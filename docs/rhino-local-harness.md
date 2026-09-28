@@ -67,6 +67,68 @@ still be able to run the whole suite. Suites opt in by spreading
 `aicWhenEnabled("<unique-id>")` into their `useLease` options; the id seeds
 the deterministic resource ids, so it must be unique per file.
 
+### Where the tenant and its bearer come from
+
+The tenant lane asks a `TenantProvider` (`src/aic/provider.ts`) for the
+tenant's name and base URL, and for a bearer. It asks again, with
+`reason: "rejected"`, after any non-anonymous call comes back 401; a provider
+that caches must not hand back the token that was refused. A connection
+resolves its provider in this order:
+
+1. `provider` passed in the options (`useLease`'s `aic`, `runAicChain`,
+   `AicFileLease`, `pullProfile`);
+2. one registered with `setTenantProvider()`, typically from a Vitest
+   `setupFiles` module;
+3. a service account configured by the environment, when
+   `RHINO_LOCAL_TENANT_URL` is set;
+4. this repo's `aic` agent (`aicCliProvider`): `aic ctx list --json`, then
+   `aic whoami --token --tenant <name>`, always with `--no-prompt`.
+
+Steps 2 and 3 are skipped when the caller injects an `io`. An injected `io` is
+the test seam for both `aic` and HTTP, and a configured service account would
+otherwise mint its token over the real network behind it.
+
+| Provider                 | Configured by                                                  | Logs for `show-log`                  |
+| ------------------------ | -------------------------------------------------------------- | ------------------------------------ |
+| `serviceAccountProvider` | `baseUrl`, `serviceAccountId`, `jwk` (the RSA private JWK)     | optional `logKeys: { id, secret }`   |
+| `tokenCallbackProvider`  | `baseUrl`, `getToken(request)`                                 | optional `logKeys: { id, secret }`   |
+| `aicCliProvider`         | the `aic` project and context                                  | `aic logs tx --wait`                 |
+
+The service account uses the JWT-bearer grant that `aic` itself uses
+(`docs/api/00-auth.md`): an RS256 assertion with `iss` = `sub` = the account
+id, `aud` = `<base>/am/oauth2/access_token`, a 180-second `exp` and a fresh
+`jti`, posted as `client_id=service-account`. The token is cached until 60
+seconds before its `expires_in` runs out. Log keys read `/monitoring/logs`
+directly, as `aic logs tx` does, with the same prefix-matching `transactionId`
+query, the same 1.05-second request spacing and the same `Retry-After` backoff
+(`docs/api/08-logs.md`).
+
+The environment form is:
+
+```sh
+RHINO_LOCAL_TENANT_URL=https://<your-tenant>.forgeblocks.com
+RHINO_LOCAL_SA_ID=<service-account-uuid>
+RHINO_LOCAL_SA_JWK_FILE=/path/outside/the/repo/sa.jwk   # or RHINO_LOCAL_SA_JWK='{...}'
+RHINO_LOCAL_LOG_KEY_ID=...        # optional, both or neither
+RHINO_LOCAL_LOG_KEY_SECRET=...
+RHINO_LOCAL_TENANT_NAME=...       # optional; default is the hostname
+```
+
+A partial configuration is an error rather than a fallback to `aic`, so a typo
+cannot quietly send the run to a different tenant. A run pinned to a tenant
+(`aic: { tenant }`) refuses a provider that serves another one, and so does
+`show-log`.
+
+**What has been exercised live (2026-09-28).** The `aic` provider is the path
+every earlier measurement in this document used. `tokenCallbackProvider` ran
+`test/harness/lease.e2e.test.ts` on the sandbox (6 of 6 passed), registered
+from a Vitest `setupFiles` module whose callback shelled out to
+`aic whoami --token` and logged each call: one `"initial"` call, and no 401,
+so the `"rejected"` path is covered offline only. The service-account and
+log-key providers are covered by offline tests only. No committed evidence
+shows either one against a tenant yet, because their credentials live only in
+the encrypted vault.
+
 **A suite that passes locally can still fail on the tenant, and that is the
 point.** Cutting the two existing e2e suites over found four rules the local
 mock store does not enforce, every one of which had been invisible: an

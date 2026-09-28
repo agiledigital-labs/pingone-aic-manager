@@ -1,6 +1,9 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { TENANT_ENV } from "../../src/aic/provider.ts";
 import type { FailureRecord } from "../../src/harness/failures.ts";
 import {
+  createDefaultIo,
   formatFailureList,
   parseSelection,
   resolveLogsEditor,
@@ -122,6 +125,32 @@ describe("resolveLogsEditor", () => {
     expect(resolveLogsEditor({ LOGS_EDITOR: "  ", EDITOR: "vim" })).toBe("vim");
     expect(resolveLogsEditor({ EDITOR: "" })).toBeUndefined();
     expect(resolveLogsEditor({})).toBeUndefined();
+  });
+});
+
+describe("createDefaultIo with a configured provider", () => {
+  const jwk = JSON.stringify(
+    generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "jwk" })
+  );
+  const env = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+    [TENANT_ENV.url]: "https://tenant.example.com",
+    [TENANT_ENV.serviceAccountId]: "00000000-0000-0000-0000-000000000001",
+    [TENANT_ENV.jwk]: jwk,
+    ...extra,
+  });
+
+  it("refuses a failure recorded on another tenant", async () => {
+    const io = createDefaultIo({ env: env() });
+    await expect(io.readTransaction("sandbox", "stem")).rejects.toThrow(
+      /ran on "sandbox", but the configured tenant provider serves "tenant.example.com"/
+    );
+  });
+
+  it("refuses a provider without log keys, naming the variables", async () => {
+    const io = createDefaultIo({ env: env() });
+    await expect(io.readTransaction("tenant.example.com", "stem")).rejects.toThrow(
+      /RHINO_LOCAL_LOG_KEY_ID/
+    );
   });
 });
 
