@@ -14,10 +14,10 @@
 #   1. type-checks a consumer test against the shipped declarations,
 #      skipLibCheck off, without allowImportingTsExtensions;
 #   2. runs it with a Java home holding `java` and no `javac`, a fresh cache,
-#      and the jar supplied offline through RHINO_LOCAL_RHINO_JAR — so the
+#      and the jar supplied offline through AIC_SCRIPT_TESTER_RHINO_JAR — so the
 #      prebuilt classes are the only way the runner can start;
 #   3. checks nothing was compiled, and that state landed in the consumer's
-#      own self-ignoring `.rhino-local/`, not in node_modules;
+#      own self-ignoring `.aic-script-tester/`, not in node_modules;
 #   4. runs the fetch-jar bin.
 #
 # Needs a JDK 25 to build (nix-shell provides one) and npm registry access, or
@@ -37,7 +37,7 @@ fail() {
   exit 1
 }
 
-java_home="${RHINO_LOCAL_JAVA_HOME:-${JAVA_HOME:-}}"
+java_home="${AIC_SCRIPT_TESTER_JAVA_HOME:-${JAVA_HOME:-}}"
 if [[ -n "$java_home" ]]; then
   java_bin="$java_home/bin/java"
 else
@@ -127,7 +127,7 @@ describe("installed rhino-local", () => {
     expect(typeof validateCase).toBe("function");
     expect(typeof readFailures).toBe("function");
     expect(typeof runShowLog).toBe("function");
-    expect(profilePath("sandbox")).toMatch(/[.]rhino-local[/]profiles[/]sandbox[.]json$/);
+    expect(profilePath("sandbox")).toMatch(/[.]aic-script-tester[/]profiles[/]sandbox[.]json$/);
     expect(() => tokenCallbackProvider({ baseUrl: "http://tenant.example.com", getToken: async () => "" })).toThrow(/https/);
   });
 });
@@ -151,8 +151,8 @@ ln -s "$java_bin" "$jre/bin/java"
 cache="$WORK/cache"
 (
   cd "$consumer"
-  env -u JAVA_HOME RHINO_LOCAL_JAVA_HOME="$jre" RHINO_LOCAL_CACHE="$cache" \
-    RHINO_LOCAL_RHINO_JAR="$jar" CI=1 npx vitest run
+  env -u JAVA_HOME AIC_SCRIPT_TESTER_JAVA_HOME="$jre" AIC_SCRIPT_TESTER_CACHE="$cache" \
+    AIC_SCRIPT_TESTER_RHINO_JAR="$jar" CI=1 npx vitest run
 ) || fail "the consumer's tests failed"
 
 [[ ! -e "$cache/classes" ]] || fail "the runner compiled classes instead of using the shipped ones"
@@ -167,11 +167,11 @@ cache="$WORK/cache"
       suite: "x", timestamp: "2026-01-01T00:00:00.000Z", tenant: "tenant" });
   ' "$installed/dist/src/harness/failures.js"
 )
-state="$consumer/.rhino-local"
+state="$consumer/.aic-script-tester"
 [[ -f "$state/failures/failures.jsonl" ]] || fail "no failure record in $state"
 [[ "$(cat "$state/.gitignore")" == "*" ]] || fail "$state does not ignore itself"
 [[ "$(stat -c %a "$state/failures/failures.jsonl")" == 600 ]] || fail "the failure record is not 0600"
-[[ -z "$(git -C "$consumer" status --porcelain -- .rhino-local)" ]] || fail "git would commit $state"
+[[ -z "$(git -C "$consumer" status --porcelain -- .aic-script-tester)" ]] || fail "git would commit $state"
 
 # A bin is its own process, so a callback provider reaches it only through
 # --provider-module. With one record written above, show-log must load the
@@ -186,9 +186,9 @@ JS
 shown="$(cd "$consumer" && npx aic-script-tester-show-log --stdout --provider-module provider.mjs)" ||
   fail "aic-script-tester-show-log failed with --provider-module"
 [[ "$shown" == *'"from": "provider-module"'* ]] || fail "show-log did not read through the provider module"
-[[ ! -e "$installed/.rhino-local" ]] || fail "state was written into node_modules"
+[[ ! -e "$installed/.aic-script-tester" ]] || fail "state was written into node_modules"
 
-fetched="$(cd "$consumer" && RHINO_LOCAL_CACHE="$cache" RHINO_LOCAL_RHINO_JAR="$jar" npx aic-script-tester-fetch-jar)"
+fetched="$(cd "$consumer" && AIC_SCRIPT_TESTER_CACHE="$cache" AIC_SCRIPT_TESTER_RHINO_JAR="$jar" npx aic-script-tester-fetch-jar)"
 [[ "$fetched" == "$jar" ]] || fail "aic-script-tester-fetch-jar printed $fetched, expected $jar"
 
 echo "rhino-local-pack-smoke: ok ($(basename "$tarball"))"

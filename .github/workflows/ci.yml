@@ -250,7 +250,7 @@ jobs:
 
   # The local Rhino harness (packages/rhino-local). Developers run it on a host
   # JVM; this job runs every test on the host JVM AND the AM image's JVM
-  # (RHINO_LOCAL_JVM=both), and a job the two answer differently fails. That is
+  # (AIC_SCRIPT_TESTER_JVM=both), and a job the two answer differently fails. That is
   # the evidence that leaving the container changed nothing a script can see —
   # a host-only run here would prove nothing about the image.
   rhino-local:
@@ -299,7 +299,7 @@ jobs:
 
       - name: rhino-local tests (host vs AM image)
         env:
-          RHINO_LOCAL_JVM: both
+          AIC_SCRIPT_TESTER_JVM: both
         run: npm -w packages/rhino-local test
 
       # The suite above imports the harness from source; this installs the

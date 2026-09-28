@@ -43,7 +43,7 @@ to the overlay; update the snapshot only after reading why it moved.
 ## Environment profiles (added 2026-09-12)
 
 `npm run pull-profile` pulls `GET /openidm/config/managed` into a normalised
-snapshot at `.rhino-local/profiles/<tenant>.json` (before 2026-09-28,
+snapshot at `.aic-script-tester/profiles/<tenant>.json` (before 2026-09-28,
 `workspace/<tenant>/harness-profile.json`). The state directory ignores itself,
 which is the guard: managed object and property names are
 client business vocabulary, and `check-sensitive-metadata.sh` deliberately
