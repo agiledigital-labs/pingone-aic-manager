@@ -9,8 +9,8 @@ export const packageRoot = join(here, "..");
 /** pingone-aic-manager repo root. */
 export const repoRoot = join(packageRoot, "..", "..", "..");
 
-/** Long-lived JVM runner launcher (`scripts/rhino-local/run-runner.sh`). */
-export const runRunnerScript = join(packageRoot, "..", "run-runner.sh");
+/** The runner's Java sources (`scripts/rhino-local/*.java`). */
+export const javaSourceDir = join(packageRoot, "..");
 
 export const bindingsJsonPath = join(
   repoRoot,
