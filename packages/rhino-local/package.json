@@ -4,6 +4,41 @@
   "private": true,
   "type": "module",
   "description": "Local Rhino harness: mock-surface generator and typed client for the long-lived JVM runner.",
+  "license": "MIT OR Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/src/harness/index.d.ts",
+      "default": "./dist/src/harness/index.js"
+    },
+    "./case": {
+      "types": "./dist/src/case/index.d.ts",
+      "default": "./dist/src/case/index.js"
+    },
+    "./aic": {
+      "types": "./dist/src/aic/index.d.ts",
+      "default": "./dist/src/aic/index.js"
+    },
+    "./bindings": {
+      "types": "./dist/src/bindings/index.d.ts",
+      "default": "./dist/src/bindings/index.js"
+    },
+    "./runner": {
+      "types": "./dist/src/runner.d.ts",
+      "default": "./dist/src/runner.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "rhino-local-show-log": "dist/bin/show-log.js",
+    "rhino-local-pull-profile": "dist/bin/pull-profile.js",
+    "rhino-local-fetch-jar": "dist/bin/fetch-jar.js"
+  },
+  "files": [
+    "dist/",
+    "generated/",
+    "java/*.java",
+    "src/bindings/rhino/runtime.cjs"
+  ],
   "engines": {
     "node": ">=24"
   },
@@ -15,7 +50,9 @@
     "lint": "eslint . --max-warnings 0",
     "lint:am": "eslint --config eslint.am.config.js generated src/bindings cases --max-warnings 0",
     "pull-profile": "node bin/pull-profile.ts",
-    "show-log": "node bin/show-log.ts"
+    "show-log": "node bin/show-log.ts",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node src/build-classes.ts",
+    "fetch-jar": "node bin/fetch-jar.ts"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
@@ -24,6 +61,10 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.70.0",
     "vitest": "3.2.7",
+    "zod": "^4.6.4"
+  },
+  "peerDependencies": {
+    "vitest": "^3.2.7",
     "zod": "^4.6.4"
   }
 }

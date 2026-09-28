@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Pull an environment's managed-object schema into a harness profile.
  *

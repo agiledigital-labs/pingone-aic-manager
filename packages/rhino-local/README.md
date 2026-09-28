@@ -22,6 +22,10 @@ library bodies; a missing id throws naming `given.libraries`), legacy
 `JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
 in `cases/`.
 
+Installed from its tarball, it needs Node 24, a Java 25 **runtime** (the runner
+classes are prebuilt), and `vitest` + `zod`. See "Using it from another repo"
+in `docs/rhino-local-harness.md`.
+
 ## JVM runner client
 
 `src/runner.ts` launches Java 25 from `RHINO_LOCAL_JAVA_HOME` or `JAVA_HOME`

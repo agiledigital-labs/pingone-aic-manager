@@ -1,10 +1,27 @@
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** `packages/rhino-local/` */
-export const packageRoot = join(here, "..");
+/**
+ * The directory holding this package's `package.json`: `packages/rhino-local/`
+ * in the repo, `node_modules/<name>/` installed. Found by walking up, because
+ * the compiled copy of this file sits one level deeper (`dist/src/`) than the
+ * source does.
+ */
+export const packageRoot = findPackageRoot(here);
+
+function findPackageRoot(start: string): string {
+  for (let dir = start; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "package.json"))) {
+      return dir;
+    }
+    if (dirname(dir) === dir) {
+      throw new Error(`rhino-local: no package.json above ${start}`);
+    }
+  }
+}
 
 /**
  * pingone-aic-manager repo root. **Repo-only**: generation and this repo's
@@ -16,6 +33,13 @@ export const repoRoot = join(packageRoot, "..", "..");
 
 /** The runner's Java sources (`packages/rhino-local/java/*.java`). */
 export const javaSourceDir = join(packageRoot, "java");
+
+/**
+ * Runner classes compiled at build time and shipped, so a consumer needs a
+ * `java` but no `javac`. Used only while their manifest matches
+ * {@link javaSourceDir}; absent in a checkout until `npm run build`.
+ */
+export const prebuiltClassesDir = join(packageRoot, "dist", "classes");
 
 /** The captured contexts JSON in this repo's docs. Repo-only; read by `generate`. */
 export const sourceBindingsJsonPath = join(

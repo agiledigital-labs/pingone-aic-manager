@@ -298,3 +298,11 @@ jobs:
         env:
           RHINO_LOCAL_JVM: both
         run: npm -w packages/rhino-local test
+
+      # The suite above imports the harness from source; this installs the
+      # packed tarball into a consumer outside the checkout and runs it there
+      # with java but no javac, so a package that only works beside this repo
+      # fails here. After the tests, because the build it runs leaves the
+      # prebuilt classes that the tests would otherwise pick up.
+      - name: rhino-local package smoke (installed, no javac)
+        run: scripts/rhino-local-pack-smoke.sh

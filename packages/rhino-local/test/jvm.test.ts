@@ -19,7 +19,9 @@ import {
   checkEnvironment,
   ensureRhinoJar,
   ensureRunnerClasses,
+  buildPrebuiltClasses,
   laneFromEnv,
+  RHINO_JAR_ENV,
   parseEnvironment,
   type RunnerEnvironment,
 } from "../src/jvm.ts";
@@ -138,6 +140,29 @@ describe("ensureRhinoJar", () => {
     expect(() => readdirSync(join(cache, "jars"))).toThrow();
   });
 
+  it("uses a verified RHINO_LOCAL_RHINO_JAR in place, without the cache or a fetch", async () => {
+    const cache = tempDir();
+    const path = join(tempDir(), "offline.jar");
+    writeFileSync(path, goodJar);
+    const fetcher = async (): Promise<Uint8Array> => {
+      throw new Error("fetcher should not run");
+    };
+    expect(await ensureRhinoJar(cache, fetcher, { [RHINO_JAR_ENV]: path })).toBe(path);
+    expect(existsSync(join(cache, "jars"))).toBe(false);
+  });
+
+  it("refuses a RHINO_LOCAL_RHINO_JAR that is not the pinned Rhino, or is missing", async () => {
+    const path = join(tempDir(), "other.jar");
+    writeFileSync(path, "not rhino");
+    const fetcher = async (): Promise<Uint8Array> => new Uint8Array(goodJar);
+    await expect(ensureRhinoJar(tempDir(), fetcher, { [RHINO_JAR_ENV]: path })).rejects.toThrow(
+      /RHINO_LOCAL_RHINO_JAR=.* is not the Rhino AM ships/
+    );
+    await expect(
+      ensureRhinoJar(tempDir(), fetcher, { [RHINO_JAR_ENV]: join(tempDir(), "absent.jar") })
+    ).rejects.toThrow(/cannot be read/);
+  });
+
   it("replaces a corrupted cached jar", async () => {
     const cache = tempDir();
     const dir = join(cache, "jars");
@@ -160,7 +185,9 @@ describe("ensureRunnerClasses", () => {
     jar = await ensureRhinoJar(cacheDir());
   }, 120_000);
 
-  function copySources(): { cache: string; sources: string } {
+  // `prebuilt` points nowhere, so a `dist/classes` left by `npm run build`
+  // cannot stand in for the compile these tests are about.
+  function copySources(): { cache: string; sources: string; prebuilt: string } {
     const root = tempDir();
     const sources = join(root, "sources");
     mkdirSync(sources);
@@ -168,66 +195,66 @@ describe("ensureRunnerClasses", () => {
       recursive: true,
       filter: (source) => source.endsWith(".java") || source === javaSourceDir,
     });
-    return { cache: join(root, "cache"), sources };
+    return { cache: join(root, "cache"), sources, prebuilt: join(root, "no-prebuilt") };
   }
 
   it("reuses the compiled directory on the second call", async () => {
-    const { cache, sources } = copySources();
-    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const { cache, sources, prebuilt } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     const marker = join(first, ".complete");
     const modified = statSync(marker).mtimeMs;
-    const second = await ensureRunnerClasses(jar, { cache, sources });
+    const second = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     expect(second).toBe(first);
     expect(statSync(marker).mtimeMs).toBe(modified);
   });
 
   it("recompiles when a compiled class is deleted", async () => {
-    const { cache, sources } = copySources();
-    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const { cache, sources, prebuilt } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     const classFile = readdirSync(first).find((file) => file.endsWith(".class"));
     expect(classFile).toBeDefined();
     if (!classFile) throw new Error("expected a compiled class");
     rmSync(join(first, classFile));
-    const second = await ensureRunnerClasses(jar, { cache, sources });
+    const second = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     expect(second).not.toBe(first);
     expect(existsSync(first)).toBe(false);
     expect(readdirSync(second)).toContain(classFile);
   });
 
   it("recompiles when a compiled class is altered", async () => {
-    const { cache, sources } = copySources();
-    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const { cache, sources, prebuilt } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     const classFile = readdirSync(first).find((file) => file.endsWith(".class"));
     expect(classFile).toBeDefined();
     if (!classFile) throw new Error("expected a compiled class");
     writeFileSync(join(first, classFile), "corrupt class payload");
-    const second = await ensureRunnerClasses(jar, { cache, sources });
+    const second = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     expect(second).not.toBe(first);
     expect(readFileSync(join(second, classFile))).not.toEqual(Buffer.from("corrupt class payload"));
   });
 
   it("rejects an extra stray class file", async () => {
-    const { cache, sources } = copySources();
-    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const { cache, sources, prebuilt } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     writeFileSync(join(first, "Stray.class"), "stray");
-    const second = await ensureRunnerClasses(jar, { cache, sources });
+    const second = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     expect(second).not.toBe(first);
     expect(readdirSync(second)).not.toContain("Stray.class");
   });
 
   it("uses a different directory when a source changes", async () => {
-    const { cache, sources } = copySources();
-    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const { cache, sources, prebuilt } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     const javaFile = join(sources, "Runner.java");
     writeFileSync(javaFile, `${readFileSync(javaFile, "utf8")}\n// source digest change\n`);
-    const second = await ensureRunnerClasses(jar, { cache, sources });
+    const second = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     expect(second).not.toBe(first);
   });
 
   it("gives concurrent cold calls valid directories and leaves no scratch", async () => {
-    const { cache, sources } = copySources();
+    const { cache, sources, prebuilt } = copySources();
     const results = await Promise.all(
-      Array.from({ length: 2 }, () => ensureRunnerClasses(jar, { cache, sources }))
+      Array.from({ length: 2 }, () => ensureRunnerClasses(jar, { cache, sources, prebuilt }))
     );
     for (const dir of results) {
       expect(readdirSync(dir)).toContain(".complete");
@@ -236,21 +263,21 @@ describe("ensureRunnerClasses", () => {
       []
     );
     // Once published, every later call settles on one directory.
-    const later = await ensureRunnerClasses(jar, { cache, sources });
-    expect(await ensureRunnerClasses(jar, { cache, sources })).toBe(later);
+    const later = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
+    expect(await ensureRunnerClasses(jar, { cache, sources, prebuilt })).toBe(later);
   });
 
   // The interleaving that a shared directory name allowed: one worker judged
   // the damaged directory invalid, another repaired it and returned the path,
   // then the first moved the repaired one away from under it.
   it("never removes a directory another concurrent repair returned", async () => {
-    const { cache, sources } = copySources();
-    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const { cache, sources, prebuilt } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
     const classFile = readdirSync(first).find((file) => file.endsWith(".class"));
     if (!classFile) throw new Error("expected a compiled class");
     writeFileSync(join(first, classFile), "corrupt class payload");
     const results = await Promise.all(
-      Array.from({ length: 4 }, () => ensureRunnerClasses(jar, { cache, sources }))
+      Array.from({ length: 4 }, () => ensureRunnerClasses(jar, { cache, sources, prebuilt }))
     );
     for (const dir of results) {
       expect(existsSync(join(dir, classFile)), dir).toBe(true);
@@ -259,4 +286,50 @@ describe("ensureRunnerClasses", () => {
       );
     }
   });
+
+  // A consumer's install has `java` and may have no `javac`: a bogus javac
+  // proves the prebuilt classes were used and nothing was compiled.
+  const noJavac = "/nonexistent/rhino-local/javac";
+
+  it("uses shipped classes whose manifest matches, without a javac", async () => {
+    const { cache, sources, prebuilt } = copySources();
+    expect(await buildPrebuiltClasses({ out: prebuilt, sources })).toBe(prebuilt);
+    expect(await ensureRunnerClasses(jar, { cache, sources, prebuilt, javac: noJavac })).toBe(
+      prebuilt
+    );
+    expect(existsSync(join(cache, "classes"))).toBe(false);
+  });
+
+  it("does not use shipped classes built from other sources", async () => {
+    const { cache, sources, prebuilt } = copySources();
+    await buildPrebuiltClasses({ out: prebuilt, sources });
+    const javaFile = join(sources, "Runner.java");
+    writeFileSync(javaFile, `${readFileSync(javaFile, "utf8")}\n// edited after the build\n`);
+    await expect(
+      ensureRunnerClasses(jar, { cache, sources, prebuilt, javac: noJavac })
+    ).rejects.toThrow(/no prebuilt classes for these sources/);
+    const compiled = await ensureRunnerClasses(jar, { cache, sources, prebuilt });
+    expect(compiled).not.toBe(prebuilt);
+  });
+
+  it("does not use a shipped class that was altered", async () => {
+    const { cache, sources, prebuilt } = copySources();
+    await buildPrebuiltClasses({ out: prebuilt, sources });
+    const classFile = readdirSync(prebuilt).find((file) => file.endsWith(".class"));
+    if (!classFile) throw new Error("expected a compiled class");
+    writeFileSync(join(prebuilt, classFile), "corrupt class payload");
+    await expect(
+      ensureRunnerClasses(jar, { cache, sources, prebuilt, javac: noJavac })
+    ).rejects.toThrow(/no prebuilt classes for these sources/);
+  });
+
+  it("replaces an earlier build and leaves no scratch beside it", async () => {
+    const { sources, prebuilt } = copySources();
+    await buildPrebuiltClasses({ out: prebuilt, sources });
+    writeFileSync(join(prebuilt, "Stray.class"), "stray");
+    await buildPrebuiltClasses({ out: prebuilt, sources });
+    expect(readdirSync(prebuilt)).not.toContain("Stray.class");
+    expect(readdirSync(join(prebuilt, "..")).filter((name) => name.includes("."))).toEqual([]);
+  });
 });
+

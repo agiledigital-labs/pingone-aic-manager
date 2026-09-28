@@ -60,6 +60,8 @@ TODO.md
 # Root npm workspace dependencies.
 /node_modules/
 packages/rhino-local/node_modules/
+# rhino-local build output: compiled JS, declarations, prebuilt runner classes.
+packages/rhino-local/dist/
 
 # Friction found while using `aic` on real tickets. `gaps/` is the raw inbox,
 # GAPS.md the ranked queue over it. Both are working notes with a finite life:
@@ -67,7 +69,8 @@ packages/rhino-local/node_modules/
 /GAPS.md
 /gaps/
 
-# Local Rhino runner cache (verified jar and compiled host-JVM classes). Never commit it.
+# rhino-local harness state (failure dumps, show-log views, environment
+# profiles). The directory writes its own `*` .gitignore; this is belt and braces.
 /.rhino-local/
 /.ai/agent/
 

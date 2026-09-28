@@ -52,6 +52,39 @@ npm -w packages/rhino-local test
 npm -w packages/rhino-local run measure
 ```
 
+### Using it from another repo
+
+`packages/rhino-local` builds to an npm package (`npm -w packages/rhino-local
+run build`, then `npm pack`). It is still `"private": true`: the published name
+and registry are not chosen yet. What a consumer needs:
+
+- **Node 24 and a Java 25 runtime** — `java` only. The package ships runner
+  classes compiled at build time (`dist/classes/`, with a SHA-256 manifest keyed
+  by the Java sources and the Rhino jar), and uses them whenever the manifest
+  matches the shipped sources. It falls back to compiling with `javac` only
+  when they do not, which in practice means a checkout of this repo with edited
+  `.java` files.
+- **The Rhino jar**, which is not bundled (MPL-2.0 and 1.4 MB). The first run
+  downloads it from Maven Central into the cache and checks its SHA-256. For an
+  offline machine, point `RHINO_LOCAL_RHINO_JAR` at a copy. It gets the same
+  SHA-256 check and is used in place. `npx rhino-local-fetch-jar` fills the
+  cache ahead of time and prints the jar's path.
+- **`vitest` and `zod`** as peer dependencies. Suites are Vitest files, and
+  `defineSuite`'s `inputs` are zod schemas.
+
+The entry points are `.` (the harness: `defineSuite`, `useLease`,
+`aicWhenEnabled`), `./case`, `./aic` (providers, `setTenantProvider`),
+`./bindings` and `./runner`. The bins are `rhino-local-show-log`,
+`rhino-local-pull-profile` and `rhino-local-fetch-jar`.
+
+`scripts/rhino-local-pack-smoke.sh` is the CI gate for all of this. It installs
+the tarball into a consumer outside the checkout, then:
+
+- type-checks a suite against the shipped declarations, with `skipLibCheck` off;
+- runs the suite with a Java home that has no `javac`, on a fresh cache;
+- fails if anything was compiled, or if state was written into
+  `node_modules`.
+
 ### Running the AIC lane
 
 `npm test` runs the **local lane only**. Opt the tenant lane in per
