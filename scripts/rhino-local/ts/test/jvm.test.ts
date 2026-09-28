@@ -1,5 +1,6 @@
 import {
   cpSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -9,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   EXPECTED_ENVIRONMENT,
@@ -188,7 +189,8 @@ describe("ensureRunnerClasses", () => {
     if (!classFile) throw new Error("expected a compiled class");
     rmSync(join(first, classFile));
     const second = await ensureRunnerClasses(jar, { cache, sources });
-    expect(second).toBe(first);
+    expect(second).not.toBe(first);
+    expect(existsSync(first)).toBe(false);
     expect(readdirSync(second)).toContain(classFile);
   });
 
@@ -200,7 +202,7 @@ describe("ensureRunnerClasses", () => {
     if (!classFile) throw new Error("expected a compiled class");
     writeFileSync(join(first, classFile), "corrupt class payload");
     const second = await ensureRunnerClasses(jar, { cache, sources });
-    expect(second).toBe(first);
+    expect(second).not.toBe(first);
     expect(readFileSync(join(second, classFile))).not.toEqual(Buffer.from("corrupt class payload"));
   });
 
@@ -209,7 +211,7 @@ describe("ensureRunnerClasses", () => {
     const first = await ensureRunnerClasses(jar, { cache, sources });
     writeFileSync(join(first, "Stray.class"), "stray");
     const second = await ensureRunnerClasses(jar, { cache, sources });
-    expect(second).toBe(first);
+    expect(second).not.toBe(first);
     expect(readdirSync(second)).not.toContain("Stray.class");
   });
 
@@ -222,16 +224,39 @@ describe("ensureRunnerClasses", () => {
     expect(second).not.toBe(first);
   });
 
-  it("publishes one complete directory for concurrent cold calls", async () => {
+  it("gives concurrent cold calls valid directories and leaves no scratch", async () => {
     const { cache, sources } = copySources();
     const results = await Promise.all(
       Array.from({ length: 2 }, () => ensureRunnerClasses(jar, { cache, sources }))
     );
-    const resolved = results[0];
-    expect(resolved).toBeDefined();
-    expect(resolved).toBe(results[1]);
-    if (resolved === undefined) throw new Error("runner classes did not resolve");
-    expect(readdirSync(resolved)).toContain(".complete");
-    expect(readdirSync(join(cache, "classes"))).toEqual([basename(resolved)]);
+    for (const dir of results) {
+      expect(readdirSync(dir)).toContain(".complete");
+    }
+    expect(readdirSync(join(cache, "classes")).filter((name) => name.startsWith("."))).toEqual(
+      []
+    );
+    // Once published, every later call settles on one directory.
+    const later = await ensureRunnerClasses(jar, { cache, sources });
+    expect(await ensureRunnerClasses(jar, { cache, sources })).toBe(later);
+  });
+
+  // The interleaving that a shared directory name allowed: one worker judged
+  // the damaged directory invalid, another repaired it and returned the path,
+  // then the first moved the repaired one away from under it.
+  it("never removes a directory another concurrent repair returned", async () => {
+    const { cache, sources } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const classFile = readdirSync(first).find((file) => file.endsWith(".class"));
+    if (!classFile) throw new Error("expected a compiled class");
+    writeFileSync(join(first, classFile), "corrupt class payload");
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => ensureRunnerClasses(jar, { cache, sources }))
+    );
+    for (const dir of results) {
+      expect(existsSync(join(dir, classFile)), dir).toBe(true);
+      expect(readFileSync(join(dir, classFile))).not.toEqual(
+        Buffer.from("corrupt class payload")
+      );
+    }
   });
 });
