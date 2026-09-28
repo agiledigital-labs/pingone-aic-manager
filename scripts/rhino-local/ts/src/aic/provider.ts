@@ -277,17 +277,17 @@ export function logKeysReader(
 ): LogReader {
   const pause = options.sleep ?? sleep;
   const now = options.now ?? Date.now;
-  let lastRequest: number | undefined;
+  // The rate limit is per environment, not per reader: every default reader
+  // in the process shares one spacer, as `aic`'s process-global throttle does.
+  // A test that injects a clock gets its own, so tests cannot delay each other.
+  const spacer =
+    options.sleep === undefined && options.now === undefined
+      ? sharedSpacer
+      : new RequestSpacer(pause, now);
 
   async function get(url: string): Promise<HttpResponse> {
     for (let retry = 0; ; retry += 1) {
-      if (lastRequest !== undefined) {
-        const wait = lastRequest + REQUEST_INTERVAL_MS - now();
-        if (wait > 0) {
-          await pause(wait);
-        }
-      }
-      lastRequest = now();
+      await spacer.slot();
       const response = await http({
         url,
         method: "GET",
@@ -360,6 +360,38 @@ export function logKeysReader(
   };
 }
 
+/**
+ * Hands out request slots at least {@link REQUEST_INTERVAL_MS} apart, in call
+ * order. Concurrent callers queue on one chain, so two cannot read the same
+ * "last request" time and wake together.
+ */
+class RequestSpacer {
+  #chain: Promise<void> = Promise.resolve();
+  #last: number | undefined;
+  readonly #pause: (ms: number) => Promise<void>;
+  readonly #now: () => number;
+  constructor(pause: (ms: number) => Promise<void>, now: () => number) {
+    this.#pause = pause;
+    this.#now = now;
+  }
+
+  slot(): Promise<void> {
+    const next = this.#chain.then(async () => {
+      if (this.#last !== undefined) {
+        const wait = this.#last + REQUEST_INTERVAL_MS - this.#now();
+        if (wait > 0) {
+          await this.#pause(wait);
+        }
+      }
+      this.#last = this.#now();
+    });
+    this.#chain = next.catch(() => undefined);
+    return next;
+  }
+}
+
+const sharedSpacer = new RequestSpacer(sleep, Date.now);
+
 function hasAccessOutcome(events: readonly unknown[]): boolean {
   return events.some(
     (event) =>
@@ -390,6 +422,14 @@ export const TENANT_ENV = {
 export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): TenantProvider | undefined {
   const url = env[TENANT_ENV.url];
   if (url === undefined || url === "") {
+    const stray = Object.values(TENANT_ENV).filter((name) => env[name]);
+    if (stray.length > 0) {
+      // Falling back to `aic` here would run against whatever context it has
+      // current — the very tenant these variables were set to avoid.
+      throw new TenantProviderError(
+        `${stray.join(", ")} ${stray.length === 1 ? "is" : "are"} set but ${TENANT_ENV.url} is not`
+      );
+    }
     return undefined;
   }
   const id = env[TENANT_ENV.serviceAccountId];
@@ -454,6 +494,12 @@ function describeUrl(baseUrl: string, name: string | undefined): TenantDescripti
     throw new TenantProviderError(`tenant base URL ${JSON.stringify(baseUrl)} is not a URL`, {
       cause: error,
     });
+  }
+  if (url.protocol !== "https:") {
+    // The assertion, every bearer and the log keys travel to this origin.
+    throw new TenantProviderError(
+      `tenant base URL must be https (got ${url.protocol.replace(/:$/, "")})`
+    );
   }
   if (url.pathname !== "/" && url.pathname !== "") {
     throw new TenantProviderError(
