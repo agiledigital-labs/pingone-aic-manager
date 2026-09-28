@@ -55,7 +55,7 @@ describe("runShowLog", () => {
     expect(fake.idPrompts).toBe(0);
     expect(fake.testPrompts).toBe(0);
     expect(fake.reads).toEqual([["sandbox", "stem-one"]]);
-    expect(fake.printed.join("\n")).toContain(JSON.stringify([{ event: "ok" }], null, 2));
+    expect(fake.written.join("\n")).toContain(JSON.stringify([{ event: "ok" }], null, 2));
   });
 
   it("with several ids offers a multi-select", async () => {
@@ -90,10 +90,22 @@ describe("runShowLog", () => {
     expect(fake.opened).toEqual(["vim:/tmp/view.json"]);
   });
 
-  it("neither editor set prints to stdout", async () => {
+  // The bodies are tenant data: with no editor (CI, typically) they go to the
+  // protected view and only its path reaches stdout.
+  it("neither editor set writes the view and prints only its path", async () => {
     const fake = trackingIo({ records: [ONE], env: {} });
     await runShowLog(fake.io);
     expect(fake.opened).toEqual([]);
+    expect(fake.written).toHaveLength(1);
+    expect(fake.printed.join("\n")).toContain("wrote /tmp/view.json");
+    expect(fake.printed.join("\n")).not.toContain('"event"');
+  });
+
+  it("--stdout prints the logs and writes no view", async () => {
+    const fake = trackingIo({ records: [ONE], env: { EDITOR: "vim" } });
+    await runShowLog(fake.io, { stdout: true });
+    expect(fake.opened).toEqual([]);
+    expect(fake.written).toEqual([]);
     expect(fake.printed.join("\n")).toContain(JSON.stringify([{ event: "ok" }], null, 2));
   });
 
@@ -172,6 +184,7 @@ function trackingIo(options: {
   reads: [string, string][];
   opened: string[];
   printed: string[];
+  written: string[];
   errors: string[];
   idPrompts: number;
   testPrompts: number;
@@ -179,6 +192,7 @@ function trackingIo(options: {
   const reads: [string, string][] = [];
   const opened: string[] = [];
   const printed: string[] = [];
+  const written: string[] = [];
   const errors: string[] = [];
   const state = { idPrompts: 0, testPrompts: 0 };
   const io: ShowLogIo = {
@@ -210,6 +224,7 @@ function trackingIo(options: {
     },
     writeView: (contents) => {
       expect(contents.length).toBeGreaterThan(0);
+      written.push(contents);
       return Promise.resolve("/tmp/view.json");
     },
   };
@@ -218,6 +233,7 @@ function trackingIo(options: {
     reads,
     opened,
     printed,
+    written,
     errors,
     get idPrompts() {
       return state.idPrompts;

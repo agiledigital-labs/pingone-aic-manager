@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 import { chmod, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
-import { configuredTenantProvider, type TenantProvider } from "../aic/provider.ts";
+import {
+  checkTenantDescription,
+  configuredTenantProvider,
+  type TenantProvider,
+} from "../aic/provider.ts";
 import { aicCliProvider, defaultAicIo } from "../aic/tenant.ts";
 import { latestLogsPath, projectRoot } from "../project.ts";
 import {
@@ -111,7 +115,16 @@ export function parseSelection(
   return picked.length === 0 ? undefined : picked;
 }
 
-export async function runShowLog(io: ShowLogIo): Promise<number> {
+export interface ShowLogOptions {
+  /**
+   * Print the log bodies instead of writing the view. Off by default: the
+   * bodies are tenant data, and the view is a 0600 file in the self-ignoring
+   * state directory, where a CI log is neither.
+   */
+  stdout?: boolean;
+}
+
+export async function runShowLog(io: ShowLogIo, options: ShowLogOptions = {}): Promise<number> {
   const records = sortNewestFirst(await io.readDump());
   if (records.length === 0) {
     io.print("no failed tests recorded. Run a test that hits the AIC lane first.");
@@ -152,12 +165,18 @@ export async function runShowLog(io: ShowLogIo): Promise<number> {
     }
   }
   const text = `${chunks.join("\n\n")}\n`;
-  const editor = resolveLogsEditor(io.env);
-  if (editor === undefined) {
+  if (options.stdout === true) {
     io.print(text);
     return 0;
   }
   const viewPath = await io.writeView(text);
+  const editor = resolveLogsEditor(io.env);
+  if (editor === undefined) {
+    io.print(
+      `wrote ${viewPath}\nSet LOGS_EDITOR or EDITOR to open it, or pass --stdout to print the logs instead.`
+    );
+    return 0;
+  }
   await io.openEditor(editor, viewPath);
   return 0;
 }
@@ -204,7 +223,7 @@ export function createDefaultIo(
           aicCliProvider(defaultAicIo(project), { tenant, project });
         providers.set(tenant, provider);
       }
-      const { name } = await provider.describe();
+      const { name } = checkTenantDescription(await provider.describe());
       if (name !== tenant) {
         throw new Error(
           `show-log: this failure ran on ${JSON.stringify(tenant)}, but the configured tenant provider serves ${JSON.stringify(name)}`

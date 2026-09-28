@@ -26,6 +26,14 @@
       "types": "./dist/src/runner.d.ts",
       "default": "./dist/src/runner.js"
     },
+    "./profile": {
+      "types": "./dist/src/profile/index.d.ts",
+      "default": "./dist/src/profile/index.js"
+    },
+    "./diagnostics": {
+      "types": "./dist/src/diagnostics.d.ts",
+      "default": "./dist/src/diagnostics.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {

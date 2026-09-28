@@ -72,10 +72,36 @@ and registry are not chosen yet. What a consumer needs:
 - **`vitest` and `zod`** as peer dependencies. Suites are Vitest files, and
   `defineSuite`'s `inputs` are zod schemas.
 
-The entry points are `.` (the harness: `defineSuite`, `useLease`,
-`aicWhenEnabled`), `./case`, `./aic` (providers, `setTenantProvider`),
-`./bindings` and `./runner`. The bins are `rhino-local-show-log`,
-`rhino-local-pull-profile` and `rhino-local-fetch-jar`.
+The entry points are:
+
+- `.`, the harness: `defineSuite`, `useLease`, `aicWhenEnabled`.
+- `./case`.
+- `./aic`: the providers and `setTenantProvider`.
+- `./profile`.
+- `./diagnostics`: failure records, `runShowLog` and `loadProviderModule`.
+- `./bindings`.
+- `./runner`.
+
+The bins are `rhino-local-show-log`, `rhino-local-pull-profile` and
+`rhino-local-fetch-jar`.
+
+The two bins that talk to a tenant take `--provider-module <file>`. That can be
+the consumer's Vitest setup module that calls `setTenantProvider()`, or any
+module that default-exports a `TenantProvider`. A token callback lives in
+consumer code, and a bin is a separate process from the run that registered it.
+
+Neither bin writes tenant data to stdout by default:
+
+- `show-log` writes the 0600 view and prints its path, and prints the logs
+  only with `--stdout`.
+- `pull-profile` prints only counts, because the object names are the tenant's
+  business vocabulary.
+- Provider errors name the endpoint path, the status and the OAuth `error` /
+  `error_description`, with the tenant's origin and hostname replaced by
+  `<tenant>`.
+- `connectTenant` re-checks every provider's description for https and a bare
+  origin before it asks for a token, custom providers included. The log reader
+  checks its own origin.
 
 `scripts/rhino-local-pack-smoke.sh` is the CI gate for all of this. It installs
 the tarball into a consumer outside the checkout, then:

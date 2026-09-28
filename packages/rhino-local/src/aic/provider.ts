@@ -163,10 +163,9 @@ export function serviceAccountProvider(options: ServiceAccountOptions): TenantPr
       body,
     });
     if (response.status !== 200) {
-      // The body names the problem (`invalid_client`, a bad `aud`) and holds
-      // no secret: the assertion went out in the request, not back.
       throw new TenantProviderError(
-        `service-account token request to ${tokenUrl} returned ${response.status}: ${response.body.slice(0, 300)}`
+        `service-account token request (POST /am/oauth2/access_token) returned ${response.status}` +
+          tokenErrorDetail(response.body, description.baseUrl)
       );
     }
     let parsed: unknown;
@@ -275,6 +274,8 @@ export function logKeysReader(
   http: HttpSend,
   options: LogReaderOptions = {}
 ): LogReader {
+  // Exported on its own, so it checks its origin itself: the keys go there.
+  const origin = describeUrl(baseUrl, undefined).baseUrl;
   const pause = options.sleep ?? sleep;
   const now = options.now ?? Date.now;
   // The rate limit is per environment, not per reader: every default reader
@@ -317,10 +318,10 @@ export function logKeysReader(
       if (cookie !== undefined) {
         params.set("_pagedResultsCookie", cookie);
       }
-      const response = await get(`${baseUrl}/monitoring/logs?${params.toString()}`);
+      const response = await get(`${origin}/monitoring/logs?${params.toString()}`);
       if (response.status !== 200) {
         throw new TenantProviderError(
-          `GET /monitoring/logs returned ${response.status}: ${response.body.slice(0, 300)}`
+          `GET /monitoring/logs returned ${response.status}: ${scrubTenant(response.body, origin).slice(0, 300)}`
         );
       }
       let body: { result?: unknown; pagedResultsCookie?: unknown };
@@ -494,6 +495,18 @@ export function configuredTenantProvider(
 
 // --- helpers ----------------------------------------------------------------
 
+/**
+ * Re-check what a provider says about its tenant. Every built-in provider
+ * validates its URL when it is made, but a caller's own `TenantProvider` is
+ * only a promise, and `connectTenant` sends a bearer to whatever this returns.
+ */
+export function checkTenantDescription(description: TenantDescription): TenantDescription {
+  if (typeof description.name !== "string" || description.name.trim() === "") {
+    throw new TenantProviderError("the tenant provider described a tenant with no name");
+  }
+  return describeUrl(description.baseUrl, description.name);
+}
+
 function describeUrl(baseUrl: string, name: string | undefined): TenantDescription {
   let url: URL;
   try {
@@ -515,6 +528,37 @@ function describeUrl(baseUrl: string, name: string | undefined): TenantDescripti
     );
   }
   return { name: name ?? url.hostname, baseUrl: url.origin };
+}
+
+/**
+ * The OAuth `error` / `error_description` of a refused token request, with the
+ * tenant's origin and hostname replaced. The description is what names the
+ * problem (a bad `aud` quotes the URL it expected), but the message ends up in
+ * test output and CI logs, where the tenant's hostname does not belong.
+ */
+export function tokenErrorDetail(body: string, baseUrl: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return "";
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return "";
+  }
+  const { error, error_description: description } = parsed as Record<string, unknown>;
+  const scrub = (text: string): string => scrubTenant(text, baseUrl).slice(0, 200);
+  const parts = [
+    typeof error === "string" ? scrub(error) : undefined,
+    typeof description === "string" ? scrub(description) : undefined,
+  ].filter((part): part is string => part !== undefined && part !== "");
+  return parts.length === 0 ? "" : `: ${parts.join(" — ")}`;
+}
+
+/** `text` with the tenant's origin and hostname replaced by `<tenant>`. */
+export function scrubTenant(text: string, baseUrl: string): string {
+  const host = new URL(baseUrl).hostname;
+  return text.split(baseUrl).join("<tenant>").split(host).join("<tenant>");
 }
 
 function sleep(ms: number): Promise<void> {

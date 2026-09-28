@@ -88,6 +88,7 @@ export {
 } from "./tenant.ts";
 export type { AicIo, ConnectOptions, TenantSession } from "./tenant.ts";
 export {
+  checkTenantDescription,
   configuredTenantProvider,
   DEFAULT_SERVICE_ACCOUNT_SCOPE,
   logKeysReader,
