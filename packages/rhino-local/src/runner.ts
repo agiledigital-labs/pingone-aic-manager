@@ -66,9 +66,9 @@ function withoutId(response: JobResponse): Omit<JobResponse, "id"> {
 }
 
 export interface SpawnRunnerOptions {
-  /** Default: `RHINO_LOCAL_JVM`, else `host`. */
+  /** Default: `AIC_SCRIPT_TESTER_JVM`, else `host`. */
   lane?: JvmLane;
-  /** Jar and compiled-class cache. Default: `RHINO_LOCAL_CACHE`, else `~/.cache/rhino-local`. */
+  /** Jar and compiled-class cache. Default: `AIC_SCRIPT_TESTER_CACHE`, else `~/.cache/aic-script-tester`. */
   cache?: string;
   spawnTimeoutMs?: number;
 }

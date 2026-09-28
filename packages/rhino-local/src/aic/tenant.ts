@@ -143,7 +143,7 @@ export interface ConnectOptions {
 
 /**
  * The provider a connection uses: the one passed, else the one registered
- * with `setTenantProvider` or configured by `RHINO_LOCAL_TENANT_URL`, else
+ * with `setTenantProvider` or configured by `AIC_SCRIPT_TESTER_TENANT_URL`, else
  * this repo's `aic` agent.
  */
 export function resolveTenantProvider(

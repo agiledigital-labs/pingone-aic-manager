@@ -38,10 +38,10 @@ export interface UseLeaseOptions
 }
 
 /** The env var that opts a run into the tenant lane. */
-export const AIC_LANE_ENV = "RHINO_LOCAL_AIC";
+export const AIC_LANE_ENV = "AIC_SCRIPT_TESTER_AIC";
 
 /**
- * Spread into `useLease` options to run both lanes when `RHINO_LOCAL_AIC=1`.
+ * Spread into `useLease` options to run both lanes when `AIC_SCRIPT_TESTER_AIC=1`.
  *
  * Off by default, deliberately. The tenant lane needs an unlocked agent and
  * network, which CI has neither of, and a checkout without them should still
@@ -49,7 +49,7 @@ export const AIC_LANE_ENV = "RHINO_LOCAL_AIC";
  * decision, not a property of the file:
  *
  *     npm test                      # local lane only, as before
- *     RHINO_LOCAL_AIC=1 npm test    # both lanes, against the sandbox
+ *     AIC_SCRIPT_TESTER_AIC=1 npm test    # both lanes, against the sandbox
  *
  * `id` must be unique per file: it seeds the deterministic resource ids, and
  * one AIC lease per file is enforced.

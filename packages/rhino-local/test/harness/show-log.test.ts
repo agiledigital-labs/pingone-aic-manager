@@ -161,7 +161,7 @@ describe("createDefaultIo with a configured provider", () => {
   it("refuses a provider without log keys, naming the variables", async () => {
     const io = createDefaultIo({ env: env() });
     await expect(io.readTransaction("tenant.example.com", "stem")).rejects.toThrow(
-      /RHINO_LOCAL_LOG_KEY_ID/
+      /AIC_SCRIPT_TESTER_LOG_KEY_ID/
     );
   });
 });

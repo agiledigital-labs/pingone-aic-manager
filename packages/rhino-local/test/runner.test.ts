@@ -183,7 +183,7 @@ describe("RhinoRunner", () => {
   });
 });
 
-describe.runIf(process.env.RHINO_LOCAL_JVM === "both")("RhinoRunner both lane", () => {
+describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both lane", () => {
   let runner: RhinoRunner;
 
   beforeAll(async () => {

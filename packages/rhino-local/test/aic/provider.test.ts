@@ -159,14 +159,14 @@ describe("providerFromEnv", () => {
     // Without the URL, any other provider variable is a partial configuration,
     // not a reason to fall back to `aic` and its current context.
     expect(() => providerFromEnv({ [TENANT_ENV.serviceAccountId]: id })).toThrow(
-      /RHINO_LOCAL_SA_ID is set but RHINO_LOCAL_TENANT_URL is not/
+      /AIC_SCRIPT_TESTER_SA_ID is set but AIC_SCRIPT_TESTER_TENANT_URL is not/
     );
     expect(() =>
       providerFromEnv({ [TENANT_ENV.logKeyId]: "k", [TENANT_ENV.logKeySecret]: "s" })
-    ).toThrow(/are set but RHINO_LOCAL_TENANT_URL is not/);
+    ).toThrow(/are set but AIC_SCRIPT_TESTER_TENANT_URL is not/);
     // Present but empty is still an attempted configuration, never "unset".
     expect(() => providerFromEnv({ [TENANT_ENV.serviceAccountId]: "" })).toThrow(
-      /RHINO_LOCAL_SA_ID is set but empty/
+      /AIC_SCRIPT_TESTER_SA_ID is set but empty/
     );
     expect(() => providerFromEnv({ [TENANT_ENV.url]: "" })).toThrow(/set but empty/);
     expect(() => providerFromEnv(env({ [TENANT_ENV.jwkFile]: "" }))).toThrow(/set but empty/);
