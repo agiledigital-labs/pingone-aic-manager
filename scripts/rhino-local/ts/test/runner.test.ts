@@ -29,7 +29,21 @@ describe("RhinoRunner", () => {
       timeoutMs: 2_000,
     });
     expect(response.outcome).toBe("ok");
-    expect(response.value).toBe("Thu Jan 01 1970 00:00:00 GMT-0000 (UTC)\n1234.5\nUTC");
+    expect(response.value).toBe("Thu Jan 01 1970 00:00:00 GMT-0000 (UTC)\n1234.5\nEtc/UTC");
+  });
+
+  // The host lane caps the heap at 256 MB; the container runs AM's default.
+  // A job allocating ~100 MB must succeed on both, so the cap is headroom and
+  // not a behaviour difference for anything a journey script plausibly does.
+  it("runs a job that allocates ~100 MB", async () => {
+    const response = await runner.eval({
+      source:
+        "var keep = []; for (var i = 0; i < 100; i++) { keep.push(java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 1048576)); } keep.length",
+      sourceName: "heap-headroom.js",
+      timeoutMs: 10_000,
+    });
+    expect(response.outcome).toBe("ok");
+    expect(response.value).toBe(100);
   });
 
   it("compiles and runs a trivial script", async () => {
@@ -180,13 +194,27 @@ describe.runIf(process.env.RHINO_LOCAL_JVM === "both")("RhinoRunner both lane", 
     await runner.close();
   }, 30_000);
 
-  it("detects a patch-build runtime version difference", async () => {
+  // Positive control: a value that cannot be the same on both lanes, so a
+  // comparison that silently stopped comparing would fail here. Not the Java
+  // build — CI installs the image's exact build, so that one must agree.
+  it("detects a lane-specific difference", async () => {
     await expect(
       runner.eval({
-        source: "String(java.lang.Runtime.version())",
-        sourceName: "positive-control-runtime-version.js",
+        source: 'String(java.lang.System.getProperty("user.dir"))',
+        sourceName: "positive-control-user-dir.js",
       })
     ).rejects.toBeInstanceOf(LaneDivergenceError);
+  });
+
+  // CI pins the image's exact build (Temurin-25.0.4+7); nixpkgs ships
+  // 25.0.4.1+1, so on a dev box the two legitimately differ here.
+  it("agrees on the Java build when the host runs the image's build", async (ctx) => {
+    if (runner.environment.javaVendorVersion !== "Temurin-25.0.4+7") ctx.skip();
+    const response = await runner.eval({
+      source: "String(java.lang.Runtime.version())",
+      sourceName: "both-lanes-runtime-version.js",
+    });
+    expect(response.outcome).toBe("ok");
   });
 
   it("agrees on date, locale formatting, and timezone", async () => {

@@ -38,7 +38,12 @@ and the client refuses a JVM whose answers differ from the AM image's.
 
 `RHINO_LOCAL_JVM` picks the lane: `host` (default), `container` (the AM image's
 JVM), or `both`, which runs every job on both and fails on any difference in
-the response. The last two need Docker and the AM image; CI runs `both`.
+the response. The last two need Docker and the AM image (pinned by digest in
+`DEFAULT_AM_IMAGE`); CI runs `both`. Only the host lane gets flags: it pins
+UTC and en_US.UTF-8 by property and caps the JVM at a 256 MB heap with the
+serial collector and C1 only, to fit an 8 GB box. The container lane runs the
+image's JVM on the image's own defaults, so `both` compares the constrained
+host against an unconstrained AM JVM rather than against a copy of itself.
 
 ```bash
 nix-shell  # or direnv: shell.nix adds Temurin 25 and Node 24
