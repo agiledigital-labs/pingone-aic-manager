@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { CliResult } from "../../src/aic/tenant.ts";
 import type { FailureRecord } from "../../src/harness/failures.ts";
 import {
   formatFailureList,
-  logsTxArgs,
   parseSelection,
   resolveLogsEditor,
   runShowLog,
@@ -53,12 +51,8 @@ describe("runShowLog", () => {
     expect(status).toBe(0);
     expect(fake.idPrompts).toBe(0);
     expect(fake.testPrompts).toBe(0);
-    expect(fake.aicCalls).toEqual([
-      logsTxArgs({ id: "stem-one", tenant: "sandbox", project: "/tmp/project" }),
-    ]);
-    expect(fake.aicCalls[0]?.[0]).toBe("--no-prompt");
-    expect(fake.aicCalls[0]?.includes("range")).toBe(false);
-    expect(fake.aicCalls[0]?.includes("tx")).toBe(true);
+    expect(fake.reads).toEqual([["sandbox", "stem-one"]]);
+    expect(fake.printed.join("\n")).toContain(JSON.stringify([{ event: "ok" }], null, 2));
   });
 
   it("with several ids offers a multi-select", async () => {
@@ -68,9 +62,9 @@ describe("runShowLog", () => {
     });
     await runShowLog(fake.io);
     expect(fake.idPrompts).toBe(1);
-    expect(fake.aicCalls.map((args) => args[args.indexOf("tx") + 1])).toEqual([
-      "stem-many-01",
-      "stem-many-10",
+    expect(fake.reads).toEqual([
+      ["sandbox", "stem-many-01"],
+      ["sandbox", "stem-many-10"],
     ]);
   });
 
@@ -97,21 +91,17 @@ describe("runShowLog", () => {
     const fake = trackingIo({ records: [ONE], env: {} });
     await runShowLog(fake.io);
     expect(fake.opened).toEqual([]);
-    expect(fake.printed.some((line) => line.includes("[events]"))).toBe(true);
+    expect(fake.printed.join("\n")).toContain(JSON.stringify([{ event: "ok" }], null, 2));
   });
 
-  it("a locked daemon fails fast with the aic message, not a hang", async () => {
+  it("a log read rejection prints its message and returns 1", async () => {
     const fake = trackingIo({
       records: [ONE],
-      aicResult: {
-        status: 3,
-        stdout: "",
-        stderr: "agent is locked — run `aic session login`",
-      },
+      readError: "log service unavailable",
     });
     const status = await runShowLog(fake.io);
-    expect(status).toBe(3);
-    expect(fake.errors.some((line) => /locked/.test(line))).toBe(true);
+    expect(status).toBe(1);
+    expect(fake.errors).toEqual(["log service unavailable"]);
     expect(fake.opened).toEqual([]);
   });
 });
@@ -135,17 +125,6 @@ describe("resolveLogsEditor", () => {
   });
 });
 
-describe("logsTxArgs", () => {
-  it("is always `aic logs tx` with --no-prompt, never a range query", () => {
-    const args = logsTxArgs({ id: "stem", tenant: "sandbox", project: "/repo" });
-    expect(args[0]).toBe("--no-prompt");
-    expect(args).toContain("tx");
-    expect(args).toContain("stem");
-    expect(args).not.toContain("range");
-    expect(args).not.toContain("query");
-  });
-});
-
 describe("formatFailureList", () => {
   it("lists newest-first input as numbered rows with timestamps", () => {
     const listed = formatFailureList([MANY, ONE]);
@@ -158,24 +137,23 @@ function trackingIo(options: {
   records: FailureRecord[];
   env?: NodeJS.ProcessEnv;
   pickIds?: string[];
-  aicResult?: CliResult;
+  readError?: string;
 }): {
   io: ShowLogIo;
-  aicCalls: string[][];
+  reads: [string, string][];
   opened: string[];
   printed: string[];
   errors: string[];
   idPrompts: number;
   testPrompts: number;
 } {
-  const aicCalls: string[][] = [];
+  const reads: [string, string][] = [];
   const opened: string[] = [];
   const printed: string[] = [];
   const errors: string[] = [];
   const state = { idPrompts: 0, testPrompts: 0 };
   const io: ShowLogIo = {
     env: options.env ?? {},
-    project: "/tmp/project",
     readDump: () => Promise.resolve(options.records),
     print: (text) => {
       printed.push(text);
@@ -191,11 +169,11 @@ function trackingIo(options: {
       state.idPrompts += 1;
       return Promise.resolve(options.pickIds ?? choices.map((choice) => choice.id));
     },
-    aic: (args) => {
-      aicCalls.push(args);
-      return Promise.resolve(
-        options.aicResult ?? { status: 0, stdout: "[events]\n", stderr: "" }
-      );
+    readTransaction: (tenant, id) => {
+      reads.push([tenant, id]);
+      return options.readError
+        ? Promise.reject(new Error(options.readError))
+        : Promise.resolve([{ event: "ok" }]);
     },
     openEditor: (editor, file) => {
       opened.push(`${editor}:${file}`);
@@ -208,7 +186,7 @@ function trackingIo(options: {
   };
   return {
     io,
-    aicCalls,
+    reads,
     opened,
     printed,
     errors,

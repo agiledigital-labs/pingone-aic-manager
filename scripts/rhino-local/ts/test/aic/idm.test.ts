@@ -2,13 +2,9 @@ import { describe, expect, it } from "vitest";
 import { encodeQueryFilter, tenantIdmHandle } from "../../src/aic/idm.ts";
 import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
 import type { AicIo, TenantSession } from "../../src/aic/tenant.ts";
+import { stubTenantSession } from "./helpers.ts";
 
-const SESSION: TenantSession = {
-  tenantName: "test",
-  baseUrl: "https://tenant.example.com",
-  token: "test-token",
-  project: "/tmp/rhino-local-aic-test",
-};
+const SESSION: TenantSession = stubTenantSession({ tenantName: "test" });
 
 describe("tenantIdmHandle", () => {
   it("returns the tenant's full materialized record without projecting it", async () => {
@@ -56,9 +52,7 @@ describe("tenantIdmHandle", () => {
   });
 
   it("does not pretend it can detect an unknown field", async () => {
-    const fake = new FakeIdmIo([
-      json(200, { result: [], resultCount: 0, totalPagedResults: -1 }),
-    ]);
+    const fake = new FakeIdmIo([json(200, { result: [], resultCount: 0, totalPagedResults: -1 })]);
     await expect(
       tenantIdmHandle(fake.io, SESSION).query("managed/alpha_user", {
         nosuchfield: "value",
@@ -93,9 +87,7 @@ describe("tenantIdmHandle", () => {
 describe("encodeQueryFilter", () => {
   it("uses true for an empty object and preserves nested CREST field paths", () => {
     expect(encodeQueryFilter({})).toBe("true");
-    expect(encodeQueryFilter({ "/name/last": "Smith" })).toBe(
-      '/name/last eq "Smith"'
-    );
+    expect(encodeQueryFilter({ "/name/last": "Smith" })).toBe('/name/last eq "Smith"');
   });
 
   it.each([

@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import { ESLint } from "eslint";
+import type { TenantProvider } from "../../src/aic/provider.ts";
+import type { TenantSession } from "../../src/aic/tenant.ts";
 import { amRhinoEslintConfigPath, packageRoot } from "../../src/paths.ts";
 import { makeCase } from "../case/helpers.ts";
 import type { Case, Expect, Given } from "../../src/case/index.ts";
@@ -41,4 +43,18 @@ export async function lintAmScript(source: string, filePath: string): Promise<st
     }
   }
   return lines;
+}
+/** Stable provider for tests that exercise tenant work, not token refresh. */
+export function stubTenantSession(overrides: Partial<TenantSession> = {}): TenantSession {
+  const provider: TenantProvider = {
+    describe: async () => ({ name: "sandbox", baseUrl: "https://tenant.example.com" }),
+    getToken: async () => "test-token",
+  };
+  return {
+    tenantName: "sandbox",
+    baseUrl: "https://tenant.example.com",
+    token: "test-token",
+    provider,
+    ...overrides,
+  };
 }

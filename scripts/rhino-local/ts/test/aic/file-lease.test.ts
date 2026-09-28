@@ -70,12 +70,10 @@ describe("AicFileLease", () => {
     const lease = makeLease(leasedFake);
     await lease.open();
     const arms = leasedFake.events.filter((event) => event === "arm").length;
-    await expect(
-      lease.run({ ...input, managedFixtures: [] })
-    ).rejects.toThrow(/managed fixture provenance/);
-    expect(leasedFake.events.filter((event) => event === "arm")).toHaveLength(
-      arms
+    await expect(lease.run({ ...input, managedFixtures: [] })).rejects.toThrow(
+      /managed fixture provenance/
     );
+    expect(leasedFake.events.filter((event) => event === "arm")).toHaveLength(arms);
     await lease.close();
   });
 
@@ -89,7 +87,7 @@ describe("AicFileLease", () => {
     await lease.close();
     await lease.close();
 
-    expect(fake.calls.length + fake.aicCalls).toBe(44);
+    expect(fake.calls.length + fake.whoamiCalls).toBe(43);
     expect(fake.calls.filter((call) => call.method === "POST")).toHaveLength(2);
     expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(9);
     expect(fake.putsFor(`/trees/${treeName}`)).toHaveLength(1);
@@ -102,8 +100,8 @@ describe("AicFileLease", () => {
     const lease = makeLease(fake);
     await lease.open();
     await Promise.all([lease.run(request("first")), lease.run(request("second"))]);
-    const relevant = fake.events.filter((event) =>
-      event === "arm" || event === "confirm-arm" || event === "authenticate"
+    const relevant = fake.events.filter(
+      (event) => event === "arm" || event === "confirm-arm" || event === "authenticate"
     );
     expect(relevant).toEqual([
       "arm",
@@ -146,12 +144,16 @@ describe("AicFileLease", () => {
       ],
       replies: [[{ type: "NameCallback", value: "alice" }]],
       hooks: {
-        stepChecks: [async (idm) => {
-          await idm.read("managed/alpha_user/step-check");
-        }],
-        finalChecks: [async (idm) => {
-          await idm.read("managed/alpha_user/final-check");
-        }],
+        stepChecks: [
+          async (idm) => {
+            await idm.read("managed/alpha_user/step-check");
+          },
+        ],
+        finalChecks: [
+          async (idm) => {
+            await idm.read("managed/alpha_user/final-check");
+          },
+        ],
         cleanup: async (idm) => {
           await idm.delete("managed/alpha_user/hook-cleanup");
         },
@@ -160,9 +162,7 @@ describe("AicFileLease", () => {
     await lease.close();
 
     expect(
-      fake.events.filter(
-        (event) => event === "authenticate" || event.startsWith("hook-")
-      )
+      fake.events.filter((event) => event === "authenticate" || event.startsWith("hook-"))
     ).toEqual([
       "authenticate",
       "hook-read:step-check",
@@ -172,7 +172,7 @@ describe("AicFileLease", () => {
     ]);
     // Base one-chain cost is 42; these three IdmHandle operations are real
     // tenant calls and therefore lift the measured fake-I/O arithmetic to 45.
-    expect(fake.calls.length + fake.aicCalls).toBe(45);
+    expect(fake.calls.length + fake.whoamiCalls).toBe(44);
   });
 
   it("refuses a realm mismatch before mutating the subject", async () => {
@@ -190,9 +190,9 @@ describe("AicFileLease", () => {
     const lease = makeLease(fake);
     await lease.open();
     const arms = fake.events.filter((event) => event === "arm").length;
-    await expect(
-      lease.run(request("legacy", "alpha", { engine: "legacy" }))
-    ).rejects.toThrow(/AIC lane unsupported/);
+    await expect(lease.run(request("legacy", "alpha", { engine: "legacy" }))).rejects.toThrow(
+      /AIC lane unsupported/
+    );
     expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
     await lease.close();
   });
@@ -210,9 +210,7 @@ describe("AicFileLease", () => {
     });
     await lease.open();
     const arms = fake.events.filter((event) => event === "arm").length;
-    const report = await lease.run(
-      request("legacy", "alpha", { engine: "legacy" })
-    );
+    const report = await lease.run(request("legacy", "alpha", { engine: "legacy" }));
     expect(report.passes[0]?.aic.skipped).toMatch(/legacy engine/);
     expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
     await lease.close();
@@ -255,10 +253,9 @@ describe("AicFileLease", () => {
         outcomes: ["done"],
       });
       const fake = new FakeLeaseTenant();
-      fake.seed(
-        `/am/json/realms/root/realms/alpha/scripts/${identity.ids.subjectScript}`,
-        { _id: identity.ids.subjectScript }
-      );
+      fake.seed(`/am/json/realms/root/realms/alpha/scripts/${identity.ids.subjectScript}`, {
+        _id: identity.ids.subjectScript,
+      });
       const lease = new AicFileLease({
         id: "file-lease-test",
         suiteName: "file lease test",
@@ -269,11 +266,7 @@ describe("AicFileLease", () => {
         io: fake.io,
       });
       await expect(lease.open()).rejects.toThrow(/refusing to overwrite/);
-      const paths = leaseStatePaths(
-        "https://tenant.example.com",
-        identity,
-        stateDir
-      );
+      const paths = leaseStatePaths("https://tenant.example.com", identity, stateDir);
       expect(await readLeaseJournal(paths.journalPath)).toBeUndefined();
     } finally {
       await rm(stateDir, { recursive: true, force: true });
@@ -309,9 +302,7 @@ describe("AicFileLease", () => {
         io: fake.io,
       });
       await expect(lease.open()).rejects.toThrow(new RegExp(oldResult));
-      expect(
-        fake.calls.some((call) => new URL(call.url).pathname.endsWith(oldResult))
-      ).toBe(true);
+      expect(fake.calls.some((call) => new URL(call.url).pathname.endsWith(oldResult))).toBe(true);
     } finally {
       await rm(stateDir, { recursive: true, force: true });
     }
@@ -331,11 +322,7 @@ describe("AicFileLease", () => {
         io: fake.io,
       });
       await lease.open();
-      const paths = leaseStatePaths(
-        "https://tenant.example.com",
-        lease.identity,
-        stateDir
-      );
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
       await expect(lease.close()).rejects.toThrow(/cleanup failed/);
       expect(await readLeaseJournal(paths.journalPath)).toMatchObject({
         aicId: "partial-close",
@@ -361,9 +348,14 @@ describe("AicFileLease", () => {
       });
       await lease.open();
       await lease.run(
-        request("managed", "alpha", {
-          managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
-        }, [MANAGED_FIXTURE])
+        request(
+          "managed",
+          "alpha",
+          {
+            managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+          },
+          [MANAGED_FIXTURE]
+        )
       );
       const create = fake.events.indexOf("managed-create");
       const read = fake.events.indexOf("managed-read");
@@ -373,11 +365,7 @@ describe("AicFileLease", () => {
       expect(read).toBeGreaterThan(create);
       expect(authenticate).toBeGreaterThan(read);
       expect(remove).toBeGreaterThan(authenticate);
-      const paths = leaseStatePaths(
-        "https://tenant.example.com",
-        lease.identity,
-        stateDir
-      );
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
       expect((await readLeaseJournal(paths.journalPath))?.managedFixtures).toEqual([]);
       await lease.close();
     } finally {
@@ -391,9 +379,14 @@ describe("AicFileLease", () => {
     await lease.open();
     await expect(
       lease.run(
-        request("managed-failure", "alpha", {
-          managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
-        }, [MANAGED_FIXTURE])
+        request(
+          "managed-failure",
+          "alpha",
+          {
+            managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+          },
+          [MANAGED_FIXTURE]
+        )
       )
     ).rejects.toThrow(/authenticate HTTP 401/);
     expect(fake.events).toContain("managed-delete");
@@ -416,9 +409,11 @@ describe("AicFileLease", () => {
         ...input,
         hooks: {
           stepChecks: [],
-          finalChecks: [() => {
-            throw new Error("do not expose this message");
-          }],
+          finalChecks: [
+            () => {
+              throw new Error("do not expose this message");
+            },
+          ],
           cleanup: async (idm) => {
             await idm.delete("managed/alpha_user/hook-cleanup");
           },
@@ -446,9 +441,14 @@ describe("AicFileLease", () => {
     await lease.open();
     await expect(
       lease.run(
-        request("managed-update-failure", "alpha", {
-          managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
-        }, [MANAGED_FIXTURE])
+        request(
+          "managed-update-failure",
+          "alpha",
+          {
+            managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+          },
+          [MANAGED_FIXTURE]
+        )
       )
     ).rejects.toThrow(/expected 200/);
     expect(fake.events).toContain("managed-delete");
@@ -483,22 +483,14 @@ describe("AicFileLease", () => {
             stepChecks: [],
             finalChecks: [],
             cleanup: async (idm) => {
-              await idm.delete(
-                `managed/alpha_user/${String(MANAGED_FIXTURE.record._id)}`
-              );
+              await idm.delete(`managed/alpha_user/${String(MANAGED_FIXTURE.record._id)}`);
             },
           },
         })
       ).rejects.toThrow(/managed fixture collision/);
       expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
-      expect(fake.events).not.toContain(
-        `hook-delete:${String(MANAGED_FIXTURE.record._id)}`
-      );
-      const paths = leaseStatePaths(
-        "https://tenant.example.com",
-        lease.identity,
-        stateDir
-      );
+      expect(fake.events).not.toContain(`hook-delete:${String(MANAGED_FIXTURE.record._id)}`);
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
       expect((await readLeaseJournal(paths.journalPath))?.managedFixtures).toEqual([]);
       await lease.close();
     } finally {
@@ -586,7 +578,7 @@ interface FakeLeaseOptions {
 class FakeLeaseTenant {
   readonly calls: HttpRequest[] = [];
   readonly events: string[] = [];
-  aicCalls = 0;
+  whoamiCalls = 0;
   readonly subjectTransactionIds: string[] = [];
   readonly #resources = new Map<string, Record<string, unknown>>();
   readonly #options: FakeLeaseOptions;
@@ -606,7 +598,6 @@ class FakeLeaseTenant {
 
   readonly io: AicIo = {
     aic: (args) => {
-      this.aicCalls += 1;
       if (args.includes("ctx") && args.includes("list")) {
         return Promise.resolve({
           status: 0,
@@ -615,6 +606,9 @@ class FakeLeaseTenant {
           ]),
           stderr: "",
         });
+      }
+      if (args.includes("whoami")) {
+        this.whoamiCalls += 1;
       }
       return Promise.resolve({ status: 0, stdout: "test-token\n", stderr: "" });
     },
@@ -728,28 +722,33 @@ class FakeLeaseTenant {
           ],
         });
       }
-      return json(status, status === 200 ? {
-        callbacks: [
-          {
-            type: "HiddenValueCallback",
-            output: [
-              { name: "id", value: HARNESS_CALLBACK_ID },
-              {
-                name: "value",
-                value: JSON.stringify({
-                  outcome: "done",
-                  before: {},
-                  final: {},
-                  invocationNonce: this.#options.wrongNonce === true ? "wrong" : this.#nonce,
-                  subjectDigest: this.#subjectDigest,
-                  leaseDigest:
-                    this.#options.wrongLeaseDigest === true ? "wrong" : this.#leaseDigest,
-                }),
-              },
-            ],
-          },
-        ],
-      } : { code: status });
+      return json(
+        status,
+        status === 200
+          ? {
+              callbacks: [
+                {
+                  type: "HiddenValueCallback",
+                  output: [
+                    { name: "id", value: HARNESS_CALLBACK_ID },
+                    {
+                      name: "value",
+                      value: JSON.stringify({
+                        outcome: "done",
+                        before: {},
+                        final: {},
+                        invocationNonce: this.#options.wrongNonce === true ? "wrong" : this.#nonce,
+                        subjectDigest: this.#subjectDigest,
+                        leaseDigest:
+                          this.#options.wrongLeaseDigest === true ? "wrong" : this.#leaseDigest,
+                      }),
+                    },
+                  ],
+                },
+              ],
+            }
+          : { code: status }
+      );
     },
   };
 
