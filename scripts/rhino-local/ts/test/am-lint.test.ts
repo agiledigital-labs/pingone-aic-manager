@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
+import { realCases } from "../cases/real/index.ts";
 import {
   amEslintConfigPath,
   amRhinoEslintConfigPath,
@@ -29,6 +30,53 @@ describe("AM script lint", () => {
       join(casesDir, "openidm-read.cjs"),
     ]);
     expect(formatResults(results)).toEqual([]);
+  });
+
+  // The real corpus runs its origin fixtures directly. These use a construct
+  // the AM rules ban, on purpose — that is what they probe — so each must be
+  // rejected (keeping this list honest), and every other one must be clean.
+  const deliberatelyBanned = new Set([
+    "legacy-es2015-globals",
+    "const-dup-across-blocks",
+    "const-in-do-while-body",
+    "const-in-for-in",
+    "const-in-for-init",
+    "const-in-for-of",
+    "const-in-loop-body",
+    "const-in-loop-in-function",
+    "const-in-nested-loop-block",
+    "const-in-while-body",
+    "const-top-level",
+    "default-params",
+    "destructuring-object",
+    "es2015-globals",
+    "for-each-java-collection",
+    "for-of-var",
+    "object-shorthand",
+    "rhino-let-behaviour",
+  ]);
+
+  it("accepts every real-corpus fixture not listed as deliberately banned", async () => {
+    const problems: string[] = [];
+    for (const entry of realCases) {
+      if (deliberatelyBanned.has(entry.kase.name)) continue;
+      problems.push(
+        ...formatResults(await lintText(entry.kase.script, `cases/real/${entry.kase.name}.cjs`))
+      );
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it("rejects every real-corpus fixture listed as deliberately banned", async () => {
+    const clean: string[] = [];
+    for (const name of deliberatelyBanned) {
+      const entry = realCases.find((candidate) => candidate.kase.name === name);
+      expect(entry, name).toBeDefined();
+      if (entry === undefined) continue;
+      const results = await lintText(entry.kase.script, `cases/real/${name}.cjs`);
+      if (formatResults(results).length === 0) clean.push(name);
+    }
+    expect(clean).toEqual([]);
   });
 
   it("rejects `let`, proving the Rhino rules are actually loaded", async () => {
