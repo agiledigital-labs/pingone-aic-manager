@@ -21,13 +21,21 @@ function build(label, fn) {
     fn();
   } catch (e) {
     try {
-      callbacksBuilder.textOutputCallback(0, "THREW " + label + ": " + String(e));
+      callbacksBuilder.textOutputCallback(
+        0,
+        "THREW " + label + ": " + String(e)
+      );
     } catch (ignore) {}
   }
 }
 if (callbacks.isEmpty()) {
   build("stringAttributeInputCallback/4", function () {
-    callbacksBuilder.stringAttributeInputCallback("attr", "Prompt", "value", true);
+    callbacksBuilder.stringAttributeInputCallback(
+      "attr",
+      "Prompt",
+      "value",
+      true
+    );
   });
   build("choiceCallback/4", function () {
     callbacksBuilder.choiceCallback("Prompt", ["one", "two"], 0, false);
@@ -48,7 +56,12 @@ if (callbacks.isEmpty()) {
     callbacksBuilder.numberAttributeInputCallback("num", "Number", 7, true);
   });
   build("booleanAttributeInputCallback/4", function () {
-    callbacksBuilder.booleanAttributeInputCallback("bool", "Boolean", true, true);
+    callbacksBuilder.booleanAttributeInputCallback(
+      "bool",
+      "Boolean",
+      true,
+      true
+    );
   });
   build("confirmationCallback/4", function () {
     callbacksBuilder.confirmationCallback("Continue?", 0, ["yes", "no"], 0);
@@ -57,10 +70,26 @@ if (callbacks.isEmpty()) {
     callbacksBuilder.languageCallback("en", "US");
   });
   build("idPCallback/9", function () {
-    callbacksBuilder.idPCallback("provider", "client", "https://example.com", ["openid"], "nonce", "", "", [], false);
+    callbacksBuilder.idPCallback(
+      "provider",
+      "client",
+      "https://example.com",
+      ["openid"],
+      "nonce",
+      "",
+      "",
+      [],
+      false
+    );
   });
   build("validatedPasswordCallback/5", function () {
-    callbacksBuilder.validatedPasswordCallback("Password", false, {}, false, []);
+    callbacksBuilder.validatedPasswordCallback(
+      "Password",
+      false,
+      {},
+      false,
+      []
+    );
   });
   build("validatedUsernameCallback/4", function () {
     callbacksBuilder.validatedUsernameCallback("Username", {}, false, []);
@@ -88,274 +117,48 @@ if (callbacks.isEmpty()) {
   });
   outcome = "ok";
 } else {
+  // Every getter in the binding inventory, in inventory order.
+  var GETTERS = [
+    "getStringAttributeInputCallbacks",
+    "getChoiceCallbacks",
+    "getNameCallbacks",
+    "getPasswordCallbacks",
+    "getHiddenValueCallbacks",
+    "getTextInputCallbacks",
+    "getNumberAttributeInputCallbacks",
+    "getBooleanAttributeInputCallbacks",
+    "getConfirmationCallbacks",
+    "getLanguageCallbacks",
+    "getIdpCallbacks",
+    "getValidatedPasswordCallbacks",
+    "getValidatedUsernameCallbacks",
+    "getHttpCallbacks",
+    "getX509CertificateCallbacks",
+    "getConsentMappingCallbacks",
+    "getDeviceProfileCallbacks",
+    "getKbaCreateCallbacks",
+    "getSelectIdPCallbacks",
+    "getTermsAndConditionsCallbacks",
+  ];
   var r = [];
-  try {
-    var x = callbacks.getStringAttributeInputCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getStringAttributeInputCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({
-      name: "getStringAttributeInputCallbacks",
-      ok: false,
-      error: String(e),
-    });
-  }
-  try {
-    var x = callbacks.getChoiceCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getChoiceCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getChoiceCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getNameCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getNameCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getNameCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getPasswordCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getPasswordCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getPasswordCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getHiddenValueCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getHiddenValueCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getHiddenValueCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getTextInputCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getTextInputCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getTextInputCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getNumberAttributeInputCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getNumberAttributeInputCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({
-      name: "getNumberAttributeInputCallbacks",
-      ok: false,
-      error: String(e),
-    });
-  }
-  try {
-    var x = callbacks.getBooleanAttributeInputCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getBooleanAttributeInputCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({
-      name: "getBooleanAttributeInputCallbacks",
-      ok: false,
-      error: String(e),
-    });
-  }
-  try {
-    var x = callbacks.getConfirmationCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getConfirmationCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getConfirmationCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getLanguageCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getLanguageCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getLanguageCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getIdpCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getIdpCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getIdpCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getValidatedPasswordCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getValidatedPasswordCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({
-      name: "getValidatedPasswordCallbacks",
-      ok: false,
-      error: String(e),
-    });
-  }
-  try {
-    var x = callbacks.getValidatedUsernameCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getValidatedUsernameCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({
-      name: "getValidatedUsernameCallbacks",
-      ok: false,
-      error: String(e),
-    });
-  }
-  try {
-    var x = callbacks.getHttpCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getHttpCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getHttpCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getX509CertificateCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getX509CertificateCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({
-      name: "getX509CertificateCallbacks",
-      ok: false,
-      error: String(e),
-    });
-  }
-  try {
-    var x = callbacks.getConsentMappingCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getConsentMappingCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getConsentMappingCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getDeviceProfileCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getDeviceProfileCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getDeviceProfileCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getKbaCreateCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getKbaCreateCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getKbaCreateCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getSelectIdPCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getSelectIdPCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({ name: "getSelectIdPCallbacks", ok: false, error: String(e) });
-  }
-  try {
-    var x = callbacks.getTermsAndConditionsCallbacks();
-    var first = x && x.length ? x[0] : null;
-    r.push({
-      name: "getTermsAndConditionsCallbacks",
-      ok: true,
-      list: describe(x),
-      first: first === null ? null : describe(first),
-    });
-  } catch (e) {
-    r.push({
-      name: "getTermsAndConditionsCallbacks",
-      ok: false,
-      error: String(e),
-    });
+  for (var i = 0; i < GETTERS.length; i++) {
+    try {
+      var list = callbacks[GETTERS[i]]();
+      var first = null;
+      if (list !== null && typeof list.size === "function") {
+        first = list.size() > 0 ? describe(list.get(0)) : null;
+      } else if (list !== null && list.length > 0) {
+        first = describe(list[0]);
+      }
+      r.push({
+        name: GETTERS[i],
+        ok: true,
+        list: describe(list),
+        first: first,
+      });
+    } catch (e) {
+      r.push({ name: GETTERS[i], ok: false, error: String(e) });
+    }
   }
   try {
     r.push({ name: "isEmpty", ok: true, value: callbacks.isEmpty() });
