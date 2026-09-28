@@ -3,10 +3,13 @@ import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
 import javax.script.ScriptContext;
 import javax.script.SimpleScriptContext;
 import org.mozilla.javascript.Context;
@@ -36,7 +39,7 @@ public final class Runner {
 
   public static void main(String[] args) throws Exception {
     final AmContextFactory factory = new AmContextFactory();
-    ERR.println("rhino-local-runner ready");
+    ERR.println("rhino-local-runner ready " + Json.stringify(environment(factory)));
     final BufferedReader in =
         new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
     String line;
@@ -46,6 +49,29 @@ public final class Runner {
       }
       handleLine(factory, line);
     }
+  }
+
+  /**
+   * What this JVM would make of a script that looked at its surroundings. The
+   * client refuses a JVM whose answers differ from the AM image's, because a
+   * host that defaulted to its own timezone or locale would pass a date-shaped
+   * test locally that fails on the tenant.
+   */
+  static Map<String, Object> environment(AmContextFactory factory) {
+    final Map<String, Object> env = new LinkedHashMap<String, Object>();
+    env.put("javaFeature", Integer.valueOf(Runtime.version().feature()));
+    env.put("javaVersion", Runtime.version().toString());
+    env.put("javaVendorVersion", System.getProperty("java.vendor.version"));
+    env.put("timezone", TimeZone.getDefault().getID());
+    env.put("locale", Locale.getDefault().toLanguageTag());
+    env.put("charset", Charset.defaultCharset().name());
+    final Context cx = factory.enterContext();
+    try {
+      env.put("rhino", cx.getImplementationVersion());
+    } finally {
+      Context.exit();
+    }
+    return env;
   }
 
   static void handleLine(AmContextFactory factory, String line) {
