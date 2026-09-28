@@ -126,6 +126,7 @@ CI_STEPS_REPRODUCED=(
   "rhino-local typecheck"
   "rhino-local lint"
   "rhino-local tests (host vs AM image)"
+  "rhino-local package smoke (installed, no javac)"
 )
 
 CI_STEPS_SETUP=(
@@ -377,6 +378,10 @@ gate "rhino-local typecheck + lint" \
 gate "rhino-local tests (host vs AM image)" \
   "the rhino-local harness failed, or the host and AM image JVMs disagreed" \
   bash -c 'RHINO_LOCAL_JVM=both npm -w packages/rhino-local test'
+
+gate "rhino-local package smoke (installed, no javac)" \
+  "the packed rhino-local does not install and run outside this checkout" \
+  scripts/rhino-local-pack-smoke.sh
 
 # --- budgets -----------------------------------------------------------------
 

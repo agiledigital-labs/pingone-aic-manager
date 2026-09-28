@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * List failed AIC-lane tests and fetch their logs.
  *

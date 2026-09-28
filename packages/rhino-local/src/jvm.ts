@@ -13,7 +13,7 @@ import {
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
-import { javaSourceDir } from "./paths.ts";
+import { javaSourceDir, prebuiltClassesDir } from "./paths.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -271,6 +271,9 @@ function validRunnerCache(dest: string, digest: string): boolean {
 
 export type Fetcher = (url: string) => Promise<Uint8Array>;
 
+/** A local copy of {@link RHINO_JAR} to use instead of the cache or a download. */
+export const RHINO_JAR_ENV = "RHINO_LOCAL_RHINO_JAR";
+
 async function defaultFetch(url: string): Promise<Uint8Array> {
   const response = await fetch(url);
   if (!response.ok) {
@@ -286,8 +289,28 @@ async function defaultFetch(url: string): Promise<Uint8Array> {
  */
 export async function ensureRhinoJar(
   cache: string = cacheDir(),
-  fetcher: Fetcher = defaultFetch
+  fetcher: Fetcher = defaultFetch,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<string> {
+  const override = env[RHINO_JAR_ENV];
+  if (override !== undefined && override !== "") {
+    // For machines that cannot reach Maven Central. Checked like a download:
+    // a path is not a promise about what is at it.
+    let actual: string;
+    try {
+      actual = sha256(readFileSync(override));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`rhino-local: ${RHINO_JAR_ENV}=${override} cannot be read: ${detail}`);
+    }
+    if (actual !== RHINO_JAR.sha256) {
+      throw new Error(
+        `rhino-local: ${RHINO_JAR_ENV}=${override} is not the Rhino AM ships ` +
+          `(sha256 ${actual}; expected ${RHINO_JAR.sha256}, ${RHINO_JAR.fileName} from ${RHINO_JAR.url})`
+      );
+    }
+    return override;
+  }
   const dir = join(cache, "jars");
   const path = join(dir, RHINO_JAR.fileName);
   if (existsSync(path)) {
@@ -312,8 +335,78 @@ export async function ensureRhinoJar(
   return path;
 }
 
+interface RunnerSources {
+  dir: string;
+  names: string[];
+  /** Over the jar and the sources only — what a shipped build must match. */
+  sourceDigest: string;
+}
+
+function runnerSources(dir: string): RunnerSources {
+  const names = readdirSync(dir)
+    .filter((name) => name.endsWith(".java"))
+    .sort();
+  if (names.length === 0) {
+    throw new Error(`rhino-local: no Java sources in ${dir}`);
+  }
+  const key = createHash("sha256");
+  key.update(RHINO_JAR.sha256);
+  for (const name of names) {
+    key.update(`\0${name}\0`);
+    key.update(readFileSync(join(dir, name)));
+  }
+  return { dir, names, sourceDigest: key.digest("hex").slice(0, 16) };
+}
+
+async function compileRunner(
+  javac: string,
+  jar: string,
+  sources: RunnerSources,
+  out: string,
+  prebuilt: string
+): Promise<void> {
+  try {
+    await execFileAsync(
+      javac,
+      [
+        "-encoding",
+        "UTF-8",
+        "--release",
+        String(EXPECTED_ENVIRONMENT.javaFeature),
+        "-cp",
+        jar,
+        "-d",
+        out,
+        ...sources.names.map((name) => join(sources.dir, name)),
+      ],
+      { timeout: 120_000, maxBuffer: 4_000_000 }
+    );
+  } catch (error) {
+    throw new Error(noClassesMessage(javac, prebuilt, error));
+  }
+}
+
+function noClassesMessage(javac: string, prebuilt: string, error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return (
+    `rhino-local: compiling the runner with ${javac} failed. There are no prebuilt classes ` +
+    `for these sources at ${prebuilt}, so it needs a JDK ${EXPECTED_ENVIRONMENT.javaFeature} ` +
+    `(set ${JAVA_HOME_ENV} or JAVA_HOME): ${detail}`
+  );
+}
+
+function writeManifest(dir: string, digest: string): void {
+  const manifest = outputFiles(dir).map(
+    (file) => `${sha256(readFileSync(join(dir, file)))}  ${file}`
+  );
+  writeFileSync(join(dir, ".complete"), `${digest}\n${manifest.join("\n")}\n`);
+}
+
 /**
- * Compiled runner classes, keyed by the Java sources, the compiler and the jar
+ * The runner classes to launch. First the package's prebuilt classes, when
+ * their manifest names these exact sources and every class still hashes as
+ * recorded — an installed package, which may have no `javac` at all. Otherwise
+ * classes compiled here, keyed by the Java sources, the compiler and the jar
  * they compile against, so an edit to a `.java` file cannot run stale
  * bytecode. Each compile goes to a scratch directory and is renamed to a
  * **fresh** `<digest>-<uuid>` name, never to a shared one: Vitest spawns
@@ -324,26 +417,25 @@ export async function ensureRhinoJar(
  */
 export async function ensureRunnerClasses(
   jar: string,
-  options: { cache?: string; javac?: string; sources?: string } = {}
+  options: { cache?: string; javac?: string; sources?: string; prebuilt?: string } = {}
 ): Promise<string> {
   const cache = options.cache ?? cacheDir();
-  const sourcesDir = options.sources ?? javaSourceDir;
-  const sources = readdirSync(sourcesDir)
-    .filter((name) => name.endsWith(".java"))
-    .sort();
-  if (sources.length === 0) {
-    throw new Error(`rhino-local: no Java sources in ${sourcesDir}`);
+  const sources = runnerSources(options.sources ?? javaSourceDir);
+  const prebuilt = options.prebuilt ?? prebuiltClassesDir;
+  if (validRunnerCache(prebuilt, sources.sourceDigest)) {
+    return prebuilt;
   }
   const javac = options.javac ?? javaTool("javac");
-  const compiler = await javacVersion(javac);
-  const key = createHash("sha256");
-  key.update(RHINO_JAR.sha256);
-  key.update(`\0javac\0${compiler}`);
-  for (const name of sources) {
-    key.update(`\0${name}\0`);
-    key.update(readFileSync(join(sourcesDir, name)));
+  let compiler: string;
+  try {
+    compiler = await javacVersion(javac);
+  } catch (error) {
+    throw new Error(noClassesMessage(javac, prebuilt, error));
   }
-  const digest = key.digest("hex").slice(0, 16);
+  const digest = createHash("sha256")
+    .update(`${sources.sourceDigest}\0javac\0${compiler}`)
+    .digest("hex")
+    .slice(0, 16);
   const classesDir = join(cache, "classes");
   const found = findValidClasses(classesDir, digest);
   if (found !== undefined) {
@@ -352,36 +444,35 @@ export async function ensureRunnerClasses(
   const scratch = join(classesDir, `.${digest}.${randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
   try {
-    try {
-      await execFileAsync(
-        javac,
-        [
-          "-encoding",
-          "UTF-8",
-          "--release",
-          String(EXPECTED_ENVIRONMENT.javaFeature),
-          "-cp",
-          jar,
-          "-d",
-          scratch,
-          ...sources.map((name) => join(sourcesDir, name)),
-        ],
-        { timeout: 120_000, maxBuffer: 4_000_000 }
-      );
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `rhino-local: compiling the runner with ${javac} failed. It needs a JDK ${EXPECTED_ENVIRONMENT.javaFeature} ` +
-          `(set ${JAVA_HOME_ENV} or JAVA_HOME): ${detail}`
-      );
-    }
-    const manifest = outputFiles(scratch).map(
-      (file) => `${sha256(readFileSync(join(scratch, file)))}  ${file}`
-    );
-    writeFileSync(join(scratch, ".complete"), `${digest}\n${manifest.join("\n")}\n`);
+    await compileRunner(javac, jar, sources, scratch, prebuilt);
+    writeManifest(scratch, digest);
     const dest = join(classesDir, `${digest}-${randomUUID()}`);
     renameSync(scratch, dest);
     return dest;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Compile the classes a package ships (`npm run build`). Their manifest is
+ * keyed by the sources alone, not the compiler: the consumer running them has
+ * no `javac` to key by, and `--release` fixes the class-file target.
+ */
+export async function buildPrebuiltClasses(
+  options: { out?: string; javac?: string; sources?: string; cache?: string } = {}
+): Promise<string> {
+  const out = options.out ?? prebuiltClassesDir;
+  const jar = await ensureRhinoJar(options.cache ?? cacheDir());
+  const sources = runnerSources(options.sources ?? javaSourceDir);
+  const scratch = `${out}.${randomUUID()}`;
+  mkdirSync(scratch, { recursive: true });
+  try {
+    await compileRunner(options.javac ?? javaTool("javac"), jar, sources, scratch, out);
+    writeManifest(scratch, sources.sourceDigest);
+    rmSync(out, { recursive: true, force: true });
+    renameSync(scratch, out);
+    return out;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

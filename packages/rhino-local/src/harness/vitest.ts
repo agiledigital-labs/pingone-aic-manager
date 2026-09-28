@@ -7,7 +7,7 @@ import { chainFromRunResult } from "../aic/conform.ts";
 import type { AicIo } from "../aic/tenant.ts";
 import type { TenantProvider } from "../aic/provider.ts";
 import { clearAicTrace, takeAicTrace } from "../aic/trace.ts";
-import { packageRoot } from "../paths.ts";
+import { projectRoot } from "../project.ts";
 import { RhinoRunner } from "../runner.ts";
 import { recordFailureIfAny } from "./failures.ts";
 import {
@@ -141,7 +141,7 @@ export function useLease<TSchema extends z.ZodType>(
         await recordFailureIfAny({
           trace,
           testName: expect.getState().currentTestName ?? context.task.name,
-          file: relative(packageRoot, context.task.file.filepath),
+          file: relative(projectRoot(), context.task.file.filepath),
           suite: suite.spec.name,
           timestamp: new Date().toISOString(),
         });
