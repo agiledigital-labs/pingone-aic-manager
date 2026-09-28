@@ -1,63 +1,168 @@
-// Probe: every callbacksBuilder overload in the binding inventory. Safe to delete.
+// Probe: distinct callbacksBuilder JavaScript signatures in the binding inventory. Safe to delete.
+// Same-arity overload entries with identical JS types collapse to one callable signature below.
+// radioChoiceCallback/3 (3 JSON entries), choiceCallback/4 (3), confirmationCallback/3 (3),
+// confirmationCallback/4 (3) are each invoked once; Rhino cannot select their Java-only overloads.
 // Emits only accumulated callbacks; it does not route the journey.
-var probeErrors=[];
-try{callbacksBuilder.radioChoiceCallback("p0",["a1","b1"],3);}catch(e){probeErrors.push("radioChoiceCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW radioChoiceCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.radioChoiceCallback("p20",["a21","b21"],23);}catch(e){probeErrors.push("radioChoiceCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW radioChoiceCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.radioChoiceCallback("p40",["a41","b41"],43);}catch(e){probeErrors.push("radioChoiceCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW radioChoiceCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.suspendedTextOutputCallback(61,"p61");}catch(e){probeErrors.push("suspendedTextOutputCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW suspendedTextOutputCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.textInputCallback("p80","p81");}catch(e){probeErrors.push("textInputCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW textInputCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.textInputCallback("p100");}catch(e){probeErrors.push("textInputCallback/1: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW textInputCallback/1: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.scriptTextOutputCallback("p120");}catch(e){probeErrors.push("scriptTextOutputCallback/1: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW scriptTextOutputCallback/1: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.metadataCallback({marker:"o140"});}catch(e){probeErrors.push("metadataCallback/1: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW metadataCallback/1: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.stringAttributeInputCallback("p160","p161","p162",false,["a164","b164"]);}catch(e){probeErrors.push("stringAttributeInputCallback/5: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW stringAttributeInputCallback/5: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.stringAttributeInputCallback("p180","p181","p182",false,{marker:"o184"},false);}catch(e){probeErrors.push("stringAttributeInputCallback/6: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW stringAttributeInputCallback/6: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.stringAttributeInputCallback("p200","p201","p202",false);}catch(e){probeErrors.push("stringAttributeInputCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW stringAttributeInputCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.stringAttributeInputCallback("p220","p221","p222",false,{marker:"o224"},false,["a226","b226"]);}catch(e){probeErrors.push("stringAttributeInputCallback/7: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW stringAttributeInputCallback/7: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.numberAttributeInputCallback("p240","p241",243,false,{marker:"o244"},false);}catch(e){probeErrors.push("numberAttributeInputCallback/6: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW numberAttributeInputCallback/6: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.numberAttributeInputCallback("p260","p261",263,false,["a264","b264"]);}catch(e){probeErrors.push("numberAttributeInputCallback/5: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW numberAttributeInputCallback/5: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.numberAttributeInputCallback("p280","p281",283,false);}catch(e){probeErrors.push("numberAttributeInputCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW numberAttributeInputCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.numberAttributeInputCallback("p300","p301",303,false,{marker:"o304"},false,["a306","b306"]);}catch(e){probeErrors.push("numberAttributeInputCallback/7: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW numberAttributeInputCallback/7: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.booleanAttributeInputCallback("p320","p321",true,false,["a324","b324"]);}catch(e){probeErrors.push("booleanAttributeInputCallback/5: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW booleanAttributeInputCallback/5: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.booleanAttributeInputCallback("p340","p341",true,false,{marker:"o344"},false,["a346","b346"]);}catch(e){probeErrors.push("booleanAttributeInputCallback/7: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW booleanAttributeInputCallback/7: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.booleanAttributeInputCallback("p360","p361",true,false);}catch(e){probeErrors.push("booleanAttributeInputCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW booleanAttributeInputCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.booleanAttributeInputCallback("p380","p381",true,false,{marker:"o384"},false);}catch(e){probeErrors.push("booleanAttributeInputCallback/6: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW booleanAttributeInputCallback/6: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.languageCallback("p400","p401");}catch(e){probeErrors.push("languageCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW languageCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.idPCallback("p420","p421","p422",["a423","b423"],"p424","p425","p426",["a427","b427"],true);}catch(e){probeErrors.push("idPCallback/9: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW idPCallback/9: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.idPCallback("p440","p441","p442",["a443","b443"],"p444","p445","p446",["a447","b447"],true,"p449","p450");}catch(e){probeErrors.push("idPCallback/11: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW idPCallback/11: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.httpCallback("p460","p461","p462");}catch(e){probeErrors.push("httpCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW httpCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.httpCallback("p480","p481","p482",484);}catch(e){probeErrors.push("httpCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW httpCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.x509CertificateCallback("p500",{marker:"o501"});}catch(e){probeErrors.push("x509CertificateCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW x509CertificateCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.x509CertificateCallback("p520");}catch(e){probeErrors.push("x509CertificateCallback/1: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW x509CertificateCallback/1: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.x509CertificateCallback("p540",{marker:"o541"},true);}catch(e){probeErrors.push("x509CertificateCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW x509CertificateCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.consentMappingCallback("p560","p561","p562","p563",["a564","b564"],"p565",true);}catch(e){probeErrors.push("consentMappingCallback/7: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW consentMappingCallback/7: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.consentMappingCallback({marker:"o580"},"p581",true);}catch(e){probeErrors.push("consentMappingCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW consentMappingCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.deviceProfileCallback(true,false,"p602");}catch(e){probeErrors.push("deviceProfileCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW deviceProfileCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.kbaCreateCallback("p620",["a621","b621"],true);}catch(e){probeErrors.push("kbaCreateCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW kbaCreateCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.selectIdPCallback({marker:"o640"});}catch(e){probeErrors.push("selectIdPCallback/1: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW selectIdPCallback/1: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.termsAndConditionsCallback("p660","p661","p662");}catch(e){probeErrors.push("termsAndConditionsCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW termsAndConditionsCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.choiceCallback("p680",["a681","b681"],683,false);}catch(e){probeErrors.push("choiceCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW choiceCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.choiceCallback("p700",["a701","b701"],703,false);}catch(e){probeErrors.push("choiceCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW choiceCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.choiceCallback("p720",["a721","b721"],723,false);}catch(e){probeErrors.push("choiceCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW choiceCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.passwordCallback("p740",false);}catch(e){probeErrors.push("passwordCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW passwordCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.nameCallback("p760","p761");}catch(e){probeErrors.push("nameCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW nameCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.nameCallback("p780");}catch(e){probeErrors.push("nameCallback/1: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW nameCallback/1: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.hiddenValueCallback("p800","p801");}catch(e){probeErrors.push("hiddenValueCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW hiddenValueCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.redirectCallback("p820",{marker:"o821"},"p822","p823","p824");}catch(e){probeErrors.push("redirectCallback/5: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW redirectCallback/5: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.redirectCallback("p840",{marker:"o841"},"p842",false);}catch(e){probeErrors.push("redirectCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW redirectCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.redirectCallback("p860",{marker:"o861"},"p862");}catch(e){probeErrors.push("redirectCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW redirectCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.redirectCallback("p880",{marker:"o881"},"p882","p883","p884",false);}catch(e){probeErrors.push("redirectCallback/6: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW redirectCallback/6: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.confirmationCallback(901,902,903);}catch(e){probeErrors.push("confirmationCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW confirmationCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.confirmationCallback(921,["a921","b921"],923);}catch(e){probeErrors.push("confirmationCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW confirmationCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.confirmationCallback("p940",942,943,944);}catch(e){probeErrors.push("confirmationCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW confirmationCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.confirmationCallback("p960",962,["a962","b962"],964);}catch(e){probeErrors.push("confirmationCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW confirmationCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.confirmationCallback("p980",982,["a982","b982"],984);}catch(e){probeErrors.push("confirmationCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW confirmationCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.confirmationCallback(1001,["a1001","b1001"],1003);}catch(e){probeErrors.push("confirmationCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW confirmationCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.confirmationCallback("p1020",1022,["a1022","b1022"],1024);}catch(e){probeErrors.push("confirmationCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW confirmationCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.confirmationCallback(1041,["a1041","b1041"],1043);}catch(e){probeErrors.push("confirmationCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW confirmationCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.pollingWaitCallback("p1060","p1061");}catch(e){probeErrors.push("pollingWaitCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW pollingWaitCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.textOutputCallback(1081,"p1081");}catch(e){probeErrors.push("textOutputCallback/2: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW textOutputCallback/2: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.validatedUsernameCallback("p1100",{marker:"o1101"},true,["a1103","b1103"]);}catch(e){probeErrors.push("validatedUsernameCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW validatedUsernameCallback/4: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.validatedUsernameCallback("p1120",{marker:"o1121"},true);}catch(e){probeErrors.push("validatedUsernameCallback/3: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW validatedUsernameCallback/3: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.validatedPasswordCallback("p1140",false,{marker:"o1142"},false,["a1144","b1144"]);}catch(e){probeErrors.push("validatedPasswordCallback/5: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW validatedPasswordCallback/5: "+String(e));}catch(ignore){}}
-try{callbacksBuilder.validatedPasswordCallback("p1160",false,{marker:"o1162"},false);}catch(e){probeErrors.push("validatedPasswordCallback/4: "+String(e));try{callbacksBuilder.textOutputCallback(0,"THREW validatedPasswordCallback/4: "+String(e));}catch(ignore){}}
-outcome="ok";
+function build(label, fn) {
+  try {
+    fn();
+  } catch (e) {
+    try {
+      callbacksBuilder.textOutputCallback(0, "THREW " + label + ": " + String(e));
+    } catch (ignore) {}
+  }
+}
+build("radioChoiceCallback/3", function () {
+  callbacksBuilder.radioChoiceCallback("probe-0", ["left-1", "right-1"], 3);
+});
+build("suspendedTextOutputCallback/2", function () {
+  callbacksBuilder.suspendedTextOutputCallback(11, "probe-11");
+});
+build("textInputCallback/2", function () {
+  callbacksBuilder.textInputCallback("probe-20", "probe-21");
+});
+build("textInputCallback/1", function () {
+  callbacksBuilder.textInputCallback("probe-30");
+});
+build("scriptTextOutputCallback/1", function () {
+  callbacksBuilder.scriptTextOutputCallback("probe-40");
+});
+build("metadataCallback/1", function () {
+  callbacksBuilder.metadataCallback({ marker: "object-50" });
+});
+build("stringAttributeInputCallback/5", function () {
+  callbacksBuilder.stringAttributeInputCallback("probe-60", "probe-61", "probe-62", false, ["left-64", "right-64"]);
+});
+build("stringAttributeInputCallback/6", function () {
+  callbacksBuilder.stringAttributeInputCallback("probe-70", "probe-71", "probe-72", false, { marker: "object-74" }, false);
+});
+build("stringAttributeInputCallback/4", function () {
+  callbacksBuilder.stringAttributeInputCallback("probe-80", "probe-81", "probe-82", false);
+});
+build("stringAttributeInputCallback/7", function () {
+  callbacksBuilder.stringAttributeInputCallback("probe-90", "probe-91", "probe-92", false, { marker: "object-94" }, false, ["left-96", "right-96"]);
+});
+build("numberAttributeInputCallback/6", function () {
+  callbacksBuilder.numberAttributeInputCallback("probe-100", "probe-101", 103, false, { marker: "object-104" }, false);
+});
+build("numberAttributeInputCallback/5", function () {
+  callbacksBuilder.numberAttributeInputCallback("probe-110", "probe-111", 113, false, ["left-114", "right-114"]);
+});
+build("numberAttributeInputCallback/4", function () {
+  callbacksBuilder.numberAttributeInputCallback("probe-120", "probe-121", 123, false);
+});
+build("numberAttributeInputCallback/7", function () {
+  callbacksBuilder.numberAttributeInputCallback("probe-130", "probe-131", 133, false, { marker: "object-134" }, false, ["left-136", "right-136"]);
+});
+build("booleanAttributeInputCallback/5", function () {
+  callbacksBuilder.booleanAttributeInputCallback("probe-140", "probe-141", true, false, ["left-144", "right-144"]);
+});
+build("booleanAttributeInputCallback/7", function () {
+  callbacksBuilder.booleanAttributeInputCallback("probe-150", "probe-151", true, false, { marker: "object-154" }, false, ["left-156", "right-156"]);
+});
+build("booleanAttributeInputCallback/4", function () {
+  callbacksBuilder.booleanAttributeInputCallback("probe-160", "probe-161", true, false);
+});
+build("booleanAttributeInputCallback/6", function () {
+  callbacksBuilder.booleanAttributeInputCallback("probe-170", "probe-171", true, false, { marker: "object-174" }, false);
+});
+build("languageCallback/2", function () {
+  callbacksBuilder.languageCallback("probe-180", "probe-181");
+});
+build("idPCallback/9", function () {
+  callbacksBuilder.idPCallback("probe-190", "probe-191", "probe-192", ["left-193", "right-193"], "probe-194", "probe-195", "probe-196", ["left-197", "right-197"], true);
+});
+build("idPCallback/11", function () {
+  callbacksBuilder.idPCallback("probe-200", "probe-201", "probe-202", ["left-203", "right-203"], "probe-204", "probe-205", "probe-206", ["left-207", "right-207"], true, "probe-209", "probe-210");
+});
+build("httpCallback/3", function () {
+  callbacksBuilder.httpCallback("probe-210", "probe-211", "probe-212");
+});
+build("httpCallback/4", function () {
+  callbacksBuilder.httpCallback("probe-220", "probe-221", "probe-222", 224);
+});
+build("x509CertificateCallback/2", function () {
+  callbacksBuilder.x509CertificateCallback("probe-230", { marker: "object-231" });
+});
+build("x509CertificateCallback/1", function () {
+  callbacksBuilder.x509CertificateCallback("probe-240");
+});
+build("x509CertificateCallback/3", function () {
+  callbacksBuilder.x509CertificateCallback("probe-250", { marker: "object-251" }, true);
+});
+build("consentMappingCallback/7", function () {
+  callbacksBuilder.consentMappingCallback("probe-260", "probe-261", "probe-262", "probe-263", ["left-264", "right-264"], "probe-265", true);
+});
+build("consentMappingCallback/3", function () {
+  callbacksBuilder.consentMappingCallback({ marker: "object-270" }, "probe-271", true);
+});
+build("deviceProfileCallback/3", function () {
+  callbacksBuilder.deviceProfileCallback(true, false, "probe-282");
+});
+build("kbaCreateCallback/3", function () {
+  callbacksBuilder.kbaCreateCallback("probe-290", ["left-291", "right-291"], true);
+});
+build("selectIdPCallback/1", function () {
+  callbacksBuilder.selectIdPCallback({ marker: "object-300" });
+});
+build("termsAndConditionsCallback/3", function () {
+  callbacksBuilder.termsAndConditionsCallback("probe-310", "probe-311", "probe-312");
+});
+build("choiceCallback/4", function () {
+  callbacksBuilder.choiceCallback("probe-320", ["left-321", "right-321"], 323, false);
+});
+build("passwordCallback/2", function () {
+  callbacksBuilder.passwordCallback("probe-330", false);
+});
+build("nameCallback/2", function () {
+  callbacksBuilder.nameCallback("probe-340", "probe-341");
+});
+build("nameCallback/1", function () {
+  callbacksBuilder.nameCallback("probe-350");
+});
+build("hiddenValueCallback/2", function () {
+  callbacksBuilder.hiddenValueCallback("probe-360", "probe-361");
+});
+build("redirectCallback/5", function () {
+  callbacksBuilder.redirectCallback("probe-370", { marker: "object-371" }, "probe-372", "probe-373", "probe-374");
+});
+build("redirectCallback/4", function () {
+  callbacksBuilder.redirectCallback("probe-380", { marker: "object-381" }, "probe-382", false);
+});
+build("redirectCallback/3", function () {
+  callbacksBuilder.redirectCallback("probe-390", { marker: "object-391" }, "probe-392");
+});
+build("redirectCallback/6", function () {
+  callbacksBuilder.redirectCallback("probe-400", { marker: "object-401" }, "probe-402", "probe-403", "probe-404", false);
+});
+build("confirmationCallback/3 numbers", function () {
+  callbacksBuilder.confirmationCallback(411, 412, 413);
+});
+build("confirmationCallback/3 array", function () {
+  callbacksBuilder.confirmationCallback(421, ["left-421", "right-421"], 423);
+});
+build("confirmationCallback/4 numbers", function () {
+  callbacksBuilder.confirmationCallback("probe-430", 432, 433, 434);
+});
+build("confirmationCallback/4 array", function () {
+  callbacksBuilder.confirmationCallback("probe-440", 442, ["left-442", "right-442"], 444);
+});
+build("pollingWaitCallback/2", function () {
+  callbacksBuilder.pollingWaitCallback("probe-450", "probe-451");
+});
+build("textOutputCallback/2", function () {
+  callbacksBuilder.textOutputCallback(461, "probe-461");
+});
+build("validatedUsernameCallback/4", function () {
+  callbacksBuilder.validatedUsernameCallback("probe-470", { marker: "object-471" }, true, ["left-473", "right-473"]);
+});
+build("validatedUsernameCallback/3", function () {
+  callbacksBuilder.validatedUsernameCallback("probe-480", { marker: "object-481" }, true);
+});
+build("validatedPasswordCallback/5", function () {
+  callbacksBuilder.validatedPasswordCallback("probe-490", false, { marker: "object-492" }, false, ["left-494", "right-494"]);
+});
+build("validatedPasswordCallback/4", function () {
+  callbacksBuilder.validatedPasswordCallback("probe-500", false, { marker: "object-502" }, false);
+});
+outcome = "ok";
