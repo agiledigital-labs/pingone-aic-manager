@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  lstatSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -182,6 +183,57 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+const javacVersions = new Map<string, Promise<string>>();
+
+async function javacVersion(javac: string): Promise<string> {
+  let version = javacVersions.get(javac);
+  if (!version) {
+    version = execFileAsync(javac, ["-version"], { timeout: 30_000, maxBuffer: 100_000 })
+      .then(({ stdout, stderr }) => `${stdout}${stderr}`.trim())
+      .catch((error) => {
+        javacVersions.delete(javac);
+        throw error;
+      });
+    javacVersions.set(javac, version);
+  }
+  return version;
+}
+
+function outputFiles(root: string, relative = ""): string[] {
+  const dir = relative ? join(root, relative) : root;
+  const files: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const child = relative ? join(relative, entry) : entry;
+    const path = join(root, child);
+    if (lstatSync(path).isDirectory()) files.push(...outputFiles(root, child));
+    else files.push(child);
+  }
+  return files.sort();
+}
+
+function validRunnerCache(dest: string, digest: string): boolean {
+  const marker = join(dest, ".complete");
+  if (!existsSync(marker)) return false;
+  try {
+    const lines = readFileSync(marker, "utf8").trimEnd().split("\n");
+    if (lines[0] !== digest || lines.length < 2) return false;
+    const entries = lines.slice(1);
+    const listed = new Set<string>();
+    let previous = "";
+    for (const line of entries) {
+      const match = /^([a-f0-9]{64})\x20{2}(.+)$/.exec(line);
+      const relative = match?.[2];
+      if (!match || !relative || relative <= previous || relative === ".complete") return false;
+      previous = relative;
+      listed.add(relative);
+      if (sha256(readFileSync(join(dest, relative))) !== match[1]) return false;
+    }
+    return outputFiles(dest).filter((file) => file.endsWith(".class")).every((file) => listed.has(file));
+  } catch {
+    return false;
+  }
+}
+
 export type Fetcher = (url: string) => Promise<Uint8Array>;
 
 async function defaultFetch(url: string): Promise<Uint8Array> {
@@ -243,22 +295,34 @@ export async function ensureRunnerClasses(
   if (sources.length === 0) {
     throw new Error(`rhino-local: no Java sources in ${sourcesDir}`);
   }
+  const javac = options.javac ?? javaTool("javac");
+  const compiler = await javacVersion(javac);
   const key = createHash("sha256");
   key.update(RHINO_JAR.sha256);
+  key.update(`\0javac\0${compiler}`);
   for (const name of sources) {
     key.update(`\0${name}\0`);
     key.update(readFileSync(join(sourcesDir, name)));
   }
   const digest = key.digest("hex").slice(0, 16);
   const dest = join(cache, "classes", digest);
-  const marker = join(dest, ".complete");
-  if (existsSync(marker)) {
+  if (validRunnerCache(dest, digest)) {
     return dest;
+  }
+  if (existsSync(dest)) {
+    if (!validRunnerCache(dest, digest)) {
+      const aside = join(cache, "classes", `.${digest}.bad.${randomUUID()}`);
+      try {
+        renameSync(dest, aside);
+      } catch {
+        // Another worker may already have moved/replaced the invalid entry.
+      }
+      rmSync(aside, { recursive: true, force: true });
+    }
   }
   const scratch = join(cache, "classes", `.${digest}.${randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
   try {
-    const javac = options.javac ?? javaTool("javac");
     try {
       await execFileAsync(
         javac,
@@ -282,12 +346,13 @@ export async function ensureRunnerClasses(
           `(set ${JAVA_HOME_ENV} or JAVA_HOME): ${detail}`
       );
     }
-    writeFileSync(join(scratch, ".complete"), `${digest}\n`);
+    const manifest = outputFiles(scratch).map((file) => `${sha256(readFileSync(join(scratch, file)))}  ${file}`);
+    writeFileSync(join(scratch, ".complete"), `${digest}\n${manifest.join("\n")}\n`);
     try {
       renameSync(scratch, dest);
     } catch (error) {
       // Another worker won the race; its classes came from the same sources.
-      if (!existsSync(marker)) {
+      if (!validRunnerCache(dest, digest)) {
         throw error;
       }
     }
