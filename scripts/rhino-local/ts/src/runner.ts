@@ -352,6 +352,9 @@ export class RhinoRunner {
     if (job.classAllowList !== undefined) {
       payload.classAllowList = job.classAllowList;
     }
+    if (job.resultGlobal !== undefined) {
+      payload.resultGlobal = job.resultGlobal;
+    }
     if (this.#shadow === undefined) {
       return this.#primary.send(id, payload);
     }

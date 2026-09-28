@@ -17,6 +17,7 @@ import org.mozilla.javascript.EvaluatorException;
 import org.mozilla.javascript.RhinoException;
 import org.mozilla.javascript.Script;
 import org.mozilla.javascript.Scriptable;
+import org.mozilla.javascript.ScriptableObject;
 
 /**
  * Long-lived JVM speaking line-delimited JSON on stdin/stdout. One process,
@@ -204,7 +205,11 @@ public final class Runner {
         }
         throw e;
       }
-      return response(id, "ok", JsValues.of(completion), null);
+      final String resultGlobal = Json.optionalString(job, "resultGlobal");
+      final Object result = resultGlobal == null
+          ? completion
+          : ScriptableObject.getProperty(scope, resultGlobal);
+      return response(id, "ok", JsValues.of(result), null);
     } finally {
       Context.exit();
     }
