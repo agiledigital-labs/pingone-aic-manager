@@ -1,0 +1,646 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-callbacks-utils — differs on callbacksBuilderEnum, utilsEnum > callbacksBuilderEnum 1`] = `
+[
+  "booleanAttributeInputCallback",
+  "choiceCallback",
+  "confirmationCallback",
+  "consentMappingCallback",
+  "deviceProfileCallback",
+  "hiddenValueCallback",
+  "httpCallback",
+  "idPCallback",
+  "kbaCreateCallback",
+  "languageCallback",
+  "metadataCallback",
+  "nameCallback",
+  "numberAttributeInputCallback",
+  "passwordCallback",
+  "pollingWaitCallback",
+  "redirectCallback",
+  "scriptTextOutputCallback",
+  "selectIdPCallback",
+  "stringAttributeInputCallback",
+  "suspendedTextOutputCallback",
+  "termsAndConditionsCallback",
+  "textInputCallback",
+  "textOutputCallback",
+  "validatedPasswordCallback",
+  "validatedUsernameCallback",
+  "x509CertificateCallback",
+]
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-callbacks-utils — differs on callbacksBuilderEnum, utilsEnum > utilsEnum 1`] = `
+[
+  "base64",
+  "base64url",
+  "crypto",
+  "types",
+]
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > arity 1`] = `
+{
+  "base64Encode": "function",
+  "confirmationCallback": 0,
+  "hiddenValueCallback": 2,
+  "nameCallback": 2,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > base64 1`] = `
+[
+  "atob",
+  "btoa",
+  "decode",
+  "decodeToBytes",
+  "encode",
+]
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > base64url 1`] = `
+[
+  "atob",
+  "btoa",
+  "decode",
+  "decodeToBytes",
+  "encode",
+]
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > crypto 1`] = `
+[
+  "getRandomValues",
+  "randomUUID",
+  "subtle",
+]
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > types 1`] = `
+[
+  "bytesToString",
+  "stringToBytes",
+]
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > httpclient-body-coercion — differs on value > value 1`] = `
+[
+  {
+    "name": "new java.lang.Integer(1)",
+    "ok": true,
+    "value": "1",
+  },
+  {
+    "name": "new java.lang.Long(1)",
+    "ok": true,
+    "value": "1",
+  },
+  {
+    "name": "new java.lang.Short(1)",
+    "ok": true,
+    "value": "1",
+  },
+  {
+    "name": "new java.lang.Double(1)",
+    "ok": true,
+    "value": "1.0",
+  },
+  {
+    "name": "java.lang.Integer.valueOf(1)",
+    "ok": true,
+    "value": "1",
+  },
+  {
+    "name": "httpClient.send echo",
+    "ok": true,
+    "value": "{"intOne":1.0,"intZero":0.0,"negInt":-5.0,"bigInt":1000000.0,"floatVal":1.5,"undefField":null,"nullField":null,"strField":"s","boolField":true,"nested":{"u":null,"n":null,"i":2.0},"arr":[1.0,null,3.0]}",
+  },
+]
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-attr-mapping — differs on value > value 1`] = `"{"user":"00000000-0000-0000-0000-000000000000","counts":{"uid":0,"cn":1,"givenName":1,"sn":1,"mail":1,"displayName":0,"description":0,"telephoneNumber":1,"l":0,"st":0,"co":0,"postalCode":0,"inetUserStatus":1,"fr-idm-uuid":1,"fr-idm-managed-user-manager":0,"manager":0,"fr-idm-managed-user-roles":0,"fr-idm-managed-application-member":0,"fr-idm-consentedMapping":0,"fr-idm-custom-attrs":1,"frGivenName":0,"givenNameXYZ":0},"customKeys":[]}"`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-enum-attrs — differs on value > value 1`] = `"{"methods":{"getAttributeValues":"function","getAttributes":"undefined","getAttributeNames":"undefined","asMap":"undefined"},"counts":{"manager":0,"fr-idm-managed-user-manager":1,"reports":0,"fr-idm-managed-user-reports":0,"dn":0,"entryDN":0}}"`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-getattribute-shape — differs on value > value 1`] = `"{"getAttribute_customAttrs":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}},"getAttributeValues_customAttrs":{"call":{"ok":true,"undef":false,"isNull":false},"lengthProp":"number","size":{"ok":true,"undef":false,"isNull":false},"toArray":{"ok":false,"threw":"TypeError: Cannot find function toArray"},"contains":{"ok":true,"undef":false,"isNull":false},"includes":{"ok":true,"undef":false,"isNull":false},"get0":{"ok":true,"undef":false,"isNull":false},"index0":{"ok":true,"undef":false,"isNull":false},"charAt":{"ok":false,"threw":"TypeError: Cannot find function charAt"},"substring":{"ok":false,"threw":"TypeError: Cannot find function substring"},"lengthValue":1,"count":1,"asString":"{}","keys":{"ok":true,"undef":false,"isNull":false},"customKeys":[]},"getAttribute_mail":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}},"getAttributeValues_mail":{"call":{"ok":true,"undef":false,"isNull":false},"lengthProp":"number","size":{"ok":true,"undef":false,"isNull":false},"toArray":{"ok":false,"threw":"TypeError: Cannot find function toArray"},"contains":{"ok":true,"undef":false,"isNull":false},"includes":{"ok":true,"undef":false,"isNull":false},"get0":{"ok":true,"undef":false,"isNull":false},"index0":{"ok":true,"undef":false,"isNull":false},"charAt":{"ok":false,"threw":"TypeError: Cannot find function charAt"},"substring":{"ok":false,"threw":"TypeError: Cannot find function substring"},"lengthValue":1,"count":1},"getAttribute_bogus":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}}}"`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-resolve-diag — differs on value > value 1`] = `"{"alice":"ok givenName-size=1","00000000-0000-0000-0000-000000000000":"ok givenName-size=1","amadmin":"getIdentity-error: Error: rhino-local: idRepository.getIdentity: no given.managed record for \\"amadmin\\"","idRepository_typeof":"object","nodeState_username":"null"}"`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > java-collections — differs on value > value 1`] = `
+[
+  {
+    "name": "typeof JavaImporter",
+    "ok": true,
+    "value": "function",
+  },
+  {
+    "name": "typeof java",
+    "ok": true,
+    "value": "object",
+  },
+  {
+    "name": "new java.util.HashSet",
+    "ok": true,
+    "value": "true:1",
+  },
+  {
+    "name": "new java.util.ArrayList",
+    "ok": true,
+    "value": "a:1",
+  },
+  {
+    "name": "new java.util.LinkedHashSet",
+    "ok": true,
+    "value": "1",
+  },
+  {
+    "name": "new java.util.TreeSet",
+    "ok": true,
+    "value": "a:2",
+  },
+  {
+    "error": "TypeError: [JavaPackage java.util.HashMap] is not a function, it is object.",
+    "name": "new java.util.HashMap",
+    "ok": false,
+  },
+  {
+    "error": "TypeError: [JavaPackage java.util.LinkedHashMap] is not a function, it is object.",
+    "name": "new java.util.LinkedHashMap",
+    "ok": false,
+  },
+  {
+    "error": "TypeError: [JavaPackage java.util.TreeMap] is not a function, it is object.",
+    "name": "new java.util.TreeMap",
+    "ok": false,
+  },
+  {
+    "name": "java.util.Collections.emptyMap",
+    "ok": true,
+    "value": "0",
+  },
+  {
+    "name": "java.util.Collections.singletonMap",
+    "ok": true,
+    "value": "1:1",
+  },
+  {
+    "error": "TypeError: org.mozilla.javascript.Undefined@<hash> is not a function, it is undefined.",
+    "name": "JavaImporter HashMap",
+    "ok": false,
+  },
+  {
+    "error": "TypeError: org.mozilla.javascript.Undefined@<hash> is not a function, it is undefined.",
+    "name": "JavaImporter HashSet",
+    "ok": false,
+  },
+]
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > lib-openidm-miss-consumer — differs on unknownTypeMiss > unknownTypeMiss 1`] = `
+{
+  "error": "Error: rhino-local: openidm.read: no given.managed entry for "managed/zzz_no_such_object_type"",
+  "threw": true,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > cookies 1`] = `
+{
+  "className": null,
+  "enumerateError": null,
+  "keys": [
+    "probe",
+  ],
+  "known": {
+    "Accept-API-Version": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Authorization": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Content-Type": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "ORIGIN": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Origin": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Referer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "User-Agent": {
+      "containsKey": false,
+      "get": null,
+    },
+    "X-Forwarded-Host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "X-Requested-With": {
+      "containsKey": false,
+      "get": null,
+    },
+    "accept": {
+      "containsKey": false,
+      "get": null,
+    },
+    "accept-api-version": {
+      "containsKey": false,
+      "get": null,
+    },
+    "authorization": {
+      "containsKey": false,
+      "get": null,
+    },
+    "content-type": {
+      "containsKey": false,
+      "get": null,
+    },
+    "cookie": {
+      "containsKey": false,
+      "get": null,
+    },
+    "host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "origin": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referrer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referrer-policy": {
+      "containsKey": false,
+      "get": null,
+    },
+    "user-agent": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-for": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-prefix": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-proto": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-requested-with": {
+      "containsKey": false,
+      "get": null,
+    },
+  },
+  "methods": [
+    "probe",
+  ],
+  "stringified": "[object Object]",
+  "typeofValue": "object",
+  "values": {
+    "probe": "1",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > headers 1`] = `
+{
+  "className": null,
+  "enumerateError": null,
+  "keys": [
+    "x-aic-probe",
+  ],
+  "known": {
+    "Accept-API-Version": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Authorization": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Content-Type": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "ORIGIN": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Origin": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Referer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "User-Agent": {
+      "containsKey": false,
+      "get": null,
+    },
+    "X-Forwarded-Host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "X-Requested-With": {
+      "containsKey": false,
+      "get": null,
+    },
+    "accept": {
+      "containsKey": false,
+      "get": null,
+    },
+    "accept-api-version": {
+      "containsKey": false,
+      "get": null,
+    },
+    "authorization": {
+      "containsKey": false,
+      "get": null,
+    },
+    "content-type": {
+      "containsKey": false,
+      "get": null,
+    },
+    "cookie": {
+      "containsKey": false,
+      "get": null,
+    },
+    "host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "origin": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referrer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referrer-policy": {
+      "containsKey": false,
+      "get": null,
+    },
+    "user-agent": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-for": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-prefix": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-proto": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-requested-with": {
+      "containsKey": false,
+      "get": null,
+    },
+  },
+  "methods": [
+    "x-aic-probe",
+  ],
+  "stringified": "[object Object]",
+  "typeofValue": "object",
+  "values": {
+    "x-aic-probe": [
+      "alpha",
+    ],
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > parameters 1`] = `
+{
+  "className": null,
+  "enumerateError": null,
+  "keys": [
+    "probeq",
+  ],
+  "known": {
+    "Accept-API-Version": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Authorization": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Content-Type": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "ORIGIN": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Origin": {
+      "containsKey": false,
+      "get": null,
+    },
+    "Referer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "User-Agent": {
+      "containsKey": false,
+      "get": null,
+    },
+    "X-Forwarded-Host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "X-Requested-With": {
+      "containsKey": false,
+      "get": null,
+    },
+    "accept": {
+      "containsKey": false,
+      "get": null,
+    },
+    "accept-api-version": {
+      "containsKey": false,
+      "get": null,
+    },
+    "authorization": {
+      "containsKey": false,
+      "get": null,
+    },
+    "content-type": {
+      "containsKey": false,
+      "get": null,
+    },
+    "cookie": {
+      "containsKey": false,
+      "get": null,
+    },
+    "host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "origin": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referrer": {
+      "containsKey": false,
+      "get": null,
+    },
+    "referrer-policy": {
+      "containsKey": false,
+      "get": null,
+    },
+    "user-agent": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-for": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-host": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-prefix": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-forwarded-proto": {
+      "containsKey": false,
+      "get": null,
+    },
+    "x-requested-with": {
+      "containsKey": false,
+      "get": null,
+    },
+  },
+  "methods": [
+    "probeq",
+  ],
+  "stringified": "[object Object]",
+  "typeofValue": "object",
+  "values": {
+    "probeq": [
+      "alpha",
+    ],
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multivalue — differs on headers, parameters > headers 1`] = `
+{
+  "className": "err:TypeError: Cannot find function getClass in object [object Object].",
+  "counts": {
+    "x-aic-probe": 2,
+    "x-aic-probe-joined": 1,
+  },
+  "error": null,
+  "label": "requestHeaders",
+  "probes": {
+    "get:X-Aic-Probe": [
+      "alpha",
+      "bravo",
+    ],
+    "get:probeq": "null",
+    "get:probeqjoined": "null",
+    "get:x-aic-probe": [
+      "alpha",
+      "bravo",
+    ],
+    "get:x-aic-probe-joined": [
+      "alpha,bravo",
+    ],
+    "x-aic-probe": [
+      "alpha",
+      "bravo",
+    ],
+    "x-aic-probe-joined": [
+      "alpha,bravo",
+    ],
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multivalue — differs on headers, parameters > parameters 1`] = `
+{
+  "className": "err:TypeError: Cannot find function getClass in object [object Object].",
+  "counts": {
+    "probeq": 2,
+    "probeqjoined": 1,
+  },
+  "error": null,
+  "label": "requestParameters",
+  "probes": {
+    "get:X-Aic-Probe": "null",
+    "get:probeq": [
+      "alpha",
+      "bravo",
+    ],
+    "get:probeqjoined": [
+      "alpha,bravo",
+    ],
+    "get:x-aic-probe": "null",
+    "get:x-aic-probe-joined": "null",
+    "probeq": [
+      "alpha",
+      "bravo",
+    ],
+    "probeqjoined": [
+      "alpha,bravo",
+    ],
+  },
+}
+`;

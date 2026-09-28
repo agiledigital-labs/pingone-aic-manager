@@ -10,22 +10,30 @@ against the JVM runner (`VERSION_DEFAULT` + `ScriptContextScope`) after
 
 ## What runs today
 
-52 cases. 9 are language parse errors (blocked on `(parse)` with the JVM's exact
-message). Of the 43 that execute:
+Re-measured 2026-09-28 against the sandbox (`run-probes.sh`) and the host-JVM
+runner. 47 cases, and every one is green — by asserting what is true, not by
+matching the overlay:
 
-| Count | Status                                             |
-| ----- | -------------------------------------------------- |
-| 23    | pass the live expect                               |
-| 20    | run and fail the live expect (fidelity gaps below) |
-| 0     | still blocked on an unimplemented method           |
+| Count | Status                                                                   |
+| ----- | ------------------------------------------------------------------------ |
+| 27    | pass the live payload exactly                                            |
+| 11    | **known gap** — live payload committed, the differing keys pinned        |
+| 9     | parse errors, blocked on `(parse)` with the JVM's exact message          |
 
-The 20 failures are intentional. The expects encode live AIC behaviour; do not
-tune them to match the overlay.
+A case runs its **origin fixture**, the file the tenant runs, not a copy. The
+copies had drifted, and a two-line header shifted every error line off AIC's.
+Runtime errors use AIC's source name (`AIC Rhino Let Probe`), so `(name#line)`
+suffixes compare equal. Identity fixtures name tenant users; a case points them
+at placeholder records with a `Rewrite` matched on the fixture's structure
+(`var PROBE_USER = "…"`), never on the value it replaces, so no tenant
+identifier is repeated in `cases/real/index.ts`.
 
-`string-normalize` was the one case whose outcome was `error` after `isEmpty`
-landed. Cause: the last probe `require()`s `rhino-lib-normalize-probe`, and
-`require` was undefined, so `results.every` was false and `emit` set
-`outcome = "error"`. It passes now that `require` evals seeded library bodies.
+A `gap` entry (`cases/real/load.ts`, `KnownGap`) names the payload keys that
+differ. Every other key must equal the committed live payload. Each differing
+key's local value is snapshotted (`test/corpus/__snapshots__/`), and where the
+live value is committed too, local must still differ from it — so closing a gap
+fails the test and asks for the entry to be dropped. Do not tune a live payload
+to the overlay; update the snapshot only after reading why it moved.
 
 ## Environment profiles (added 2026-09-12)
 
@@ -85,81 +93,39 @@ remainder (`frIndexed*`, `effectiveRoles`, `authzRoles`, …) have no recorded
 AM name, so a script reading one through `identity` cannot be tested locally
 until that row is measured.
 
-## Ranked remaining gaps (measured)
+## Known gaps (measured 2026-09-28)
 
-Ranked by how many of the 20 a fix would turn green. Several cases fail for more
-than one reason; they are listed under the dominant one.
+Each is a `gap` entry with its reason; this is the index.
 
-### 1. Java class shutter / `java.util` — 4 cases
+| Case                          | AIC                                                                                          | Local                                                              |
+| ----------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `enum-callbacks-utils`        | `callbacksBuilder`/`utils` are Java objects; for-in lists `class`, `getClass`, `wait`, …     | plain JS mocks enumerate only their methods                        |
+| `enum-utils-sub`              | same for `utils.base64`/`crypto`/`types`; varargs callbacks have arity 0                     | JS methods, declared arity 2                                       |
+| `request-multivalue`          | Java maps: `getClass()` → `Access to Java class "java.lang.Class" is prohibited`             | JS object: `Cannot find function getClass`                         |
+| `request-headers-dump`        | same, plus Java map formatting from `String()`                                               | JS object                                                          |
+| `httpclient-body-coercion`    | `java.lang.Integer`/`Long` body fields are sent                                              | the mock drops them                                                |
+| `java-collections`            | `new (JavaImporter(java.util)).HashSet()` works                                              | throws                                                             |
+| `lib-openidm-miss-consumer`   | read of a nonexistent managed **type** → `null`                                              | throws `no given.managed entry` (deliberate — see above)           |
+| `identity-resolve-diag`       | `getIdentity` resolves a UUID only                                                           | also resolves a userName                                           |
+| `identity-attr-mapping`       | `uid` is mapped (count 1)                                                                    | not mapped (count 0)                                               |
+| `identity-getattribute-shape` | `getAttributeValues` is a Java collection: `toArray` yes, `includes` no, prints `[{}]`       | JS array: `includes` yes, `toArray` no                             |
+| `identity-enum-attrs`         | **not measured** — every count came back `err`; the probe's IDM setup users are gone         | —                                                                  |
 
-`java-collections`, `java-class-shutter`, `for-each-java-collection`,
-`lib-java-collections-consumer`.
+Two of these are dangerous rather than cosmetic: `.includes()` on
+`getAttributeValues` and a `getClass()` on a request map both behave better
+locally than on AIC, so a script relying on them passes here and fails live.
 
-The local Rhino has no AM class shutter. It will construct classes AIC hides
-(`HashMap`) and will not hide the ones AIC exposes. `require()` of the library
-probe works; the payload then disagrees on which constructions succeed.
+Two request cases are also **not comparable** beyond their `getClass` row: the
+live run was a curl with its own headers and parameters, not the case's
+`given`, and its payload carries the tenant host and client-certificate
+headers, so it is not committed.
 
-This is not a mock method. Faithful `require` does not need the shutter to
-resolve a library; it needs it for the Java names the library then touches.
-
-### 2. Identity object shape — 4 cases
-
-Predicted this morning, now measured.
-
-| Case                          | Live                                                                                                                           | Local                                                                                                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `identity-resolve-diag`       | `getIdentity(userName)` and `getIdentity("amadmin")` return a stub whose `getAttributeValues` throws `this.amIdentity is null` | `getIdentity` matches `_id` **or** `userName`, so `"alice"` resolves; `"amadmin"` throws `no given.managed record` |
-| `identity-attr-mapping`       | `uid` count 1 (AM maps it)                                                                                                     | `uid` count 0 (no `uid` field on the seeded record, no mapping table)                                              |
-| `identity-getattribute-shape` | Java collection: `.toArray()` works, `.includes()` throws, `String(v)` is `[{…}]`                                              | JS array with hidden `size`/`get`/`contains`: `.toArray()` throws, `.includes()` works                             |
-| `identity-enum-attrs`         | `getAttributes` / `getAttributeNames` / `asMap` absent on next-gen wrapper                                                     | same absences (`typeof` is `"undefined"`); extra dump fields are not in the expect                                 |
-
-`.includes()` working locally is the dangerous one: a script banned from
-`.includes()` on AIC would pass the local harness.
-
-### 3. Request map `getClass` + truncated expects — 3 cases
-
-`request-multivalue`, `request-headers-dump`, `legacy-request-multivalue`.
-
-Local request maps are JS objects. `getClass` throws
-`Cannot find function getClass in object [object Object]`. Live recorded a Java
-class name. The conversion also asserted only `{ok, feature}`, so extra dump
-fields fail even on fields that match.
-
-### 4. Mock enumerability vs Java `for-in` — 2 cases
-
-`enum-callbacks-utils`, `enum-utils-sub`. Live `callbacksBuilder` / `utils.*`
-are Java objects; locally they are JS objects whose methods are enumerable. The
-name lists disagree. Mock-shape, not a missing method.
-
-### 5. Legacy logger / `idRepository` members — 4 cases
-
-`legacy-idrepository-methods`, `legacy-nodestate-logger`, `legacy-logger-args`,
-`legacy-logger-levels`.
-
-`Action.send` works. What remains is the **legacy** surface, which is not the
-next-gen JSON:
-
-- `idRepository.getAttribute` / `setAttribute` / `addAttribute` are functions on
-  live legacy, `undefined` on the next-gen mock (`getIdentity` is present)
-- `logger.message` / `warning` / `errorEnabled` / `messageEnabled` /
-  `warningEnabled` are the classic Debug API; calling `errorEnabled()` throws
-  `Cannot find function errorEnabled`
-
-Do not add these to the next-gen mock just to turn the tests green. They are not
-on `docs/api/bindings/scripted-decision-next.json`.
-
-### 6. One-off
-
-| Case                        | Why it fails                                                                                                                                                                       |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `logger-placeholders`       | extra `E0-shape` field (`caught=JavaException: java.lang.NumberFormatException…`); the `E0`/`E1`/… `ok` map otherwise matches                                                      |
-| `httpclient-body-coercion`  | undeclared `http` effect (case has no `expect.http`) plus extra dump fields. The stub was hit; that is not a wire-fidelity match for JS `1` → `1.0`                                |
-| `lib-openidm-miss-consumer` | missing **record** in a seeded collection returns `null` (AIC). Missing **type** (`managed/zzz_no_such_object_type/…`) throws `no given.managed entry` locally; AIC returns `null` |
-
-`openidm.read` of an unseeded collection stays a missing-fixture throw on
-purpose. Live does not distinguish that from a missing record.
-
----
+What the 2026-09-12 ranking called the shutter gap is closed:
+`java-class-shutter`, `for-each-java-collection` and
+`lib-java-collections-consumer` now equal the live payload exactly, as does
+`logger-placeholders` (its `E0-shape` row was the only miss, and it was the
+expectation that was incomplete). The five legacy cases were dropped on
+2026-09-12 (`7bb0195`); legacy scripts are not supported.
 
 ## Where the real scripts are
 
@@ -184,15 +150,16 @@ actually assert.
 
 ## What was converted
 
-52 cases under `scripts/rhino-local/ts/cases/real/`:
+47 cases in `scripts/rhino-local/ts/cases/real/index.ts`, each running its
+origin fixture under `scripts/rhino-script-tester/`:
 
 - 45 next-gen (43 `fixtures/*.script.js` + 2 `scripts/*.script.js`)
-- 7 legacy
+- 2 legacy
 
 Identity cases originally named a sandbox test user and three managed-object
-UUIDs. Those are reserved placeholders (`alice` / `bob` /
-`00000000-0000-0000-0000-000000000000` and `…0001` / `…0002`). The case comments
-say so.
+UUIDs. Cases rewrite those to reserved placeholders (`alice` / `bob` /
+`00000000-0000-0000-0000-000000000000` and `…0001` / `…0002`) at load time, via
+`Rewrite`s in `index.ts`.
 
 A blocked case still asserts its exact throw, so implementing that method fails
 the assertion and forces re-triage. Nothing in this corpus is currently blocked
@@ -206,22 +173,22 @@ blocked on `(parse)` with the JVM's exact message. Already covered as
 language-corpus rows in `docs/rhino-local-harness.md`; kept here so the
 real-script set is complete.
 
-| Case                      | Exact throw (2026-09-12)                                                             | Live (matrix)                       |
+| Case                      | Exact throw (2026-09-28)                                                             | Live (matrix)                       |
 | ------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------- |
-| `rhino-let-behaviour`     | `compile_error: missing ; before statement (rhino-let-behaviour#10)`                 | parse: `missing ; before statement` |
-| `for-of-var`              | `compile_error: missing ; after for-loop initializer (for-of-var#34)`                | same                                |
-| `object-shorthand`        | `compile_error: missing : after property id (object-shorthand#14)`                   | same                                |
-| `destructuring-object`    | `compile_error: missing : after property id (destructuring-object#13)`               | parse error                         |
-| `default-params`          | `compile_error: missing ) after formal parameters (default-params#11)`               | parse error                         |
-| `const-in-for-init`       | `compile_error: syntax error (const-in-for-init#15)`                                 | parse error                         |
-| `const-in-for-in`         | `compile_error: syntax error (const-in-for-in#14)`                                   | parse error                         |
-| `const-in-for-of`         | `compile_error: syntax error (const-in-for-of#14)`                                   | parse error                         |
-| `const-dup-across-blocks` | `compile_error: TypeError: redeclaration of const dup. (const-dup-across-blocks#21)` | parse error                         |
+| `rhino-let-behaviour`     | `compile_error: missing ; before statement (rhino-let-behaviour#8)`                 | parse: `missing ; before statement` |
+| `for-of-var`              | `compile_error: missing ; after for-loop initializer (for-of-var#32)`                | same                                |
+| `object-shorthand`        | `compile_error: missing : after property id (object-shorthand#12)`                   | same                                |
+| `destructuring-object`    | `compile_error: missing : after property id (destructuring-object#11)`               | parse error                         |
+| `default-params`          | `compile_error: missing ) after formal parameters (default-params#9)`               | parse error                         |
+| `const-in-for-init`       | `compile_error: syntax error (const-in-for-init#13)`                                 | parse error                         |
+| `const-in-for-in`         | `compile_error: syntax error (const-in-for-in#12)`                                   | parse error                         |
+| `const-in-for-of`         | `compile_error: syntax error (const-in-for-of#12)`                                   | parse error                         |
+| `const-dup-across-blocks` | `compile_error: TypeError: redeclaration of const dup. (const-dup-across-blocks#19)` | parse error                         |
 
 The `const-dup` wording differs (`TypeError: redeclaration…` locally vs an
 unspecified parse error in the matrix). Both sides reject the source. Line
-numbers are of the copied file (a two-line corpus header sits above the original
-fixture).
+numbers are the fixture's own. AIC does not report them (a failed parse is a
+bare 401), so they are the local runner's, re-measured 2026-09-28.
 
 The silent `const` bugs (`const-top-level`, `const-in-loop-body`, …) now pass as
 language-fidelity cases on the bindings runner. Library top-level `const` also
@@ -234,7 +201,8 @@ yields `"0,0,0"` (`lib-const-loop-consumer`), matching live.
   here.
 - It does not claim OAuth2 / ATM / may-act scripts were pointed at this harness.
   They are a different binding surface.
-- A skipped case is not coverage. Twenty of 52 still fail the live expect.
+- A known gap is not coverage. Eleven of 47 differ from AIC on at least one key,
+  and one of those (`identity-enum-attrs`) has no valid live measurement.
 - `require()` is a CommonJS eval of seeded source, not AM's wrap factory. The
   library probes in this corpus do not need the shutter to load; they need it
   for the Java names they then construct (`lib-java-collections-consumer`).

@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { defineCase } from "../../src/case/index.ts";
 import type {
   CallbackEffect,
@@ -10,16 +9,6 @@ import type {
 } from "../../src/case/types.ts";
 import { repoRoot } from "../../src/paths.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
-
-/** Directory holding next-gen / legacy corpus scripts. */
-export const realCasesDir = here;
-
-/**
- * Load a copied probe script. AM-lint-clean copies are `.cjs`; copies that
- * intentionally use a Rhino-banned construct (or `for each`) are `.src` so
- * `eslint.am.config.js` does not reject them.
- */
 /** Load an AM LIBRARY fixture body for `require()` by script name. */
 export function librarySource(file: string): string {
   return readFileSync(
@@ -28,17 +17,54 @@ export function librarySource(file: string): string {
   );
 }
 
-export function loadScript(kind: "nextgen" | "legacy", name: string): string {
-  const base = join(here, kind, name);
-  const cjs = `${base}.cjs`;
-  const src = `${base}.src`;
-  if (existsSync(cjs)) {
-    return readFileSync(cjs, "utf8");
+/**
+ * The name `scripts/rhino-script-tester/update-script.sh` gives the tenant
+ * script every probe runs as, so a runtime error's `(name#line)` suffix reads
+ * the same locally as live.
+ */
+export const PROBE_SOURCE_NAME = "AIC Rhino Let Probe";
+
+/**
+ * Load a case's script from its origin fixture — the file the tenant runs —
+ * rather than a copy, so the local run cannot drift from the live one and an
+ * error's line number is the line AIC reports.
+ */
+export function loadOrigin(origin: string, rewrites: readonly Rewrite[] = []): string {
+  let source = readFileSync(join(repoRoot, origin), "utf8");
+  for (const [pattern, replacement] of rewrites) {
+    const hits = source.match(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`));
+    if (hits?.length !== 1) {
+      throw new Error(
+        `rhino-local: rewrite ${String(pattern)} matched ${hits?.length ?? 0} times in ${origin}, not once — the fixture changed`
+      );
+    }
+    source = source.replace(pattern, replacement);
   }
-  if (existsSync(src)) {
-    return readFileSync(src, "utf8");
-  }
-  throw new Error(`rhino-local: missing real case script ${kind}/${name}`);
+  return source;
+}
+
+/**
+ * One substitution applied to an origin fixture before it runs, matched by
+ * the fixture's **structure** (`var PROBE_USER = "…"`), never by the value it
+ * replaces: identity probes name tenant users, and this is how a case points
+ * them at placeholder records without repeating a tenant identifier here.
+ * Each must match exactly once, so a fixture edit fails loudly.
+ */
+export type Rewrite = readonly [pattern: RegExp, replacement: string];
+
+/**
+ * A measured difference between the local harness and AIC, kept visible
+ * rather than papered over. Every payload key **not** listed must still equal
+ * the committed live payload. Each listed key's local value is pinned by a
+ * snapshot, and where its live value is committed too (it is left out only
+ * when it cannot be sanitised) the local value must still differ from it. So
+ * closing the gap, or the local output drifting, fails and gets looked at.
+ */
+export interface KnownGap {
+  /** What AIC does, what the harness does instead, and what would close it. */
+  reason: string;
+  /** Top-level payload keys that differ from the live run today. */
+  differs: readonly string[];
 }
 
 /** HiddenValueCallback the probe fixtures emit on a successful live run. */
@@ -76,6 +102,8 @@ export interface RealEntry {
   blocked?: BlockedBy;
   /** AM library script bodies keyed by `require()` id. */
   libraries?: Record<string, string>;
+  /** Present when local and live measurably differ; see {@link KnownGap}. */
+  gap?: KnownGap;
 }
 
 export function realCase(input: {
@@ -86,6 +114,8 @@ export function realCase(input: {
   expect: Expect;
   blocked?: BlockedBy;
   libraries?: Record<string, string>;
+  rewrites?: readonly Rewrite[];
+  gap?: KnownGap;
 }): RealEntry {
   const init: {
     name: string;
@@ -94,7 +124,7 @@ export function realCase(input: {
     expect: Expect;
   } = {
     name: input.name,
-    script: loadScript(input.kind, input.name),
+    script: loadOrigin(input.origin, input.rewrites),
     expect: input.expect,
   };
   let given: Given | undefined = input.given;
@@ -114,6 +144,9 @@ export function realCase(input: {
   }
   if (input.libraries !== undefined) {
     entry.libraries = input.libraries;
+  }
+  if (input.gap !== undefined) {
+    entry.gap = input.gap;
   }
   return entry;
 }
