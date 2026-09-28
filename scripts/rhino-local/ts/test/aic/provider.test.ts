@@ -163,6 +163,12 @@ describe("providerFromEnv", () => {
     expect(() =>
       providerFromEnv({ [TENANT_ENV.logKeyId]: "k", [TENANT_ENV.logKeySecret]: "s" })
     ).toThrow(/are set but RHINO_LOCAL_TENANT_URL is not/);
+    // Present but empty is still an attempted configuration, never "unset".
+    expect(() => providerFromEnv({ [TENANT_ENV.serviceAccountId]: "" })).toThrow(
+      /RHINO_LOCAL_SA_ID is set but empty/
+    );
+    expect(() => providerFromEnv({ [TENANT_ENV.url]: "" })).toThrow(/set but empty/);
+    expect(() => providerFromEnv(env({ [TENANT_ENV.jwkFile]: "" }))).toThrow(/set but empty/);
     expect(() => providerFromEnv({ [TENANT_ENV.url]: baseUrl })).toThrow(/SA_ID/);
     expect(() => providerFromEnv(env({ [TENANT_ENV.jwkFile]: "/tmp/key" }))).toThrow(/exactly one/);
     expect(() =>

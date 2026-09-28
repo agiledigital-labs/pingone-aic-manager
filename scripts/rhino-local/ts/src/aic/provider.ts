@@ -420,9 +420,17 @@ export const TENANT_ENV = {
  * than falling back, so a typo cannot quietly send the run to another tenant.
  */
 export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): TenantProvider | undefined {
+  // Presence, not truthiness, decides whether a configuration was attempted:
+  // `RHINO_LOCAL_SA_ID=` must not read as "unset" and fall through to `aic`.
+  const empty = Object.values(TENANT_ENV).filter((name) => env[name] === "");
+  if (empty.length > 0) {
+    throw new TenantProviderError(
+      `${empty.join(", ")} ${empty.length === 1 ? "is" : "are"} set but empty`
+    );
+  }
   const url = env[TENANT_ENV.url];
-  if (url === undefined || url === "") {
-    const stray = Object.values(TENANT_ENV).filter((name) => env[name]);
+  if (url === undefined) {
+    const stray = Object.values(TENANT_ENV).filter((name) => env[name] !== undefined);
     if (stray.length > 0) {
       // Falling back to `aic` here would run against whatever context it has
       // current — the very tenant these variables were set to avoid.
