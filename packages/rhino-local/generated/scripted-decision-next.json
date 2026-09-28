@@ -8,12 +8,6 @@
             "elements": [
                 {
                     "elementType": "method",
-                    "name": "getAssertion",
-                    "parameters": [],
-                    "returnType": "object"
-                },
-                {
-                    "elementType": "method",
                     "name": "getApplicationId",
                     "parameters": [],
                     "returnType": "string"
@@ -41,6 +35,12 @@
                     "name": "getFlowInitiator",
                     "parameters": [],
                     "returnType": "string"
+                },
+                {
+                    "elementType": "method",
+                    "name": "getAssertion",
+                    "parameters": [],
+                    "returnType": "object"
                 }
             ]
         },
@@ -475,6 +475,18 @@
                 },
                 {
                     "elementType": "method",
+                    "name": "getStringAttributeInputCallbacks",
+                    "parameters": [],
+                    "returnType": "array"
+                },
+                {
+                    "elementType": "method",
+                    "name": "getChoiceCallbacks",
+                    "parameters": [],
+                    "returnType": "array"
+                },
+                {
+                    "elementType": "method",
                     "name": "getNameCallbacks",
                     "parameters": [],
                     "returnType": "array"
@@ -493,37 +505,7 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "getDeviceProfileCallbacks",
-                    "parameters": [],
-                    "returnType": "array"
-                },
-                {
-                    "elementType": "method",
-                    "name": "getKbaCreateCallbacks",
-                    "parameters": [],
-                    "returnType": "array"
-                },
-                {
-                    "elementType": "method",
-                    "name": "getSelectIdPCallbacks",
-                    "parameters": [],
-                    "returnType": "array"
-                },
-                {
-                    "elementType": "method",
-                    "name": "getTermsAndConditionsCallbacks",
-                    "parameters": [],
-                    "returnType": "array"
-                },
-                {
-                    "elementType": "method",
                     "name": "getTextInputCallbacks",
-                    "parameters": [],
-                    "returnType": "array"
-                },
-                {
-                    "elementType": "method",
-                    "name": "getStringAttributeInputCallbacks",
                     "parameters": [],
                     "returnType": "array"
                 },
@@ -589,7 +571,25 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "getChoiceCallbacks",
+                    "name": "getDeviceProfileCallbacks",
+                    "parameters": [],
+                    "returnType": "array"
+                },
+                {
+                    "elementType": "method",
+                    "name": "getKbaCreateCallbacks",
+                    "parameters": [],
+                    "returnType": "array"
+                },
+                {
+                    "elementType": "method",
+                    "name": "getSelectIdPCallbacks",
+                    "parameters": [],
+                    "returnType": "array"
+                },
+                {
+                    "elementType": "method",
+                    "name": "getTermsAndConditionsCallbacks",
                     "parameters": [],
                     "returnType": "array"
                 }
@@ -600,6 +600,40 @@
             "javaScriptType": "object",
             "javaClass": "org.forgerock.openam.scripting.api.identity.ScriptedIdentityRepositoryScriptWrapper",
             "elements": [
+                {
+                    "elementType": "method",
+                    "name": "createUser",
+                    "parameters": [
+                        {
+                            "name": "userName",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "password",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "object"
+                },
+                {
+                    "elementType": "method",
+                    "name": "createUser",
+                    "parameters": [
+                        {
+                            "name": "userName",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "password",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "attributes",
+                            "javaScriptType": "object"
+                        }
+                    ],
+                    "returnType": "object"
+                },
                 {
                     "elementType": "method",
                     "name": "getIdentity",
@@ -658,6 +692,21 @@
                                 }
                             ],
                             "returnType": "array"
+                        },
+                        {
+                            "elementType": "method",
+                            "name": "checkBcrypt",
+                            "parameters": [
+                                {
+                                    "name": "bcryptString",
+                                    "javaScriptType": "string"
+                                },
+                                {
+                                    "name": "password",
+                                    "javaScriptType": "string"
+                                }
+                            ],
+                            "returnType": "boolean"
                         },
                         {
                             "elementType": "field",
@@ -766,7 +815,7 @@
                                 },
                                 {
                                     "elementType": "method",
-                                    "name": "decrypt",
+                                    "name": "encrypt",
                                     "parameters": [
                                         {
                                             "name": "algorithm",
@@ -785,7 +834,7 @@
                                 },
                                 {
                                     "elementType": "method",
-                                    "name": "decrypt",
+                                    "name": "encrypt",
                                     "parameters": [
                                         {
                                             "name": "algorithmOptions",
@@ -804,7 +853,7 @@
                                 },
                                 {
                                     "elementType": "method",
-                                    "name": "encrypt",
+                                    "name": "decrypt",
                                     "parameters": [
                                         {
                                             "name": "algorithm",
@@ -823,7 +872,7 @@
                                 },
                                 {
                                     "elementType": "method",
-                                    "name": "encrypt",
+                                    "name": "decrypt",
                                     "parameters": [
                                         {
                                             "name": "algorithmOptions",
@@ -1129,14 +1178,6 @@
                         {
                             "name": "callbackTextFormat",
                             "javaScriptType": "string"
-                        },
-                        {
-                            "name": "additionalLogic",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "maximumSuspendDuration",
-                            "javaScriptType": "number"
                         }
                     ],
                     "returnType": "object"
@@ -1148,6 +1189,14 @@
                         {
                             "name": "callbackTextFormat",
                             "javaScriptType": "string"
+                        },
+                        {
+                            "name": "additionalLogic",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "maximumSuspendDuration",
+                            "javaScriptType": "number"
                         }
                     ],
                     "returnType": "object"
@@ -1180,11 +1229,22 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "withStage",
+                    "name": "withMaxSessionTime",
                     "parameters": [
                         {
-                            "name": "stage",
-                            "javaScriptType": "string"
+                            "name": "maxSessionTime",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "object"
+                },
+                {
+                    "elementType": "method",
+                    "name": "withMaxIdleTime",
+                    "parameters": [
+                        {
+                            "name": "maxIdleTime",
+                            "javaScriptType": "number"
                         }
                     ],
                     "returnType": "object"
@@ -1210,6 +1270,17 @@
                     "parameters": [
                         {
                             "name": "description",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "object"
+                },
+                {
+                    "elementType": "method",
+                    "name": "withStage",
+                    "parameters": [
+                        {
+                            "name": "stage",
                             "javaScriptType": "string"
                         }
                     ],
@@ -1247,28 +1318,6 @@
                         }
                     ],
                     "returnType": "object"
-                },
-                {
-                    "elementType": "method",
-                    "name": "withMaxSessionTime",
-                    "parameters": [
-                        {
-                            "name": "maxSessionTime",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "object"
-                },
-                {
-                    "elementType": "method",
-                    "name": "withMaxIdleTime",
-                    "parameters": [
-                        {
-                            "name": "maxIdleTime",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "object"
                 }
             ]
         },
@@ -1277,6 +1326,63 @@
             "javaScriptType": "object",
             "javaClass": "org.forgerock.openam.auth.nodes.script.ScriptedCallbacksBuilder",
             "elements": [
+                {
+                    "elementType": "method",
+                    "name": "radioChoiceCallback",
+                    "parameters": [
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "choices",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultChoice",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "radioChoiceCallback",
+                    "parameters": [
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "choices",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultChoice",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "radioChoiceCallback",
+                    "parameters": [
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "choices",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultChoice",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
                 {
                     "elementType": "method",
                     "name": "suspendedTextOutputCallback",
@@ -1325,6 +1431,365 @@
                         {
                             "name": "message",
                             "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "metadataCallback",
+                    "parameters": [
+                        {
+                            "name": "outputValue",
+                            "javaScriptType": "object"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "stringAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "failedPolicies",
+                            "javaScriptType": "array"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "stringAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "policies",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "validateOnly",
+                            "javaScriptType": "boolean"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "stringAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "stringAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "policies",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "validateOnly",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "failedPolicies",
+                            "javaScriptType": "array"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "numberAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "policies",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "validateOnly",
+                            "javaScriptType": "boolean"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "numberAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "failedPolicies",
+                            "javaScriptType": "array"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "numberAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "numberAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "policies",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "validateOnly",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "failedPolicies",
+                            "javaScriptType": "array"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "booleanAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "failedPolicies",
+                            "javaScriptType": "array"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "booleanAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "policies",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "validateOnly",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "failedPolicies",
+                            "javaScriptType": "array"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "booleanAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "booleanAttributeInputCallback",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "required",
+                            "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "policies",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "validateOnly",
+                            "javaScriptType": "boolean"
                         }
                     ],
                     "returnType": "void"
@@ -1443,6 +1908,25 @@
                     "name": "httpCallback",
                     "parameters": [
                         {
+                            "name": "authorizationHeader",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "negotiationHeader",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "errorCode",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "httpCallback",
+                    "parameters": [
+                        {
                             "name": "authRHeader",
                             "javaScriptType": "string"
                         },
@@ -1463,18 +1947,25 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "httpCallback",
+                    "name": "x509CertificateCallback",
                     "parameters": [
                         {
-                            "name": "authorizationHeader",
+                            "name": "prompt",
                             "javaScriptType": "string"
                         },
                         {
-                            "name": "negotiationHeader",
-                            "javaScriptType": "string"
-                        },
+                            "name": "certificate",
+                            "javaScriptType": "object"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "x509CertificateCallback",
+                    "parameters": [
                         {
-                            "name": "errorCode",
+                            "name": "prompt",
                             "javaScriptType": "string"
                         }
                     ],
@@ -1495,32 +1986,6 @@
                         {
                             "name": "requestSignature",
                             "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "x509CertificateCallback",
-                    "parameters": [
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "certificate",
-                            "javaScriptType": "object"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "x509CertificateCallback",
-                    "parameters": [
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
                         }
                     ],
                     "returnType": "void"
@@ -1649,563 +2114,6 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "metadataCallback",
-                    "parameters": [
-                        {
-                            "name": "outputValue",
-                            "javaScriptType": "object"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "stringAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "policies",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "validateOnly",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "failedPolicies",
-                            "javaScriptType": "array"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "stringAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "stringAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "failedPolicies",
-                            "javaScriptType": "array"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "stringAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "policies",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "validateOnly",
-                            "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "numberAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "policies",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "validateOnly",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "failedPolicies",
-                            "javaScriptType": "array"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "numberAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "numberAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "failedPolicies",
-                            "javaScriptType": "array"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "numberAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "policies",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "validateOnly",
-                            "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "booleanAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "policies",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "validateOnly",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "failedPolicies",
-                            "javaScriptType": "array"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "booleanAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "booleanAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "failedPolicies",
-                            "javaScriptType": "array"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "booleanAttributeInputCallback",
-                    "parameters": [
-                        {
-                            "name": "name",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "required",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "policies",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "validateOnly",
-                            "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "pollingWaitCallback",
-                    "parameters": [
-                        {
-                            "name": "waitTime",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "message",
-                            "javaScriptType": "string"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "confirmationCallback",
-                    "parameters": [
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "options",
-                            "javaScriptType": "array"
-                        },
-                        {
-                            "name": "defaultOption",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "confirmationCallback",
-                    "parameters": [
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "options",
-                            "javaScriptType": "array"
-                        },
-                        {
-                            "name": "defaultOption",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "confirmationCallback",
-                    "parameters": [
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "optionType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "defaultOption",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "confirmationCallback",
-                    "parameters": [
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "options",
-                            "javaScriptType": "array"
-                        },
-                        {
-                            "name": "defaultOption",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "confirmationCallback",
-                    "parameters": [
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "options",
-                            "javaScriptType": "array"
-                        },
-                        {
-                            "name": "defaultOption",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "confirmationCallback",
-                    "parameters": [
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "options",
-                            "javaScriptType": "array"
-                        },
-                        {
-                            "name": "defaultOption",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "confirmationCallback",
-                    "parameters": [
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "optionType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "defaultOption",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "confirmationCallback",
-                    "parameters": [
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "options",
-                            "javaScriptType": "array"
-                        },
-                        {
-                            "name": "defaultOption",
-                            "javaScriptType": "number"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "textOutputCallback",
-                    "parameters": [
-                        {
-                            "name": "messageType",
-                            "javaScriptType": "number"
-                        },
-                        {
-                            "name": "message",
-                            "javaScriptType": "string"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
                     "name": "choiceCallback",
                     "parameters": [
                         {
@@ -2275,115 +2183,15 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "redirectCallback",
+                    "name": "passwordCallback",
                     "parameters": [
                         {
-                            "name": "redirectUrl",
+                            "name": "prompt",
                             "javaScriptType": "string"
                         },
                         {
-                            "name": "redirectData",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "method",
-                            "javaScriptType": "string"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "redirectCallback",
-                    "parameters": [
-                        {
-                            "name": "redirectUrl",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "redirectData",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "method",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "statusParameter",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "redirectBackUrlCookie",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "setTrackingCookie",
+                            "name": "echoOn",
                             "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "redirectCallback",
-                    "parameters": [
-                        {
-                            "name": "redirectUrl",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "redirectData",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "method",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "setTrackingCookie",
-                            "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "redirectCallback",
-                    "parameters": [
-                        {
-                            "name": "redirectUrl",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "redirectData",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "method",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "statusParameter",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "redirectBackUrlCookie",
-                            "javaScriptType": "string"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "hiddenValueCallback",
-                    "parameters": [
-                        {
-                            "name": "id",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "string"
                         }
                     ],
                     "returnType": "void"
@@ -2416,15 +2224,336 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "passwordCallback",
+                    "name": "hiddenValueCallback",
+                    "parameters": [
+                        {
+                            "name": "id",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "redirectCallback",
+                    "parameters": [
+                        {
+                            "name": "redirectUrl",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "redirectData",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "method",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "statusParameter",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "redirectBackUrlCookie",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "redirectCallback",
+                    "parameters": [
+                        {
+                            "name": "redirectUrl",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "redirectData",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "method",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "setTrackingCookie",
+                            "javaScriptType": "boolean"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "redirectCallback",
+                    "parameters": [
+                        {
+                            "name": "redirectUrl",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "redirectData",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "method",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "redirectCallback",
+                    "parameters": [
+                        {
+                            "name": "redirectUrl",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "redirectData",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "method",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "statusParameter",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "redirectBackUrlCookie",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "setTrackingCookie",
+                            "javaScriptType": "boolean"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "confirmationCallback",
+                    "parameters": [
+                        {
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "optionType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "defaultOption",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "confirmationCallback",
+                    "parameters": [
+                        {
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "options",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultOption",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "confirmationCallback",
                     "parameters": [
                         {
                             "name": "prompt",
                             "javaScriptType": "string"
                         },
                         {
-                            "name": "echoOn",
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "optionType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "defaultOption",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "confirmationCallback",
+                    "parameters": [
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "options",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultOption",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "confirmationCallback",
+                    "parameters": [
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "options",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultOption",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "confirmationCallback",
+                    "parameters": [
+                        {
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "options",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultOption",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "confirmationCallback",
+                    "parameters": [
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "options",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultOption",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "confirmationCallback",
+                    "parameters": [
+                        {
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "options",
+                            "javaScriptType": "array"
+                        },
+                        {
+                            "name": "defaultOption",
+                            "javaScriptType": "number"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "pollingWaitCallback",
+                    "parameters": [
+                        {
+                            "name": "waitTime",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "message",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "textOutputCallback",
+                    "parameters": [
+                        {
+                            "name": "messageType",
+                            "javaScriptType": "number"
+                        },
+                        {
+                            "name": "message",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
+                },
+                {
+                    "elementType": "method",
+                    "name": "validatedUsernameCallback",
+                    "parameters": [
+                        {
+                            "name": "prompt",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "policies",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "validateOnly",
                             "javaScriptType": "boolean"
+                        },
+                        {
+                            "name": "failedPolicies",
+                            "javaScriptType": "array"
                         }
                     ],
                     "returnType": "void"
@@ -2450,11 +2579,15 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "validatedUsernameCallback",
+                    "name": "validatedPasswordCallback",
                     "parameters": [
                         {
                             "name": "prompt",
                             "javaScriptType": "string"
+                        },
+                        {
+                            "name": "echoOn",
+                            "javaScriptType": "boolean"
                         },
                         {
                             "name": "policies",
@@ -2490,33 +2623,6 @@
                         {
                             "name": "validateOnly",
                             "javaScriptType": "boolean"
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                {
-                    "elementType": "method",
-                    "name": "validatedPasswordCallback",
-                    "parameters": [
-                        {
-                            "name": "prompt",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "echoOn",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "policies",
-                            "javaScriptType": "object"
-                        },
-                        {
-                            "name": "validateOnly",
-                            "javaScriptType": "boolean"
-                        },
-                        {
-                            "name": "failedPolicies",
-                            "javaScriptType": "array"
                         }
                     ],
                     "returnType": "void"
@@ -2993,6 +3099,29 @@
                         }
                     ],
                     "returnType": "array"
+                },
+                {
+                    "elementType": "method",
+                    "name": "evaluateTree",
+                    "parameters": [
+                        {
+                            "name": "subject",
+                            "javaScriptType": "object"
+                        },
+                        {
+                            "name": "application",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "resourceName",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "environment",
+                            "javaScriptType": "object"
+                        }
+                    ],
+                    "returnType": "array"
                 }
             ]
         },
@@ -3163,6 +3292,12 @@
             "elements": [
                 {
                     "elementType": "method",
+                    "name": "getRequestProperties",
+                    "parameters": [],
+                    "returnType": "object"
+                },
+                {
+                    "elementType": "method",
                     "name": "getApplicationId",
                     "parameters": [],
                     "returnType": "string"
@@ -3172,18 +3307,132 @@
                     "name": "getClientProperties",
                     "parameters": [],
                     "returnType": "object"
+                }
+            ]
+        },
+        {
+            "name": "emailService",
+            "javaScriptType": "object",
+            "javaClass": "org.forgerock.openam.scripting.bindings.ScriptEmailService",
+            "elements": [
+                {
+                    "elementType": "method",
+                    "name": "send",
+                    "parameters": [
+                        {
+                            "name": "to",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "subject",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "body",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
                 },
                 {
                     "elementType": "method",
-                    "name": "getRequestProperties",
-                    "parameters": [],
-                    "returnType": "object"
+                    "name": "send",
+                    "parameters": [
+                        {
+                            "name": "to",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "subject",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "body",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "mimeType",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "void"
                 }
             ]
         },
         {
             "name": "locales",
             "javaScriptType": "unknown"
+        },
+        {
+            "name": "systemEnv",
+            "javaScriptType": "object",
+            "javaClass": "org.forgerock.openam.scripting.bindings.SystemEnvScriptWrapper",
+            "elements": [
+                {
+                    "elementType": "method",
+                    "name": "getProperty",
+                    "parameters": [
+                        {
+                            "name": "propertyName",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "defaultValue",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "returnType",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "object"
+                },
+                {
+                    "elementType": "method",
+                    "name": "getProperty",
+                    "parameters": [
+                        {
+                            "name": "propertyName",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "defaultValue",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "returnType",
+                            "javaScriptType": "object"
+                        }
+                    ],
+                    "returnType": "object"
+                },
+                {
+                    "elementType": "method",
+                    "name": "getProperty",
+                    "parameters": [
+                        {
+                            "name": "propertyName",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "defaultValue",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "string"
+                },
+                {
+                    "elementType": "method",
+                    "name": "getProperty",
+                    "parameters": [
+                        {
+                            "name": "propertyName",
+                            "javaScriptType": "string"
+                        }
+                    ],
+                    "returnType": "string"
+                }
+            ]
         },
         {
             "name": "requestHeaders",
@@ -3247,21 +3496,6 @@
                 },
                 {
                     "elementType": "method",
-                    "name": "putTransient",
-                    "parameters": [
-                        {
-                            "name": "key",
-                            "javaScriptType": "string"
-                        },
-                        {
-                            "name": "value",
-                            "javaScriptType": "object"
-                        }
-                    ],
-                    "returnType": "object"
-                },
-                {
-                    "elementType": "method",
                     "name": "putShared",
                     "parameters": [
                         {
@@ -3292,6 +3526,21 @@
                     "parameters": [
                         {
                             "name": "object",
+                            "javaScriptType": "object"
+                        }
+                    ],
+                    "returnType": "object"
+                },
+                {
+                    "elementType": "method",
+                    "name": "putTransient",
+                    "parameters": [
+                        {
+                            "name": "key",
+                            "javaScriptType": "string"
+                        },
+                        {
+                            "name": "value",
                             "javaScriptType": "object"
                         }
                     ],

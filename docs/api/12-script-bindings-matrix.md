@@ -1693,6 +1693,28 @@ binding _presence_ (see the legacy section above; the tester now takes
    `randomValues`.) The metadata only covers `evaluatorVersion 2.0`; the
    equivalent legacy dump would let us tighten the legacy leaf the same way.
 
+   **Refreshed 2026-09-29** from a fresh console export of the same context.
+   It now lists **27** bindings. Everything else is reordering; the members
+   that are new since 2026-06-04 are:
+
+   - `emailService` — `send(to, subject, body)` and
+     `send(to, subject, body, mimeType)`.
+   - `systemEnv` — `getProperty(name)`, `getProperty(name, defaultValue)`, and
+     `getProperty(name, defaultValue, returnType)` with `returnType` typed both
+     `object` and `string`. It was already present at runtime (typeof probe);
+     the metadata now lists it.
+   - `callbacksBuilder.radioChoiceCallback(prompt, choices, defaultChoice)`,
+     three overloads.
+   - `idRepository.createUser(userName, password)` and
+     `createUser(userName, password, attributes)` — previously only on
+     `OAUTH2_JWT_ISSUER`.
+   - `policy.evaluateTree(subject, application, resourceName, environment)`.
+   - `utils.crypto.checkBcrypt(bcryptString, password)` → boolean.
+
+   Nothing was removed, and the Java allow-list is unchanged. This is
+   metadata, not a measurement: what each new member does at runtime is
+   recorded where a probe measured it.
+
    Source: the script-context endpoint `GET /am/json/{realm}/contexts/{ID}` (see
    `docs/api/13-script-contexts.md`). It exposes the same metadata for any
    context **once upgraded to next-gen** — 9 have it today (artifacts in
