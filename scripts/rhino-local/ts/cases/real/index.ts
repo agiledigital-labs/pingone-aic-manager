@@ -1,4 +1,4 @@
-import type { Given } from "../../src/case/types.ts";
+import type { Given, HttpExpect } from "../../src/case/types.ts";
 import {
   hiddenValue,
   librarySource,
@@ -89,6 +89,8 @@ interface Extras {
   libraries?: Record<string, string>;
   rewrites?: readonly Rewrite[];
   gap?: KnownGap;
+  /** Requests the script makes; required alongside a `given.http` stub. */
+  http?: HttpExpect[];
 }
 
 function entry(
@@ -102,7 +104,11 @@ function entry(
     name: string;
     kind: "nextgen" | "legacy";
     origin: string;
-    expect: { outcome: string; callbacks: ReturnType<typeof hiddenValue> };
+    expect: {
+      outcome: string;
+      callbacks: ReturnType<typeof hiddenValue>;
+      http?: HttpExpect[];
+    };
     given: Given;
     blocked?: BlockedBy;
     libraries?: Record<string, string>;
@@ -118,6 +124,9 @@ function entry(
     },
     given: firstVisit(extras.given),
   };
+  if (extras.http !== undefined) {
+    init.expect.http = extras.http;
+  }
   if (extras.blocked !== undefined) {
     init.blocked = extras.blocked;
   }
@@ -641,6 +650,7 @@ export const realCases: RealEntry[] = [
         "AIC serialises java.lang.Integer/Long body fields into the request (javaInt, javaLong appear in the echoed body); the local httpClient mock drops them. The echo reply in `given.http` is also a fixed string recorded without those fields, so closing this needs both the mock serialising Java boxed numbers and the reply echoing the request.",
       differs: ["value"],
     },
+    http: [{ url: "https://httpbin.org/post", method: "POST" }],
     given: {
       http: [
         {
