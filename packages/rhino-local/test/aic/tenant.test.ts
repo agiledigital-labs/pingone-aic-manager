@@ -1,0 +1,137 @@
+import { describe, expect, it, vi } from "vitest";
+import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
+import {
+  AicLaneError,
+  amRequest,
+  defaultAicIo,
+  type AicIo,
+  type TenantSession,
+} from "../../src/aic/tenant.ts";
+import { stubTenantSession } from "./helpers.ts";
+
+function session(): TenantSession {
+  return stubTenantSession({
+    baseUrl: "https://tenant.invalid",
+    token: "first-token",
+    provider: {
+      describe: async () => ({ name: "sandbox", baseUrl: "https://tenant.invalid" }),
+      getToken: async () => "second-token",
+    },
+  });
+}
+
+/** Answers 401 until the bearer changes, then 200. */
+function fakeIo(options: { tokenAfterRefresh?: string } = {}): {
+  io: AicIo;
+  bearers: string[];
+  aicArgs: string[][];
+} {
+  const bearers: string[] = [];
+  const aicArgs: string[][] = [];
+  const io: AicIo = {
+    aic(args) {
+      aicArgs.push(args);
+      return Promise.resolve({
+        status: 0,
+        stdout: `${options.tokenAfterRefresh ?? "second-token"}\n`,
+        stderr: "",
+      });
+    },
+    http(req: HttpRequest): Promise<HttpResponse> {
+      const authorization = req.headerLines
+        .filter(([name]) => name.toLowerCase() === "authorization")
+        .map(([, value]) => value);
+      bearers.push(authorization[0] ?? "<none>");
+      const stale = authorization[0] === "Bearer first-token";
+      return Promise.resolve({
+        status: stale ? 401 : 200,
+        headers: [],
+        body: JSON.stringify({ ok: !stale }),
+      });
+    },
+  };
+  return { io, bearers, aicArgs };
+}
+
+describe("amRequest bearer refresh", () => {
+  it("refreshes and retries once when an authenticated call returns 401", async () => {
+    const fake = fakeIo();
+    const response = await amRequest(fake.io, session(), {
+      method: "GET",
+      path: "/am/json/realms/root/realms/alpha/scripts/x",
+    });
+
+    expect(response.status).toBe(200);
+    // The retry must actually carry the NEW bearer — a retry that re-sent the
+    // dead one would loop or fail, and asserting only on the call count would
+    // not notice.
+    expect(fake.bearers).toEqual(["Bearer first-token", "Bearer second-token"]);
+    expect(fake.aicArgs).toEqual([]);
+  });
+
+  it("adopts the refreshed bearer for later calls on the same session", async () => {
+    const fake = fakeIo();
+    const live = session();
+    await amRequest(fake.io, live, { method: "GET", path: "/first" });
+    await amRequest(fake.io, live, { method: "GET", path: "/second" });
+
+    expect(live.token).toBe("second-token");
+    // Second call starts on the refreshed bearer, so it needs no second refresh.
+    expect(fake.bearers).toEqual([
+      "Bearer first-token",
+      "Bearer second-token",
+      "Bearer second-token",
+    ]);
+    expect(fake.aicArgs).toEqual([]);
+  });
+
+  it("does not retry an anonymous 401, which is a journey verdict", async () => {
+    const fake = fakeIo();
+    const response = await amRequest(fake.io, session(), {
+      method: "POST",
+      path: "/am/json/realms/root/realms/alpha/authenticate",
+      anonymous: true,
+    });
+
+    // No bearer was sent, so the fake answers 200; what matters is that no
+    // refresh was attempted for an unauthenticated call.
+    expect(response.status).toBe(200);
+    expect(fake.aicArgs).toEqual([]);
+  });
+
+  it("fails loudly when the agent cannot supply a fresh bearer", async () => {
+    const io: AicIo = {
+      aic: () => Promise.resolve({ status: 3, stdout: "", stderr: "agent is locked" }),
+      http: () =>
+        Promise.resolve({ status: 401, headers: [], body: JSON.stringify({ ok: false }) }),
+    };
+    const live = session();
+    live.provider = {
+      describe: async () => ({ name: "sandbox", baseUrl: live.baseUrl }),
+      getToken: async () => {
+        throw new Error("token refresh unavailable");
+      },
+    };
+    await expect(amRequest(io, live, { method: "GET", path: "/x" })).rejects.toThrow(
+      /token refresh unavailable/
+    );
+  });
+});
+
+describe("defaultAicIo without an aic binary", () => {
+  // The last resort of provider resolution: a consumer with no provider and
+  // no aic must be told how to configure one, not handed a spawn error.
+  it("names the ways to configure a provider", async () => {
+    vi.stubEnv("AIC_BIN", "/nonexistent/rhino-local/aic");
+    try {
+      const io = defaultAicIo("/nonexistent");
+      const failure = io.aic(["ctx", "list"]);
+      await expect(failure).rejects.toBeInstanceOf(AicLaneError);
+      await expect(failure).rejects.toThrow(
+        /no tenant provider configured: pass `provider`, call setTenantProvider\(\), or set RHINO_LOCAL_TENANT_URL/
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

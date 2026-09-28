@@ -123,6 +123,10 @@ CI_STEPS_REPRODUCED=(
   "Test (logs-store)"
   "Type tests (accept + reject)"
   "TypeScript project type-check"
+  "rhino-local typecheck"
+  "rhino-local lint"
+  "rhino-local tests (host vs AM image)"
+  "rhino-local package smoke (installed, no javac)"
 )
 
 CI_STEPS_SETUP=(
@@ -131,6 +135,10 @@ CI_STEPS_SETUP=(
   "Cache cargo build"
   "Install Node"
   "Install TypeScript"
+  "Install Java (AM's Temurin)"
+  "Install rhino-local dependencies"
+  "Pull the AM image"
+  "Record the JVM builds"
   "Read the declared MSRV"
   "Install the declared MSRV toolchain"
 )
@@ -352,6 +360,28 @@ gate "typescript project type-check" \
   bash -c 'cd src/scripts/templates/typescript &&
            npm install --no-audit --no-fund &&
            npm run type-check'
+
+# --- rhino-local harness -----------------------------------------------------
+#
+# CI runs every harness test on the host JVM and the AM image's JVM and fails on
+# a difference, so this does too: a release checked only on the host lane has
+# not checked the thing CI checks. It needs a Java 25 (shell.nix provides one)
+# and docker with the AM image; the harness says which is missing.
+
+gate "rhino-local typecheck + lint" \
+  "the rhino-local harness does not type-check or lint clean" \
+  bash -c 'npm ci --no-audit --no-fund &&
+           npm -w packages/rhino-local run typecheck &&
+           npm -w packages/rhino-local run lint &&
+           npm -w packages/rhino-local run lint:am'
+
+gate "rhino-local tests (host vs AM image)" \
+  "the rhino-local harness failed, or the host and AM image JVMs disagreed" \
+  bash -c 'RHINO_LOCAL_JVM=both npm -w packages/rhino-local test'
+
+gate "rhino-local package smoke (installed, no javac)" \
+  "the packed rhino-local does not install and run outside this checkout" \
+  scripts/rhino-local-pack-smoke.sh
 
 # --- budgets -----------------------------------------------------------------
 

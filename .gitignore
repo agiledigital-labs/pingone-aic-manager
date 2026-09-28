@@ -57,8 +57,11 @@ TODO.md
 # Never committed: a list of client names IS the client names.
 /.ai/denylist.txt
 
-# Local Rhino mock-surface generator (scripts/rhino-local/ts)
-scripts/rhino-local/ts/node_modules/
+# Root npm workspace dependencies.
+/node_modules/
+packages/rhino-local/node_modules/
+# rhino-local build output: compiled JS, declarations, prebuilt runner classes.
+packages/rhino-local/dist/
 
 # Friction found while using `aic` on real tickets. `gaps/` is the raw inbox,
 # GAPS.md the ranked queue over it. Both are working notes with a finite life:
@@ -66,8 +69,8 @@ scripts/rhino-local/ts/node_modules/
 /GAPS.md
 /gaps/
 
-# AM Rhino jars extracted from the local docker image by
-# scripts/rhino-local/fetch-jars.sh. Never commit a jar.
+# rhino-local harness state (failure dumps, show-log views, environment
+# profiles). The directory writes its own `*` .gitignore; this is belt and braces.
 /.rhino-local/
 /.ai/agent/
 
