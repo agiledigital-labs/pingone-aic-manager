@@ -28,18 +28,20 @@ bytecode and AIC's observed JS disagree, AIC wins.
 
 ## How to run
 
-Use a host JDK 25 through `RHINO_LOCAL_JAVA_HOME` or `JAVA_HOME`; `shell.nix`
-provides `temurin-bin-25`. The default JVM lane is `host`. Set
-`RHINO_LOCAL_JVM=container` to use the AM image JVM, or `both` to run every job
-on host and container and fail on any difference (the latter lanes need Docker
-and the AM image). The default cache is `~/.cache/rhino-local`; set
-`RHINO_LOCAL_CACHE` to override it. In this checkout, `.rhino-local/` is the
-gitignored cache location.
+The runner needs a host JDK 25: `RHINO_LOCAL_JAVA_HOME`, then `JAVA_HOME`, then
+`java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar
+comes from Maven Central, verified by SHA-256 — it is byte-identical to the one
+in the AM image — and it and the compiled runner classes are cached under
+`~/.cache/rhino-local` (`RHINO_LOCAL_CACHE` overrides). On start the runner
+reports its timezone, locale, charset, Java feature release and Rhino version,
+and the client refuses a JVM whose answers differ from the AM image's.
+
+`RHINO_LOCAL_JVM` picks the lane: `host` (default), `container` (the AM image's
+JVM), or `both`, which runs every job on both and fails on any difference in
+the response. The last two need Docker and the AM image; CI runs `both`.
 
 ```bash
-nix-shell  # shell.nix adds Temurin 25 to PATH
-export JAVA_HOME="$(dirname "$(dirname "$(command -v javac)")")"
-export RHINO_LOCAL_CACHE="$PWD/.rhino-local"
+nix-shell  # or direnv: shell.nix adds Temurin 25 and Node 24
 npm --prefix scripts/rhino-local/ts ci
 npm --prefix scripts/rhino-local/ts test
 npm --prefix scripts/rhino-local/ts run measure
@@ -70,7 +72,7 @@ would never have stored.
 
 ## Local Context configuration
 
-The corpus test reproduces AM 8.1.1's
+The runner (`AmContextFactory.java`) reproduces AM 8.1.1's
 `ObservedJavaScriptContext` constructor, measured with `javap -p -c` on
 `org.forgerock.openam.scripting.timeouts.ObservedContextFactory$ObservedJavaScriptContext`:
 
