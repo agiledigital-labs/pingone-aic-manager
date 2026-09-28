@@ -24,7 +24,9 @@ in `cases/`.
 
 ## Using the installed package
 
-The package name `rhino-local-ts` is a placeholder until one is chosen.
+```sh
+npm install --save-dev @agiledigital/pingone-aic-script-tester vitest zod
+```
 
 **Requirements**:
 
@@ -42,7 +44,7 @@ A suite runs on the local lane by default:
 ```ts
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { defineSuite, useLease } from "rhino-local-ts";
+import { defineSuite, useLease } from "@agiledigital/pingone-aic-script-tester";
 
 const suite = defineSuite({
   name: "greet",
@@ -76,7 +78,7 @@ A partial environment configuration is an error rather than a fallthrough.
 
 ```ts
 // test/tenant.setup.ts — list it in vitest.config's test.setupFiles
-import { setTenantProvider, tokenCallbackProvider } from "rhino-local-ts/aic";
+import { setTenantProvider, tokenCallbackProvider } from "@agiledigital/pingone-aic-script-tester/aic";
 
 setTenantProvider(
   tokenCallbackProvider({
