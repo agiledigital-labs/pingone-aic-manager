@@ -1,3 +1,4 @@
+import type { TenantProvider } from "../aic/provider.ts";
 import {
   AicLaneError,
   amRequest,
@@ -15,6 +16,8 @@ export const MANAGED_CONFIG_ENDPOINT = "/openidm/config/managed";
 export interface PullOptions {
   tenant?: string;
   project?: string;
+  /** Where the tenant and its bearer come from; see `resolveTenantProvider`. */
+  provider?: TenantProvider;
   io?: AicIo;
   now?: () => Date;
 }
@@ -32,6 +35,8 @@ export async function pullProfile(
   const io = options.io ?? defaultAicIo(project);
   const session = await connectTenant(io, {
     ...(options.tenant !== undefined ? { tenant: options.tenant } : {}),
+    ...(options.provider !== undefined ? { provider: options.provider } : {}),
+    useConfigured: options.io === undefined,
     project,
   });
   const response = await amRequest(io, session, {

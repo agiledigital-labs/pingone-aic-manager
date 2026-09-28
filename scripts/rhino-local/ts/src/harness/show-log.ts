@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
-import { defaultAicIo, type CliResult } from "../aic/tenant.ts";
+import { configuredTenantProvider } from "../aic/provider.ts";
+import { aicCliProvider, defaultAicIo } from "../aic/tenant.ts";
 import { failuresDir, latestLogsPath, repoRoot } from "../paths.ts";
 import {
   readFailures,
@@ -20,11 +21,11 @@ export interface ShowLogIo {
   error: (text: string) => void;
   selectTests: (records: FailureRecord[]) => Promise<FailureRecord[]>;
   selectIds: (record: FailureRecord, choices: TxChoice[]) => Promise<string[]>;
-  aic: (args: string[]) => Promise<CliResult>;
+  /** Every log event for `id` on the tenant a failure record names. */
+  readTransaction: (tenant: string, id: string) => Promise<unknown[]>;
   openEditor: (editor: string, file: string) => Promise<void>;
   writeView: (contents: string) => Promise<string>;
   env: NodeJS.ProcessEnv;
-  project: string;
 }
 
 export function txChoices(record: FailureRecord): TxChoice[] {
@@ -42,24 +43,6 @@ export function txChoices(record: FailureRecord): TxChoice[] {
 
 export function resolveLogsEditor(env: NodeJS.ProcessEnv): string | undefined {
   return nonEmpty(env.LOGS_EDITOR) ?? nonEmpty(env.EDITOR);
-}
-
-export function logsTxArgs(options: {
-  id: string;
-  tenant: string;
-  project: string;
-}): string[] {
-  return [
-    "--no-prompt",
-    "--project",
-    options.project,
-    "logs",
-    "tx",
-    options.id,
-    "--tenant",
-    options.tenant,
-    "--wait",
-  ];
 }
 
 export function formatFailureList(records: readonly FailureRecord[]): string {
@@ -153,14 +136,14 @@ export async function runShowLog(io: ShowLogIo): Promise<number> {
         ? [onlyChoice.id]
         : await io.selectIds(record, choices);
     for (const id of ids) {
-      const result = await io.aic(
-        logsTxArgs({ id, tenant: record.tenant, project: io.project })
-      );
-      if (result.status !== 0) {
-        io.error(formatAicFailure(result));
-        return result.status;
+      let events: unknown[];
+      try {
+        events = await io.readTransaction(record.tenant, id);
+      } catch (error) {
+        io.error(error instanceof Error ? error.message : String(error));
+        return 1;
       }
-      const body = result.stdout.trimEnd();
+      const body = JSON.stringify(events, null, 2);
       chunks.push(
         ids.length === 1 && selected.length === 1
           ? body
@@ -184,10 +167,8 @@ export function createDefaultIo(
 ): ShowLogIo {
   const env = options.env ?? process.env;
   const project = options.project ?? repoRoot;
-  const aicIo = defaultAicIo(project);
   return {
     env,
-    project,
     readDump: () => readFailures(),
     print: (text) => {
       process.stdout.write(`${text}\n`);
@@ -212,7 +193,23 @@ export function createDefaultIo(
         return id === undefined ? [] : [id];
       });
     },
-    aic: (args) => aicIo.aic(args),
+    async readTransaction(tenant, id) {
+      const provider =
+        configuredTenantProvider(env) ??
+        aicCliProvider(defaultAicIo(project), { tenant, project });
+      const { name } = await provider.describe();
+      if (name !== tenant) {
+        throw new Error(
+          `show-log: this failure ran on ${JSON.stringify(tenant)}, but the configured tenant provider serves ${JSON.stringify(name)}`
+        );
+      }
+      if (provider.logs === undefined) {
+        throw new Error(
+          "show-log: the configured tenant provider cannot read logs. Give it logKeys (or set RHINO_LOCAL_LOG_KEY_ID and RHINO_LOCAL_LOG_KEY_SECRET)."
+        );
+      }
+      return provider.logs.transaction(id);
+    },
     openEditor,
     async writeView(contents) {
       await mkdir(failuresDir, { recursive: true });
@@ -264,18 +261,6 @@ function openEditor(editor: string, file: string): Promise<void> {
       reject(new Error(`${editor} exited ${code}`));
     });
   });
-}
-
-function formatAicFailure(result: CliResult): string {
-  const body = (result.stderr || result.stdout).trim();
-  const hint = "Unlock the agent (`aic login`) if it is locked.";
-  if (body.length === 0) {
-    return `aic logs tx failed (status ${result.status}). ${hint}`;
-  }
-  if (/locked|aic login|session login/i.test(body)) {
-    return body;
-  }
-  return `${body}\n${hint}`;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {

@@ -5,6 +5,7 @@ import type { File, Suite as VitestSuite } from "vitest";
 import { AicFileLease } from "../aic/file-lease.ts";
 import { chainFromRunResult } from "../aic/conform.ts";
 import type { AicIo } from "../aic/tenant.ts";
+import type { TenantProvider } from "../aic/provider.ts";
 import { clearAicTrace, takeAicTrace } from "../aic/trace.ts";
 import { packageRoot } from "../paths.ts";
 import { RhinoRunner } from "../runner.ts";
@@ -21,6 +22,8 @@ export interface UseLeaseAicOptions {
   realm?: string;
   tenant?: string;
   project?: string;
+  /** Where the tenant and its bearer come from; see `resolveTenantProvider`. */
+  provider?: TenantProvider;
   unsupported?: "fail" | "skip";
 }
 
@@ -117,6 +120,7 @@ export function useLease<TSchema extends z.ZodType>(
         ...(options.aic.realm === undefined ? {} : { realm: options.aic.realm }),
         ...(options.aic.tenant === undefined ? {} : { tenant: options.aic.tenant }),
         ...(options.aic.project === undefined ? {} : { project: options.aic.project }),
+        ...(options.aic.provider === undefined ? {} : { provider: options.aic.provider }),
         ...(options.aic.unsupported === undefined
           ? {}
           : { unsupported: options.aic.unsupported }),

@@ -1,3 +1,4 @@
+import type { TenantProvider } from "./provider.ts";
 /**
  * Owns the reusable AM graph and tenant-backed check/cleanup replay behind the
  * harness's framework-free lane port. The Vitest composition root constructs
@@ -68,6 +69,8 @@ export interface AicFileLeaseOptions {
   realm?: string;
   tenant?: string;
   project?: string;
+  /** Where the tenant and its bearer come from; see `resolveTenantProvider`. */
+  provider?: TenantProvider;
   unsupported?: "fail" | "skip";
   io?: AicIo;
   /** Test seam; production state defaults to the machine temp directory. */
@@ -132,6 +135,8 @@ export class AicFileLease {
     try {
       this.#session = await connectTenant(this.#io, {
         ...(this.#options.tenant === undefined ? {} : { tenant: this.#options.tenant }),
+        ...(this.#options.provider === undefined ? {} : { provider: this.#options.provider }),
+        useConfigured: this.#options.io === undefined,
         project: this.#project,
       });
       this.#paths = leaseStatePaths(
