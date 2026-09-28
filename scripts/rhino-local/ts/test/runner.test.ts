@@ -2,7 +2,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { RhinoRunner, RhinoRunnerExitError } from "../src/runner.ts";
+import { LaneDivergenceError, RhinoRunner, RhinoRunnerExitError } from "../src/runner.ts";
+import { EXPECTED_ENVIRONMENT } from "../src/jvm.ts";
 
 describe("RhinoRunner", () => {
   let runner: RhinoRunner;
@@ -14,6 +15,10 @@ describe("RhinoRunner", () => {
   afterAll(async () => {
     await runner.close();
   }, 30_000);
+
+  it("reports the expected AM environment for its selected lane", () => {
+    expect(runner.environment).toMatchObject(EXPECTED_ENVIRONMENT);
+  });
 
   it("compiles and runs a trivial script", async () => {
     const response = await runner.eval({
@@ -149,6 +154,36 @@ describe("RhinoRunner", () => {
     });
     expect(response.outcome).toBe("ok");
     expect(response.value).toBe("undefined");
+  });
+});
+
+describe.runIf(process.env.RHINO_LOCAL_JVM === "both")("RhinoRunner both lane", () => {
+  let runner: RhinoRunner;
+
+  beforeAll(async () => {
+    runner = await RhinoRunner.spawn({ lane: "both" });
+  }, 60_000);
+
+  afterAll(async () => {
+    await runner.close();
+  }, 30_000);
+
+  it("detects a patch-build runtime version difference", async () => {
+    await expect(
+      runner.eval({
+        source: "String(java.lang.Runtime.version())",
+        sourceName: "positive-control-runtime-version.js",
+      })
+    ).rejects.toBeInstanceOf(LaneDivergenceError);
+  });
+
+  it("agrees on date, locale formatting, and timezone", async () => {
+    const response = await runner.eval({
+      source:
+        "[new Date(0).toString(), (1234.5).toLocaleString(), java.util.TimeZone.getDefault().getID()].join('\\n')",
+      sourceName: "both-lanes-environment.js",
+    });
+    expect(response.outcome).toBe("ok");
   });
 });
 
