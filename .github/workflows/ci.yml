@@ -283,6 +283,14 @@ jobs:
       - name: Pull the AM image
         run: docker pull "$(node --input-type=module -e 'import("./src/jvm.ts").then((m) => console.log(m.DEFAULT_AM_IMAGE))')"
 
+      # The environment check compares only the Java feature release; this
+      # puts both full builds in the log so a patch drift is visible.
+      - name: Record the JVM builds
+        run: |
+          java -version
+          docker run --rm --entrypoint /opt/java/openjdk/bin/java \
+            "$(node --input-type=module -e 'import("./src/jvm.ts").then((m) => console.log(m.DEFAULT_AM_IMAGE))')" -version
+
       - name: rhino-local typecheck
         run: npm run typecheck
 
