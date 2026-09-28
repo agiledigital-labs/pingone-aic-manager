@@ -137,6 +137,7 @@ CI_STEPS_SETUP=(
   "Install Java (AM's Temurin)"
   "Install rhino-local dependencies"
   "Pull the AM image"
+  "Record the JVM builds"
   "Read the declared MSRV"
   "Install the declared MSRV toolchain"
 )
