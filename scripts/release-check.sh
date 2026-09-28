@@ -377,7 +377,7 @@ gate "rhino-local typecheck + lint" \
 
 gate "rhino-local tests (host vs AM image)" \
   "the rhino-local harness failed, or the host and AM image JVMs disagreed" \
-  bash -c 'RHINO_LOCAL_JVM=both npm -w packages/rhino-local test'
+  bash -c 'AIC_SCRIPT_TESTER_JVM=both npm -w packages/rhino-local test'
 
 gate "rhino-local package smoke (installed, no javac)" \
   "the packed rhino-local does not install and run outside this checkout" \

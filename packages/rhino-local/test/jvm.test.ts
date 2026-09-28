@@ -42,15 +42,15 @@ afterEach(() => {
 
 describe("JVM configuration", () => {
   it.each([undefined, "", "host"])("selects host for %s", (lane) => {
-    expect(laneFromEnv({ RHINO_LOCAL_JVM: lane })).toBe("host");
+    expect(laneFromEnv({ AIC_SCRIPT_TESTER_JVM: lane })).toBe("host");
   });
 
   it.each(["container", "both"] as const)("selects %s", (lane) => {
-    expect(laneFromEnv({ RHINO_LOCAL_JVM: lane })).toBe(lane);
+    expect(laneFromEnv({ AIC_SCRIPT_TESTER_JVM: lane })).toBe(lane);
   });
 
   it("rejects an unknown lane", () => {
-    expect(() => laneFromEnv({ RHINO_LOCAL_JVM: "docker" })).toThrow("RHINO_LOCAL_JVM");
+    expect(() => laneFromEnv({ AIC_SCRIPT_TESTER_JVM: "docker" })).toThrow("AIC_SCRIPT_TESTER_JVM");
   });
 
   it("requires JSON environment data in the ready line", () => {
@@ -90,14 +90,14 @@ describe("JVM configuration", () => {
     }
   );
 
-  it("points a host with the wrong Java feature at RHINO_LOCAL_JAVA_HOME", () => {
+  it("points a host with the wrong Java feature at AIC_SCRIPT_TESTER_JAVA_HOME", () => {
     const environment: RunnerEnvironment = {
       ...EXPECTED_ENVIRONMENT,
       javaFeature: 24,
       javaVersion: "24",
       javaVendorVersion: "Temurin-24",
     };
-    expect(() => checkEnvironment(environment, "host")).toThrow("RHINO_LOCAL_JAVA_HOME");
+    expect(() => checkEnvironment(environment, "host")).toThrow("AIC_SCRIPT_TESTER_JAVA_HOME");
   });
 });
 
@@ -140,7 +140,7 @@ describe("ensureRhinoJar", () => {
     expect(() => readdirSync(join(cache, "jars"))).toThrow();
   });
 
-  it("uses a verified RHINO_LOCAL_RHINO_JAR in place, without the cache or a fetch", async () => {
+  it("uses a verified AIC_SCRIPT_TESTER_RHINO_JAR in place, without the cache or a fetch", async () => {
     const cache = tempDir();
     const path = join(tempDir(), "offline.jar");
     writeFileSync(path, goodJar);
@@ -151,12 +151,12 @@ describe("ensureRhinoJar", () => {
     expect(existsSync(join(cache, "jars"))).toBe(false);
   });
 
-  it("refuses a RHINO_LOCAL_RHINO_JAR that is not the pinned Rhino, or is missing", async () => {
+  it("refuses a AIC_SCRIPT_TESTER_RHINO_JAR that is not the pinned Rhino, or is missing", async () => {
     const path = join(tempDir(), "other.jar");
     writeFileSync(path, "not rhino");
     const fetcher = async (): Promise<Uint8Array> => new Uint8Array(goodJar);
     await expect(ensureRhinoJar(tempDir(), fetcher, { [RHINO_JAR_ENV]: path })).rejects.toThrow(
-      /RHINO_LOCAL_RHINO_JAR=.* is not the Rhino AM ships/
+      /AIC_SCRIPT_TESTER_RHINO_JAR=.* is not the Rhino AM ships/
     );
     await expect(
       ensureRhinoJar(tempDir(), fetcher, { [RHINO_JAR_ENV]: join(tempDir(), "absent.jar") })

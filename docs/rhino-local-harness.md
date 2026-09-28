@@ -28,15 +28,15 @@ bytecode and AIC's observed JS disagree, AIC wins.
 
 ## How to run
 
-The runner needs a host JDK 25: `RHINO_LOCAL_JAVA_HOME`, then `JAVA_HOME`, then
+The runner needs a host JDK 25: `AIC_SCRIPT_TESTER_JAVA_HOME`, then `JAVA_HOME`, then
 `java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar
 comes from Maven Central, verified by SHA-256 — it is byte-identical to the one
 in the AM image — and it and the compiled runner classes are cached under
-`~/.cache/rhino-local` (`RHINO_LOCAL_CACHE` overrides). On start the runner
+`~/.cache/aic-script-tester` (`AIC_SCRIPT_TESTER_CACHE` overrides). On start the runner
 reports its timezone, locale, charset, Java feature release and Rhino version,
 and the client refuses a JVM whose answers differ from the AM image's.
 
-`RHINO_LOCAL_JVM` picks the lane: `host` (default), `container` (the AM image's
+`AIC_SCRIPT_TESTER_JVM` picks the lane: `host` (default), `container` (the AM image's
 JVM), or `both`, which runs every job on both and fails on any difference in
 the response. The last two need Docker and the AM image (pinned by digest in
 `DEFAULT_AM_IMAGE`); CI runs `both`. Only the host lane gets flags: it pins
@@ -66,7 +66,7 @@ and registry are not chosen yet. What a consumer needs:
   `.java` files.
 - **The Rhino jar**, which is not bundled (MPL-2.0 and 1.4 MB). The first run
   downloads it from Maven Central into the cache and checks its SHA-256. For an
-  offline machine, point `RHINO_LOCAL_RHINO_JAR` at a copy. It gets the same
+  offline machine, point `AIC_SCRIPT_TESTER_RHINO_JAR` at a copy. It gets the same
   SHA-256 check and is used in place. `npx aic-script-tester-fetch-jar` fills the
   cache ahead of time and prints the jar's path.
 - **`vitest` and `zod`** as peer dependencies. Suites are Vitest files, and
@@ -117,7 +117,7 @@ the tarball into a consumer outside the checkout, then:
 invocation:
 
 ```bash
-RHINO_LOCAL_AIC=1 npm -w packages/rhino-local test
+AIC_SCRIPT_TESTER_AIC=1 npm -w packages/rhino-local test
 ```
 
 It is off by default because the tenant lane needs an unlocked agent
@@ -139,7 +139,7 @@ resolves its provider in this order:
 2. one registered with `setTenantProvider()`, typically from a Vitest
    `setupFiles` module;
 3. a service account configured by the environment, when
-   `RHINO_LOCAL_TENANT_URL` is set;
+   `AIC_SCRIPT_TESTER_TENANT_URL` is set;
 4. this repo's `aic` agent (`aicCliProvider`): `aic ctx list --json`, then
    `aic whoami --token --tenant <name>`, always with `--no-prompt`.
 
@@ -165,17 +165,17 @@ query, the same process-wide 1.05-second request spacing and the same `Retry-Aft
 The environment form is:
 
 ```sh
-RHINO_LOCAL_TENANT_URL=https://<your-tenant>.forgeblocks.com
-RHINO_LOCAL_SA_ID=<service-account-uuid>
-RHINO_LOCAL_SA_JWK_FILE=/path/outside/the/repo/sa.jwk   # or RHINO_LOCAL_SA_JWK='{...}'
-RHINO_LOCAL_LOG_KEY_ID=...        # optional, both or neither
-RHINO_LOCAL_LOG_KEY_SECRET=...
-RHINO_LOCAL_TENANT_NAME=...       # optional; default is the hostname
+AIC_SCRIPT_TESTER_TENANT_URL=https://<your-tenant>.forgeblocks.com
+AIC_SCRIPT_TESTER_SA_ID=<service-account-uuid>
+AIC_SCRIPT_TESTER_SA_JWK_FILE=/path/outside/the/repo/sa.jwk   # or AIC_SCRIPT_TESTER_SA_JWK='{...}'
+AIC_SCRIPT_TESTER_LOG_KEY_ID=...        # optional, both or neither
+AIC_SCRIPT_TESTER_LOG_KEY_SECRET=...
+AIC_SCRIPT_TESTER_TENANT_NAME=...       # optional; default is the hostname
 ```
 
 A partial configuration is an error rather than a fallback to `aic`, so a typo
 cannot quietly send the run to a different tenant. That includes any of these
-variables set without `RHINO_LOCAL_TENANT_URL`. Tenant URLs must be `https`,
+variables set without `AIC_SCRIPT_TESTER_TENANT_URL`. Tenant URLs must be `https`,
 because the assertion, every bearer and the log keys go to that origin. Log
 reads share one request spacer per process, whichever provider made them. A run pinned to a tenant
 (`aic: { tenant }`) refuses a provider that serves another one, and so does
@@ -203,14 +203,14 @@ would never have stored.
 
 Failure dumps, the `show-log` view and environment profiles can all name a live
 tenant, so they go in one directory that ignores itself:
-`<project>/.rhino-local/`, created `0700` with a `.gitignore` of `*` on first
+`<project>/.aic-script-tester/`, created `0700` with a `.gitignore` of `*` on first
 write. The consuming repo's own `.gitignore` never has to know about it.
 
-- `<project>` is `RHINO_LOCAL_PROJECT`, else the nearest ancestor of the working
+- `<project>` is `AIC_SCRIPT_TESTER_PROJECT`, else the nearest ancestor of the working
   directory holding `.git` (a worktree's `.git` file counts), else the working
   directory. It is never the package's own directory, which an install puts in
   `node_modules`.
-- `RHINO_LOCAL_STATE_DIR` replaces `<project>/.rhino-local` outright.
+- `AIC_SCRIPT_TESTER_STATE_DIR` replaces `<project>/.aic-script-tester` outright.
 - `failures/failures.jsonl` and `failures/latest-logs.json` (`0600`) are the
   failure dump and the view `show-log` opens.
 - `profiles/<tenant>.json` (`0600`) is what `pull-profile` writes. Before

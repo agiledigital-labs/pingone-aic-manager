@@ -309,7 +309,7 @@ CI runs twelve more that these do not cover: the sensitive-metadata scanner
 `scripts/type-tests/run.sh` and `npm run type-check` in
 `src/scripts/templates/typescript`, and four for the rhino-local harness
 (`packages/rhino-local`): typecheck, lint, the suite on the host JVM and the AM
-image's JVM (`RHINO_LOCAL_JVM=both`), and `scripts/rhino-local-pack-smoke.sh`,
+image's JVM (`AIC_SCRIPT_TESTER_JVM=both`), and `scripts/rhino-local-pack-smoke.sh`,
 which installs the packed tarball outside the checkout and runs it with no
 `javac`. No cargo gate compiles a shipped `.d.ts` at all, so the Rust tests can
 be green while the declarations they emit do not type-check, and no cargo gate

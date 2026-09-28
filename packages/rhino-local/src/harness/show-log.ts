@@ -235,7 +235,7 @@ export function createDefaultIo(
       }
       if (provider.logs === undefined) {
         throw new Error(
-          "show-log: the configured tenant provider cannot read logs. Give it logKeys (or set RHINO_LOCAL_LOG_KEY_ID and RHINO_LOCAL_LOG_KEY_SECRET)."
+          "show-log: the configured tenant provider cannot read logs. Give it logKeys (or set AIC_SCRIPT_TESTER_LOG_KEY_ID and AIC_SCRIPT_TESTER_LOG_KEY_SECRET)."
         );
       }
       return provider.logs.transaction(id);

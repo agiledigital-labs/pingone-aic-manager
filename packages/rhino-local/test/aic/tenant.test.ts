@@ -128,7 +128,7 @@ describe("defaultAicIo without an aic binary", () => {
       const failure = io.aic(["ctx", "list"]);
       await expect(failure).rejects.toBeInstanceOf(AicLaneError);
       await expect(failure).rejects.toThrow(
-        /no tenant provider configured: pass `provider`, call setTenantProvider\(\), or set RHINO_LOCAL_TENANT_URL/
+        /no tenant provider configured: pass `provider`, call setTenantProvider\(\), or set AIC_SCRIPT_TESTER_TENANT_URL/
       );
     } finally {
       vi.unstubAllEnvs();
