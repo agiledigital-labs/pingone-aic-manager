@@ -4,8 +4,8 @@ Two jobs, one package:
 
 1. Generate the **scripted-decision mock binding surface** from the captured AM
    contexts metadata at `docs/api/bindings/scripted-decision-next.json`.
-2. Talk to the long-lived JVM runner (`scripts/rhino-local/run-runner.sh`) so a
-   test can eval a script without starting a JVM per case.
+2. Talk to the long-lived host-JVM runner so tests can eval scripts without
+   starting a JVM per case.
 
 The generator emits presence, not behaviour: every method throws
 `rhino-local: not mocked: <binding>.<method> arity=N overload=[…]` until the
@@ -24,10 +24,14 @@ in `cases/`.
 
 ## JVM runner client
 
-`src/runner.ts` spawns `run-runner.sh` (docker + the AM image JDK) and speaks
-line-delimited JSON. Correlate by job `id` — do not assume the JVM answers in
-order. A crashed JVM rejects every pending job rather than hanging. `close()`
-ends stdin and waits for the process; `afterAll` should call it.
+`src/runner.ts` launches Java 25 from `RHINO_LOCAL_JAVA_HOME` or `JAVA_HOME`
+(`shell.nix` provides `temurin-bin-25`) and speaks line-delimited JSON.
+`RHINO_LOCAL_JVM` selects `host` (default), `container`, or `both`; the latter
+lanes require Docker and the AM image. The cache defaults to
+`~/.cache/rhino-local`; `RHINO_LOCAL_CACHE` overrides it. Correlate by job `id`
+— do not assume the JVM answers in order. A crashed JVM rejects every pending
+job rather than hanging. `close()` ends stdin and waits for the process;
+`afterAll` should call it.
 
 Job shape (open enough to carry later mock bindings):
 
@@ -64,7 +68,7 @@ npm test
 npm run typecheck
 npm run lint
 npm run lint:am
-npm run measure   # JVM startup + per-job timings (needs docker + AM image)
+npm run measure   # JVM startup + per-job timings
 npm run show-log  # fetch AIC logs for a failed test (needs `aic login`)
 ```
 

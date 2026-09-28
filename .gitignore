@@ -66,8 +66,7 @@ scripts/rhino-local/ts/node_modules/
 /GAPS.md
 /gaps/
 
-# AM Rhino jars extracted from the local docker image by
-# scripts/rhino-local/fetch-jars.sh. Never commit a jar.
+# Local Rhino runner cache (verified jar and compiled host-JVM classes). Never commit it.
 /.rhino-local/
 /.ai/agent/
 
