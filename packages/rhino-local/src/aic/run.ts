@@ -1,7 +1,7 @@
 import type { TenantProvider } from "./provider.ts";
 import { randomUUID } from "node:crypto";
 import type { Case, JsonValue, RecordedEffects } from "../case/types.ts";
-import { repoRoot } from "../paths.ts";
+import { projectRoot } from "../project.ts";
 import { fillCallbackInputs, parseAuthenticateCallbacks } from "./callbacks.ts";
 import { emitWrapperJourney, type WrapperJourney } from "./emit-journey.ts";
 import { emitSessionJourney } from "./emit-session.ts";
@@ -123,7 +123,7 @@ export async function runAicChain(
     throw new AicLaneError(`AIC lane skipped: ${validation.unsupported.join("; ")}`);
   }
   const kase = emitCase(cases);
-  const project = options.project ?? repoRoot;
+  const project = options.project ?? projectRoot();
   const io = options.io ?? defaultAicIo(project);
   const session = await connectTenant(io, {
     ...(options.tenant !== undefined ? { tenant: options.tenant } : {}),

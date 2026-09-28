@@ -2,10 +2,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { isPlainObject } from "../case/util.ts";
-import { repoRoot } from "../paths.ts";
+import { projectRoot } from "../project.ts";
 import { headerValues, sendHttp, type HttpRequest, type HttpResponse } from "./http.ts";
 import {
   configuredTenantProvider,
+  TENANT_ENV,
   type LogReader,
   type TenantDescription,
   type TenantProvider,
@@ -87,6 +88,14 @@ export function defaultAicIo(project: string): AicIo {
         });
         return { status: 0, stdout: result.stdout, stderr: result.stderr };
       } catch (error) {
+        if (isExecError(error) && error.code === "ENOENT") {
+          throw new AicLaneError(
+            `no tenant provider configured: pass \`provider\`, call setTenantProvider(), ` +
+              `or set ${TENANT_ENV.url} (see docs/rhino-local-harness.md); ` +
+              `the aic fallback needs the aic CLI, and ${bin} does not exist (set AIC_BIN)`,
+            { cause: error }
+          );
+        }
         if (isExecError(error)) {
           return {
             status: error.code === null || error.code === undefined ? 1 : execStatus(error.code),
@@ -180,7 +189,7 @@ export function aicCliProvider(
   io: AicIo,
   options: { tenant?: string; project?: string } = {}
 ): TenantProvider {
-  const project = options.project ?? repoRoot;
+  const project = options.project ?? projectRoot();
   const noPrompt = ["--no-prompt", "--project", project];
   let chosen: Promise<TenantDescription> | undefined;
   function describe(): Promise<TenantDescription> {

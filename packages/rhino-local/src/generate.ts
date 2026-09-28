@@ -1,18 +1,19 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { emitDts } from "./emit-dts.ts";
 import { emitJs } from "./emit-js.ts";
 import { loadContext } from "./load.ts";
-import { bindingsJsonPath, generatedDir } from "./paths.ts";
+import { generatedDir, sourceBindingsJsonPath } from "./paths.ts";
 import { classifyBinding, membersOf } from "./schema.ts";
 import type { ContextsDocument, Element } from "./schema.ts";
 
 export const generatedJsName = "scripted-decision-mocks.cjs";
 export const generatedDtsName = "scripted-decision-mocks.d.ts";
+export const generatedBindingsName = "scripted-decision-next.json";
 
 export function generate(
-  jsonPath = bindingsJsonPath,
+  jsonPath = sourceBindingsJsonPath,
   outDir = generatedDir
 ): { js: string; dts: string; doc: ContextsDocument } {
   const doc = loadContext(jsonPath);
@@ -21,6 +22,9 @@ export function generate(
   const dts = emitDts(doc);
   writeFileSync(join(outDir, generatedJsName), js, "utf8");
   writeFileSync(join(outDir, generatedDtsName), dts, "utf8");
+  // The run-time surface (binding names, the class allow-list) is read from
+  // this copy, so an installed package needs no docs tree beside it.
+  copyFileSync(jsonPath, join(outDir, generatedBindingsName));
   return { js, dts, doc };
 }
 
@@ -60,7 +64,7 @@ function printSummary(doc: ContextsDocument): void {
     overloads += counted.overloads;
   }
   process.stdout.write(
-    `wrote ${generatedJsName} and ${generatedDtsName}\n` +
+    `wrote ${generatedJsName}, ${generatedDtsName} and ${generatedBindingsName}\n` +
       `${doc.bindings.length} bindings (${scalar} scalar, ${opaque} opaque); ` +
       `${unique} methods (${overloads} signatures including overloads)\n`
   );
