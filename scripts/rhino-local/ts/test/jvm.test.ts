@@ -10,10 +10,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   EXPECTED_ENVIRONMENT,
   RHINO_JAR,
+  cacheDir,
   checkEnvironment,
   ensureRhinoJar,
   ensureRunnerClasses,
@@ -98,7 +99,12 @@ describe("JVM configuration", () => {
 });
 
 describe("ensureRhinoJar", () => {
-  const goodJar = readFileSync(join(process.env.RHINO_LOCAL_CACHE ?? "", "jars", RHINO_JAR.fileName));
+  // The real jar, from the real cache (downloading it on a cold one), so the
+  // "good" payload is the verified artefact and not a copy of the check.
+  let goodJar: Buffer;
+  beforeAll(async () => {
+    goodJar = readFileSync(await ensureRhinoJar(cacheDir()));
+  }, 120_000);
 
   it("uses a valid cached jar without fetching", async () => {
     const cache = tempDir();
@@ -148,7 +154,10 @@ describe("ensureRhinoJar", () => {
 });
 
 describe("ensureRunnerClasses", () => {
-  const jar = join(process.env.RHINO_LOCAL_CACHE ?? "", "jars", RHINO_JAR.fileName);
+  let jar: string;
+  beforeAll(async () => {
+    jar = await ensureRhinoJar(cacheDir());
+  }, 120_000);
 
   function copySources(): { cache: string; sources: string } {
     const root = tempDir();

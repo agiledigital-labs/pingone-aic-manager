@@ -20,6 +20,18 @@ describe("RhinoRunner", () => {
     expect(runner.environment).toMatchObject(EXPECTED_ENVIRONMENT);
   });
 
+  // What the AM image prints (MEASURED 2026-09-28). A host that leaked its own
+  // timezone or locale into the JVM would print its local midnight here.
+  it("formats dates and numbers as the AM image does", async () => {
+    const response = await runner.eval({
+      source:
+        "[new Date(0).toString(), (1234.5).toLocaleString(), java.util.TimeZone.getDefault().getID()].join('\\n')",
+      timeoutMs: 2_000,
+    });
+    expect(response.outcome).toBe("ok");
+    expect(response.value).toBe("Thu Jan 01 1970 00:00:00 GMT-0000 (UTC)\n1234.5\nUTC");
+  });
+
   it("compiles and runs a trivial script", async () => {
     const response = await runner.eval({
       id: "ok-1",
