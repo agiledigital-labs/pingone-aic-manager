@@ -68,7 +68,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "25.0.4+7"
+          java-version: "25.0.4+7.0.LTS" # spelling: see ci.yml
 
       # No registry-url: setup-node would write an _authToken line and a dummy
       # NODE_AUTH_TOKEN, which stops npm attempting the OIDC exchange. npm's

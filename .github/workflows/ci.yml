@@ -262,11 +262,13 @@ jobs:
       # The exact build in the AM image (Temurin-25.0.4+7). The harness itself
       # only insists on Java 25; pinning the patch here is what makes a
       # divergence mean "host JVM vs image JVM" and not "whatever CI got".
+      # setup-java matches Adoptium's full version string, so "25.0.4+7" finds
+      # nothing, and a bare "25.0.4" would take the 25.0.4+101 rebuild.
       - name: Install Java (AM's Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "25.0.4+7"
+          java-version: "25.0.4+7.0.LTS"
 
       - name: Install Node
         uses: actions/setup-node@v4
