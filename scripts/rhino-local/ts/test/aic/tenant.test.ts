@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
 import { amRequest, type AicIo, type TenantSession } from "../../src/aic/tenant.ts";
+import { stubTenantSession } from "./helpers.ts";
 
 function session(): TenantSession {
-  return {
-    tenantName: "sandbox",
+  return stubTenantSession({
     baseUrl: "https://tenant.invalid",
     token: "first-token",
-    project: "/tmp/rhino-local-tenant-test",
-  };
+    provider: {
+      describe: async () => ({ name: "sandbox", baseUrl: "https://tenant.invalid" }),
+      getToken: async () => "second-token",
+    },
+  });
 }
 
 /** Answers 401 until the bearer changes, then 200. */
@@ -57,9 +60,7 @@ describe("amRequest bearer refresh", () => {
     // dead one would loop or fail, and asserting only on the call count would
     // not notice.
     expect(fake.bearers).toEqual(["Bearer first-token", "Bearer second-token"]);
-    expect(fake.aicArgs).toHaveLength(1);
-    expect(fake.aicArgs[0]).toContain("--no-prompt");
-    expect(fake.aicArgs[0]).toContain("--token");
+    expect(fake.aicArgs).toEqual([]);
   });
 
   it("adopts the refreshed bearer for later calls on the same session", async () => {
@@ -75,7 +76,7 @@ describe("amRequest bearer refresh", () => {
       "Bearer second-token",
       "Bearer second-token",
     ]);
-    expect(fake.aicArgs).toHaveLength(1);
+    expect(fake.aicArgs).toEqual([]);
   });
 
   it("does not retry an anonymous 401, which is a journey verdict", async () => {
@@ -98,8 +99,15 @@ describe("amRequest bearer refresh", () => {
       http: () =>
         Promise.resolve({ status: 401, headers: [], body: JSON.stringify({ ok: false }) }),
     };
-    await expect(
-      amRequest(io, session(), { method: "GET", path: "/x" })
-    ).rejects.toThrow(/whoami --token failed while refreshing the bearer/);
+    const live = session();
+    live.provider = {
+      describe: async () => ({ name: "sandbox", baseUrl: live.baseUrl }),
+      getToken: async () => {
+        throw new Error("token refresh unavailable");
+      },
+    };
+    await expect(amRequest(io, live, { method: "GET", path: "/x" })).rejects.toThrow(
+      /token refresh unavailable/
+    );
   });
 });

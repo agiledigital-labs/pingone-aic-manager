@@ -1,13 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { acquireManagedFixtureLock } from "../../src/aic/managed.ts";
 import type { TenantSession } from "../../src/aic/tenant.ts";
+import { stubTenantSession } from "./helpers.ts";
 
-const SESSION: TenantSession = {
-  tenantName: "sandbox",
-  baseUrl: "https://tenant.example.com",
-  token: "test-token",
-  project: "/tmp/rhino-local-aic-test",
-};
+const SESSION: TenantSession = stubTenantSession();
 
 describe("managed fixture isolation", () => {
   it("serializes two runs targeting the same tenant", async () => {
@@ -15,12 +11,10 @@ describe("managed fixture isolation", () => {
     let firstReleased = false;
     let releaseSecond: (() => Promise<void>) | undefined;
     let secondAcquired = false;
-    const second = acquireManagedFixtureLock(SESSION, "second test").then(
-      (release) => {
-        secondAcquired = true;
-        return release;
-      }
-    );
+    const second = acquireManagedFixtureLock(SESSION, "second test").then((release) => {
+      secondAcquired = true;
+      return release;
+    });
 
     try {
       await new Promise((resolve) => setTimeout(resolve, 20));
