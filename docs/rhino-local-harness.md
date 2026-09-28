@@ -67,7 +67,7 @@ and registry are not chosen yet. What a consumer needs:
 - **The Rhino jar**, which is not bundled (MPL-2.0 and 1.4 MB). The first run
   downloads it from Maven Central into the cache and checks its SHA-256. For an
   offline machine, point `RHINO_LOCAL_RHINO_JAR` at a copy. It gets the same
-  SHA-256 check and is used in place. `npx rhino-local-fetch-jar` fills the
+  SHA-256 check and is used in place. `npx aic-script-tester-fetch-jar` fills the
   cache ahead of time and prints the jar's path.
 - **`vitest` and `zod`** as peer dependencies. Suites are Vitest files, and
   `defineSuite`'s `inputs` are zod schemas.
@@ -82,8 +82,8 @@ The entry points are:
 - `./bindings`.
 - `./runner`.
 
-The bins are `rhino-local-show-log`, `rhino-local-pull-profile` and
-`rhino-local-fetch-jar`.
+The bins are `aic-script-tester-show-log`, `aic-script-tester-pull-profile` and
+`aic-script-tester-fetch-jar`.
 
 The two bins that talk to a tenant take `--provider-module <file>`. That can be
 the consumer's Vitest setup module that calls `setTenantProvider()`, or any

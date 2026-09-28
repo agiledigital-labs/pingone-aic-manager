@@ -1,7 +1,6 @@
 {
   "name": "@agiledigital/pingone-aic-script-tester",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Local Rhino harness: mock-surface generator and typed client for the long-lived JVM runner.",
   "license": "MIT OR Apache-2.0",
@@ -45,9 +44,9 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "rhino-local-show-log": "dist/bin/show-log.js",
-    "rhino-local-pull-profile": "dist/bin/pull-profile.js",
-    "rhino-local-fetch-jar": "dist/bin/fetch-jar.js"
+    "aic-script-tester-show-log": "dist/bin/show-log.js",
+    "aic-script-tester-pull-profile": "dist/bin/pull-profile.js",
+    "aic-script-tester-fetch-jar": "dist/bin/fetch-jar.js"
   },
   "files": [
     "dist/",
@@ -70,6 +69,7 @@
     "pull-profile": "node bin/pull-profile.ts",
     "show-log": "node bin/show-log.ts",
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node src/build-classes.ts",
+    "prepack": "npm run build",
     "fetch-jar": "node bin/fetch-jar.ts"
   },
   "devDependencies": {
