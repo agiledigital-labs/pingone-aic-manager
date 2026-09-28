@@ -44,7 +44,9 @@ else
   java_bin="$(command -v java)" || fail "no java on PATH; set JAVA_HOME"
 fi
 
-(cd "$PKG" && npm run build >/dev/null && npm pack --pack-destination "$WORK" >/dev/null 2>&1)
+# `prepack` builds dist/ and the prebuilt classes, so this is also the check
+# that a bare `npm publish` cannot ship a package without them.
+(cd "$PKG" && rm -rf dist && npm pack --pack-destination "$WORK" >/dev/null 2>&1)
 tarball="$(find "$WORK" -maxdepth 1 -name '*.tgz' -print -quit)"
 [[ -n "$tarball" ]] || fail "npm pack produced no tarball"
 name="$(node -p 'require(process.argv[1]).name' "$PKG/package.json")"
@@ -181,12 +183,12 @@ export default {
   logs: { transaction: async () => [{ from: "provider-module" }] },
 };
 JS
-shown="$(cd "$consumer" && npx rhino-local-show-log --stdout --provider-module provider.mjs)" ||
-  fail "rhino-local-show-log failed with --provider-module"
+shown="$(cd "$consumer" && npx aic-script-tester-show-log --stdout --provider-module provider.mjs)" ||
+  fail "aic-script-tester-show-log failed with --provider-module"
 [[ "$shown" == *'"from": "provider-module"'* ]] || fail "show-log did not read through the provider module"
 [[ ! -e "$installed/.rhino-local" ]] || fail "state was written into node_modules"
 
-fetched="$(cd "$consumer" && RHINO_LOCAL_CACHE="$cache" RHINO_LOCAL_RHINO_JAR="$jar" npx rhino-local-fetch-jar)"
-[[ "$fetched" == "$jar" ]] || fail "rhino-local-fetch-jar printed $fetched, expected $jar"
+fetched="$(cd "$consumer" && RHINO_LOCAL_CACHE="$cache" RHINO_LOCAL_RHINO_JAR="$jar" npx aic-script-tester-fetch-jar)"
+[[ "$fetched" == "$jar" ]] || fail "aic-script-tester-fetch-jar printed $fetched, expected $jar"
 
 echo "rhino-local-pack-smoke: ok ($(basename "$tarball"))"

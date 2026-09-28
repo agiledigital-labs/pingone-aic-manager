@@ -1,0 +1,102 @@
+name: Release script tester
+
+# Publishes packages/rhino-local to npm as @agiledigital/pingone-aic-script-tester.
+#
+#   git tag script-tester-v0.2.0 && git push origin script-tester-v0.2.0
+#
+# Its own tag prefix, so an `aic` release (v*) never publishes the package and
+# this never cuts an `aic` release. The tag must match package.json's version
+# and point at a commit on main.
+#
+# The first version (0.1.0) is published by hand, because npm lets a trusted
+# publisher be configured only on a package that already exists; the first
+# tag this workflow sees is the next version.
+#
+# No npm token exists anywhere: npm's trusted publishing exchanges this job's
+# GitHub OIDC token for a short-lived publish credential, and attaches
+# provenance. The trusted publisher configured on npmjs.com names this file and
+# the `npm` environment, so renaming either breaks publishing until it is
+# updated there too.
+
+on:
+  push:
+    tags:
+      - "script-tester-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  # Every CI job, not just the rhino-local one: the release gate is the same
+  # gate main is held to, secrets included (the metadata scanner fails closed
+  # without its denylist).
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  publish:
+    name: Publish to npm
+    needs: ci
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag against main and package.json
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#script-tester-v}"
+          pkg_version="$(node -p 'require("./packages/rhino-local/package.json").version')"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag_version, package.json says $pkg_version" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "$GITHUB_REF_NAME ($GITHUB_SHA) is not on main" >&2
+            exit 1
+          fi
+
+      # A JDK, not a JRE: the build compiles the prebuilt runner classes. Same
+      # Temurin build as the CI job that tested them.
+      - name: Install Java (AM's Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25.0.4+7"
+
+      # No registry-url: setup-node would write an _authToken line and a dummy
+      # NODE_AUTH_TOKEN, which stops npm attempting the OIDC exchange. npm's
+      # default registry is already npmjs.org.
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Trusted publishing needs npm >= 11.5.1; pinned so the publish does not
+      # move with whatever npm Node 24 happens to bundle.
+      - name: Install npm
+        run: npm install -g npm@11.19.0
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # An existing version fails rather than skips: a green run must mean this
+      # tag's commit is what npm serves, and a version already there came from
+      # somewhere else (an earlier tag, or the hand-made bootstrap publish).
+      - name: npm publish
+        working-directory: packages/rhino-local
+        run: |
+          set -euo pipefail
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "npm already has ${name}@${version}; bump the version and tag again" >&2
+            exit 1
+          fi
+          npm publish --provenance --access public
