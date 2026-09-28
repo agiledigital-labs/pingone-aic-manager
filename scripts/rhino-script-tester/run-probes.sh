@@ -24,6 +24,7 @@ AUTH_TIMEOUT_SECONDS="${AUTH_TIMEOUT_SECONDS:-30}"
 FIXTURES_DIR="${FIXTURES_DIR:-$SCRIPT_DIR/fixtures}"
 OUT_DIR="${OUT_DIR:-$ROOT/tmp/rhino-script-tester}"
 FETCH_LOGS="${FETCH_LOGS:-0}"
+RESUBMIT="${RESUBMIT:-0}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 1; }; }
 need base64; need curl; need jq
@@ -58,6 +59,16 @@ for fx in "${fixtures[@]}"; do
     -H "Accept-API-Version: resource=2.0, protocol=1.0" \
     -H "Content-Type: application/json" \
     "$auth_url" || echo "000")"
+  if [[ "$RESUBMIT" == "1" ]]; then
+    second_body="$tmpdir/second-body.json"
+    second_headers="$tmpdir/second-headers"
+    second_status="$(curl -sS --max-time "$AUTH_TIMEOUT_SECONDS" -o "$second_body" -D "$second_headers" -w '%{http_code}' \
+      -X POST -H "Accept-API-Version: resource=2.0, protocol=1.0" \
+      -H "Content-Type: application/json" --data-binary "@$body" "$auth_url" || echo "000")"
+    mv "$second_body" "$body"
+    mv "$second_headers" "$headers"
+    status="$second_status"
+  fi
   txid="$(awk 'tolower($1)=="x-forgerock-transactionid:" {print $2}' "$headers" | tr -d '\r' | tail -n 1)"
   hidden="$(jq -r '.callbacks[]? | select(.type=="HiddenValueCallback") | .output[]? | select(.name=="value") | .value' "$body" 2>/dev/null | head -n 1)"
 
