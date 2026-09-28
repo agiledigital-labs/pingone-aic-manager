@@ -8,6 +8,10 @@ name: Release script tester
 # this never cuts an `aic` release. The tag must match package.json's version
 # and point at a commit on main.
 #
+# The first version (0.1.0) is published by hand, because npm lets a trusted
+# publisher be configured only on a package that already exists; the first
+# tag this workflow sees is the next version.
+#
 # No npm token exists anywhere: npm's trusted publishing exchanges this job's
 # GitHub OIDC token for a short-lived publish credential, and attaches
 # provenance. The trusted publisher configured on npmjs.com names this file and
@@ -66,11 +70,13 @@ jobs:
           distribution: temurin
           java-version: "25.0.4+7"
 
+      # No registry-url: setup-node would write an _authToken line and a dummy
+      # NODE_AUTH_TOKEN, which stops npm attempting the OIDC exchange. npm's
+      # default registry is already npmjs.org.
       - name: Install Node
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       # Trusted publishing needs npm >= 11.5.1; pinned so the publish does not
       # move with whatever npm Node 24 happens to bundle.
@@ -80,16 +86,17 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
-      # Re-running a tag after a partial failure must not fail on a version
-      # that already landed; npm refuses to overwrite one in any case.
-      - name: npm publish (skip if this version is already on npm)
+      # An existing version fails rather than skips: a green run must mean this
+      # tag's commit is what npm serves, and a version already there came from
+      # somewhere else (an earlier tag, or the hand-made bootstrap publish).
+      - name: npm publish
         working-directory: packages/rhino-local
         run: |
           set -euo pipefail
           name="$(node -p 'require("./package.json").name')"
           version="$(node -p 'require("./package.json").version')"
           if npm view "${name}@${version}" version >/dev/null 2>&1; then
-            echo "npm already has ${name}@${version} — skipping publish."
-          else
-            npm publish --provenance --access public
+            echo "npm already has ${name}@${version}; bump the version and tag again" >&2
+            exit 1
           fi
+          npm publish --provenance --access public
