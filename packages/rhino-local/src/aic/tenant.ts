@@ -168,7 +168,8 @@ export async function connectTenant(
   const description = checkTenantDescription(await provider.describe());
   if (options.tenant !== undefined && options.tenant !== description.name) {
     throw new AicLaneError(
-      `the tenant provider serves ${JSON.stringify(description.name)}, but this run asks for ${JSON.stringify(options.tenant)}`
+      // Neither name is quoted: a provider's name defaults to its hostname.
+      "the tenant provider serves a different tenant from the one this run asks for (the `tenant` option)"
     );
   }
   const token = await provider.getToken({ reason: "initial" });

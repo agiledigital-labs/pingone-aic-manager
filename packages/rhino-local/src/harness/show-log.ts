@@ -49,11 +49,15 @@ export function resolveLogsEditor(env: NodeJS.ProcessEnv): string | undefined {
   return nonEmpty(env.LOGS_EDITOR) ?? nonEmpty(env.EDITOR);
 }
 
+/**
+ * No tenant column: a tenant's name defaults to its hostname, and this list
+ * reaches stdout (and so CI logs) whether or not `--stdout` was asked for.
+ */
 export function formatFailureList(records: readonly FailureRecord[]): string {
   return records
     .map((record, index) => {
       const n = String(index + 1).padStart(String(records.length).length, " ");
-      return `${n}. ${record.timestamp}  ${record.testName}  (${record.tenant})`;
+      return `${n}. ${record.timestamp}  ${record.testName}`;
     })
     .join("\n");
 }
@@ -226,7 +230,7 @@ export function createDefaultIo(
       const { name } = checkTenantDescription(await provider.describe());
       if (name !== tenant) {
         throw new Error(
-          `show-log: this failure ran on ${JSON.stringify(tenant)}, but the configured tenant provider serves ${JSON.stringify(name)}`
+          "show-log: this failure ran on a different tenant from the one the configured tenant provider serves"
         );
       }
       if (provider.logs === undefined) {

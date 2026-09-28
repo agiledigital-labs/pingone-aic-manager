@@ -25,13 +25,14 @@ afterEach(() => {
 
 describe("loadProviderModule", () => {
   it("registers a default-exported provider", async () => {
-    await loadProviderModule(
+    const provider = await loadProviderModule(
       module(`export default {
         describe: async () => ({ name: "from-default", baseUrl: "https://tenant.example.com" }),
         getToken: async () => "bearer",
       };`)
     );
-    expect(await configuredTenantProvider({})?.describe()).toMatchObject({ name: "from-default" });
+    expect(configuredTenantProvider({})).toBe(provider);
+    expect(await provider.describe()).toMatchObject({ name: "from-default" });
   });
 
   it("accepts a module that registers its own through setTenantProvider", async () => {
@@ -43,6 +44,29 @@ describe("loadProviderModule", () => {
         });`)
     );
     expect(await configuredTenantProvider({})?.describe()).toMatchObject({ name: "registered" });
+  });
+
+  // The discriminating case: with a provider already registered, a module
+  // that supplies nothing must fail and must not leave the old tenant in force.
+  it("refuses a module that provides nothing even when another provider was registered", async () => {
+    setTenantProvider({
+      describe: async () => ({ name: "earlier", baseUrl: "https://tenant.example.com" }),
+      getToken: async () => "bearer",
+    });
+    await expect(loadProviderModule(module("export const unrelated = 1;"))).rejects.toThrow(
+      /neither default-exports/
+    );
+    expect(configuredTenantProvider({})).toBeUndefined();
+  });
+
+  it("refuses a registering module imported a second time, which cannot run again", async () => {
+    const path = module(`import { setTenantProvider } from ${JSON.stringify(providerTs)};
+      setTenantProvider({
+        describe: async () => ({ name: "once", baseUrl: "https://tenant.example.com" }),
+        getToken: async () => "bearer",
+      });`);
+    await loadProviderModule(path);
+    await expect(loadProviderModule(path)).rejects.toThrow(/already imported/);
   });
 
   it("refuses a module that provides nothing", async () => {

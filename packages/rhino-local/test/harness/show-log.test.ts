@@ -154,7 +154,7 @@ describe("createDefaultIo with a configured provider", () => {
   it("refuses a failure recorded on another tenant", async () => {
     const io = createDefaultIo({ env: env() });
     await expect(io.readTransaction("sandbox", "stem")).rejects.toThrow(
-      /ran on "sandbox", but the configured tenant provider serves "tenant.example.com"/
+      /ran on a different tenant from the one the configured tenant provider serves/
     );
   });
 
@@ -171,6 +171,7 @@ describe("formatFailureList", () => {
     const listed = formatFailureList([MANY, ONE]);
     expect(listed).toContain("1. 2026-09-14T13:00:00.000Z  suite > many passes");
     expect(listed).toContain("2. 2026-09-14T12:00:00.000Z  suite > one pass");
+    expect(listed).not.toContain("sandbox");
   });
 });
 
