@@ -1,3 +1,4 @@
+import type { TenantProvider } from "./provider.ts";
 import { randomUUID } from "node:crypto";
 import type { Case, JsonValue, RecordedEffects } from "../case/types.ts";
 import { repoRoot } from "../paths.ts";
@@ -45,6 +46,8 @@ export interface RunAicOptions {
   realm?: string;
   runId?: string;
   project?: string;
+  /** Where the tenant and its bearer come from; see `resolveTenantProvider`. */
+  provider?: TenantProvider;
   /** Harness-owned records from the local lease's fixture ledger. */
   managedFixtures?: readonly ManagedFixture[];
   /**
@@ -124,6 +127,8 @@ export async function runAicChain(
   const io = options.io ?? defaultAicIo(project);
   const session = await connectTenant(io, {
     ...(options.tenant !== undefined ? { tenant: options.tenant } : {}),
+    ...(options.provider !== undefined ? { provider: options.provider } : {}),
+    useConfigured: options.io === undefined,
     project,
   });
   const runId =

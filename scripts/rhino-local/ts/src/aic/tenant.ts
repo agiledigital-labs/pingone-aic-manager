@@ -4,6 +4,12 @@ import { join } from "node:path";
 import { isPlainObject } from "../case/util.ts";
 import { repoRoot } from "../paths.ts";
 import { headerValues, sendHttp, type HttpRequest, type HttpResponse } from "./http.ts";
+import {
+  configuredTenantProvider,
+  type LogReader,
+  type TenantDescription,
+  type TenantProvider,
+} from "./provider.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -11,7 +17,8 @@ export interface TenantSession {
   tenantName: string;
   baseUrl: string;
   token: string;
-  project: string;
+  /** Where `token` came from, and where a replacement comes from after a 401. */
+  provider: TenantProvider;
 }
 
 export interface CliResult {
@@ -104,12 +111,131 @@ function execStatus(code: string | number): number {
   return typeof code === "number" ? code : 1;
 }
 
+export interface ConnectOptions {
+  /**
+   * An `aic` context name. With the `aic` provider it selects the context;
+   * with any other it must equal the provider's name, so a suite pinned to
+   * one tenant cannot run against another.
+   */
+  tenant?: string;
+  /** The `aic` project directory; the `aic` provider only. */
+  project?: string;
+  /** Default: {@link configuredTenantProvider}, else the `aic` CLI. */
+  provider?: TenantProvider;
+  /**
+   * `false` skips the registered and environment providers. Callers pass it
+   * when they were handed an `io`: an injected `io` is a test seam for both
+   * `aic` and HTTP, and a configured service account would mint its token
+   * over the real network behind it.
+   */
+  useConfigured?: boolean;
+}
+
+/**
+ * The provider a connection uses: the one passed, else the one registered
+ * with `setTenantProvider` or configured by `RHINO_LOCAL_TENANT_URL`, else
+ * this repo's `aic` agent.
+ */
+export function resolveTenantProvider(
+  io: AicIo,
+  options: ConnectOptions = {}
+): TenantProvider {
+  return (
+    options.provider ??
+    (options.useConfigured === false ? undefined : configuredTenantProvider()) ??
+    aicCliProvider(io, {
+      ...(options.tenant === undefined ? {} : { tenant: options.tenant }),
+      ...(options.project === undefined ? {} : { project: options.project }),
+    })
+  );
+}
+
 export async function connectTenant(
   io: AicIo,
-  options: { tenant?: string; project?: string } = {}
+  options: ConnectOptions = {}
 ): Promise<TenantSession> {
+  const provider = resolveTenantProvider(io, options);
+  const description = await provider.describe();
+  if (options.tenant !== undefined && options.tenant !== description.name) {
+    throw new AicLaneError(
+      `the tenant provider serves ${JSON.stringify(description.name)}, but this run asks for ${JSON.stringify(options.tenant)}`
+    );
+  }
+  const token = await provider.getToken({ reason: "initial" });
+  return {
+    tenantName: description.name,
+    baseUrl: stripSlash(description.baseUrl),
+    token,
+    provider,
+  };
+}
+
+/**
+ * This repo's provider: the tenant and bearer come from the `aic` agent
+ * (`aic ctx list --json`, `aic whoami --token`), and logs from
+ * `aic logs tx --wait`. The agent must be unlocked; every call passes
+ * `--no-prompt` so a locked one fails instead of waiting for a password.
+ */
+export function aicCliProvider(
+  io: AicIo,
+  options: { tenant?: string; project?: string } = {}
+): TenantProvider {
   const project = options.project ?? repoRoot;
   const noPrompt = ["--no-prompt", "--project", project];
+  let chosen: Promise<TenantDescription> | undefined;
+  function describe(): Promise<TenantDescription> {
+    chosen ??= chooseContext(io, noPrompt, options.tenant);
+    return chosen;
+  }
+  const logs: LogReader = {
+    async transaction(id, readOptions = {}) {
+      const { name } = await describe();
+      const args = [...noPrompt, "logs", "tx", id, "--tenant", name, "--wait"];
+      if (readOptions.waitMs !== undefined) {
+        args.push("--timeout", String(Math.max(1, Math.ceil(readOptions.waitMs / 1000))));
+      }
+      const result = await io.aic(args);
+      if (result.status !== 0) {
+        throw new AicLaneError(formatLogsFailure(result), { status: result.status });
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(result.stdout);
+      } catch (error) {
+        throw new AicLaneError("aic logs tx did not print JSON", { cause: error });
+      }
+      if (!Array.isArray(parsed)) {
+        throw new AicLaneError("aic logs tx did not print a JSON array");
+      }
+      return parsed as unknown[];
+    },
+  };
+  return {
+    describe,
+    async getToken(request) {
+      const { name } = await describe();
+      const whoami = await io.aic([...noPrompt, "whoami", "--token", "--tenant", name]);
+      const during = request.reason === "rejected" ? " while refreshing the bearer" : "";
+      if (whoami.status !== 0) {
+        throw new AicLaneError(
+          `aic whoami --token failed${during} (status ${whoami.status}): ${trim(whoami.stderr || whoami.stdout)}. Unlock the agent (aic login) or pass a reachable tenant.`
+        );
+      }
+      const token = whoami.stdout.trim();
+      if (token.length === 0) {
+        throw new AicLaneError(`aic whoami --token printed an empty token${during}`);
+      }
+      return token;
+    },
+    logs,
+  };
+}
+
+async function chooseContext(
+  io: AicIo,
+  noPrompt: readonly string[],
+  tenant: string | undefined
+): Promise<TenantDescription> {
   const list = await io.aic([...noPrompt, "ctx", "list", "--json"]);
   if (list.status !== 0) {
     throw new AicLaneError(
@@ -118,36 +244,29 @@ export async function connectTenant(
   }
   const tenants = parseCtxList(list.stdout);
   const chosen =
-    options.tenant !== undefined
-      ? tenants.find((row) => row.name === options.tenant)
+    tenant !== undefined
+      ? tenants.find((row) => row.name === tenant)
       : tenants.find((row) => row.current) ?? tenants[0];
   if (chosen === undefined) {
     throw new AicLaneError(
-      options.tenant === undefined
+      tenant === undefined
         ? "aic ctx list returned no tenants"
-        : `aic ctx list has no tenant named ${JSON.stringify(options.tenant)}`
+        : `aic ctx list has no tenant named ${JSON.stringify(tenant)}`
     );
   }
-  const whoamiArgs = [...noPrompt, "whoami", "--token"];
-  if (options.tenant !== undefined) {
-    whoamiArgs.push("--tenant", options.tenant);
+  return { name: chosen.name, baseUrl: stripSlash(chosen.base_url) };
+}
+
+function formatLogsFailure(result: CliResult): string {
+  const body = (result.stderr || result.stdout).trim();
+  const hint = "Unlock the agent (`aic login`) if it is locked.";
+  if (body.length === 0) {
+    return `aic logs tx failed (status ${result.status}). ${hint}`;
   }
-  const whoami = await io.aic(whoamiArgs);
-  if (whoami.status !== 0) {
-    throw new AicLaneError(
-      `aic whoami --token failed (status ${whoami.status}): ${trim(whoami.stderr || whoami.stdout)}. Unlock the agent (aic login) or pass a reachable tenant.`
-    );
+  if (/locked|aic login|session login/i.test(body)) {
+    return body;
   }
-  const token = whoami.stdout.trim();
-  if (token.length === 0) {
-    throw new AicLaneError("aic whoami --token printed an empty token");
-  }
-  return {
-    tenantName: chosen.name,
-    baseUrl: stripSlash(chosen.base_url),
-    token,
-    project,
-  };
+  return `${body}\n${hint}`;
 }
 
 interface CtxRow {
@@ -182,7 +301,11 @@ function parseCtxList(stdout: string): CtxRow[] {
 }
 
 /**
- * Re-ask the agent for this tenant's bearer and adopt it.
+ * Ask the provider for a replacement bearer and adopt it.
+ *
+ * The history below is the `aic` provider's, and it is why a 401 must reach
+ * the provider as `"rejected"`: a provider that caches has to know the token
+ * it holds is dead, rather than handing it back.
  *
  * MEASURED 2026-09-14 over 20 minutes: `aic whoami --token` handed back a
  * token that worked *right now* and said nothing about how much life was left
@@ -199,25 +322,11 @@ function parseCtxList(stdout: string): CtxRow[] {
  * an older `aic` on someone else's PATH makes no such promise. So the 401 retry
  * remains the correctness mechanism and the floor is only what makes it rare.
  */
-export async function refreshSessionToken(
-  io: AicIo,
-  session: TenantSession
-): Promise<void> {
-  const args = ["--no-prompt", "--project", session.project, "whoami", "--token"];
-  if (session.tenantName.length > 0) {
-    args.push("--tenant", session.tenantName);
-  }
-  const whoami = await io.aic(args);
-  if (whoami.status !== 0) {
-    throw new AicLaneError(
-      `aic whoami --token failed while refreshing the bearer (status ${whoami.status}): ${trim(whoami.stderr || whoami.stdout)}`
-    );
-  }
-  const token = whoami.stdout.trim();
-  if (token.length === 0) {
-    throw new AicLaneError("aic whoami --token printed an empty token on refresh");
-  }
-  session.token = token;
+export async function refreshSessionToken(session: TenantSession): Promise<void> {
+  session.token = await session.provider.getToken({
+    reason: "rejected",
+    rejected: session.token,
+  });
 }
 
 export function realmJsonPath(realm: string): string {
@@ -238,7 +347,7 @@ export async function amRequest(
   if (first.status !== 401 || req.anonymous === true) {
     return first;
   }
-  await refreshSessionToken(io, session);
+  await refreshSessionToken(session);
   return sendAmRequest(io, session, req);
 }
 

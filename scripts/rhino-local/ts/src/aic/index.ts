@@ -81,8 +81,31 @@ export {
   AicLaneError,
   AM_CONFIG_API_VERSION,
   amConfigHeaders,
+  aicCliProvider,
   connectTenant,
   defaultAicIo,
+  resolveTenantProvider,
 } from "./tenant.ts";
-export type { AicIo, TenantSession } from "./tenant.ts";
+export type { AicIo, ConnectOptions, TenantSession } from "./tenant.ts";
+export {
+  configuredTenantProvider,
+  DEFAULT_SERVICE_ACCOUNT_SCOPE,
+  logKeysReader,
+  providerFromEnv,
+  serviceAccountProvider,
+  setTenantProvider,
+  TENANT_ENV,
+  tokenCallbackProvider,
+  TenantProviderError,
+} from "./provider.ts";
+export type {
+  HttpSend,
+  LogKeys,
+  LogReader,
+  ServiceAccountOptions,
+  TenantDescription,
+  TenantProvider,
+  TokenCallbackOptions,
+  TokenRequest,
+} from "./provider.ts";
 export { aicUnsupportedReason } from "./unsupported.ts";
