@@ -20,8 +20,7 @@ closed both; they are no longer a fidelity boundary.
 
 This file does **not** claim a live tenant probe. The AIC column is copied from
 the matrix (runtime-verified 2026-06-03 through 2026-07-30 via
-`scripts/rhino-script-tester/`). Local numbers come from
-`scripts/rhino-local/run-corpus.sh` against Rhino 1.7.14.1 extracted from
+`scripts/rhino-script-tester/`). Historical local measurements in this document were taken in the AM image against Rhino 1.7.14.1 from
 `us-docker.pkg.dev/forgeops-public/images/am:2026.3.1-2053`
 (`@sha256:358d7e1e13b27619b742a759fd5a85d4fcc57cc75811027b9f3c0019a0bd9be3`).
 That image is AM 8.1.1. AIC self-reports `9.0.0-SNAPSHOT`. Where the image
@@ -29,22 +28,88 @@ bytecode and AIC's observed JS disagree, AIC wins.
 
 ## How to run
 
-The machine this was built on has no host JDK. Compile and run inside the AM
-image (Temurin 25.0.4, the same runtime as the jars):
+The runner needs a host JDK 25: `RHINO_LOCAL_JAVA_HOME`, then `JAVA_HOME`, then
+`java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar
+comes from Maven Central, verified by SHA-256 — it is byte-identical to the one
+in the AM image — and it and the compiled runner classes are cached under
+`~/.cache/rhino-local` (`RHINO_LOCAL_CACHE` overrides). On start the runner
+reports its timezone, locale, charset, Java feature release and Rhino version,
+and the client refuses a JVM whose answers differ from the AM image's.
+
+`RHINO_LOCAL_JVM` picks the lane: `host` (default), `container` (the AM image's
+JVM), or `both`, which runs every job on both and fails on any difference in
+the response. The last two need Docker and the AM image (pinned by digest in
+`DEFAULT_AM_IMAGE`); CI runs `both`. Only the host lane gets flags: it pins
+UTC and en_US.UTF-8 by property and caps the JVM at a 256 MB heap with the
+serial collector and C1 only, to fit an 8 GB box. The container lane runs the
+image's JVM on the image's own defaults, so `both` compares the constrained
+host against an unconstrained AM JVM rather than against a copy of itself.
 
 ```bash
-scripts/rhino-local/fetch-jars.sh    # no-op once .rhino-local/ is populated
-scripts/rhino-local/run-corpus.sh    # language corpus via Probe
-scripts/rhino-local/run-runner.sh    # long-lived JSON runner (stdin/stdout)
-npm --prefix scripts/rhino-local/ts ci
-npm --prefix scripts/rhino-local/ts test
-npm --prefix scripts/rhino-local/ts run measure
+nix-shell  # or direnv: shell.nix adds Temurin 25 and Node 24
+npm ci
+npm -w packages/rhino-local test
+npm -w packages/rhino-local run measure
 ```
 
-`fetch-jars.sh` will not pull the image. If it is absent it exits 1 and names
-it. Jars land in gitignored `.rhino-local/`. The Node client spawns
-`run-runner.sh`; that script compiles the Java sources inside the image when
-they are stale.
+### Using it from another repo
+
+`packages/rhino-local` builds to an npm package (`npm -w packages/rhino-local
+run build`, then `npm pack`). It is still `"private": true`: the published name
+and registry are not chosen yet. What a consumer needs:
+
+- **Node 24 and a Java 25 runtime** — `java` only. The package ships runner
+  classes compiled at build time (`dist/classes/`, with a SHA-256 manifest keyed
+  by the Java sources and the Rhino jar), and uses them whenever the manifest
+  matches the shipped sources. It falls back to compiling with `javac` only
+  when they do not, which in practice means a checkout of this repo with edited
+  `.java` files.
+- **The Rhino jar**, which is not bundled (MPL-2.0 and 1.4 MB). The first run
+  downloads it from Maven Central into the cache and checks its SHA-256. For an
+  offline machine, point `RHINO_LOCAL_RHINO_JAR` at a copy. It gets the same
+  SHA-256 check and is used in place. `npx rhino-local-fetch-jar` fills the
+  cache ahead of time and prints the jar's path.
+- **`vitest` and `zod`** as peer dependencies. Suites are Vitest files, and
+  `defineSuite`'s `inputs` are zod schemas.
+
+The entry points are:
+
+- `.`, the harness: `defineSuite`, `useLease`, `aicWhenEnabled`.
+- `./case`.
+- `./aic`: the providers and `setTenantProvider`.
+- `./profile`.
+- `./diagnostics`: failure records, `runShowLog` and `loadProviderModule`.
+- `./bindings`.
+- `./runner`.
+
+The bins are `rhino-local-show-log`, `rhino-local-pull-profile` and
+`rhino-local-fetch-jar`.
+
+The two bins that talk to a tenant take `--provider-module <file>`. That can be
+the consumer's Vitest setup module that calls `setTenantProvider()`, or any
+module that default-exports a `TenantProvider`. A token callback lives in
+consumer code, and a bin is a separate process from the run that registered it.
+
+Neither bin writes tenant data to stdout by default:
+
+- `show-log` writes the 0600 view and prints its path, and prints the logs
+  only with `--stdout`.
+- `pull-profile` prints only counts, because the object names are the tenant's
+  business vocabulary.
+- Provider errors name the endpoint path, the status and the OAuth `error` /
+  `error_description`, with the tenant's origin and hostname replaced by
+  `<tenant>`.
+- `connectTenant` re-checks every provider's description for https and a bare
+  origin before it asks for a token, custom providers included. The log reader
+  checks its own origin.
+
+`scripts/rhino-local-pack-smoke.sh` is the CI gate for all of this. It installs
+the tarball into a consumer outside the checkout, then:
+
+- type-checks a suite against the shipped declarations, with `skipLibCheck` off;
+- runs the suite with a Java home that has no `javac`, on a fresh cache;
+- fails if anything was compiled, or if state was written into
+  `node_modules`.
 
 ### Running the AIC lane
 
@@ -52,7 +117,7 @@ they are stale.
 invocation:
 
 ```bash
-RHINO_LOCAL_AIC=1 npm --prefix scripts/rhino-local/ts test
+RHINO_LOCAL_AIC=1 npm -w packages/rhino-local test
 ```
 
 It is off by default because the tenant lane needs an unlocked agent
@@ -60,6 +125,71 @@ It is off by default because the tenant lane needs an unlocked agent
 still be able to run the whole suite. Suites opt in by spreading
 `aicWhenEnabled("<unique-id>")` into their `useLease` options; the id seeds
 the deterministic resource ids, so it must be unique per file.
+
+### Where the tenant and its bearer come from
+
+The tenant lane asks a `TenantProvider` (`src/aic/provider.ts`) for the
+tenant's name and base URL, and for a bearer. It asks again, with
+`reason: "rejected"`, after any non-anonymous call comes back 401; a provider
+that caches must not hand back the token that was refused. A connection
+resolves its provider in this order:
+
+1. `provider` passed in the options (`useLease`'s `aic`, `runAicChain`,
+   `AicFileLease`, `pullProfile`);
+2. one registered with `setTenantProvider()`, typically from a Vitest
+   `setupFiles` module;
+3. a service account configured by the environment, when
+   `RHINO_LOCAL_TENANT_URL` is set;
+4. this repo's `aic` agent (`aicCliProvider`): `aic ctx list --json`, then
+   `aic whoami --token --tenant <name>`, always with `--no-prompt`.
+
+Steps 2 and 3 are skipped when the caller injects an `io`. An injected `io` is
+the test seam for both `aic` and HTTP, and a configured service account would
+otherwise mint its token over the real network behind it.
+
+| Provider                 | Configured by                                                  | Logs for `show-log`                  |
+| ------------------------ | -------------------------------------------------------------- | ------------------------------------ |
+| `serviceAccountProvider` | `baseUrl`, `serviceAccountId`, `jwk` (the RSA private JWK)     | optional `logKeys: { id, secret }`   |
+| `tokenCallbackProvider`  | `baseUrl`, `getToken(request)`                                 | optional `logKeys: { id, secret }`   |
+| `aicCliProvider`         | the `aic` project and context                                  | `aic logs tx --wait`                 |
+
+The service account uses the JWT-bearer grant that `aic` itself uses
+(`docs/api/00-auth.md`): an RS256 assertion with `iss` = `sub` = the account
+id, `aud` = `<base>/am/oauth2/access_token`, a 180-second `exp` and a fresh
+`jti`, posted as `client_id=service-account`. The token is cached until 60
+seconds before its `expires_in` runs out. Log keys read `/monitoring/logs`
+directly, as `aic logs tx` does, with the same prefix-matching `transactionId`
+query, the same process-wide 1.05-second request spacing and the same `Retry-After` backoff
+(`docs/api/08-logs.md`).
+
+The environment form is:
+
+```sh
+RHINO_LOCAL_TENANT_URL=https://<your-tenant>.forgeblocks.com
+RHINO_LOCAL_SA_ID=<service-account-uuid>
+RHINO_LOCAL_SA_JWK_FILE=/path/outside/the/repo/sa.jwk   # or RHINO_LOCAL_SA_JWK='{...}'
+RHINO_LOCAL_LOG_KEY_ID=...        # optional, both or neither
+RHINO_LOCAL_LOG_KEY_SECRET=...
+RHINO_LOCAL_TENANT_NAME=...       # optional; default is the hostname
+```
+
+A partial configuration is an error rather than a fallback to `aic`, so a typo
+cannot quietly send the run to a different tenant. That includes any of these
+variables set without `RHINO_LOCAL_TENANT_URL`. Tenant URLs must be `https`,
+because the assertion, every bearer and the log keys go to that origin. Log
+reads share one request spacer per process, whichever provider made them. A run pinned to a tenant
+(`aic: { tenant }`) refuses a provider that serves another one, and so does
+`show-log`.
+
+**What has been exercised live (2026-09-28).** The `aic` provider is the path
+every earlier measurement in this document used. `tokenCallbackProvider` ran
+`test/harness/lease.e2e.test.ts` on the sandbox (6 of 6 passed), registered
+from a Vitest `setupFiles` module whose callback shelled out to
+`aic whoami --token` and logged each call: one `"initial"` call, and no 401,
+so the `"rejected"` path is covered offline only. The service-account and
+log-key providers are covered by offline tests only. No committed evidence
+shows either one against a tenant yet, because their credentials live only in
+the encrypted vault.
 
 **A suite that passes locally can still fail on the tenant, and that is the
 point.** Cutting the two existing e2e suites over found four rules the local
@@ -69,9 +199,31 @@ policy, and an undeclared property is refused outright. A script or fixture
 written against the mock alone will assert happily against records the tenant
 would never have stored.
 
+### Where the harness keeps its state
+
+Failure dumps, the `show-log` view and environment profiles can all name a live
+tenant, so they go in one directory that ignores itself:
+`<project>/.rhino-local/`, created `0700` with a `.gitignore` of `*` on first
+write. The consuming repo's own `.gitignore` never has to know about it.
+
+- `<project>` is `RHINO_LOCAL_PROJECT`, else the nearest ancestor of the working
+  directory holding `.git` (a worktree's `.git` file counts), else the working
+  directory. It is never the package's own directory, which an install puts in
+  `node_modules`.
+- `RHINO_LOCAL_STATE_DIR` replaces `<project>/.rhino-local` outright.
+- `failures/failures.jsonl` and `failures/latest-logs.json` (`0600`) are the
+  failure dump and the view `show-log` opens.
+- `profiles/<tenant>.json` (`0600`) is what `pull-profile` writes. Before
+  2026-09-28 it was `workspace/<tenant>/harness-profile.json`; pull again after
+  upgrading.
+
+With no provider configured and no `aic` binary at `AIC_BIN` (default
+`<project>/target/debug/aic`), a tenant run fails naming the three ways to
+configure one, rather than with a bare spawn error.
+
 ## Local Context configuration
 
-The probe (`scripts/rhino-local/Probe.java`) reproduces AM 8.1.1's
+The runner (`AmContextFactory.java`) reproduces AM 8.1.1's
 `ObservedJavaScriptContext` constructor, measured with `javap -p -c` on
 `org.forgerock.openam.scripting.timeouts.ObservedContextFactory$ObservedJavaScriptContext`:
 
@@ -156,7 +308,7 @@ standard-objects prototype is an optimisation this slice did not need: per-job
 runner does not model it.
 
 AM's `ScriptContextScope` class depends on `org.forgerock.util.Reject`. The
-harness replicates the bytecode (`scripts/rhino-local/ScriptContextScope.java`)
+harness replicates the bytecode (`packages/rhino-local/java/ScriptContextScope.java`)
 rather than loading the AM class, so forgerock-util is not on the classpath.
 
 ## Chosen configuration for a later harness
@@ -275,9 +427,9 @@ harness now reproduces the AIC bug instead of hiding it.
 
 ## Long-lived runner
 
-`Probe.java` is still the one-shot corpus driver. The long-lived process is
-`Runner.java`, spawned by `scripts/rhino-local/run-runner.sh` and driven from
-Node by `scripts/rhino-local/ts/src/runner.ts`.
+`Runner.java` is the long-lived process, launched by the TypeScript client in
+`packages/rhino-local/src/runner.ts`. The language corpus is also evaluated
+through that client by Vitest.
 
 Line-delimited JSON on stdin; one JSON response per job on stdout. Runner
 diagnostics go to stderr (`rhino-local-runner ready` on start). Jobs are handled
@@ -320,7 +472,7 @@ real for script-defined state.
 
 ### Measured cost (2026-09-11)
 
-`npm --prefix scripts/rhino-local/ts run measure` — three spawn/ready cycles,
+`npm --prefix scripts/rhino-local/ts run measure` (now `npm -w packages/rhino-local run measure`) — three spawn/ready cycles,
 then 200 sequential `1+1` jobs on the first process. Host times include the Node
 client and docker stdio; the JVM is Temurin 25.0.4 inside the AM image.
 
