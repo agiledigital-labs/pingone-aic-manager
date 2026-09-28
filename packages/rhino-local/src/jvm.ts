@@ -29,7 +29,7 @@ const execFileAsync = promisify(execFile);
  */
 export type JvmLane = "host" | "container" | "both";
 
-export const JVM_LANE_ENV = "RHINO_LOCAL_JVM";
+export const JVM_LANE_ENV = "AIC_SCRIPT_TESTER_JVM";
 
 export function laneFromEnv(env: NodeJS.ProcessEnv = process.env): JvmLane {
   const raw = env[JVM_LANE_ENV];
@@ -174,19 +174,19 @@ export function checkEnvironment(env: RunnerEnvironment, lane: "host" | "contain
   }
 }
 
-export const JAVA_HOME_ENV = "RHINO_LOCAL_JAVA_HOME";
+export const JAVA_HOME_ENV = "AIC_SCRIPT_TESTER_JAVA_HOME";
 
-/** `bin/<tool>` under RHINO_LOCAL_JAVA_HOME, then JAVA_HOME, else the bare name for PATH lookup. */
+/** `bin/<tool>` under AIC_SCRIPT_TESTER_JAVA_HOME, then JAVA_HOME, else the bare name for PATH lookup. */
 export function javaTool(tool: "java" | "javac", env: NodeJS.ProcessEnv = process.env): string {
   const home = env[JAVA_HOME_ENV] || env.JAVA_HOME;
   return home ? join(home, "bin", tool) : tool;
 }
 
 export function cacheDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.RHINO_LOCAL_CACHE) {
-    return env.RHINO_LOCAL_CACHE;
+  if (env.AIC_SCRIPT_TESTER_CACHE) {
+    return env.AIC_SCRIPT_TESTER_CACHE;
   }
-  return join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "rhino-local");
+  return join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "aic-script-tester");
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -272,7 +272,7 @@ function validRunnerCache(dest: string, digest: string): boolean {
 export type Fetcher = (url: string) => Promise<Uint8Array>;
 
 /** A local copy of {@link RHINO_JAR} to use instead of the cache or a download. */
-export const RHINO_JAR_ENV = "RHINO_LOCAL_RHINO_JAR";
+export const RHINO_JAR_ENV = "AIC_SCRIPT_TESTER_RHINO_JAR";
 
 async function defaultFetch(url: string): Promise<Uint8Array> {
   const response = await fetch(url);
@@ -506,7 +506,7 @@ export function containerLaunch(
   env: NodeJS.ProcessEnv = process.env
 ): Launch {
   const containerName = `rhino-local-runner-${randomUUID()}`;
-  const image = env.RHINO_LOCAL_IMAGE || DEFAULT_AM_IMAGE;
+  const image = env.AIC_SCRIPT_TESTER_IMAGE || DEFAULT_AM_IMAGE;
   const user =
     typeof process.getuid === "function"
       ? [`--user`, `${process.getuid()}:${process.getgid?.() ?? 0}`]

@@ -5,7 +5,7 @@
  *   aic-script-tester-pull-profile [--tenant <name>] [--provider-module <file>]
  *
  * The tenant and bearer come from the configured tenant provider: the module
- * named by `--provider-module`, else the RHINO_LOCAL_TENANT_URL environment,
+ * named by `--provider-module`, else the AIC_SCRIPT_TESTER_TENANT_URL environment,
  * else the current `aic` context. The bearer is never written to disk.
  *
  * Only counts are printed. The object names are the tenant's business

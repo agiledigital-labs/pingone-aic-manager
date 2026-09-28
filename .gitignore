@@ -71,7 +71,7 @@ packages/rhino-local/dist/
 
 # rhino-local harness state (failure dumps, show-log views, environment
 # profiles). The directory writes its own `*` .gitignore; this is belt and braces.
-/.rhino-local/
+/.aic-script-tester/
 /.ai/agent/
 
 # agent offload prompts and logs

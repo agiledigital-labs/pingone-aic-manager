@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe("projectRoot", () => {
-  it("prefers RHINO_LOCAL_PROJECT", () => {
+  it("prefers AIC_SCRIPT_TESTER_PROJECT", () => {
     mkdirSync(join(dir, "repo", ".git"), { recursive: true });
     expect(projectRoot({ [PROJECT_ENV]: join(dir, "elsewhere") }, join(dir, "repo"))).toBe(
       join(dir, "elsewhere")
@@ -60,15 +60,15 @@ describe("projectRoot", () => {
 });
 
 describe("stateDir", () => {
-  it("is <project>/.rhino-local, or RHINO_LOCAL_STATE_DIR outright", () => {
-    expect(stateDir({ [PROJECT_ENV]: dir })).toBe(join(dir, ".rhino-local"));
+  it("is <project>/.aic-script-tester, or AIC_SCRIPT_TESTER_STATE_DIR outright", () => {
+    expect(stateDir({ [PROJECT_ENV]: dir })).toBe(join(dir, ".aic-script-tester"));
     expect(stateDir({ [PROJECT_ENV]: dir, [STATE_DIR_ENV]: join(dir, "s") })).toBe(join(dir, "s"));
   });
 });
 
 describe("ensureStateSubdir", () => {
   it("creates a 0700 directory that ignores itself, and keeps an existing ignore", () => {
-    const root = join(dir, ".rhino-local");
+    const root = join(dir, ".aic-script-tester");
     const sub = ensureStateSubdir(root, "failures");
     expect(sub).toBe(join(root, "failures"));
     expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe("*\n");
@@ -85,7 +85,7 @@ describe("ensureStateSubdir", () => {
     ["a file that ignores something else", "profiles/\n", "profiles/\n*\n"],
     ["a re-include after the star", "*\n!profiles/", "*\n!profiles/\n*\n"],
   ])("restores the ignore-everything rule over %s", (_name, before, after) => {
-    const root = join(dir, ".rhino-local");
+    const root = join(dir, ".aic-script-tester");
     mkdirSync(root);
     writeFileSync(join(root, ".gitignore"), before);
     ensureStateSubdir(root, "profiles");

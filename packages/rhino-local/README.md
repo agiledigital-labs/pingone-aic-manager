@@ -32,11 +32,11 @@ npm install --save-dev @agiledigital/pingone-aic-script-tester vitest zod
 
 - Node 24.
 - A Java 25 **runtime**. The runner classes are prebuilt, so no `javac` is
-  needed. Use `RHINO_LOCAL_JAVA_HOME` or `JAVA_HOME`, else `java` on `PATH`.
+  needed. Use `AIC_SCRIPT_TESTER_JAVA_HOME` or `JAVA_HOME`, else `java` on `PATH`.
 - `vitest` and `zod`, as peer dependencies.
 
 The first run downloads the Rhino jar from Maven Central and checks it by
-SHA-256. On a machine without access, point `RHINO_LOCAL_RHINO_JAR` at a copy
+SHA-256. On a machine without access, point `AIC_SCRIPT_TESTER_RHINO_JAR` at a copy
 instead. `npx aic-script-tester-fetch-jar` fills the cache ahead of time.
 
 A suite runs on the local lane by default:
@@ -63,15 +63,15 @@ describe("greet", () => {
 ```
 
 To run the same suite against a tenant, spread `aicWhenEnabled("<unique-id>")`
-into the `useLease` options, then run with `RHINO_LOCAL_AIC=1`. The tenant
+into the `useLease` options, then run with `AIC_SCRIPT_TESTER_AIC=1`. The tenant
 comes from the first of these that is configured:
 
 1. a `provider` passed in the options;
 2. a provider registered with `setTenantProvider()`, typically from a Vitest
    `setupFiles` module;
-3. the environment: `RHINO_LOCAL_TENANT_URL` (https, no path), plus either
-   `RHINO_LOCAL_SA_ID` with `RHINO_LOCAL_SA_JWK` or `RHINO_LOCAL_SA_JWK_FILE`,
-   plus optional `RHINO_LOCAL_LOG_KEY_ID` and `RHINO_LOCAL_LOG_KEY_SECRET`;
+3. the environment: `AIC_SCRIPT_TESTER_TENANT_URL` (https, no path), plus either
+   `AIC_SCRIPT_TESTER_SA_ID` with `AIC_SCRIPT_TESTER_SA_JWK` or `AIC_SCRIPT_TESTER_SA_JWK_FILE`,
+   plus optional `AIC_SCRIPT_TESTER_LOG_KEY_ID` and `AIC_SCRIPT_TESTER_LOG_KEY_SECRET`;
 4. the `aic` CLI (`AIC_BIN`).
 
 A partial environment configuration is an error rather than a fallthrough.
@@ -92,9 +92,9 @@ setTenantProvider(
 ```
 
 **State.** Failure records, the log view and environment profiles can all
-contain tenant data. They go to `<project>/.rhino-local/`, which writes its own
+contain tenant data. They go to `<project>/.aic-script-tester/`, which writes its own
 `*` `.gitignore`; the files are `0600`. `<project>` is the nearest ancestor with
-a `.git`. `RHINO_LOCAL_PROJECT` overrides the project and `RHINO_LOCAL_STATE_DIR`
+a `.git`. `AIC_SCRIPT_TESTER_PROJECT` overrides the project and `AIC_SCRIPT_TESTER_STATE_DIR`
 overrides the directory.
 
 **Bins.** Both commands that talk to a tenant take
@@ -103,9 +103,9 @@ default export is a `TenantProvider`. It exists because a bin runs in its own
 process, where the Vitest registration does not reach.
 
 - `aic-script-tester-pull-profile [--tenant <name>]` writes
-  `.rhino-local/profiles/<tenant>.json`. It prints only counts.
+  `.aic-script-tester/profiles/<tenant>.json`. It prints only counts.
 - `aic-script-tester-show-log [--stdout]` fetches the logs of recorded failures. It
-  writes them to `.rhino-local/failures/latest-logs.json`, and opens that in
+  writes them to `.aic-script-tester/failures/latest-logs.json`, and opens that in
   `$LOGS_EDITOR` or `$EDITOR` if one is set. `--stdout` prints them instead;
   don't use it in CI.
 
@@ -126,11 +126,11 @@ not shipped with the package.
 
 ## JVM runner client
 
-`src/runner.ts` launches Java 25 from `RHINO_LOCAL_JAVA_HOME` or `JAVA_HOME`
+`src/runner.ts` launches Java 25 from `AIC_SCRIPT_TESTER_JAVA_HOME` or `JAVA_HOME`
 (`shell.nix` provides `temurin-bin-25`) and speaks line-delimited JSON.
-`RHINO_LOCAL_JVM` selects `host` (default), `container`, or `both`; the latter
+`AIC_SCRIPT_TESTER_JVM` selects `host` (default), `container`, or `both`; the latter
 lanes require Docker and the AM image. The cache defaults to
-`~/.cache/rhino-local`; `RHINO_LOCAL_CACHE` overrides it. Correlate by job `id`
+`~/.cache/aic-script-tester`; `AIC_SCRIPT_TESTER_CACHE` overrides it. Correlate by job `id`
 — do not assume the JVM answers in order. A crashed JVM rejects every pending
 job rather than hanging. `close()` ends stdin and waits for the process;
 `afterAll` should call it.
@@ -175,7 +175,7 @@ npm run show-log  # fetch AIC logs for a failed test (needs `aic login`)
 ```
 
 When a test that hit the AIC lane fails, `useLease` appends a JSONL record to
-`.rhino-local/failures/failures.jsonl`. `npm run show-log` lists those records
+`.aic-script-tester/failures/failures.jsonl`. `npm run show-log` lists those records
 newest first and fetches their logs from the tenant provider: the `aic` CLI's
 `aic logs tx`, or the log API when log keys are configured. It fetches the
 stem first, so one call covers a whole authenticate chain, and it never issues

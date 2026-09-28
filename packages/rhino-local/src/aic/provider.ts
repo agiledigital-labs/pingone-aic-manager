@@ -405,24 +405,24 @@ function hasAccessOutcome(events: readonly unknown[]): boolean {
 
 /** The variables {@link providerFromEnv} reads. */
 export const TENANT_ENV = {
-  url: "RHINO_LOCAL_TENANT_URL",
-  name: "RHINO_LOCAL_TENANT_NAME",
-  serviceAccountId: "RHINO_LOCAL_SA_ID",
-  jwk: "RHINO_LOCAL_SA_JWK",
-  jwkFile: "RHINO_LOCAL_SA_JWK_FILE",
-  scope: "RHINO_LOCAL_SA_SCOPE",
-  logKeyId: "RHINO_LOCAL_LOG_KEY_ID",
-  logKeySecret: "RHINO_LOCAL_LOG_KEY_SECRET",
+  url: "AIC_SCRIPT_TESTER_TENANT_URL",
+  name: "AIC_SCRIPT_TESTER_TENANT_NAME",
+  serviceAccountId: "AIC_SCRIPT_TESTER_SA_ID",
+  jwk: "AIC_SCRIPT_TESTER_SA_JWK",
+  jwkFile: "AIC_SCRIPT_TESTER_SA_JWK_FILE",
+  scope: "AIC_SCRIPT_TESTER_SA_SCOPE",
+  logKeyId: "AIC_SCRIPT_TESTER_LOG_KEY_ID",
+  logKeySecret: "AIC_SCRIPT_TESTER_LOG_KEY_SECRET",
 } as const;
 
 /**
  * A service-account provider from the environment, or `undefined` when
- * `RHINO_LOCAL_TENANT_URL` is unset. A partial configuration throws rather
+ * `AIC_SCRIPT_TESTER_TENANT_URL` is unset. A partial configuration throws rather
  * than falling back, so a typo cannot quietly send the run to another tenant.
  */
 export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): TenantProvider | undefined {
   // Presence, not truthiness, decides whether a configuration was attempted:
-  // `RHINO_LOCAL_SA_ID=` must not read as "unset" and fall through to `aic`.
+  // `AIC_SCRIPT_TESTER_SA_ID=` must not read as "unset" and fall through to `aic`.
   const empty = Object.values(TENANT_ENV).filter((name) => env[name] === "");
   if (empty.length > 0) {
     throw new TenantProviderError(
