@@ -16,19 +16,29 @@ import {
  * default export is a `TenantProvider`, or one that calls
  * `setTenantProvider()` when imported.
  */
-export async function loadProviderModule(path: string, cwd: string = process.cwd()): Promise<void> {
+export async function loadProviderModule(
+  path: string,
+  cwd: string = process.cwd()
+): Promise<TenantProvider> {
   const url = pathToFileURL(resolve(cwd, path)).href;
+  // Clear first, so the only provider that can be registered afterwards is
+  // one this module supplied: a module that supplies none must not leave an
+  // earlier registration — another tenant — in force.
+  setTenantProvider(undefined);
   const loaded = (await import(url)) as { default?: unknown };
   if (isTenantProvider(loaded.default)) {
     setTenantProvider(loaded.default);
-    return;
+    return loaded.default;
   }
   // An empty environment leaves only the registry to answer.
-  if (configuredTenantProvider({}) === undefined) {
+  const registered = configuredTenantProvider({});
+  if (registered === undefined) {
     throw new TenantProviderError(
-      `${path} neither default-exports a TenantProvider nor calls setTenantProvider()`
+      `${path} neither default-exports a TenantProvider nor calls setTenantProvider() ` +
+        "(a module that was already imported does not run again, so it cannot register twice)"
     );
   }
+  return registered;
 }
 
 function isTenantProvider(value: unknown): value is TenantProvider {

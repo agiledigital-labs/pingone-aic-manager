@@ -35,7 +35,9 @@ export function readProfile(tenant: string, root = stateDir()): EnvProfile {
   const path = profilePath(tenant, root);
   if (!existsSync(path)) {
     throw new ProfileShapeError(
-      `no environment profile for ${JSON.stringify(tenant)} at ${path}. Pull one: npm run pull-profile -- --tenant ${tenant}`
+      // The tenant is not named: its name defaults to its hostname, and this
+      // surfaces in test output.
+      `no environment profile for this tenant in ${join(root, "profiles")}. Pull one: rhino-local-pull-profile`
     );
   }
   return parseProfile(readFileSync(path, "utf8"), path);
