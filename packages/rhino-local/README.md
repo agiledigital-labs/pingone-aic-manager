@@ -22,9 +22,105 @@ library bodies; a missing id throws naming `given.libraries`), legacy
 `JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
 in `cases/`.
 
-Installed from its tarball, it needs Node 24, a Java 25 **runtime** (the runner
-classes are prebuilt), and `vitest` + `zod`. See "Using it from another repo"
-in `docs/rhino-local-harness.md`.
+## Using the installed package
+
+The package name `rhino-local-ts` is a placeholder until one is chosen.
+
+**Requirements**:
+
+- Node 24.
+- A Java 25 **runtime**. The runner classes are prebuilt, so no `javac` is
+  needed. Use `RHINO_LOCAL_JAVA_HOME` or `JAVA_HOME`, else `java` on `PATH`.
+- `vitest` and `zod`, as peer dependencies.
+
+The first run downloads the Rhino jar from Maven Central and checks it by
+SHA-256. On a machine without access, point `RHINO_LOCAL_RHINO_JAR` at a copy
+instead. `npx rhino-local-fetch-jar` fills the cache ahead of time.
+
+A suite runs on the local lane by default:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { defineSuite, useLease } from "rhino-local-ts";
+
+const suite = defineSuite({
+  name: "greet",
+  script: 'if (nodeState.get("userId") === "alice") { action.goTo("known"); } else { action.goTo("unknown"); }',
+  outcomes: ["known", "unknown"],
+  inputs: z.object({ userId: z.string() }),
+});
+
+describe("greet", () => {
+  const lease = useLease(suite);
+  it("knows alice", async () => {
+    const run = await lease.run({ userId: "alice" }).expect({ outcome: "known" });
+    expect(run.verdict.summary).toBe("");
+  });
+});
+```
+
+To run the same suite against a tenant, spread `aicWhenEnabled("<unique-id>")`
+into the `useLease` options, then run with `RHINO_LOCAL_AIC=1`. The tenant
+comes from the first of these that is configured:
+
+1. a `provider` passed in the options;
+2. a provider registered with `setTenantProvider()`, typically from a Vitest
+   `setupFiles` module;
+3. the environment: `RHINO_LOCAL_TENANT_URL` (https, no path), plus either
+   `RHINO_LOCAL_SA_ID` with `RHINO_LOCAL_SA_JWK` or `RHINO_LOCAL_SA_JWK_FILE`,
+   plus optional `RHINO_LOCAL_LOG_KEY_ID` and `RHINO_LOCAL_LOG_KEY_SECRET`;
+4. the `aic` CLI (`AIC_BIN`).
+
+A partial environment configuration is an error rather than a fallthrough.
+
+```ts
+// test/tenant.setup.ts — list it in vitest.config's test.setupFiles
+import { setTenantProvider, tokenCallbackProvider } from "rhino-local-ts/aic";
+
+setTenantProvider(
+  tokenCallbackProvider({
+    baseUrl: "https://tenant.example.com",
+    // Called again with reason "rejected" after a 401; don't return the same token.
+    getToken: async ({ reason }) => fetchBearerSomehow(reason),
+    // Optional, and needed only for rhino-local-show-log.
+    logKeys: { id: process.env.LOG_KEY_ID!, secret: process.env.LOG_KEY_SECRET! },
+  })
+);
+```
+
+**State.** Failure records, the log view and environment profiles can all
+contain tenant data. They go to `<project>/.rhino-local/`, which writes its own
+`*` `.gitignore`; the files are `0600`. `<project>` is the nearest ancestor with
+a `.git`. `RHINO_LOCAL_PROJECT` overrides the project and `RHINO_LOCAL_STATE_DIR`
+overrides the directory.
+
+**Bins.** Both commands that talk to a tenant take
+`--provider-module <file>`. That is the same setup module, or any module whose
+default export is a `TenantProvider`. It exists because a bin runs in its own
+process, where the Vitest registration does not reach.
+
+- `rhino-local-pull-profile [--tenant <name>]` writes
+  `.rhino-local/profiles/<tenant>.json`. It prints only counts.
+- `rhino-local-show-log [--stdout]` fetches the logs of recorded failures. It
+  writes them to `.rhino-local/failures/latest-logs.json`, and opens that in
+  `$LOGS_EDITOR` or `$EDITOR` if one is set. `--stdout` prints them instead;
+  don't use it in CI.
+
+**Entry points:**
+
+| Import | What it provides |
+| --- | --- |
+| `.` | the harness |
+| `./case` | case definition and judging |
+| `./aic` | providers and `setTenantProvider` |
+| `./profile` | `pullProfile` and the profile store |
+| `./diagnostics` | failure records, `runShowLog` and `loadProviderModule` |
+| `./bindings` | the bindings runtime |
+| `./runner` | `RhinoRunner` |
+
+More detail lives in this repository's `docs/rhino-local-harness.md`, which is
+not shipped with the package.
 
 ## JVM runner client
 
@@ -76,11 +172,12 @@ npm run measure   # JVM startup + per-job timings
 npm run show-log  # fetch AIC logs for a failed test (needs `aic login`)
 ```
 
-When a test that hit the AIC lane fails, `useLease` appends a JSONL record
-under `failures/` (gitignored, per-checkout). `npm run show-log` lists those
-newest first and fetches with `aic logs tx` — the stem first, so one call
-covers a whole authenticate chain. It never issues a range query. Logs open
-in `$LOGS_EDITOR` or `$EDITOR`; with neither set they print to stdout.
+When a test that hit the AIC lane fails, `useLease` appends a JSONL record to
+`.rhino-local/failures/failures.jsonl`. `npm run show-log` lists those records
+newest first and fetches their logs from the tenant provider: the `aic` CLI's
+`aic logs tx`, or the log API when log keys are configured. It fetches the
+stem first, so one call covers a whole authenticate chain, and it never issues
+a range query. It writes the logs to the 0600 view described above.
 
 ## Per-file AIC lease
 

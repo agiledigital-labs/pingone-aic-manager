@@ -82,6 +82,8 @@ import { z } from "zod";
 import { defineSuite, useLease } from "$name";
 import { validateCase } from "$name/case";
 import { tokenCallbackProvider } from "$name/aic";
+import { readFailures, runShowLog } from "$name/diagnostics";
+import { profilePath } from "$name/profile";
 
 const suite = defineSuite({
   name: "consumer-smoke",
@@ -119,8 +121,11 @@ describe("installed rhino-local", () => {
     expect(typeof wrong).toBe("function");
   });
 
-  it("exports the case and provider surfaces", () => {
+  it("exports the case, provider, diagnostics and profile surfaces", () => {
     expect(typeof validateCase).toBe("function");
+    expect(typeof readFailures).toBe("function");
+    expect(typeof runShowLog).toBe("function");
+    expect(profilePath("sandbox")).toMatch(/[.]rhino-local[/]profiles[/]sandbox[.]json$/);
     expect(() => tokenCallbackProvider({ baseUrl: "http://tenant.example.com", getToken: async () => "" })).toThrow(/https/);
   });
 });
@@ -165,6 +170,20 @@ state="$consumer/.rhino-local"
 [[ "$(cat "$state/.gitignore")" == "*" ]] || fail "$state does not ignore itself"
 [[ "$(stat -c %a "$state/failures/failures.jsonl")" == 600 ]] || fail "the failure record is not 0600"
 [[ -z "$(git -C "$consumer" status --porcelain -- .rhino-local)" ]] || fail "git would commit $state"
+
+# A bin is its own process, so a callback provider reaches it only through
+# --provider-module. With one record written above, show-log must load the
+# module and use its provider (whose log reader answers without a network).
+cat >"$consumer/provider.mjs" <<'JS'
+export default {
+  describe: async () => ({ name: "tenant", baseUrl: "https://tenant.example.com" }),
+  getToken: async () => "unused",
+  logs: { transaction: async () => [{ from: "provider-module" }] },
+};
+JS
+shown="$(cd "$consumer" && npx rhino-local-show-log --stdout --provider-module provider.mjs)" ||
+  fail "rhino-local-show-log failed with --provider-module"
+[[ "$shown" == *'"from": "provider-module"'* ]] || fail "show-log did not read through the provider module"
 [[ ! -e "$installed/.rhino-local" ]] || fail "state was written into node_modules"
 
 fetched="$(cd "$consumer" && RHINO_LOCAL_CACHE="$cache" RHINO_LOCAL_RHINO_JAR="$jar" npx rhino-local-fetch-jar)"

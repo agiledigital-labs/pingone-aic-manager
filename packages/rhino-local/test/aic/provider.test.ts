@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
 import { aicCliProvider, type AicIo, connectTenant } from "../../src/aic/tenant.ts";
 import {
+  checkTenantDescription,
   logKeysReader,
   providerFromEnv,
   serviceAccountProvider,
@@ -465,3 +466,70 @@ function cliIo(): AicIo & { calls: string[][] } {
     http: async () => response(200, ""),
   } as AicIo & { calls: string[][] };
 }
+
+// A tenant's hostname must not reach test output or CI logs through an error.
+describe("tenant hostnames stay out of error messages", () => {
+  const leaky = JSON.stringify({
+    error: "invalid_client",
+    error_description: `JWT audience must be ${baseUrl}/am/oauth2/access_token on tenant.example.com`,
+  });
+
+  it("reports a refused service-account mint by path, status and OAuth error", async () => {
+    const failed = serviceAccountProvider({
+      baseUrl,
+      serviceAccountId: id,
+      jwk,
+      http: async () => response(401, leaky),
+    });
+    const error = await failed.getToken({ reason: "initial" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TenantProviderError);
+    const message = (error as Error).message;
+    expect(message).toContain("POST /am/oauth2/access_token) returned 401: invalid_client");
+    expect(message).toContain("JWT audience must be <tenant>/am/oauth2/access_token on <tenant>");
+    expect(message).not.toContain("tenant.example.com");
+  });
+
+  it("scrubs a refused log read's body", async () => {
+    const bad = logKeysReader(baseUrl, { id: "i", secret: "s" }, async () => response(403, leaky));
+    const error = await bad.transaction("tx").catch((e: unknown) => e);
+    expect((error as Error).message).toMatch(/403/);
+    expect((error as Error).message).not.toContain("tenant.example.com");
+  });
+});
+
+// A caller's own provider is only a promise about where the bearer goes.
+describe("https is enforced on every route a credential takes", () => {
+  it("refuses a custom provider's http origin before asking it for a token", async () => {
+    let asked = 0;
+    const plain: TenantProvider = {
+      describe: async () => ({ name: "sandbox", baseUrl: "http://tenant.example.com" }),
+      getToken: async () => {
+        asked += 1;
+        return "bearer";
+      },
+    };
+    await expect(connectTenant(emptyIo(), { provider: plain })).rejects.toThrow(/must be https/);
+    expect(asked).toBe(0);
+  });
+
+  it("normalises a custom provider's origin and refuses a nameless tenant", () => {
+    expect(
+      checkTenantDescription({ name: "sandbox", baseUrl: "https://tenant.example.com/" })
+    ).toEqual({ name: "sandbox", baseUrl });
+    expect(() => checkTenantDescription({ name: " ", baseUrl })).toThrow(/no name/);
+    expect(() =>
+      checkTenantDescription({ name: "sandbox", baseUrl: "https://tenant.example.com/am" })
+    ).toThrow(/no path/);
+  });
+
+  it("refuses an http origin for a standalone log reader, sending nothing", () => {
+    let sent = 0;
+    expect(() =>
+      logKeysReader("http://tenant.example.com", { id: "i", secret: "s" }, async () => {
+        sent += 1;
+        return response(200, "{}");
+      })
+    ).toThrow(/must be https/);
+    expect(sent).toBe(0);
+  });
+});

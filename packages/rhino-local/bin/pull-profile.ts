@@ -2,36 +2,39 @@
 /**
  * Pull an environment's managed-object schema into a harness profile.
  *
- *   npm run pull-profile                 # the current aic context
- *   npm run pull-profile -- --tenant foo
+ *   rhino-local-pull-profile [--tenant <name>] [--provider-module <file>]
  *
- * Requires an unlocked agent (`aic login`) — the bearer is borrowed from it and
- * never written to disk.
+ * The tenant and bearer come from the configured tenant provider: the module
+ * named by `--provider-module`, else the RHINO_LOCAL_TENANT_URL environment,
+ * else the current `aic` context. The bearer is never written to disk.
+ *
+ * Only counts are printed. The object names are the tenant's business
+ * vocabulary and belong in the profile, not in a terminal or CI log.
  */
+import { parseArgs } from "node:util";
 import { pullProfile } from "../src/profile/pull.ts";
-
-const args = process.argv.slice(2);
-const tenantFlag = args.indexOf("--tenant");
-const tenant = tenantFlag >= 0 ? args[tenantFlag + 1] : undefined;
-
-if (tenantFlag >= 0 && (tenant === undefined || tenant.startsWith("--"))) {
-  console.error("pull-profile: --tenant needs a value");
-  process.exit(2);
-}
+import { loadProviderModule } from "../src/provider-module.ts";
 
 try {
+  const { values } = parseArgs({
+    options: {
+      tenant: { type: "string" },
+      "provider-module": { type: "string" },
+    },
+  });
+  if (values["provider-module"] !== undefined) {
+    await loadProviderModule(values["provider-module"]);
+  }
   const { profile, path } = await pullProfile(
-    tenant !== undefined ? { tenant } : {}
+    values.tenant !== undefined ? { tenant: values.tenant } : {}
   );
-  const names = Object.keys(profile.objects).sort();
+  const names = Object.keys(profile.objects);
   const fields = names.reduce(
     (total, name) => total + Object.keys(profile.objects[name]!.properties).length,
     0
   );
-  console.log(`tenant   ${profile.tenant}`);
   console.log(`pulled   ${profile.pulledAt}`);
   console.log(`objects  ${names.length} (${fields} properties)`);
-  console.log(`         ${names.join(", ")}`);
   console.log(`written  ${path}`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

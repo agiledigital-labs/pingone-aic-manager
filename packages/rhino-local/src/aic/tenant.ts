@@ -5,6 +5,7 @@ import { isPlainObject } from "../case/util.ts";
 import { projectRoot } from "../project.ts";
 import { headerValues, sendHttp, type HttpRequest, type HttpResponse } from "./http.ts";
 import {
+  checkTenantDescription,
   configuredTenantProvider,
   TENANT_ENV,
   type LogReader,
@@ -164,7 +165,7 @@ export async function connectTenant(
   options: ConnectOptions = {}
 ): Promise<TenantSession> {
   const provider = resolveTenantProvider(io, options);
-  const description = await provider.describe();
+  const description = checkTenantDescription(await provider.describe());
   if (options.tenant !== undefined && options.tenant !== description.name) {
     throw new AicLaneError(
       `the tenant provider serves ${JSON.stringify(description.name)}, but this run asks for ${JSON.stringify(options.tenant)}`
