@@ -238,7 +238,9 @@ function validRunnerCache(dest: string, digest: string): boolean {
       listed.add(relative);
       if (sha256(readFileSync(join(dest, relative))) !== match[1]) return false;
     }
-    return outputFiles(dest).filter((file) => file.endsWith(".class")).every((file) => listed.has(file));
+    return outputFiles(dest)
+      .filter((file) => file.endsWith(".class"))
+      .every((file) => listed.has(file));
   } catch {
     return false;
   }
@@ -320,15 +322,15 @@ export async function ensureRunnerClasses(
     return dest;
   }
   if (existsSync(dest)) {
-    if (!validRunnerCache(dest, digest)) {
-      const aside = join(cache, "classes", `.${digest}.bad.${randomUUID()}`);
-      try {
-        renameSync(dest, aside);
-      } catch {
-        // Another worker may already have moved/replaced the invalid entry.
-      }
-      rmSync(aside, { recursive: true, force: true });
+    // Present but not what its manifest says: a deleted or altered class, or
+    // a stray one. Move it aside rather than trusting it.
+    const aside = join(cache, "classes", `.${digest}.bad.${randomUUID()}`);
+    try {
+      renameSync(dest, aside);
+    } catch {
+      // Another worker may already have moved/replaced the invalid entry.
     }
+    rmSync(aside, { recursive: true, force: true });
   }
   const scratch = join(cache, "classes", `.${digest}.${randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
@@ -356,7 +358,9 @@ export async function ensureRunnerClasses(
           `(set ${JAVA_HOME_ENV} or JAVA_HOME): ${detail}`
       );
     }
-    const manifest = outputFiles(scratch).map((file) => `${sha256(readFileSync(join(scratch, file)))}  ${file}`);
+    const manifest = outputFiles(scratch).map(
+      (file) => `${sha256(readFileSync(join(scratch, file)))}  ${file}`
+    );
     writeFileSync(join(scratch, ".complete"), `${digest}\n${manifest.join("\n")}\n`);
     try {
       renameSync(scratch, dest);

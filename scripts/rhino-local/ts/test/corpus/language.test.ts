@@ -149,6 +149,8 @@ describe("language corpus header validation", () => {
   it("requires an expectation and accepts known verdicts", () => {
     expect(() => validateHeader(base, "inline.js")).toThrow("inline.js");
     expect(() => validateHeader({ ...base, result: "undefined" }, "inline.js")).not.toThrow();
-    expect(() => validateHeader({ ...base, verdict: "ignore" }, "inline.js")).toThrow("unknown verdict");
+    expect(() => validateHeader({ ...base, verdict: "ignore" }, "inline.js")).toThrow(
+      "unknown verdict"
+    );
   });
 });
