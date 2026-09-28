@@ -1,5 +1,5 @@
 // GENERATED from docs/api/bindings/scripted-decision-next.json — do not edit.
-// Re-run: npm --prefix scripts/rhino-local/ts run generate
+// Re-run: npm -w packages/rhino-local run generate
 //
 // Evaluated by AM's Rhino 1.7.14 as part of the script-under-test's scope.
 // AM-safe JavaScript only: no let, no top-level const, no for...of, no object

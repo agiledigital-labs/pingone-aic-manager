@@ -902,7 +902,7 @@ error. Do not offer `ne` or `in` in script-template query validation.
 
 Measured against `managed/alpha_user` in realm `alpha` with one throwaway
 fixture, created and deleted inside the probe. This is the contract a
-tenant-backed `IdmHandle` in `scripts/rhino-local/` has to implement, and the
+tenant-backed `IdmHandle` in `packages/rhino-local/` has to implement, and the
 three traps below are all cases where the tenant answers 200 with the wrong
 answer rather than failing.
 
@@ -1168,7 +1168,7 @@ on create, or when actually rotating it.
   match". No reproduce script — the probes were scratch files, not committed.
 
 - Date: 2026-09-14 — fixture seeding through the rhino-local harness's own
-  `seedManagedFixtures` (`scripts/rhino-local/ts/src/aic/managed.ts`), realm
+  `seedManagedFixtures` (`packages/rhino-local/src/aic/managed.ts`), realm
   `alpha`; every record created was deleted afterward. Four arms:
   a `managed/alpha_user` with `password` created (201) but its GET omitted
   `password`; the same record without `password`, keeping mixed-case

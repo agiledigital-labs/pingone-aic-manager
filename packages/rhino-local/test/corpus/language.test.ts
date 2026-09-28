@@ -5,7 +5,7 @@ import { repoRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import type { JobResponse } from "../../src/protocol.ts";
 
-const corpusDir = join(repoRoot, "scripts", "rhino-local", "corpus");
+const corpusDir = join(repoRoot, "packages", "rhino-local", "corpus");
 
 interface CorpusHeader {
   row: string;

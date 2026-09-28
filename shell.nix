@@ -20,7 +20,7 @@ pkgs.mkShell {
     pkgs.rustfmt
     pkgs.rust-analyzer
     # The rhino-local harness's JVM. AM runs Temurin 25; the harness refuses
-    # any other Java feature release (scripts/rhino-local/ts/src/jvm.ts).
+    # any other Java feature release (packages/rhino-local/src/jvm.ts).
     pkgs.temurin-bin-25
     pkgs.nodejs_24
   ];

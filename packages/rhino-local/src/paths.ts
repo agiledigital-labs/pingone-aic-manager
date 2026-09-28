@@ -3,14 +3,14 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** `scripts/rhino-local/ts/` */
+/** `packages/rhino-local/` */
 export const packageRoot = join(here, "..");
 
 /** pingone-aic-manager repo root. */
-export const repoRoot = join(packageRoot, "..", "..", "..");
+export const repoRoot = join(packageRoot, "..", "..");
 
-/** The runner's Java sources (`scripts/rhino-local/*.java`). */
-export const javaSourceDir = join(packageRoot, "..");
+/** The runner's Java sources (`packages/rhino-local/java/*.java`). */
+export const javaSourceDir = join(packageRoot, "java");
 
 export const bindingsJsonPath = join(
   repoRoot,

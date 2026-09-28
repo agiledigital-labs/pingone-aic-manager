@@ -47,9 +47,9 @@ host against an unconstrained AM JVM rather than against a copy of itself.
 
 ```bash
 nix-shell  # or direnv: shell.nix adds Temurin 25 and Node 24
-npm --prefix scripts/rhino-local/ts ci
-npm --prefix scripts/rhino-local/ts test
-npm --prefix scripts/rhino-local/ts run measure
+npm ci
+npm -w packages/rhino-local test
+npm -w packages/rhino-local run measure
 ```
 
 ### Running the AIC lane
@@ -58,7 +58,7 @@ npm --prefix scripts/rhino-local/ts run measure
 invocation:
 
 ```bash
-RHINO_LOCAL_AIC=1 npm --prefix scripts/rhino-local/ts test
+RHINO_LOCAL_AIC=1 npm -w packages/rhino-local test
 ```
 
 It is off by default because the tenant lane needs an unlocked agent
@@ -227,7 +227,7 @@ standard-objects prototype is an optimisation this slice did not need: per-job
 runner does not model it.
 
 AM's `ScriptContextScope` class depends on `org.forgerock.util.Reject`. The
-harness replicates the bytecode (`scripts/rhino-local/ScriptContextScope.java`)
+harness replicates the bytecode (`packages/rhino-local/java/ScriptContextScope.java`)
 rather than loading the AM class, so forgerock-util is not on the classpath.
 
 ## Chosen configuration for a later harness
@@ -347,7 +347,7 @@ harness now reproduces the AIC bug instead of hiding it.
 ## Long-lived runner
 
 `Runner.java` is the long-lived process, launched by the TypeScript client in
-`scripts/rhino-local/ts/src/runner.ts`. The language corpus is also evaluated
+`packages/rhino-local/src/runner.ts`. The language corpus is also evaluated
 through that client by Vitest.
 
 Line-delimited JSON on stdin; one JSON response per job on stdout. Runner
@@ -391,7 +391,7 @@ real for script-defined state.
 
 ### Measured cost (2026-09-11)
 
-`npm --prefix scripts/rhino-local/ts run measure` — three spawn/ready cycles,
+`npm --prefix scripts/rhino-local/ts run measure` (now `npm -w packages/rhino-local run measure`) — three spawn/ready cycles,
 then 200 sequential `1+1` jobs on the first process. Host times include the Node
 client and docker stdio; the JVM is Temurin 25.0.4 inside the AM image.
 
