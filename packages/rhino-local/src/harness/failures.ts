@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AicTrace } from "../aic/trace.ts";
 import { isPlainObject } from "../case/util.ts";
-import { failuresPath } from "../paths.ts";
+import { failuresPath } from "../project.ts";
 
 export interface FailureRecord {
   testName: string;
@@ -42,7 +42,7 @@ export function failureRecordFor(input: {
 
 export async function appendFailure(
   record: FailureRecord,
-  path = failuresPath
+  path = failuresPath({ create: true })
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await appendFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8" });
@@ -50,17 +50,17 @@ export async function appendFailure(
 
 export async function recordFailureIfAny(
   input: Parameters<typeof failureRecordFor>[0],
-  path = failuresPath
+  path?: string
 ): Promise<FailureRecord | undefined> {
   const record = failureRecordFor(input);
   if (record === undefined) {
     return undefined;
   }
-  await appendFailure(record, path);
+  await appendFailure(record, path ?? failuresPath({ create: true }));
   return record;
 }
 
-export async function readFailures(path = failuresPath): Promise<FailureRecord[]> {
+export async function readFailures(path = failuresPath()): Promise<FailureRecord[]> {
   let text: string;
   try {
     text = await readFile(path, "utf8");

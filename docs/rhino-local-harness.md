@@ -140,6 +140,28 @@ policy, and an undeclared property is refused outright. A script or fixture
 written against the mock alone will assert happily against records the tenant
 would never have stored.
 
+### Where the harness keeps its state
+
+Failure dumps, the `show-log` view and environment profiles can all name a live
+tenant, so they go in one directory that ignores itself:
+`<project>/.rhino-local/`, created `0700` with a `.gitignore` of `*` on first
+write. The consuming repo's own `.gitignore` never has to know about it.
+
+- `<project>` is `RHINO_LOCAL_PROJECT`, else the nearest ancestor of the working
+  directory holding `.git` (a worktree's `.git` file counts), else the working
+  directory. It is never the package's own directory, which an install puts in
+  `node_modules`.
+- `RHINO_LOCAL_STATE_DIR` replaces `<project>/.rhino-local` outright.
+- `failures/failures.jsonl` and `failures/latest-logs.json` (`0600`) are the
+  failure dump and the view `show-log` opens.
+- `profiles/<tenant>.json` (`0600`) is what `pull-profile` writes. Before
+  2026-09-28 it was `workspace/<tenant>/harness-profile.json`; pull again after
+  upgrading.
+
+With no provider configured and no `aic` binary at `AIC_BIN` (default
+`<project>/target/debug/aic`), a tenant run fails naming the three ways to
+configure one, rather than with a bare spawn error.
+
 ## Local Context configuration
 
 The runner (`AmContextFactory.java`) reproduces AM 8.1.1's

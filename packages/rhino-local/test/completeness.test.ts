@@ -3,10 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { generate, generatedDtsName, generatedJsName } from "../src/generate.ts";
+import {
+  generate,
+  generatedBindingsName,
+  generatedDtsName,
+  generatedJsName,
+} from "../src/generate.ts";
 import { loadContext } from "../src/load.ts";
 import {
   bindingsJsonPath,
+  sourceBindingsJsonPath,
   generatedDtsPath,
   generatedJsPath,
 } from "../src/paths.ts";
@@ -84,12 +90,20 @@ describe("completeness against the contexts JSON", () => {
   it("matches the committed artefacts (forgot-to-regenerate check)", () => {
     const dir = mkdtempSync(join(tmpdir(), "rhino-local-"));
     try {
-      generate(bindingsJsonPath, dir);
+      generate(sourceBindingsJsonPath, dir);
       expect(readFileSync(join(dir, generatedJsName), "utf8")).toBe(
         readFileSync(generatedJsPath, "utf8")
       );
       expect(readFileSync(join(dir, generatedDtsName), "utf8")).toBe(
         readFileSync(generatedDtsPath, "utf8")
+      );
+      // The run-time surface reads the shipped snapshot, so a stale one
+      // would validate cases against bindings the docs no longer describe.
+      expect(readFileSync(join(dir, generatedBindingsName), "utf8")).toBe(
+        readFileSync(sourceBindingsJsonPath, "utf8")
+      );
+      expect(readFileSync(bindingsJsonPath, "utf8")).toBe(
+        readFileSync(sourceBindingsJsonPath, "utf8")
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

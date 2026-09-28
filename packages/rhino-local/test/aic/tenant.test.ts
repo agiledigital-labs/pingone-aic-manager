@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
-import { amRequest, type AicIo, type TenantSession } from "../../src/aic/tenant.ts";
+import {
+  AicLaneError,
+  amRequest,
+  defaultAicIo,
+  type AicIo,
+  type TenantSession,
+} from "../../src/aic/tenant.ts";
 import { stubTenantSession } from "./helpers.ts";
 
 function session(): TenantSession {
@@ -109,5 +115,23 @@ describe("amRequest bearer refresh", () => {
     await expect(amRequest(io, live, { method: "GET", path: "/x" })).rejects.toThrow(
       /token refresh unavailable/
     );
+  });
+});
+
+describe("defaultAicIo without an aic binary", () => {
+  // The last resort of provider resolution: a consumer with no provider and
+  // no aic must be told how to configure one, not handed a spawn error.
+  it("names the ways to configure a provider", async () => {
+    vi.stubEnv("AIC_BIN", "/nonexistent/rhino-local/aic");
+    try {
+      const io = defaultAicIo("/nonexistent");
+      const failure = io.aic(["ctx", "list"]);
+      await expect(failure).rejects.toBeInstanceOf(AicLaneError);
+      await expect(failure).rejects.toThrow(
+        /no tenant provider configured: pass `provider`, call setTenantProvider\(\), or set RHINO_LOCAL_TENANT_URL/
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

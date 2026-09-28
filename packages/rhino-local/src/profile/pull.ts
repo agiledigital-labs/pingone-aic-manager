@@ -6,7 +6,7 @@ import {
   defaultAicIo,
   type AicIo,
 } from "../aic/tenant.ts";
-import { repoRoot } from "../paths.ts";
+import { projectRoot } from "../project.ts";
 import { normaliseManagedConfig } from "./normalise.ts";
 import { writeProfile } from "./store.ts";
 import type { EnvProfile } from "./types.ts";
@@ -31,7 +31,7 @@ export interface PullOptions {
 export async function pullProfile(
   options: PullOptions = {}
 ): Promise<{ profile: EnvProfile; path: string }> {
-  const project = options.project ?? repoRoot;
+  const project = options.project ?? projectRoot();
   const io = options.io ?? defaultAicIo(project);
   const session = await connectTenant(io, {
     ...(options.tenant !== undefined ? { tenant: options.tenant } : {}),
@@ -55,6 +55,6 @@ export async function pullProfile(
     pulledAt: now.toISOString(),
     endpoint: MANAGED_CONFIG_ENDPOINT,
   });
-  const path = writeProfile(profile, project);
+  const path = writeProfile(profile);
   return { profile, path };
 }

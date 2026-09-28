@@ -59,7 +59,7 @@ import {
   type TenantSession,
 } from "./tenant.ts";
 import { beginSingleTrace, beginTrace, clearAicTrace } from "./trace.ts";
-import { repoRoot } from "../paths.ts";
+import { projectRoot } from "../project.ts";
 
 export interface AicFileLeaseOptions {
   id: string;
@@ -106,7 +106,7 @@ export class AicFileLease {
   constructor(options: AicFileLeaseOptions) {
     this.#options = options;
     this.#realm = options.realm ?? "alpha";
-    this.#project = options.project ?? repoRoot;
+    this.#project = options.project ?? projectRoot();
     this.#io = options.io ?? defaultAicIo(this.#project);
   }
 

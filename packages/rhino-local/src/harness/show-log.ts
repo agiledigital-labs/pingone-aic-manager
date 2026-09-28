@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { configuredTenantProvider, type TenantProvider } from "../aic/provider.ts";
 import { aicCliProvider, defaultAicIo } from "../aic/tenant.ts";
-import { failuresDir, latestLogsPath, repoRoot } from "../paths.ts";
+import { latestLogsPath, projectRoot } from "../project.ts";
 import {
   readFailures,
   sortNewestFirst,
@@ -166,7 +166,7 @@ export function createDefaultIo(
   options: { env?: NodeJS.ProcessEnv; project?: string } = {}
 ): ShowLogIo {
   const env = options.env ?? process.env;
-  const project = options.project ?? repoRoot;
+  const project = options.project ?? projectRoot(env);
   const providers = new Map<string, TenantProvider>();
   return {
     env,
@@ -219,12 +219,12 @@ export function createDefaultIo(
     },
     openEditor,
     async writeView(contents) {
-      await mkdir(failuresDir, { recursive: true });
+      const path = latestLogsPath(env);
       // 0600: this holds a live tenant's log bodies — hostnames, client ips,
       // request headers. The directory is gitignored, but the file should not
       // be world-readable either.
-      await writeFile(latestLogsPath, contents, { encoding: "utf8", mode: 0o600 });
-      return latestLogsPath;
+      await writeFile(path, contents, { encoding: "utf8", mode: 0o600 });
+      return path;
     },
   };
 }

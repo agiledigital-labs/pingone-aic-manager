@@ -6,13 +6,19 @@ const here = dirname(fileURLToPath(import.meta.url));
 /** `packages/rhino-local/` */
 export const packageRoot = join(here, "..");
 
-/** pingone-aic-manager repo root. */
+/**
+ * pingone-aic-manager repo root. **Repo-only**: generation and this repo's
+ * tests read through it; nothing under `src/` may use it at run time,
+ * because an installed package has no repo around it
+ * (`test/paths.test.ts` enforces that).
+ */
 export const repoRoot = join(packageRoot, "..", "..");
 
 /** The runner's Java sources (`packages/rhino-local/java/*.java`). */
 export const javaSourceDir = join(packageRoot, "java");
 
-export const bindingsJsonPath = join(
+/** The captured contexts JSON in this repo's docs. Repo-only; read by `generate`. */
+export const sourceBindingsJsonPath = join(
   repoRoot,
   "docs",
   "api",
@@ -21,6 +27,9 @@ export const bindingsJsonPath = join(
 );
 
 export const generatedDir = join(packageRoot, "generated");
+
+/** `generate`'s verbatim copy of {@link sourceBindingsJsonPath}, shipped with the package. */
+export const bindingsJsonPath = join(generatedDir, "scripted-decision-next.json");
 
 export const generatedJsPath = join(
   generatedDir,
@@ -46,6 +55,7 @@ export const casesDir = join(packageRoot, "cases");
 
 export const amRhinoEslintConfigPath = join(packageRoot, "eslint.am.config.js");
 
+/** This repo's AM script lint. Repo-only: the lockstep test reads it. */
 export const amEslintConfigPath = join(
   repoRoot,
   "src",
@@ -54,10 +64,3 @@ export const amEslintConfigPath = join(
   "am",
   "eslint.config.js"
 );
-
-/** Per-checkout dump of failed AIC-lane tests. Gitignored; not `/tmp`. */
-export const failuresDir = join(packageRoot, "failures");
-
-export const failuresPath = join(failuresDir, "failures.jsonl");
-
-export const latestLogsPath = join(failuresDir, "latest-logs.json");
