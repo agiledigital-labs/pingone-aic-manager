@@ -50,6 +50,8 @@ export interface JobRequest {
   /** Evaluated first, so author line numbers on `source` stay intact. */
   preamble?: string;
   preambleName?: string;
+  /** Return this global after evaluation instead of Rhino's completion value. */
+  resultGlobal?: string;
 }
 
 export interface JobError {
