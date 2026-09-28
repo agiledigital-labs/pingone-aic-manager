@@ -56,8 +56,13 @@ export const RHINO_JAR = {
   bytes: 1_389_188,
 } as const;
 
-/** The AM image the `container` lane runs; override to calibrate another tag. */
-export const DEFAULT_AM_IMAGE = "us-docker.pkg.dev/forgeops-public/images/am:2026.3.1-2053";
+/**
+ * The AM image the `container` lane runs, pinned by digest so the reference
+ * cannot move under a re-pushed tag; override to calibrate another image.
+ */
+export const DEFAULT_AM_IMAGE =
+  "us-docker.pkg.dev/forgeops-public/images/am:2026.3.1-2053" +
+  "@sha256:358d7e1e13b27619b742a759fd5a85d4fcc57cc75811027b9f3c0019a0bd9be3";
 
 /**
  * The JVM AM runs, as the AM image reports it (MEASURED 2026-09-28):
@@ -67,21 +72,26 @@ export const DEFAULT_AM_IMAGE = "us-docker.pkg.dev/forgeops-public/images/am:202
  */
 export const EXPECTED_ENVIRONMENT = {
   javaFeature: 25,
-  timezone: "UTC",
+  timezone: "Etc/UTC",
   locale: "en-US",
   charset: "UTF-8",
   rhino: "Rhino 1.7.14.1",
 } as const;
 
 /**
- * JVM flags both lanes get, so a difference between them is the JVM and its
- * OS, not the flags. The properties pin what a host would otherwise take from
- * its own settings. The heap cap and serial collector are what keeps a runner
- * small on an 8GB box; the container gets them too so the lanes run the same
- * heap.
+ * Flags for the host lane only. The properties pin what the AM image's JVM
+ * gets from its OS (UTC, en_US.UTF-8), which a host would otherwise take from
+ * its own settings. The heap cap, serial collector and C1-only JIT are what
+ * keep a runner small on an 8GB box.
+ *
+ * The container lane gets **none** of these: it is the reference, so it runs
+ * the image's JVM on the image's defaults, as the old launcher did. That makes
+ * `both` compare the constrained host against an unconstrained AM JVM, so a
+ * script that only works with more heap or a faster JIT shows up as a
+ * divergence rather than agreeing with itself.
  */
-export const JVM_FLAGS: readonly string[] = [
-  "-Duser.timezone=UTC",
+export const HOST_JVM_FLAGS: readonly string[] = [
+  "-Duser.timezone=Etc/UTC",
   "-Duser.language=en",
   "-Duser.country=US",
   "-Dfile.encoding=UTF-8",
@@ -312,10 +322,10 @@ export function hostLaunch(
 ): Launch {
   return {
     command: javaTool("java", env),
-    args: [...JVM_FLAGS, "-cp", `${classes}${delimiter}${jar}`, "Runner"],
+    args: [...HOST_JVM_FLAGS, "-cp", `${classes}${delimiter}${jar}`, "Runner"],
     // TZ as well as -Duser.timezone: the property wins for java.util, but a
     // host TZ still leaks into anything that asks the OS.
-    env: { ...env, TZ: "UTC" },
+    env: { ...env, TZ: "Etc/UTC" },
   };
 }
 
@@ -348,7 +358,6 @@ export function containerLaunch(
       "--entrypoint",
       "/opt/java/openjdk/bin/java",
       image,
-      ...JVM_FLAGS,
       "-cp",
       "/rhino-local/classes:/rhino-local/rhino.jar",
       "Runner",
