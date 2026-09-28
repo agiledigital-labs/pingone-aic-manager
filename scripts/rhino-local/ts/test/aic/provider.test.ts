@@ -322,8 +322,17 @@ describe("tenant connections and CLI provider", () => {
         )
     ).toBe(true);
     expect(await provider.logs!.transaction("id", { waitMs: 1500 })).toEqual([{ x: 1 }]);
-    expect(calls.at(-1)).toContain("--timeout");
-    expect(calls.at(-1)).toContain("2");
+    const logsCall = calls.at(-1)!;
+    expect(logsCall.slice(logsCall.indexOf("logs"))).toEqual([
+      "logs",
+      "tx",
+      "id",
+      "--tenant",
+      "sandbox",
+      "--wait",
+      "--timeout",
+      "2",
+    ]);
     const failing = aicCliProvider({
       ...io,
       aic: async (args) =>
@@ -336,6 +345,9 @@ describe("tenant connections and CLI provider", () => {
           : { status: 1, stdout: "", stderr: "locked" },
     });
     await expect(failing.getToken({ reason: "initial" })).rejects.toThrow(/aic login/);
+    await expect(failing.getToken({ reason: "rejected", rejected: "old" })).rejects.toThrow(
+      /while refreshing the bearer/
+    );
   });
 
   it("refreshes authenticated 401s with rejected token and leaves anonymous calls alone", async () => {
@@ -349,12 +361,18 @@ describe("tenant connections and CLI provider", () => {
     };
     setTenantProvider(provider);
     const io = emptyIo();
-    io.http = async (req) =>
-      response(req.headerLines.some(([, v]) => v === "Bearer old") ? 401 : 200, "ok");
+    const bearers: string[] = [];
+    io.http = async (req) => {
+      const bearer = req.headerLines.find(([name]) => name === "Authorization")?.[1] ?? "<none>";
+      bearers.push(bearer);
+      return response(bearer === "Bearer old" ? 401 : 200, "ok");
+    };
     const session = await connectTenant(io);
     const { amRequest } = await import("../../src/aic/tenant.ts");
-    await amRequest(io, session, { method: "GET", path: "/x" });
+    expect((await amRequest(io, session, { method: "GET", path: "/x" })).status).toBe(200);
     expect(seen).toEqual([{ reason: "initial" }, { reason: "rejected", rejected: "old" }]);
+    expect(bearers).toEqual(["Bearer old", "Bearer new"]);
+    expect(session.token).toBe("new");
     seen.length = 0;
     await amRequest(io, session, { method: "POST", path: "/x", anonymous: true });
     expect(seen).toEqual([]);
