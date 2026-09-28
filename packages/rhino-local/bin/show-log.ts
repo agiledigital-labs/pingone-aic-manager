@@ -2,7 +2,7 @@
 /**
  * List failed AIC-lane tests and fetch their logs.
  *
- *   rhino-local-show-log [--stdout] [--provider-module <file>]
+ *   aic-script-tester-show-log [--stdout] [--provider-module <file>]
  *
  * The logs are written to `.rhino-local/failures/latest-logs.json` (0600) and
  * opened in LOGS_EDITOR or EDITOR; `--stdout` prints them instead. Logs come

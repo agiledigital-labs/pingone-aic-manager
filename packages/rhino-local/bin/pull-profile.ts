@@ -2,7 +2,7 @@
 /**
  * Pull an environment's managed-object schema into a harness profile.
  *
- *   rhino-local-pull-profile [--tenant <name>] [--provider-module <file>]
+ *   aic-script-tester-pull-profile [--tenant <name>] [--provider-module <file>]
  *
  * The tenant and bearer come from the configured tenant provider: the module
  * named by `--provider-module`, else the RHINO_LOCAL_TENANT_URL environment,
