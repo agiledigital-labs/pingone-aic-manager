@@ -21,7 +21,8 @@ declare const realm: string;
 // global. Kept here (available everywhere) rather than removed, so next-gen
 // scripts that use it still type-check. Prefer documented bindings where possible.
 interface SystemEnv {
-  getProperty: (key: StringLike) => JavaString | null;
+  // A method, not a property, so decision-node-next.d.ts can add overloads.
+  getProperty(propertyName: StringLike): JavaString | null;
 }
 declare const systemEnv: SystemEnv;
 
