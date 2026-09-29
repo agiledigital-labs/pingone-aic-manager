@@ -303,8 +303,8 @@ cargo test --features logs-store
 
 CI runs fourteen more that these do not cover: the sensitive-metadata scanner
 (`--selftest`, `--tracked`, the pushed range), gitleaks over the history,
-`cargo audit` over `Cargo.lock` (ignores, each with its reason, in
-`.cargo/audit.toml`), `npm audit` over `package-lock.json` and over the three
+`cargo audit --deny warnings` over `Cargo.lock` (ignores, each with its reason,
+in `.cargo/audit.toml`), `npm audit` over `package-lock.json` and over the three
 shipped templates' resolved trees (`scripts/npm-audit-templates.sh`; no ignore
 mechanism, so an unfixable advisory has to be dealt with, not waved through),
 `scripts/shellcheck-all.sh`, and the two TypeScript gates —

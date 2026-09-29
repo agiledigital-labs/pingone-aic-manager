@@ -100,7 +100,7 @@ jobs:
   # Known-vulnerable dependencies in Cargo.lock. It reads the lockfile and the
   # RustSec database only, so it needs no build. A pinned release binary, for
   # the reason the gitleaks step gives. Ignores live in .cargo/audit.toml, each
-  # with its reason; warnings (unmaintained, yanked) are reported, not fatal.
+  # with its reason; warnings (unmaintained, yanked) are denied.
   # A new advisory fails the next run whatever that run changed: this is
   # deliberate, because the fix is a lockfile update that ships the same day.
   audit:
@@ -116,7 +116,7 @@ jobs:
           name="cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}"
           curl -sSfL "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v${CARGO_AUDIT_VERSION}/${name}.tgz" \
             | tar -xz -C /tmp "${name}/cargo-audit"
-          "/tmp/${name}/cargo-audit" audit
+          "/tmp/${name}/cargo-audit" audit --deny warnings
 
   npm-audit:
     name: npm audit
