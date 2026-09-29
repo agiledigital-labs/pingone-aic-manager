@@ -430,10 +430,12 @@ describe("callbacks (submitted values)", () => {
       getNameCallbacks: () => {
         get: (i: number) => unknown;
         size: () => number;
+        isEmpty: () => boolean;
+        contains: (value: unknown) => boolean;
       };
       getPasswordCallbacks: () => { get: (i: number) => unknown };
       getConfirmationCallbacks: () => { get: (i: number) => unknown };
-      getChoiceCallbacks: () => { size: () => number };
+      getChoiceCallbacks: () => { size: () => number; isEmpty: () => boolean };
     };
     expect(callbacks.isEmpty()).toBe(false);
     expect(callbacks.getNameCallbacks().size()).toBe(2);
@@ -442,6 +444,11 @@ describe("callbacks (submitted values)", () => {
     expect(callbacks.getPasswordCallbacks().get(0)).toBe("s3cret");
     expect(callbacks.getConfirmationCallbacks().get(0)).toBe(1);
     expect(callbacks.getChoiceCallbacks().size()).toBe(0);
+    // Java List methods a script checks before indexing.
+    expect(callbacks.getNameCallbacks().isEmpty()).toBe(false);
+    expect(callbacks.getChoiceCallbacks().isEmpty()).toBe(true);
+    expect(callbacks.getNameCallbacks().contains("alice.admin")).toBe(true);
+    expect(callbacks.getNameCallbacks().contains("bob")).toBe(false);
   });
 
   it("treats an explicit empty given.callbacks as a first pass", () => {
