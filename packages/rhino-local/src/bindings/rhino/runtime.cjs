@@ -415,6 +415,11 @@ nodeState.mergeTransient = function (object) {
   return nodeState;
 };
 
+// AIC's action is a Java wrapper; String(action) names its class (measured).
+action.toString = function () {
+  return "org.forgerock.openam.auth.nodes.script.ActionWrapper@1b6d3586";
+};
+
 action.goTo = function (name) {
   __rhinoLocalExpectArity("action.goTo", arguments, 1);
   __rhinoLocal.outcome = String(name);
@@ -469,6 +474,13 @@ action.removeSessionProperty = function (key) {
 
 action.withMaxSessionTime = function (maxSessionTime) {
   __rhinoLocalExpectArity("action.withMaxSessionTime", arguments, 1);
+  // AIC's message for "x" (measured); where the edge sits for other
+  // non-numbers is inferred from Rhino's Integer conversion.
+  if (isNaN(Number(maxSessionTime))) {
+    throw new InternalError(
+      "Cannot convert " + maxSessionTime + " to java.lang.Integer"
+    );
+  }
   return action;
 };
 
@@ -641,25 +653,18 @@ callbacksBuilder.nameCallback = function (prompt, defaultName) {
         " (expected 1 or 2)"
     );
   }
-  var fields = { prompt: String(prompt) };
-  if (arguments.length > 1) {
-    fields.defaultName = String(defaultName);
-  }
-  __rhinoLocalCallback("NameCallback", fields);
+  __rhinoLocalCallback("NameCallback", { prompt: String(prompt) });
 };
 
 callbacksBuilder.passwordCallback = function (prompt, echoOn) {
   __rhinoLocalExpectArity("callbacksBuilder.passwordCallback", arguments, 2);
-  __rhinoLocalCallback("PasswordCallback", {
-    prompt: String(prompt),
-    echoOn: Boolean(echoOn),
-  });
+  __rhinoLocalCallback("PasswordCallback", { prompt: String(prompt) });
 };
 
 callbacksBuilder.textOutputCallback = function (messageType, message) {
   __rhinoLocalExpectArity("callbacksBuilder.textOutputCallback", arguments, 2);
   __rhinoLocalCallback("TextOutputCallback", {
-    messageType: messageType,
+    messageType: String(messageType),
     message: String(message),
   });
 };
@@ -676,21 +681,27 @@ callbacksBuilder.confirmationCallback = function () {
   var a = arguments;
   var fields = {};
   if (a.length === 3 && typeof a[0] === "number" && Array.isArray(a[1])) {
+    fields.prompt = "";
     fields.messageType = a[0];
     fields.options = a[1];
+    fields.optionType = -1;
     fields.defaultOption = a[2];
   } else if (a.length === 3 && typeof a[0] === "number") {
+    fields.prompt = "";
     fields.messageType = a[0];
+    fields.options = [];
     fields.optionType = a[1];
     fields.defaultOption = a[2];
   } else if (a.length === 4 && Array.isArray(a[2])) {
     fields.prompt = String(a[0]);
     fields.messageType = a[1];
     fields.options = a[2];
+    fields.optionType = -1;
     fields.defaultOption = a[3];
   } else if (a.length === 4) {
     fields.prompt = String(a[0]);
     fields.messageType = a[1];
+    fields.options = [];
     fields.optionType = a[2];
     fields.defaultOption = a[3];
   } else {
@@ -712,7 +723,16 @@ callbacksBuilder.choiceCallback = function (
     prompt: String(prompt),
     choices: choices,
     defaultChoice: defaultChoice,
-    multipleSelectionsAllowed: Boolean(multipleSelectionsAllowed),
+  });
+};
+
+callbacksBuilder.radioChoiceCallback = function (prompt, choices, defaultChoice) {
+  __rhinoLocalExpectArity("callbacksBuilder.radioChoiceCallback", arguments, 3);
+  __rhinoLocalCallback("ChoiceCallback", {
+    prompt: String(prompt),
+    choices: choices,
+    defaultChoice: defaultChoice,
+    radio: true,
   });
 };
 
@@ -723,7 +743,7 @@ callbacksBuilder.suspendedTextOutputCallback = function (messageType, message) {
     2
   );
   __rhinoLocalCallback("SuspendedTextOutputCallback", {
-    messageType: messageType,
+    messageType: String(messageType),
     message: String(message),
   });
 };
@@ -737,9 +757,7 @@ callbacksBuilder.textInputCallback = function (prompt, defaultText) {
     );
   }
   var textFields = { prompt: String(prompt) };
-  if (arguments.length > 1) {
-    textFields.defaultText = String(defaultText);
-  }
+  textFields.defaultText = arguments.length > 1 ? String(defaultText) : "";
   __rhinoLocalCallback("TextInputCallback", textFields);
 };
 
@@ -749,15 +767,15 @@ callbacksBuilder.scriptTextOutputCallback = function (message) {
     arguments,
     1
   );
-  __rhinoLocalCallback("ScriptTextOutputCallback", { message: String(message) });
+  __rhinoLocalCallback("TextOutputCallback", {
+    message: String(message),
+    messageType: "4",
+  });
 };
 
 callbacksBuilder.languageCallback = function (language, country) {
   __rhinoLocalExpectArity("callbacksBuilder.languageCallback", arguments, 2);
-  __rhinoLocalCallback("LanguageCallback", {
-    language: String(language),
-    country: String(country),
-  });
+  __rhinoLocalCallback("LanguageCallback", {});
 };
 
 callbacksBuilder.idPCallback = function (
@@ -784,17 +802,13 @@ callbacksBuilder.idPCallback = function (
     provider: String(provider),
     clientId: String(clientId),
     redirectUri: String(redirectUri),
-    scope: scope,
+    scopes: scope,
     nonce: String(nonce),
     request: String(request),
     requestUri: String(requestUri),
     acrValues: acrValues,
-    requestNativeAppForUserInfo: Boolean(requestNativeAppForUserInfo),
+    acceptsJSON: Boolean(requestNativeAppForUserInfo),
   };
-  if (arguments.length === 11) {
-    idpFields.token = String(token);
-    idpFields.tokenType = String(tokenType);
-  }
   __rhinoLocalCallback("IdPCallback", idpFields);
 };
 
@@ -852,15 +866,27 @@ callbacksBuilder.consentMappingCallback = function () {
       displayName: String(a[1]),
       icon: String(a[2]),
       accessLevel: String(a[3]),
-      titles: a[4],
+      fields: a[4],
       message: String(a[5]),
       isRequired: Boolean(a[6]),
     });
     return;
   }
   if (a.length === 3) {
+    var config = a[0];
+    var emptyFields = [];
+    var i;
+    if (config && Array.isArray(config.fields)) {
+      for (i = 0; i < config.fields.length; i += 1) {
+        emptyFields.push(null);
+      }
+    }
     __rhinoLocalCallback("ConsentMappingCallback", {
-      config: a[0],
+      name: String(config.name),
+      displayName: String(config.displayName),
+      icon: String(config.icon),
+      accessLevel: String(config.accessLevel),
+      fields: emptyFields,
       message: String(a[1]),
       isRequired: Boolean(a[2]),
     });
@@ -895,7 +921,7 @@ callbacksBuilder.kbaCreateCallback = function (
 
 callbacksBuilder.selectIdPCallback = function (providers) {
   __rhinoLocalExpectArity("callbacksBuilder.selectIdPCallback", arguments, 1);
-  __rhinoLocalCallback("SelectIdPCallback", { providers: providers });
+  __rhinoLocalCallback("SelectIdPCallback", { providers: providers, value: "" });
 };
 
 callbacksBuilder.termsAndConditionsCallback = function (version, terms, createDate) {
@@ -913,7 +939,7 @@ callbacksBuilder.termsAndConditionsCallback = function (version, terms, createDa
 
 callbacksBuilder.metadataCallback = function (outputValue) {
   __rhinoLocalExpectArity("callbacksBuilder.metadataCallback", arguments, 1);
-  __rhinoLocalCallback("MetadataCallback", { outputValue: outputValue });
+  __rhinoLocalCallback("MetadataCallback", { data: outputValue });
 };
 
 callbacksBuilder.pollingWaitCallback = function (waitTime, message) {
@@ -936,27 +962,13 @@ callbacksBuilder.redirectCallback = function (
   var redirectFields = {
     redirectUrl: String(redirectUrl),
     redirectData: redirectData,
-    method: String(method),
+    redirectMethod: String(method),
+    // Every probe passed false or omitted it; true is unmeasured. The status
+    // parameter and redirect-back cookie are not rendered (measured).
+    trackingCookie:
+      a.length === 4 ? Boolean(fourth) : a.length === 6 ? Boolean(sixth) : false,
   };
-  if (a.length === 3) {
-    __rhinoLocalCallback("RedirectCallback", redirectFields);
-    return;
-  }
-  if (a.length === 4) {
-    redirectFields.setTrackingCookie = Boolean(fourth);
-    __rhinoLocalCallback("RedirectCallback", redirectFields);
-    return;
-  }
-  if (a.length === 5) {
-    redirectFields.statusParameter = String(fourth);
-    redirectFields.redirectBackUrlCookie = String(fifth);
-    __rhinoLocalCallback("RedirectCallback", redirectFields);
-    return;
-  }
-  if (a.length === 6) {
-    redirectFields.statusParameter = String(fourth);
-    redirectFields.redirectBackUrlCookie = String(fifth);
-    redirectFields.setTrackingCookie = Boolean(sixth);
+  if (a.length >= 3 && a.length <= 6) {
     __rhinoLocalCallback("RedirectCallback", redirectFields);
     return;
   }
@@ -971,6 +983,9 @@ function __rhinoLocalAttributeCallback(type, args) {
     prompt: String(args[1]),
     value: args[2],
     required: Boolean(args[3]),
+    policies: [],
+    failedPolicies: [],
+    validateOnly: false,
   };
   if (args.length === 4) {
     __rhinoLocalCallback(type, fields);
@@ -1032,11 +1047,12 @@ callbacksBuilder.validatedUsernameCallback = function (
     prompt: String(prompt),
     policies: policies,
     validateOnly: Boolean(validateOnly),
+    failedPolicies: [],
   };
   if (arguments.length === 4) {
     userFields.failedPolicies = failedPolicies;
   }
-  __rhinoLocalCallback("ValidatedUsernameCallback", userFields);
+  __rhinoLocalCallback("ValidatedCreateUsernameCallback", userFields);
 };
 
 callbacksBuilder.validatedPasswordCallback = function (
@@ -1058,11 +1074,12 @@ callbacksBuilder.validatedPasswordCallback = function (
     echoOn: Boolean(echoOn),
     policies: policies,
     validateOnly: Boolean(validateOnly),
+    failedPolicies: [],
   };
   if (arguments.length === 5) {
     pwFields.failedPolicies = failedPolicies;
   }
-  __rhinoLocalCallback("ValidatedPasswordCallback", pwFields);
+  __rhinoLocalCallback("ValidatedCreatePasswordCallback", pwFields);
 };
 
 function __rhinoLocalRequireSubmitted() {

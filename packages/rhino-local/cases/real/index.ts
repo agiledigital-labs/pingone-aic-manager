@@ -1379,11 +1379,11 @@ export const realCases: RealEntry[] = [
     },
     "base64/encode/bytes": {
       "ok": false,
-      "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (AIC Rhino Let Probe#82)"
+      "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (AIC Rhino Let Probe#86)"
     },
     "base64url/encode/bytes": {
       "ok": false,
-      "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (AIC Rhino Let Probe#87)"
+      "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (AIC Rhino Let Probe#91)"
     },
     "base64/decodeToBytes": {
       "ok": true,
@@ -1462,7 +1462,8 @@ export const realCases: RealEntry[] = [
       "value": {
         "type": "string",
         "length": 36,
-        "uuid": true
+        "uuid": true,
+        "v4": true
       }
     },
     "crypto/getRandomValues": {
@@ -1476,7 +1477,9 @@ export const realCases: RealEntry[] = [
           "number"
         ],
         "same": true,
-        "array": true
+        "array": true,
+        "int32": true,
+        "anyNegative": true
       }
     },
     "crypto/checkBcrypt/right": {
@@ -1619,7 +1622,7 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "utils.base64, utils.base64url, utils.types and utils.crypto are not mocked locally, so every probe records rhino-local's not-mocked error where AIC returns the value. Closing it means mocks for the tenant-independent members (encodings, byte conversion, UUID shape, getRandomValues, checkBcrypt).",
+        "utils.base64, base64url, types and crypto are not mocked locally yet: java.util.Base64, SecureRandom and UUID sit outside the scripted-decision class allow-list, so the mocks cannot reach them from the preamble. A host-side bridge is the planned fix; checkBcrypt stays a gap because the JDK has no bcrypt.",
       differs: ["base64/string/0","base64url/string/0","base64/string/1","base64url/string/1","base64/string/2","base64url/string/2","base64/encode/bytes","base64url/encode/bytes","base64/decodeToBytes","base64url/decodeToBytes","base64/invalid","base64url/invalid","types/roundtrip","crypto/randomUUID","crypto/getRandomValues","crypto/checkBcrypt/right","crypto/checkBcrypt/wrong","subtle/digest/SHA-256","subtle/sign/HMAC/options","subtle/sign/HMAC/string","subtle/verify/right","subtle/verify/tampered","subtle/encrypt/string","subtle/decrypt/string","subtle/encrypt/decrypt/options","subtle/generateKey/object","subtle/generateKey/string","subtle/deriveKey/object","subtle/deriveKey/string"],
     },
   }),
@@ -1934,7 +1937,7 @@ export const realCases: RealEntry[] = [
     },
     "encrypt/RSA/generatedKey": {
       "ok": false,
-      "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.crypto.subtle.ScriptSubtleService.encrypt(string,org.forgerock.openam.scripting.javascript.MapScriptWrapper,[B). (AIC Rhino Let Probe#94)"
+      "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.crypto.subtle.ScriptSubtleService.encrypt(string,org.forgerock.openam.scripting.javascript.MapScriptWrapper,[B). (AIC Rhino Let Probe#98)"
     },
     "sign/HMAC/object/hash-string": {
       "ok": true,
@@ -2399,46 +2402,79 @@ export const realCases: RealEntry[] = [
   // Live payload, verbatim (probe run 2026-09-29).
   ng("binding-action", "fixtures/binding-action.script.js", {
     "withIdentifiedUser/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withIdentifiedAgent/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withHeader/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withMaxSessionTime/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withMaxIdleTime/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "putSessionProperty/2": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withDescription/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withStage/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withErrorMessage/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withLockoutMessage/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "removeSessionProperty/1": {
-      "ok": true
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
     },
     "withMaxSessionTime/bad": {
       "ok": false,
-      "error": "InternalError: Cannot convert x to java.lang.Integer (AIC Rhino Let Probe#96)"
+      "error": "InternalError: Cannot convert x to java.lang.Integer (AIC Rhino Let Probe#100)"
     }
   }, {
     gap: {
       reason:
-        "withMaxSessionTime(\"x\") returns the wrapper locally; AIC throws \"Cannot convert x to java.lang.Integer\".",
+        "withMaxSessionTime(\"x\") throws the same message locally, but AIC appends the calling script's \"(name#line)\" location and the mock-thrown InternalError carries none.",
       differs: ["withMaxSessionTime/bad"],
     },
   }),
@@ -2524,7 +2560,7 @@ export const realCases: RealEntry[] = [
     },
     "systemEnv.getProperty-3-class": {
       "ok": false,
-      "error": "InternalError: Java class \"java.lang.Integer\" has no public instance field or method named \"class\". (AIC Rhino Let Probe#96)"
+      "error": "InternalError: Java class \"java.lang.Integer\" has no public instance field or method named \"class\". (AIC Rhino Let Probe#100)"
     },
     "systemEnv.getProperty-3-rhino-class-object": {
       "ok": false,
@@ -2642,7 +2678,7 @@ export const realCases: RealEntry[] = [
     },
     "jwtValidator.validateJwtClaims": {
       "ok": false,
-      "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.JwtValidatorScriptWrapper.validateJwtClaims(string). (AIC Rhino Let Probe#219)"
+      "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.JwtValidatorScriptWrapper.validateJwtClaims(string). (AIC Rhino Let Probe#223)"
     },
     "policy.evaluate": {
       "ok": false,
@@ -3072,6 +3108,452 @@ export const realCases: RealEntry[] = [
       reason:
         "idRepository.createUser is not mocked locally; this AIC environment refuses it (\"User creation through identity repository is not allowed in this environment\") after a ClassCastException for non-array attribute values.",
       differs: ["createUser/2","createUser/3","createUser/3/arrays","createUser/duplicate"],
+    },
+  }),
+  // Live callbacks, parsed from the probe run's /authenticate body (2026-09-29).
+  realCase({
+    name: "binding-callbacks-builder",
+    kind: "nextgen",
+    origin: "scripts/rhino-script-tester/fixtures/binding-callbacks-builder.script.js",
+    given: firstVisit(),
+    expect: {
+      // AIC sends the callbacks and decides nothing; the harness records the
+      // script's outcome alongside them, as for every probe case here.
+      outcome: "ok",
+      callbacks: [
+        {
+          "type": "ChoiceCallback",
+          "prompt": "probe-0",
+          "choices": [
+            "left-1",
+            "right-1"
+          ],
+          "defaultChoice": 1,
+          "radio": true
+        },
+        {
+          "type": "SuspendedTextOutputCallback",
+          "message": "probe-11",
+          "messageType": "2"
+        },
+        {
+          "type": "TextInputCallback",
+          "prompt": "probe-20",
+          "defaultText": "probe-21"
+        },
+        {
+          "type": "TextInputCallback",
+          "prompt": "probe-30",
+          "defaultText": ""
+        },
+        {
+          "type": "TextOutputCallback",
+          "message": "probe-40",
+          "messageType": "4"
+        },
+        {
+          "type": "MetadataCallback",
+          "data": {
+            "marker": "object-50"
+          }
+        },
+        {
+          "type": "StringAttributeInputCallback",
+          "name": "probe-60",
+          "prompt": "probe-61",
+          "required": false,
+          "policies": [],
+          "failedPolicies": [
+            "left-64",
+            "right-64"
+          ],
+          "validateOnly": false,
+          "value": "probe-62"
+        },
+        {
+          "type": "StringAttributeInputCallback",
+          "name": "probe-70",
+          "prompt": "probe-71",
+          "required": false,
+          "policies": {
+            "marker": "object-74"
+          },
+          "failedPolicies": [],
+          "validateOnly": false,
+          "value": "probe-72"
+        },
+        {
+          "type": "StringAttributeInputCallback",
+          "name": "probe-80",
+          "prompt": "probe-81",
+          "required": false,
+          "policies": [],
+          "failedPolicies": [],
+          "validateOnly": false,
+          "value": "probe-82"
+        },
+        {
+          "type": "StringAttributeInputCallback",
+          "name": "probe-90",
+          "prompt": "probe-91",
+          "required": false,
+          "policies": {
+            "marker": "object-94"
+          },
+          "failedPolicies": [
+            "left-96",
+            "right-96"
+          ],
+          "validateOnly": false,
+          "value": "probe-92"
+        },
+        {
+          "type": "NumberAttributeInputCallback",
+          "name": "probe-100",
+          "prompt": "probe-101",
+          "required": false,
+          "policies": {
+            "marker": "object-104"
+          },
+          "failedPolicies": [],
+          "validateOnly": false,
+          "value": 103
+        },
+        {
+          "type": "NumberAttributeInputCallback",
+          "name": "probe-110",
+          "prompt": "probe-111",
+          "required": false,
+          "policies": [],
+          "failedPolicies": [
+            "left-114",
+            "right-114"
+          ],
+          "validateOnly": false,
+          "value": 113
+        },
+        {
+          "type": "NumberAttributeInputCallback",
+          "name": "probe-120",
+          "prompt": "probe-121",
+          "required": false,
+          "policies": [],
+          "failedPolicies": [],
+          "validateOnly": false,
+          "value": 123
+        },
+        {
+          "type": "NumberAttributeInputCallback",
+          "name": "probe-130",
+          "prompt": "probe-131",
+          "required": false,
+          "policies": {
+            "marker": "object-134"
+          },
+          "failedPolicies": [
+            "left-136",
+            "right-136"
+          ],
+          "validateOnly": false,
+          "value": 133
+        },
+        {
+          "type": "BooleanAttributeInputCallback",
+          "name": "probe-140",
+          "prompt": "probe-141",
+          "required": false,
+          "policies": [],
+          "failedPolicies": [
+            "left-144",
+            "right-144"
+          ],
+          "validateOnly": false,
+          "value": true
+        },
+        {
+          "type": "BooleanAttributeInputCallback",
+          "name": "probe-150",
+          "prompt": "probe-151",
+          "required": false,
+          "policies": {
+            "marker": "object-154"
+          },
+          "failedPolicies": [
+            "left-156",
+            "right-156"
+          ],
+          "validateOnly": false,
+          "value": true
+        },
+        {
+          "type": "BooleanAttributeInputCallback",
+          "name": "probe-160",
+          "prompt": "probe-161",
+          "required": false,
+          "policies": [],
+          "failedPolicies": [],
+          "validateOnly": false,
+          "value": true
+        },
+        {
+          "type": "BooleanAttributeInputCallback",
+          "name": "probe-170",
+          "prompt": "probe-171",
+          "required": false,
+          "policies": {
+            "marker": "object-174"
+          },
+          "failedPolicies": [],
+          "validateOnly": false,
+          "value": true
+        },
+        {
+          "type": "LanguageCallback"
+        },
+        {
+          "type": "IdPCallback",
+          "provider": "probe-190",
+          "clientId": "probe-191",
+          "redirectUri": "probe-192",
+          "scopes": [
+            "left-193",
+            "right-193"
+          ],
+          "nonce": "probe-194",
+          "acrValues": [
+            "left-197",
+            "right-197"
+          ],
+          "request": "probe-195",
+          "acceptsJSON": true,
+          "requestUri": "probe-196"
+        },
+        {
+          "type": "IdPCallback",
+          "provider": "probe-200",
+          "clientId": "probe-201",
+          "redirectUri": "probe-202",
+          "scopes": [
+            "left-203",
+            "right-203"
+          ],
+          "nonce": "probe-204",
+          "acrValues": [
+            "left-207",
+            "right-207"
+          ],
+          "request": "probe-205",
+          "acceptsJSON": true,
+          "requestUri": "probe-206"
+        },
+        {
+          "type": "ConsentMappingCallback",
+          "name": "probe-260",
+          "displayName": "probe-261",
+          "icon": "probe-262",
+          "accessLevel": "probe-263",
+          "isRequired": true,
+          "message": "probe-265",
+          "fields": [
+            "left-264",
+            "right-264"
+          ]
+        },
+        {
+          "type": "ConsentMappingCallback",
+          "name": "probe-270",
+          "displayName": "probe-272",
+          "icon": "probe-273",
+          "accessLevel": "probe-274",
+          "isRequired": true,
+          "message": "probe-271",
+          "fields": [
+            null
+          ]
+        },
+        {
+          "type": "DeviceProfileCallback",
+          "metadata": true,
+          "location": false,
+          "message": "probe-282"
+        },
+        {
+          "type": "KbaCreateCallback",
+          "prompt": "probe-290",
+          "predefinedQuestions": [
+            "left-291",
+            "right-291"
+          ],
+          "allowUserDefinedQuestions": true
+        },
+        {
+          "type": "SelectIdPCallback",
+          "providers": {
+            "marker": "object-300"
+          },
+          "value": ""
+        },
+        {
+          "type": "TermsAndConditionsCallback",
+          "version": "probe-310",
+          "terms": "probe-311",
+          "createDate": "probe-312"
+        },
+        {
+          "type": "ChoiceCallback",
+          "prompt": "probe-320",
+          "choices": [
+            "left-321",
+            "right-321"
+          ],
+          "defaultChoice": 1
+        },
+        {
+          "type": "PasswordCallback",
+          "prompt": "probe-330"
+        },
+        {
+          "type": "NameCallback",
+          "prompt": "probe-340"
+        },
+        {
+          "type": "NameCallback",
+          "prompt": "probe-350"
+        },
+        {
+          "type": "HiddenValueCallback",
+          "value": "probe-361",
+          "id": "probe-360"
+        },
+        {
+          "type": "RedirectCallback",
+          "redirectUrl": "probe-370",
+          "redirectMethod": "probe-372",
+          "trackingCookie": false,
+          "redirectData": {
+            "marker": "object-371"
+          }
+        },
+        {
+          "type": "RedirectCallback",
+          "redirectUrl": "probe-380",
+          "redirectMethod": "probe-382",
+          "trackingCookie": false,
+          "redirectData": {
+            "marker": "object-381"
+          }
+        },
+        {
+          "type": "RedirectCallback",
+          "redirectUrl": "probe-390",
+          "redirectMethod": "probe-392",
+          "trackingCookie": false,
+          "redirectData": {
+            "marker": "object-391"
+          }
+        },
+        {
+          "type": "RedirectCallback",
+          "redirectUrl": "probe-400",
+          "redirectMethod": "probe-402",
+          "trackingCookie": false,
+          "redirectData": {
+            "marker": "object-401"
+          }
+        },
+        {
+          "type": "ConfirmationCallback",
+          "prompt": "",
+          "messageType": 1,
+          "options": [],
+          "optionType": 0,
+          "defaultOption": 1
+        },
+        {
+          "type": "ConfirmationCallback",
+          "prompt": "",
+          "messageType": 2,
+          "options": [
+            "left-421",
+            "right-421"
+          ],
+          "optionType": -1,
+          "defaultOption": 1
+        },
+        {
+          "type": "ConfirmationCallback",
+          "prompt": "probe-430",
+          "messageType": 0,
+          "options": [],
+          "optionType": 2,
+          "defaultOption": 3
+        },
+        {
+          "type": "ConfirmationCallback",
+          "prompt": "probe-440",
+          "messageType": 1,
+          "options": [
+            "left-442",
+            "right-442"
+          ],
+          "optionType": -1,
+          "defaultOption": 0
+        },
+        {
+          "type": "PollingWaitCallback",
+          "waitTime": "probe-450",
+          "message": "probe-451"
+        },
+        {
+          "type": "TextOutputCallback",
+          "message": "probe-461",
+          "messageType": "1"
+        },
+        {
+          "type": "ValidatedCreateUsernameCallback",
+          "policies": {
+            "marker": "object-471"
+          },
+          "failedPolicies": [
+            "left-473",
+            "right-473"
+          ],
+          "validateOnly": true,
+          "prompt": "probe-470"
+        },
+        {
+          "type": "ValidatedCreateUsernameCallback",
+          "policies": {
+            "marker": "object-481"
+          },
+          "failedPolicies": [],
+          "validateOnly": true,
+          "prompt": "probe-480"
+        },
+        {
+          "type": "ValidatedCreatePasswordCallback",
+          "echoOn": false,
+          "policies": {
+            "marker": "object-492"
+          },
+          "failedPolicies": [
+            "left-494",
+            "right-494"
+          ],
+          "validateOnly": false,
+          "prompt": "probe-490"
+        },
+        {
+          "type": "ValidatedCreatePasswordCallback",
+          "echoOn": false,
+          "policies": {
+            "marker": "object-502"
+          },
+          "failedPolicies": [],
+          "validateOnly": false,
+          "prompt": "probe-500"
+        }
+      ],
     },
   }),
 ];

@@ -2,7 +2,8 @@
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-action — differs on withMaxSessionTime/bad > withMaxSessionTime/bad 1`] = `
 {
-  "ok": true,
+  "error": "InternalError: Cannot convert x to java.lang.Integer",
+  "ok": false,
 }
 `;
 
