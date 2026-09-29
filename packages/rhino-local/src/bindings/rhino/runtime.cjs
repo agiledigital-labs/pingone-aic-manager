@@ -15,7 +15,10 @@ var __rhinoLocal = {
   initialSecure: {},
   managed: {},
   esv: {},
+  esvProvided: false,
   secrets: {},
+  secretsProvided: false,
+  bindings: {},
   submittedCallbacks: null,
   httpStubs: [],
   generatedId: 0,
@@ -682,7 +685,7 @@ logger.error = function () {
 };
 
 logger.isTraceEnabled = function () {
-  return true;
+  return false;
 };
 
 logger.isDebugEnabled = function () {
@@ -2166,17 +2169,106 @@ idRepository.getIdentity = function (userName) {
   };
 };
 
+idRepository.createUser = function (userName, password, attributes) {
+  if (arguments.length === 3 && __rhinoLocalIsPlainObject(attributes)) {
+    var names = Object.keys(attributes);
+    var i;
+    for (i = 0; i < names.length; i += 1) {
+      if (!Array.isArray(attributes[names[i]])) {
+        throw new InternalError(
+          "class java.lang.String cannot be cast to class java.util.Collection (java.lang.String and java.util.Collection are in module java.base of loader 'bootstrap')"
+        );
+      }
+    }
+  }
+  throw new InternalError(
+    "User creation through identity repository is not allowed in this environment"
+  );
+};
+
 systemEnv = {
-  getProperty: function (key) {
-    __rhinoLocalExpectArity("systemEnv.getProperty", arguments, 1);
+  getProperty: function (key, defaultValue, returnType) {
+    if (arguments.length < 1 || arguments.length > 3) {
+      throw new Error("rhino-local: systemEnv.getProperty arity=" + arguments.length);
+    }
     var k = String(key);
-    if (!__rhinoLocalHas(__rhinoLocal.esv, k)) {
+    if (!__rhinoLocal.esvProvided) {
       throw new Error(
         "rhino-local: systemEnv.getProperty: no given.esv entry for " +
           JSON.stringify(k)
       );
     }
-    return __rhinoLocal.esv[k];
+    var value = __rhinoLocalHas(__rhinoLocal.esv, k)
+      ? __rhinoLocal.esv[k]
+      : arguments.length === 1
+        ? null
+        : defaultValue;
+    if (arguments.length < 3 || value === null) {
+      return value;
+    }
+    var type;
+    if (typeof returnType === "string") {
+      type = returnType.toLowerCase();
+    } else {
+      var classType = String(returnType).match(/^\[JavaClass java\.lang\.(Integer|String|Boolean|Double)\]$/);
+      if (!classType) {
+        throw new InternalError("Property resolution failed");
+      }
+      type = classType[1].toLowerCase();
+    }
+    if (type === "string") {
+      return String(value);
+    }
+    if (type === "integer" || type === "number") {
+      var number = Number(value);
+      if (isNaN(number)) {
+        throw new InternalError("Property resolution failed");
+      }
+      return number;
+    }
+    if (type === "double") {
+      var doubleValue = Number(value);
+      if (isNaN(doubleValue)) {
+        throw new InternalError("Property resolution failed");
+      }
+      return doubleValue;
+    }
+    if (type === "boolean") {
+      return String(value).toLowerCase() === "true";
+    }
+    if (type === "object" || type === "map") {
+      try {
+        var parsed = JSON.parse(String(value));
+        if (!__rhinoLocalIsPlainObject(parsed)) {
+          throw new Error("not a map");
+        }
+        __rhinoLocalHide(parsed, "toString", function () {
+          return __rhinoLocalJavaMapString(parsed).replace(/([0-9]+)\.0\b/g, "$1");
+        });
+        __rhinoLocalHide(parsed, "size", function () {
+          return Object.keys(parsed).filter(function (name) {
+            return name !== "toString" && name !== "size";
+          }).length;
+        });
+        return parsed;
+      } catch (e) {
+        throw new InternalError("Property resolution failed");
+      }
+    }
+    if (type === "array" || type === "list") {
+      var values;
+      try {
+        values = String(value).split(",");
+      } catch (e) {
+        throw new InternalError("Property resolution failed");
+      }
+      var list = new java.util.ArrayList();
+      for (var j = 0; j < values.length; j += 1) {
+        list.add(values[j]);
+      }
+      return list;
+    }
+    throw new InternalError("Unsupported return type: " + returnType);
   },
 };
 
@@ -2192,6 +2284,11 @@ function __rhinoLocalSecret(value) {
 function __rhinoLocalRequireSecret(method, secretId) {
   var id = String(secretId);
   if (!__rhinoLocalHas(__rhinoLocal.secrets, id)) {
+    if (__rhinoLocal.secretsProvided) {
+      throw new Error(
+        "rhino-local: secrets." + method + ": Secret id " + id + " not accessible"
+      );
+    }
     throw new Error(
       "rhino-local: secrets." +
         method +
@@ -2225,6 +2322,48 @@ secrets.getSigningKey = function (secretId) {
 secrets.getVerificationKey = function (secretId) {
   __rhinoLocalExpectArity("secrets.getVerificationKey", arguments, 1);
   return __rhinoLocalRequireSecret("getVerificationKey", secretId);
+};
+
+cacheManager.exists = function (cacheName) {
+  __rhinoLocalExpectArity("cacheManager.exists", arguments, 1);
+  return false;
+};
+
+cacheManager.named = function (cacheName) {
+  __rhinoLocalExpectArity("cacheManager.named", arguments, 1);
+  return null;
+};
+
+journey.name = function () {
+  __rhinoLocalExpectArity("journey.name", arguments, 0);
+  var seed = __rhinoLocal.bindings.journey;
+  if (!seed || seed.name === undefined) {
+    throw new Error(
+      "rhino-local: journey.name: no given.bindings.journey.name"
+    );
+  }
+  return seed.name;
+};
+
+journey.innerJourney = function () {
+  __rhinoLocalExpectArity("journey.innerJourney", arguments, 0);
+  return false;
+};
+
+journey.mustRun = function () {
+  __rhinoLocalExpectArity("journey.mustRun", arguments, 0);
+  return false;
+};
+
+journey.identityResource = function () {
+  __rhinoLocalExpectArity("journey.identityResource", arguments, 0);
+  var seed = __rhinoLocal.bindings.journey;
+  if (!seed || seed.identityResource === undefined) {
+    throw new Error(
+      "rhino-local: journey.identityResource: no given.bindings.journey.identityResource"
+    );
+  }
+  return seed.identityResource;
 };
 
 // Capture the Rhino builtin before we shadow it. A function declaration
@@ -2513,11 +2652,21 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
 
 function __rhinoLocalSeed(given) {
   given = given || {};
-  if (given.bindings) {
-    throw new Error(
-      "rhino-local: given.bindings seeding is not implemented; use a dedicated given.* field"
-    );
+  __rhinoLocal.bindings = __rhinoLocalClone(given.bindings || {});
+  var seeded = Object.keys(__rhinoLocal.bindings);
+  var s;
+  for (s = 0; s < seeded.length; s += 1) {
+    if (seeded[s] !== "journey") {
+      throw new Error(
+        "rhino-local: given.bindings." +
+          seeded[s] +
+          " seeding is not implemented; only given.bindings.journey is"
+      );
+    }
   }
+  // Measured null in a journey: every call is "Cannot call method … of null".
+  samlApplication = null;
+  oauthApplication = null;
   __rhinoLocal.shared = __rhinoLocalClone(given.sharedState || {});
   __rhinoLocal.transient = __rhinoLocalClone(given.transientState || {});
   __rhinoLocal.secure = __rhinoLocalClone(given.secureState || {});
@@ -2534,7 +2683,9 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.profileTenant = given.profileTenant || null;
   __rhinoLocal.profilePulledAt = given.profilePulledAt || null;
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
+  __rhinoLocal.esvProvided = given.esv !== undefined;
   __rhinoLocal.secrets = __rhinoLocalClone(given.secrets || {});
+  __rhinoLocal.secretsProvided = given.secrets !== undefined;
   __rhinoLocal.libraries = given.libraries
     ? __rhinoLocalClone(given.libraries)
     : {};
