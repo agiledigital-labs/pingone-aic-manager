@@ -29,6 +29,8 @@ function build(label, fn) {
   }
 }
 if (callbacks.isEmpty()) {
+  // No httpCallback / x509CertificateCallback: AM cannot render either as REST
+  // JSON (a 400 for the whole response), so their getters read empty lists.
   build("stringAttributeInputCallback/4", function () {
     callbacksBuilder.stringAttributeInputCallback(
       "attr",
@@ -93,12 +95,6 @@ if (callbacks.isEmpty()) {
   });
   build("validatedUsernameCallback/4", function () {
     callbacksBuilder.validatedUsernameCallback("Username", {}, false, []);
-  });
-  build("httpCallback/3", function () {
-    callbacksBuilder.httpCallback("auth", "nego", "");
-  });
-  build("x509CertificateCallback/2", function () {
-    callbacksBuilder.x509CertificateCallback("certificate", "prompt");
   });
   build("consentMappingCallback/3", function () {
     callbacksBuilder.consentMappingCallback({}, "Consent", true);

@@ -272,6 +272,129 @@ r.push({
   value: describe(resumedFromSuspend),
 });
 r.push({ name: "locales", ok: true, value: describe(locales) });
+// Round two (2026-09-29): round one showed a class argument is rejected and
+// "java.lang.Integer" is "Unsupported return type", so try the other spellings.
+var RETURN_TYPES = [
+  "string",
+  "number",
+  "boolean",
+  "object",
+  "array",
+  "list",
+  "map",
+  "java.lang.String",
+  "java.lang.Boolean",
+  "java.util.List",
+];
+for (var t = 0; t < RETURN_TYPES.length; t++) {
+  (function (rt) {
+    r.push(
+      probe("systemEnv.getProperty-3/" + rt, function () {
+        return systemEnv.getProperty("esv.rl.probe.absent", "42", rt);
+      })
+    );
+  })(RETURN_TYPES[t]);
+}
+var JWT_KEY = "0123456789abcdef0123456789abcdef";
+var JWT_DATA = {
+  jwtType: "SIGNED",
+  jwsAlgorithm: "HS256",
+  issuer: "https://example.com",
+  subject: "probe",
+  audience: "https://example.com",
+  type: "JWT",
+  validityMinutes: 1,
+  signingKey: utils.types.stringToBytes(JWT_KEY),
+};
+var jwt = null;
+r.push(
+  probe("jwtAssertion.generateJwt/empty", function () {
+    return jwtAssertion.generateJwt({});
+  })
+);
+r.push(
+  probe("jwtAssertion.generateJwt/HS256", function () {
+    jwt = jwtAssertion.generateJwt(JWT_DATA);
+    return typeof jwt + "/" + String(jwt).split(".").length + " parts";
+  })
+);
+// "Missing argument" with a byte[] signingKey: retry with the ESV-style string.
+r.push(
+  probe("jwtAssertion.generateJwt/HS256/string-key", function () {
+    var d = {};
+    for (var k in JWT_DATA) d[k] = JWT_DATA[k];
+    d.signingKey = JWT_KEY;
+    jwt = jwtAssertion.generateJwt(d);
+    return typeof jwt + "/" + String(jwt).split(".").length + " parts";
+  })
+);
+r.push(
+  probe("jwtValidator.validateJwtClaims/empty", function () {
+    return JSON.stringify(jwtValidator.validateJwtClaims({}));
+  })
+);
+r.push(
+  probe("jwtValidator.validateJwtClaims/HS256", function () {
+    return JSON.stringify(
+      jwtValidator.validateJwtClaims({
+        jwtType: "SIGNED",
+        jwt: jwt,
+        issuer: "https://example.com",
+        subject: "probe",
+        audience: "https://example.com",
+        type: "JWT",
+        verificationKey: utils.types.stringToBytes(JWT_KEY),
+      })
+    );
+  })
+);
+// { claims } is the subject shape AM accepts (the others are "Invalid value
+// subject"); oauth2Scopes is AM's stock policy set (the agent default is absent on AIC).
+r.push(
+  probe("policy.evaluate/claims/oauth2Scopes", function () {
+    return JSON.stringify(
+      policy.evaluate(
+        { claims: { sub: "rl-probe" } },
+        "oauth2Scopes",
+        ["https://example.com/"],
+        {}
+      )
+    );
+  })
+);
+r.push(
+  probe("policy.evaluateTree/claims/oauth2Scopes", function () {
+    return JSON.stringify(
+      policy.evaluateTree(
+        { claims: { sub: "rl-probe" } },
+        "oauth2Scopes",
+        "https://example.com/",
+        {}
+      )
+    );
+  })
+);
+var SUBJECTS = [
+  { ssoToken: "rl-probe" },
+  { jwt: "rl-probe" },
+  { claims: { sub: "rl-probe" } },
+];
+for (var q = 0; q < SUBJECTS.length; q++) {
+  (function (subject, label) {
+    r.push(
+      probe("policy.evaluate/" + label, function () {
+        return JSON.stringify(
+          policy.evaluate(
+            subject,
+            "rl-probe-missing",
+            ["https://example.com/"],
+            {}
+          )
+        );
+      })
+    );
+  })(SUBJECTS[q], Object.keys(SUBJECTS[q])[0]);
+}
 if (callbacks.isEmpty())
   callbacksBuilder.hiddenValueCallback("result", JSON.stringify(r));
 outcome = "ok";

@@ -25,6 +25,9 @@ FIXTURES_DIR="${FIXTURES_DIR:-$SCRIPT_DIR/fixtures}"
 OUT_DIR="${OUT_DIR:-$ROOT/tmp/rhino-script-tester}"
 FETCH_LOGS="${FETCH_LOGS:-0}"
 RESUBMIT="${RESUBMIT:-0}"
+# RAW=1 records the whole response body even when it carries a
+# HiddenValueCallback -- for fixtures whose subject IS the callbacks.
+RAW="${RAW:-0}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 1; }; }
 need base64; need curl; need jq
@@ -72,7 +75,7 @@ for fx in "${fixtures[@]}"; do
   txid="$(awk 'tolower($1)=="x-forgerock-transactionid:" {print $2}' "$headers" | tr -d '\r' | tail -n 1)"
   hidden="$(jq -r '.callbacks[]? | select(.type=="HiddenValueCallback") | .output[]? | select(.name=="value") | .value' "$body" 2>/dev/null | head -n 1)"
 
-  if [[ -n "$hidden" && "$hidden" != "null" ]]; then
+  if [[ "$RAW" != "1" && -n "$hidden" && "$hidden" != "null" ]]; then
     callback="parsed"
     payload="$hidden"
   else
