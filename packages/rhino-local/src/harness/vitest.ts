@@ -1,7 +1,10 @@
 import { relative } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect } from "vitest";
 import type { z } from "zod";
-import type { File, Suite as VitestSuite } from "vitest";
+import type {
+  RunnerTestFile as File,
+  RunnerTestSuite as VitestSuite,
+} from "vitest";
 import { AicFileLease } from "../aic/file-lease.ts";
 import { chainFromRunResult } from "../aic/conform.ts";
 import type { AicIo } from "../aic/tenant.ts";
@@ -107,7 +110,9 @@ export function useLease<TSchema extends z.ZodType>(
     testName: () => expect.getState().currentTestName ?? suite.spec.name,
   } as LeaseOptions);
 
-  beforeAll(async (scope) => {
+  // Vitest 5 requires fixture destructuring before the suite argument.
+  // eslint-disable-next-line no-empty-pattern
+  beforeAll(async ({}, scope) => {
     runner = await RhinoRunner.spawn();
     lease.open();
     if (options.aic !== undefined) {

@@ -26,7 +26,8 @@ export function parseHarvest(raw: string): RecordedEffects {
     parsed = JSON.parse(raw) as unknown;
   } catch (error) {
     throw new Error(
-      `rhino-local: harvest is not JSON: ${error instanceof Error ? error.message : String(error)}`
+      `rhino-local: harvest is not JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
     );
   }
   if (!isPlainObject(parsed)) {

@@ -115,6 +115,8 @@ CI_STEPS_REPRODUCED=(
   "Scan introduced history"
   "Gitleaks (credentials)"
   "Cargo audit (advisories)"
+  "npm audit (rhino-local lockfile)"
+  "npm audit (shipped templates)"
   "Shellcheck (all scripts)"
   "Format"
   "Clippy (default)"
@@ -287,6 +289,16 @@ gate "cargo audit: advisories" \
   (cargo update -p <crate>); ignore it in .cargo/audit.toml only when no fix
   exists, with the reason and the condition for removing the ignore." \
   "$CARGO_AUDIT_BIN" audit
+
+# npm audit reads package-lock.json without node_modules. The shipped templates
+# have no lockfile; scripts/npm-audit-templates.sh resolves and audits each.
+gate "npm audit (rhino-local)" \
+  "an npm dependency has a security advisory (see above)" \
+  npm audit --audit-level=low
+
+gate "npm audit (shipped templates)" \
+  "a shipped template dependency has a security advisory (see above)" \
+  scripts/npm-audit-templates.sh
 
 # --- shell -------------------------------------------------------------------
 #
