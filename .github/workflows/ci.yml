@@ -118,6 +118,23 @@ jobs:
             | tar -xz -C /tmp "${name}/cargo-audit"
           "/tmp/${name}/cargo-audit" audit
 
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: npm audit (rhino-local lockfile)
+        run: npm audit --audit-level=low
+
+      - name: npm audit (shipped templates)
+        run: scripts/npm-audit-templates.sh
+
   gate:
     name: fmt + clippy + test
     runs-on: ubuntu-22.04
