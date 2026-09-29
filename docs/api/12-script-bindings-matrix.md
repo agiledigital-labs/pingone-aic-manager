@@ -1479,12 +1479,15 @@ unprompted.
 
 ### Next-gen scripted decision: every binding member (verified 2026-09-29)
 
-Every member in `docs/api/bindings/scripted-decision-next.json` was called on
-the sandbox tenant by the `scripts/rhino-script-tester/fixtures/binding-*`
-probes, and each fixture's live payload is committed as a real-script corpus
-case in `packages/rhino-local/cases/real/index.ts` — the raw evidence for every
-row below. Two runs were byte-identical once Java identity hashes were masked.
-Where the local harness still differs, the case records a `KnownGap`.
+Every member in `docs/api/bindings/scripted-decision-next.json` except
+`emailService.send` (it sends mail) was called on the sandbox tenant by the
+`scripts/rhino-script-tester/fixtures/binding-*` probes. Each fixture's live
+payload is committed as a real-script corpus case in
+`packages/rhino-local/cases/real/index.ts` — the raw evidence for the rows
+below — except `binding-callbacks-http` and `binding-callbacks-x509`, whose
+result is the failed `/authenticate` response quoted here. Two runs were
+byte-identical once Java identity hashes were masked. Where the local harness
+still differs, the case records a `KnownGap`.
 
 **`utils`**
 
@@ -1496,9 +1499,10 @@ Where the local harness still differs, the case records a `KnownGap`.
   `base64url.decode` returns `null`. Same input, different contract.
 - `types.stringToBytes` returns a Java `byte[]` of **signed** values (`é` is
   `-61, -87`); `bytesToString` round-trips it.
-- `crypto.randomUUID`: a 36-character v4 string. `getRandomValues(array)`
-  fills the JS array in place with signed 32-bit ints and returns the **same**
-  array.
+- `crypto.randomUUID`: a 36-character string with version nibble `4` and an
+  RFC 4122 variant. `getRandomValues(array)`
+  fills the JS array in place with 32-bit integers, negative ones included, and
+  returns the **same** array.
 - `crypto.checkBcrypt(hash, password)`: `true`/`false` against a `$2b$` hash.
 
 **`utils.crypto.subtle`** — AM's own algorithm names, not WebCrypto's:
@@ -1550,7 +1554,8 @@ Where the local harness still differs, the case records a `KnownGap`.
 - `getHiddenValueCallbacks()` returns a **Map** `{ id: value }`, not a List:
   `.get(0)` is `null`.
 - `Idp`, `ValidatedPassword`/`ValidatedUsername` and `KbaCreate` return Lists
-  of maps (`{ validateOnly, value }`, `{ selectedAnswer, selectedQuestion }`).
+  of maps (`{ validateOnly, value }`, `{ selectedAnswer, selectedQuestion }`);
+  `ConsentMapping` a List of booleans.
 
 **`action`**: every `with*`, `putSessionProperty` and `removeSessionProperty`
 returns the same wrapper. `withMaxSessionTime("x")` throws
@@ -1564,7 +1569,7 @@ returns the same wrapper. `withMaxSessionTime("x")` throws
   `"42"` is `false`), `"array"`/`"list"` → a Java List split on commas **without
   trimming** (`"a, b"` has `" b"`), `"object"`/`"map"` → the value parsed as
   JSON. A Rhino class reference also works (`java.lang.Integer`, not
-  `java.lang.Integer.class`).
+  `java.lang.Integer.class`), though the workspace types do not declare it.
 - A value that does not convert throws `Property resolution failed`; any other
   name (`"int"`, `"java.lang.Integer"`) throws `Unsupported return type: …`.
 

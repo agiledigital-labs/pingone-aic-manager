@@ -130,6 +130,10 @@ r.push(
       type: typeof x,
       length: String(x).length,
       uuid: /^[0-9a-f-]{36}$/i.test(String(x)),
+      // Version nibble 4 and an RFC 4122 variant (8, 9, a or b).
+      v4: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        String(x)
+      ),
     };
   })
 );
@@ -142,11 +146,30 @@ r.push(
     for (var j = 0; j < a.length; j++) {
       types.push(typeof a[j]);
     }
+    // 64 values: whether each is a 32-bit integer, and whether any is
+    // negative (all 64 non-negative by chance is 2^-64 for signed ints).
+    var big = [];
+    for (var m = 0; m < 64; m++) {
+      big.push(0);
+    }
+    utils.crypto.getRandomValues(big);
+    var int32 = true;
+    var negative = false;
+    for (var n = 0; n < big.length; n++) {
+      if ((big[n] | 0) !== big[n]) {
+        int32 = false;
+      }
+      if (big[n] < 0) {
+        negative = true;
+      }
+    }
     return {
       length: a.length,
       types: types,
       same: x === a,
       array: Array.isArray(x),
+      int32: int32,
+      anyNegative: negative,
     };
   })
 );

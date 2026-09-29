@@ -420,12 +420,9 @@ interface SystemEnv {
     defaultValue: StringLike,
     returnType: "object" | "map"
   ): JavaMap<JavaString, any>;
-  /** A Rhino Java class reference such as `java.lang.Integer` (not `.class`). */
-  getProperty(
-    propertyName: StringLike,
-    defaultValue: StringLike,
-    returnType: object
-  ): any;
+  // AM also accepts a Rhino Java class reference (`java.lang.Integer`, not
+  // `.class`). It is not declared: `java` has no type in this leaf, and an
+  // `object` parameter would let any value bypass the overloads above.
 }
 
 interface CallbacksBuilder {

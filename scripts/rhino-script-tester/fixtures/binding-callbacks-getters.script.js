@@ -113,7 +113,18 @@ if (callbacks.isEmpty()) {
     callbacksBuilder.validatedUsernameCallback("Username", {}, false, []);
   });
   build("consentMappingCallback/3", function () {
-    callbacksBuilder.consentMappingCallback({}, "Consent", true);
+    // `fields` is required (binding-callbacks-builder measured the throw).
+    callbacksBuilder.consentMappingCallback(
+      {
+        name: "consent",
+        displayName: "Consent",
+        icon: "",
+        accessLevel: "",
+        fields: [],
+      },
+      "Consent",
+      true
+    );
   });
   build("deviceProfileCallback/3", function () {
     callbacksBuilder.deviceProfileCallback(true, true, "Device");
