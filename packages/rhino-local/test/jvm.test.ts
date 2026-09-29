@@ -101,7 +101,8 @@ describe("JVM configuration", () => {
   });
 });
 
-describe("ensureRhinoJar", () => {
+// A cold fetch or a javac compile on a loaded CI runner outlasts the 5 s default.
+describe("ensureRhinoJar", { timeout: 60_000 }, () => {
   // The real jar, from the real cache (downloading it on a cold one), so the
   // "good" payload is the verified artefact and not a copy of the check.
   let goodJar: Buffer;
@@ -179,7 +180,8 @@ describe("ensureRhinoJar", () => {
   });
 });
 
-describe("ensureRunnerClasses", () => {
+// A cold fetch or a javac compile on a loaded CI runner outlasts the 5 s default.
+describe("ensureRunnerClasses", { timeout: 60_000 }, () => {
   let jar: string;
   beforeAll(async () => {
     jar = await ensureRhinoJar(cacheDir());

@@ -8,14 +8,16 @@ import { blockedCases, gapCases, realCases, runnableCases } from "../../cases/re
 import { PROBE_SOURCE_NAME, type RealEntry } from "../../cases/real/load.ts";
 
 function runOptions(entry: RealEntry, sourceName: string): RunCaseOptions {
-  const options: RunCaseOptions = { sourceName, timeoutMs: 5_000 };
+  // RSA key generation (binding-utils-subtle) runs past 5 s on a loaded CI
+  // runner; locally every case finishes in well under one.
+  const options: RunCaseOptions = { sourceName, timeoutMs: 20_000 };
   if (entry.libraries !== undefined) {
     options.libraries = entry.libraries;
   }
   return options;
 }
 
-describe("real scripted-decision corpus", () => {
+describe("real scripted-decision corpus", { timeout: 30_000 }, () => {
   let runner: RhinoRunner;
 
   beforeAll(async () => {
