@@ -301,7 +301,9 @@ export async function ensureRhinoJar(
       actual = sha256(readFileSync(override));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`rhino-local: ${RHINO_JAR_ENV}=${override} cannot be read: ${detail}`);
+      throw new Error(`rhino-local: ${RHINO_JAR_ENV}=${override} cannot be read: ${detail}`, {
+        cause: error,
+      });
     }
     if (actual !== RHINO_JAR.sha256) {
       throw new Error(
@@ -382,7 +384,7 @@ async function compileRunner(
       { timeout: 120_000, maxBuffer: 4_000_000 }
     );
   } catch (error) {
-    throw new Error(noClassesMessage(javac, prebuilt, error));
+    throw new Error(noClassesMessage(javac, prebuilt, error), { cause: error });
   }
 }
 
@@ -430,7 +432,7 @@ export async function ensureRunnerClasses(
   try {
     compiler = await javacVersion(javac);
   } catch (error) {
-    throw new Error(noClassesMessage(javac, prebuilt, error));
+    throw new Error(noClassesMessage(javac, prebuilt, error), { cause: error });
   }
   const digest = createHash("sha256")
     .update(`${sources.sourceDigest}\0javac\0${compiler}`)

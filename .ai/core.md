@@ -301,10 +301,12 @@ cargo clippy --all-targets --features logs-store -- -D warnings
 cargo test --features logs-store
 ```
 
-CI runs twelve more that these do not cover: the sensitive-metadata scanner
+CI runs fourteen more that these do not cover: the sensitive-metadata scanner
 (`--selftest`, `--tracked`, the pushed range), gitleaks over the history,
-`cargo audit` over `Cargo.lock` (ignores, each with its reason, in
-`.cargo/audit.toml`),
+`cargo audit --deny warnings` over `Cargo.lock` (ignores, each with its reason,
+in `.cargo/audit.toml`), `npm audit` over `package-lock.json` and over the three
+shipped templates' resolved trees (`scripts/npm-audit-templates.sh`; no ignore
+mechanism, so an unfixable advisory has to be dealt with, not waved through),
 `scripts/shellcheck-all.sh`, and the two TypeScript gates —
 `scripts/type-tests/run.sh` and `npm run type-check` in
 `src/scripts/templates/typescript`, and four for the rhino-local harness
@@ -315,7 +317,7 @@ which installs the packed tarball outside the checkout and runs it with no
 be green while the declarations they emit do not type-check, and no cargo gate
 reads a line of shell.
 
-`scripts/release-check.sh` runs **all seventeen** and refuses to report ready if
+`scripts/release-check.sh` runs **all nineteen** and refuses to report ready if
 any fails, so before a release that is the one command to run. It also fails
 when `ci.yml` gains or loses a step it does not account for — the two drifted
 apart before, and a release cut from a stale gate list is discovered by a red

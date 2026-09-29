@@ -51,7 +51,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rsa = "0.9"
 sha2 = "0.11"
-base64 = "0.22"
+base64 = "0.23"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -87,8 +87,8 @@ pkcs8          = { version = "0.10", features = ["alloc"] }
 # Misc
 uuid        = { version = "1", features = ["v4", "serde"] }
 chrono      = { version = "0.4", features = ["serde"] }
-toml        = "0.8"
-directories = "5"
+toml        = "1.1"
+directories = "6"
 
 # Security keys (FIDO2 hmac-secret) — talks CTAP2 over USB HID to the device.
 # We initially tried webauthn-authenticator-rs but its USB backend
@@ -105,7 +105,7 @@ libc       = "0.2"
 
 # Interactive single-select fuzzy picker for `aic script pull`/`push` with no
 # argument (type to filter, enter to choose).
-inquire    = "0.7"
+inquire    = "0.9"
 
 # Fuzzy matching for the ESV search (`/`) — the helix editor's matcher,
 # small, no_std-friendly, returns scored matches + indices we can use to

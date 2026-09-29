@@ -9,7 +9,7 @@ export function loadContext(path: string): ContextsDocument {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    throw new Error(`rhino-local: cannot parse ${path}: ${String(error)}`);
+    throw new Error(`rhino-local: cannot parse ${path}: ${String(error)}`, { cause: error });
   }
   return parseDocument(parsed, path);
 }
