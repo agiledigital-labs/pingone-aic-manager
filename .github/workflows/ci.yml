@@ -25,7 +25,7 @@ jobs:
     name: sensitive metadata
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -80,7 +80,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned, like gitleaks and cargo-audit. It used to be whatever the image
       # shipped (0.8.0 on ubuntu-22.04), which disagreed with 0.11.0 locally in
@@ -107,7 +107,7 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cargo audit (advisories)
         env:
@@ -122,10 +122,10 @@ jobs:
     name: npm audit
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -139,7 +139,7 @@ jobs:
     name: fmt + clippy + test
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # hidapi (via ctap-hid-fido2, for security-key unlock) needs libudev at
       # build time. DuckDB/SQLite use bundled C/C++ (compiled with the runner's
@@ -196,7 +196,7 @@ jobs:
     name: msrv (Cargo.toml rust-version)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
@@ -228,7 +228,7 @@ jobs:
     name: script workspace types
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The .d.ts files under src/scripts/templates/ carry real logic — the
       # `{}`-placeholder arity check, the managed-record `fields` projection —
@@ -239,7 +239,7 @@ jobs:
       # an unsupported runtime is not a faithful run of the thing being gated
       # even while npm only warns about it.
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -274,7 +274,7 @@ jobs:
     name: rhino-local harness
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The exact build in the AM image (Temurin-25.0.4+7). The harness itself
       # only insists on Java 25; pinning the patch here is what makes a
@@ -282,13 +282,13 @@ jobs:
       # setup-java matches Adoptium's full version string, so "25.0.4+7" finds
       # nothing, and a bare "25.0.4" would take the 25.0.4+101 rebuild.
       - name: Install Java (AM's Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "25.0.4+7.0.LTS"
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
