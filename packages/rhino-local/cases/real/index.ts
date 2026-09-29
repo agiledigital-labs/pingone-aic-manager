@@ -3344,11 +3344,6 @@ export const realCases: RealEntry[] = [
     }
   }, {
     allowUndeclared: {"sharedState":true,"transientState":true},
-    gap: {
-      reason:
-        "Not yet matched: mergeShared refuses nested objects on AIC (\"State must not contain nested objects unless they are inside registered state containers\") where the mock merges them; keys() is a Java collection (iterator()) where the mock returns a JS array; getObject prints as a Java map. Final state was not captured live, so the state channels are not judged.",
-      differs: ["getObject/object","mergeShared/returns-self","mergeShared/after/replaced-or-deep","mergeShared/after/new-key","keys"],
-    },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
   ng("binding-openidm-writes", "fixtures/binding-openidm-writes.script.js", {
@@ -3525,8 +3520,8 @@ export const realCases: RealEntry[] = [
     allowUndeclared: {"openidmWrites":true},
     gap: {
       reason:
-        "Not yet matched: the openidm mock accepts a duplicate create and a wrong _rev, ignores the fields argument, orders keys differently (AIC puts _id and _rev first), answers every action with {}, and reports absent records with a harness error rather than AIC's \"No Such Entry\". Writes were not captured live, so the write channel is not judged.",
-      differs: ["cleanup/before","create/5","create/duplicate","create/fields","update/null-rev","update/after","update/wrong-rev","patch/replace","patch/add-unknown-field","patch/bad-operation","patch/fields","create/4","update/4","update/5/fields","patch/4","delete/4/fields","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete/3","delete","delete/absent","update/absent"],
+        "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (it returns {}). Writes were not captured live, so the write channel is not judged.",
+      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
