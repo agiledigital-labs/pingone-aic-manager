@@ -1622,8 +1622,8 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "utils.base64, base64url, types and crypto are not mocked locally yet: java.util.Base64, SecureRandom and UUID sit outside the scripted-decision class allow-list, so the mocks cannot reach them from the preamble. A host-side bridge is the planned fix; checkBcrypt stays a gap because the JDK has no bcrypt.",
-      differs: ["base64/string/0","base64url/string/0","base64/string/1","base64url/string/1","base64/string/2","base64url/string/2","base64/encode/bytes","base64url/encode/bytes","base64/decodeToBytes","base64url/decodeToBytes","base64/invalid","base64url/invalid","types/roundtrip","crypto/randomUUID","crypto/getRandomValues","crypto/checkBcrypt/right","crypto/checkBcrypt/wrong","subtle/digest/SHA-256","subtle/sign/HMAC/options","subtle/sign/HMAC/string","subtle/verify/right","subtle/verify/tampered","subtle/encrypt/string","subtle/decrypt/string","subtle/encrypt/decrypt/options","subtle/generateKey/object","subtle/generateKey/string","subtle/deriveKey/object","subtle/deriveKey/string"],
+        "Base64/UTF-8, UUID, random values and every subtle result and rejection match, through java/HostOps.java. Still different: encoding a JS array fails on both, but AIC suffixes its conversion error with the calling script's (name#line) and local with the mock's; checkBcrypt is unmocked (no bcrypt in the JDK, and no dependency added); PBKDF2 with a JS-array salt fails on both, but AIC's ClassCastException also names its webapp class loader.",
+      differs: ["base64/encode/bytes","base64url/encode/bytes","crypto/checkBcrypt/right","crypto/checkBcrypt/wrong","subtle/deriveKey/object"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -2395,8 +2395,8 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "utils.crypto.subtle is not mocked locally, so every probe records rhino-local's not-mocked error where AIC computes digests, HMAC, AES-128-ECB, PBKDF2 and RSA/ECDSA key pairs, or rejects an algorithm name with its own message.",
-      differs: ["generateKey/string/AES","generateKey/object/AES","generateKey/string/HMAC","generateKey/object/HMAC","generateKey/string/RSA","generateKey/object/RSA","generateKey/string/ECDSA","generateKey/object/ECDSA","encrypt/decrypt/AES/string","encrypt/decrypt/AES/object","encrypt/AES/generatedKey","encrypt/RSA/generatedKey","sign/HMAC/object/hash-string","sign/HMAC/string/hex","deriveKey/object/PBKDF2","deriveKey/string/PBKDF2","encrypt/AES/hex-twice","deriveKey/object/PBKDF2/hex","encrypt/decrypt/RSA/keyPair","sign/verify/ECDSA/keyPair"],
+        "Digest, HMAC, AES-128-ECB, PBKDF2 and RSA/ECDSA key pairs match (AIC's vectors reproduced). Still different: RSA encrypt given the whole key-pair map fails on both, but AIC reports a Java overload miss naming its MapScriptWrapper and local a byte[] conversion error.",
+      differs: ["encrypt/RSA/generatedKey"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
