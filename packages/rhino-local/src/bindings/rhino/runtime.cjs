@@ -1166,6 +1166,81 @@ function __rhinoLocalRequireSubmitted() {
   return __rhinoLocal.submittedCallbacks;
 }
 
+// A Java List as AIC's getters return it: indexable, size()/get(), and
+// printed "[a, b]" with each element formatted by format().
+function __rhinoLocalCallbackList(items, format) {
+  var list = {};
+  var i;
+  for (i = 0; i < items.length; i += 1) {
+    list[i] = items[i];
+  }
+  Object.defineProperty(list, "length", {
+    enumerable: false,
+    configurable: true,
+    writable: true,
+    value: items.length
+  });
+  __rhinoLocalHide(list, "size", function () {
+    return items.length;
+  });
+  __rhinoLocalHide(list, "get", function (index) {
+    return items[index] === undefined ? null : items[index];
+  });
+  __rhinoLocalHide(list, "toString", function () {
+    var values = [];
+    var j;
+    for (j = 0; j < items.length; j += 1) {
+      values.push(format(items[j]));
+    }
+    return "[" + values.join(", ") + "]";
+  });
+  return list;
+}
+
+function __rhinoLocalCallbackValueString(value) {
+  if (Array.isArray(value)) {
+    return "[" + value.map(__rhinoLocalCallbackValueString).join(", ") + "]";
+  }
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  return String(value);
+}
+
+function __rhinoLocalCallbackMap(values) {
+  var map = {};
+  var keys = Object.keys(values);
+  var i;
+  for (i = 0; i < keys.length; i += 1) {
+    map[keys[i]] = values[keys[i]];
+  }
+  __rhinoLocalHide(map, "size", function () {
+    return keys.length;
+  });
+  __rhinoLocalHide(map, "get", function (key) {
+    return __rhinoLocalHas(map, String(key)) ? map[String(key)] : null;
+  });
+  __rhinoLocalHide(map, "toString", function () {
+    return __rhinoLocalJavaMapString(map);
+  });
+  __rhinoLocalHide(map, "__javaString", function () {
+    var pairs = [];
+    var j;
+    for (j = 0; j < keys.length; j += 1) {
+      pairs.push(keys[j] + "=" + __rhinoLocalCallbackValueString(map[keys[j]]));
+    }
+    return "{" + pairs.join(", ") + "}";
+  });
+  return map;
+}
+
+// A List of Java maps prints each as "{k=v, …}" (Map.toString).
+function __rhinoLocalCallbackMapList(maps) {
+  return __rhinoLocalCallbackList(maps, function (m) {
+    return m.__javaString();
+  });
+}
+
 function __rhinoLocalSubmittedValues(type) {
   var submitted = __rhinoLocalRequireSubmitted();
   var out = [];
@@ -1186,7 +1261,13 @@ function __rhinoLocalSubmittedValues(type) {
       out.push(cb.value);
     }
   }
-  return __rhinoLocalJavaList(out);
+  // Number values are Doubles on AIC: [7.0].
+  var decimal = type === "NumberAttributeInputCallback";
+  return __rhinoLocalCallbackList(out, function (value) {
+    return decimal && typeof value === "number" && Math.floor(value) === value
+      ? String(value) + ".0"
+      : String(value);
+  });
 }
 
 callbacks.isEmpty = function () {
@@ -1206,7 +1287,15 @@ callbacks.getPasswordCallbacks = function () {
 
 callbacks.getHiddenValueCallbacks = function () {
   __rhinoLocalExpectArity("callbacks.getHiddenValueCallbacks", arguments, 0);
-  return __rhinoLocalSubmittedValues("HiddenValueCallback");
+  var submitted = __rhinoLocalRequireSubmitted();
+  var values = {};
+  var i;
+  for (i = 0; i < submitted.length; i += 1) {
+    if (submitted[i].type === "HiddenValueCallback") {
+      values[String(submitted[i].id)] = submitted[i].value;
+    }
+  }
+  return __rhinoLocalCallbackMap(values);
 };
 
 callbacks.getDeviceProfileCallbacks = function () {
@@ -1216,7 +1305,18 @@ callbacks.getDeviceProfileCallbacks = function () {
 
 callbacks.getKbaCreateCallbacks = function () {
   __rhinoLocalExpectArity("callbacks.getKbaCreateCallbacks", arguments, 0);
-  return __rhinoLocalSubmittedValues("KbaCreateCallback");
+  var submitted = __rhinoLocalRequireSubmitted();
+  var maps = [];
+  var i;
+  for (i = 0; i < submitted.length; i += 1) {
+    if (submitted[i].type === "KbaCreateCallback") {
+      maps.push(__rhinoLocalCallbackMap({
+        selectedAnswer: submitted[i].selectedAnswer,
+        selectedQuestion: submitted[i].selectedQuestion,
+      }));
+    }
+  }
+  return __rhinoLocalCallbackMapList(maps);
 };
 
 callbacks.getSelectIdPCallbacks = function () {
@@ -1277,7 +1377,31 @@ callbacks.getLanguageCallbacks = function () {
 
 callbacks.getIdpCallbacks = function () {
   __rhinoLocalExpectArity("callbacks.getIdpCallbacks", arguments, 0);
-  return __rhinoLocalSubmittedValues("IdPCallback");
+  var submitted = __rhinoLocalRequireSubmitted();
+  var maps = [];
+  var i;
+  for (i = 0; i < submitted.length; i += 1) {
+    if (submitted[i].type === "IdPCallback") {
+      // nodeName, userInfo and requestNativeAppForUserInfo are not in the
+      // rendered callback; these are the values AIC's map held (measured).
+      maps.push(__rhinoLocalCallbackMap({
+        nodeName: "IdPCallback",
+        redirectUri: submitted[i].redirectUri,
+        request: submitted[i].request,
+        acrValues: submitted[i].acrValues,
+        userInfo: null,
+        clientId: submitted[i].clientId,
+        requestNativeAppForUserInfo: false,
+        requestUri: submitted[i].requestUri,
+        nonce: submitted[i].nonce,
+        token: submitted[i].token,
+        provider: submitted[i].provider,
+        scope: submitted[i].scopes,
+        tokenType: submitted[i].tokenType,
+      }));
+    }
+  }
+  return __rhinoLocalCallbackMapList(maps);
 };
 
 callbacks.getValidatedPasswordCallbacks = function () {
@@ -1286,7 +1410,7 @@ callbacks.getValidatedPasswordCallbacks = function () {
     arguments,
     0
   );
-  return __rhinoLocalSubmittedValues("ValidatedPasswordCallback");
+  return __rhinoLocalValidatedCallbacks("ValidatedCreatePasswordCallback");
 };
 
 callbacks.getValidatedUsernameCallbacks = function () {
@@ -1295,8 +1419,23 @@ callbacks.getValidatedUsernameCallbacks = function () {
     arguments,
     0
   );
-  return __rhinoLocalSubmittedValues("ValidatedUsernameCallback");
+  return __rhinoLocalValidatedCallbacks("ValidatedCreateUsernameCallback");
 };
+
+function __rhinoLocalValidatedCallbacks(type) {
+  var submitted = __rhinoLocalRequireSubmitted();
+  var maps = [];
+  var i;
+  for (i = 0; i < submitted.length; i += 1) {
+    if (submitted[i].type === type) {
+      maps.push(__rhinoLocalCallbackMap({
+        validateOnly: submitted[i].validateOnly,
+        value: submitted[i].value,
+      }));
+    }
+  }
+  return __rhinoLocalCallbackMapList(maps);
+}
 
 callbacks.getHttpCallbacks = function () {
   __rhinoLocalExpectArity("callbacks.getHttpCallbacks", arguments, 0);

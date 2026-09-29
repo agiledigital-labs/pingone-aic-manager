@@ -3109,7 +3109,18 @@ export const realCases: RealEntry[] = [
       "error": "InternalError: Unable to retrieve application under realm /alpha."
     }
   }, {
-    given: {"realm":"/alpha","scriptName":"AIC Rhino Let Probe","esv":{},"secrets":{},"bindings":{"journey":{"name":"AIC-Rhino-Let-Probe","identityResource":"managed/alpha_user"}}},
+    given: {
+      "realm": "/alpha",
+      "scriptName": "AIC Rhino Let Probe",
+      "esv": {},
+      "secrets": {},
+      "bindings": {
+        "journey": {
+          "name": "AIC-Rhino-Let-Probe",
+          "identityResource": "managed/alpha_user"
+        }
+      }
+    },
     gap: {
       reason:
         "57/80 measured payload keys now match: ESV defaults and conversions, cacheManager, the seeded journey values and flags, null SAML/OAuth bindings, and logger.isTraceEnabled. Remaining gaps are tenant-backed JWT creation/validation and policy results; idRepository.getIdentity on an absent user (AIC returns its Java wrapper, which this mock does not model); JavaException wrappers for absent secrets; logger.getName includes the tenant script id; and Java reflection shapes for emailService enumeration and locales.",
@@ -3547,7 +3558,11 @@ export const realCases: RealEntry[] = [
       "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: No Such Entry: The search base entry &#39;uid&#61;rl-probe-openidm-writes,ou&#61;role,o&#61;alpha,o&#61;root,ou&#61;identities&#39; does not exist"
     }
   }, {
-    given: {"managed":{"managed/alpha_role":[]}},
+    given: {
+      "managed": {
+        "managed/alpha_role": []
+      }
+    },
     allowUndeclared: {"openidmWrites":true},
     gap: {
       reason:
@@ -3657,6 +3672,502 @@ export const realCases: RealEntry[] = [
       reason:
         "ECDSA interop (P1363 accepted, DER false), generated key encodings, digest/AES/HMAC edges and JS-array handling match. Still different: a 5-byte AES key fails on both, but AIC wraps it as JavaException ScriptCryptoException; randomUUID(1) and getRandomValues({}) fail on both, but with the harness arity message and without AIC's (name#line) suffix respectively.",
       differs: ["aes/key-5","crypto/randomUUID/1","crypto/getRandomValues/js-object"],
+    },
+  }),
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-callbacks-getters", "fixtures/binding-callbacks-getters.script.js", {
+    "getStringAttributeInputCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[value]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "string",
+        "string": "value",
+        "array": false,
+        "length": 5
+      }
+    },
+    "getChoiceCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[[I@<hash>]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "object",
+        "string": "[I@<hash>",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1
+      }
+    },
+    "getNameCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[Ada]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "string",
+        "string": "Ada",
+        "array": false,
+        "length": 3
+      }
+    },
+    "getPasswordCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "string",
+        "string": "",
+        "array": false,
+        "length": 0
+      }
+    },
+    "getHiddenValueCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "{ \"hidden\": \"hidden\" }",
+        "array": false,
+        "keys": [
+          "hidden"
+        ],
+        "size": 1
+      },
+      "first": {
+        "type": "object",
+        "string": "null",
+        "array": false
+      }
+    },
+    "getTextInputCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "string",
+        "string": "",
+        "array": false,
+        "length": 0
+      }
+    },
+    "getNumberAttributeInputCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[7.0]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "number",
+        "string": "7",
+        "array": false
+      }
+    },
+    "getBooleanAttributeInputCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[true]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "boolean",
+        "string": "true",
+        "array": false
+      }
+    },
+    "getConfirmationCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[0]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "number",
+        "string": "0",
+        "array": false
+      }
+    },
+    "getLanguageCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[en_US]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "string",
+        "string": "en_US",
+        "array": false,
+        "length": 5
+      }
+    },
+    "getIdpCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[{nodeName=IdPCallback, redirectUri=https://example.com, request=, acrValues=[], userInfo=null, clientId=client, requestNativeAppForUserInfo=false, requestUri=, nonce=nonce, token=, provider=provider, scope=[openid], tokenType=}]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "object",
+        "string": "{ \"nodeName\": \"IdPCallback\", \"redirectUri\": \"https://example.com\", \"request\": \"\", \"acrValues\": [  ], \"userInfo\": null, \"clientId\": \"client\", \"requestNativeAppForUserInfo\": false, \"requestUri\": \"\", \"nonce\": \"nonce\", \"token\": \"\", \"provider\": \"provider\", \"scope\": [ \"openid\" ], \"tokenType\": \"\" }",
+        "array": false,
+        "keys": [
+          "acrValues",
+          "clientId",
+          "nodeName",
+          "nonce",
+          "provider",
+          "redirectUri",
+          "request",
+          "requestNativeAppForUserInfo",
+          "requestUri",
+          "scope",
+          "token",
+          "tokenType",
+          "userInfo"
+        ],
+        "size": 13
+      }
+    },
+    "getValidatedPasswordCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[{validateOnly=false, value=}]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "object",
+        "string": "{ \"validateOnly\": false, \"value\": \"\" }",
+        "array": false,
+        "keys": [
+          "validateOnly",
+          "value"
+        ],
+        "size": 2
+      }
+    },
+    "getValidatedUsernameCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[{validateOnly=false, value=}]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "object",
+        "string": "{ \"validateOnly\": false, \"value\": \"\" }",
+        "array": false,
+        "keys": [
+          "validateOnly",
+          "value"
+        ],
+        "size": 2
+      }
+    },
+    "getHttpCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[]",
+        "array": false,
+        "keys": [],
+        "length": 0,
+        "size": 0
+      },
+      "first": null
+    },
+    "getX509CertificateCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[]",
+        "array": false,
+        "keys": [],
+        "length": 0,
+        "size": 0
+      },
+      "first": null
+    },
+    "getConsentMappingCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[false]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "boolean",
+        "string": "false",
+        "array": false
+      }
+    },
+    "getDeviceProfileCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "string",
+        "string": "",
+        "array": false,
+        "length": 0
+      }
+    },
+    "getKbaCreateCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[{selectedAnswer=, selectedQuestion=}]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "object",
+        "string": "{ \"selectedAnswer\": \"\", \"selectedQuestion\": \"\" }",
+        "array": false,
+        "keys": [
+          "selectedAnswer",
+          "selectedQuestion"
+        ],
+        "size": 2
+      }
+    },
+    "getSelectIdPCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "string",
+        "string": "",
+        "array": false,
+        "length": 0
+      }
+    },
+    "getTermsAndConditionsCallbacks": {
+      "ok": true,
+      "list": {
+        "type": "object",
+        "string": "[false]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      },
+      "first": {
+        "type": "boolean",
+        "string": "false",
+        "array": false
+      }
+    },
+    "isEmpty": {
+      "ok": true,
+      "value": false
+    }
+  }, {
+    given: {
+      "callbacks": [
+        {
+          "type": "StringAttributeInputCallback",
+          "value": "value",
+          "validateOnly": false
+        },
+        {
+          "type": "ChoiceCallback",
+          "value": 0
+        },
+        {
+          "type": "NameCallback",
+          "value": "Ada"
+        },
+        {
+          "type": "PasswordCallback",
+          "value": ""
+        },
+        {
+          "type": "HiddenValueCallback",
+          "value": "hidden",
+          "id": "hidden"
+        },
+        {
+          "type": "TextInputCallback",
+          "value": ""
+        },
+        {
+          "type": "NumberAttributeInputCallback",
+          "value": 7,
+          "validateOnly": false
+        },
+        {
+          "type": "BooleanAttributeInputCallback",
+          "value": true,
+          "validateOnly": false
+        },
+        {
+          "type": "ConfirmationCallback",
+          "value": 0
+        },
+        {
+          "type": "LanguageCallback",
+          "value": "en_US"
+        },
+        {
+          "type": "IdPCallback",
+          "provider": "provider",
+          "clientId": "client",
+          "redirectUri": "https://example.com",
+          "scopes": [
+            "openid"
+          ],
+          "nonce": "nonce",
+          "acrValues": [],
+          "request": "",
+          "acceptsJSON": false,
+          "requestUri": "",
+          "token": "",
+          "tokenType": ""
+        },
+        {
+          "type": "ValidatedCreatePasswordCallback",
+          "value": "",
+          "validateOnly": false
+        },
+        {
+          "type": "ValidatedCreateUsernameCallback",
+          "value": "",
+          "validateOnly": false
+        },
+        {
+          "type": "TextOutputCallback"
+        },
+        {
+          "type": "DeviceProfileCallback",
+          "value": ""
+        },
+        {
+          "type": "KbaCreateCallback",
+          "selectedQuestion": "",
+          "selectedAnswer": ""
+        },
+        {
+          "type": "SelectIdPCallback",
+          "value": ""
+        },
+        {
+          "type": "TermsAndConditionsCallback",
+          "value": false
+        }
+      ]
+    },
+    gap: {
+      reason:
+        "The two remaining differences are getChoiceCallbacks (AIC returns int[], which cannot be constructed through AM’s class shutter) and getConsentMappingCallbacks (visit one emitted a TextOutputCallback after consentMappingCallback failed, so no consent callback body can seed its observed [false] value).",
+      differs: ["getChoiceCallbacks","getConsentMappingCallbacks"],
     },
   }),
   // Live callbacks, parsed from the probe run's /authenticate body (2026-09-29).
