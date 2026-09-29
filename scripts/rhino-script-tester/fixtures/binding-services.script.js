@@ -1,12 +1,24 @@
 // Probe: safe remaining binding members and metadata. Safe to delete.
 // emailService.send and idRepository.createUser are intentionally not called.
+// One payload key per probe, so the corpus can record a gap per probe; and
+// Java identity hashes (`[B@6d719625`) masked, because they differ every run.
+function keyed(feature, records) {
+  var out = { ok: true, feature: feature };
+  for (var i = 0; i < records.length; i++) {
+    var rec = records[i];
+    out[rec.name] = rec.ok
+      ? { ok: true, value: rec.value }
+      : { ok: false, error: rec.error };
+  }
+  return JSON.stringify(out).replace(/@[0-9a-f]{4,8}\b/g, "@<hash>");
+}
 function describe(v) {
   var r = { type: typeof v, string: String(v) };
   try {
     r.array = Array.isArray(v);
   } catch (e) {}
   try {
-    r.keys = Object.keys(v);
+    r.keys = Object.keys(v).sort();
   } catch (e) {}
   try {
     r.length = v.length;
@@ -26,7 +38,8 @@ function probe(n, f) {
 var r = [];
 r.push(
   probe("logger.getName", function () {
-    return logger.getName();
+    // The script id is tenant-specific.
+    return logger.getName().replace(/[0-9a-f-]{36}/, "<scriptId>");
   })
 );
 r.push(
@@ -228,7 +241,7 @@ r.push({
     type: typeof samlApplication,
     keys: (function () {
       try {
-        return Object.keys(samlApplication);
+        return Object.keys(samlApplication).sort();
       } catch (e) {
         return String(e);
       }
@@ -242,7 +255,7 @@ r.push({
     type: typeof oauthApplication,
     keys: (function () {
       try {
-        return Object.keys(oauthApplication);
+        return Object.keys(oauthApplication).sort();
       } catch (e) {
         return String(e);
       }
@@ -256,7 +269,7 @@ r.push({
     type: typeof emailService,
     keys: (function () {
       try {
-        return Object.keys(emailService);
+        return Object.keys(emailService).sort();
       } catch (e) {
         return String(e);
       }
@@ -265,7 +278,8 @@ r.push({
 });
 r.push({ name: "realm", ok: true, value: describe(realm) });
 r.push({ name: "scriptName", ok: true, value: describe(scriptName) });
-r.push({ name: "cookieName", ok: true, value: describe(cookieName) });
+// The value is tenant-specific: type only.
+r.push({ name: "cookieName", ok: true, value: typeof cookieName });
 r.push({
   name: "resumedFromSuspend",
   ok: true,
@@ -304,7 +318,6 @@ var JWT_DATA = {
   audience: "https://example.com",
   type: "JWT",
   validityMinutes: 1,
-  signingKey: utils.types.stringToBytes(JWT_KEY),
 };
 var jwt = null;
 r.push(
@@ -314,7 +327,10 @@ r.push(
 );
 r.push(
   probe("jwtAssertion.generateJwt/HS256", function () {
-    jwt = jwtAssertion.generateJwt(JWT_DATA);
+    var d = {};
+    for (var k in JWT_DATA) d[k] = JWT_DATA[k];
+    d.signingKey = utils.types.stringToBytes(JWT_KEY);
+    jwt = jwtAssertion.generateJwt(d);
     return typeof jwt + "/" + String(jwt).split(".").length + " parts";
   })
 );
@@ -335,17 +351,23 @@ r.push(
 );
 r.push(
   probe("jwtValidator.validateJwtClaims/HS256", function () {
-    return JSON.stringify(
-      jwtValidator.validateJwtClaims({
-        jwtType: "SIGNED",
-        jwt: jwt,
-        issuer: "https://example.com",
-        subject: "probe",
-        audience: "https://example.com",
-        type: "JWT",
-        verificationKey: utils.types.stringToBytes(JWT_KEY),
-      })
-    );
+    var c = jwtValidator.validateJwtClaims({
+      jwtType: "SIGNED",
+      jwt: jwt,
+      issuer: "https://example.com",
+      subject: "probe",
+      audience: "https://example.com",
+      type: "JWT",
+      verificationKey: utils.types.stringToBytes(JWT_KEY),
+    });
+    // issuedAt, expirationTime and jwtId vary per run: keys only for those.
+    return JSON.stringify({
+      keys: Object.keys(c).sort(),
+      issuer: c.issuer,
+      subject: c.subject,
+      audience: c.audience,
+      type: c.type,
+    });
   })
 );
 // { claims } is the subject shape AM accepts (the others are "Invalid value
@@ -396,5 +418,5 @@ for (var q = 0; q < SUBJECTS.length; q++) {
   })(SUBJECTS[q], Object.keys(SUBJECTS[q])[0]);
 }
 if (callbacks.isEmpty())
-  callbacksBuilder.hiddenValueCallback("result", JSON.stringify(r));
+  callbacksBuilder.hiddenValueCallback("result", keyed("binding-services", r));
 outcome = "ok";
