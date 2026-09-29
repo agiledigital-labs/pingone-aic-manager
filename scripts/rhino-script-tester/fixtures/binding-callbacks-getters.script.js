@@ -6,9 +6,13 @@ function keyed(feature, records) {
   var out = { ok: true, feature: feature };
   for (var i = 0; i < records.length; i++) {
     var rec = records[i];
-    out[rec.name] = rec.ok
-      ? { ok: true, value: rec.value }
-      : { ok: false, error: rec.error };
+    var fields = {};
+    for (var k in rec) {
+      if (k !== "name") {
+        fields[k] = rec[k];
+      }
+    }
+    out[rec.name] = fields;
   }
   return JSON.stringify(out).replace(/@[0-9a-f]{4,8}\b/g, "@<hash>");
 }
