@@ -196,8 +196,16 @@ build("consentMappingCallback/7", function () {
   );
 });
 build("consentMappingCallback/3", function () {
+  // The config needs a `fields` list (without one: "Cannot invoke
+  // List.stream()"); its elements come back null in the REST output.
   callbacksBuilder.consentMappingCallback(
-    { marker: "object-270" },
+    {
+      name: "probe-270",
+      displayName: "probe-272",
+      icon: "probe-273",
+      accessLevel: "probe-274",
+      fields: ["probe-275"],
+    },
     "probe-271",
     true
   );
