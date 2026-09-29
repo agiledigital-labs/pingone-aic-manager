@@ -102,6 +102,20 @@ function __rhinoLocalMergeBucket(bucketName, object) {
   var incoming;
   var existing;
   var merged;
+  // Measured with a nested plain object only; AIC's message names
+  // objectAttributes as the container that may hold one.
+  if (bucketName === "shared") {
+    for (i = 0; i < keys.length; i += 1) {
+      if (
+        keys[i] !== "objectAttributes" &&
+        __rhinoLocalIsPlainObject(object[keys[i]])
+      ) {
+        throw new InternalError(
+          "State must not contain nested objects unless they are inside registered state containers: objectAttributes"
+        );
+      }
+    }
+  }
   for (i = 0; i < keys.length; i += 1) {
     key = keys[i];
     incoming = object[key];
@@ -374,8 +388,51 @@ nodeState.keys = function () {
   take(__rhinoLocal.transient);
   take(__rhinoLocal.secure);
   take(__rhinoLocal.shared);
-  return __rhinoLocalJavaList(names);
+  var list = __rhinoLocalJavaList(names);
+  __rhinoLocalHide(list, "iterator", function () {
+    var index = 0;
+    return {
+      hasNext: function () {
+        return index < list.length;
+      },
+      next: function () {
+        return list[index++];
+      },
+    };
+  });
+  return list;
 };
+
+// How a Java map/list from nodeState.getObject prints (measured).
+function __rhinoLocalJavaMapString(value) {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    var items = [];
+    var i;
+    for (i = 0; i < value.length; i += 1) {
+      items.push(__rhinoLocalJavaMapString(value[i]));
+    }
+    return "[ " + items.join(", ") + " ]";
+  }
+  if (__rhinoLocalIsPlainObject(value)) {
+    var keys = Object.keys(value);
+    var pairs = [];
+    var j;
+    for (j = 0; j < keys.length; j += 1) {
+      pairs.push(JSON.stringify(keys[j]) + ": " + __rhinoLocalJavaMapString(value[keys[j]]));
+    }
+    return "{ " + pairs.join(", ") + " }";
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Math.floor(value) === value) {
+    return String(value) + ".0";
+  }
+  return String(value);
+}
 
 nodeState.getObject = function (key) {
   __rhinoLocalExpectArity("nodeState.getObject", arguments, 1);
@@ -398,6 +455,9 @@ nodeState.getObject = function (key) {
     __rhinoLocalAssignPlain(merged, sharedVal);
     __rhinoLocalAssignPlain(merged, secureVal);
     __rhinoLocalAssignPlain(merged, transientVal);
+    __rhinoLocalHide(merged, "toString", function () {
+      return __rhinoLocalJavaMapString(merged);
+    });
     return merged;
   }
   return __rhinoLocalLookupState(k);
@@ -1338,10 +1398,7 @@ function __rhinoLocalRequireRecord(method, resource) {
   var found = __rhinoLocalFindRecord(split.collection, split.recordId);
   if (!found.record) {
     throw new Error(
-      "rhino-local: openidm." +
-        method +
-        ": no given.managed entry for " +
-        JSON.stringify(resource)
+      "rhino-local: openidm." + method + ": No Such Entry: " + resource
     );
   }
   return found;
@@ -1395,6 +1452,18 @@ function __rhinoLocalFilterError(filter) {
   throw new Error(
     "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
   );
+}
+
+function __rhinoLocalOpenidmRecord(value, id, rev) {
+  var record = { _id: id, _rev: rev };
+  var keys = Object.keys(value);
+  var i;
+  for (i = 0; i < keys.length; i += 1) {
+    if (keys[i] !== "_id" && keys[i] !== "_rev") {
+      record[keys[i]] = value[keys[i]];
+    }
+  }
+  return record;
 }
 
 function __rhinoLocalIsIdentChar(ch) {
@@ -1816,13 +1885,24 @@ openidm.create = function (resourceName, newResourceId, content) {
   if (!__rhinoLocalHas(__rhinoLocal.managed, collection)) {
     __rhinoLocal.managed[collection] = [];
   }
-  var stored = __rhinoLocalClone(content);
-  stored._id = id;
-  if (stored._rev === undefined) {
-    stored._rev = "0";
+  var rows = __rhinoLocal.managed[collection];
+  if (
+    id !== undefined &&
+    id !== null &&
+    __rhinoLocalFindRecord(collection, id).record
+  ) {
+    throw new Error(
+      "rhino-local: openidm.create: Entry Already Exists: " + recordedResource
+    );
   }
-  __rhinoLocal.managed[collection].push(stored);
-  return stored;
+  var stored = __rhinoLocalClone(content);
+  stored = __rhinoLocalOpenidmRecord(
+    stored,
+    id,
+    stored._rev === undefined ? "local-rev" : stored._rev
+  );
+  rows.push(stored);
+  return __rhinoLocalProject(stored, arguments.length >= 5 ? arguments[4] : null);
 };
 
 openidm.update = function (id, _rev, value) {
@@ -1834,13 +1914,19 @@ openidm.update = function (id, _rev, value) {
   var resource = String(id);
   __rhinoLocalPushOpenidm("update", resource, value);
   var found = __rhinoLocalRequireRecord("update", resource);
-  var next = __rhinoLocalClone(value);
-  next._id = found.record._id;
-  if (next._rev === undefined) {
-    next._rev = found.record._rev;
+  if (_rev !== null && _rev !== undefined && String(_rev) !== String(found.record._rev)) {
+    throw new Error(
+      "rhino-local: openidm.update: the expected version '" +
+        String(_rev) +
+        "' does not match the current version '" +
+        String(found.record._rev) +
+        "'"
+    );
   }
+  var next = __rhinoLocalClone(value);
+  next = __rhinoLocalOpenidmRecord(next, found.record._id, found.record._rev);
   found.rows[found.index] = next;
-  return next;
+  return __rhinoLocalProject(next, arguments.length >= 5 ? arguments[4] : null);
 };
 
 openidm.patch = function (resourceName, _rev, patch) {
@@ -1857,6 +1943,16 @@ openidm.patch = function (resourceName, _rev, patch) {
   var field;
   for (i = 0; i < patch.length; i += 1) {
     op = patch[i];
+    if (op.operation !== "add" && op.operation !== "remove" && op.operation !== "replace") {
+      throw new Error(
+        "rhino-local: openidm.patch: not a valid JSON patch (operation " +
+          String(op.operation) +
+          ")"
+      );
+    }
+  }
+  for (i = 0; i < patch.length; i += 1) {
+    op = patch[i];
     field = String(op.field).replace(/^\//, "");
     if (op.operation === "remove") {
       delete found.record[field];
@@ -1864,7 +1960,7 @@ openidm.patch = function (resourceName, _rev, patch) {
       found.record[field] = op.value;
     }
   }
-  return found.record;
+  return __rhinoLocalProject(found.record, arguments.length >= 5 ? arguments[4] : null);
 };
 
 openidm.delete = function (resourceName) {
@@ -1878,7 +1974,7 @@ openidm.delete = function (resourceName) {
   var found = __rhinoLocalRequireRecord("delete", resource);
   var removed = found.record;
   found.rows.splice(found.index, 1);
-  return removed;
+  return __rhinoLocalProject(removed, arguments.length >= 4 ? arguments[3] : null);
 };
 
 openidm.action = function (resource, actionName, content, params) {
@@ -1892,6 +1988,17 @@ openidm.action = function (resource, actionName, content, params) {
     body = params;
   }
   __rhinoLocalPushOpenidm("action", String(resource), body, String(actionName));
+  // Measured on a managed collection only; other resources have other actions.
+  if (
+    /^managed\/[^/]+$/.test(String(resource)) &&
+    actionName !== "patch" &&
+    actionName !== "triggerSyncCheck" &&
+    actionName !== "updateLastSync"
+  ) {
+    throw new Error(
+      "rhino-local: openidm.action: Expecting String containing one of: patch triggerSyncCheck updateLastSync"
+    );
+  }
   return {};
 };
 
