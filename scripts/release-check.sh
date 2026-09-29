@@ -237,6 +237,7 @@ gate "gitleaks: credentials in history" \
 # Same pinning as gitleaks: the version is read from ci.yml, and the static musl
 # binary is fetched into the cache unless the exact version is already on PATH.
 # Ignores, each with its reason, are in .cargo/audit.toml.
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/pingone-aic-manager"
 CARGO_AUDIT_VERSION="$(grep -oP '^\s+CARGO_AUDIT_VERSION:\s*\K\S+' "$CI_YML" | head -1)"
 [ -n "$CARGO_AUDIT_VERSION" ] || fail "could not read CARGO_AUDIT_VERSION from $CI_YML"
 
