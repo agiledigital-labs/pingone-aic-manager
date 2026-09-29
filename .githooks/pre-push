@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Scan exactly the commits a push publishes, with the same two scanners CI's
+# "Scan introduced history" and "Gitleaks" steps run. Enable with:
+#   git config core.hooksPath .githooks
+#
+# This is the last point where a leak is free to fix: the remote keeps objects
+# even after a force-push removes them from every ref. Fails closed.
+set -euo pipefail
+
+remote="$1"
+zero=0000000000000000000000000000000000000000
+
+while read -r local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue # deleting a ref publishes nothing
+  if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    base="$remote_sha"
+  else
+    # A new ref: scan from where it leaves the remote's default branch, or the
+    # whole history reachable from it when there is no such point.
+    base="$(git merge-base "$local_sha" "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+  fi
+  if [ -n "$base" ]; then
+    range="$base..$local_sha"
+  else
+    range="$local_sha"
+  fi
+  echo "pre-push: scanning $local_ref ($range)" >&2
+  scripts/check-sensitive-metadata.sh --history "$range"
+  scripts/gitleaks.sh git --redact --no-banner --exit-code 1 --log-opts="$range" .
+done

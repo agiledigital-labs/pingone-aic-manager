@@ -5,8 +5,9 @@
 #   scripts/shellcheck-all.sh
 #
 # One entry point so CI and scripts/release-check.sh run the same command over
-# the same file set. The set comes from `git ls-files '*.sh'`, not a glob, so a
-# script added in a new directory is covered without editing anything here.
+# the same file set. The set comes from `git ls-files '*.sh' '.githooks/*'`,
+# not a glob, so a script added in a new directory is covered without editing
+# anything here, and so are the extensionless git hooks.
 #
 # SEVERITY is `style`, which is everything shellcheck has to say. It is NOT the
 # severity the whole tree passes at today — when this gate landed, 11 of 32
@@ -56,7 +57,7 @@ in_list() {
   return 1
 }
 
-mapfile -t all < <(git ls-files '*.sh' | sort)
+mapfile -t all < <(git ls-files '*.sh' '.githooks/*' | sort)
 [ "${#all[@]}" -gt 0 ] || {
   echo "shellcheck-all: git ls-files matched no shell scripts" >&2
   exit 1

@@ -214,35 +214,15 @@ gate "metadata: full history" \
 
 # --- gitleaks ----------------------------------------------------------------
 #
-# The version is read from ci.yml rather than repeated, so the two cannot pin
-# different binaries. Orthogonal to the scanner above: that one knows the shape
-# of tenant and client metadata, this one knows credentials.
-GITLEAKS_VERSION="$(grep -oP '^\s+GITLEAKS_VERSION:\s*\K\S+' "$CI_YML" | head -1)"
-[ -n "$GITLEAKS_VERSION" ] || fail "could not read GITLEAKS_VERSION from $CI_YML"
-
-CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/pingone-aic-manager"
-GITLEAKS_BIN="$CACHE/gitleaks-$GITLEAKS_VERSION"
-
-if command -v gitleaks >/dev/null 2>&1 &&
-  [ "$(gitleaks version 2>/dev/null)" = "$GITLEAKS_VERSION" ]; then
-  GITLEAKS_BIN="$(command -v gitleaks)"
-elif [ ! -x "$GITLEAKS_BIN" ]; then
-  step "gitleaks: fetch $GITLEAKS_VERSION"
-  mkdir -p "$CACHE"
-  tmp="$(mktemp -d)"
-  if curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-    | tar -xz -C "$tmp" gitleaks >>"$LOG" 2>&1; then
-    mv "$tmp/gitleaks" "$GITLEAKS_BIN"
-    rm -rf "$tmp"
-    ok
-  else
-    rm -rf "$tmp"
-    echo
-    fail "could not fetch gitleaks $GITLEAKS_VERSION.
-  CI runs it, so a release cannot skip it. Install it on PATH at that exact
-  version, or make the download work and re-run."
-  fi
-fi
+# Orthogonal to the scanner above: that one knows the shape of tenant and
+# client metadata, this one knows credentials. scripts/gitleaks.sh reads the version from ci.yml and fetches that exact
+# release into the cache if it is not on PATH — the same binary the git hooks
+# use.
+step "gitleaks: resolve the pinned binary"
+GITLEAKS_BIN="$(scripts/gitleaks.sh --path 2>>"$LOG")" || fail "could not obtain the pinned gitleaks.
+  CI runs it, so a release cannot skip it. Install it on PATH at the version
+  ci.yml pins, or make the download work and re-run."
+ok
 
 # --redact so a finding names the rule and file without printing the secret.
 # .gitleaks.toml is picked up from the repo root automatically.

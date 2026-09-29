@@ -1,6 +1,16 @@
 #!/usr/bin/env sh
-# Reject tenant/client-identifying metadata before it is committed.
-# Enable with:  git config core.hooksPath .githooks
-# Bypassing this hook does not help: CI runs the same check over the whole
-# tree, so a --no-verify commit fails the pull request instead.
-exec scripts/check-sensitive-metadata.sh --staged
+# Reject tenant/client-identifying metadata and credentials before they are
+# committed. Enable with:  git config core.hooksPath .githooks
+# Bypassing this hook does not help: CI runs the same checks over the whole
+# history, so a --no-verify commit fails the pull request instead.
+set -e
+scripts/check-sensitive-metadata.sh --staged
+
+# gitleaks is fetched on first use. With no network and no cached binary the
+# commit goes ahead with a warning — pre-push, which needs the network anyway,
+# fails closed on the same check.
+if gitleaks="$(scripts/gitleaks.sh --path 2>/dev/null)"; then
+  "$gitleaks" git --pre-commit --staged --redact --no-banner --exit-code 1 .
+else
+  echo "pre-commit: gitleaks unavailable; credentials not checked (pre-push will)" >&2
+fi
