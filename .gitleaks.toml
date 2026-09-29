@@ -32,3 +32,30 @@ regexTarget = "match"
 regexes = [
   '''(?i)script"?\s*[:=]\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"''',
 ]
+
+[[allowlists]]
+description = """
+The rhino-local binding corpus keys its probe payloads by slash-joined paths
+(`encrypt/RSA/generatedKey`, `digest/AES/HMAC`). When one follows a word that
+contains "key", generic-api-key reads the path as the key's value.
+
+Narrow on purpose. Both conditions must hold. The file must be the corpus index
+or its snapshots, and the value must be two or more letter-only segments joined
+by "/". A base64 secret in the same place would carry digits, "+" or "=", and it
+still fires.
+"""
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^[A-Za-z]+(?:/[A-Za-z]+)+$''']
+paths = ['''^packages/rhino-local/(?:cases/real/index\.ts|test/corpus/__snapshots__/real\.test\.ts\.snap)$''']
+
+[[allowlists]]
+description = """
+The ascending hex run "0123456789abcdef", repeated, is a published test vector
+(the binding-services probe signs a throwaway JWT with it). It is a value no
+generator produces. Any other hex string in the same key still fires.
+"""
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^(?:0123456789abcdef)+$''']
