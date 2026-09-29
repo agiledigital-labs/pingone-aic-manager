@@ -55,8 +55,10 @@ npm -w packages/rhino-local run measure
 ### Using it from another repo
 
 `packages/rhino-local` builds to an npm package (`npm -w packages/rhino-local
-run build`, then `npm pack`). It is still `"private": true`: the published name
-and registry are not chosen yet. What a consumer needs:
+run build`, then `npm pack`) published as `@agiledigital/pingone-aic-script-tester`
+on npm when a `script-tester-v*` tag is pushed
+(`.github/workflows/release-script-tester.yml`). Until the first release is
+cut, install the `npm pack` tarball. What a consumer needs:
 
 - **Node 24 and a Java 25 runtime** — `java` only. The package ships runner
   classes compiled at build time (`dist/classes/`, with a SHA-256 manifest keyed
