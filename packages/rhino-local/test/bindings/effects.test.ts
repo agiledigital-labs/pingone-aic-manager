@@ -362,7 +362,7 @@ describe("callbacksBuilder", () => {
         'callbacksBuilder.idPCallback("google", "id", "https://r", ["openid"], "n", "req", "https://req", ["acr"], false);',
         'callbacksBuilder.httpCallback("Basic", "Negotiate", "Negotiate", 401);',
         'callbacksBuilder.x509CertificateCallback("cert");',
-        'callbacksBuilder.consentMappingCallback({ n: 1 }, "msg", true);',
+        'callbacksBuilder.consentMappingCallback({ name: "n", fields: [] }, "msg", true);',
         'callbacksBuilder.kbaCreateCallback("q", ["a"], false);',
         "callbacksBuilder.selectIdPCallback({ p: true });",
         'callbacksBuilder.termsAndConditionsCallback("1", "terms", "2026-01-01");',

@@ -1,4 +1,4 @@
-import type { Given, HttpExpect } from "../../src/case/types.ts";
+import type { AllowUndeclared, Given, HttpExpect } from "../../src/case/types.ts";
 import {
   hiddenValue,
   librarySource,
@@ -91,6 +91,12 @@ interface Extras {
   gap?: KnownGap;
   /** Requests the script makes; required alongside a `given.http` stub. */
   http?: HttpExpect[];
+  /**
+   * Side-effect channels the live run did not capture. A probe's payload is
+   * its measurement; pinning the local value of an uncaptured channel would
+   * read as a live claim.
+   */
+  allowUndeclared?: AllowUndeclared;
 }
 
 function entry(
@@ -108,6 +114,7 @@ function entry(
       outcome: string;
       callbacks: ReturnType<typeof hiddenValue>;
       http?: HttpExpect[];
+      allowUndeclared?: AllowUndeclared;
     };
     given: Given;
     blocked?: BlockedBy;
@@ -126,6 +133,9 @@ function entry(
   };
   if (extras.http !== undefined) {
     init.expect.http = extras.http;
+  }
+  if (extras.allowUndeclared !== undefined) {
+    init.expect.allowUndeclared = extras.allowUndeclared;
   }
   if (extras.blocked !== undefined) {
     init.blocked = extras.blocked;
@@ -2470,12 +2480,32 @@ export const realCases: RealEntry[] = [
     "withMaxSessionTime/bad": {
       "ok": false,
       "error": "InternalError: Cannot convert x to java.lang.Integer (AIC Rhino Let Probe#100)"
+    },
+    "withMaxSessionTime/numeric-string": {
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
+    },
+    "withMaxSessionTime/null": {
+      "ok": false,
+      "error": "InternalError: Can't find method org.forgerock.openam.auth.nodes.script.ActionWrapper.withMaxSessionTime(null). (AIC Rhino Let Probe#110)"
+    },
+    "withMaxSessionTime/fraction": {
+      "ok": true,
+      "type": "object",
+      "string": "org.forgerock.openam.auth.nodes.script.ActionWrapper@<hash>",
+      "same": true
+    },
+    "withMaxIdleTime/bad": {
+      "ok": false,
+      "error": "InternalError: Cannot convert x to java.lang.Integer (AIC Rhino Let Probe#120)"
     }
   }, {
     gap: {
       reason:
-        "withMaxSessionTime(\"x\") throws the same message locally, but AIC appends the calling script's \"(name#line)\" location and the mock-thrown InternalError carries none.",
-      differs: ["withMaxSessionTime/bad"],
+        "withMaxSessionTime/withMaxIdleTime reject \"x\" and null with the same messages locally, but AIC appends the calling script's \"(name#line)\" and a mock-thrown InternalError carries none.",
+      differs: ["withMaxSessionTime/bad","withMaxSessionTime/null","withMaxIdleTime/bad"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -3110,6 +3140,499 @@ export const realCases: RealEntry[] = [
       differs: ["createUser/2","createUser/3","createUser/3/arrays","createUser/duplicate"],
     },
   }),
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-nodestate", "fixtures/binding-nodestate.script.js", {
+    "putShared/returns-self": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "json": "true"
+      }
+    },
+    "putTransient/returns-self": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "json": "true"
+      }
+    },
+    "get/shared": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "s1",
+        "json": "\"s1\""
+      }
+    },
+    "get/transient": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "t1",
+        "json": "\"t1\""
+      }
+    },
+    "getObject/shared": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "s1",
+        "json": "\"s1\""
+      }
+    },
+    "isDefined/shared": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "json": "true"
+      }
+    },
+    "isDefined/transient": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "json": "true"
+      }
+    },
+    "isDefined/absent": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "json": "false"
+      }
+    },
+    "get/absent": {
+      "ok": true,
+      "value": "null"
+    },
+    "getObject/absent": {
+      "ok": true,
+      "value": "null"
+    },
+    "putShared/object": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"a\":1,\"nested\":{\"b\":\"x\"},\"list\":[1,2]}"
+      }
+    },
+    "getObject/object": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"a\": 1.0, \"nested\": { \"b\": \"x\" }, \"list\": [ 1.0, 2.0 ] }",
+        "json": "{\"a\":1,\"nested\":{\"b\":\"x\"},\"list\":[1,2]}"
+      }
+    },
+    "getObject/object/field": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "x",
+        "json": "\"x\""
+      }
+    },
+    "mergeShared/returns-self": {
+      "ok": false,
+      "error": "InternalError: State must not contain nested objects unless they are inside registered state containers: objectAttributes"
+    },
+    "mergeShared/after/replaced-or-deep": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"a\":1,\"nested\":{\"b\":\"x\"},\"list\":[1,2]}"
+      }
+    },
+    "mergeShared/after/new-key": {
+      "ok": true,
+      "value": "null"
+    },
+    "mergeTransient/returns-self": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "json": "true"
+      }
+    },
+    "mergeTransient/after": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "t2,mt",
+        "json": "[\"t2\",\"mt\"]"
+      }
+    },
+    "putShared/null": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "true,",
+        "json": "[true,null]"
+      }
+    },
+    "shadow/transient-over-shared": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "transient",
+        "json": "\"transient\""
+      }
+    },
+    "remove/returns-self": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "json": "false"
+      }
+    },
+    "remove/after": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "false,",
+        "json": "[false,null]"
+      }
+    },
+    "remove/both-buckets": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "false,",
+        "json": "[false,null]"
+      }
+    },
+    "remove/absent": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "json": "false"
+      }
+    },
+    "mergeShared/flat": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "json": "true"
+      }
+    },
+    "mergeShared/flat/after": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "f,3",
+        "json": "[\"f\",3]"
+      }
+    },
+    "keys": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"type\":\"object\",\"rl\":[\"rlFlat\",\"rlFlatNum\",\"rlMergedT\",\"rlNull\",\"rlObj\",\"rlTransient\"]}"
+      }
+    }
+  }, {
+    allowUndeclared: {"sharedState":true,"transientState":true},
+    gap: {
+      reason:
+        "Not yet matched: mergeShared refuses nested objects on AIC (\"State must not contain nested objects unless they are inside registered state containers\") where the mock merges them; keys() is a Java collection (iterator()) where the mock returns a JS array; getObject prints as a Java map. Final state was not captured live, so the state channels are not judged.",
+      differs: ["getObject/object","mergeShared/returns-self","mergeShared/after/replaced-or-deep","mergeShared/after/new-key","keys"],
+    },
+  }),
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-openidm-writes", "fixtures/binding-openidm-writes.script.js", {
+    "cleanup/before": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: No Such Entry: The search base entry &#39;uid&#61;rl-probe-openidm-writes,ou&#61;role,o&#61;alpha,o&#61;root,ou&#61;identities&#39; does not exist"
+    },
+    "create/5": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes\",\"_rev\":\"<rev>\",\"name\":\"rl-a\",\"description\":\"rl-probe\"}"
+      }
+    },
+    "create/duplicate": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Entry Already Exists: The entry &#39;uid&#61;rl-probe-openidm-writes,ou&#61;role,o&#61;alpha,o&#61;root,ou&#61;identities&#39; cannot be added because an entry with that name already exists"
+    },
+    "create/3": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "string",
+        "json": "\"string\""
+      }
+    },
+    "create/fields": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes-fields\",\"_rev\":\"<rev>\",\"name\":\"rl-f\"}"
+      }
+    },
+    "update/null-rev": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes\",\"_rev\":\"<rev>\",\"name\":\"rl-a2\",\"description\":\"rl-probe\"}"
+      }
+    },
+    "update/after": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes\",\"_rev\":\"<rev>\",\"name\":\"rl-a2\",\"description\":\"rl-probe\"}"
+      }
+    },
+    "update/wrong-rev": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: The resource could not be accessed because the expected version &#39;0&#39; does not match the current version &#39;<uuid>&#39;"
+    },
+    "patch/replace": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes\",\"_rev\":\"<rev>\",\"name\":\"rl-a2\",\"description\":\"rl-9\"}"
+      }
+    },
+    "patch/add-unknown-field": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes\",\"_rev\":\"<rev>\",\"name\":\"rl-a2\",\"description\":\"rl-9\",\"rlNotInSchema\":\"x\"}"
+      }
+    },
+    "patch/bad-operation": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: The request could not be processed because the provided content is not a valid JSON patch."
+    },
+    "patch/fields": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes\",\"_rev\":\"<rev>\",\"description\":\"rl-8\"}"
+      }
+    },
+    "create/4": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes-4\",\"_rev\":\"<rev>\",\"name\":\"rl-4\",\"description\":\"rl-probe\"}"
+      }
+    },
+    "update/4": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes-4\",\"_rev\":\"<rev>\",\"name\":\"rl-4u\",\"description\":\"rl-probe\"}"
+      }
+    },
+    "update/5/fields": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes-4\",\"_rev\":\"<rev>\",\"name\":\"rl-4v\"}"
+      }
+    },
+    "patch/4": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes-4\",\"_rev\":\"<rev>\",\"name\":\"rl-4v\",\"description\":\"rl-5\"}"
+      }
+    },
+    "delete/4/fields": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes-4\",\"_rev\":\"<rev>\",\"name\":\"rl-4v\"}"
+      }
+    },
+    "action/4/validateObject": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"result\": true, \"failedPolicyRequirements\": [  ] }",
+        "json": "{\"failedPolicyRequirements\":[],\"result\":true}"
+      }
+    },
+    "action/3/validateObject": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"result\": true, \"failedPolicyRequirements\": [  ] }",
+        "json": "{\"failedPolicyRequirements\":[],\"result\":true}"
+      }
+    },
+    "action/5/validateObject": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"result\": true, \"failedPolicyRequirements\": [  ] }",
+        "json": "{\"failedPolicyRequirements\":[],\"result\":true}"
+      }
+    },
+    "action/2/unknown": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Expecting String containing one of: patch triggerSyncCheck updateLastSync"
+    },
+    "delete/3": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"_id\":\"rl-probe-openidm-writes\",\"_rev\":\"<rev>\",\"name\":\"rl-a2\",\"description\":\"rl-8\",\"rlNotInSchema\":\"x\"}"
+      }
+    },
+    "delete": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: No Such Entry: The search base entry &#39;uid&#61;rl-probe-openidm-writes,ou&#61;role,o&#61;alpha,o&#61;root,ou&#61;identities&#39; does not exist"
+    },
+    "delete/absent": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: No Such Entry: The search base entry &#39;uid&#61;rl-probe-openidm-writes,ou&#61;role,o&#61;alpha,o&#61;root,ou&#61;identities&#39; does not exist"
+    },
+    "update/absent": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: No Such Entry: The search base entry &#39;uid&#61;rl-probe-openidm-writes,ou&#61;role,o&#61;alpha,o&#61;root,ou&#61;identities&#39; does not exist"
+    }
+  }, {
+    given: {"managed":{"managed/alpha_role":[]}},
+    allowUndeclared: {"openidmWrites":true},
+    gap: {
+      reason:
+        "Not yet matched: the openidm mock accepts a duplicate create and a wrong _rev, ignores the fields argument, orders keys differently (AIC puts _id and _rev first), answers every action with {}, and reports absent records with a harness error rather than AIC's \"No Such Entry\". Writes were not captured live, so the write channel is not judged.",
+      differs: ["cleanup/before","create/5","create/duplicate","create/fields","update/null-rev","update/after","update/wrong-rev","patch/replace","patch/add-unknown-field","patch/bad-operation","patch/fields","create/4","update/4","update/5/fields","patch/4","delete/4/fields","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete/3","delete","delete/absent","update/absent"],
+    },
+  }),
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-utils-interop", "fixtures/binding-utils-interop.script.js", {
+    "ecdsa/verify/p1363": {
+      "ok": true,
+      "value": true
+    },
+    "ecdsa/verify/der": {
+      "ok": true,
+      "value": false
+    },
+    "ecdsa/verify/p1363/tampered": {
+      "ok": true,
+      "value": false
+    },
+    "rsa/generated/encoding": {
+      "ok": true,
+      "value": {
+        "publicKey": {
+          "length": 294,
+          "head": "30820122300d06092a864886f70d01010105000382010f00"
+        },
+        "privateKey": "020100300d06092a864886f70d0101010500"
+      }
+    },
+    "ecdsa/generated/encoding": {
+      "ok": true,
+      "value": {
+        "publicKey": {
+          "length": 91,
+          "head": "3059301306072a8648ce3d020106082a8648ce3d03010703420004"
+        },
+        "privateKey": {
+          "length": 67,
+          "head": "3041020100301306072a8648ce3d020106082a8648ce3d030107042730250201010420"
+        }
+      }
+    },
+    "digest/js-array": {
+      "ok": true,
+      "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    },
+    "digest/SHA-1": {
+      "ok": true,
+      "value": "a9993e364706816aba3e25717850c26c9cd0d89d"
+    },
+    "digest/SHA-512": {
+      "ok": true,
+      "value": "ddaf35a193617aba"
+    },
+    "digest/MD5": {
+      "ok": false,
+      "error": "InternalError: Algorithm must be one of [SHA-256, SHA-384, SHA-1, SHA-512]"
+    },
+    "digest/object": {
+      "ok": false,
+      "error": "InternalError: Algorithm must be one of [SHA-256, SHA-384, SHA-1, SHA-512]"
+    },
+    "aes/js-array-key": {
+      "ok": true,
+      "value": "1d25821c3e311eea2d4dd8633a25c1b5"
+    },
+    "aes/js-array-data": {
+      "ok": true,
+      "value": "1d25821c3e311eea2d4dd8633a25c1b5"
+    },
+    "aes/key-24": {
+      "ok": true,
+      "value": "377f35478afd40126bdcb4d5f9be9ee6"
+    },
+    "aes/key-5": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoException: java.security.InvalidKeyException: Invalid AES key length: 5 bytes"
+    },
+    "hmac/SHA-512": {
+      "ok": true,
+      "value": "3926a207c8c42b0c"
+    },
+    "types/bytesToString/js-array": {
+      "ok": true,
+      "value": "ab"
+    },
+    "types/stringToBytes/number": {
+      "ok": true,
+      "value": "3132"
+    },
+    "base64/encode/number": {
+      "ok": true,
+      "value": "MTI="
+    },
+    "crypto/randomUUID/1": {
+      "ok": false,
+      "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService.randomUUID(number). (AIC Rhino Let Probe#128)"
+    },
+    "crypto/getRandomValues/js-object": {
+      "ok": false,
+      "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService.getRandomValues(object). (AIC Rhino Let Probe#132)"
+    }
+  }, {
+    gap: {
+      reason:
+        "ECDSA interop (P1363 accepted, DER false), generated key encodings, digest/AES/HMAC edges and JS-array handling match. Still different: a 5-byte AES key fails on both, but AIC wraps it as JavaException ScriptCryptoException; randomUUID(1) and getRandomValues({}) fail on both, but with the harness arity message and without AIC's (name#line) suffix respectively.",
+      differs: ["aes/key-5","crypto/randomUUID/1","crypto/getRandomValues/js-object"],
+    },
+  }),
   // Live callbacks, parsed from the probe run's /authenticate body (2026-09-29).
   realCase({
     name: "binding-callbacks-builder",
@@ -3459,6 +3982,24 @@ export const realCases: RealEntry[] = [
           "trackingCookie": false,
           "redirectData": {
             "marker": "object-401"
+          }
+        },
+        {
+          "type": "RedirectCallback",
+          "redirectUrl": "probe-410",
+          "redirectMethod": "probe-412",
+          "trackingCookie": true,
+          "redirectData": {
+            "marker": "object-411"
+          }
+        },
+        {
+          "type": "RedirectCallback",
+          "redirectUrl": "probe-420",
+          "redirectMethod": "probe-422",
+          "trackingCookie": true,
+          "redirectData": {
+            "marker": "object-421"
           }
         },
         {

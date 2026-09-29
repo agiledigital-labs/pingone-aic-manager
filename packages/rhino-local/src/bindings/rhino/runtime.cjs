@@ -472,20 +472,30 @@ action.removeSessionProperty = function (key) {
   return action;
 };
 
-action.withMaxSessionTime = function (maxSessionTime) {
-  __rhinoLocalExpectArity("action.withMaxSessionTime", arguments, 1);
-  // AIC's message for "x" (measured); where the edge sits for other
-  // non-numbers is inferred from Rhino's Integer conversion.
-  if (isNaN(Number(maxSessionTime))) {
+// AIC's Integer parameter (measured): "120" and 1.5 convert, "x" does not,
+// and null matches no overload.
+function __rhinoLocalActionInteger(method, value) {
+  if (value === null) {
     throw new InternalError(
-      "Cannot convert " + maxSessionTime + " to java.lang.Integer"
+      "Can't find method org.forgerock.openam.auth.nodes.script.ActionWrapper." +
+        method +
+        "(null)."
     );
   }
+  if (isNaN(Number(value))) {
+    throw new InternalError("Cannot convert " + value + " to java.lang.Integer");
+  }
+}
+
+action.withMaxSessionTime = function (maxSessionTime) {
+  __rhinoLocalExpectArity("action.withMaxSessionTime", arguments, 1);
+  __rhinoLocalActionInteger("withMaxSessionTime", maxSessionTime);
   return action;
 };
 
 action.withMaxIdleTime = function (maxIdleTime) {
   __rhinoLocalExpectArity("action.withMaxIdleTime", arguments, 1);
+  __rhinoLocalActionInteger("withMaxIdleTime", maxIdleTime);
   return action;
 };
 
@@ -876,10 +886,14 @@ callbacksBuilder.consentMappingCallback = function () {
     var config = a[0];
     var emptyFields = [];
     var i;
-    if (config && Array.isArray(config.fields)) {
-      for (i = 0; i < config.fields.length; i += 1) {
-        emptyFields.push(null);
-      }
+    // AIC streams config.fields and fails without it (measured).
+    if (!config || !Array.isArray(config.fields)) {
+      throw new Error(
+        "rhino-local: consentMappingCallback config needs a fields list; AIC refuses one without"
+      );
+    }
+    for (i = 0; i < config.fields.length; i += 1) {
+      emptyFields.push(null);
     }
     __rhinoLocalCallback("ConsentMappingCallback", {
       name: String(config.name),
@@ -963,8 +977,8 @@ callbacksBuilder.redirectCallback = function (
     redirectUrl: String(redirectUrl),
     redirectData: redirectData,
     redirectMethod: String(method),
-    // Every probe passed false or omitted it; true is unmeasured. The status
-    // parameter and redirect-back cookie are not rendered (measured).
+    // Follows the argument; the status parameter and redirect-back cookie are
+    // not rendered (both measured).
     trackingCookie:
       a.length === 4 ? Boolean(fourth) : a.length === 6 ? Boolean(sixth) : false,
   };
@@ -2213,8 +2227,12 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
     function fail(message) {
       throw new InternalError(message);
     }
+    // A number or boolean takes AIC's String overload ("MTI=" for 12).
     function bytes(value) {
-      return typeof value === "string" ? hostOp("utf8", value) : value;
+      var t = typeof value;
+      return t === "string" || t === "number" || t === "boolean"
+        ? hostOp("utf8", String(value))
+        : value;
     }
     function encoded(value, url) {
       return hostOp("base64Encode", bytes(value), url);
@@ -2255,9 +2273,17 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
       return hostOp("fromUtf8", value);
     };
     utils.crypto.randomUUID = function () {
+      __rhinoLocalExpectArity("utils.crypto.randomUUID", arguments, 0);
       return hostOp("uuid");
     };
     utils.crypto.getRandomValues = function (array) {
+      __rhinoLocalExpectArity("utils.crypto.getRandomValues", arguments, 1);
+      // AIC takes an array only; an array-like object has no overload.
+      if (!Array.isArray(array) && !(array instanceof java.lang.Object)) {
+        fail(
+          "Can't find method org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService.getRandomValues(object)."
+        );
+      }
       var i;
       for (i = 0; i < array.length; i += 1) {
         array[i] = hostOp("randomInt32");
@@ -2276,8 +2302,13 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
       }
       return hash;
     }
+    // Only these names, and only as a string: { name } is refused (measured).
+    var DIGESTS = ["SHA-256", "SHA-384", "SHA-1", "SHA-512"];
     subtle.digest = function (algorithm, data) {
-      return hostOp("digest", algorithmName(algorithm), data);
+      if (typeof algorithm !== "string" || DIGESTS.indexOf(algorithm) < 0) {
+        fail("Algorithm must be one of [" + DIGESTS.join(", ") + "]");
+      }
+      return hostOp("digest", algorithm, data);
     };
     subtle.sign = function (algorithm, key, data) {
       var name = algorithmName(algorithm);
@@ -2326,7 +2357,7 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
     subtle.generateKey = function (algorithm) {
       var name = algorithmName(algorithm);
       if (name === "AES" || name === "HMAC") {
-        return hostOp("generateSecret", 32);
+        return hostOp("generateSecret");
       }
       if (name === "RSA" || name === "ECDSA") {
         var pair = hostOp("generateKeyPair", name);

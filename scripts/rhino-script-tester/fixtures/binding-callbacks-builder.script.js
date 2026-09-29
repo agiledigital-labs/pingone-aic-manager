@@ -284,6 +284,24 @@ build("redirectCallback/6", function () {
     false
   );
 });
+build("redirectCallback/4 true", function () {
+  callbacksBuilder.redirectCallback(
+    "probe-410",
+    { marker: "object-411" },
+    "probe-412",
+    true
+  );
+});
+build("redirectCallback/6 true", function () {
+  callbacksBuilder.redirectCallback(
+    "probe-420",
+    { marker: "object-421" },
+    "probe-422",
+    "probe-423",
+    "probe-424",
+    true
+  );
+});
 build("confirmationCallback/3 numbers", function () {
   callbacksBuilder.confirmationCallback(1, 0, 1);
 });
