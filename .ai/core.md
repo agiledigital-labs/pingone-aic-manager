@@ -114,17 +114,24 @@ working-tree scan reports are all in `target/` and the gitignored `workspace/`,
 none in tracked files.
 
 `.gitleaks.toml` extends the stock ruleset — it never replaces it — and holds
-one allowlist: an AM script id is a UUID, and `accessTokenModificationScript` /
-`accessTokenMayActScript` contain "Token", which `generic-api-key` reads as a
-token assignment. **Allowlist by shape, never by fingerprint.** A fingerprint
+three allowlists. First, an AM script id is a UUID, and
+`accessTokenModificationScript` / `accessTokenMayActScript` contain "Token",
+which `generic-api-key` reads as a token assignment. Second, the rhino-local
+corpus's slash-joined probe keys (`encrypt/RSA/generatedKey`), in the corpus
+files only. Third, the ascending-hex test vector `0123456789abcdef…`. **Allowlist by shape, never by fingerprint.** A fingerprint
 pins a commit hash, and this history was rewritten on 2026-09-15, so every
 fingerprint taken before that names a commit which no longer exists. Any new
 entry needs the same discriminating control the first one has: a value of the
 wrong shape in the same key must still fire.
 
-Enable the hook once per clone: `git config core.hooksPath .githooks`. CI runs
-the same check over the whole tree, so `--no-verify` only moves the failure to
-the pull request.
+Enable the hooks once per clone: `git config core.hooksPath .githooks`.
+`pre-commit` runs the scanner on staged lines plus gitleaks on the staged diff.
+`pre-push` runs both over exactly the commits being published, which is the
+last point where a leak is free to fix, because the remote keeps force-pushed
+objects. Both use `scripts/gitleaks.sh`, the version CI pins. pre-commit warns
+and carries on when gitleaks cannot be fetched offline; pre-push fails closed.
+CI runs the same checks over the whole history, so `--no-verify` only moves the
+failure to the pull request.
 
 Use these reserved placeholders — the scanner accepts them and rejects
 everything else of the same shape:
