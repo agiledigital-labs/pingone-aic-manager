@@ -2201,6 +2201,178 @@ function __rhinoLocalLoadLibrary(name) {
   return module.exports;
 }
 
+// utils is backed by java/HostOps.java, a native function the runner defines
+// for the preamble and deletes before the script runs: java.util.Base64,
+// SecureRandom and javax.crypto are outside the AM allow-list, so neither the
+// mocks nor a script can reach them directly. Absent (the node vm path), utils
+// stays unmocked.
+if (typeof __rhinoLocalHostOp !== "undefined") {
+  (function (hostOp) {
+    // AIC's service errors carry no (script#line) suffix; a JS-thrown
+    // InternalError has none either, where one reported from Java would.
+    function fail(message) {
+      throw new InternalError(message);
+    }
+    function bytes(value) {
+      return typeof value === "string" ? hostOp("utf8", value) : value;
+    }
+    function encoded(value, url) {
+      return hostOp("base64Encode", bytes(value), url);
+    }
+    function decoded(value, url, asBytes) {
+      var result;
+      try {
+        result = hostOp("base64Decode", String(value), url);
+      } catch (e) {
+        if (url) {
+          return null;
+        }
+        if (typeof e === "string") {
+          fail(e);
+        }
+        throw e;
+      }
+      return asBytes ? result : hostOp("fromUtf8", result);
+    }
+    [utils.base64, utils.base64url].forEach(function (codec, index) {
+      var url = index === 1;
+      codec.encode = function (value) {
+        return encoded(value, url);
+      };
+      codec.decode = function (value) {
+        return decoded(value, url, false);
+      };
+      codec.decodeToBytes = function (value) {
+        return decoded(value, url, true);
+      };
+      codec.btoa = codec.encode;
+      codec.atob = codec.decode;
+    });
+    utils.types.stringToBytes = function (value) {
+      return hostOp("utf8", String(value));
+    };
+    utils.types.bytesToString = function (value) {
+      return hostOp("fromUtf8", value);
+    };
+    utils.crypto.randomUUID = function () {
+      return hostOp("uuid");
+    };
+    utils.crypto.getRandomValues = function (array) {
+      var i;
+      for (i = 0; i < array.length; i += 1) {
+        array[i] = hostOp("randomInt32");
+      }
+      return array;
+    };
+
+    var subtle = utils.crypto.subtle;
+    function algorithmName(value) {
+      return typeof value === "string" ? value : value.name;
+    }
+    function hmacHash(algorithm) {
+      var hash = typeof algorithm === "string" ? "SHA-256" : algorithm.hash;
+      if (typeof hash !== "string") {
+        fail("Unsupported hashing algorithm: [object Object]");
+      }
+      return hash;
+    }
+    subtle.digest = function (algorithm, data) {
+      return hostOp("digest", algorithmName(algorithm), data);
+    };
+    subtle.sign = function (algorithm, key, data) {
+      var name = algorithmName(algorithm);
+      if (name === "HMAC") {
+        return hostOp("hmac", hmacHash(algorithm), key, data);
+      }
+      if (name === "ECDSA") {
+        return hostOp("ecdsaSign", key, data);
+      }
+      fail("Algorithm must be one of [HMAC, ECDSA]");
+    };
+    subtle.verify = function (algorithm, key, data, signature) {
+      var name = algorithmName(algorithm);
+      if (name === "HMAC") {
+        var expected = hostOp("hmac", hmacHash(algorithm), key, data);
+        var i;
+        if (expected.length !== signature.length) {
+          return false;
+        }
+        for (i = 0; i < expected.length; i += 1) {
+          if (expected[i] !== signature[i]) {
+            return false;
+          }
+        }
+        return true;
+      }
+      if (name === "ECDSA") {
+        return hostOp("ecdsaVerify", key, data, signature);
+      }
+      fail("Algorithm must be one of [HMAC, ECDSA]");
+    };
+    function cipher(encrypt) {
+      return function (algorithm, key, data) {
+        var name = algorithmName(algorithm);
+        if (name === "AES") {
+          return hostOp("aes", encrypt, key, data);
+        }
+        if (name === "RSA") {
+          return hostOp("rsa", encrypt, key, data);
+        }
+        fail("Algorithm must be one of [AES, RSA]");
+      };
+    }
+    subtle.encrypt = cipher(true);
+    subtle.decrypt = cipher(false);
+    subtle.generateKey = function (algorithm) {
+      var name = algorithmName(algorithm);
+      if (name === "AES" || name === "HMAC") {
+        return hostOp("generateSecret", 32);
+      }
+      if (name === "RSA" || name === "ECDSA") {
+        var pair = hostOp("generateKeyPair", name);
+        // How AIC's key-pair map prints (measured).
+        Object.defineProperty(pair, "toString", {
+          enumerable: false,
+          value: function () {
+            return (
+              '{ "privateKey": ' +
+              this.privateKey +
+              ', "publicKey": ' +
+              this.publicKey +
+              " }"
+            );
+          },
+        });
+        return pair;
+      }
+      fail("Algorithm must be one of [AES, ECDSA, RSA, HMAC]");
+    };
+    subtle.deriveKey = function (algorithm, baseKey, length) {
+      if (typeof algorithm === "string") {
+        fail("Salt must be provided for PBKDF2.");
+      }
+      if (algorithm.name !== "PBKDF2") {
+        fail("Algorithm must be one of [PBKDF2]");
+      }
+      try {
+        return hostOp(
+          "pbkdf2",
+          baseKey,
+          algorithm.salt,
+          algorithm.iterations,
+          length,
+          algorithm.hash
+        );
+      } catch (e) {
+        if (typeof e === "string") {
+          fail(e);
+        }
+        throw e;
+      }
+    };
+  })(__rhinoLocalHostOp);
+}
+
 function __rhinoLocalSeed(given) {
   given = given || {};
   if (given.bindings) {

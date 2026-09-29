@@ -105,7 +105,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, logger.isTraceEnabled, systemEnv.getProperty-1, systemEnv.getProperty-2, systemEnv.getProperty-3-string, systemEnv.getProperty-3-rhino-class-object, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, cacheManager.named, cacheManager.exists, journey.name, journey.innerJourney, journey.mustRun, journey.identityResource, samlApplication.getApplicationId, samlApplication.getAuthnRequest, samlApplication.getIdpAttributes, samlApplication.getSpAttributes, samlApplication.getFlowInitiator, samlApplication.getAssertion, oauthApplication.getRequestProperties, oauthApplication.getApplicationId, oauthApplication.getClientProperties, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, samlApplication/typeof-enumeration, oauthApplication/typeof-enumeration, emailService/typeof-enumeration, realm, scriptName, locales, systemEnv.getProperty-3/string, systemEnv.getProperty-3/number, systemEnv.getProperty-3/boolean, systemEnv.getProperty-3/object, systemEnv.getProperty-3/array, systemEnv.getProperty-3/list, systemEnv.getProperty-3/map, systemEnv.getProperty-3/java.lang.String, systemEnv.getProperty-3/java.lang.Boolean, systemEnv.getProperty-3/java.util.List, systemEnv.getProperty-3/class/Integer, systemEnv.getProperty-3/class/String, systemEnv.getProperty-3/class/Boolean, systemEnv.getProperty-3/class/Double, systemEnv.getProperty-3/object/json, systemEnv.getProperty-3/map/json, systemEnv.getProperty-3/array/json, systemEnv.getProperty-3/array/csv, systemEnv.getProperty-3/list/csv-spaced, systemEnv.getProperty-3/number/4.5, systemEnv.getProperty-3/number/not-a-number, systemEnv.getProperty-3/boolean/TRUE, systemEnv.getProperty-3/String, systemEnv.getProperty-3/int, systemEnv.getProperty-3/integer, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtAssertion.generateJwt/HS256 1`] = `
 {
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
+  "error": "Error: rhino-local: not mocked: jwtAssertion.generateJwt arity=1 overload=[generateJwt(jwtData: object)]",
   "ok": false,
 }
 `;
@@ -133,7 +133,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, logger.isTraceEnabled, systemEnv.getProperty-1, systemEnv.getProperty-2, systemEnv.getProperty-3-string, systemEnv.getProperty-3-rhino-class-object, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, cacheManager.named, cacheManager.exists, journey.name, journey.innerJourney, journey.mustRun, journey.identityResource, samlApplication.getApplicationId, samlApplication.getAuthnRequest, samlApplication.getIdpAttributes, samlApplication.getSpAttributes, samlApplication.getFlowInitiator, samlApplication.getAssertion, oauthApplication.getRequestProperties, oauthApplication.getApplicationId, oauthApplication.getClientProperties, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, samlApplication/typeof-enumeration, oauthApplication/typeof-enumeration, emailService/typeof-enumeration, realm, scriptName, locales, systemEnv.getProperty-3/string, systemEnv.getProperty-3/number, systemEnv.getProperty-3/boolean, systemEnv.getProperty-3/object, systemEnv.getProperty-3/array, systemEnv.getProperty-3/list, systemEnv.getProperty-3/map, systemEnv.getProperty-3/java.lang.String, systemEnv.getProperty-3/java.lang.Boolean, systemEnv.getProperty-3/java.util.List, systemEnv.getProperty-3/class/Integer, systemEnv.getProperty-3/class/String, systemEnv.getProperty-3/class/Boolean, systemEnv.getProperty-3/class/Double, systemEnv.getProperty-3/object/json, systemEnv.getProperty-3/map/json, systemEnv.getProperty-3/array/json, systemEnv.getProperty-3/array/csv, systemEnv.getProperty-3/list/csv-spaced, systemEnv.getProperty-3/number/4.5, systemEnv.getProperty-3/number/not-a-number, systemEnv.getProperty-3/boolean/TRUE, systemEnv.getProperty-3/String, systemEnv.getProperty-3/int, systemEnv.getProperty-3/integer, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtValidator.validateJwtClaims/HS256 1`] = `
 {
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
+  "error": "Error: rhino-local: not mocked: jwtValidator.validateJwtClaims arity=1 overload=[validateJwtClaims(jwtData: object)]",
   "ok": false,
 }
 `;
@@ -585,345 +585,44 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64/decodeToBytes 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64/encode/bytes 1`] = `
 {
-  "error": "Error: rhino-local: not mocked: utils.base64.decodeToBytes arity=1 overload=[decodeToBytes(toDecode: string)]",
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#2943)",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64/encode/bytes 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64url/encode/bytes 1`] = `
 {
-  "error": "Error: rhino-local: not mocked: utils.base64.encode arity=1 overload=[encode(toEncode: array)]",
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#2943)",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64/invalid 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64.decode arity=1 overload=[decode(toDecode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64/string/0 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64.encode arity=1 overload=[encode(toEncode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64/string/1 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64.encode arity=1 overload=[encode(toEncode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64/string/2 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64.encode arity=1 overload=[encode(toEncode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64url/decodeToBytes 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64url.decodeToBytes arity=1 overload=[decodeToBytes(toDecode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64url/encode/bytes 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64url.encode arity=1 overload=[encode(toEncode: array)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64url/invalid 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64url.decode arity=1 overload=[decode(toDecode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64url/string/0 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64url.encode arity=1 overload=[encode(toEncode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64url/string/1 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64url.encode arity=1 overload=[encode(toEncode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > base64url/string/2 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.base64url.encode arity=1 overload=[encode(toEncode: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > crypto/checkBcrypt/right 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > crypto/checkBcrypt/right 1`] = `
 {
   "error": "Error: rhino-local: not mocked: utils.crypto.checkBcrypt arity=2 overload=[checkBcrypt(bcryptString: string, password: string)]",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > crypto/checkBcrypt/wrong 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > crypto/checkBcrypt/wrong 1`] = `
 {
   "error": "Error: rhino-local: not mocked: utils.crypto.checkBcrypt arity=2 overload=[checkBcrypt(bcryptString: string, password: string)]",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > crypto/getRandomValues 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > subtle/deriveKey/object 1`] = `
 {
-  "error": "Error: rhino-local: not mocked: utils.crypto.getRandomValues arity=1 overload=[getRandomValues(array: array)]",
+  "error": "InternalError: class org.mozilla.javascript.NativeArray cannot be cast to class [B",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > crypto/randomUUID 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on encrypt/RSA/generatedKey > encrypt/RSA/generatedKey 1`] = `
 {
-  "error": "Error: rhino-local: not mocked: utils.crypto.randomUUID arity=0 overload=[randomUUID()]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/decrypt/string 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.decrypt arity=3 overload=[decrypt(algorithm: string, key: array, data: array)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/deriveKey/object 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.deriveKey arity=3 overload=[deriveKey(algorithm: object, baseKey: array, derivedKeyLength: number)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/deriveKey/string 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.deriveKey arity=3 overload=[deriveKey(algorithmName: string, baseKey: array, derivedKeyLength: number)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/digest/SHA-256 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/encrypt/decrypt/options 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/encrypt/string 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/generateKey/object 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: object)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/generateKey/string 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/sign/HMAC/options 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/sign/HMAC/string 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/verify/right 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > subtle/verify/tampered 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/string/0, base64url/string/0, base64/string/1, base64url/string/1, base64/string/2, base64url/string/2, base64/encode/bytes, base64url/encode/bytes, base64/decodeToBytes, base64url/decodeToBytes, base64/invalid, base64url/invalid, types/roundtrip, crypto/randomUUID, crypto/getRandomValues, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/digest/SHA-256, subtle/sign/HMAC/options, subtle/sign/HMAC/string, subtle/verify/right, subtle/verify/tampered, subtle/encrypt/string, subtle/decrypt/string, subtle/encrypt/decrypt/options, subtle/generateKey/object, subtle/generateKey/string, subtle/deriveKey/object, subtle/deriveKey/string > types/roundtrip 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > deriveKey/object/PBKDF2 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > deriveKey/object/PBKDF2/hex 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > deriveKey/string/PBKDF2 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > encrypt/AES/generatedKey 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > encrypt/AES/hex-twice 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > encrypt/RSA/generatedKey 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > encrypt/decrypt/AES/object 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > encrypt/decrypt/AES/string 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > encrypt/decrypt/RSA/keyPair 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > generateKey/object/AES 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: object)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > generateKey/object/ECDSA 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: object)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > generateKey/object/HMAC 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: object)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > generateKey/object/RSA 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: object)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > generateKey/string/AES 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > generateKey/string/ECDSA 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > generateKey/string/HMAC 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > generateKey/string/RSA 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > sign/HMAC/object/hash-string 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > sign/HMAC/string/hex 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.types.stringToBytes arity=1 overload=[stringToBytes(string: string)]",
-  "ok": false,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on generateKey/string/AES, generateKey/object/AES, generateKey/string/HMAC, generateKey/object/HMAC, generateKey/string/RSA, generateKey/object/RSA, generateKey/string/ECDSA, generateKey/object/ECDSA, encrypt/decrypt/AES/string, encrypt/decrypt/AES/object, encrypt/AES/generatedKey, encrypt/RSA/generatedKey, sign/HMAC/object/hash-string, sign/HMAC/string/hex, deriveKey/object/PBKDF2, deriveKey/string/PBKDF2, encrypt/AES/hex-twice, deriveKey/object/PBKDF2/hex, encrypt/decrypt/RSA/keyPair, sign/verify/ECDSA/keyPair > sign/verify/ECDSA/keyPair 1`] = `
-{
-  "error": "Error: rhino-local: not mocked: utils.crypto.subtle.generateKey arity=1 overload=[generateKey(algorithm: string)]",
+  "error": "InternalError: Cannot convert [object Object] to byte[] (rhino-local-mocks.cjs#3042)",
   "ok": false,
 }
 `;

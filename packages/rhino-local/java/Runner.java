@@ -171,8 +171,14 @@ public final class Runner {
 
       if (preamble != null && !preamble.isEmpty()) {
         try {
+          final String hostOpName = "__rhinoLocalHostOp";
+          HostOps hostOps = new HostOps();
+          hostOps.setParentScope(scope);
+          hostOps.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+          ScriptableObject.putProperty(scope, hostOpName, hostOps);
           Script preambleScript = cx.compileString(preamble, preambleName, 1, null);
           preambleScript.exec(cx, scope);
+          ScriptableObject.deleteProperty(scope, hostOpName);
         } catch (EvaluatorException e) {
           return errorFromRhino(id, "compile_error", e);
         } catch (RhinoException e) {
