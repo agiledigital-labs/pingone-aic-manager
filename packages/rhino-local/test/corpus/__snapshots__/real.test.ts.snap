@@ -21,6 +21,42 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-actio
 }
 `;
 
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-callbacks-getters — differs on getChoiceCallbacks, getConsentMappingCallbacks > getChoiceCallbacks 1`] = `
+{
+  "first": {
+    "array": false,
+    "string": "0",
+    "type": "number",
+  },
+  "list": {
+    "array": false,
+    "keys": [
+      "0",
+    ],
+    "length": 1,
+    "size": 1,
+    "string": "[0]",
+    "type": "object",
+  },
+  "ok": true,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-callbacks-getters — differs on getChoiceCallbacks, getConsentMappingCallbacks > getConsentMappingCallbacks 1`] = `
+{
+  "first": null,
+  "list": {
+    "array": false,
+    "keys": [],
+    "length": 0,
+    "size": 0,
+    "string": "[]",
+    "type": "object",
+  },
+  "ok": true,
+}
+`;
+
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/2/unknown 1`] = `
 {
   "error": "Error: rhino-local: openidm.action: Expecting String containing one of: patch triggerSyncCheck updateLastSync",
@@ -309,14 +345,14 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64/encode/bytes 1`] = `
 {
-  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#3220)",
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#<line>)",
   "ok": false,
 }
 `;
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64url/encode/bytes 1`] = `
 {
-  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#3220)",
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#<line>)",
   "ok": false,
 }
 `;
@@ -344,7 +380,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-interop — differs on aes/key-5, crypto/randomUUID/1, crypto/getRandomValues/js-object > aes/key-5 1`] = `
 {
-  "error": "InternalError: java.security.InvalidKeyException: Invalid AES key length: 5 bytes (rhino-local-mocks.cjs#3329)",
+  "error": "InternalError: java.security.InvalidKeyException: Invalid AES key length: 5 bytes (rhino-local-mocks.cjs#<line>)",
   "ok": false,
 }
 `;
@@ -365,7 +401,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on encrypt/RSA/generatedKey > encrypt/RSA/generatedKey 1`] = `
 {
-  "error": "InternalError: Cannot convert [object Object] to byte[] (rhino-local-mocks.cjs#3332)",
+  "error": "InternalError: Cannot convert [object Object] to byte[] (rhino-local-mocks.cjs#<line>)",
   "ok": false,
 }
 `;
