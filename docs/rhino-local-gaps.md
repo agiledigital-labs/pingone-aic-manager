@@ -137,8 +137,13 @@ expectation that was incomplete). The five legacy cases were dropped on
 ## Binding probes (measured 2026-09-29)
 
 Ten `binding-*` fixtures exercise the scripted-decision binding surface
-member by member. A live run is committed verbatim as each case's expectation,
-and the local payload is compared to it key by key. Every binding member is run
+member by member. Each case's expectation is the live payload, committed
+verbatim, and the local payload is compared to it key by key. Three things are
+not raw live values. `binding-openidm-writes` masks `_rev` and the generated id
+in the fixture itself, on both sides. Java identity hashes (`@1a2b3c`) are
+masked when a gap's local value is compared. `binding-callbacks-builder` pins
+AIC's callbacks parsed from the `/authenticate` body, because that fixture emits
+no payload. Every binding member is run
 by at least one corpus case's origin fixture, or is excluded with a reason in
 `test/corpus/member-coverage.test.ts`. The four exclusions are
 `emailService.send` (it sends mail), `action.suspend` (it ends the probe), and
@@ -168,7 +173,8 @@ behaviour is in `docs/api/12-script-bindings-matrix.md`.
 `given.bindings` accepts only `journey` (whose getters throw when unseeded) and
 `cacheManager`. Any other name throws, so a case cannot quietly seed a binding
 the harness does not model. `samlApplication` and `oauthApplication` are always
-`null`, as they are live in a scripted-decision node.
+`null`, as measured on a journey not started by a SAML or OAuth2 flow. A journey
+those flows start is not modelled.
 
 ## Where the real scripts are
 

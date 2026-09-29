@@ -1185,7 +1185,7 @@ function __rhinoLocalRequireSubmitted() {
   return __rhinoLocal.submittedCallbacks;
 }
 
-// A Java List as AIC's getters return it: indexable, size()/get(), and
+// A Java List as AIC's getters return it: indexable, size/get/isEmpty/contains, and
 // printed "[a, b]" with each element formatted by format().
 function __rhinoLocalCallbackList(items, format) {
   var list = {};
@@ -1204,6 +1204,12 @@ function __rhinoLocalCallbackList(items, format) {
   });
   __rhinoLocalHide(list, "get", function (index) {
     return items[index] === undefined ? null : items[index];
+  });
+  __rhinoLocalHide(list, "isEmpty", function () {
+    return items.length === 0;
+  });
+  __rhinoLocalHide(list, "contains", function (value) {
+    return items.indexOf(value) !== -1;
   });
   __rhinoLocalHide(list, "toString", function () {
     var values = [];

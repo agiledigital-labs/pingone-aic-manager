@@ -3,7 +3,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { realCases } from "../../cases/real/index.ts";
 import { bindingsJsonPath, repoRoot } from "../../src/paths.ts";
-import { membersOf, type ContextsDocument, type Element } from "../../src/schema.ts";
+import {
+  membersOf,
+  type ContextsDocument,
+  type Element,
+} from "../../src/schema.ts";
 
 /**
  * Every member of the scripted-decision binding surface is exercised by at
@@ -14,12 +18,16 @@ import { membersOf, type ContextsDocument, type Element } from "../../src/schema
  * Textual, so deliberately strict about what counts: comments are stripped
  * (a fixture saying "emailService.send is not called" is not a call), and a
  * method needs a call — `path(` (whitespace allowed around the dots), or
- * `alias.member(` where the fixture assigned `var alias = parent;`, or a
- * quoted `"member"` where the fixture subscripts `parent[…]` to call it.
+ * `alias.member(` where the fixture assigned `var alias = parent;`, or
+ * `parent[NAMES[i]](` where the array literal `var NAMES = [ … ]` quotes the
+ * member. A quoted name and a subscript that are not the same call do not
+ * count: `typeof callbacksBuilder[candidates[i]]` only enumerates.
  */
 const EXCLUDED: Record<string, string> = {
-  "emailService.send": "sends real mail from the tenant; never called by a probe",
-  "action.suspend": "suspends the live journey; a probe could not return its payload",
+  "emailService.send":
+    "sends real mail from the tenant; never called by a probe",
+  "action.suspend":
+    "suspends the live journey; a probe could not return its payload",
   "callbacksBuilder.httpCallback":
     "AM cannot render it as REST JSON (400 for the whole response); measured in binding-callbacks-http, which has no payload for a case",
   "callbacksBuilder.x509CertificateCallback":
@@ -47,24 +55,42 @@ function covered(source: string, path: string, isMethod: boolean): boolean {
   const dot = path.lastIndexOf(".");
   const parent = path.slice(0, dot);
   const member = path.slice(dot + 1);
-  if (
-    new RegExp(`${dotted(parent)}\\[`).test(source) &&
-    new RegExp(`["']${escape(member)}["']`).test(source)
-  ) {
-    return true;
+  // `parent[NAMES[i]](…)`, where `var NAMES = [ … ]` lists the member.
+  const subscripted = new RegExp(
+    `${dotted(parent)}\\s*\\[\\s*(\\w+)\\s*\\[\\s*\\w+\\s*\\]\\s*\\]\\s*\\(`,
+    "g",
+  );
+  for (const call of source.matchAll(subscripted)) {
+    const list = new RegExp(`var\\s+${call[1]}\\s*=\\s*\\[([^\\]]*)\\]`).exec(
+      source,
+    );
+    if (
+      list?.[1] !== undefined &&
+      new RegExp(`["']${escape(member)}["']`).test(list[1])
+    ) {
+      return true;
+    }
   }
-  const aliases = [...source.matchAll(new RegExp(`var\\s+(\\w+)\\s*=\\s*${dotted(parent)}\\s*;`, "g"))];
+  const aliases = [
+    ...source.matchAll(
+      new RegExp(`var\\s+(\\w+)\\s*=\\s*${dotted(parent)}\\s*;`, "g"),
+    ),
+  ];
   return aliases.some((alias) =>
-    new RegExp(`\\b${alias[1]}\\s*\\.\\s*${escape(member)}${call}`).test(source)
+    new RegExp(`\\b${alias[1]}\\s*\\.\\s*${escape(member)}${call}`).test(
+      source,
+    ),
   );
 }
 
 describe("binding member coverage", () => {
-  const doc = JSON.parse(readFileSync(bindingsJsonPath, "utf8")) as ContextsDocument;
+  const doc = JSON.parse(
+    readFileSync(bindingsJsonPath, "utf8"),
+  ) as ContextsDocument;
   const source = withoutComments(
     [...new Set(realCases.map((entry) => entry.origin))]
       .map((origin) => readFileSync(join(repoRoot, origin), "utf8"))
-      .join("\n")
+      .join("\n"),
   );
   const paths: { path: string; method: boolean }[] = [];
   function walk(prefix: string, elements: Element[]): void {
@@ -91,7 +117,7 @@ describe("binding member coverage", () => {
       .filter(({ path, method }) =>
         method || path.includes(".")
           ? !covered(source, path, method)
-          : !new RegExp(`\\b${escape(path)}\\b`).test(source)
+          : !new RegExp(`\\b${escape(path)}\\b`).test(source),
       )
       .map(({ path }) => path);
     expect(missing).toEqual([]);
@@ -103,7 +129,7 @@ describe("binding member coverage", () => {
       expect(entry, `${path} is not a binding member`).toBeDefined();
       expect(
         covered(source, path, entry?.method ?? false),
-        `${path} is now exercised; drop its exclusion`
+        `${path} is now exercised; drop its exclusion`,
       ).toBe(false);
     }
   });
