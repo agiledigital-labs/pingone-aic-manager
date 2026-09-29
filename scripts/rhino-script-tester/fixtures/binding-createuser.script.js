@@ -36,12 +36,21 @@ var second = probe("createUser/3", function () {
     mail: "probe@example.com",
   });
 });
+// Measured 2026-09-29: a string attribute value is a ClassCastException before
+// the environment check runs, so the values must be arrays to reach it.
+var third = probe("createUser/3/arrays", function () {
+  return idRepository.createUser(user + "-arr", password, {
+    givenName: ["Probe"],
+    sn: ["User"],
+    mail: ["probe@example.com"],
+  });
+});
 var duplicate = probe("createUser/duplicate", function () {
   return idRepository.createUser(user, password);
 });
 if (callbacks.isEmpty())
   callbacksBuilder.hiddenValueCallback(
     "result",
-    JSON.stringify([first, second, duplicate])
+    JSON.stringify([first, second, third, duplicate])
   );
 outcome = "ok";

@@ -2,6 +2,9 @@
 // Same-arity overload entries with identical JS types collapse to one callable signature below.
 // radioChoiceCallback/3 (3 JSON entries), choiceCallback/4 (3), confirmationCallback/3 (3),
 // confirmationCallback/4 (3) are each invoked once; Rhino cannot select their Java-only overloads.
+// httpCallback and x509CertificateCallback are in binding-callbacks-http /
+// binding-callbacks-x509: AM cannot render either as REST JSON and fails the
+// whole /authenticate response with a 400.
 // Emits only accumulated callbacks; it does not route the journey.
 // Numeric arguments are legal values (message types 0-2, option types 0-2,
 // in-range default indexes): an illegal one throws in the Java constructor and
@@ -179,27 +182,6 @@ build("idPCallback/11", function () {
     true,
     "probe-209",
     "probe-210"
-  );
-});
-build("httpCallback/3", function () {
-  callbacksBuilder.httpCallback("probe-210", "probe-211", "probe-212");
-});
-build("httpCallback/4", function () {
-  callbacksBuilder.httpCallback("probe-220", "probe-221", "probe-222", 401);
-});
-build("x509CertificateCallback/2", function () {
-  callbacksBuilder.x509CertificateCallback("probe-230", {
-    marker: "object-231",
-  });
-});
-build("x509CertificateCallback/1", function () {
-  callbacksBuilder.x509CertificateCallback("probe-240");
-});
-build("x509CertificateCallback/3", function () {
-  callbacksBuilder.x509CertificateCallback(
-    "probe-250",
-    { marker: "object-251" },
-    true
   );
 });
 build("consentMappingCallback/7", function () {
