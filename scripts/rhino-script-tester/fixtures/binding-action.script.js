@@ -27,7 +27,9 @@ function probe(n, f) {
   }
 }
 function emit(p) {
-  if (callbacks.isEmpty()) callbacksBuilder.hiddenValueCallback("result", p);
+  if (callbacks.isEmpty()) {
+    callbacksBuilder.hiddenValueCallback("result", p);
+  }
   outcome = "ok";
 }
 var r = [];

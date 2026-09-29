@@ -60,9 +60,10 @@ var third = probe("createUser/3/arrays", function () {
 var duplicate = probe("createUser/duplicate", function () {
   return idRepository.createUser(user, password);
 });
-if (callbacks.isEmpty())
+if (callbacks.isEmpty()) {
   callbacksBuilder.hiddenValueCallback(
     "result",
     keyed("binding-createuser", [first, second, third, duplicate])
   );
+}
 outcome = "ok";
