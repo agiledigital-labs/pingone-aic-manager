@@ -25,6 +25,8 @@ import org.mozilla.javascript.Wrapper;
 /** Narrow Java bridge captured by trusted mocks, then removed before user code runs. */
 public final class HostOps extends BaseFunction {
   private static final SecureRandom RANDOM = new SecureRandom();
+  static final java.util.List<String> DIGESTS =
+      java.util.Arrays.asList("SHA-256", "SHA-384", "SHA-1", "SHA-512");
 
   // A real Java byte[], as AIC returns: the same NativeJavaArray a script gets
   // from java.lang.String#getBytes, which the shutter already allows.
@@ -51,7 +53,14 @@ public final class HostOps extends BaseFunction {
     String op = (String) Context.jsToJava(args[0], String.class);
     switch (op) {
       case "base64Encode": {
-        byte[] b = toBytes(args[1]);
+        // AIC's encode(byte[]) overload refuses a JS array (measured), where
+        // most of the crypto methods convert one.
+        Object raw = args[1] instanceof Wrapper ? ((Wrapper) args[1]).unwrap() : args[1];
+        if (!(raw instanceof byte[])) {
+          throw Context.reportRuntimeError("Cannot convert " + raw.getClass().getName() + "@"
+              + Integer.toHexString(System.identityHashCode(raw)) + " to byte[]");
+        }
+        byte[] b = (byte[]) raw;
         boolean url = Context.toBoolean(args[2]);
         return url ? Base64.getUrlEncoder().withoutPadding().encodeToString(b)
             : Base64.getEncoder().encodeToString(b);
@@ -72,11 +81,20 @@ public final class HostOps extends BaseFunction {
       case "fromUtf8": return new String(toBytes(args[1]), StandardCharsets.UTF_8);
       case "uuid": return UUID.randomUUID().toString();
       case "randomInt32": return Integer.valueOf(RANDOM.nextInt());
-      case "digest": return wrapBytes(cx, scope, MessageDigest.getInstance((String) Context.jsToJava(args[1], String.class))
-          .digest(toBytes(args[2])));
+      case "digest": {
+        String alg = (String) Context.jsToJava(args[1], String.class);
+        // AIC's list (measured); anything else is refused before it gets here.
+        if (!DIGESTS.contains(alg)) {
+          throw Context.reportRuntimeError("digest " + alg);
+        }
+        return wrapBytes(cx, scope, MessageDigest.getInstance(alg).digest(toBytes(args[2])));
+      }
       case "hmac": {
         String alg = (String) Context.jsToJava(args[1], String.class);
-        Mac mac = Mac.getInstance("SHA-256".equals(alg) ? "HmacSHA256" : alg);
+        if (!DIGESTS.contains(alg)) {
+          throw Context.reportRuntimeError("hmac " + alg);
+        }
+        Mac mac = Mac.getInstance("Hmac" + alg.replace("-", ""));
         mac.init(new SecretKeySpec(toBytes(args[2]), mac.getAlgorithm()));
         return wrapBytes(cx, scope, mac.doFinal(toBytes(args[3])));
       }
@@ -103,8 +121,10 @@ public final class HostOps extends BaseFunction {
             .generateSecret(spec).getEncoded());
       }
       case "generateSecret": {
-        int size = ((Number) Context.jsToJava(args[1], Number.class)).intValue();
-        byte[] bytes = new byte[size]; RANDOM.nextBytes(bytes); return wrapBytes(cx, scope, bytes);
+        // AIC's generated AES and HMAC keys are both 32 bytes (measured).
+        byte[] bytes = new byte[32];
+        RANDOM.nextBytes(bytes);
+        return wrapBytes(cx, scope, bytes);
       }
       case "generateKeyPair": {
         String alg = (String) Context.jsToJava(args[1], String.class);
@@ -139,7 +159,12 @@ public final class HostOps extends BaseFunction {
         Signature sig = Signature.getInstance("SHA256withECDSAinP1363Format");
         sig.initVerify(KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(key)));
         sig.update(toBytes(args[2]));
-        return Boolean.valueOf(sig.verify(toBytes(args[3])));
+        // AIC answers false for a DER signature rather than throwing (measured).
+        try {
+          return Boolean.valueOf(sig.verify(toBytes(args[3])));
+        } catch (java.security.SignatureException e) {
+          return Boolean.FALSE;
+        }
       }
       default: throw Context.reportRuntimeError("unknown host operation: " + op);
     }

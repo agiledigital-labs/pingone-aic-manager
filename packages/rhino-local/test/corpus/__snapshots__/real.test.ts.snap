@@ -1,8 +1,22 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-action — differs on withMaxSessionTime/bad > withMaxSessionTime/bad 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-action — differs on withMaxSessionTime/bad, withMaxSessionTime/null, withMaxIdleTime/bad > withMaxIdleTime/bad 1`] = `
 {
   "error": "InternalError: Cannot convert x to java.lang.Integer",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-action — differs on withMaxSessionTime/bad, withMaxSessionTime/null, withMaxIdleTime/bad > withMaxSessionTime/bad 1`] = `
+{
+  "error": "InternalError: Cannot convert x to java.lang.Integer",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-action — differs on withMaxSessionTime/bad, withMaxSessionTime/null, withMaxIdleTime/bad > withMaxSessionTime/null 1`] = `
+{
+  "error": "InternalError: Can't find method org.forgerock.openam.auth.nodes.script.ActionWrapper.withMaxSessionTime(null).",
   "ok": false,
 }
 `;
@@ -32,6 +46,309 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-creat
 {
   "error": "Error: rhino-local: not mocked: idRepository.createUser arity=2 overload=[createUser(userName: string, password: string)]",
   "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-nodestate — differs on getObject/object, mergeShared/returns-self, mergeShared/after/replaced-or-deep, mergeShared/after/new-key, keys > getObject/object 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"a":1,"nested":{"b":"x"},"list":[1,2]}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-nodestate — differs on getObject/object, mergeShared/returns-self, mergeShared/after/replaced-or-deep, mergeShared/after/new-key, keys > keys 1`] = `
+{
+  "error": "TypeError: Cannot find function iterator in object rlTransient,rlMergedT,rlObj,rlMerged,rlNull,rlFlat,rlFlatNum.",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-nodestate — differs on getObject/object, mergeShared/returns-self, mergeShared/after/replaced-or-deep, mergeShared/after/new-key, keys > mergeShared/after/new-key 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": ""m"",
+    "string": "m",
+    "type": "string",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-nodestate — differs on getObject/object, mergeShared/returns-self, mergeShared/after/replaced-or-deep, mergeShared/after/new-key, keys > mergeShared/after/replaced-or-deep 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"a":1,"nested":{"b":"x"},"list":[1,2],"c":2}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-nodestate — differs on getObject/object, mergeShared/returns-self, mergeShared/after/replaced-or-deep, mergeShared/after/new-key, keys > mergeShared/returns-self 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "true",
+    "string": "true",
+    "type": "boolean",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > action/2/unknown 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > action/3/validateObject 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > action/4/validateObject 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > action/5/validateObject 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > cleanup/before 1`] = `
+{
+  "error": "Error: rhino-local: openidm.delete: no given.managed entry for "managed/alpha_role/rl-probe-openidm-writes"",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > create/4 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-4","description":"rl-probe","_id":"rl-probe-openidm-writes-4","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > create/5 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a","description":"rl-probe","_id":"rl-probe-openidm-writes","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > create/duplicate 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a","description":"rl-probe","_id":"rl-probe-openidm-writes","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > create/fields 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-f","description":"rl-probe","_id":"rl-probe-openidm-writes-fields","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > delete 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a","description":"rl-probe","_id":"rl-probe-openidm-writes","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > delete/3 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a3","description":"rl-8","_id":"rl-probe-openidm-writes","_rev":"<rev>","rlNotInSchema":"x"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > delete/4/fields 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-4v","description":"rl-5","_id":"rl-probe-openidm-writes-4","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > delete/absent 1`] = `
+{
+  "error": "Error: rhino-local: openidm.delete: no given.managed entry for "managed/alpha_role/rl-probe-openidm-writes"",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > patch/4 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-4v","description":"rl-5","_id":"rl-probe-openidm-writes-4","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > patch/add-unknown-field 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a3","description":"rl-9","_id":"rl-probe-openidm-writes","_rev":"<rev>","rlNotInSchema":"x"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > patch/bad-operation 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a3","description":"rl-1","_id":"rl-probe-openidm-writes","_rev":"<rev>","rlNotInSchema":"x"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > patch/fields 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a3","description":"rl-8","_id":"rl-probe-openidm-writes","_rev":"<rev>","rlNotInSchema":"x"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > patch/replace 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a3","description":"rl-9","_id":"rl-probe-openidm-writes","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > update/4 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-4u","description":"rl-probe","_id":"rl-probe-openidm-writes-4","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > update/5/fields 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-4v","description":"rl-probe","_id":"rl-probe-openidm-writes-4","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > update/absent 1`] = `
+{
+  "error": "Error: rhino-local: openidm.update: no given.managed entry for "managed/alpha_role/rl-probe-openidm-writes"",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > update/after 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a2","description":"rl-probe","_id":"rl-probe-openidm-writes","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > update/null-rev 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a2","description":"rl-probe","_id":"rl-probe-openidm-writes","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/5, create/duplicate, create/fields, update/null-rev, update/after, update/wrong-rev, patch/replace, patch/add-unknown-field, patch/bad-operation, patch/fields, create/4, update/4, update/5/fields, patch/4, delete/4/fields, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete/3, delete, delete/absent, update/absent > update/wrong-rev 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{"name":"rl-a3","description":"rl-probe","_id":"rl-probe-openidm-writes","_rev":"<rev>"}",
+    "string": "[object Object]",
+    "type": "object",
+  },
 }
 `;
 
@@ -587,14 +904,14 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64/encode/bytes 1`] = `
 {
-  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#2943)",
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#2961)",
   "ok": false,
 }
 `;
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64url/encode/bytes 1`] = `
 {
-  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#2943)",
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#2961)",
   "ok": false,
 }
 `;
@@ -620,9 +937,30 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils
 }
 `;
 
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-interop — differs on aes/key-5, crypto/randomUUID/1, crypto/getRandomValues/js-object > aes/key-5 1`] = `
+{
+  "error": "InternalError: java.security.InvalidKeyException: Invalid AES key length: 5 bytes (rhino-local-mocks.cjs#3070)",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-interop — differs on aes/key-5, crypto/randomUUID/1, crypto/getRandomValues/js-object > crypto/getRandomValues/js-object 1`] = `
+{
+  "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService.getRandomValues(object).",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-interop — differs on aes/key-5, crypto/randomUUID/1, crypto/getRandomValues/js-object > crypto/randomUUID/1 1`] = `
+{
+  "error": "Error: rhino-local: utils.crypto.randomUUID arity=1 (expected 0)",
+  "ok": false,
+}
+`;
+
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on encrypt/RSA/generatedKey > encrypt/RSA/generatedKey 1`] = `
 {
-  "error": "InternalError: Cannot convert [object Object] to byte[] (rhino-local-mocks.cjs#3042)",
+  "error": "InternalError: Cannot convert [object Object] to byte[] (rhino-local-mocks.cjs#3073)",
   "ok": false,
 }
 `;

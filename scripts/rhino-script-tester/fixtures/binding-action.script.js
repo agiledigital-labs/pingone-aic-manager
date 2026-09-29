@@ -100,5 +100,25 @@ r.push(
     return action.withMaxSessionTime("x");
   })
 );
+r.push(
+  probe("withMaxSessionTime/numeric-string", function () {
+    return action.withMaxSessionTime("120");
+  })
+);
+r.push(
+  probe("withMaxSessionTime/null", function () {
+    return action.withMaxSessionTime(null);
+  })
+);
+r.push(
+  probe("withMaxSessionTime/fraction", function () {
+    return action.withMaxSessionTime(1.5);
+  })
+);
+r.push(
+  probe("withMaxIdleTime/bad", function () {
+    return action.withMaxIdleTime("x");
+  })
+);
 emit(keyed("binding-action", r));
 action.goTo("ok");
