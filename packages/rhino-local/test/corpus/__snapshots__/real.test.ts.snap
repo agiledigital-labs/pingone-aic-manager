@@ -21,14 +21,14 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-actio
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/2/unknown 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/2/unknown 1`] = `
 {
   "error": "Error: rhino-local: openidm.action: Expecting String containing one of: patch triggerSyncCheck updateLastSync",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/3/validateObject 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/3/validateObject 1`] = `
 {
   "ok": true,
   "value": {
@@ -39,7 +39,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openi
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/4/validateObject 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/4/validateObject 1`] = `
 {
   "ok": true,
   "value": {
@@ -50,7 +50,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openi
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/5/validateObject 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/5/validateObject 1`] = `
 {
   "ok": true,
   "value": {
@@ -61,49 +61,70 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openi
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > cleanup/before 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > cleanup/before 1`] = `
 {
   "error": "Error: rhino-local: openidm.delete: No Such Entry: managed/alpha_role/rl-probe-openidm-writes",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > create/duplicate 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > create/duplicate 1`] = `
 {
   "error": "Error: rhino-local: openidm.create: Entry Already Exists: managed/alpha_role/rl-probe-openidm-writes",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > delete 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > delete 1`] = `
 {
   "error": "Error: rhino-local: openidm.delete: No Such Entry: managed/alpha_role/rl-probe-openidm-writes",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > delete/absent 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > delete/absent 1`] = `
 {
   "error": "Error: rhino-local: openidm.delete: No Such Entry: managed/alpha_role/rl-probe-openidm-writes",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > patch/bad-operation 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > patch/bad-operation 1`] = `
 {
   "error": "Error: rhino-local: openidm.patch: not a valid JSON patch (operation frobnicate)",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > update/absent 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/absent-type 1`] = `
+{
+  "error": "Error: rhino-local: openidm.query: no given.managed entry for "managed/rlNoSuchType"",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/bad-filter 1`] = `
+{
+  "error": "Error: rhino-local: openidm.query: unmocked filter "name eq"",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/no-filter 1`] = `
+{
+  "error": "Error: rhino-local: openidm.query: You must use exactly one of [_queryId, _queryExpression, _queryFilter].",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > update/absent 1`] = `
 {
   "error": "Error: rhino-local: openidm.update: No Such Entry: managed/alpha_role/rl-probe-openidm-writes",
   "ok": false,
 }
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > update/wrong-rev 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > update/wrong-rev 1`] = `
 {
   "error": "Error: rhino-local: openidm.update: the expected version '0' does not match the current version 'local-rev'",
   "ok": false,
@@ -288,14 +309,14 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64/encode/bytes 1`] = `
 {
-  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#3207)",
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#3220)",
   "ok": false,
 }
 `;
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64url/encode/bytes 1`] = `
 {
-  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#3207)",
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#3220)",
   "ok": false,
 }
 `;
@@ -323,7 +344,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-interop — differs on aes/key-5, crypto/randomUUID/1, crypto/getRandomValues/js-object > aes/key-5 1`] = `
 {
-  "error": "InternalError: java.security.InvalidKeyException: Invalid AES key length: 5 bytes (rhino-local-mocks.cjs#3316)",
+  "error": "InternalError: java.security.InvalidKeyException: Invalid AES key length: 5 bytes (rhino-local-mocks.cjs#3329)",
   "ok": false,
 }
 `;
@@ -344,7 +365,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on encrypt/RSA/generatedKey > encrypt/RSA/generatedKey 1`] = `
 {
-  "error": "InternalError: Cannot convert [object Object] to byte[] (rhino-local-mocks.cjs#3319)",
+  "error": "InternalError: Cannot convert [object Object] to byte[] (rhino-local-mocks.cjs#3332)",
   "ok": false,
 }
 `;

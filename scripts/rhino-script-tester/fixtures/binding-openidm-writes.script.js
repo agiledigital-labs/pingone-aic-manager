@@ -112,6 +112,42 @@ r.push(probe("update/5/fields", function () {
 r.push(probe("patch/4", function () {
   return masked(openidm.patch(PATH + "/" + ID + "-4", null, [{ operation: "replace", field: "/description", value: "rl-5" }], {}));
 }));
+// Queries run while the -4 and main records exist. A query response is
+// recorded as its sorted keys, its scalar fields and the matched ids, because
+// the records' _rev values differ every run.
+function queried(resp) {
+  var out = { keys: Object.keys(resp).sort(), ids: [], recordKeys: [] };
+  for (var k in resp) {
+    if (k !== "result") {
+      out[k] = resp[k];
+    }
+  }
+  for (var i = 0; i < resp.result.length; i++) {
+    out.ids.push(resp.result[i]._id);
+    out.recordKeys.push(Object.keys(resp.result[i]).sort().join(","));
+  }
+  out.ids.sort();
+  out.recordKeys.sort();
+  return out;
+}
+r.push(probe("query/2/filter", function () {
+  return queried(openidm.query(PATH, { _queryFilter: 'name sw "rl-"' }));
+}));
+r.push(probe("query/3/fields", function () {
+  return queried(openidm.query(PATH, { _queryFilter: 'name sw "rl-"' }, ["name"]));
+}));
+r.push(probe("query/2/none", function () {
+  return queried(openidm.query(PATH, { _queryFilter: 'name eq "rl-none"' }));
+}));
+r.push(probe("query/2/bad-filter", function () {
+  return queried(openidm.query(PATH, { _queryFilter: "name eq" }));
+}));
+r.push(probe("query/2/no-filter", function () {
+  return queried(openidm.query(PATH, {}));
+}));
+r.push(probe("query/2/absent-type", function () {
+  return queried(openidm.query("managed/rlNoSuchType", { _queryFilter: "true" }));
+}));
 r.push(probe("delete/4/fields", function () {
   return masked(openidm.delete(PATH + "/" + ID + "-4", null, {}, ["name"]));
 }));

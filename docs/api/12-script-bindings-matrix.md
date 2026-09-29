@@ -1619,6 +1619,16 @@ no matching method.
   returns `{ result, failedPolicyRequirements }`. An unknown action on a
   managed collection throws
   `Expecting String containing one of: patch triggerSyncCheck updateLastSync`.
+- `query(resource, params[, fields])` returns `result` plus
+  `pagedResultsCookie: null`, `totalPagedResultsPolicy: "NONE"`,
+  `totalPagedResults: -1` and `resultCount`, those four in that order (where
+  `result` falls was not recorded). `fields` narrows
+  each record to the named fields plus `_id` and `_rev`; no match is an empty
+  `result`. Params with none of `_queryId`/`_queryExpression`/`_queryFilter`
+  throw `You must use exactly one of [_queryId, _queryExpression, _queryFilter].`,
+  an unparseable filter throws
+  `The value 'name eq' for parameter '_queryFilter' could not be parsed as a valid query filter`,
+  and an unknown managed type throws `Resource 'managed/<type>' not found`.
 - Errors surface as `JavaException: …ResourceExceptionScriptAdapter: …`.
 
 **`systemEnv.getProperty`**

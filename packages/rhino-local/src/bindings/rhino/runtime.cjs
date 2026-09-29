@@ -1850,6 +1850,19 @@ openidm.query = function (resourceName, params, fields) {
   var collection = String(resourceName);
   __rhinoLocalPushOpenidm("query", collection, params);
   var rows = __rhinoLocalRequireCollection("query", collection);
+  var kinds = 0;
+  var kindNames = ["_queryId", "_queryExpression", "_queryFilter"];
+  var k;
+  for (k = 0; k < kindNames.length; k += 1) {
+    if (params && params[kindNames[k]] !== undefined) {
+      kinds += 1;
+    }
+  }
+  if (kinds !== 1) {
+    throw new Error(
+      "rhino-local: openidm.query: You must use exactly one of [_queryId, _queryExpression, _queryFilter]."
+    );
+  }
   var filter = params && params._queryFilter;
   var result = [];
   var i;
@@ -1860,10 +1873,10 @@ openidm.query = function (resourceName, params, fields) {
   }
   return {
     result: result,
-    resultCount: result.length,
     pagedResultsCookie: null,
     totalPagedResultsPolicy: "NONE",
     totalPagedResults: -1,
+    resultCount: result.length,
   };
 };
 
