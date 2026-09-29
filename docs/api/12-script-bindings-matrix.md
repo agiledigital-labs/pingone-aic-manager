@@ -1477,6 +1477,213 @@ known test-user credentials or creating a throwaway managed user — the latter
 touches the IDM sync queue and any `onCreate` hooks, so it wasn't done
 unprompted.
 
+### Next-gen scripted decision: every binding member (verified 2026-09-29)
+
+Every member in `docs/api/bindings/scripted-decision-next.json` except
+`emailService.send` (it sends mail) was called on the sandbox tenant by the
+`scripts/rhino-script-tester/fixtures/binding-*` probes. Each fixture's live
+payload is committed as a real-script corpus case in
+`packages/rhino-local/cases/real/index.ts` — the raw evidence for the rows
+below — except `binding-callbacks-http` and `binding-callbacks-x509`, whose
+result is the failed `/authenticate` response quoted here. Two runs were
+byte-identical once Java identity hashes were masked. Where the local harness
+still differs, the case records a `KnownGap`. One claim has no committed
+fixture: RSA padding was measured by having AIC encrypt under a throwaway public
+key and decrypting offline with its private key, which was never committed.
+
+**`utils`**
+
+- `base64.encode` / `btoa`: UTF-8, standard alphabet, padded. `base64url`: no
+  padding. `decode` / `atob` return a string; `decodeToBytes` a Java `byte[]`.
+- `encode` given a JS array: `Cannot convert org.mozilla.javascript.NativeArray@… to byte[]`.
+  A number takes the string overload (`encode(12)` is `MTI=`).
+- Invalid input: `base64.decode` throws `Illegal base64 character 25`;
+  `base64url.decode` returns `null`. Same input, different contract.
+- `types.stringToBytes` returns a Java `byte[]` of **signed** values (`é` is
+  `-61, -87`); `bytesToString` round-trips it, and also takes a JS array.
+- `crypto.randomUUID`: a 36-character string with version nibble `4` and an
+  RFC 4122 variant. `getRandomValues(array)`
+  fills the JS array in place with 32-bit integers, negative ones included, and
+  returns the **same** array. An array-like object has no matching method, and
+  nor does `randomUUID(1)`.
+- `crypto.checkBcrypt(hash, password)`: `true`/`false` against a `$2b$` hash.
+
+**`utils.crypto.subtle`** — AM's own algorithm names, not WebCrypto's:
+
+- `encrypt`/`decrypt` accept only `[AES, RSA]`, `generateKey` only
+  `[AES, ECDSA, RSA, HMAC]` — the error lists them. `"AES-CBC"` and friends are
+  rejected. For these the algorithm may be a string or `{ name }`.
+- `digest(name, bytes)` takes the name as a **string** only, one of
+  `[SHA-256, SHA-384, SHA-1, SHA-512]`; `{ name: "SHA-256" }` and `"MD5"` are
+  both refused with that list. `"SHA-256"` of `"abc"` is the NIST vector; the
+  data may be a JS array.
+- `sign("HMAC", key, data)` is HMAC-SHA256 and `verify` checks it.
+  `{ name: "HMAC", hash: "SHA-256" }` works; a WebCrypto
+  `hash: { name: "SHA-256" }` fails with `Unsupported hashing algorithm: [object Object]`.
+  `hash: "SHA-512"` works.
+- AES is **AES-128-ECB with PKCS#5 padding** and so deterministic: the same key
+  and plaintext give the same ciphertext (`openssl enc -aes-128-ecb` agrees). No
+  IV, no authentication. Do not use it for anything that needs either. A
+  24-byte key gives AES-192; a 5-byte key is `InvalidKeyException`. Key and
+  data may be JS arrays.
+- `generateKey`: AES and HMAC give a 32-byte `byte[]`; RSA (2048-bit) and ECDSA
+  give `{ privateKey: byte[], publicKey: byte[] }`, the private key PKCS#8 and
+  the public key X.509 SubjectPublicKeyInfo DER (an EC private key is the
+  67-byte PKCS#8 form, without the public point). RSA encrypts with `publicKey`
+  and decrypts with `privateKey`, using **PKCS#1 v1.5** padding, not OAEP.
+  ECDSA is P-256 with SHA-256. It signs with `privateKey`, giving a 64-byte
+  signature in **IEEE P1363 (`r‖s`)** form, not DER. It verifies with
+  `publicKey`: an OpenSSL signature converted to P1363 verifies, while the DER
+  original returns `false` rather than throwing. Passing the whole key-pair map
+  as the key has no matching method.
+- `deriveKey({ name: "PBKDF2", salt: byte[], iterations, hash: "SHA-256" }, password, bits)`
+  is standard PBKDF2-HMAC-SHA256. The string form fails with
+  `Salt must be provided for PBKDF2.`; a JS-array salt is a cast error.
+
+**`callbacksBuilder`**
+
+- `radioChoiceCallback(prompt, choices, defaultChoice)` is sent as a
+  `ChoiceCallback` whose output has an extra `radio: true`.
+- `SuspendedTextOutputCallback` / `TextOutputCallback` report `messageType` as a
+  **string** (`"2"`). `scriptTextOutputCallback(script)` is sent as a
+  `TextOutputCallback` with `messageType: "4"`.
+- `consentMappingCallback(config, message, isRequired)` needs a `fields` list in
+  `config` (without one: `Cannot invoke "java.util.List.stream()"…`), and each
+  `fields` element — string or object alike — comes back `null` in the REST
+  output.
+- An `httpCallback` or `x509CertificateCallback` in the response fails the
+  whole `/authenticate` call — 400 `…Cannot be converted into a JSON representation`
+  for X.509, 401 `http-auth-failed` for HTTP — because REST cannot render
+  them. They work only for clients that negotiate them in the initial request.
+- An out-of-range numeric argument (message type, option type, default index)
+  throws in the Java constructor.
+- `redirectCallback` renders `redirectUrl`, `redirectMethod`, `redirectData`
+  and `trackingCookie`. `trackingCookie` follows the 4th argument of the
+  4-argument form and the 6th of the 6-argument form, and is otherwise
+  `false`. The status parameter and redirect-back cookie are not rendered.
+
+**`callbacks` getters** (second visit, AM's default inputs resubmitted):
+
+- String-valued callbacks (`StringAttribute`, `Name`, `Password`, `TextInput`,
+  `DeviceProfile`, `SelectIdP`) return a List of strings; `Choice` a List of
+  `int[]`.
+- `NumberAttribute` returns numbers; `BooleanAttribute` and
+  `TermsAndConditions` booleans; `Confirmation` a number; `Language` the string
+  `en_US`.
+- `getHiddenValueCallbacks()` returns a **Map** `{ id: value }`, not a List:
+  `.get(0)` is `null`.
+- `Idp`, `ValidatedPassword`/`ValidatedUsername` and `KbaCreate` return Lists
+  of maps (`{ validateOnly, value }`, `{ selectedAnswer, selectedQuestion }`);
+  `ConsentMapping` a List of booleans.
+
+**`action`**: every `with*`, `putSessionProperty` and `removeSessionProperty`
+returns the same wrapper, which prints as
+`org.forgerock.openam.auth.nodes.script.ActionWrapper@…`.
+`withMaxSessionTime`/`withMaxIdleTime` take an Integer: `"120"` and `1.5`
+convert, `"x"` throws `Cannot convert x to java.lang.Integer`, and `null` has
+no matching method.
+
+**`nodeState`** (`binding-nodestate`):
+
+- `putShared` / `putTransient` / `mergeShared` / `mergeTransient` return
+  `nodeState` itself; `remove` does not. `remove` clears the key from both
+  buckets.
+- `get` reads transient over shared. On an absent key `get` and `getObject` are
+  `null` and `isDefined` is `false`. A key put with `null` is still defined.
+- `putShared` accepts a nested object. **`mergeShared` refuses one**:
+  `State must not contain nested objects unless they are inside registered state containers: objectAttributes`.
+  The whole merge is dropped, including its flat keys. A flat
+  `mergeShared` works, and so does a nested object under `objectAttributes`,
+  which `get` then returns as a Java map (it prints `{ "rlOa": 1.0 }`, where a
+  `putShared` object prints `[object Object]`). `mergeTransient` refuses a
+  nested object with the same message.
+- `getObject` returns a Java map: it prints as `{ "a": 1.0, … }`, and
+  `containsKey`, `size` and `keySet` are functions on it. `keys()` is
+  a Java collection, iterated with `iterator()`, that includes **transient**
+  keys.
+
+**`openidm` writes** (`binding-openidm-writes`, on a throwaway
+`managed/alpha_role` record):
+
+- `create(resource, id, content[, params[, fields]])` with a caller-chosen id
+  returns the record with `_id` and `_rev` first. A `null` id generates one. A
+  second create of the same id throws `Entry Already Exists`.
+- `update(id, rev, value[, params[, fields]])`: a `null` rev is unconditional,
+  while a wrong one throws `…expected version '0' does not match the current version …`.
+  `patch` with a wrong rev throws the same. `delete` with a wrong rev throws
+  `Assertion Failed: Entry uid=<id>,… cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry`.
+- `patch(id, rev, operations[, params[, fields]])` applies a `replace` and will
+  `add` a field the schema does not declare. An unknown `operation` throws
+  `…not a valid JSON patch.`
+- `delete(id, rev[, params[, fields]])` returns the deleted record.
+- `update` and `delete` on an absent record throw
+  `No Such Entry: The search base entry 'uid=<id>,ou=role,o=alpha,o=root,ou=identities' does not exist`
+  (`patch` on an absent record was not probed).
+- Every write's `fields` argument narrows the returned record, keeping `_id`
+  and `_rev`.
+- `action("policy/<resource>/<id>", "validateObject", content[, params[, fields]])`
+  returns `{ result, failedPolicyRequirements }`. An unknown action on a
+  managed collection throws
+  `Expecting String containing one of: patch triggerSyncCheck updateLastSync`.
+- `query(resource, params[, fields])` returns `result` plus
+  `pagedResultsCookie: null`, `totalPagedResultsPolicy: "NONE"`,
+  `totalPagedResults: -1` and `resultCount`, those four in that order (where
+  `result` falls was not recorded). `fields` narrows each record to the named
+  fields plus `_id` and `_rev`; no match is an empty `result`.
+  - Params with none, or two, of `_queryId`/`_queryExpression`/`_queryFilter`
+    throw `You must use exactly one of [_queryId, _queryExpression, _queryFilter].`
+  - `_queryId: "query-all-ids"` returns every record of the type, each with
+    only `_id` and `_rev`.
+  - `_queryExpression` throws
+    `Query Expressions are not supported when using DS as the repo`.
+  - An unparseable filter throws
+    `The value 'name eq' for parameter '_queryFilter' could not be parsed as a valid query filter`.
+  - An unknown managed type throws `Resource 'managed/<type>' not found`.
+- Errors surface as `JavaException: …ResourceExceptionScriptAdapter: …`.
+
+**`systemEnv.getProperty`**
+
+- `(name)` on an absent ESV: `null`. `(name, default)`: the default.
+- `(name, default, returnType)` converts: `"string"`/`"String"` → string,
+  `"number"`/`"integer"` → number, `"boolean"` → boolean (`"TRUE"` is `true`,
+  `"42"` is `false`), `"array"`/`"list"` → a Java List split on commas **without
+  trimming** (`"a, b"` has `" b"`), `"object"`/`"map"` → the value parsed as
+  JSON. A Rhino class reference also works (`java.lang.Integer`, not
+  `java.lang.Integer.class`), though the workspace types do not declare it.
+- A value that does not convert throws `Property resolution failed`; any other
+  name (`"int"`, `"java.lang.Integer"`) throws `Unsupported return type: …`.
+
+**Other bindings**
+
+- `secrets.*` on an absent id throws
+  `…ScriptedSecretsException: Secret id <id> not accessible`.
+- `cacheManager.named(name)` is `null` for an unknown cache; `exists` is
+  `false`.
+- `journey`: `name()`, `innerJourney()`, `mustRun()`, `identityResource()`
+  (`managed/alpha_user`).
+- `samlApplication` and `oauthApplication` are **`null`** in a journey not
+  started by SAML or OAuth2 — guard them.
+- `jwtAssertion.generateJwt`: `{}` returns `null`; an HS256 map needs
+  `signingKey` as a **string** (a `byte[]` key is `Missing argument`) and
+  returns a three-part JWT. `jwtValidator.validateJwtClaims` with
+  `verificationKey` as a `byte[]` returns the claims (`issuer`, `subject`,
+  `audience` as a list, `type`, `jwtId`, `issuedAt`, `expirationTime`); `{}`
+  returns `null`, and a string argument has no matching method.
+- `policy.evaluate` / `evaluateTree`: the subject must be `{ claims: {…} }`
+  (`ssoToken`/`jwt` stand-ins are `Invalid value subject`); an unknown policy
+  set is `Unable to retrieve application under realm /alpha.`; against
+  `oauth2Scopes` both return `[{ resourceName, attributes, advices, actions }]`.
+- `idRepository.createUser` is refused on AIC: `User creation through identity
+  repository is not allowed in this environment`. Attribute values must be
+  arrays — a string is a `ClassCastException` first.
+- `logger.getName()` is
+  `scripts.AUTHENTICATION_TREE_DECISION_NODE.<scriptId>.(<script name>)`;
+  `isTraceEnabled()` is `false`, the other levels `true`.
+- `emailService` enumerates `send` plus the `java.lang.Object` members. It was
+  not called: it sends mail.
+- `realm` is `/alpha`, `scriptName` the script's name, `resumedFromSuspend`
+  `false`, `cookieName` a string, `locales` a `ScriptedLocalizedMessageImpl`.
+
 ### AM script families (folder slugs)
 
 | Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                                                |
@@ -1692,6 +1899,29 @@ binding _presence_ (see the legacy section above; the tester now takes
    `suspendedTextOutputCallback(messageType, message)`; `utils.crypto` has no
    `randomValues`.) The metadata only covers `evaluatorVersion 2.0`; the
    equivalent legacy dump would let us tighten the legacy leaf the same way.
+
+   **Refreshed 2026-09-29** from a fresh console export of the same context.
+   It now lists **27** bindings. Everything else is reordering; the members
+   that are new since 2026-06-04 are:
+
+   - `emailService` — `send(to, subject, body)` and
+     `send(to, subject, body, mimeType)`.
+   - `systemEnv` — `getProperty(name)`, `getProperty(name, defaultValue)`, and
+     `getProperty(name, defaultValue, returnType)` with `returnType` typed both
+     `object` and `string`. It was already present at runtime (typeof probe);
+     the metadata now lists it.
+   - `callbacksBuilder.radioChoiceCallback(prompt, choices, defaultChoice)`,
+     three overloads.
+   - `idRepository.createUser(userName, password)` and
+     `createUser(userName, password, attributes)` — previously only on
+     `OAUTH2_JWT_ISSUER`.
+   - `policy.evaluateTree(subject, application, resourceName, environment)`.
+   - `utils.crypto.checkBcrypt(bcryptString, password)` → boolean.
+
+   Nothing was removed, and the Java allow-list is unchanged. This is
+   metadata, not a measurement: what each new member does at runtime is
+   recorded where a probe measured it — every member, new and old, in
+   "Next-gen scripted decision: every binding member" above.
 
    Source: the script-context endpoint `GET /am/json/{realm}/contexts/{ID}` (see
    `docs/api/13-script-contexts.md`). It exposes the same metadata for any

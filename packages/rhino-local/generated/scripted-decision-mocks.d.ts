@@ -16,12 +16,12 @@ export type OpaqueBinding = {
 };
 
 export interface SamlApplication {
-  getAssertion(): object;
   getApplicationId(): string;
   getAuthnRequest(): object;
   getIdpAttributes(): object;
   getSpAttributes(): object;
   getFlowInitiator(): string;
+  getAssertion(): object;
 }
 
 export interface Logger {
@@ -60,15 +60,12 @@ export interface Logger {
 
 export interface Callbacks {
   isEmpty(): boolean;
+  getStringAttributeInputCallbacks(): unknown[];
+  getChoiceCallbacks(): unknown[];
   getNameCallbacks(): unknown[];
   getPasswordCallbacks(): unknown[];
   getHiddenValueCallbacks(): object;
-  getDeviceProfileCallbacks(): unknown[];
-  getKbaCreateCallbacks(): unknown[];
-  getSelectIdPCallbacks(): unknown[];
-  getTermsAndConditionsCallbacks(): unknown[];
   getTextInputCallbacks(): unknown[];
-  getStringAttributeInputCallbacks(): unknown[];
   getNumberAttributeInputCallbacks(): unknown[];
   getBooleanAttributeInputCallbacks(): unknown[];
   getConfirmationCallbacks(): unknown[];
@@ -79,10 +76,15 @@ export interface Callbacks {
   getHttpCallbacks(): unknown[];
   getX509CertificateCallbacks(): unknown[];
   getConsentMappingCallbacks(): unknown[];
-  getChoiceCallbacks(): unknown[];
+  getDeviceProfileCallbacks(): unknown[];
+  getKbaCreateCallbacks(): unknown[];
+  getSelectIdPCallbacks(): unknown[];
+  getTermsAndConditionsCallbacks(): unknown[];
 }
 
 export interface IdRepository {
+  createUser(userName: string, password: string): object;
+  createUser(userName: string, password: string, attributes: object): object;
   getIdentity(userName: string): object;
 }
 
@@ -106,10 +108,10 @@ export interface UtilsCryptoSubtle {
     data: unknown[],
     signature: unknown[]
   ): boolean;
-  decrypt(algorithm: string, key: unknown[], data: unknown[]): unknown[];
-  decrypt(algorithmOptions: object, key: unknown[], data: unknown[]): unknown[];
   encrypt(algorithm: string, key: unknown[], data: unknown[]): unknown[];
   encrypt(algorithmOptions: object, key: unknown[], data: unknown[]): unknown[];
+  decrypt(algorithm: string, key: unknown[], data: unknown[]): unknown[];
+  decrypt(algorithmOptions: object, key: unknown[], data: unknown[]): unknown[];
   generateKey(algorithm: object): object;
   generateKey(algorithm: string): object;
   deriveKey(
@@ -127,6 +129,7 @@ export interface UtilsCryptoSubtle {
 export interface UtilsCrypto {
   randomUUID(): string;
   getRandomValues(array: unknown[]): unknown[];
+  checkBcrypt(bcryptString: string, password: string): boolean;
   subtle: UtilsCryptoSubtle;
 }
 
@@ -164,29 +167,125 @@ export interface Action {
   withIdentifiedUser(username: string): object;
   withIdentifiedAgent(agentName: string): object;
   goTo(outcome: string): object;
+  suspend(callbackTextFormat: string): object;
   suspend(
     callbackTextFormat: string,
     additionalLogic: object,
     maximumSuspendDuration: number
   ): object;
-  suspend(callbackTextFormat: string): object;
   suspend(callbackTextFormat: string, additionalLogic: object): object;
   withHeader(header: string): object;
-  withStage(stage: string): object;
+  withMaxSessionTime(maxSessionTime: number): object;
+  withMaxIdleTime(maxIdleTime: number): object;
   putSessionProperty(key: string, value: string): object;
   withDescription(description: string): object;
+  withStage(stage: string): object;
   withErrorMessage(errorMessage: string): object;
   withLockoutMessage(lockoutMessage: string): object;
   removeSessionProperty(key: string): object;
-  withMaxSessionTime(maxSessionTime: number): object;
-  withMaxIdleTime(maxIdleTime: number): object;
 }
 
 export interface CallbacksBuilder {
+  radioChoiceCallback(
+    prompt: string,
+    choices: unknown[],
+    defaultChoice: number
+  ): void;
   suspendedTextOutputCallback(messageType: number, message: string): void;
   textInputCallback(prompt: string, defaultText: string): void;
   textInputCallback(prompt: string): void;
   scriptTextOutputCallback(message: string): void;
+  metadataCallback(outputValue: object): void;
+  stringAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: string,
+    required: boolean,
+    failedPolicies: unknown[]
+  ): void;
+  stringAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: string,
+    required: boolean,
+    policies: object,
+    validateOnly: boolean
+  ): void;
+  stringAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: string,
+    required: boolean
+  ): void;
+  stringAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: string,
+    required: boolean,
+    policies: object,
+    validateOnly: boolean,
+    failedPolicies: unknown[]
+  ): void;
+  numberAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: number,
+    required: boolean,
+    policies: object,
+    validateOnly: boolean
+  ): void;
+  numberAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: number,
+    required: boolean,
+    failedPolicies: unknown[]
+  ): void;
+  numberAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: number,
+    required: boolean
+  ): void;
+  numberAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: number,
+    required: boolean,
+    policies: object,
+    validateOnly: boolean,
+    failedPolicies: unknown[]
+  ): void;
+  booleanAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: boolean,
+    required: boolean,
+    failedPolicies: unknown[]
+  ): void;
+  booleanAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: boolean,
+    required: boolean,
+    policies: object,
+    validateOnly: boolean,
+    failedPolicies: unknown[]
+  ): void;
+  booleanAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: boolean,
+    required: boolean
+  ): void;
+  booleanAttributeInputCallback(
+    name: string,
+    prompt: string,
+    value: boolean,
+    required: boolean,
+    policies: object,
+    validateOnly: boolean
+  ): void;
   languageCallback(language: string, country: string): void;
   idPCallback(
     provider: string,
@@ -213,23 +312,23 @@ export interface CallbacksBuilder {
     tokenType: string
   ): void;
   httpCallback(
+    authorizationHeader: string,
+    negotiationHeader: string,
+    errorCode: string
+  ): void;
+  httpCallback(
     authRHeader: string,
     negoName: string,
     negoValue: string,
     errorCode: number
   ): void;
-  httpCallback(
-    authorizationHeader: string,
-    negotiationHeader: string,
-    errorCode: string
-  ): void;
+  x509CertificateCallback(prompt: string, certificate: object): void;
+  x509CertificateCallback(prompt: string): void;
   x509CertificateCallback(
     prompt: string,
     certificate: object,
     requestSignature: boolean
   ): void;
-  x509CertificateCallback(prompt: string, certificate: object): void;
-  x509CertificateCallback(prompt: string): void;
   consentMappingCallback(
     name: string,
     displayName: string,
@@ -260,126 +359,28 @@ export interface CallbacksBuilder {
     terms: string,
     createDate: string
   ): void;
-  metadataCallback(outputValue: object): void;
-  stringAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: string,
-    required: boolean,
-    policies: object,
-    validateOnly: boolean,
-    failedPolicies: unknown[]
-  ): void;
-  stringAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: string,
-    required: boolean
-  ): void;
-  stringAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: string,
-    required: boolean,
-    failedPolicies: unknown[]
-  ): void;
-  stringAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: string,
-    required: boolean,
-    policies: object,
-    validateOnly: boolean
-  ): void;
-  numberAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: number,
-    required: boolean,
-    policies: object,
-    validateOnly: boolean,
-    failedPolicies: unknown[]
-  ): void;
-  numberAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: number,
-    required: boolean
-  ): void;
-  numberAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: number,
-    required: boolean,
-    failedPolicies: unknown[]
-  ): void;
-  numberAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: number,
-    required: boolean,
-    policies: object,
-    validateOnly: boolean
-  ): void;
-  booleanAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: boolean,
-    required: boolean,
-    policies: object,
-    validateOnly: boolean,
-    failedPolicies: unknown[]
-  ): void;
-  booleanAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: boolean,
-    required: boolean
-  ): void;
-  booleanAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: boolean,
-    required: boolean,
-    failedPolicies: unknown[]
-  ): void;
-  booleanAttributeInputCallback(
-    name: string,
-    prompt: string,
-    value: boolean,
-    required: boolean,
-    policies: object,
-    validateOnly: boolean
-  ): void;
-  pollingWaitCallback(waitTime: string, message: string): void;
-  confirmationCallback(
-    messageType: number,
-    options: unknown[],
-    defaultOption: number
-  ): void;
-  confirmationCallback(
-    prompt: string,
-    messageType: number,
-    options: unknown[],
-    defaultOption: number
-  ): void;
-  confirmationCallback(
-    prompt: string,
-    messageType: number,
-    optionType: number,
-    defaultOption: number
-  ): void;
-  confirmationCallback(
-    messageType: number,
-    optionType: number,
-    defaultOption: number
-  ): void;
-  textOutputCallback(messageType: number, message: string): void;
   choiceCallback(
     prompt: string,
     choices: unknown[],
     defaultChoice: number,
     multipleSelectionsAllowed: boolean
+  ): void;
+  passwordCallback(prompt: string, echoOn: boolean): void;
+  nameCallback(prompt: string, defaultName: string): void;
+  nameCallback(prompt: string): void;
+  hiddenValueCallback(id: string, value: string): void;
+  redirectCallback(
+    redirectUrl: string,
+    redirectData: object,
+    method: string,
+    statusParameter: string,
+    redirectBackUrlCookie: string
+  ): void;
+  redirectCallback(
+    redirectUrl: string,
+    redirectData: object,
+    method: string,
+    setTrackingCookie: boolean
   ): void;
   redirectCallback(
     redirectUrl: string,
@@ -394,30 +395,44 @@ export interface CallbacksBuilder {
     redirectBackUrlCookie: string,
     setTrackingCookie: boolean
   ): void;
-  redirectCallback(
-    redirectUrl: string,
-    redirectData: object,
-    method: string,
-    setTrackingCookie: boolean
+  confirmationCallback(
+    messageType: number,
+    optionType: number,
+    defaultOption: number
   ): void;
-  redirectCallback(
-    redirectUrl: string,
-    redirectData: object,
-    method: string,
-    statusParameter: string,
-    redirectBackUrlCookie: string
+  confirmationCallback(
+    messageType: number,
+    options: unknown[],
+    defaultOption: number
   ): void;
-  hiddenValueCallback(id: string, value: string): void;
-  nameCallback(prompt: string, defaultName: string): void;
-  nameCallback(prompt: string): void;
-  passwordCallback(prompt: string, echoOn: boolean): void;
+  confirmationCallback(
+    prompt: string,
+    messageType: number,
+    optionType: number,
+    defaultOption: number
+  ): void;
+  confirmationCallback(
+    prompt: string,
+    messageType: number,
+    options: unknown[],
+    defaultOption: number
+  ): void;
+  pollingWaitCallback(waitTime: string, message: string): void;
+  textOutputCallback(messageType: number, message: string): void;
+  validatedUsernameCallback(
+    prompt: string,
+    policies: object,
+    validateOnly: boolean,
+    failedPolicies: unknown[]
+  ): void;
   validatedUsernameCallback(
     prompt: string,
     policies: object,
     validateOnly: boolean
   ): void;
-  validatedUsernameCallback(
+  validatedPasswordCallback(
     prompt: string,
+    echoOn: boolean,
     policies: object,
     validateOnly: boolean,
     failedPolicies: unknown[]
@@ -427,13 +442,6 @@ export interface CallbacksBuilder {
     echoOn: boolean,
     policies: object,
     validateOnly: boolean
-  ): void;
-  validatedPasswordCallback(
-    prompt: string,
-    echoOn: boolean,
-    policies: object,
-    validateOnly: boolean,
-    failedPolicies: unknown[]
   ): void;
 }
 
@@ -512,6 +520,12 @@ export interface Policy {
     resourceNames: unknown[],
     environment: object
   ): unknown[];
+  evaluateTree(
+    subject: object,
+    application: string,
+    resourceName: string,
+    environment: object
+  ): unknown[];
 }
 
 export interface HttpClient {
@@ -540,9 +554,29 @@ export interface Secrets {
 }
 
 export interface OauthApplication {
+  getRequestProperties(): object;
   getApplicationId(): string;
   getClientProperties(): object;
-  getRequestProperties(): object;
+}
+
+export interface EmailService {
+  send(to: string, subject: string, body: string): void;
+  send(to: string, subject: string, body: string, mimeType: string): void;
+}
+
+export interface SystemEnv {
+  getProperty(
+    propertyName: string,
+    defaultValue: string,
+    returnType: string
+  ): object;
+  getProperty(
+    propertyName: string,
+    defaultValue: string,
+    returnType: object
+  ): object;
+  getProperty(propertyName: string, defaultValue: string): string;
+  getProperty(propertyName: string): string;
 }
 
 export interface NodeState {
@@ -551,10 +585,10 @@ export interface NodeState {
   keys(): object;
   isDefined(key: string): boolean;
   getObject(key: string): object;
-  putTransient(key: string, value: object): object;
   putShared(key: string, value: object): object;
   mergeShared(object: object): object;
   mergeTransient(object: object): object;
+  putTransient(key: string, value: object): object;
 }
 
 export interface JwtValidator {
@@ -580,7 +614,9 @@ export interface ScriptedDecisionMocks {
   cacheManager: CacheManager;
   secrets: Secrets;
   oauthApplication: OauthApplication;
+  emailService: EmailService;
   locales: OpaqueBinding;
+  systemEnv: SystemEnv;
   requestHeaders: OpaqueBinding;
   nodeState: NodeState;
   resumedFromSuspend: boolean;

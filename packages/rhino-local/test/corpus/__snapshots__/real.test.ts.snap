@@ -1,5 +1,439 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-action — differs on withMaxSessionTime/bad, withMaxSessionTime/null, withMaxIdleTime/bad > withMaxIdleTime/bad 1`] = `
+{
+  "error": "InternalError: Cannot convert x to java.lang.Integer",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-action — differs on withMaxSessionTime/bad, withMaxSessionTime/null, withMaxIdleTime/bad > withMaxSessionTime/bad 1`] = `
+{
+  "error": "InternalError: Cannot convert x to java.lang.Integer",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-action — differs on withMaxSessionTime/bad, withMaxSessionTime/null, withMaxIdleTime/bad > withMaxSessionTime/null 1`] = `
+{
+  "error": "InternalError: Can't find method org.forgerock.openam.auth.nodes.script.ActionWrapper.withMaxSessionTime(null).",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-callbacks-getters — differs on getChoiceCallbacks, getConsentMappingCallbacks > getChoiceCallbacks 1`] = `
+{
+  "first": {
+    "array": false,
+    "string": "0",
+    "type": "number",
+  },
+  "list": {
+    "array": false,
+    "keys": [
+      "0",
+    ],
+    "length": 1,
+    "size": 1,
+    "string": "[0]",
+    "type": "object",
+  },
+  "ok": true,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-callbacks-getters — differs on getChoiceCallbacks, getConsentMappingCallbacks > getConsentMappingCallbacks 1`] = `
+{
+  "first": null,
+  "list": {
+    "array": false,
+    "keys": [],
+    "length": 0,
+    "size": 0,
+    "string": "[]",
+    "type": "object",
+  },
+  "ok": true,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/2/unknown 1`] = `
+{
+  "error": "Error: rhino-local: openidm.action: Expecting String containing one of: patch triggerSyncCheck updateLastSync",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/3/validateObject 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/4/validateObject 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > action/5/validateObject 1`] = `
+{
+  "ok": true,
+  "value": {
+    "json": "{}",
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > cleanup/before 1`] = `
+{
+  "error": "Error: rhino-local: openidm.delete: No Such Entry: managed/alpha_role/rl-probe-openidm-writes",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > create/duplicate 1`] = `
+{
+  "error": "Error: rhino-local: openidm.create: Entry Already Exists: managed/alpha_role/rl-probe-openidm-writes",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > delete 1`] = `
+{
+  "error": "Error: rhino-local: openidm.delete: No Such Entry: managed/alpha_role/rl-probe-openidm-writes",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > delete/absent 1`] = `
+{
+  "error": "Error: rhino-local: openidm.delete: No Such Entry: managed/alpha_role/rl-probe-openidm-writes",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > delete/wrong-rev 1`] = `
+{
+  "error": "Error: rhino-local: openidm.delete: Assertion Failed: the entry cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > patch/bad-operation 1`] = `
+{
+  "error": "Error: rhino-local: openidm.patch: not a valid JSON patch (operation frobnicate)",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > patch/wrong-rev 1`] = `
+{
+  "error": "Error: rhino-local: openidm.patch: the expected version '0' does not match the current version 'local-rev'",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/absent-type 1`] = `
+{
+  "error": "Error: rhino-local: openidm.query: no given.managed entry for "managed/rlNoSuchType"",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/bad-filter 1`] = `
+{
+  "error": "Error: rhino-local: openidm.query: unmocked filter "name eq"",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/no-filter 1`] = `
+{
+  "error": "Error: rhino-local: openidm.query: You must use exactly one of [_queryId, _queryExpression, _queryFilter].",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/queryExpression 1`] = `
+{
+  "error": "Error: rhino-local: openidm.query: Query Expressions are not supported when using DS as the repo",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/two-kinds 1`] = `
+{
+  "error": "Error: rhino-local: openidm.query: You must use exactly one of [_queryId, _queryExpression, _queryFilter].",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > update/absent 1`] = `
+{
+  "error": "Error: rhino-local: openidm.update: No Such Entry: managed/alpha_role/rl-probe-openidm-writes",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > update/wrong-rev 1`] = `
+{
+  "error": "Error: rhino-local: openidm.update: the expected version '0' does not match the current version 'local-rev'",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > emailService/typeof-enumeration 1`] = `
+{
+  "ok": true,
+  "value": {
+    "keys": [
+      "send",
+    ],
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > idRepository.getIdentity 1`] = `
+{
+  "error": "Error: rhino-local: idRepository.getIdentity: no given.managed record for "rl-probe-absent"",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtAssertion.generateJwt 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: jwtAssertion.generateJwt arity=1 overload=[generateJwt(jwtData: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtAssertion.generateJwt/HS256 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: jwtAssertion.generateJwt arity=1 overload=[generateJwt(jwtData: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtAssertion.generateJwt/HS256/string-key 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: jwtAssertion.generateJwt arity=1 overload=[generateJwt(jwtData: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtAssertion.generateJwt/empty 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: jwtAssertion.generateJwt arity=1 overload=[generateJwt(jwtData: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtValidator.validateJwtClaims 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: jwtValidator.validateJwtClaims arity=1 overload=[validateJwtClaims(jwtData: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtValidator.validateJwtClaims/HS256 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: jwtValidator.validateJwtClaims arity=1 overload=[validateJwtClaims(jwtData: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > jwtValidator.validateJwtClaims/empty 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: jwtValidator.validateJwtClaims arity=1 overload=[validateJwtClaims(jwtData: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > locales 1`] = `
+{
+  "ok": true,
+  "value": {
+    "array": false,
+    "keys": [],
+    "string": "[object Object]",
+    "type": "object",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > logger.getName 1`] = `
+{
+  "ok": true,
+  "value": {
+    "array": false,
+    "length": 19,
+    "string": "AIC Rhino Let Probe",
+    "type": "string",
+  },
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > policy.evaluate 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: policy.evaluate arity=4 overload=[evaluate(subject: object, application: string, resourceNames: array, environment: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > policy.evaluate/claims 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: policy.evaluate arity=4 overload=[evaluate(subject: object, application: string, resourceNames: array, environment: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > policy.evaluate/claims/oauth2Scopes 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: policy.evaluate arity=4 overload=[evaluate(subject: object, application: string, resourceNames: array, environment: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > policy.evaluate/jwt 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: policy.evaluate arity=4 overload=[evaluate(subject: object, application: string, resourceNames: array, environment: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > policy.evaluate/ssoToken 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: policy.evaluate arity=4 overload=[evaluate(subject: object, application: string, resourceNames: array, environment: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > policy.evaluateTree 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: policy.evaluateTree arity=4 overload=[evaluateTree(subject: object, application: string, resourceName: string, environment: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > policy.evaluateTree/claims/oauth2Scopes 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: policy.evaluateTree arity=4 overload=[evaluateTree(subject: object, application: string, resourceName: string, environment: object)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > secrets.getDecryptionKey 1`] = `
+{
+  "error": "Error: rhino-local: secrets.getDecryptionKey: Secret id rl-probe-absent not accessible",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > secrets.getEncryptionKey 1`] = `
+{
+  "error": "Error: rhino-local: secrets.getEncryptionKey: Secret id rl-probe-absent not accessible",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > secrets.getGenericSecret 1`] = `
+{
+  "error": "Error: rhino-local: secrets.getGenericSecret: Secret id rl-probe-absent not accessible",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > secrets.getSigningKey 1`] = `
+{
+  "error": "Error: rhino-local: secrets.getSigningKey: Secret id rl-probe-absent not accessible",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > secrets.getVerificationKey 1`] = `
+{
+  "error": "Error: rhino-local: secrets.getVerificationKey: Secret id rl-probe-absent not accessible",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64/encode/bytes 1`] = `
+{
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#<line>)",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > base64url/encode/bytes 1`] = `
+{
+  "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (rhino-local-mocks.cjs#<line>)",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > crypto/checkBcrypt/right 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: utils.crypto.checkBcrypt arity=2 overload=[checkBcrypt(bcryptString: string, password: string)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > crypto/checkBcrypt/wrong 1`] = `
+{
+  "error": "Error: rhino-local: not mocked: utils.crypto.checkBcrypt arity=2 overload=[checkBcrypt(bcryptString: string, password: string)]",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils — differs on base64/encode/bytes, base64url/encode/bytes, crypto/checkBcrypt/right, crypto/checkBcrypt/wrong, subtle/deriveKey/object > subtle/deriveKey/object 1`] = `
+{
+  "error": "InternalError: class org.mozilla.javascript.NativeArray cannot be cast to class [B",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-interop — differs on aes/key-5, crypto/randomUUID/1, crypto/getRandomValues/js-object > aes/key-5 1`] = `
+{
+  "error": "InternalError: java.security.InvalidKeyException: Invalid AES key length: 5 bytes (rhino-local-mocks.cjs#<line>)",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-interop — differs on aes/key-5, crypto/randomUUID/1, crypto/getRandomValues/js-object > crypto/getRandomValues/js-object 1`] = `
+{
+  "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService.getRandomValues(object).",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-interop — differs on aes/key-5, crypto/randomUUID/1, crypto/getRandomValues/js-object > crypto/randomUUID/1 1`] = `
+{
+  "error": "Error: rhino-local: utils.crypto.randomUUID arity=1 (expected 0)",
+  "ok": false,
+}
+`;
+
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-utils-subtle — differs on encrypt/RSA/generatedKey > encrypt/RSA/generatedKey 1`] = `
+{
+  "error": "InternalError: Cannot convert [object Object] to byte[] (rhino-local-mocks.cjs#<line>)",
+  "ok": false,
+}
+`;
+
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-callbacks-utils — differs on callbacksBuilderEnum, utilsEnum > callbacksBuilderEnum 1`] = `
 [
   "booleanAttributeInputCallback",
@@ -17,6 +451,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-callback
   "numberAttributeInputCallback",
   "passwordCallback",
   "pollingWaitCallback",
+  "radioChoiceCallback",
   "redirectCallback",
   "scriptTextOutputCallback",
   "selectIdPCallback",
@@ -71,6 +506,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-su
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > crypto 1`] = `
 [
+  "checkBcrypt",
   "getRandomValues",
   "randomUUID",
   "subtle",

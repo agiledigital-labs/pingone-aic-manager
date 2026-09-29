@@ -15,7 +15,10 @@ var __rhinoLocal = {
   initialSecure: {},
   managed: {},
   esv: {},
+  esvProvided: false,
   secrets: {},
+  secretsProvided: false,
+  bindings: {},
   submittedCallbacks: null,
   httpStubs: [],
   generatedId: 0,
@@ -102,6 +105,18 @@ function __rhinoLocalMergeBucket(bucketName, object) {
   var incoming;
   var existing;
   var merged;
+  // Both merges refuse a nested plain object (measured), except inside
+  // objectAttributes (measured for mergeShared). Arrays were not measured.
+  for (i = 0; i < keys.length; i += 1) {
+    if (
+      keys[i] !== "objectAttributes" &&
+      __rhinoLocalIsPlainObject(object[keys[i]])
+    ) {
+      throw new InternalError(
+        "State must not contain nested objects unless they are inside registered state containers: objectAttributes"
+      );
+    }
+  }
   for (i = 0; i < keys.length; i += 1) {
     key = keys[i];
     incoming = object[key];
@@ -110,7 +125,12 @@ function __rhinoLocalMergeBucket(bucketName, object) {
       merged = {};
       __rhinoLocalAssignPlain(merged, existing);
       __rhinoLocalAssignPlain(merged, incoming);
-      bucket[key] = merged;
+      bucket[key] = __rhinoLocalAsJavaMap(merged);
+    } else if (__rhinoLocalIsPlainObject(incoming)) {
+      // A merged object is stored as a Java map (measured); putShared's is not.
+      merged = {};
+      __rhinoLocalAssignPlain(merged, incoming);
+      bucket[key] = __rhinoLocalAsJavaMap(merged);
     } else {
       bucket[key] = incoming;
     }
@@ -374,8 +394,70 @@ nodeState.keys = function () {
   take(__rhinoLocal.transient);
   take(__rhinoLocal.secure);
   take(__rhinoLocal.shared);
-  return __rhinoLocalJavaList(names);
+  var list = __rhinoLocalJavaList(names);
+  __rhinoLocalHide(list, "iterator", function () {
+    var index = 0;
+    return {
+      hasNext: function () {
+        return index < list.length;
+      },
+      next: function () {
+        return list[index++];
+      },
+    };
+  });
+  return list;
 };
+
+// How a Java map/list from nodeState.getObject prints (measured).
+function __rhinoLocalJavaMapString(value) {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    var items = [];
+    var i;
+    for (i = 0; i < value.length; i += 1) {
+      items.push(__rhinoLocalJavaMapString(value[i]));
+    }
+    return "[ " + items.join(", ") + " ]";
+  }
+  if (__rhinoLocalIsPlainObject(value)) {
+    var keys = Object.keys(value);
+    var pairs = [];
+    var j;
+    for (j = 0; j < keys.length; j += 1) {
+      pairs.push(JSON.stringify(keys[j]) + ": " + __rhinoLocalJavaMapString(value[keys[j]]));
+    }
+    return "{ " + pairs.join(", ") + " }";
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Math.floor(value) === value) {
+    return String(value) + ".0";
+  }
+  return String(value);
+}
+
+// A plain object dressed as the Java map AIC hands back: it prints as one,
+// and containsKey, size and keySet are functions (measured).
+function __rhinoLocalAsJavaMap(map) {
+  var names = Object.keys(map);
+  __rhinoLocalHide(map, "toString", function () {
+    return __rhinoLocalJavaMapString(map);
+  });
+  __rhinoLocalHide(map, "containsKey", function (name) {
+    return names.indexOf(String(name)) !== -1;
+  });
+  __rhinoLocalHide(map, "size", function () {
+    return names.length;
+  });
+  __rhinoLocalHide(map, "keySet", function () {
+    return __rhinoLocalJavaList(names.slice());
+  });
+  return map;
+}
 
 nodeState.getObject = function (key) {
   __rhinoLocalExpectArity("nodeState.getObject", arguments, 1);
@@ -398,7 +480,7 @@ nodeState.getObject = function (key) {
     __rhinoLocalAssignPlain(merged, sharedVal);
     __rhinoLocalAssignPlain(merged, secureVal);
     __rhinoLocalAssignPlain(merged, transientVal);
-    return merged;
+    return __rhinoLocalAsJavaMap(merged);
   }
   return __rhinoLocalLookupState(k);
 };
@@ -413,6 +495,11 @@ nodeState.mergeTransient = function (object) {
   __rhinoLocalExpectArity("nodeState.mergeTransient", arguments, 1);
   __rhinoLocalMergeBucket("transient", object);
   return nodeState;
+};
+
+// AIC's action is a Java wrapper; String(action) names its class (measured).
+action.toString = function () {
+  return "org.forgerock.openam.auth.nodes.script.ActionWrapper@1b6d3586";
 };
 
 action.goTo = function (name) {
@@ -467,13 +554,30 @@ action.removeSessionProperty = function (key) {
   return action;
 };
 
+// AIC's Integer parameter (measured): "120" and 1.5 convert, "x" does not,
+// and null matches no overload.
+function __rhinoLocalActionInteger(method, value) {
+  if (value === null) {
+    throw new InternalError(
+      "Can't find method org.forgerock.openam.auth.nodes.script.ActionWrapper." +
+        method +
+        "(null)."
+    );
+  }
+  if (isNaN(Number(value))) {
+    throw new InternalError("Cannot convert " + value + " to java.lang.Integer");
+  }
+}
+
 action.withMaxSessionTime = function (maxSessionTime) {
   __rhinoLocalExpectArity("action.withMaxSessionTime", arguments, 1);
+  __rhinoLocalActionInteger("withMaxSessionTime", maxSessionTime);
   return action;
 };
 
 action.withMaxIdleTime = function (maxIdleTime) {
   __rhinoLocalExpectArity("action.withMaxIdleTime", arguments, 1);
+  __rhinoLocalActionInteger("withMaxIdleTime", maxIdleTime);
   return action;
 };
 
@@ -600,7 +704,7 @@ logger.error = function () {
 };
 
 logger.isTraceEnabled = function () {
-  return true;
+  return false;
 };
 
 logger.isDebugEnabled = function () {
@@ -641,25 +745,18 @@ callbacksBuilder.nameCallback = function (prompt, defaultName) {
         " (expected 1 or 2)"
     );
   }
-  var fields = { prompt: String(prompt) };
-  if (arguments.length > 1) {
-    fields.defaultName = String(defaultName);
-  }
-  __rhinoLocalCallback("NameCallback", fields);
+  __rhinoLocalCallback("NameCallback", { prompt: String(prompt) });
 };
 
 callbacksBuilder.passwordCallback = function (prompt, echoOn) {
   __rhinoLocalExpectArity("callbacksBuilder.passwordCallback", arguments, 2);
-  __rhinoLocalCallback("PasswordCallback", {
-    prompt: String(prompt),
-    echoOn: Boolean(echoOn),
-  });
+  __rhinoLocalCallback("PasswordCallback", { prompt: String(prompt) });
 };
 
 callbacksBuilder.textOutputCallback = function (messageType, message) {
   __rhinoLocalExpectArity("callbacksBuilder.textOutputCallback", arguments, 2);
   __rhinoLocalCallback("TextOutputCallback", {
-    messageType: messageType,
+    messageType: String(messageType),
     message: String(message),
   });
 };
@@ -676,21 +773,27 @@ callbacksBuilder.confirmationCallback = function () {
   var a = arguments;
   var fields = {};
   if (a.length === 3 && typeof a[0] === "number" && Array.isArray(a[1])) {
+    fields.prompt = "";
     fields.messageType = a[0];
     fields.options = a[1];
+    fields.optionType = -1;
     fields.defaultOption = a[2];
   } else if (a.length === 3 && typeof a[0] === "number") {
+    fields.prompt = "";
     fields.messageType = a[0];
+    fields.options = [];
     fields.optionType = a[1];
     fields.defaultOption = a[2];
   } else if (a.length === 4 && Array.isArray(a[2])) {
     fields.prompt = String(a[0]);
     fields.messageType = a[1];
     fields.options = a[2];
+    fields.optionType = -1;
     fields.defaultOption = a[3];
   } else if (a.length === 4) {
     fields.prompt = String(a[0]);
     fields.messageType = a[1];
+    fields.options = [];
     fields.optionType = a[2];
     fields.defaultOption = a[3];
   } else {
@@ -712,7 +815,16 @@ callbacksBuilder.choiceCallback = function (
     prompt: String(prompt),
     choices: choices,
     defaultChoice: defaultChoice,
-    multipleSelectionsAllowed: Boolean(multipleSelectionsAllowed),
+  });
+};
+
+callbacksBuilder.radioChoiceCallback = function (prompt, choices, defaultChoice) {
+  __rhinoLocalExpectArity("callbacksBuilder.radioChoiceCallback", arguments, 3);
+  __rhinoLocalCallback("ChoiceCallback", {
+    prompt: String(prompt),
+    choices: choices,
+    defaultChoice: defaultChoice,
+    radio: true,
   });
 };
 
@@ -723,7 +835,7 @@ callbacksBuilder.suspendedTextOutputCallback = function (messageType, message) {
     2
   );
   __rhinoLocalCallback("SuspendedTextOutputCallback", {
-    messageType: messageType,
+    messageType: String(messageType),
     message: String(message),
   });
 };
@@ -737,9 +849,7 @@ callbacksBuilder.textInputCallback = function (prompt, defaultText) {
     );
   }
   var textFields = { prompt: String(prompt) };
-  if (arguments.length > 1) {
-    textFields.defaultText = String(defaultText);
-  }
+  textFields.defaultText = arguments.length > 1 ? String(defaultText) : "";
   __rhinoLocalCallback("TextInputCallback", textFields);
 };
 
@@ -749,15 +859,15 @@ callbacksBuilder.scriptTextOutputCallback = function (message) {
     arguments,
     1
   );
-  __rhinoLocalCallback("ScriptTextOutputCallback", { message: String(message) });
+  __rhinoLocalCallback("TextOutputCallback", {
+    message: String(message),
+    messageType: "4",
+  });
 };
 
 callbacksBuilder.languageCallback = function (language, country) {
   __rhinoLocalExpectArity("callbacksBuilder.languageCallback", arguments, 2);
-  __rhinoLocalCallback("LanguageCallback", {
-    language: String(language),
-    country: String(country),
-  });
+  __rhinoLocalCallback("LanguageCallback", {});
 };
 
 callbacksBuilder.idPCallback = function (
@@ -784,17 +894,13 @@ callbacksBuilder.idPCallback = function (
     provider: String(provider),
     clientId: String(clientId),
     redirectUri: String(redirectUri),
-    scope: scope,
+    scopes: scope,
     nonce: String(nonce),
     request: String(request),
     requestUri: String(requestUri),
     acrValues: acrValues,
-    requestNativeAppForUserInfo: Boolean(requestNativeAppForUserInfo),
+    acceptsJSON: Boolean(requestNativeAppForUserInfo),
   };
-  if (arguments.length === 11) {
-    idpFields.token = String(token);
-    idpFields.tokenType = String(tokenType);
-  }
   __rhinoLocalCallback("IdPCallback", idpFields);
 };
 
@@ -852,15 +958,31 @@ callbacksBuilder.consentMappingCallback = function () {
       displayName: String(a[1]),
       icon: String(a[2]),
       accessLevel: String(a[3]),
-      titles: a[4],
+      fields: a[4],
       message: String(a[5]),
       isRequired: Boolean(a[6]),
     });
     return;
   }
   if (a.length === 3) {
+    var config = a[0];
+    var emptyFields = [];
+    var i;
+    // AIC streams config.fields and fails without it (measured).
+    if (!config || !Array.isArray(config.fields)) {
+      throw new Error(
+        "rhino-local: consentMappingCallback config needs a fields list; AIC refuses one without"
+      );
+    }
+    for (i = 0; i < config.fields.length; i += 1) {
+      emptyFields.push(null);
+    }
     __rhinoLocalCallback("ConsentMappingCallback", {
-      config: a[0],
+      name: String(config.name),
+      displayName: String(config.displayName),
+      icon: String(config.icon),
+      accessLevel: String(config.accessLevel),
+      fields: emptyFields,
       message: String(a[1]),
       isRequired: Boolean(a[2]),
     });
@@ -895,7 +1017,7 @@ callbacksBuilder.kbaCreateCallback = function (
 
 callbacksBuilder.selectIdPCallback = function (providers) {
   __rhinoLocalExpectArity("callbacksBuilder.selectIdPCallback", arguments, 1);
-  __rhinoLocalCallback("SelectIdPCallback", { providers: providers });
+  __rhinoLocalCallback("SelectIdPCallback", { providers: providers, value: "" });
 };
 
 callbacksBuilder.termsAndConditionsCallback = function (version, terms, createDate) {
@@ -913,7 +1035,7 @@ callbacksBuilder.termsAndConditionsCallback = function (version, terms, createDa
 
 callbacksBuilder.metadataCallback = function (outputValue) {
   __rhinoLocalExpectArity("callbacksBuilder.metadataCallback", arguments, 1);
-  __rhinoLocalCallback("MetadataCallback", { outputValue: outputValue });
+  __rhinoLocalCallback("MetadataCallback", { data: outputValue });
 };
 
 callbacksBuilder.pollingWaitCallback = function (waitTime, message) {
@@ -936,27 +1058,13 @@ callbacksBuilder.redirectCallback = function (
   var redirectFields = {
     redirectUrl: String(redirectUrl),
     redirectData: redirectData,
-    method: String(method),
+    redirectMethod: String(method),
+    // Follows the argument; the status parameter and redirect-back cookie are
+    // not rendered (both measured).
+    trackingCookie:
+      a.length === 4 ? Boolean(fourth) : a.length === 6 ? Boolean(sixth) : false,
   };
-  if (a.length === 3) {
-    __rhinoLocalCallback("RedirectCallback", redirectFields);
-    return;
-  }
-  if (a.length === 4) {
-    redirectFields.setTrackingCookie = Boolean(fourth);
-    __rhinoLocalCallback("RedirectCallback", redirectFields);
-    return;
-  }
-  if (a.length === 5) {
-    redirectFields.statusParameter = String(fourth);
-    redirectFields.redirectBackUrlCookie = String(fifth);
-    __rhinoLocalCallback("RedirectCallback", redirectFields);
-    return;
-  }
-  if (a.length === 6) {
-    redirectFields.statusParameter = String(fourth);
-    redirectFields.redirectBackUrlCookie = String(fifth);
-    redirectFields.setTrackingCookie = Boolean(sixth);
+  if (a.length >= 3 && a.length <= 6) {
     __rhinoLocalCallback("RedirectCallback", redirectFields);
     return;
   }
@@ -971,6 +1079,9 @@ function __rhinoLocalAttributeCallback(type, args) {
     prompt: String(args[1]),
     value: args[2],
     required: Boolean(args[3]),
+    policies: [],
+    failedPolicies: [],
+    validateOnly: false,
   };
   if (args.length === 4) {
     __rhinoLocalCallback(type, fields);
@@ -1032,11 +1143,12 @@ callbacksBuilder.validatedUsernameCallback = function (
     prompt: String(prompt),
     policies: policies,
     validateOnly: Boolean(validateOnly),
+    failedPolicies: [],
   };
   if (arguments.length === 4) {
     userFields.failedPolicies = failedPolicies;
   }
-  __rhinoLocalCallback("ValidatedUsernameCallback", userFields);
+  __rhinoLocalCallback("ValidatedCreateUsernameCallback", userFields);
 };
 
 callbacksBuilder.validatedPasswordCallback = function (
@@ -1058,11 +1170,12 @@ callbacksBuilder.validatedPasswordCallback = function (
     echoOn: Boolean(echoOn),
     policies: policies,
     validateOnly: Boolean(validateOnly),
+    failedPolicies: [],
   };
   if (arguments.length === 5) {
     pwFields.failedPolicies = failedPolicies;
   }
-  __rhinoLocalCallback("ValidatedPasswordCallback", pwFields);
+  __rhinoLocalCallback("ValidatedCreatePasswordCallback", pwFields);
 };
 
 function __rhinoLocalRequireSubmitted() {
@@ -1070,6 +1183,87 @@ function __rhinoLocalRequireSubmitted() {
     throw new Error("rhino-local: callbacks: no given.callbacks");
   }
   return __rhinoLocal.submittedCallbacks;
+}
+
+// A Java List as AIC's getters return it: indexable, size/get/isEmpty/contains, and
+// printed "[a, b]" with each element formatted by format().
+function __rhinoLocalCallbackList(items, format) {
+  var list = {};
+  var i;
+  for (i = 0; i < items.length; i += 1) {
+    list[i] = items[i];
+  }
+  Object.defineProperty(list, "length", {
+    enumerable: false,
+    configurable: true,
+    writable: true,
+    value: items.length
+  });
+  __rhinoLocalHide(list, "size", function () {
+    return items.length;
+  });
+  __rhinoLocalHide(list, "get", function (index) {
+    return items[index] === undefined ? null : items[index];
+  });
+  __rhinoLocalHide(list, "isEmpty", function () {
+    return items.length === 0;
+  });
+  __rhinoLocalHide(list, "contains", function (value) {
+    return items.indexOf(value) !== -1;
+  });
+  __rhinoLocalHide(list, "toString", function () {
+    var values = [];
+    var j;
+    for (j = 0; j < items.length; j += 1) {
+      values.push(format(items[j]));
+    }
+    return "[" + values.join(", ") + "]";
+  });
+  return list;
+}
+
+function __rhinoLocalCallbackValueString(value) {
+  if (Array.isArray(value)) {
+    return "[" + value.map(__rhinoLocalCallbackValueString).join(", ") + "]";
+  }
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  return String(value);
+}
+
+function __rhinoLocalCallbackMap(values) {
+  var map = {};
+  var keys = Object.keys(values);
+  var i;
+  for (i = 0; i < keys.length; i += 1) {
+    map[keys[i]] = values[keys[i]];
+  }
+  __rhinoLocalHide(map, "size", function () {
+    return keys.length;
+  });
+  __rhinoLocalHide(map, "get", function (key) {
+    return __rhinoLocalHas(map, String(key)) ? map[String(key)] : null;
+  });
+  __rhinoLocalHide(map, "toString", function () {
+    return __rhinoLocalJavaMapString(map);
+  });
+  __rhinoLocalHide(map, "__javaString", function () {
+    var pairs = [];
+    var j;
+    for (j = 0; j < keys.length; j += 1) {
+      pairs.push(keys[j] + "=" + __rhinoLocalCallbackValueString(map[keys[j]]));
+    }
+    return "{" + pairs.join(", ") + "}";
+  });
+  return map;
+}
+
+// A List of Java maps prints each as "{k=v, …}" (Map.toString).
+function __rhinoLocalCallbackMapList(maps) {
+  return __rhinoLocalCallbackList(maps, function (m) {
+    return m.__javaString();
+  });
 }
 
 function __rhinoLocalSubmittedValues(type) {
@@ -1092,7 +1286,13 @@ function __rhinoLocalSubmittedValues(type) {
       out.push(cb.value);
     }
   }
-  return __rhinoLocalJavaList(out);
+  // Number values are Doubles on AIC: [7.0].
+  var decimal = type === "NumberAttributeInputCallback";
+  return __rhinoLocalCallbackList(out, function (value) {
+    return decimal && typeof value === "number" && Math.floor(value) === value
+      ? String(value) + ".0"
+      : String(value);
+  });
 }
 
 callbacks.isEmpty = function () {
@@ -1112,7 +1312,15 @@ callbacks.getPasswordCallbacks = function () {
 
 callbacks.getHiddenValueCallbacks = function () {
   __rhinoLocalExpectArity("callbacks.getHiddenValueCallbacks", arguments, 0);
-  return __rhinoLocalSubmittedValues("HiddenValueCallback");
+  var submitted = __rhinoLocalRequireSubmitted();
+  var values = {};
+  var i;
+  for (i = 0; i < submitted.length; i += 1) {
+    if (submitted[i].type === "HiddenValueCallback") {
+      values[String(submitted[i].id)] = submitted[i].value;
+    }
+  }
+  return __rhinoLocalCallbackMap(values);
 };
 
 callbacks.getDeviceProfileCallbacks = function () {
@@ -1122,7 +1330,18 @@ callbacks.getDeviceProfileCallbacks = function () {
 
 callbacks.getKbaCreateCallbacks = function () {
   __rhinoLocalExpectArity("callbacks.getKbaCreateCallbacks", arguments, 0);
-  return __rhinoLocalSubmittedValues("KbaCreateCallback");
+  var submitted = __rhinoLocalRequireSubmitted();
+  var maps = [];
+  var i;
+  for (i = 0; i < submitted.length; i += 1) {
+    if (submitted[i].type === "KbaCreateCallback") {
+      maps.push(__rhinoLocalCallbackMap({
+        selectedAnswer: submitted[i].selectedAnswer,
+        selectedQuestion: submitted[i].selectedQuestion,
+      }));
+    }
+  }
+  return __rhinoLocalCallbackMapList(maps);
 };
 
 callbacks.getSelectIdPCallbacks = function () {
@@ -1183,7 +1402,31 @@ callbacks.getLanguageCallbacks = function () {
 
 callbacks.getIdpCallbacks = function () {
   __rhinoLocalExpectArity("callbacks.getIdpCallbacks", arguments, 0);
-  return __rhinoLocalSubmittedValues("IdPCallback");
+  var submitted = __rhinoLocalRequireSubmitted();
+  var maps = [];
+  var i;
+  for (i = 0; i < submitted.length; i += 1) {
+    if (submitted[i].type === "IdPCallback") {
+      // nodeName, userInfo and requestNativeAppForUserInfo are not in the
+      // rendered callback; these are the values AIC's map held (measured).
+      maps.push(__rhinoLocalCallbackMap({
+        nodeName: "IdPCallback",
+        redirectUri: submitted[i].redirectUri,
+        request: submitted[i].request,
+        acrValues: submitted[i].acrValues,
+        userInfo: null,
+        clientId: submitted[i].clientId,
+        requestNativeAppForUserInfo: false,
+        requestUri: submitted[i].requestUri,
+        nonce: submitted[i].nonce,
+        token: submitted[i].token,
+        provider: submitted[i].provider,
+        scope: submitted[i].scopes,
+        tokenType: submitted[i].tokenType,
+      }));
+    }
+  }
+  return __rhinoLocalCallbackMapList(maps);
 };
 
 callbacks.getValidatedPasswordCallbacks = function () {
@@ -1192,7 +1435,7 @@ callbacks.getValidatedPasswordCallbacks = function () {
     arguments,
     0
   );
-  return __rhinoLocalSubmittedValues("ValidatedPasswordCallback");
+  return __rhinoLocalValidatedCallbacks("ValidatedCreatePasswordCallback");
 };
 
 callbacks.getValidatedUsernameCallbacks = function () {
@@ -1201,8 +1444,23 @@ callbacks.getValidatedUsernameCallbacks = function () {
     arguments,
     0
   );
-  return __rhinoLocalSubmittedValues("ValidatedUsernameCallback");
+  return __rhinoLocalValidatedCallbacks("ValidatedCreateUsernameCallback");
 };
+
+function __rhinoLocalValidatedCallbacks(type) {
+  var submitted = __rhinoLocalRequireSubmitted();
+  var maps = [];
+  var i;
+  for (i = 0; i < submitted.length; i += 1) {
+    if (submitted[i].type === type) {
+      maps.push(__rhinoLocalCallbackMap({
+        validateOnly: submitted[i].validateOnly,
+        value: submitted[i].value,
+      }));
+    }
+  }
+  return __rhinoLocalCallbackMapList(maps);
+}
 
 callbacks.getHttpCallbacks = function () {
   __rhinoLocalExpectArity("callbacks.getHttpCallbacks", arguments, 0);
@@ -1307,10 +1565,7 @@ function __rhinoLocalRequireRecord(method, resource) {
   var found = __rhinoLocalFindRecord(split.collection, split.recordId);
   if (!found.record) {
     throw new Error(
-      "rhino-local: openidm." +
-        method +
-        ": no given.managed entry for " +
-        JSON.stringify(resource)
+      "rhino-local: openidm." + method + ": No Such Entry: " + resource
     );
   }
   return found;
@@ -1364,6 +1619,33 @@ function __rhinoLocalFilterError(filter) {
   throw new Error(
     "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
   );
+}
+
+// update and patch with a stale non-null _rev (measured on both).
+function __rhinoLocalCheckRev(method, rev, record) {
+  if (rev !== null && rev !== undefined && String(rev) !== String(record._rev)) {
+    throw new Error(
+      "rhino-local: openidm." +
+        method +
+        ": the expected version '" +
+        String(rev) +
+        "' does not match the current version '" +
+        String(record._rev) +
+        "'"
+    );
+  }
+}
+
+function __rhinoLocalOpenidmRecord(value, id, rev) {
+  var record = { _id: id, _rev: rev };
+  var keys = Object.keys(value);
+  var i;
+  for (i = 0; i < keys.length; i += 1) {
+    if (keys[i] !== "_id" && keys[i] !== "_rev") {
+      record[keys[i]] = value[keys[i]];
+    }
+  }
+  return record;
 }
 
 function __rhinoLocalIsIdentChar(ch) {
@@ -1747,7 +2029,34 @@ openidm.query = function (resourceName, params, fields) {
   var collection = String(resourceName);
   __rhinoLocalPushOpenidm("query", collection, params);
   var rows = __rhinoLocalRequireCollection("query", collection);
-  var filter = params && params._queryFilter;
+  var kinds = 0;
+  var kindNames = ["_queryId", "_queryExpression", "_queryFilter"];
+  var k;
+  for (k = 0; k < kindNames.length; k += 1) {
+    if (params && params[kindNames[k]] !== undefined) {
+      kinds += 1;
+    }
+  }
+  if (kinds !== 1) {
+    throw new Error(
+      "rhino-local: openidm.query: You must use exactly one of [_queryId, _queryExpression, _queryFilter]."
+    );
+  }
+  if (params._queryExpression !== undefined) {
+    throw new Error(
+      "rhino-local: openidm.query: Query Expressions are not supported when using DS as the repo"
+    );
+  }
+  // query-all-ids is the one _queryId measured: every record, _id/_rev only.
+  if (params._queryId !== undefined && params._queryId !== "query-all-ids") {
+    throw new Error(
+      "rhino-local: not mocked: openidm.query _queryId " + String(params._queryId)
+    );
+  }
+  var filter = params._queryId !== undefined ? "true" : params._queryFilter;
+  if (params._queryId !== undefined) {
+    fields = ["_id"];
+  }
   var result = [];
   var i;
   for (i = 0; i < rows.length; i += 1) {
@@ -1757,10 +2066,10 @@ openidm.query = function (resourceName, params, fields) {
   }
   return {
     result: result,
-    resultCount: result.length,
     pagedResultsCookie: null,
     totalPagedResultsPolicy: "NONE",
     totalPagedResults: -1,
+    resultCount: result.length,
   };
 };
 
@@ -1785,13 +2094,24 @@ openidm.create = function (resourceName, newResourceId, content) {
   if (!__rhinoLocalHas(__rhinoLocal.managed, collection)) {
     __rhinoLocal.managed[collection] = [];
   }
-  var stored = __rhinoLocalClone(content);
-  stored._id = id;
-  if (stored._rev === undefined) {
-    stored._rev = "0";
+  var rows = __rhinoLocal.managed[collection];
+  if (
+    id !== undefined &&
+    id !== null &&
+    __rhinoLocalFindRecord(collection, id).record
+  ) {
+    throw new Error(
+      "rhino-local: openidm.create: Entry Already Exists: " + recordedResource
+    );
   }
-  __rhinoLocal.managed[collection].push(stored);
-  return stored;
+  var stored = __rhinoLocalClone(content);
+  stored = __rhinoLocalOpenidmRecord(
+    stored,
+    id,
+    stored._rev === undefined ? "local-rev" : stored._rev
+  );
+  rows.push(stored);
+  return __rhinoLocalProject(stored, arguments.length >= 5 ? arguments[4] : null);
 };
 
 openidm.update = function (id, _rev, value) {
@@ -1803,13 +2123,11 @@ openidm.update = function (id, _rev, value) {
   var resource = String(id);
   __rhinoLocalPushOpenidm("update", resource, value);
   var found = __rhinoLocalRequireRecord("update", resource);
+  __rhinoLocalCheckRev("update", _rev, found.record);
   var next = __rhinoLocalClone(value);
-  next._id = found.record._id;
-  if (next._rev === undefined) {
-    next._rev = found.record._rev;
-  }
+  next = __rhinoLocalOpenidmRecord(next, found.record._id, found.record._rev);
   found.rows[found.index] = next;
-  return next;
+  return __rhinoLocalProject(next, arguments.length >= 5 ? arguments[4] : null);
 };
 
 openidm.patch = function (resourceName, _rev, patch) {
@@ -1821,9 +2139,20 @@ openidm.patch = function (resourceName, _rev, patch) {
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("patch", resource, patch);
   var found = __rhinoLocalRequireRecord("patch", resource);
+  __rhinoLocalCheckRev("patch", _rev, found.record);
   var i;
   var op;
   var field;
+  for (i = 0; i < patch.length; i += 1) {
+    op = patch[i];
+    if (op.operation !== "add" && op.operation !== "remove" && op.operation !== "replace") {
+      throw new Error(
+        "rhino-local: openidm.patch: not a valid JSON patch (operation " +
+          String(op.operation) +
+          ")"
+      );
+    }
+  }
   for (i = 0; i < patch.length; i += 1) {
     op = patch[i];
     field = String(op.field).replace(/^\//, "");
@@ -1833,10 +2162,10 @@ openidm.patch = function (resourceName, _rev, patch) {
       found.record[field] = op.value;
     }
   }
-  return found.record;
+  return __rhinoLocalProject(found.record, arguments.length >= 5 ? arguments[4] : null);
 };
 
-openidm.delete = function (resourceName) {
+openidm.delete = function (resourceName, _rev) {
   if (arguments.length < 2 || arguments.length > 4) {
     throw new Error(
       "rhino-local: openidm.delete arity=" + arguments.length + " (expected 2..4)"
@@ -1845,9 +2174,14 @@ openidm.delete = function (resourceName) {
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("delete", resource);
   var found = __rhinoLocalRequireRecord("delete", resource);
+  if (_rev !== null && _rev !== undefined && String(_rev) !== String(found.record._rev)) {
+    throw new Error(
+      "rhino-local: openidm.delete: Assertion Failed: the entry cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry"
+    );
+  }
   var removed = found.record;
   found.rows.splice(found.index, 1);
-  return removed;
+  return __rhinoLocalProject(removed, arguments.length >= 4 ? arguments[3] : null);
 };
 
 openidm.action = function (resource, actionName, content, params) {
@@ -1861,6 +2195,17 @@ openidm.action = function (resource, actionName, content, params) {
     body = params;
   }
   __rhinoLocalPushOpenidm("action", String(resource), body, String(actionName));
+  // Measured on a managed collection only; other resources have other actions.
+  if (
+    /^managed\/[^/]+$/.test(String(resource)) &&
+    actionName !== "patch" &&
+    actionName !== "triggerSyncCheck" &&
+    actionName !== "updateLastSync"
+  ) {
+    throw new Error(
+      "rhino-local: openidm.action: Expecting String containing one of: patch triggerSyncCheck updateLastSync"
+    );
+  }
   return {};
 };
 
@@ -2028,17 +2373,106 @@ idRepository.getIdentity = function (userName) {
   };
 };
 
+idRepository.createUser = function (userName, password, attributes) {
+  if (arguments.length === 3 && __rhinoLocalIsPlainObject(attributes)) {
+    var names = Object.keys(attributes);
+    var i;
+    for (i = 0; i < names.length; i += 1) {
+      if (!Array.isArray(attributes[names[i]])) {
+        throw new InternalError(
+          "class java.lang.String cannot be cast to class java.util.Collection (java.lang.String and java.util.Collection are in module java.base of loader 'bootstrap')"
+        );
+      }
+    }
+  }
+  throw new InternalError(
+    "User creation through identity repository is not allowed in this environment"
+  );
+};
+
 systemEnv = {
-  getProperty: function (key) {
-    __rhinoLocalExpectArity("systemEnv.getProperty", arguments, 1);
+  getProperty: function (key, defaultValue, returnType) {
+    if (arguments.length < 1 || arguments.length > 3) {
+      throw new Error("rhino-local: systemEnv.getProperty arity=" + arguments.length);
+    }
     var k = String(key);
-    if (!__rhinoLocalHas(__rhinoLocal.esv, k)) {
+    if (!__rhinoLocal.esvProvided) {
       throw new Error(
         "rhino-local: systemEnv.getProperty: no given.esv entry for " +
           JSON.stringify(k)
       );
     }
-    return __rhinoLocal.esv[k];
+    var value = __rhinoLocalHas(__rhinoLocal.esv, k)
+      ? __rhinoLocal.esv[k]
+      : arguments.length === 1
+        ? null
+        : defaultValue;
+    if (arguments.length < 3 || value === null) {
+      return value;
+    }
+    var type;
+    if (typeof returnType === "string") {
+      type = returnType.toLowerCase();
+    } else {
+      var classType = String(returnType).match(/^\[JavaClass java\.lang\.(Integer|String|Boolean|Double)\]$/);
+      if (!classType) {
+        throw new InternalError("Property resolution failed");
+      }
+      type = classType[1].toLowerCase();
+    }
+    if (type === "string") {
+      return String(value);
+    }
+    if (type === "integer" || type === "number") {
+      var number = Number(value);
+      if (isNaN(number)) {
+        throw new InternalError("Property resolution failed");
+      }
+      return number;
+    }
+    if (type === "double") {
+      var doubleValue = Number(value);
+      if (isNaN(doubleValue)) {
+        throw new InternalError("Property resolution failed");
+      }
+      return doubleValue;
+    }
+    if (type === "boolean") {
+      return String(value).toLowerCase() === "true";
+    }
+    if (type === "object" || type === "map") {
+      try {
+        var parsed = JSON.parse(String(value));
+        if (!__rhinoLocalIsPlainObject(parsed)) {
+          throw new Error("not a map");
+        }
+        __rhinoLocalHide(parsed, "toString", function () {
+          return __rhinoLocalJavaMapString(parsed).replace(/([0-9]+)\.0\b/g, "$1");
+        });
+        __rhinoLocalHide(parsed, "size", function () {
+          return Object.keys(parsed).filter(function (name) {
+            return name !== "toString" && name !== "size";
+          }).length;
+        });
+        return parsed;
+      } catch (e) {
+        throw new InternalError("Property resolution failed");
+      }
+    }
+    if (type === "array" || type === "list") {
+      var values;
+      try {
+        values = String(value).split(",");
+      } catch (e) {
+        throw new InternalError("Property resolution failed");
+      }
+      var list = new java.util.ArrayList();
+      for (var j = 0; j < values.length; j += 1) {
+        list.add(values[j]);
+      }
+      return list;
+    }
+    throw new InternalError("Unsupported return type: " + returnType);
   },
 };
 
@@ -2054,6 +2488,11 @@ function __rhinoLocalSecret(value) {
 function __rhinoLocalRequireSecret(method, secretId) {
   var id = String(secretId);
   if (!__rhinoLocalHas(__rhinoLocal.secrets, id)) {
+    if (__rhinoLocal.secretsProvided) {
+      throw new Error(
+        "rhino-local: secrets." + method + ": Secret id " + id + " not accessible"
+      );
+    }
     throw new Error(
       "rhino-local: secrets." +
         method +
@@ -2087,6 +2526,57 @@ secrets.getSigningKey = function (secretId) {
 secrets.getVerificationKey = function (secretId) {
   __rhinoLocalExpectArity("secrets.getVerificationKey", arguments, 1);
   return __rhinoLocalRequireSecret("getVerificationKey", secretId);
+};
+
+// given.bindings.cacheManager: {} is the measured state, no caches at all.
+function __rhinoLocalRequireCaches(method) {
+  if (!__rhinoLocalHas(__rhinoLocal.bindings, "cacheManager")) {
+    throw new Error(
+      "rhino-local: cacheManager." + method + ": no given.bindings.cacheManager"
+    );
+  }
+}
+
+cacheManager.exists = function (cacheName) {
+  __rhinoLocalExpectArity("cacheManager.exists", arguments, 1);
+  __rhinoLocalRequireCaches("exists");
+  return false;
+};
+
+cacheManager.named = function (cacheName) {
+  __rhinoLocalExpectArity("cacheManager.named", arguments, 1);
+  __rhinoLocalRequireCaches("named");
+  return null;
+};
+
+function __rhinoLocalJourneySeed(field) {
+  var seed = __rhinoLocal.bindings.journey;
+  if (!seed || seed[field] === undefined) {
+    throw new Error(
+      "rhino-local: journey." + field + ": no given.bindings.journey." + field
+    );
+  }
+  return seed[field];
+}
+
+journey.name = function () {
+  __rhinoLocalExpectArity("journey.name", arguments, 0);
+  return __rhinoLocalJourneySeed("name");
+};
+
+journey.innerJourney = function () {
+  __rhinoLocalExpectArity("journey.innerJourney", arguments, 0);
+  return __rhinoLocalJourneySeed("innerJourney");
+};
+
+journey.mustRun = function () {
+  __rhinoLocalExpectArity("journey.mustRun", arguments, 0);
+  return __rhinoLocalJourneySeed("mustRun");
+};
+
+journey.identityResource = function () {
+  __rhinoLocalExpectArity("journey.identityResource", arguments, 0);
+  return __rhinoLocalJourneySeed("identityResource");
 };
 
 // Capture the Rhino builtin before we shadow it. A function declaration
@@ -2184,13 +2674,227 @@ function __rhinoLocalLoadLibrary(name) {
   return module.exports;
 }
 
+// utils is backed by java/HostOps.java, a native function the runner defines
+// for the preamble and deletes before the script runs: java.util.Base64,
+// SecureRandom and javax.crypto are outside the AM allow-list, so neither the
+// mocks nor a script can reach them directly. Absent (the node vm path), utils
+// stays unmocked.
+if (typeof __rhinoLocalHostOp !== "undefined") {
+  (function (hostOp) {
+    // AIC's service errors carry no (script#line) suffix; a JS-thrown
+    // InternalError has none either, where one reported from Java would.
+    function fail(message) {
+      throw new InternalError(message);
+    }
+    // A number or boolean takes AIC's String overload ("MTI=" for 12).
+    function bytes(value) {
+      var t = typeof value;
+      return t === "string" || t === "number" || t === "boolean"
+        ? hostOp("utf8", String(value))
+        : value;
+    }
+    function encoded(value, url) {
+      return hostOp("base64Encode", bytes(value), url);
+    }
+    function decoded(value, url, asBytes) {
+      var result;
+      try {
+        result = hostOp("base64Decode", String(value), url);
+      } catch (e) {
+        if (url) {
+          return null;
+        }
+        if (typeof e === "string") {
+          fail(e);
+        }
+        throw e;
+      }
+      return asBytes ? result : hostOp("fromUtf8", result);
+    }
+    [utils.base64, utils.base64url].forEach(function (codec, index) {
+      var url = index === 1;
+      codec.encode = function (value) {
+        return encoded(value, url);
+      };
+      codec.decode = function (value) {
+        return decoded(value, url, false);
+      };
+      codec.decodeToBytes = function (value) {
+        return decoded(value, url, true);
+      };
+      codec.btoa = codec.encode;
+      codec.atob = codec.decode;
+    });
+    utils.types.stringToBytes = function (value) {
+      return hostOp("utf8", String(value));
+    };
+    utils.types.bytesToString = function (value) {
+      return hostOp("fromUtf8", value);
+    };
+    utils.crypto.randomUUID = function () {
+      __rhinoLocalExpectArity("utils.crypto.randomUUID", arguments, 0);
+      return hostOp("uuid");
+    };
+    utils.crypto.getRandomValues = function (array) {
+      __rhinoLocalExpectArity("utils.crypto.getRandomValues", arguments, 1);
+      // AIC takes an array only; an array-like object has no overload.
+      if (!Array.isArray(array) && !(array instanceof java.lang.Object)) {
+        fail(
+          "Can't find method org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService.getRandomValues(object)."
+        );
+      }
+      var i;
+      for (i = 0; i < array.length; i += 1) {
+        array[i] = hostOp("randomInt32");
+      }
+      return array;
+    };
+
+    var subtle = utils.crypto.subtle;
+    function algorithmName(value) {
+      return typeof value === "string" ? value : value.name;
+    }
+    function hmacHash(algorithm) {
+      var hash = typeof algorithm === "string" ? "SHA-256" : algorithm.hash;
+      if (typeof hash !== "string") {
+        fail("Unsupported hashing algorithm: [object Object]");
+      }
+      return hash;
+    }
+    // Only these names, and only as a string: { name } is refused (measured).
+    var DIGESTS = ["SHA-256", "SHA-384", "SHA-1", "SHA-512"];
+    subtle.digest = function (algorithm, data) {
+      if (typeof algorithm !== "string" || DIGESTS.indexOf(algorithm) < 0) {
+        fail("Algorithm must be one of [" + DIGESTS.join(", ") + "]");
+      }
+      return hostOp("digest", algorithm, data);
+    };
+    subtle.sign = function (algorithm, key, data) {
+      var name = algorithmName(algorithm);
+      if (name === "HMAC") {
+        return hostOp("hmac", hmacHash(algorithm), key, data);
+      }
+      if (name === "ECDSA") {
+        return hostOp("ecdsaSign", key, data);
+      }
+      fail("Algorithm must be one of [HMAC, ECDSA]");
+    };
+    subtle.verify = function (algorithm, key, data, signature) {
+      var name = algorithmName(algorithm);
+      if (name === "HMAC") {
+        var expected = hostOp("hmac", hmacHash(algorithm), key, data);
+        var i;
+        if (expected.length !== signature.length) {
+          return false;
+        }
+        for (i = 0; i < expected.length; i += 1) {
+          if (expected[i] !== signature[i]) {
+            return false;
+          }
+        }
+        return true;
+      }
+      if (name === "ECDSA") {
+        return hostOp("ecdsaVerify", key, data, signature);
+      }
+      fail("Algorithm must be one of [HMAC, ECDSA]");
+    };
+    function cipher(encrypt) {
+      return function (algorithm, key, data) {
+        var name = algorithmName(algorithm);
+        if (name === "AES") {
+          return hostOp("aes", encrypt, key, data);
+        }
+        if (name === "RSA") {
+          return hostOp("rsa", encrypt, key, data);
+        }
+        fail("Algorithm must be one of [AES, RSA]");
+      };
+    }
+    subtle.encrypt = cipher(true);
+    subtle.decrypt = cipher(false);
+    subtle.generateKey = function (algorithm) {
+      var name = algorithmName(algorithm);
+      if (name === "AES" || name === "HMAC") {
+        return hostOp("generateSecret");
+      }
+      if (name === "RSA" || name === "ECDSA") {
+        var pair = hostOp("generateKeyPair", name);
+        // How AIC's key-pair map prints (measured).
+        Object.defineProperty(pair, "toString", {
+          enumerable: false,
+          value: function () {
+            return (
+              '{ "privateKey": ' +
+              this.privateKey +
+              ', "publicKey": ' +
+              this.publicKey +
+              " }"
+            );
+          },
+        });
+        return pair;
+      }
+      fail("Algorithm must be one of [AES, ECDSA, RSA, HMAC]");
+    };
+    subtle.deriveKey = function (algorithm, baseKey, length) {
+      if (typeof algorithm === "string") {
+        fail("Salt must be provided for PBKDF2.");
+      }
+      if (algorithm.name !== "PBKDF2") {
+        fail("Algorithm must be one of [PBKDF2]");
+      }
+      try {
+        return hostOp(
+          "pbkdf2",
+          baseKey,
+          algorithm.salt,
+          algorithm.iterations,
+          length,
+          algorithm.hash
+        );
+      } catch (e) {
+        if (typeof e === "string") {
+          fail(e);
+        }
+        throw e;
+      }
+    };
+  })(__rhinoLocalHostOp);
+}
+
 function __rhinoLocalSeed(given) {
   given = given || {};
-  if (given.bindings) {
-    throw new Error(
-      "rhino-local: given.bindings seeding is not implemented; use a dedicated given.* field"
-    );
+  __rhinoLocal.bindings = __rhinoLocalClone(given.bindings || {});
+  var seeded = Object.keys(__rhinoLocal.bindings);
+  var s;
+  var journeyFields = ["name", "identityResource", "innerJourney", "mustRun"];
+  for (s = 0; s < seeded.length; s += 1) {
+    if (seeded[s] === "journey") {
+      Object.keys(__rhinoLocal.bindings.journey || {}).forEach(function (f) {
+        if (journeyFields.indexOf(f) === -1) {
+          throw new Error(
+            "rhino-local: given.bindings.journey." + f + " is not a journey seed"
+          );
+        }
+      });
+    } else if (seeded[s] === "cacheManager") {
+      if (Object.keys(__rhinoLocal.bindings.cacheManager || {}).length > 0) {
+        throw new Error(
+          "rhino-local: given.bindings.cacheManager must be {}; seeding caches is not implemented"
+        );
+      }
+    } else {
+      throw new Error(
+        "rhino-local: given.bindings." +
+          seeded[s] +
+          " seeding is not implemented; only journey and cacheManager are"
+      );
+    }
   }
+  // Measured null in a journey: every call is "Cannot call method … of null".
+  samlApplication = null;
+  oauthApplication = null;
   __rhinoLocal.shared = __rhinoLocalClone(given.sharedState || {});
   __rhinoLocal.transient = __rhinoLocalClone(given.transientState || {});
   __rhinoLocal.secure = __rhinoLocalClone(given.secureState || {});
@@ -2207,7 +2911,9 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.profileTenant = given.profileTenant || null;
   __rhinoLocal.profilePulledAt = given.profilePulledAt || null;
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
+  __rhinoLocal.esvProvided = given.esv !== undefined;
   __rhinoLocal.secrets = __rhinoLocalClone(given.secrets || {});
+  __rhinoLocal.secretsProvided = given.secrets !== undefined;
   __rhinoLocal.libraries = given.libraries
     ? __rhinoLocalClone(given.libraries)
     : {};
