@@ -2,7 +2,8 @@
 // Layered on top of rhino + common + nextgen-common + decision-node-base.
 //
 // Signatures transcribed from the script editor's binding metadata
-// (docs/api/bindings/scripted-decision-next.json, 2026-06-04) — authoritative.
+// (docs/api/bindings/scripted-decision-next.json, 2026-06-04; refreshed
+// 2026-09-29) — authoritative.
 // All verified ABSENT on the legacy engine (2026-06-03).
 
 // (require lives in nextgen-common.d.ts — shared by all next-gen contexts.)
@@ -379,3 +380,99 @@ interface Journey {
   identityResource(): string;
 }
 declare const journey: Journey;
+
+// ---- members added by the 2026-09-29 binding export -----------------------
+// Behaviour measured on AIC 2026-09-29 (docs/api/12-script-bindings-matrix.md).
+// Declared here rather than in the shared files because only this context's
+// metadata was refreshed.
+
+interface SystemEnv {
+  /** The ESV, or `defaultValue` when it is absent. */
+  getProperty(propertyName: StringLike, defaultValue: StringLike): JavaString;
+  /**
+   * The ESV, or `defaultValue`, converted. `"array"`/`"list"` split on commas
+   * without trimming; `"object"`/`"map"` parse JSON. A value that does not
+   * convert throws "Property resolution failed", and any other name
+   * (`"int"`, `"java.lang.Integer"`) throws "Unsupported return type".
+   */
+  getProperty(
+    propertyName: StringLike,
+    defaultValue: StringLike,
+    returnType: "string" | "String"
+  ): JavaString;
+  getProperty(
+    propertyName: StringLike,
+    defaultValue: StringLike,
+    returnType: "number" | "integer"
+  ): number;
+  getProperty(
+    propertyName: StringLike,
+    defaultValue: StringLike,
+    returnType: "boolean"
+  ): boolean;
+  getProperty(
+    propertyName: StringLike,
+    defaultValue: StringLike,
+    returnType: "array" | "list"
+  ): JavaArray<JavaString>;
+  getProperty(
+    propertyName: StringLike,
+    defaultValue: StringLike,
+    returnType: "object" | "map"
+  ): JavaMap<JavaString, any>;
+  /** A Rhino Java class reference such as `java.lang.Integer` (not `.class`). */
+  getProperty(
+    propertyName: StringLike,
+    defaultValue: StringLike,
+    returnType: object
+  ): any;
+}
+
+interface CallbacksBuilder {
+  /** Renders as a `ChoiceCallback` whose output carries `radio: true`. */
+  radioChoiceCallback(
+    prompt: StringLike,
+    choices: string[],
+    defaultChoice: number
+  ): void;
+}
+
+interface ScriptCrypto {
+  /** Check `password` against a bcrypt hash (`$2a$`/`$2b$`). */
+  checkBcrypt(bcryptString: StringLike, password: StringLike): boolean;
+}
+
+interface Policy {
+  /** Evaluate one resource and its sub-resources (subtree mode). */
+  evaluateTree(
+    subject: object,
+    application: string,
+    resourceName: string,
+    environment: object
+  ): any[];
+}
+
+interface IdRepository {
+  /**
+   * Refused on AIC: "User creation through identity repository is not allowed
+   * in this environment". Attribute values must be arrays; a string value is a
+   * ClassCastException before that check.
+   */
+  createUser(userName: StringLike, password: StringLike): object;
+  createUser(
+    userName: StringLike,
+    password: StringLike,
+    attributes: Record<string, string[]>
+  ): object;
+}
+
+interface EmailService {
+  send(to: StringLike, subject: StringLike, body: StringLike): void;
+  send(
+    to: StringLike,
+    subject: StringLike,
+    body: StringLike,
+    mimeType: StringLike
+  ): void;
+}
+declare const emailService: EmailService;

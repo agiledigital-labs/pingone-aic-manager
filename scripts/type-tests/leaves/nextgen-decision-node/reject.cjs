@@ -125,3 +125,9 @@ logger.message("plain"); // expect: TS2339 — classic Debug name; next-gen is s
 /** @type {ExistingSession} */
 var sessionMustExist = existingSession; // expect: TS2322 — may be undefined
 logger.info("{}", sessionMustExist.Principal);
+
+// --- 2026-09-29 binding export ---------------------------------------------
+// A returnType name AM rejects ("Unsupported return type") matches no overload.
+systemEnv.getProperty("esv.x", "42", "int"); // expect: TS2769 — no overload for an unsupported name
+// Attribute values must be arrays: a string is a ClassCastException on AIC.
+idRepository.createUser("u", "p", { mail: "u@example.com" }); // expect: TS2322 — string is not string[]

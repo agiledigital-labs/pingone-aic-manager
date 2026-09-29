@@ -180,3 +180,18 @@ if (typeof existingSession !== "undefined" && existingSession != null) {
 // The reject file is the discriminating half of that claim.
 var ident = idRepository.getIdentity("alice");
 logger.info("user {}", ident.getName());
+
+// --- 2026-09-29 binding export ---------------------------------------------
+// systemEnv's returnType names each pick their own result type (measured).
+/** @type {number} */
+var esvNumber = systemEnv.getProperty("esv.x", "42", "number");
+/** @type {boolean} */
+var esvFlag = systemEnv.getProperty("esv.x", "true", "boolean");
+var esvList = systemEnv.getProperty("esv.x", "a,b", "list");
+logger.info("{} {} {}", esvNumber, esvFlag, esvList.size());
+callbacksBuilder.radioChoiceCallback("pick", ["a", "b"], 0);
+/** @type {boolean} */
+var bcryptOk = utils.crypto.checkBcrypt("$2b$05$x", "pw");
+policy.evaluateTree({ claims: { sub: "u" } }, "oauth2Scopes", "profile", {});
+idRepository.createUser("u", "p", { mail: ["u@example.com"] });
+logger.info("{}", bcryptOk);
