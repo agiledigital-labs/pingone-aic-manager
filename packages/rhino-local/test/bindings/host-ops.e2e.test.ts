@@ -56,4 +56,39 @@ describe("the utils host bridge on the real Rhino engine", () => {
       encoded: "YWJj",
     });
   });
+
+  // So what the dispatcher accepts is the limit instead: nothing the public
+  // utils surface refuses. RSA is the control that the path reaches it.
+  it("reached through __parent__, refuses what utils refuses", async () => {
+    const result = await runCase(
+      runner,
+      defineCase({
+        name: "host-ops-parent",
+        script: [
+          "var op = utils.base64.encode.__parent__.__parent__.hostOp;",
+          "function attempt(f) {",
+          "  try { return String(typeof f()); } catch (e) { return 'threw'; }",
+          "}",
+          "var probe = {",
+          "  reached: typeof op,",
+          '  rsa: attempt(function () { return op("generateKeyPair", "RSA").publicKey; }),',
+          '  dsa: attempt(function () { return op("generateKeyPair", "DSA"); }),',
+          '  sha224: attempt(function () { return op("pbkdf2", utils.types.stringToBytes("p"), utils.types.stringToBytes("s"), 1, 128, "SHA-224"); }),',
+          "};",
+          "logger.info(JSON.stringify(probe));",
+          'action.goTo("true");',
+        ].join("\n"),
+        outcomes: ["true"],
+        given: {},
+        expect: { outcome: "true" },
+      }),
+      { timeoutMs: 5_000 },
+    );
+    expect(result.verdict.summary).toBe("");
+    const probe = JSON.parse(result.effects.logs[0]?.message ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    expect(probe).toEqual({ reached: "function", rsa: "object", dsa: "threw", sha224: "threw" });
+  });
 });

@@ -116,6 +116,10 @@ public final class HostOps extends BaseFunction {
         int iterations = ((Number) Context.jsToJava(args[3], Number.class)).intValue();
         int bits = ((Number) Context.jsToJava(args[4], Number.class)).intValue();
         String hash = (String) Context.jsToJava(args[5], String.class);
+        // Reachable through __parent__, so no wider than utils accepts.
+        if (!DIGESTS.contains(hash)) {
+          throw Context.reportRuntimeError("pbkdf2 " + hash);
+        }
         PBEKeySpec spec = new PBEKeySpec(new String(password, StandardCharsets.UTF_8).toCharArray(), salt, iterations, bits);
         return wrapBytes(cx, scope, SecretKeyFactory.getInstance("PBKDF2WithHmac" + hash.replace("-", ""))
             .generateSecret(spec).getEncoded());
@@ -128,6 +132,10 @@ public final class HostOps extends BaseFunction {
       }
       case "generateKeyPair": {
         String alg = (String) Context.jsToJava(args[1], String.class);
+        // Reachable through __parent__, so no wider than utils accepts.
+        if (!"RSA".equals(alg) && !"ECDSA".equals(alg)) {
+          throw Context.reportRuntimeError("generateKeyPair " + alg);
+        }
         KeyPairGenerator gen = KeyPairGenerator.getInstance("ECDSA".equals(alg) ? "EC" : alg);
         if ("RSA".equals(alg)) gen.initialize(2048);
         if ("ECDSA".equals(alg)) gen.initialize(new ECGenParameterSpec("secp256r1"));

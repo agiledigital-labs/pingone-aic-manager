@@ -148,6 +148,30 @@ r.push(probe("query/2/no-filter", function () {
 r.push(probe("query/2/absent-type", function () {
   return queried(openidm.query("managed/rlNoSuchType", { _queryFilter: "true" }));
 }));
+r.push(probe("query/2/queryId", function () {
+  // Returns every record of the type, tenant roles included, so only the
+  // shape and the probe's own records are kept.
+  var resp = openidm.query(PATH, { _queryId: "query-all-ids" });
+  var mine = [];
+  for (var i = 0; i < resp.result.length; i++) {
+    if (String(resp.result[i]._id).indexOf(ID) === 0) {
+      mine.push(Object.keys(resp.result[i]).sort().join(","));
+    }
+  }
+  return { keys: Object.keys(resp).sort(), countIsNumber: typeof resp.resultCount === "number", mine: mine.sort() };
+}));
+r.push(probe("query/2/queryExpression", function () {
+  return queried(openidm.query(PATH, { _queryExpression: "select * from role" }));
+}));
+r.push(probe("query/2/two-kinds", function () {
+  return queried(openidm.query(PATH, { _queryFilter: "true", _queryId: "query-all-ids" }));
+}));
+r.push(probe("patch/wrong-rev", function () {
+  return masked(openidm.patch(PATH + "/" + ID + "-4", "0", [{ operation: "replace", field: "/description", value: "rl-6" }]));
+}));
+r.push(probe("delete/wrong-rev", function () {
+  return masked(openidm.delete(PATH + "/" + ID + "-4", "0"));
+}));
 r.push(probe("delete/4/fields", function () {
   return masked(openidm.delete(PATH + "/" + ID + "-4", null, {}, ["name"]));
 }));

@@ -105,18 +105,16 @@ function __rhinoLocalMergeBucket(bucketName, object) {
   var incoming;
   var existing;
   var merged;
-  // Measured with a nested plain object only; AIC's message names
-  // objectAttributes as the container that may hold one.
-  if (bucketName === "shared") {
-    for (i = 0; i < keys.length; i += 1) {
-      if (
-        keys[i] !== "objectAttributes" &&
-        __rhinoLocalIsPlainObject(object[keys[i]])
-      ) {
-        throw new InternalError(
-          "State must not contain nested objects unless they are inside registered state containers: objectAttributes"
-        );
-      }
+  // Both merges refuse a nested plain object (measured), except inside
+  // objectAttributes (measured for mergeShared). Arrays were not measured.
+  for (i = 0; i < keys.length; i += 1) {
+    if (
+      keys[i] !== "objectAttributes" &&
+      __rhinoLocalIsPlainObject(object[keys[i]])
+    ) {
+      throw new InternalError(
+        "State must not contain nested objects unless they are inside registered state containers: objectAttributes"
+      );
     }
   }
   for (i = 0; i < keys.length; i += 1) {
@@ -127,7 +125,12 @@ function __rhinoLocalMergeBucket(bucketName, object) {
       merged = {};
       __rhinoLocalAssignPlain(merged, existing);
       __rhinoLocalAssignPlain(merged, incoming);
-      bucket[key] = merged;
+      bucket[key] = __rhinoLocalAsJavaMap(merged);
+    } else if (__rhinoLocalIsPlainObject(incoming)) {
+      // A merged object is stored as a Java map (measured); putShared's is not.
+      merged = {};
+      __rhinoLocalAssignPlain(merged, incoming);
+      bucket[key] = __rhinoLocalAsJavaMap(merged);
     } else {
       bucket[key] = incoming;
     }
@@ -437,6 +440,25 @@ function __rhinoLocalJavaMapString(value) {
   return String(value);
 }
 
+// A plain object dressed as the Java map AIC hands back: it prints as one,
+// and containsKey, size and keySet are functions (measured).
+function __rhinoLocalAsJavaMap(map) {
+  var names = Object.keys(map);
+  __rhinoLocalHide(map, "toString", function () {
+    return __rhinoLocalJavaMapString(map);
+  });
+  __rhinoLocalHide(map, "containsKey", function (name) {
+    return names.indexOf(String(name)) !== -1;
+  });
+  __rhinoLocalHide(map, "size", function () {
+    return names.length;
+  });
+  __rhinoLocalHide(map, "keySet", function () {
+    return __rhinoLocalJavaList(names.slice());
+  });
+  return map;
+}
+
 nodeState.getObject = function (key) {
   __rhinoLocalExpectArity("nodeState.getObject", arguments, 1);
   var k = String(key);
@@ -458,10 +480,7 @@ nodeState.getObject = function (key) {
     __rhinoLocalAssignPlain(merged, sharedVal);
     __rhinoLocalAssignPlain(merged, secureVal);
     __rhinoLocalAssignPlain(merged, transientVal);
-    __rhinoLocalHide(merged, "toString", function () {
-      return __rhinoLocalJavaMapString(merged);
-    });
-    return merged;
+    return __rhinoLocalAsJavaMap(merged);
   }
   return __rhinoLocalLookupState(k);
 };
@@ -1596,6 +1615,21 @@ function __rhinoLocalFilterError(filter) {
   );
 }
 
+// update and patch with a stale non-null _rev (measured on both).
+function __rhinoLocalCheckRev(method, rev, record) {
+  if (rev !== null && rev !== undefined && String(rev) !== String(record._rev)) {
+    throw new Error(
+      "rhino-local: openidm." +
+        method +
+        ": the expected version '" +
+        String(rev) +
+        "' does not match the current version '" +
+        String(record._rev) +
+        "'"
+    );
+  }
+}
+
 function __rhinoLocalOpenidmRecord(value, id, rev) {
   var record = { _id: id, _rev: rev };
   var keys = Object.keys(value);
@@ -2002,7 +2036,21 @@ openidm.query = function (resourceName, params, fields) {
       "rhino-local: openidm.query: You must use exactly one of [_queryId, _queryExpression, _queryFilter]."
     );
   }
-  var filter = params && params._queryFilter;
+  if (params._queryExpression !== undefined) {
+    throw new Error(
+      "rhino-local: openidm.query: Query Expressions are not supported when using DS as the repo"
+    );
+  }
+  // query-all-ids is the one _queryId measured: every record, _id/_rev only.
+  if (params._queryId !== undefined && params._queryId !== "query-all-ids") {
+    throw new Error(
+      "rhino-local: not mocked: openidm.query _queryId " + String(params._queryId)
+    );
+  }
+  var filter = params._queryId !== undefined ? "true" : params._queryFilter;
+  if (params._queryId !== undefined) {
+    fields = ["_id"];
+  }
   var result = [];
   var i;
   for (i = 0; i < rows.length; i += 1) {
@@ -2069,15 +2117,7 @@ openidm.update = function (id, _rev, value) {
   var resource = String(id);
   __rhinoLocalPushOpenidm("update", resource, value);
   var found = __rhinoLocalRequireRecord("update", resource);
-  if (_rev !== null && _rev !== undefined && String(_rev) !== String(found.record._rev)) {
-    throw new Error(
-      "rhino-local: openidm.update: the expected version '" +
-        String(_rev) +
-        "' does not match the current version '" +
-        String(found.record._rev) +
-        "'"
-    );
-  }
+  __rhinoLocalCheckRev("update", _rev, found.record);
   var next = __rhinoLocalClone(value);
   next = __rhinoLocalOpenidmRecord(next, found.record._id, found.record._rev);
   found.rows[found.index] = next;
@@ -2093,6 +2133,7 @@ openidm.patch = function (resourceName, _rev, patch) {
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("patch", resource, patch);
   var found = __rhinoLocalRequireRecord("patch", resource);
+  __rhinoLocalCheckRev("patch", _rev, found.record);
   var i;
   var op;
   var field;
@@ -2118,7 +2159,7 @@ openidm.patch = function (resourceName, _rev, patch) {
   return __rhinoLocalProject(found.record, arguments.length >= 5 ? arguments[4] : null);
 };
 
-openidm.delete = function (resourceName) {
+openidm.delete = function (resourceName, _rev) {
   if (arguments.length < 2 || arguments.length > 4) {
     throw new Error(
       "rhino-local: openidm.delete arity=" + arguments.length + " (expected 2..4)"
@@ -2127,6 +2168,11 @@ openidm.delete = function (resourceName) {
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("delete", resource);
   var found = __rhinoLocalRequireRecord("delete", resource);
+  if (_rev !== null && _rev !== undefined && String(_rev) !== String(found.record._rev)) {
+    throw new Error(
+      "rhino-local: openidm.delete: Assertion Failed: the entry cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry"
+    );
+  }
   var removed = found.record;
   found.rows.splice(found.index, 1);
   return __rhinoLocalProject(removed, arguments.length >= 4 ? arguments[3] : null);
@@ -2476,46 +2522,55 @@ secrets.getVerificationKey = function (secretId) {
   return __rhinoLocalRequireSecret("getVerificationKey", secretId);
 };
 
+// given.bindings.cacheManager: {} is the measured state, no caches at all.
+function __rhinoLocalRequireCaches(method) {
+  if (!__rhinoLocalHas(__rhinoLocal.bindings, "cacheManager")) {
+    throw new Error(
+      "rhino-local: cacheManager." + method + ": no given.bindings.cacheManager"
+    );
+  }
+}
+
 cacheManager.exists = function (cacheName) {
   __rhinoLocalExpectArity("cacheManager.exists", arguments, 1);
+  __rhinoLocalRequireCaches("exists");
   return false;
 };
 
 cacheManager.named = function (cacheName) {
   __rhinoLocalExpectArity("cacheManager.named", arguments, 1);
+  __rhinoLocalRequireCaches("named");
   return null;
 };
 
-journey.name = function () {
-  __rhinoLocalExpectArity("journey.name", arguments, 0);
+function __rhinoLocalJourneySeed(field) {
   var seed = __rhinoLocal.bindings.journey;
-  if (!seed || seed.name === undefined) {
+  if (!seed || seed[field] === undefined) {
     throw new Error(
-      "rhino-local: journey.name: no given.bindings.journey.name"
+      "rhino-local: journey." + field + ": no given.bindings.journey." + field
     );
   }
-  return seed.name;
+  return seed[field];
+}
+
+journey.name = function () {
+  __rhinoLocalExpectArity("journey.name", arguments, 0);
+  return __rhinoLocalJourneySeed("name");
 };
 
 journey.innerJourney = function () {
   __rhinoLocalExpectArity("journey.innerJourney", arguments, 0);
-  return false;
+  return __rhinoLocalJourneySeed("innerJourney");
 };
 
 journey.mustRun = function () {
   __rhinoLocalExpectArity("journey.mustRun", arguments, 0);
-  return false;
+  return __rhinoLocalJourneySeed("mustRun");
 };
 
 journey.identityResource = function () {
   __rhinoLocalExpectArity("journey.identityResource", arguments, 0);
-  var seed = __rhinoLocal.bindings.journey;
-  if (!seed || seed.identityResource === undefined) {
-    throw new Error(
-      "rhino-local: journey.identityResource: no given.bindings.journey.identityResource"
-    );
-  }
-  return seed.identityResource;
+  return __rhinoLocalJourneySeed("identityResource");
 };
 
 // Capture the Rhino builtin before we shadow it. A function declaration
@@ -2807,12 +2862,27 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.bindings = __rhinoLocalClone(given.bindings || {});
   var seeded = Object.keys(__rhinoLocal.bindings);
   var s;
+  var journeyFields = ["name", "identityResource", "innerJourney", "mustRun"];
   for (s = 0; s < seeded.length; s += 1) {
-    if (seeded[s] !== "journey") {
+    if (seeded[s] === "journey") {
+      Object.keys(__rhinoLocal.bindings.journey || {}).forEach(function (f) {
+        if (journeyFields.indexOf(f) === -1) {
+          throw new Error(
+            "rhino-local: given.bindings.journey." + f + " is not a journey seed"
+          );
+        }
+      });
+    } else if (seeded[s] === "cacheManager") {
+      if (Object.keys(__rhinoLocal.bindings.cacheManager || {}).length > 0) {
+        throw new Error(
+          "rhino-local: given.bindings.cacheManager must be {}; seeding caches is not implemented"
+        );
+      }
+    } else {
       throw new Error(
         "rhino-local: given.bindings." +
           seeded[s] +
-          " seeding is not implemented; only given.bindings.journey is"
+          " seeding is not implemented; only journey and cacheManager are"
       );
     }
   }
