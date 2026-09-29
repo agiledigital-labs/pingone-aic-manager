@@ -1477,6 +1477,128 @@ known test-user credentials or creating a throwaway managed user — the latter
 touches the IDM sync queue and any `onCreate` hooks, so it wasn't done
 unprompted.
 
+### Next-gen scripted decision: every binding member (verified 2026-09-29)
+
+Every member in `docs/api/bindings/scripted-decision-next.json` was called on
+the sandbox tenant by the `scripts/rhino-script-tester/fixtures/binding-*`
+probes, and each fixture's live payload is committed as a real-script corpus
+case in `packages/rhino-local/cases/real/index.ts` — the raw evidence for every
+row below. Two runs were byte-identical once Java identity hashes were masked.
+Where the local harness still differs, the case records a `KnownGap`.
+
+**`utils`**
+
+- `base64.encode` / `btoa`: UTF-8, standard alphabet, padded. `base64url`: no
+  padding. `decode` / `atob` return a string; `decodeToBytes` a Java `byte[]`.
+- `encode` given a JS array: `Cannot convert org.mozilla.javascript.NativeArray@… to byte[]`.
+  It takes a string only.
+- Invalid input: `base64.decode` throws `Illegal base64 character 25`;
+  `base64url.decode` returns `null`. Same input, different contract.
+- `types.stringToBytes` returns a Java `byte[]` of **signed** values (`é` is
+  `-61, -87`); `bytesToString` round-trips it.
+- `crypto.randomUUID`: a 36-character v4 string. `getRandomValues(array)`
+  fills the JS array in place with signed 32-bit ints and returns the **same**
+  array.
+- `crypto.checkBcrypt(hash, password)`: `true`/`false` against a `$2b$` hash.
+
+**`utils.crypto.subtle`** — AM's own algorithm names, not WebCrypto's:
+
+- `encrypt`/`decrypt` accept only `[AES, RSA]`, `generateKey` only
+  `[AES, ECDSA, RSA, HMAC]` — the error lists them. `"AES-CBC"` and friends are
+  rejected. The algorithm may be a string or `{ name }`.
+- `digest("SHA-256", bytes)`: a 32-byte `byte[]` (NIST vector for `"abc"`).
+- `sign("HMAC", key, data)` is HMAC-SHA256 and `verify` checks it.
+  `{ name: "HMAC", hash: "SHA-256" }` works; a WebCrypto
+  `hash: { name: "SHA-256" }` fails with `Unsupported hashing algorithm: [object Object]`.
+- AES is **AES-128-ECB with PKCS#5 padding** and so deterministic: the same key
+  and plaintext give the same ciphertext (`openssl enc -aes-128-ecb` agrees). No
+  IV, no authentication. Do not use it for anything that needs either.
+- `generateKey`: AES and HMAC give a 32-byte `byte[]`; RSA (2048-bit) and ECDSA
+  give `{ privateKey: byte[], publicKey: byte[] }`. RSA encrypts with
+  `publicKey` and decrypts with `privateKey`; ECDSA signs with `privateKey`
+  (64-byte signature) and verifies with `publicKey`.
+- `deriveKey({ name: "PBKDF2", salt: byte[], iterations, hash: "SHA-256" }, password, bits)`
+  is standard PBKDF2-HMAC-SHA256. The string form fails with
+  `Salt must be provided for PBKDF2.`; a JS-array salt is a cast error.
+
+**`callbacksBuilder`**
+
+- `radioChoiceCallback(prompt, choices, defaultChoice)` is sent as a
+  `ChoiceCallback` whose output has an extra `radio: true`.
+- `SuspendedTextOutputCallback` / `TextOutputCallback` report `messageType` as a
+  **string** (`"2"`). `scriptTextOutputCallback(script)` is sent as a
+  `TextOutputCallback` with `messageType: "4"`.
+- `consentMappingCallback(config, message, isRequired)` needs a `fields` list in
+  `config` (without one: `Cannot invoke "java.util.List.stream()"…`), and each
+  `fields` element — string or object alike — comes back `null` in the REST
+  output.
+- An `httpCallback` or `x509CertificateCallback` in the response fails the
+  whole `/authenticate` call — 400 `…Cannot be converted into a JSON representation`
+  for X.509, 401 `http-auth-failed` for HTTP — because REST cannot render
+  them. They work only for clients that negotiate them in the initial request.
+- An out-of-range numeric argument (message type, option type, default index)
+  throws in the Java constructor.
+
+**`callbacks` getters** (second visit, AM's default inputs resubmitted):
+
+- String-valued callbacks (`StringAttribute`, `Name`, `Password`, `TextInput`,
+  `DeviceProfile`, `SelectIdP`) return a List of strings; `Choice` a List of
+  `int[]`.
+- `NumberAttribute` returns numbers; `BooleanAttribute` and
+  `TermsAndConditions` booleans; `Confirmation` a number; `Language` the string
+  `en_US`.
+- `getHiddenValueCallbacks()` returns a **Map** `{ id: value }`, not a List:
+  `.get(0)` is `null`.
+- `Idp`, `ValidatedPassword`/`ValidatedUsername` and `KbaCreate` return Lists
+  of maps (`{ validateOnly, value }`, `{ selectedAnswer, selectedQuestion }`).
+
+**`action`**: every `with*`, `putSessionProperty` and `removeSessionProperty`
+returns the same wrapper. `withMaxSessionTime("x")` throws
+`Cannot convert x to java.lang.Integer`.
+
+**`systemEnv.getProperty`**
+
+- `(name)` on an absent ESV: `null`. `(name, default)`: the default.
+- `(name, default, returnType)` converts: `"string"`/`"String"` → string,
+  `"number"`/`"integer"` → number, `"boolean"` → boolean (`"TRUE"` is `true`,
+  `"42"` is `false`), `"array"`/`"list"` → a Java List split on commas **without
+  trimming** (`"a, b"` has `" b"`), `"object"`/`"map"` → the value parsed as
+  JSON. A Rhino class reference also works (`java.lang.Integer`, not
+  `java.lang.Integer.class`).
+- A value that does not convert throws `Property resolution failed`; any other
+  name (`"int"`, `"java.lang.Integer"`) throws `Unsupported return type: …`.
+
+**Other bindings**
+
+- `secrets.*` on an absent id throws
+  `…ScriptedSecretsException: Secret id <id> not accessible`.
+- `cacheManager.named(name)` is `null` for an unknown cache; `exists` is
+  `false`.
+- `journey`: `name()`, `innerJourney()`, `mustRun()`, `identityResource()`
+  (`managed/alpha_user`).
+- `samlApplication` and `oauthApplication` are **`null`** in a journey not
+  started by SAML or OAuth2 — guard them.
+- `jwtAssertion.generateJwt`: `{}` returns `null`; an HS256 map needs
+  `signingKey` as a **string** (a `byte[]` key is `Missing argument`) and
+  returns a three-part JWT. `jwtValidator.validateJwtClaims` with
+  `verificationKey` as a `byte[]` returns the claims (`issuer`, `subject`,
+  `audience` as a list, `type`, `jwtId`, `issuedAt`, `expirationTime`); `{}`
+  returns `null`, and a string argument has no matching method.
+- `policy.evaluate` / `evaluateTree`: the subject must be `{ claims: {…} }`
+  (`ssoToken`/`jwt` stand-ins are `Invalid value subject`); an unknown policy
+  set is `Unable to retrieve application under realm /alpha.`; against
+  `oauth2Scopes` both return `[{ resourceName, attributes, advices, actions }]`.
+- `idRepository.createUser` is refused on AIC: `User creation through identity
+  repository is not allowed in this environment`. Attribute values must be
+  arrays — a string is a `ClassCastException` first.
+- `logger.getName()` is
+  `scripts.AUTHENTICATION_TREE_DECISION_NODE.<scriptId>.(<script name>)`;
+  `isTraceEnabled()` is `false`, the other levels `true`.
+- `emailService` enumerates `send` plus the `java.lang.Object` members. It was
+  not called: it sends mail.
+- `realm` is `/alpha`, `scriptName` the script's name, `resumedFromSuspend`
+  `false`, `cookieName` a string, `locales` a `ScriptedLocalizedMessageImpl`.
+
 ### AM script families (folder slugs)
 
 | Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                                                |
@@ -1713,7 +1835,8 @@ binding _presence_ (see the legacy section above; the tester now takes
 
    Nothing was removed, and the Java allow-list is unchanged. This is
    metadata, not a measurement: what each new member does at runtime is
-   recorded where a probe measured it.
+   recorded where a probe measured it — every member, new and old, in
+   "Next-gen scripted decision: every binding member" above.
 
    Source: the script-context endpoint `GET /am/json/{realm}/contexts/{ID}` (see
    `docs/api/13-script-contexts.md`). It exposes the same metadata for any
