@@ -34,7 +34,7 @@ export function parseSubjectDump(raw: unknown): SubjectDump {
       parsed = JSON.parse(raw);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`rhino-local: harness dump is not JSON: ${message}`);
+      throw new Error(`rhino-local: harness dump is not JSON: ${message}`, { cause: error });
     }
     return parseSubjectDump(parsed);
   }
