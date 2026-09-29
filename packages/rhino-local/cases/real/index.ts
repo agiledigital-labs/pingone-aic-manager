@@ -3115,9 +3115,12 @@ export const realCases: RealEntry[] = [
       "esv": {},
       "secrets": {},
       "bindings": {
+        "cacheManager": {},
         "journey": {
           "name": "AIC-Rhino-Let-Probe",
-          "identityResource": "managed/alpha_user"
+          "identityResource": "managed/alpha_user",
+          "innerJourney": false,
+          "mustRun": false
         }
       }
     },
@@ -3347,6 +3350,38 @@ export const realCases: RealEntry[] = [
         "string": "[object Object]",
         "json": "{\"type\":\"object\",\"rl\":[\"rlFlat\",\"rlFlatNum\",\"rlMergedT\",\"rlNull\",\"rlObj\",\"rlTransient\"]}"
       }
+    },
+    "mergeShared/objectAttributes": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "json": "true"
+      }
+    },
+    "mergeShared/objectAttributes/after": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"rlOa\": 1.0 }",
+        "json": "{\"rlOa\":1}"
+      }
+    },
+    "mergeTransient/nested": {
+      "ok": false,
+      "error": "InternalError: State must not contain nested objects unless they are inside registered state containers: objectAttributes"
+    },
+    "mergeTransient/nested/after": {
+      "ok": true,
+      "value": "null"
+    },
+    "getObject/object/methods": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "function,function,function",
+        "json": "[\"function\",\"function\",\"function\"]"
+      }
     }
   }, {
     allowUndeclared: {"sharedState":true,"transientState":true},
@@ -3501,6 +3536,30 @@ export const realCases: RealEntry[] = [
       "ok": false,
       "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Resource &#39;managed/rlNoSuchType&#39; not found"
     },
+    "query/2/queryId": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"keys\":[\"pagedResultsCookie\",\"result\",\"resultCount\",\"totalPagedResults\",\"totalPagedResultsPolicy\"],\"countIsNumber\":true,\"mine\":[\"_id,_rev\",\"_id,_rev\"]}"
+      }
+    },
+    "query/2/queryExpression": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Query Expressions are not supported when using DS as the repo"
+    },
+    "query/2/two-kinds": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: You must use exactly one of [_queryId, _queryExpression, _queryFilter]."
+    },
+    "patch/wrong-rev": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: The resource could not be accessed because the expected version &#39;0&#39; does not match the current version &#39;<uuid>&#39;"
+    },
+    "delete/wrong-rev": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Assertion Failed: Entry uid&#61;rl-probe-openidm-writes-4,ou&#61;role,o&#61;alpha,o&#61;root,ou&#61;identities cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry"
+    },
     "delete/4/fields": {
       "ok": true,
       "value": {
@@ -3567,7 +3626,7 @@ export const realCases: RealEntry[] = [
     gap: {
       reason:
         "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (it returns {}). Writes were not captured live, so the write channel is not judged. openidm.query: a filter the local parser does not support is reported as unmocked rather than as AIC's parse error, and an unseeded managed type throws the harness's missing-fixture error rather than AIC's \"Resource … not found\".",
-      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
+      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","query/2/queryExpression","query/2/two-kinds","patch/wrong-rev","delete/wrong-rev","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).

@@ -138,5 +138,22 @@ r.push(probe("keys", function () {
   }
   return { type: typeof keys, rl: names.sort() };
 }));
+// After "keys", so these keys do not change its list.
+r.push(probe("mergeShared/objectAttributes", function () {
+  return nodeState.mergeShared({ objectAttributes: { rlOa: 1 } }) === nodeState;
+}));
+r.push(probe("mergeShared/objectAttributes/after", function () {
+  return nodeState.get("objectAttributes");
+}));
+r.push(probe("mergeTransient/nested", function () {
+  return nodeState.mergeTransient({ xNested: { c: 2 } }) === nodeState;
+}));
+r.push(probe("mergeTransient/nested/after", function () {
+  return nodeState.get("xNested");
+}));
+r.push(probe("getObject/object/methods", function () {
+  var o = nodeState.getObject("rlObj");
+  return [typeof o.containsKey, typeof o.size, typeof o.keySet];
+}));
 emit(keyed("binding-nodestate", r));
 action.goTo("ok");

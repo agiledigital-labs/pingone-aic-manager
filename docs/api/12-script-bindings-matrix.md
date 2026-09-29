@@ -1593,8 +1593,12 @@ no matching method.
 - `putShared` accepts a nested object. **`mergeShared` refuses one**:
   `State must not contain nested objects unless they are inside registered state containers: objectAttributes`.
   The whole merge is dropped, including its flat keys. A flat
-  `mergeShared` works. `mergeTransient` was measured with flat values only.
-- `getObject` returns a Java map (it prints as `{ "a": 1.0, … }`). `keys()` is
+  `mergeShared` works, and so does a nested object under `objectAttributes`,
+  which `get` then returns as a Java map (it prints `{ "rlOa": 1.0 }`, where a
+  `putShared` object prints `[object Object]`). `mergeTransient` refuses a
+  nested object with the same message.
+- `getObject` returns a Java map: it prints as `{ "a": 1.0, … }`, and
+  `containsKey`, `size` and `keySet` are functions on it. `keys()` is
   a Java collection, iterated with `iterator()`, that includes **transient**
   keys.
 
@@ -1606,6 +1610,8 @@ no matching method.
   second create of the same id throws `Entry Already Exists`.
 - `update(id, rev, value[, params[, fields]])`: a `null` rev is unconditional,
   while a wrong one throws `…expected version '0' does not match the current version …`.
+  `patch` with a wrong rev throws the same. `delete` with a wrong rev throws
+  `Assertion Failed: Entry uid=<id>,… cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry`.
 - `patch(id, rev, operations[, params[, fields]])` applies a `replace` and will
   `add` a field the schema does not declare. An unknown `operation` throws
   `…not a valid JSON patch.`
@@ -1622,13 +1628,17 @@ no matching method.
 - `query(resource, params[, fields])` returns `result` plus
   `pagedResultsCookie: null`, `totalPagedResultsPolicy: "NONE"`,
   `totalPagedResults: -1` and `resultCount`, those four in that order (where
-  `result` falls was not recorded). `fields` narrows
-  each record to the named fields plus `_id` and `_rev`; no match is an empty
-  `result`. Params with none of `_queryId`/`_queryExpression`/`_queryFilter`
-  throw `You must use exactly one of [_queryId, _queryExpression, _queryFilter].`,
-  an unparseable filter throws
-  `The value 'name eq' for parameter '_queryFilter' could not be parsed as a valid query filter`,
-  and an unknown managed type throws `Resource 'managed/<type>' not found`.
+  `result` falls was not recorded). `fields` narrows each record to the named
+  fields plus `_id` and `_rev`; no match is an empty `result`.
+  - Params with none, or two, of `_queryId`/`_queryExpression`/`_queryFilter`
+    throw `You must use exactly one of [_queryId, _queryExpression, _queryFilter].`
+  - `_queryId: "query-all-ids"` returns every record of the type, each with
+    only `_id` and `_rev`.
+  - `_queryExpression` throws
+    `Query Expressions are not supported when using DS as the repo`.
+  - An unparseable filter throws
+    `The value 'name eq' for parameter '_queryFilter' could not be parsed as a valid query filter`.
+  - An unknown managed type throws `Resource 'managed/<type>' not found`.
 - Errors surface as `JavaException: …ResourceExceptionScriptAdapter: …`.
 
 **`systemEnv.getProperty`**
