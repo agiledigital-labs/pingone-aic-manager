@@ -288,7 +288,7 @@ gate "cargo audit: advisories" \
   "a dependency in Cargo.lock has a security advisory (see above). Update it
   (cargo update -p <crate>); ignore it in .cargo/audit.toml only when no fix
   exists, with the reason and the condition for removing the ignore." \
-  "$CARGO_AUDIT_BIN" audit
+  "$CARGO_AUDIT_BIN" audit --deny warnings
 
 # npm audit reads package-lock.json without node_modules. The shipped templates
 # have no lockfile; scripts/npm-audit-templates.sh resolves and audits each.
