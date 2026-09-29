@@ -242,7 +242,9 @@ export interface Given {
   engine?: Engine;
   /**
    * Extra binding seeds keyed by generated mock binding name. Unknown names
-   * fail validation — a typo must not silently seed nothing.
+   * fail validation — a typo must not silently seed nothing. The runtime
+   * implements one today, `journey` (`name`, `identityResource`); any other
+   * name throws when the case runs.
    */
   bindings?: Record<string, JsonValue>;
 }

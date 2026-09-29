@@ -3109,10 +3109,11 @@ export const realCases: RealEntry[] = [
       "error": "InternalError: Unable to retrieve application under realm /alpha."
     }
   }, {
+    given: {"realm":"/alpha","scriptName":"AIC Rhino Let Probe","esv":{},"secrets":{},"bindings":{"journey":{"name":"AIC-Rhino-Let-Probe","identityResource":"managed/alpha_user"}}},
     gap: {
       reason:
-        "Mostly not mocked locally: logger's level queries and getName, every systemEnv.getProperty overload but the one-argument form, secrets, cacheManager, journey, samlApplication/oauthApplication, jwtAssertion/jwtValidator, policy and emailService enumeration throw rhino-local's not-mocked error or return a JS-object shape. Several are tenant state (journey values, policy sets, a null application binding) and are expected to stay gaps.",
-      differs: ["logger.getName","logger.isTraceEnabled","systemEnv.getProperty-1","systemEnv.getProperty-2","systemEnv.getProperty-3-string","systemEnv.getProperty-3-rhino-class-object","secrets.getGenericSecret","secrets.getDecryptionKey","secrets.getEncryptionKey","secrets.getSigningKey","secrets.getVerificationKey","cacheManager.named","cacheManager.exists","journey.name","journey.innerJourney","journey.mustRun","journey.identityResource","samlApplication.getApplicationId","samlApplication.getAuthnRequest","samlApplication.getIdpAttributes","samlApplication.getSpAttributes","samlApplication.getFlowInitiator","samlApplication.getAssertion","oauthApplication.getRequestProperties","oauthApplication.getApplicationId","oauthApplication.getClientProperties","jwtAssertion.generateJwt","jwtValidator.validateJwtClaims","policy.evaluate","policy.evaluateTree","idRepository.getIdentity","samlApplication/typeof-enumeration","oauthApplication/typeof-enumeration","emailService/typeof-enumeration","realm","scriptName","locales","systemEnv.getProperty-3/string","systemEnv.getProperty-3/number","systemEnv.getProperty-3/boolean","systemEnv.getProperty-3/object","systemEnv.getProperty-3/array","systemEnv.getProperty-3/list","systemEnv.getProperty-3/map","systemEnv.getProperty-3/java.lang.String","systemEnv.getProperty-3/java.lang.Boolean","systemEnv.getProperty-3/java.util.List","systemEnv.getProperty-3/class/Integer","systemEnv.getProperty-3/class/String","systemEnv.getProperty-3/class/Boolean","systemEnv.getProperty-3/class/Double","systemEnv.getProperty-3/object/json","systemEnv.getProperty-3/map/json","systemEnv.getProperty-3/array/json","systemEnv.getProperty-3/array/csv","systemEnv.getProperty-3/list/csv-spaced","systemEnv.getProperty-3/number/4.5","systemEnv.getProperty-3/number/not-a-number","systemEnv.getProperty-3/boolean/TRUE","systemEnv.getProperty-3/String","systemEnv.getProperty-3/int","systemEnv.getProperty-3/integer","jwtAssertion.generateJwt/empty","jwtAssertion.generateJwt/HS256","jwtAssertion.generateJwt/HS256/string-key","jwtValidator.validateJwtClaims/empty","jwtValidator.validateJwtClaims/HS256","policy.evaluate/claims/oauth2Scopes","policy.evaluateTree/claims/oauth2Scopes","policy.evaluate/ssoToken","policy.evaluate/jwt","policy.evaluate/claims"],
+        "57/80 measured payload keys now match: ESV defaults and conversions, cacheManager, the seeded journey values and flags, null SAML/OAuth bindings, and logger.isTraceEnabled. Remaining gaps are tenant-backed JWT creation/validation and policy results; idRepository.getIdentity on an absent user (AIC returns its Java wrapper, which this mock does not model); JavaException wrappers for absent secrets; logger.getName includes the tenant script id; and Java reflection shapes for emailService enumeration and locales.",
+      differs: ["logger.getName","secrets.getGenericSecret","secrets.getDecryptionKey","secrets.getEncryptionKey","secrets.getSigningKey","secrets.getVerificationKey","jwtAssertion.generateJwt","jwtValidator.validateJwtClaims","policy.evaluate","policy.evaluateTree","idRepository.getIdentity","emailService/typeof-enumeration","locales","jwtAssertion.generateJwt/empty","jwtAssertion.generateJwt/HS256","jwtAssertion.generateJwt/HS256/string-key","jwtValidator.validateJwtClaims/empty","jwtValidator.validateJwtClaims/HS256","policy.evaluate/claims/oauth2Scopes","policy.evaluateTree/claims/oauth2Scopes","policy.evaluate/ssoToken","policy.evaluate/jwt","policy.evaluate/claims"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -3133,12 +3134,6 @@ export const realCases: RealEntry[] = [
       "ok": false,
       "error": "InternalError: User creation through identity repository is not allowed in this environment"
     }
-  }, {
-    gap: {
-      reason:
-        "idRepository.createUser is not mocked locally; this AIC environment refuses it (\"User creation through identity repository is not allowed in this environment\") after a ClassCastException for non-array attribute values.",
-      differs: ["createUser/2","createUser/3","createUser/3/arrays","createUser/duplicate"],
-    },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
   ng("binding-nodestate", "fixtures/binding-nodestate.script.js", {
