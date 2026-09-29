@@ -43,7 +43,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -65,18 +65,21 @@ jobs:
       # A JDK, not a JRE: the build compiles the prebuilt runner classes. Same
       # Temurin build as the CI job that tested them.
       - name: Install Java (AM's Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "25.0.4+7.0.LTS" # spelling: see ci.yml
 
-      # No registry-url: setup-node would write an _authToken line and a dummy
-      # NODE_AUTH_TOKEN, which stops npm attempting the OIDC exchange. npm's
-      # default registry is already npmjs.org.
+      # No registry-url: setup-node would write an _authToken line to .npmrc,
+      # which stops npm attempting the OIDC exchange. npm's default registry is
+      # already npmjs.org. No package cache either: a publish job must not
+      # restore state another workflow could have written, and setup-node >= 5
+      # turns caching on by itself if a packageManager field ever appears.
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
+          package-manager-cache: false
 
       # Trusted publishing needs npm >= 11.5.1; pinned so the publish does not
       # move with whatever npm Node 24 happens to bundle.
