@@ -3454,6 +3454,42 @@ export const realCases: RealEntry[] = [
         "json": "{\"_id\":\"rl-probe-openidm-writes-4\",\"_rev\":\"<rev>\",\"name\":\"rl-4v\",\"description\":\"rl-5\"}"
       }
     },
+    "query/2/filter": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"keys\":[\"pagedResultsCookie\",\"result\",\"resultCount\",\"totalPagedResults\",\"totalPagedResultsPolicy\"],\"ids\":[\"rl-probe-openidm-writes\",\"rl-probe-openidm-writes-4\"],\"recordKeys\":[\"_id,_rev,description,name\",\"_id,_rev,description,name,rlNotInSchema\"],\"pagedResultsCookie\":null,\"totalPagedResultsPolicy\":\"NONE\",\"totalPagedResults\":-1,\"resultCount\":2}"
+      }
+    },
+    "query/3/fields": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"keys\":[\"pagedResultsCookie\",\"result\",\"resultCount\",\"totalPagedResults\",\"totalPagedResultsPolicy\"],\"ids\":[\"rl-probe-openidm-writes\",\"rl-probe-openidm-writes-4\"],\"recordKeys\":[\"_id,_rev,name\",\"_id,_rev,name\"],\"pagedResultsCookie\":null,\"totalPagedResultsPolicy\":\"NONE\",\"totalPagedResults\":-1,\"resultCount\":2}"
+      }
+    },
+    "query/2/none": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[object Object]",
+        "json": "{\"keys\":[\"pagedResultsCookie\",\"result\",\"resultCount\",\"totalPagedResults\",\"totalPagedResultsPolicy\"],\"ids\":[],\"recordKeys\":[],\"pagedResultsCookie\":null,\"totalPagedResultsPolicy\":\"NONE\",\"totalPagedResults\":-1,\"resultCount\":0}"
+      }
+    },
+    "query/2/bad-filter": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: The value 'name eq' for parameter '_queryFilter' could not be parsed as a valid query filter"
+    },
+    "query/2/no-filter": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: You must use exactly one of [_queryId, _queryExpression, _queryFilter]."
+    },
+    "query/2/absent-type": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Resource &#39;managed/rlNoSuchType&#39; not found"
+    },
     "delete/4/fields": {
       "ok": true,
       "value": {
@@ -3515,8 +3551,8 @@ export const realCases: RealEntry[] = [
     allowUndeclared: {"openidmWrites":true},
     gap: {
       reason:
-        "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (it returns {}). Writes were not captured live, so the write channel is not judged.",
-      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
+        "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (it returns {}). Writes were not captured live, so the write channel is not judged. openidm.query: a filter the local parser does not support is reported as unmocked rather than as AIC's parse error, and an unseeded managed type throws the harness's missing-fixture error rather than AIC's \"Resource … not found\".",
+      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
