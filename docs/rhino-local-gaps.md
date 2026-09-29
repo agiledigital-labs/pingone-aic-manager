@@ -11,13 +11,14 @@ against the JVM runner (`VERSION_DEFAULT` + `ScriptContextScope`) after
 ## What runs today
 
 Re-measured 2026-09-28 against the sandbox (`run-probes.sh`) and the host-JVM
-runner. 47 cases, and every one is green — by asserting what is true, not by
+runner, and on 2026-09-29 for the ten `binding-*` cases. 57 cases, and every
+one is green — by asserting what is true, not by
 matching the overlay:
 
 | Count | Status                                                                                             |
 | ----- | -------------------------------------------------------------------------------------------------- |
-| 27    | pass the live payload exactly                                                                      |
-| 8     | **known gap** — live values committed, the differing keys pinned                                   |
+| 30    | pass the live payload exactly                                                                      |
+| 15    | **known gap** — live values committed, the differing keys pinned                                   |
 | 2     | **known gap**, request cases — live request data not committed (it names the tenant); local pinned |
 | 1     | **unmeasured** — `identity-enum-attrs`: every live count was `err`; local pinned                   |
 | 9     | parse errors, blocked on `(parse)` with the JVM's exact message                                    |
@@ -133,6 +134,42 @@ What the 2026-09-12 ranking called the shutter gap is closed:
 expectation that was incomplete). The five legacy cases were dropped on
 2026-09-12 (`7bb0195`); legacy scripts are not supported.
 
+## Binding probes (measured 2026-09-29)
+
+Ten `binding-*` fixtures exercise the scripted-decision binding surface
+member by member. A live run is committed verbatim as each case's expectation,
+and the local payload is compared to it key by key. Every binding member is run
+by at least one corpus case's origin fixture, or is excluded with a reason in
+`test/corpus/member-coverage.test.ts`. The four exclusions are
+`emailService.send` (it sends mail), `action.suspend` (it ends the probe), and
+`callbacksBuilder.httpCallback`/`x509CertificateCallback` (AM cannot render
+them as REST JSON).
+
+| Case                        | Keys matched | What still differs                                                                                                                  |
+| --------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `binding-nodestate`         | 32/32        | — (final state not captured live, so state channels are not judged)                                                                 |
+| `binding-createuser`        | 4/4          | —                                                                                                                                   |
+| `binding-callbacks-builder` | callbacks    | — (AIC returned the raw callbacks; the case pins them parsed)                                                                       |
+| `binding-utils-subtle`      | 19/20        | RSA encrypt given the whole key-pair map: both fail, with different Java messages                                                   |
+| `binding-callbacks-getters` | 19/21        | `getChoiceCallbacks` is `int[]` on AIC (unconstructible through the shutter); `getConsentMappingCallbacks` has no seedable body     |
+| `binding-utils`             | 24/29        | error suffixes name the mock, not the script; `checkBcrypt` unmocked (no bcrypt in the JDK); PBKDF2 JS-array salt message          |
+| `binding-action`            | 13/16        | a mock-thrown `InternalError` carries no `(name#line)`                                                                              |
+| `binding-utils-interop`     | 17/20        | AIC wraps as `JavaException ScriptCryptoException`; arity and `(name#line)` wording                                                 |
+| `binding-services`          | 57/80        | tenant-backed JWT and policy results; absent-user `getIdentity` wrapper; secret `JavaException`s; tenant script id in `getName`     |
+| `binding-openidm-writes`    | 18/36        | AIC throws `JavaException` wrappers carrying the LDAP DN; `validateObject` answers from tenant policy; unsupported query filters     |
+
+Two conventions keep these honest. An AIC `InternalError:` is reproduced with
+`throw new InternalError(msg)`. An AIC `JavaException: …Adapter: <msg>` becomes
+`Error("rhino-local: <method>: <AIC phrase>")`. The mocks never forge a Java
+exception, so those keys stay gaps rather than being tuned to match. The full
+reasons are the `gap` entries in `cases/real/index.ts`, and the measured
+behaviour is in `docs/api/12-script-bindings-matrix.md`.
+
+`given.bindings` accepts only `journey` (whose getters throw when unseeded) and
+`cacheManager`. Any other name throws, so a case cannot quietly seed a binding
+the harness does not model. `samlApplication` and `oauthApplication` are always
+`null`, as they are live in a scripted-decision node.
+
 ## Where the real scripts are
 
 | Source                                                                                | What it is                                                                | Verdict                                                                                                                                                                                                                                 |
@@ -156,10 +193,10 @@ actually assert.
 
 ## What was converted
 
-47 cases in `packages/rhino-local/cases/real/index.ts`, each running its
+57 cases in `packages/rhino-local/cases/real/index.ts`, each running its
 origin fixture under `scripts/rhino-script-tester/`:
 
-- 45 next-gen (43 `fixtures/*.script.js` + 2 `scripts/*.script.js`)
+- 55 next-gen (53 `fixtures/*.script.js` + 2 `scripts/*.script.js`)
 - 2 legacy
 
 Identity cases originally named a sandbox test user and three managed-object
@@ -207,7 +244,7 @@ yields `"0,0,0"` (`lib-const-loop-consumer`), matching live.
   here.
 - It does not claim OAuth2 / ATM / may-act scripts were pointed at this harness.
   They are a different binding surface.
-- A known gap is not coverage. Eleven of 47 differ from AIC on at least one key,
+- A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,
   and one of those (`identity-enum-attrs`) has no valid live measurement.
 - `require()` is a CommonJS eval of seeded source, not AM's wrap factory. The
   library probes in this corpus do not need the shutter to load; they need it
