@@ -1,8 +1,20 @@
 // Probe: utility encoding, types, random crypto and WebCrypto bindings. Safe to delete.
 // Writes no tenant state.
+// One payload key per probe, so the corpus can record a gap per probe; and
+// Java identity hashes (`[B@6d719625`) masked, because they differ every run.
+function keyed(feature, records) {
+  var out = { ok: true, feature: feature };
+  for (var i = 0; i < records.length; i++) {
+    var rec = records[i];
+    out[rec.name] = rec.ok
+      ? { ok: true, value: rec.value }
+      : { ok: false, error: rec.error };
+  }
+  return JSON.stringify(out).replace(/@[0-9a-f]{4,8}\b/g, "@<hash>");
+}
 function emit(p) {
   if (callbacks.isEmpty()) {
-    callbacksBuilder.hiddenValueCallback("result", JSON.stringify(p));
+    callbacksBuilder.hiddenValueCallback("result", p);
   }
   outcome = "ok";
 }
@@ -19,7 +31,7 @@ function describe(v) {
     r.array = Array.isArray(v);
   } catch (e) {}
   try {
-    r.keys = Object.keys(v);
+    r.keys = Object.keys(v).sort();
   } catch (e) {}
   try {
     r.length = v.length;
@@ -121,7 +133,15 @@ r.push(
   probe("crypto/getRandomValues", function () {
     var a = [0, 0, 0, 0];
     var x = utils.crypto.getRandomValues(a);
-    return { input: describe(a), result: describe(x), same: x === a };
+    // Random: record the shape only.
+    var types = [];
+    for (var j = 0; j < a.length; j++) types.push(typeof a[j]);
+    return {
+      length: a.length,
+      types: types,
+      same: x === a,
+      array: Array.isArray(x),
+    };
   })
 );
 r.push(
@@ -257,4 +277,4 @@ r.push(
     return describe(sub.deriveKey("PBKDF2", key, 128));
   })
 );
-emit({ ok: true, feature: "binding-utils", value: r });
+emit(keyed("binding-utils", r));

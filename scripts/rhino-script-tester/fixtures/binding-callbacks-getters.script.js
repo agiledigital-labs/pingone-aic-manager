@@ -1,12 +1,24 @@
 // Probe: callback getters across two authentication visits. Safe to delete.
 // The runner must use RESUBMIT=1 to submit visit one defaults unchanged.
+// One payload key per probe, so the corpus can record a gap per probe; and
+// Java identity hashes (`[B@6d719625`) masked, because they differ every run.
+function keyed(feature, records) {
+  var out = { ok: true, feature: feature };
+  for (var i = 0; i < records.length; i++) {
+    var rec = records[i];
+    out[rec.name] = rec.ok
+      ? { ok: true, value: rec.value }
+      : { ok: false, error: rec.error };
+  }
+  return JSON.stringify(out).replace(/@[0-9a-f]{4,8}\b/g, "@<hash>");
+}
 function describe(v) {
   var r = { type: typeof v, string: String(v) };
   try {
     r.array = Array.isArray(v);
   } catch (e) {}
   try {
-    r.keys = Object.keys(v);
+    r.keys = Object.keys(v).sort();
   } catch (e) {}
   try {
     r.length = v.length;
@@ -161,6 +173,9 @@ if (callbacks.isEmpty()) {
   } catch (e) {
     r.push({ name: "isEmpty", ok: false, error: String(e) });
   }
-  callbacksBuilder.hiddenValueCallback("result", JSON.stringify(r));
+  callbacksBuilder.hiddenValueCallback(
+    "result",
+    keyed("binding-callbacks-getters", r)
+  );
   outcome = "ok";
 }

@@ -1,5 +1,17 @@
 // Probe: action methods, chain return shapes, and one invalid type. Safe to delete.
 // suspend is skipped because it parks the journey.
+// One payload key per probe, so the corpus can record a gap per probe; and
+// Java identity hashes (`[B@6d719625`) masked, because they differ every run.
+function keyed(feature, records) {
+  var out = { ok: true, feature: feature };
+  for (var i = 0; i < records.length; i++) {
+    var rec = records[i];
+    out[rec.name] = rec.ok
+      ? { ok: true, value: rec.value }
+      : { ok: false, error: rec.error };
+  }
+  return JSON.stringify(out).replace(/@[0-9a-f]{4,8}\b/g, "@<hash>");
+}
 function probe(n, f) {
   try {
     var v = f();
@@ -15,8 +27,7 @@ function probe(n, f) {
   }
 }
 function emit(p) {
-  if (callbacks.isEmpty())
-    callbacksBuilder.hiddenValueCallback("result", JSON.stringify(p));
+  if (callbacks.isEmpty()) callbacksBuilder.hiddenValueCallback("result", p);
   outcome = "ok";
 }
 var r = [];
@@ -83,5 +94,5 @@ r.push(
     return action.withMaxSessionTime("x");
   })
 );
-emit(r);
+emit(keyed("binding-action", r));
 action.goTo("ok");

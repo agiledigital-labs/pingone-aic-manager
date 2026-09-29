@@ -1,9 +1,21 @@
 // Probe: createUser overloads and duplicate-name error. Creates two users; delete them afterwards.
 // Names and passwords are generated per run; mail uses example.com.
+// One payload key per probe, so the corpus can record a gap per probe; and
+// Java identity hashes (`[B@6d719625`) masked, because they differ every run.
+function keyed(feature, records) {
+  var out = { ok: true, feature: feature };
+  for (var i = 0; i < records.length; i++) {
+    var rec = records[i];
+    out[rec.name] = rec.ok
+      ? { ok: true, value: rec.value }
+      : { ok: false, error: rec.error };
+  }
+  return JSON.stringify(out).replace(/@[0-9a-f]{4,8}\b/g, "@<hash>");
+}
 function describe(v) {
   var r = { type: typeof v, string: String(v) };
   try {
-    r.keys = Object.keys(v);
+    r.keys = Object.keys(v).sort();
   } catch (e) {}
   try {
     r.length = v.length;
@@ -51,6 +63,6 @@ var duplicate = probe("createUser/duplicate", function () {
 if (callbacks.isEmpty())
   callbacksBuilder.hiddenValueCallback(
     "result",
-    JSON.stringify([first, second, third, duplicate])
+    keyed("binding-createuser", [first, second, third, duplicate])
   );
 outcome = "ok";
