@@ -135,7 +135,9 @@ r.push(
     var x = utils.crypto.getRandomValues(a);
     // Random: record the shape only.
     var types = [];
-    for (var j = 0; j < a.length; j++) types.push(typeof a[j]);
+    for (var j = 0; j < a.length; j++) {
+      types.push(typeof a[j]);
+    }
     return {
       length: a.length,
       types: types,
@@ -146,13 +148,11 @@ r.push(
 );
 r.push(
   probe("crypto/checkBcrypt/right", function () {
-    if (!BCRYPT_HASH) return "BCRYPT_HASH placeholder";
     return utils.crypto.checkBcrypt(BCRYPT_HASH, "probe-password");
   })
 );
 r.push(
   probe("crypto/checkBcrypt/wrong", function () {
-    if (!BCRYPT_HASH) return "BCRYPT_HASH placeholder";
     return utils.crypto.checkBcrypt(BCRYPT_HASH, "wrong-password");
   })
 );

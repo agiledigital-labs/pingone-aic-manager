@@ -309,6 +309,35 @@ for (var t = 0; t < RETURN_TYPES.length; t++) {
     );
   })(RETURN_TYPES[t]);
 }
+// Round three: a Rhino class reference is accepted (round one's failure was the
+// default not converting), "object"/"map" parse JSON and "array"/"list" split
+// on commas.
+var CONVERSIONS = [
+  ["class/Integer", "42", java.lang.Integer],
+  ["class/String", "42", java.lang.String],
+  ["class/Boolean", "true", java.lang.Boolean],
+  ["class/Double", "4.5", java.lang.Double],
+  ["object/json", '{"a":1}', "object"],
+  ["map/json", '{"a":1}', "map"],
+  ["array/json", '["a","b"]', "array"],
+  ["array/csv", "a,b", "array"],
+  ["list/csv-spaced", "a, b", "list"],
+  ["number/4.5", "4.5", "number"],
+  ["number/not-a-number", "x", "number"],
+  ["boolean/TRUE", "TRUE", "boolean"],
+  ["String", "42", "String"],
+  ["int", "42", "int"],
+  ["integer", "42", "integer"],
+];
+for (var c = 0; c < CONVERSIONS.length; c++) {
+  (function (conv) {
+    r.push(
+      probe("systemEnv.getProperty-3/" + conv[0], function () {
+        return systemEnv.getProperty("esv.rl.probe.absent", conv[1], conv[2]);
+      })
+    );
+  })(CONVERSIONS[c]);
+}
 var JWT_KEY = "0123456789abcdef0123456789abcdef";
 var JWT_DATA = {
   jwtType: "SIGNED",
@@ -328,7 +357,9 @@ r.push(
 r.push(
   probe("jwtAssertion.generateJwt/HS256", function () {
     var d = {};
-    for (var k in JWT_DATA) d[k] = JWT_DATA[k];
+    for (var k in JWT_DATA) {
+      d[k] = JWT_DATA[k];
+    }
     d.signingKey = utils.types.stringToBytes(JWT_KEY);
     jwt = jwtAssertion.generateJwt(d);
     return typeof jwt + "/" + String(jwt).split(".").length + " parts";
@@ -338,7 +369,9 @@ r.push(
 r.push(
   probe("jwtAssertion.generateJwt/HS256/string-key", function () {
     var d = {};
-    for (var k in JWT_DATA) d[k] = JWT_DATA[k];
+    for (var k in JWT_DATA) {
+      d[k] = JWT_DATA[k];
+    }
     d.signingKey = JWT_KEY;
     jwt = jwtAssertion.generateJwt(d);
     return typeof jwt + "/" + String(jwt).split(".").length + " parts";
@@ -417,6 +450,7 @@ for (var q = 0; q < SUBJECTS.length; q++) {
     );
   })(SUBJECTS[q], Object.keys(SUBJECTS[q])[0]);
 }
-if (callbacks.isEmpty())
+if (callbacks.isEmpty()) {
   callbacksBuilder.hiddenValueCallback("result", keyed("binding-services", r));
+}
 outcome = "ok";

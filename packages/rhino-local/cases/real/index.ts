@@ -1200,6 +1200,1880 @@ export const realCases: RealEntry[] = [
       ],
     }
   ),
+
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-utils", "fixtures/binding-utils.script.js", {
+    "base64/string/0": {
+      "ok": true,
+      "value": {
+        "encode": {
+          "type": "string",
+          "string": "aGVsbG8gd29ybGQ=",
+          "array": false,
+          "length": 16
+        },
+        "decode": {
+          "type": "string",
+          "string": "hello world",
+          "array": false,
+          "length": 11
+        },
+        "btoa": {
+          "type": "string",
+          "string": "aGVsbG8gd29ybGQ=",
+          "array": false,
+          "length": 16
+        },
+        "atob": {
+          "type": "string",
+          "string": "hello world",
+          "array": false,
+          "length": 11
+        }
+      }
+    },
+    "base64url/string/0": {
+      "ok": true,
+      "value": {
+        "encode": {
+          "type": "string",
+          "string": "aGVsbG8gd29ybGQ",
+          "array": false,
+          "length": 15
+        },
+        "decode": {
+          "type": "string",
+          "string": "hello world",
+          "array": false,
+          "length": 11
+        },
+        "btoa": {
+          "type": "string",
+          "string": "aGVsbG8gd29ybGQ",
+          "array": false,
+          "length": 15
+        },
+        "atob": {
+          "type": "string",
+          "string": "hello world",
+          "array": false,
+          "length": 11
+        }
+      }
+    },
+    "base64/string/1": {
+      "ok": true,
+      "value": {
+        "encode": {
+          "type": "string",
+          "string": "aMOpbGxvIOKckw==",
+          "array": false,
+          "length": 16
+        },
+        "decode": {
+          "type": "string",
+          "string": "héllo ✓",
+          "array": false,
+          "length": 7
+        },
+        "btoa": {
+          "type": "string",
+          "string": "aMOpbGxvIOKckw==",
+          "array": false,
+          "length": 16
+        },
+        "atob": {
+          "type": "string",
+          "string": "héllo ✓",
+          "array": false,
+          "length": 7
+        }
+      }
+    },
+    "base64url/string/1": {
+      "ok": true,
+      "value": {
+        "encode": {
+          "type": "string",
+          "string": "aMOpbGxvIOKckw",
+          "array": false,
+          "length": 14
+        },
+        "decode": {
+          "type": "string",
+          "string": "héllo ✓",
+          "array": false,
+          "length": 7
+        },
+        "btoa": {
+          "type": "string",
+          "string": "aMOpbGxvIOKckw",
+          "array": false,
+          "length": 14
+        },
+        "atob": {
+          "type": "string",
+          "string": "héllo ✓",
+          "array": false,
+          "length": 7
+        }
+      }
+    },
+    "base64/string/2": {
+      "ok": true,
+      "value": {
+        "encode": {
+          "type": "string",
+          "string": "w7vDvw==",
+          "array": false,
+          "length": 8
+        },
+        "decode": {
+          "type": "string",
+          "string": "ûÿ",
+          "array": false,
+          "length": 2
+        },
+        "btoa": {
+          "type": "string",
+          "string": "w7vDvw==",
+          "array": false,
+          "length": 8
+        },
+        "atob": {
+          "type": "string",
+          "string": "ûÿ",
+          "array": false,
+          "length": 2
+        }
+      }
+    },
+    "base64url/string/2": {
+      "ok": true,
+      "value": {
+        "encode": {
+          "type": "string",
+          "string": "w7vDvw",
+          "array": false,
+          "length": 6
+        },
+        "decode": {
+          "type": "string",
+          "string": "ûÿ",
+          "array": false,
+          "length": 2
+        },
+        "btoa": {
+          "type": "string",
+          "string": "w7vDvw",
+          "array": false,
+          "length": 6
+        },
+        "atob": {
+          "type": "string",
+          "string": "ûÿ",
+          "array": false,
+          "length": 2
+        }
+      }
+    },
+    "base64/encode/bytes": {
+      "ok": false,
+      "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (AIC Rhino Let Probe#82)"
+    },
+    "base64url/encode/bytes": {
+      "ok": false,
+      "error": "InternalError: Cannot convert org.mozilla.javascript.NativeArray@<hash> to byte[] (AIC Rhino Let Probe#87)"
+    },
+    "base64/decodeToBytes": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1"
+        ],
+        "length": 2
+      }
+    },
+    "base64url/decodeToBytes": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1"
+        ],
+        "length": 2
+      }
+    },
+    "base64/invalid": {
+      "ok": false,
+      "error": "InternalError: Illegal base64 character 25"
+    },
+    "base64url/invalid": {
+      "ok": true,
+      "value": null
+    },
+    "types/roundtrip": {
+      "ok": true,
+      "value": {
+        "bytes": {
+          "type": "object",
+          "string": "[B@<hash>",
+          "array": false,
+          "keys": [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9"
+          ],
+          "length": 10
+        },
+        "first": [
+          {
+            "value": 104,
+            "type": "number"
+          },
+          {
+            "value": -61,
+            "type": "number"
+          },
+          {
+            "value": -87,
+            "type": "number"
+          }
+        ],
+        "roundtrip": "héllo ✓"
+      }
+    },
+    "crypto/randomUUID": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "length": 36,
+        "uuid": true
+      }
+    },
+    "crypto/getRandomValues": {
+      "ok": true,
+      "value": {
+        "length": 4,
+        "types": [
+          "number",
+          "number",
+          "number",
+          "number"
+        ],
+        "same": true,
+        "array": true
+      }
+    },
+    "crypto/checkBcrypt/right": {
+      "ok": true,
+      "value": true
+    },
+    "crypto/checkBcrypt/wrong": {
+      "ok": true,
+      "value": false
+    },
+    "subtle/digest/SHA-256": {
+      "ok": true,
+      "value": {
+        "shape": {
+          "type": "object",
+          "string": "[B@<hash>",
+          "array": false,
+          "keys": [
+            "0",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "2",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "3",
+            "30",
+            "31",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9"
+          ],
+          "length": 32
+        },
+        "hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      }
+    },
+    "subtle/sign/HMAC/options": {
+      "ok": false,
+      "error": "InternalError: Unsupported hashing algorithm: [object Object]"
+    },
+    "subtle/sign/HMAC/string": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "2",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26",
+          "27",
+          "28",
+          "29",
+          "3",
+          "30",
+          "31",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "length": 32
+      }
+    },
+    "subtle/verify/right": {
+      "ok": true,
+      "value": true
+    },
+    "subtle/verify/tampered": {
+      "ok": true,
+      "value": false
+    },
+    "subtle/encrypt/string": {
+      "ok": false,
+      "error": "InternalError: Algorithm must be one of [AES, RSA]"
+    },
+    "subtle/decrypt/string": {
+      "ok": false,
+      "error": "InternalError: Algorithm must be one of [AES, RSA]"
+    },
+    "subtle/encrypt/decrypt/options": {
+      "ok": false,
+      "error": "InternalError: Algorithm must be one of [AES, RSA]"
+    },
+    "subtle/generateKey/object": {
+      "ok": false,
+      "error": "InternalError: Algorithm must be one of [AES, ECDSA, RSA, HMAC]"
+    },
+    "subtle/generateKey/string": {
+      "ok": false,
+      "error": "InternalError: Algorithm must be one of [AES, ECDSA, RSA, HMAC]"
+    },
+    "subtle/deriveKey/object": {
+      "ok": false,
+      "error": "InternalError: class org.mozilla.javascript.NativeArray cannot be cast to class [B (org.mozilla.javascript.NativeArray is in unnamed module of loader org.apache.catalina.loader.ParallelWebappClassLoader @<hash>; [B is in module java.base of loader 'bootstrap')"
+    },
+    "subtle/deriveKey/string": {
+      "ok": false,
+      "error": "InternalError: Salt must be provided for PBKDF2."
+    }
+  }, {
+    gap: {
+      reason:
+        "utils.base64, utils.base64url, utils.types and utils.crypto are not mocked locally, so every probe records rhino-local's not-mocked error where AIC returns the value. Closing it means mocks for the tenant-independent members (encodings, byte conversion, UUID shape, getRandomValues, checkBcrypt).",
+      differs: ["base64/string/0","base64url/string/0","base64/string/1","base64url/string/1","base64/string/2","base64url/string/2","base64/encode/bytes","base64url/encode/bytes","base64/decodeToBytes","base64url/decodeToBytes","base64/invalid","base64url/invalid","types/roundtrip","crypto/randomUUID","crypto/getRandomValues","crypto/checkBcrypt/right","crypto/checkBcrypt/wrong","subtle/digest/SHA-256","subtle/sign/HMAC/options","subtle/sign/HMAC/string","subtle/verify/right","subtle/verify/tampered","subtle/encrypt/string","subtle/decrypt/string","subtle/encrypt/decrypt/options","subtle/generateKey/object","subtle/generateKey/string","subtle/deriveKey/object","subtle/deriveKey/string"],
+    },
+  }),
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-utils-subtle", "fixtures/binding-utils-subtle.script.js", {
+    "generateKey/string/AES": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "2",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26",
+          "27",
+          "28",
+          "29",
+          "3",
+          "30",
+          "31",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "length": 32
+      }
+    },
+    "generateKey/object/AES": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "2",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26",
+          "27",
+          "28",
+          "29",
+          "3",
+          "30",
+          "31",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "length": 32
+      }
+    },
+    "generateKey/string/HMAC": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "2",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26",
+          "27",
+          "28",
+          "29",
+          "3",
+          "30",
+          "31",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "length": 32
+      }
+    },
+    "generateKey/object/HMAC": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "2",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26",
+          "27",
+          "28",
+          "29",
+          "3",
+          "30",
+          "31",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "length": 32
+      }
+    },
+    "generateKey/string/RSA": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"privateKey\": [B@<hash>, \"publicKey\": [B@<hash> }",
+        "array": false,
+        "keys": [
+          "privateKey",
+          "publicKey"
+        ]
+      }
+    },
+    "generateKey/object/RSA": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"privateKey\": [B@<hash>, \"publicKey\": [B@<hash> }",
+        "array": false,
+        "keys": [
+          "privateKey",
+          "publicKey"
+        ]
+      }
+    },
+    "generateKey/string/ECDSA": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"privateKey\": [B@<hash>, \"publicKey\": [B@<hash> }",
+        "array": false,
+        "keys": [
+          "privateKey",
+          "publicKey"
+        ]
+      }
+    },
+    "generateKey/object/ECDSA": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"privateKey\": [B@<hash>, \"publicKey\": [B@<hash> }",
+        "array": false,
+        "keys": [
+          "privateKey",
+          "publicKey"
+        ]
+      }
+    },
+    "encrypt/decrypt/AES/string": {
+      "ok": true,
+      "value": {
+        "ciphertext": {
+          "type": "object",
+          "string": "[B@<hash>",
+          "array": false,
+          "keys": [
+            "0",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9"
+          ],
+          "length": 16
+        },
+        "plaintext": "abc"
+      }
+    },
+    "encrypt/decrypt/AES/object": {
+      "ok": true,
+      "value": {
+        "ciphertext": {
+          "type": "object",
+          "string": "[B@<hash>",
+          "array": false,
+          "keys": [
+            "0",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9"
+          ],
+          "length": 16
+        },
+        "plaintext": "abc"
+      }
+    },
+    "encrypt/AES/generatedKey": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "length": 16
+      }
+    },
+    "encrypt/RSA/generatedKey": {
+      "ok": false,
+      "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.crypto.subtle.ScriptSubtleService.encrypt(string,org.forgerock.openam.scripting.javascript.MapScriptWrapper,[B). (AIC Rhino Let Probe#94)"
+    },
+    "sign/HMAC/object/hash-string": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "2",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26",
+          "27",
+          "28",
+          "29",
+          "3",
+          "30",
+          "31",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "length": 32
+      }
+    },
+    "sign/HMAC/string/hex": {
+      "ok": true,
+      "value": "9c196e32dc0175f86f4b1cb89289d6619de6bee699e4c378e68309ed97a1a6ab"
+    },
+    "deriveKey/object/PBKDF2": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[B@<hash>",
+        "array": false,
+        "keys": [
+          "0",
+          "1",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "2",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26",
+          "27",
+          "28",
+          "29",
+          "3",
+          "30",
+          "31",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "length": 32
+      }
+    },
+    "deriveKey/string/PBKDF2": {
+      "ok": false,
+      "error": "InternalError: Salt must be provided for PBKDF2."
+    },
+    "encrypt/AES/hex-twice": {
+      "ok": true,
+      "value": [
+        "1d25821c3e311eea2d4dd8633a25c1b5",
+        "1d25821c3e311eea2d4dd8633a25c1b5"
+      ]
+    },
+    "deriveKey/object/PBKDF2/hex": {
+      "ok": true,
+      "value": "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+    },
+    "encrypt/decrypt/RSA/keyPair": {
+      "ok": true,
+      "value": {
+        "ciphertext": {
+          "type": "object",
+          "string": "[B@<hash>",
+          "array": false,
+          "keys": [
+            "0",
+            "1",
+            "10",
+            "100",
+            "101",
+            "102",
+            "103",
+            "104",
+            "105",
+            "106",
+            "107",
+            "108",
+            "109",
+            "11",
+            "110",
+            "111",
+            "112",
+            "113",
+            "114",
+            "115",
+            "116",
+            "117",
+            "118",
+            "119",
+            "12",
+            "120",
+            "121",
+            "122",
+            "123",
+            "124",
+            "125",
+            "126",
+            "127",
+            "128",
+            "129",
+            "13",
+            "130",
+            "131",
+            "132",
+            "133",
+            "134",
+            "135",
+            "136",
+            "137",
+            "138",
+            "139",
+            "14",
+            "140",
+            "141",
+            "142",
+            "143",
+            "144",
+            "145",
+            "146",
+            "147",
+            "148",
+            "149",
+            "15",
+            "150",
+            "151",
+            "152",
+            "153",
+            "154",
+            "155",
+            "156",
+            "157",
+            "158",
+            "159",
+            "16",
+            "160",
+            "161",
+            "162",
+            "163",
+            "164",
+            "165",
+            "166",
+            "167",
+            "168",
+            "169",
+            "17",
+            "170",
+            "171",
+            "172",
+            "173",
+            "174",
+            "175",
+            "176",
+            "177",
+            "178",
+            "179",
+            "18",
+            "180",
+            "181",
+            "182",
+            "183",
+            "184",
+            "185",
+            "186",
+            "187",
+            "188",
+            "189",
+            "19",
+            "190",
+            "191",
+            "192",
+            "193",
+            "194",
+            "195",
+            "196",
+            "197",
+            "198",
+            "199",
+            "2",
+            "20",
+            "200",
+            "201",
+            "202",
+            "203",
+            "204",
+            "205",
+            "206",
+            "207",
+            "208",
+            "209",
+            "21",
+            "210",
+            "211",
+            "212",
+            "213",
+            "214",
+            "215",
+            "216",
+            "217",
+            "218",
+            "219",
+            "22",
+            "220",
+            "221",
+            "222",
+            "223",
+            "224",
+            "225",
+            "226",
+            "227",
+            "228",
+            "229",
+            "23",
+            "230",
+            "231",
+            "232",
+            "233",
+            "234",
+            "235",
+            "236",
+            "237",
+            "238",
+            "239",
+            "24",
+            "240",
+            "241",
+            "242",
+            "243",
+            "244",
+            "245",
+            "246",
+            "247",
+            "248",
+            "249",
+            "25",
+            "250",
+            "251",
+            "252",
+            "253",
+            "254",
+            "255",
+            "26",
+            "27",
+            "28",
+            "29",
+            "3",
+            "30",
+            "31",
+            "32",
+            "33",
+            "34",
+            "35",
+            "36",
+            "37",
+            "38",
+            "39",
+            "4",
+            "40",
+            "41",
+            "42",
+            "43",
+            "44",
+            "45",
+            "46",
+            "47",
+            "48",
+            "49",
+            "5",
+            "50",
+            "51",
+            "52",
+            "53",
+            "54",
+            "55",
+            "56",
+            "57",
+            "58",
+            "59",
+            "6",
+            "60",
+            "61",
+            "62",
+            "63",
+            "64",
+            "65",
+            "66",
+            "67",
+            "68",
+            "69",
+            "7",
+            "70",
+            "71",
+            "72",
+            "73",
+            "74",
+            "75",
+            "76",
+            "77",
+            "78",
+            "79",
+            "8",
+            "80",
+            "81",
+            "82",
+            "83",
+            "84",
+            "85",
+            "86",
+            "87",
+            "88",
+            "89",
+            "9",
+            "90",
+            "91",
+            "92",
+            "93",
+            "94",
+            "95",
+            "96",
+            "97",
+            "98",
+            "99"
+          ],
+          "length": 256
+        },
+        "plaintext": "abc"
+      }
+    },
+    "sign/verify/ECDSA/keyPair": {
+      "ok": true,
+      "value": {
+        "signature": {
+          "type": "object",
+          "string": "[B@<hash>",
+          "array": false,
+          "keys": [
+            "0",
+            "1",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "2",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "3",
+            "30",
+            "31",
+            "32",
+            "33",
+            "34",
+            "35",
+            "36",
+            "37",
+            "38",
+            "39",
+            "4",
+            "40",
+            "41",
+            "42",
+            "43",
+            "44",
+            "45",
+            "46",
+            "47",
+            "48",
+            "49",
+            "5",
+            "50",
+            "51",
+            "52",
+            "53",
+            "54",
+            "55",
+            "56",
+            "57",
+            "58",
+            "59",
+            "6",
+            "60",
+            "61",
+            "62",
+            "63",
+            "7",
+            "8",
+            "9"
+          ],
+          "length": 64
+        },
+        "verify": true
+      }
+    }
+  }, {
+    gap: {
+      reason:
+        "utils.crypto.subtle is not mocked locally, so every probe records rhino-local's not-mocked error where AIC computes digests, HMAC, AES-128-ECB, PBKDF2 and RSA/ECDSA key pairs, or rejects an algorithm name with its own message.",
+      differs: ["generateKey/string/AES","generateKey/object/AES","generateKey/string/HMAC","generateKey/object/HMAC","generateKey/string/RSA","generateKey/object/RSA","generateKey/string/ECDSA","generateKey/object/ECDSA","encrypt/decrypt/AES/string","encrypt/decrypt/AES/object","encrypt/AES/generatedKey","encrypt/RSA/generatedKey","sign/HMAC/object/hash-string","sign/HMAC/string/hex","deriveKey/object/PBKDF2","deriveKey/string/PBKDF2","encrypt/AES/hex-twice","deriveKey/object/PBKDF2/hex","encrypt/decrypt/RSA/keyPair","sign/verify/ECDSA/keyPair"],
+    },
+  }),
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-action", "fixtures/binding-action.script.js", {
+    "withIdentifiedUser/1": {
+      "ok": true
+    },
+    "withIdentifiedAgent/1": {
+      "ok": true
+    },
+    "withHeader/1": {
+      "ok": true
+    },
+    "withMaxSessionTime/1": {
+      "ok": true
+    },
+    "withMaxIdleTime/1": {
+      "ok": true
+    },
+    "putSessionProperty/2": {
+      "ok": true
+    },
+    "withDescription/1": {
+      "ok": true
+    },
+    "withStage/1": {
+      "ok": true
+    },
+    "withErrorMessage/1": {
+      "ok": true
+    },
+    "withLockoutMessage/1": {
+      "ok": true
+    },
+    "removeSessionProperty/1": {
+      "ok": true
+    },
+    "withMaxSessionTime/bad": {
+      "ok": false,
+      "error": "InternalError: Cannot convert x to java.lang.Integer (AIC Rhino Let Probe#96)"
+    }
+  }, {
+    gap: {
+      reason:
+        "withMaxSessionTime(\"x\") returns the wrapper locally; AIC throws \"Cannot convert x to java.lang.Integer\".",
+      differs: ["withMaxSessionTime/bad"],
+    },
+  }),
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-services", "fixtures/binding-services.script.js", {
+    "logger.getName": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "scripts.AUTHENTICATION_TREE_DECISION_NODE.<scriptId>.(AIC Rhino Let Probe)",
+        "array": false,
+        "length": 74
+      }
+    },
+    "logger.isTraceEnabled": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "array": false
+      }
+    },
+    "logger.isDebugEnabled": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "array": false
+      }
+    },
+    "logger.isErrorEnabled": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "array": false
+      }
+    },
+    "logger.isInfoEnabled": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "array": false
+      }
+    },
+    "logger.isWarnEnabled": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "array": false
+      }
+    },
+    "logger.trace": {
+      "ok": true,
+      "value": {
+        "type": "undefined",
+        "string": "undefined",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-1": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "null",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-2": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "default-two",
+        "array": false,
+        "length": 11
+      }
+    },
+    "systemEnv.getProperty-3-string": {
+      "ok": false,
+      "error": "InternalError: Unsupported return type: java.lang.Integer"
+    },
+    "systemEnv.getProperty-3-class": {
+      "ok": false,
+      "error": "InternalError: Java class \"java.lang.Integer\" has no public instance field or method named \"class\". (AIC Rhino Let Probe#96)"
+    },
+    "systemEnv.getProperty-3-rhino-class-object": {
+      "ok": false,
+      "error": "InternalError: Property resolution failed"
+    },
+    "secrets.getGenericSecret": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.api.secrets.ScriptedSecretsException: Secret id rl-probe-absent not accessible"
+    },
+    "secrets.getDecryptionKey": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.api.secrets.ScriptedSecretsException: Secret id rl-probe-absent not accessible"
+    },
+    "secrets.getEncryptionKey": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.api.secrets.ScriptedSecretsException: Secret id rl-probe-absent not accessible"
+    },
+    "secrets.getSigningKey": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.api.secrets.ScriptedSecretsException: Secret id rl-probe-absent not accessible"
+    },
+    "secrets.getVerificationKey": {
+      "ok": false,
+      "error": "JavaException: org.forgerock.openam.scripting.api.secrets.ScriptedSecretsException: Secret id rl-probe-absent not accessible"
+    },
+    "cacheManager.named": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "null",
+        "array": false
+      }
+    },
+    "cacheManager.exists": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "array": false
+      }
+    },
+    "journey.name": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "AIC-Rhino-Let-Probe",
+        "array": false,
+        "length": 19
+      }
+    },
+    "journey.innerJourney": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "array": false
+      }
+    },
+    "journey.mustRun": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "array": false
+      }
+    },
+    "journey.identityResource": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "managed/alpha_user",
+        "array": false,
+        "length": 18
+      }
+    },
+    "samlApplication.getApplicationId": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getApplicationId\" of null"
+    },
+    "samlApplication.getAuthnRequest": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getAuthnRequest\" of null"
+    },
+    "samlApplication.getIdpAttributes": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getIdpAttributes\" of null"
+    },
+    "samlApplication.getSpAttributes": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getSpAttributes\" of null"
+    },
+    "samlApplication.getFlowInitiator": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getFlowInitiator\" of null"
+    },
+    "samlApplication.getAssertion": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getAssertion\" of null"
+    },
+    "oauthApplication.getRequestProperties": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getRequestProperties\" of null"
+    },
+    "oauthApplication.getApplicationId": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getApplicationId\" of null"
+    },
+    "oauthApplication.getClientProperties": {
+      "ok": false,
+      "error": "TypeError: Cannot call method \"getClientProperties\" of null"
+    },
+    "jwtAssertion.generateJwt": {
+      "ok": false,
+      "error": "InternalError: Cannot invoke \"java.util.Map.get(Object)\" because \"jwtData\" is null"
+    },
+    "jwtValidator.validateJwtClaims": {
+      "ok": false,
+      "error": "InternalError: Can't find method org.forgerock.openam.scripting.bindings.JwtValidatorScriptWrapper.validateJwtClaims(string). (AIC Rhino Let Probe#219)"
+    },
+    "policy.evaluate": {
+      "ok": false,
+      "error": "InternalError: Invalid value subject"
+    },
+    "policy.evaluateTree": {
+      "ok": false,
+      "error": "InternalError: Invalid value subject"
+    },
+    "idRepository.getIdentity": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper@<hash>",
+        "array": false,
+        "keys": [
+          "addAttribute",
+          "attribute",
+          "attributeValues",
+          "class",
+          "equals",
+          "exists",
+          "getAttributeValues",
+          "getClass",
+          "getName",
+          "getUniversalId",
+          "hashCode",
+          "name",
+          "notify",
+          "notifyAll",
+          "setAttribute",
+          "store",
+          "toString",
+          "universalId",
+          "wait"
+        ]
+      }
+    },
+    "samlApplication/typeof-enumeration": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "keys": "TypeError: Expected argument of type object, but instead had type object"
+      }
+    },
+    "oauthApplication/typeof-enumeration": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "keys": "TypeError: Expected argument of type object, but instead had type object"
+      }
+    },
+    "emailService/typeof-enumeration": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "keys": [
+          "class",
+          "equals",
+          "getClass",
+          "hashCode",
+          "notify",
+          "notifyAll",
+          "send",
+          "toString",
+          "wait"
+        ]
+      }
+    },
+    "realm": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "/alpha",
+        "array": false,
+        "length": 6
+      }
+    },
+    "scriptName": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "AIC Rhino Let Probe",
+        "array": false,
+        "length": 19
+      }
+    },
+    "cookieName": {
+      "ok": true,
+      "value": "string"
+    },
+    "resumedFromSuspend": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "array": false
+      }
+    },
+    "locales": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "org.forgerock.openam.auth.nodes.script.ScriptedLocalizedMessageImpl@<hash>",
+        "array": false,
+        "keys": [
+          "class",
+          "equals",
+          "getClass",
+          "getLocalizedMessage",
+          "hashCode",
+          "localizedMessage",
+          "notify",
+          "notifyAll",
+          "toString",
+          "wait"
+        ]
+      }
+    },
+    "systemEnv.getProperty-3/string": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "42",
+        "array": false,
+        "length": 2
+      }
+    },
+    "systemEnv.getProperty-3/number": {
+      "ok": true,
+      "value": {
+        "type": "number",
+        "string": "42",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-3/boolean": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "false",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-3/object": {
+      "ok": false,
+      "error": "InternalError: Property resolution failed"
+    },
+    "systemEnv.getProperty-3/array": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[42]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      }
+    },
+    "systemEnv.getProperty-3/list": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[42]",
+        "array": false,
+        "keys": [
+          "0"
+        ],
+        "length": 1,
+        "size": 1
+      }
+    },
+    "systemEnv.getProperty-3/map": {
+      "ok": false,
+      "error": "InternalError: Property resolution failed"
+    },
+    "systemEnv.getProperty-3/java.lang.String": {
+      "ok": false,
+      "error": "InternalError: Unsupported return type: java.lang.String"
+    },
+    "systemEnv.getProperty-3/java.lang.Boolean": {
+      "ok": false,
+      "error": "InternalError: Unsupported return type: java.lang.Boolean"
+    },
+    "systemEnv.getProperty-3/java.util.List": {
+      "ok": false,
+      "error": "InternalError: Unsupported return type: java.util.List"
+    },
+    "systemEnv.getProperty-3/class/Integer": {
+      "ok": true,
+      "value": {
+        "type": "number",
+        "string": "42",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-3/class/String": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "42",
+        "array": false,
+        "length": 2
+      }
+    },
+    "systemEnv.getProperty-3/class/Boolean": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-3/class/Double": {
+      "ok": true,
+      "value": {
+        "type": "number",
+        "string": "4.5",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-3/object/json": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"a\": 1 }",
+        "array": false,
+        "keys": [
+          "a"
+        ],
+        "size": 1
+      }
+    },
+    "systemEnv.getProperty-3/map/json": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "{ \"a\": 1 }",
+        "array": false,
+        "keys": [
+          "a"
+        ],
+        "size": 1
+      }
+    },
+    "systemEnv.getProperty-3/array/json": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[[\"a\", \"b\"]]",
+        "array": false,
+        "keys": [
+          "0",
+          "1"
+        ],
+        "length": 2,
+        "size": 2
+      }
+    },
+    "systemEnv.getProperty-3/array/csv": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[a, b]",
+        "array": false,
+        "keys": [
+          "0",
+          "1"
+        ],
+        "length": 2,
+        "size": 2
+      }
+    },
+    "systemEnv.getProperty-3/list/csv-spaced": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "[a,  b]",
+        "array": false,
+        "keys": [
+          "0",
+          "1"
+        ],
+        "length": 2,
+        "size": 2
+      }
+    },
+    "systemEnv.getProperty-3/number/4.5": {
+      "ok": true,
+      "value": {
+        "type": "number",
+        "string": "4.5",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-3/number/not-a-number": {
+      "ok": false,
+      "error": "InternalError: Property resolution failed"
+    },
+    "systemEnv.getProperty-3/boolean/TRUE": {
+      "ok": true,
+      "value": {
+        "type": "boolean",
+        "string": "true",
+        "array": false
+      }
+    },
+    "systemEnv.getProperty-3/String": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "42",
+        "array": false,
+        "length": 2
+      }
+    },
+    "systemEnv.getProperty-3/int": {
+      "ok": false,
+      "error": "InternalError: Unsupported return type: int"
+    },
+    "systemEnv.getProperty-3/integer": {
+      "ok": true,
+      "value": {
+        "type": "number",
+        "string": "42",
+        "array": false
+      }
+    },
+    "jwtAssertion.generateJwt/empty": {
+      "ok": true,
+      "value": {
+        "type": "object",
+        "string": "null",
+        "array": false
+      }
+    },
+    "jwtAssertion.generateJwt/HS256": {
+      "ok": false,
+      "error": "InternalError: Missing argument"
+    },
+    "jwtAssertion.generateJwt/HS256/string-key": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "string/3 parts",
+        "array": false,
+        "length": 14
+      }
+    },
+    "jwtValidator.validateJwtClaims/empty": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "null",
+        "array": false,
+        "length": 4
+      }
+    },
+    "jwtValidator.validateJwtClaims/HS256": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "{\"keys\":[\"audience\",\"expirationTime\",\"issuedAt\",\"issuer\",\"jwtId\",\"subject\",\"type\"],\"issuer\":\"https://example.com\",\"subject\":\"probe\",\"audience\":[\"https://example.com\"],\"type\":\"JWT\"}",
+        "array": false,
+        "length": 180
+      }
+    },
+    "policy.evaluate/claims/oauth2Scopes": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "[{\"resourceName\":\"https://example.com/\",\"attributes\":{},\"advices\":{},\"actions\":{}}]",
+        "array": false,
+        "length": 83
+      }
+    },
+    "policy.evaluateTree/claims/oauth2Scopes": {
+      "ok": true,
+      "value": {
+        "type": "string",
+        "string": "[{\"resourceName\":\"https://example.com/\",\"attributes\":{},\"advices\":{},\"actions\":{}}]",
+        "array": false,
+        "length": 83
+      }
+    },
+    "policy.evaluate/ssoToken": {
+      "ok": false,
+      "error": "InternalError: Invalid value subject"
+    },
+    "policy.evaluate/jwt": {
+      "ok": false,
+      "error": "InternalError: Invalid value subject"
+    },
+    "policy.evaluate/claims": {
+      "ok": false,
+      "error": "InternalError: Unable to retrieve application under realm /alpha."
+    }
+  }, {
+    gap: {
+      reason:
+        "Mostly not mocked locally: logger's level queries and getName, every systemEnv.getProperty overload but the one-argument form, secrets, cacheManager, journey, samlApplication/oauthApplication, jwtAssertion/jwtValidator, policy and emailService enumeration throw rhino-local's not-mocked error or return a JS-object shape. Several are tenant state (journey values, policy sets, a null application binding) and are expected to stay gaps.",
+      differs: ["logger.getName","logger.isTraceEnabled","systemEnv.getProperty-1","systemEnv.getProperty-2","systemEnv.getProperty-3-string","systemEnv.getProperty-3-rhino-class-object","secrets.getGenericSecret","secrets.getDecryptionKey","secrets.getEncryptionKey","secrets.getSigningKey","secrets.getVerificationKey","cacheManager.named","cacheManager.exists","journey.name","journey.innerJourney","journey.mustRun","journey.identityResource","samlApplication.getApplicationId","samlApplication.getAuthnRequest","samlApplication.getIdpAttributes","samlApplication.getSpAttributes","samlApplication.getFlowInitiator","samlApplication.getAssertion","oauthApplication.getRequestProperties","oauthApplication.getApplicationId","oauthApplication.getClientProperties","jwtAssertion.generateJwt","jwtValidator.validateJwtClaims","policy.evaluate","policy.evaluateTree","idRepository.getIdentity","samlApplication/typeof-enumeration","oauthApplication/typeof-enumeration","emailService/typeof-enumeration","realm","scriptName","locales","systemEnv.getProperty-3/string","systemEnv.getProperty-3/number","systemEnv.getProperty-3/boolean","systemEnv.getProperty-3/object","systemEnv.getProperty-3/array","systemEnv.getProperty-3/list","systemEnv.getProperty-3/map","systemEnv.getProperty-3/java.lang.String","systemEnv.getProperty-3/java.lang.Boolean","systemEnv.getProperty-3/java.util.List","systemEnv.getProperty-3/class/Integer","systemEnv.getProperty-3/class/String","systemEnv.getProperty-3/class/Boolean","systemEnv.getProperty-3/class/Double","systemEnv.getProperty-3/object/json","systemEnv.getProperty-3/map/json","systemEnv.getProperty-3/array/json","systemEnv.getProperty-3/array/csv","systemEnv.getProperty-3/list/csv-spaced","systemEnv.getProperty-3/number/4.5","systemEnv.getProperty-3/number/not-a-number","systemEnv.getProperty-3/boolean/TRUE","systemEnv.getProperty-3/String","systemEnv.getProperty-3/int","systemEnv.getProperty-3/integer","jwtAssertion.generateJwt/empty","jwtAssertion.generateJwt/HS256","jwtAssertion.generateJwt/HS256/string-key","jwtValidator.validateJwtClaims/empty","jwtValidator.validateJwtClaims/HS256","policy.evaluate/claims/oauth2Scopes","policy.evaluateTree/claims/oauth2Scopes","policy.evaluate/ssoToken","policy.evaluate/jwt","policy.evaluate/claims"],
+    },
+  }),
+  // Live payload, verbatim (probe run 2026-09-29).
+  ng("binding-createuser", "fixtures/binding-createuser.script.js", {
+    "createUser/2": {
+      "ok": false,
+      "error": "InternalError: User creation through identity repository is not allowed in this environment"
+    },
+    "createUser/3": {
+      "ok": false,
+      "error": "InternalError: class java.lang.String cannot be cast to class java.util.Collection (java.lang.String and java.util.Collection are in module java.base of loader 'bootstrap')"
+    },
+    "createUser/3/arrays": {
+      "ok": false,
+      "error": "InternalError: User creation through identity repository is not allowed in this environment"
+    },
+    "createUser/duplicate": {
+      "ok": false,
+      "error": "InternalError: User creation through identity repository is not allowed in this environment"
+    }
+  }, {
+    gap: {
+      reason:
+        "idRepository.createUser is not mocked locally; this AIC environment refuses it (\"User creation through identity repository is not allowed in this environment\") after a ClassCastException for non-array attribute values.",
+      differs: ["createUser/2","createUser/3","createUser/3/arrays","createUser/duplicate"],
+    },
+  }),
 ];
 
 export const runnableCases = realCases.filter(
