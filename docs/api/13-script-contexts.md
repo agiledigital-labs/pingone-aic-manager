@@ -59,9 +59,13 @@ upgraded** — but can't help legacy-only contexts yet.
 
 Next-gen (binding metadata captured under `docs/api/bindings/`):
 
+`SCRIPTED_DECISION_NODE` was re-exported on 2026-09-29 (25 → 27 bindings; the
+delta is in `12-script-bindings-matrix.md`, open question 4). The other rows are
+still the 2026-06-04 captures.
+
 | Context                                   | bindings | artifact                              |
 | ----------------------------------------- | -------- | ------------------------------------- |
-| `SCRIPTED_DECISION_NODE`                  | 25       | `scripted-decision-next.json`         |
+| `SCRIPTED_DECISION_NODE`                  | 27       | `scripted-decision-next.json`         |
 | `DEVICE_MATCH_NODE`                       | 25       | `device-match-next.json`              |
 | `OIDC_CLAIMS_NEXT_GEN`                    | 18       | `oidc-claims-next.json`               |
 | `SOCIAL_PROVIDER_HANDLER_NODE`            | 17       | `social-provider-handler-next.json`   |

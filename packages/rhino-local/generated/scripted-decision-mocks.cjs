@@ -64,9 +64,6 @@ function __rhinoLocalNotMocked(binding, method, args, signatures) {
 }
 
 var samlApplication = {
-  getAssertion: function () {
-    __rhinoLocalNotMocked("samlApplication", "getAssertion", arguments, [{ arity: 0, types: [], label: "getAssertion()" }]);
-  },
   getApplicationId: function () {
     __rhinoLocalNotMocked("samlApplication", "getApplicationId", arguments, [{ arity: 0, types: [], label: "getApplicationId()" }]);
   },
@@ -81,6 +78,9 @@ var samlApplication = {
   },
   getFlowInitiator: function () {
     __rhinoLocalNotMocked("samlApplication", "getFlowInitiator", arguments, [{ arity: 0, types: [], label: "getFlowInitiator()" }]);
+  },
+  getAssertion: function () {
+    __rhinoLocalNotMocked("samlApplication", "getAssertion", arguments, [{ arity: 0, types: [], label: "getAssertion()" }]);
   },
 };
 
@@ -154,6 +154,12 @@ var callbacks = {
   isEmpty: function () {
     __rhinoLocalNotMocked("callbacks", "isEmpty", arguments, [{ arity: 0, types: [], label: "isEmpty()" }]);
   },
+  getStringAttributeInputCallbacks: function () {
+    __rhinoLocalNotMocked("callbacks", "getStringAttributeInputCallbacks", arguments, [{ arity: 0, types: [], label: "getStringAttributeInputCallbacks()" }]);
+  },
+  getChoiceCallbacks: function () {
+    __rhinoLocalNotMocked("callbacks", "getChoiceCallbacks", arguments, [{ arity: 0, types: [], label: "getChoiceCallbacks()" }]);
+  },
   getNameCallbacks: function () {
     __rhinoLocalNotMocked("callbacks", "getNameCallbacks", arguments, [{ arity: 0, types: [], label: "getNameCallbacks()" }]);
   },
@@ -163,23 +169,8 @@ var callbacks = {
   getHiddenValueCallbacks: function () {
     __rhinoLocalNotMocked("callbacks", "getHiddenValueCallbacks", arguments, [{ arity: 0, types: [], label: "getHiddenValueCallbacks()" }]);
   },
-  getDeviceProfileCallbacks: function () {
-    __rhinoLocalNotMocked("callbacks", "getDeviceProfileCallbacks", arguments, [{ arity: 0, types: [], label: "getDeviceProfileCallbacks()" }]);
-  },
-  getKbaCreateCallbacks: function () {
-    __rhinoLocalNotMocked("callbacks", "getKbaCreateCallbacks", arguments, [{ arity: 0, types: [], label: "getKbaCreateCallbacks()" }]);
-  },
-  getSelectIdPCallbacks: function () {
-    __rhinoLocalNotMocked("callbacks", "getSelectIdPCallbacks", arguments, [{ arity: 0, types: [], label: "getSelectIdPCallbacks()" }]);
-  },
-  getTermsAndConditionsCallbacks: function () {
-    __rhinoLocalNotMocked("callbacks", "getTermsAndConditionsCallbacks", arguments, [{ arity: 0, types: [], label: "getTermsAndConditionsCallbacks()" }]);
-  },
   getTextInputCallbacks: function () {
     __rhinoLocalNotMocked("callbacks", "getTextInputCallbacks", arguments, [{ arity: 0, types: [], label: "getTextInputCallbacks()" }]);
-  },
-  getStringAttributeInputCallbacks: function () {
-    __rhinoLocalNotMocked("callbacks", "getStringAttributeInputCallbacks", arguments, [{ arity: 0, types: [], label: "getStringAttributeInputCallbacks()" }]);
   },
   getNumberAttributeInputCallbacks: function () {
     __rhinoLocalNotMocked("callbacks", "getNumberAttributeInputCallbacks", arguments, [{ arity: 0, types: [], label: "getNumberAttributeInputCallbacks()" }]);
@@ -211,12 +202,27 @@ var callbacks = {
   getConsentMappingCallbacks: function () {
     __rhinoLocalNotMocked("callbacks", "getConsentMappingCallbacks", arguments, [{ arity: 0, types: [], label: "getConsentMappingCallbacks()" }]);
   },
-  getChoiceCallbacks: function () {
-    __rhinoLocalNotMocked("callbacks", "getChoiceCallbacks", arguments, [{ arity: 0, types: [], label: "getChoiceCallbacks()" }]);
+  getDeviceProfileCallbacks: function () {
+    __rhinoLocalNotMocked("callbacks", "getDeviceProfileCallbacks", arguments, [{ arity: 0, types: [], label: "getDeviceProfileCallbacks()" }]);
+  },
+  getKbaCreateCallbacks: function () {
+    __rhinoLocalNotMocked("callbacks", "getKbaCreateCallbacks", arguments, [{ arity: 0, types: [], label: "getKbaCreateCallbacks()" }]);
+  },
+  getSelectIdPCallbacks: function () {
+    __rhinoLocalNotMocked("callbacks", "getSelectIdPCallbacks", arguments, [{ arity: 0, types: [], label: "getSelectIdPCallbacks()" }]);
+  },
+  getTermsAndConditionsCallbacks: function () {
+    __rhinoLocalNotMocked("callbacks", "getTermsAndConditionsCallbacks", arguments, [{ arity: 0, types: [], label: "getTermsAndConditionsCallbacks()" }]);
   },
 };
 
 var idRepository = {
+  createUser: function () {
+    __rhinoLocalNotMocked("idRepository", "createUser", arguments, [
+      { arity: 2, types: ["string","string"], label: "createUser(userName: string, password: string)" },
+      { arity: 3, types: ["string","string","object"], label: "createUser(userName: string, password: string, attributes: object)" },
+    ]);
+  },
   getIdentity: function () {
     __rhinoLocalNotMocked("idRepository", "getIdentity", arguments, [{ arity: 1, types: ["string"], label: "getIdentity(userName: string)" }]);
   },
@@ -236,6 +242,9 @@ var utils = {
     getRandomValues: function () {
       __rhinoLocalNotMocked("utils.crypto", "getRandomValues", arguments, [{ arity: 1, types: ["array"], label: "getRandomValues(array: array)" }]);
     },
+    checkBcrypt: function () {
+      __rhinoLocalNotMocked("utils.crypto", "checkBcrypt", arguments, [{ arity: 2, types: ["string","string"], label: "checkBcrypt(bcryptString: string, password: string)" }]);
+    },
     subtle: {
       sign: function () {
         __rhinoLocalNotMocked("utils.crypto.subtle", "sign", arguments, [
@@ -252,16 +261,16 @@ var utils = {
           { arity: 4, types: ["object","array","array","array"], label: "verify(algorithmOptions: object, key: array, data: array, signature: array)" },
         ]);
       },
-      decrypt: function () {
-        __rhinoLocalNotMocked("utils.crypto.subtle", "decrypt", arguments, [
-          { arity: 3, types: ["string","array","array"], label: "decrypt(algorithm: string, key: array, data: array)" },
-          { arity: 3, types: ["object","array","array"], label: "decrypt(algorithmOptions: object, key: array, data: array)" },
-        ]);
-      },
       encrypt: function () {
         __rhinoLocalNotMocked("utils.crypto.subtle", "encrypt", arguments, [
           { arity: 3, types: ["string","array","array"], label: "encrypt(algorithm: string, key: array, data: array)" },
           { arity: 3, types: ["object","array","array"], label: "encrypt(algorithmOptions: object, key: array, data: array)" },
+        ]);
+      },
+      decrypt: function () {
+        __rhinoLocalNotMocked("utils.crypto.subtle", "decrypt", arguments, [
+          { arity: 3, types: ["string","array","array"], label: "decrypt(algorithm: string, key: array, data: array)" },
+          { arity: 3, types: ["object","array","array"], label: "decrypt(algorithmOptions: object, key: array, data: array)" },
         ]);
       },
       generateKey: function () {
@@ -340,22 +349,28 @@ var action = {
   },
   suspend: function () {
     __rhinoLocalNotMocked("action", "suspend", arguments, [
-      { arity: 3, types: ["string","object","number"], label: "suspend(callbackTextFormat: string, additionalLogic: object, maximumSuspendDuration: number)" },
       { arity: 1, types: ["string"], label: "suspend(callbackTextFormat: string)" },
+      { arity: 3, types: ["string","object","number"], label: "suspend(callbackTextFormat: string, additionalLogic: object, maximumSuspendDuration: number)" },
       { arity: 2, types: ["string","object"], label: "suspend(callbackTextFormat: string, additionalLogic: object)" },
     ]);
   },
   withHeader: function () {
     __rhinoLocalNotMocked("action", "withHeader", arguments, [{ arity: 1, types: ["string"], label: "withHeader(header: string)" }]);
   },
-  withStage: function () {
-    __rhinoLocalNotMocked("action", "withStage", arguments, [{ arity: 1, types: ["string"], label: "withStage(stage: string)" }]);
+  withMaxSessionTime: function () {
+    __rhinoLocalNotMocked("action", "withMaxSessionTime", arguments, [{ arity: 1, types: ["number"], label: "withMaxSessionTime(maxSessionTime: number)" }]);
+  },
+  withMaxIdleTime: function () {
+    __rhinoLocalNotMocked("action", "withMaxIdleTime", arguments, [{ arity: 1, types: ["number"], label: "withMaxIdleTime(maxIdleTime: number)" }]);
   },
   putSessionProperty: function () {
     __rhinoLocalNotMocked("action", "putSessionProperty", arguments, [{ arity: 2, types: ["string","string"], label: "putSessionProperty(key: string, value: string)" }]);
   },
   withDescription: function () {
     __rhinoLocalNotMocked("action", "withDescription", arguments, [{ arity: 1, types: ["string"], label: "withDescription(description: string)" }]);
+  },
+  withStage: function () {
+    __rhinoLocalNotMocked("action", "withStage", arguments, [{ arity: 1, types: ["string"], label: "withStage(stage: string)" }]);
   },
   withErrorMessage: function () {
     __rhinoLocalNotMocked("action", "withErrorMessage", arguments, [{ arity: 1, types: ["string"], label: "withErrorMessage(errorMessage: string)" }]);
@@ -366,15 +381,12 @@ var action = {
   removeSessionProperty: function () {
     __rhinoLocalNotMocked("action", "removeSessionProperty", arguments, [{ arity: 1, types: ["string"], label: "removeSessionProperty(key: string)" }]);
   },
-  withMaxSessionTime: function () {
-    __rhinoLocalNotMocked("action", "withMaxSessionTime", arguments, [{ arity: 1, types: ["number"], label: "withMaxSessionTime(maxSessionTime: number)" }]);
-  },
-  withMaxIdleTime: function () {
-    __rhinoLocalNotMocked("action", "withMaxIdleTime", arguments, [{ arity: 1, types: ["number"], label: "withMaxIdleTime(maxIdleTime: number)" }]);
-  },
 };
 
 var callbacksBuilder = {
+  radioChoiceCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "radioChoiceCallback", arguments, [{ arity: 3, types: ["string","array","number"], label: "radioChoiceCallback(prompt: string, choices: array, defaultChoice: number)" }]);
+  },
   suspendedTextOutputCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "suspendedTextOutputCallback", arguments, [{ arity: 2, types: ["number","string"], label: "suspendedTextOutputCallback(messageType: number, message: string)" }]);
   },
@@ -387,6 +399,33 @@ var callbacksBuilder = {
   scriptTextOutputCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "scriptTextOutputCallback", arguments, [{ arity: 1, types: ["string"], label: "scriptTextOutputCallback(message: string)" }]);
   },
+  metadataCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "metadataCallback", arguments, [{ arity: 1, types: ["object"], label: "metadataCallback(outputValue: object)" }]);
+  },
+  stringAttributeInputCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "stringAttributeInputCallback", arguments, [
+      { arity: 5, types: ["string","string","string","boolean","array"], label: "stringAttributeInputCallback(name: string, prompt: string, value: string, required: boolean, failedPolicies: array)" },
+      { arity: 6, types: ["string","string","string","boolean","object","boolean"], label: "stringAttributeInputCallback(name: string, prompt: string, value: string, required: boolean, policies: object, validateOnly: boolean)" },
+      { arity: 4, types: ["string","string","string","boolean"], label: "stringAttributeInputCallback(name: string, prompt: string, value: string, required: boolean)" },
+      { arity: 7, types: ["string","string","string","boolean","object","boolean","array"], label: "stringAttributeInputCallback(name: string, prompt: string, value: string, required: boolean, policies: object, validateOnly: boolean, failedPolicies: array)" },
+    ]);
+  },
+  numberAttributeInputCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "numberAttributeInputCallback", arguments, [
+      { arity: 6, types: ["string","string","number","boolean","object","boolean"], label: "numberAttributeInputCallback(name: string, prompt: string, value: number, required: boolean, policies: object, validateOnly: boolean)" },
+      { arity: 5, types: ["string","string","number","boolean","array"], label: "numberAttributeInputCallback(name: string, prompt: string, value: number, required: boolean, failedPolicies: array)" },
+      { arity: 4, types: ["string","string","number","boolean"], label: "numberAttributeInputCallback(name: string, prompt: string, value: number, required: boolean)" },
+      { arity: 7, types: ["string","string","number","boolean","object","boolean","array"], label: "numberAttributeInputCallback(name: string, prompt: string, value: number, required: boolean, policies: object, validateOnly: boolean, failedPolicies: array)" },
+    ]);
+  },
+  booleanAttributeInputCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "booleanAttributeInputCallback", arguments, [
+      { arity: 5, types: ["string","string","boolean","boolean","array"], label: "booleanAttributeInputCallback(name: string, prompt: string, value: boolean, required: boolean, failedPolicies: array)" },
+      { arity: 7, types: ["string","string","boolean","boolean","object","boolean","array"], label: "booleanAttributeInputCallback(name: string, prompt: string, value: boolean, required: boolean, policies: object, validateOnly: boolean, failedPolicies: array)" },
+      { arity: 4, types: ["string","string","boolean","boolean"], label: "booleanAttributeInputCallback(name: string, prompt: string, value: boolean, required: boolean)" },
+      { arity: 6, types: ["string","string","boolean","boolean","object","boolean"], label: "booleanAttributeInputCallback(name: string, prompt: string, value: boolean, required: boolean, policies: object, validateOnly: boolean)" },
+    ]);
+  },
   languageCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "languageCallback", arguments, [{ arity: 2, types: ["string","string"], label: "languageCallback(language: string, country: string)" }]);
   },
@@ -398,15 +437,15 @@ var callbacksBuilder = {
   },
   httpCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "httpCallback", arguments, [
-      { arity: 4, types: ["string","string","string","number"], label: "httpCallback(authRHeader: string, negoName: string, negoValue: string, errorCode: number)" },
       { arity: 3, types: ["string","string","string"], label: "httpCallback(authorizationHeader: string, negotiationHeader: string, errorCode: string)" },
+      { arity: 4, types: ["string","string","string","number"], label: "httpCallback(authRHeader: string, negoName: string, negoValue: string, errorCode: number)" },
     ]);
   },
   x509CertificateCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "x509CertificateCallback", arguments, [
-      { arity: 3, types: ["string","object","boolean"], label: "x509CertificateCallback(prompt: string, certificate: object, requestSignature: boolean)" },
       { arity: 2, types: ["string","object"], label: "x509CertificateCallback(prompt: string, certificate: object)" },
       { arity: 1, types: ["string"], label: "x509CertificateCallback(prompt: string)" },
+      { arity: 3, types: ["string","object","boolean"], label: "x509CertificateCallback(prompt: string, certificate: object, requestSignature: boolean)" },
     ]);
   },
   consentMappingCallback: function () {
@@ -427,60 +466,11 @@ var callbacksBuilder = {
   termsAndConditionsCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "termsAndConditionsCallback", arguments, [{ arity: 3, types: ["string","string","string"], label: "termsAndConditionsCallback(version: string, terms: string, createDate: string)" }]);
   },
-  metadataCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "metadataCallback", arguments, [{ arity: 1, types: ["object"], label: "metadataCallback(outputValue: object)" }]);
-  },
-  stringAttributeInputCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "stringAttributeInputCallback", arguments, [
-      { arity: 7, types: ["string","string","string","boolean","object","boolean","array"], label: "stringAttributeInputCallback(name: string, prompt: string, value: string, required: boolean, policies: object, validateOnly: boolean, failedPolicies: array)" },
-      { arity: 4, types: ["string","string","string","boolean"], label: "stringAttributeInputCallback(name: string, prompt: string, value: string, required: boolean)" },
-      { arity: 5, types: ["string","string","string","boolean","array"], label: "stringAttributeInputCallback(name: string, prompt: string, value: string, required: boolean, failedPolicies: array)" },
-      { arity: 6, types: ["string","string","string","boolean","object","boolean"], label: "stringAttributeInputCallback(name: string, prompt: string, value: string, required: boolean, policies: object, validateOnly: boolean)" },
-    ]);
-  },
-  numberAttributeInputCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "numberAttributeInputCallback", arguments, [
-      { arity: 7, types: ["string","string","number","boolean","object","boolean","array"], label: "numberAttributeInputCallback(name: string, prompt: string, value: number, required: boolean, policies: object, validateOnly: boolean, failedPolicies: array)" },
-      { arity: 4, types: ["string","string","number","boolean"], label: "numberAttributeInputCallback(name: string, prompt: string, value: number, required: boolean)" },
-      { arity: 5, types: ["string","string","number","boolean","array"], label: "numberAttributeInputCallback(name: string, prompt: string, value: number, required: boolean, failedPolicies: array)" },
-      { arity: 6, types: ["string","string","number","boolean","object","boolean"], label: "numberAttributeInputCallback(name: string, prompt: string, value: number, required: boolean, policies: object, validateOnly: boolean)" },
-    ]);
-  },
-  booleanAttributeInputCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "booleanAttributeInputCallback", arguments, [
-      { arity: 7, types: ["string","string","boolean","boolean","object","boolean","array"], label: "booleanAttributeInputCallback(name: string, prompt: string, value: boolean, required: boolean, policies: object, validateOnly: boolean, failedPolicies: array)" },
-      { arity: 4, types: ["string","string","boolean","boolean"], label: "booleanAttributeInputCallback(name: string, prompt: string, value: boolean, required: boolean)" },
-      { arity: 5, types: ["string","string","boolean","boolean","array"], label: "booleanAttributeInputCallback(name: string, prompt: string, value: boolean, required: boolean, failedPolicies: array)" },
-      { arity: 6, types: ["string","string","boolean","boolean","object","boolean"], label: "booleanAttributeInputCallback(name: string, prompt: string, value: boolean, required: boolean, policies: object, validateOnly: boolean)" },
-    ]);
-  },
-  pollingWaitCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "pollingWaitCallback", arguments, [{ arity: 2, types: ["string","string"], label: "pollingWaitCallback(waitTime: string, message: string)" }]);
-  },
-  confirmationCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "confirmationCallback", arguments, [
-      { arity: 3, types: ["number","array","number"], label: "confirmationCallback(messageType: number, options: array, defaultOption: number)" },
-      { arity: 4, types: ["string","number","array","number"], label: "confirmationCallback(prompt: string, messageType: number, options: array, defaultOption: number)" },
-      { arity: 4, types: ["string","number","number","number"], label: "confirmationCallback(prompt: string, messageType: number, optionType: number, defaultOption: number)" },
-      { arity: 3, types: ["number","number","number"], label: "confirmationCallback(messageType: number, optionType: number, defaultOption: number)" },
-    ]);
-  },
-  textOutputCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "textOutputCallback", arguments, [{ arity: 2, types: ["number","string"], label: "textOutputCallback(messageType: number, message: string)" }]);
-  },
   choiceCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "choiceCallback", arguments, [{ arity: 4, types: ["string","array","number","boolean"], label: "choiceCallback(prompt: string, choices: array, defaultChoice: number, multipleSelectionsAllowed: boolean)" }]);
   },
-  redirectCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "redirectCallback", arguments, [
-      { arity: 3, types: ["string","object","string"], label: "redirectCallback(redirectUrl: string, redirectData: object, method: string)" },
-      { arity: 6, types: ["string","object","string","string","string","boolean"], label: "redirectCallback(redirectUrl: string, redirectData: object, method: string, statusParameter: string, redirectBackUrlCookie: string, setTrackingCookie: boolean)" },
-      { arity: 4, types: ["string","object","string","boolean"], label: "redirectCallback(redirectUrl: string, redirectData: object, method: string, setTrackingCookie: boolean)" },
-      { arity: 5, types: ["string","object","string","string","string"], label: "redirectCallback(redirectUrl: string, redirectData: object, method: string, statusParameter: string, redirectBackUrlCookie: string)" },
-    ]);
-  },
-  hiddenValueCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "hiddenValueCallback", arguments, [{ arity: 2, types: ["string","string"], label: "hiddenValueCallback(id: string, value: string)" }]);
+  passwordCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "passwordCallback", arguments, [{ arity: 2, types: ["string","boolean"], label: "passwordCallback(prompt: string, echoOn: boolean)" }]);
   },
   nameCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "nameCallback", arguments, [
@@ -488,19 +478,41 @@ var callbacksBuilder = {
       { arity: 1, types: ["string"], label: "nameCallback(prompt: string)" },
     ]);
   },
-  passwordCallback: function () {
-    __rhinoLocalNotMocked("callbacksBuilder", "passwordCallback", arguments, [{ arity: 2, types: ["string","boolean"], label: "passwordCallback(prompt: string, echoOn: boolean)" }]);
+  hiddenValueCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "hiddenValueCallback", arguments, [{ arity: 2, types: ["string","string"], label: "hiddenValueCallback(id: string, value: string)" }]);
+  },
+  redirectCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "redirectCallback", arguments, [
+      { arity: 5, types: ["string","object","string","string","string"], label: "redirectCallback(redirectUrl: string, redirectData: object, method: string, statusParameter: string, redirectBackUrlCookie: string)" },
+      { arity: 4, types: ["string","object","string","boolean"], label: "redirectCallback(redirectUrl: string, redirectData: object, method: string, setTrackingCookie: boolean)" },
+      { arity: 3, types: ["string","object","string"], label: "redirectCallback(redirectUrl: string, redirectData: object, method: string)" },
+      { arity: 6, types: ["string","object","string","string","string","boolean"], label: "redirectCallback(redirectUrl: string, redirectData: object, method: string, statusParameter: string, redirectBackUrlCookie: string, setTrackingCookie: boolean)" },
+    ]);
+  },
+  confirmationCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "confirmationCallback", arguments, [
+      { arity: 3, types: ["number","number","number"], label: "confirmationCallback(messageType: number, optionType: number, defaultOption: number)" },
+      { arity: 3, types: ["number","array","number"], label: "confirmationCallback(messageType: number, options: array, defaultOption: number)" },
+      { arity: 4, types: ["string","number","number","number"], label: "confirmationCallback(prompt: string, messageType: number, optionType: number, defaultOption: number)" },
+      { arity: 4, types: ["string","number","array","number"], label: "confirmationCallback(prompt: string, messageType: number, options: array, defaultOption: number)" },
+    ]);
+  },
+  pollingWaitCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "pollingWaitCallback", arguments, [{ arity: 2, types: ["string","string"], label: "pollingWaitCallback(waitTime: string, message: string)" }]);
+  },
+  textOutputCallback: function () {
+    __rhinoLocalNotMocked("callbacksBuilder", "textOutputCallback", arguments, [{ arity: 2, types: ["number","string"], label: "textOutputCallback(messageType: number, message: string)" }]);
   },
   validatedUsernameCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "validatedUsernameCallback", arguments, [
-      { arity: 3, types: ["string","object","boolean"], label: "validatedUsernameCallback(prompt: string, policies: object, validateOnly: boolean)" },
       { arity: 4, types: ["string","object","boolean","array"], label: "validatedUsernameCallback(prompt: string, policies: object, validateOnly: boolean, failedPolicies: array)" },
+      { arity: 3, types: ["string","object","boolean"], label: "validatedUsernameCallback(prompt: string, policies: object, validateOnly: boolean)" },
     ]);
   },
   validatedPasswordCallback: function () {
     __rhinoLocalNotMocked("callbacksBuilder", "validatedPasswordCallback", arguments, [
-      { arity: 4, types: ["string","boolean","object","boolean"], label: "validatedPasswordCallback(prompt: string, echoOn: boolean, policies: object, validateOnly: boolean)" },
       { arity: 5, types: ["string","boolean","object","boolean","array"], label: "validatedPasswordCallback(prompt: string, echoOn: boolean, policies: object, validateOnly: boolean, failedPolicies: array)" },
+      { arity: 4, types: ["string","boolean","object","boolean"], label: "validatedPasswordCallback(prompt: string, echoOn: boolean, policies: object, validateOnly: boolean)" },
     ]);
   },
 };
@@ -567,6 +579,9 @@ var policy = {
   evaluate: function () {
     __rhinoLocalNotMocked("policy", "evaluate", arguments, [{ arity: 4, types: ["object","string","array","object"], label: "evaluate(subject: object, application: string, resourceNames: array, environment: object)" }]);
   },
+  evaluateTree: function () {
+    __rhinoLocalNotMocked("policy", "evaluateTree", arguments, [{ arity: 4, types: ["object","string","string","object"], label: "evaluateTree(subject: object, application: string, resourceName: string, environment: object)" }]);
+  },
 };
 
 var httpClient = {
@@ -625,20 +640,40 @@ var secrets = {
 };
 
 var oauthApplication = {
+  getRequestProperties: function () {
+    __rhinoLocalNotMocked("oauthApplication", "getRequestProperties", arguments, [{ arity: 0, types: [], label: "getRequestProperties()" }]);
+  },
   getApplicationId: function () {
     __rhinoLocalNotMocked("oauthApplication", "getApplicationId", arguments, [{ arity: 0, types: [], label: "getApplicationId()" }]);
   },
   getClientProperties: function () {
     __rhinoLocalNotMocked("oauthApplication", "getClientProperties", arguments, [{ arity: 0, types: [], label: "getClientProperties()" }]);
   },
-  getRequestProperties: function () {
-    __rhinoLocalNotMocked("oauthApplication", "getRequestProperties", arguments, [{ arity: 0, types: [], label: "getRequestProperties()" }]);
+};
+
+var emailService = {
+  send: function () {
+    __rhinoLocalNotMocked("emailService", "send", arguments, [
+      { arity: 3, types: ["string","string","string"], label: "send(to: string, subject: string, body: string)" },
+      { arity: 4, types: ["string","string","string","string"], label: "send(to: string, subject: string, body: string, mimeType: string)" },
+    ]);
   },
 };
 
 // Opaque container: the contexts metadata lists no elements. A case
 // seeds this object directly; a later slice may replace the assignment.
 var locales = {};
+
+var systemEnv = {
+  getProperty: function () {
+    __rhinoLocalNotMocked("systemEnv", "getProperty", arguments, [
+      { arity: 3, types: ["string","string","string"], label: "getProperty(propertyName: string, defaultValue: string, returnType: string)" },
+      { arity: 3, types: ["string","string","object"], label: "getProperty(propertyName: string, defaultValue: string, returnType: object)" },
+      { arity: 2, types: ["string","string"], label: "getProperty(propertyName: string, defaultValue: string)" },
+      { arity: 1, types: ["string"], label: "getProperty(propertyName: string)" },
+    ]);
+  },
+};
 
 // Opaque container: the contexts metadata lists no elements. A case
 // seeds this object directly; a later slice may replace the assignment.
@@ -660,9 +695,6 @@ var nodeState = {
   getObject: function () {
     __rhinoLocalNotMocked("nodeState", "getObject", arguments, [{ arity: 1, types: ["string"], label: "getObject(key: string)" }]);
   },
-  putTransient: function () {
-    __rhinoLocalNotMocked("nodeState", "putTransient", arguments, [{ arity: 2, types: ["string","object"], label: "putTransient(key: string, value: object)" }]);
-  },
   putShared: function () {
     __rhinoLocalNotMocked("nodeState", "putShared", arguments, [{ arity: 2, types: ["string","object"], label: "putShared(key: string, value: object)" }]);
   },
@@ -671,6 +703,9 @@ var nodeState = {
   },
   mergeTransient: function () {
     __rhinoLocalNotMocked("nodeState", "mergeTransient", arguments, [{ arity: 1, types: ["object"], label: "mergeTransient(object: object)" }]);
+  },
+  putTransient: function () {
+    __rhinoLocalNotMocked("nodeState", "putTransient", arguments, [{ arity: 2, types: ["string","object"], label: "putTransient(key: string, value: object)" }]);
   },
 };
 

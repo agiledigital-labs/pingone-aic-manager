@@ -15,20 +15,22 @@ describe("logger", () => {
         'logger.info("plain");',
         'logger.warn("two {} and {}", 1, true);',
         'logger.debug("one {} bound", "alice");',
-      ].join("\n")
+      ].join("\n"),
     );
-    expect(effects.logs.map((line) => `${line.level}:${line.message}`)).toEqual([
-      "error:a",
-      "error:a X b",
-      "error:a X b Y c",
-      "error:a X b {} c",
-      "error:a",
-      "error:a {} b",
-      "error:a \\X b",
-      "info:plain",
-      "warn:two 1 and true",
-      "debug:one alice bound",
-    ]);
+    expect(effects.logs.map((line) => `${line.level}:${line.message}`)).toEqual(
+      [
+        "error:a",
+        "error:a X b",
+        "error:a X b Y c",
+        "error:a X b {} c",
+        "error:a",
+        "error:a {} b",
+        "error:a \\X b",
+        "info:plain",
+        "warn:two 1 and true",
+        "debug:one alice bound",
+      ],
+    );
   });
 
   it("does not treat a JS Error as a throwable", () => {
@@ -50,9 +52,9 @@ describe("openidm", () => {
   });
 
   it("throws naming the missing given.managed entry", () => {
-    expect(() => runScript('openidm.read("managed/alpha_user/alice");')).toThrow(
-      /no given\.managed entry for "managed\/alpha_user"/
-    );
+    expect(() =>
+      runScript('openidm.read("managed/alpha_user/alice");'),
+    ).toThrow(/no given\.managed entry for "managed\/alpha_user"/);
   });
 
   it("returns null for a missing record in a seeded collection", () => {
@@ -66,7 +68,7 @@ describe("openidm", () => {
   it("records create with a null id as the collection path", () => {
     const effects = runScript(
       'openidm.create("managed/alpha_user", null, { userName: "bob" });',
-      { managed: { "managed/alpha_user": [] } }
+      { managed: { "managed/alpha_user": [] } },
     );
     expect(effects.openidm).toEqual([
       {
@@ -84,7 +86,7 @@ describe("openidm", () => {
         managed: {
           "managed/alpha_user": [{ _id: "alice", sn: "a", _rev: "1" }],
         },
-      }
+      },
     );
     expect(effects.openidm).toEqual([
       {
@@ -102,7 +104,7 @@ describe("openidm", () => {
         managed: {
           "managed/alpha_user": [{ _id: "alice", userName: "alice" }],
         },
-      }
+      },
     );
     expect(effects.openidm).toEqual([
       {
@@ -142,7 +144,7 @@ describe("openidm", () => {
     const openidm = sandbox.openidm as {
       query: (
         resource: string,
-        params: { _queryFilter: string }
+        params: { _queryFilter: string },
       ) => { result: Array<{ _id: string }> };
     };
     function ids(filter: string): string[] {
@@ -154,7 +156,9 @@ describe("openidm", () => {
     // and binds tighter than or: bob OR (York AND alice-mail) → alice, bob.
     // If or bound tighter, (bob OR York) AND alice-mail → alice only.
     expect(
-      ids('userName eq "bob" or city eq "York" and mail eq "alice@example.com"')
+      ids(
+        'userName eq "bob" or city eq "York" and mail eq "alice@example.com"',
+      ),
     ).toEqual(["alice", "bob"]);
 
     expect(ids('userName sw "ali"')).toEqual(["alice", "alicia"]);
@@ -182,7 +186,7 @@ describe("openidm", () => {
     const openidm = sandbox.openidm as {
       query: (
         resource: string,
-        params: { _queryFilter: string }
+        params: { _queryFilter: string },
       ) => { result: Array<{ _id: string }> };
     };
     expect(
@@ -190,7 +194,7 @@ describe("openidm", () => {
         .query("managed/alpha_user", {
           _queryFilter: 'mail eq "alice@example.com"',
         })
-        .result.map((row) => row._id)
+        .result.map((row) => row._id),
     ).toEqual(["alice"]);
   });
 
@@ -207,13 +211,13 @@ describe("openidm", () => {
     const openidm = sandbox.openidm as {
       query: (
         resource: string,
-        params: { _queryFilter: string }
+        params: { _queryFilter: string },
       ) => { result: Array<{ _id: string }> };
     };
     expect(
       openidm
         .query("managed/alpha_user", { _queryFilter: '/name/last eq "Smith"' })
-        .result.map((row) => row._id)
+        .result.map((row) => row._id),
     ).toEqual(["alice", "carol"]);
   });
 
@@ -227,18 +231,18 @@ describe("openidm", () => {
       query: (resource: string, params: { _queryFilter: string }) => unknown;
     };
     expect(() =>
-      openidm.query("managed/alpha_user", { _queryFilter: '/_id ne "alice"' })
+      openidm.query("managed/alpha_user", { _queryFilter: '/_id ne "alice"' }),
     ).toThrow(/unmocked filter "\/_id ne \\"alice\\""/);
     expect(() =>
       openidm.query("managed/alpha_user", {
         _queryFilter: 'not (userName eq "alice")',
-      })
+      }),
     ).toThrow(/unmocked filter/);
   });
 
   it("records actionName and body as content ?? params", () => {
     const withContent = runScript(
-      'openidm.action("managed/alpha_user/alice", "reset", { n: 1 }, { q: true });'
+      'openidm.action("managed/alpha_user/alice", "reset", { n: 1 }, { q: true });',
     );
     expect(withContent.openidm).toEqual([
       {
@@ -249,7 +253,7 @@ describe("openidm", () => {
       },
     ]);
     const paramsOnly = runScript(
-      'openidm.action("managed/alpha_user/alice", "reset", null, { q: true });'
+      'openidm.action("managed/alpha_user/alice", "reset", null, { q: true });',
     );
     expect(paramsOnly.openidm).toEqual([
       {
@@ -275,7 +279,7 @@ describe("httpClient", () => {
     const httpClient = sandbox.httpClient as {
       send: (
         url: string,
-        opts: { method: string; body: unknown }
+        opts: { method: string; body: unknown },
       ) => { get: () => { status: number; ok: boolean; json: () => unknown } };
     };
     const response = httpClient
@@ -288,7 +292,7 @@ describe("httpClient", () => {
 
   it("throws naming the URL when no stub matches", () => {
     expect(() =>
-      runScript('httpClient.send("https://example.com/missing").get();')
+      runScript('httpClient.send("https://example.com/missing").get();'),
     ).toThrow(/no given\.http stub for GET https:\/\/example.com\/missing/);
   });
 
@@ -296,10 +300,14 @@ describe("httpClient", () => {
     const effects = runScript(
       'httpClient.send("https://example.com/x", { method: "GET" }).get();',
       {
-        http: [{ match: { url: "https://example.com/x" }, reply: { status: 200 } }],
-      }
+        http: [
+          { match: { url: "https://example.com/x" }, reply: { status: 200 } },
+        ],
+      },
     );
-    expect(effects.http).toEqual([{ url: "https://example.com/x", method: "GET" }]);
+    expect(effects.http).toEqual([
+      { url: "https://example.com/x", method: "GET" },
+    ]);
   });
 });
 
@@ -313,7 +321,7 @@ describe("callbacksBuilder", () => {
         'callbacksBuilder.hiddenValueCallback("id", "v");',
         'callbacksBuilder.confirmationCallback(0, ["Yes", "No"], 0);',
         'callbacksBuilder.choiceCallback("Pick", ["a", "b"], 0, false);',
-      ].join("\n")
+      ].join("\n"),
     );
     expect(effects.callbacks.map((cb) => cb.type)).toEqual([
       "NameCallback",
@@ -334,14 +342,14 @@ describe("callbacksBuilder", () => {
         'callbacksBuilder.redirectCallback("https://x", { a: 1 }, "GET");',
         'callbacksBuilder.validatedUsernameCallback("User", {}, false);',
         'callbacksBuilder.deviceProfileCallback(true, false, "Allow");',
-      ].join("\n")
+      ].join("\n"),
     );
     expect(effects.callbacks.map((cb) => cb.type)).toEqual([
       "TextInputCallback",
-      "ScriptTextOutputCallback",
+      "TextOutputCallback",
       "PollingWaitCallback",
       "RedirectCallback",
-      "ValidatedUsernameCallback",
+      "ValidatedCreateUsernameCallback",
       "DeviceProfileCallback",
     ]);
   });
@@ -354,16 +362,16 @@ describe("callbacksBuilder", () => {
         'callbacksBuilder.idPCallback("google", "id", "https://r", ["openid"], "n", "req", "https://req", ["acr"], false);',
         'callbacksBuilder.httpCallback("Basic", "Negotiate", "Negotiate", 401);',
         'callbacksBuilder.x509CertificateCallback("cert");',
-        'callbacksBuilder.consentMappingCallback({ n: 1 }, "msg", true);',
+        'callbacksBuilder.consentMappingCallback({ name: "n", fields: [] }, "msg", true);',
         'callbacksBuilder.kbaCreateCallback("q", ["a"], false);',
-        'callbacksBuilder.selectIdPCallback({ p: true });',
+        "callbacksBuilder.selectIdPCallback({ p: true });",
         'callbacksBuilder.termsAndConditionsCallback("1", "terms", "2026-01-01");',
-        'callbacksBuilder.metadataCallback({ k: 1 });',
+        "callbacksBuilder.metadataCallback({ k: 1 });",
         'callbacksBuilder.stringAttributeInputCallback("mail", "Email", "", true);',
         'callbacksBuilder.numberAttributeInputCallback("age", "Age", 1, true);',
         'callbacksBuilder.booleanAttributeInputCallback("ok", "OK", true, true);',
         'callbacksBuilder.validatedPasswordCallback("pw", false, {}, false);',
-      ].join("\n")
+      ].join("\n"),
     );
     expect(effects.callbacks.map((cb) => cb.type)).toEqual([
       "SuspendedTextOutputCallback",
@@ -379,31 +387,30 @@ describe("callbacksBuilder", () => {
       "StringAttributeInputCallback",
       "NumberAttributeInputCallback",
       "BooleanAttributeInputCallback",
-      "ValidatedPasswordCallback",
+      "ValidatedCreatePasswordCallback",
     ]);
   });
 
   it("distinguishes redirectCallback overloads by arity", () => {
     const withCookie = runScript(
-      'callbacksBuilder.redirectCallback("https://x", {}, "POST", true);'
+      'callbacksBuilder.redirectCallback("https://x", {}, "POST", true);',
     );
     const withStatus = runScript(
-      'callbacksBuilder.redirectCallback("https://x", {}, "POST", "status", "cookie");'
+      'callbacksBuilder.redirectCallback("https://x", {}, "POST", "status", "cookie");',
     );
     expect(withCookie.callbacks[0]).toEqual({
       type: "RedirectCallback",
       redirectUrl: "https://x",
       redirectData: {},
-      method: "POST",
-      setTrackingCookie: true,
+      redirectMethod: "POST",
+      trackingCookie: true,
     });
     expect(withStatus.callbacks[0]).toEqual({
       type: "RedirectCallback",
       redirectUrl: "https://x",
       redirectData: {},
-      method: "POST",
-      statusParameter: "status",
-      redirectBackUrlCookie: "cookie",
+      redirectMethod: "POST",
+      trackingCookie: false,
     });
   });
 });
@@ -423,10 +430,12 @@ describe("callbacks (submitted values)", () => {
       getNameCallbacks: () => {
         get: (i: number) => unknown;
         size: () => number;
+        isEmpty: () => boolean;
+        contains: (value: unknown) => boolean;
       };
       getPasswordCallbacks: () => { get: (i: number) => unknown };
       getConfirmationCallbacks: () => { get: (i: number) => unknown };
-      getChoiceCallbacks: () => { size: () => number };
+      getChoiceCallbacks: () => { size: () => number; isEmpty: () => boolean };
     };
     expect(callbacks.isEmpty()).toBe(false);
     expect(callbacks.getNameCallbacks().size()).toBe(2);
@@ -435,6 +444,11 @@ describe("callbacks (submitted values)", () => {
     expect(callbacks.getPasswordCallbacks().get(0)).toBe("s3cret");
     expect(callbacks.getConfirmationCallbacks().get(0)).toBe(1);
     expect(callbacks.getChoiceCallbacks().size()).toBe(0);
+    // Java List methods a script checks before indexing.
+    expect(callbacks.getNameCallbacks().isEmpty()).toBe(false);
+    expect(callbacks.getChoiceCallbacks().isEmpty()).toBe(true);
+    expect(callbacks.getNameCallbacks().contains("alice.admin")).toBe(true);
+    expect(callbacks.getNameCallbacks().contains("bob")).toBe(false);
   });
 
   it("treats an explicit empty given.callbacks as a first pass", () => {
@@ -445,7 +459,7 @@ describe("callbacks (submitted values)", () => {
 
   it("throws naming given.callbacks when the fixture is missing", () => {
     expect(() => runScript("callbacks.getNameCallbacks();")).toThrow(
-      /no given\.callbacks/
+      /no given\.callbacks/,
     );
   });
 });

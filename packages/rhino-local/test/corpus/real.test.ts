@@ -147,10 +147,18 @@ function withPayload(
   );
 }
 
-/** `org.mozilla.javascript.Undefined@421faab1` differs on every run, locally and live. */
+/**
+ * `org.mozilla.javascript.Undefined@421faab1` differs on every run, locally and
+ * live; a `rhino-local-mocks.cjs#<n>` line moves with every edit to the mocks.
+ * Neither is part of what a gap pins.
+ */
 function withoutIdentityHashes(value: unknown): unknown {
   if (value === undefined) {
     return value;
   }
-  return JSON.parse(JSON.stringify(value).replace(/@[0-9a-f]{4,8}\b/g, "@<hash>")) as unknown;
+  return JSON.parse(
+    JSON.stringify(value)
+      .replace(/@[0-9a-f]{4,8}\b/g, "@<hash>")
+      .replace(/rhino-local-mocks\.cjs#\d+/g, "rhino-local-mocks.cjs#<line>")
+  ) as unknown;
 }
