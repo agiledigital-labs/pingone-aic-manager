@@ -113,14 +113,16 @@ describe("idRepository", () => {
     expect(() => identity.store()).toThrow(/storeAndThrow\(\).*this\.amIdentity.*null/);
   });
 
-  it("stages AM-named writes until store and records the persisted change", () => {
+  it("keeps staged writes invisible to reads until store and records the persisted change", () => {
     const effects = runScript(
       [
         'var identity = idRepository.getIdentity("uuid-1");',
         'identity.setAttribute("fr-attr-str1", ["new"]);',
-        'if (identity.getAttributeValues("fr-attr-str1").toArray()[0] !== "new") throw new Error("staged value missing");',
+        'if (identity.getAttributeValues("fr-attr-str1").toArray()[0] !== "old") throw new Error("persisted value missing");',
         'identity.addAttribute("fr-attr-multi1", "second");',
         'identity.store();',
+        'if (identity.getAttributeValues("fr-attr-str1").toArray()[0] !== "new") throw new Error("stored value missing");',
+        'if (!identity.getAttributeValues("fr-attr-multi1").contains("second")) throw new Error("added value missing");',
       ].join("\n"),
       { managed: { "managed/alpha_user": [{ _id: "uuid-1", frUnindexedString1: "old", frUnindexedMultivalued1: ["first"] }] } }
     );

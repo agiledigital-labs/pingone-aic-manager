@@ -217,20 +217,21 @@ attributes. Applies to the contexts that expose the binding: OIDC claims
 (`identity: AMIdentity`), oidc-claims-ng / SAML mappers (`identity: Identity`),
 and scripted decision (`idRepository.getIdentity(uuid): Identity`).
 
-## Identity writes pending live verification (2026-10-01)
+## Identity writes (live AIC-lane probe, 2026-10-01)
 
-The local script tester models `setAttribute` as a staged replacement visible to
-`getAttributeValues` before `store()`, and `addAttribute` as adding a distinct
-value to the staged collection. `store()` commits those values to the seeded
-managed record. These write semantics remain unmeasured on AIC.
+On a throwaway managed user, `setAttribute("fr-attr-str1", ["new"])`
+succeeded, but `getAttributeValues("fr-attr-str1")` returned the persisted
+"old" value **before** `store()`. The local tester now keeps staged writes
+invisible to that getter until `store()`. The live result also recorded
+successful `addAttribute("fr-attr-multi1", "second")` and `store()` calls.
+On a later callback pass, the getter returned "new" for the string attribute,
+and the multivalue collection had size 2 and contained both "first" and
+"second". The wrong IDM field name returned size 0. These values matched the
+local model after the pre-store read was corrected.
 
-The first AIC-enabled run on 2026-10-01 reached a later pass without the
-locally expected `preStore` state seed. That does not identify which identity
-operation differed. The revised
-`live-identity-writes.e2e.test.ts` catches lookup,
-`setAttribute`, the pre-store read, `addAttribute`, `store()`, and later reads, and
-records each result in shared state. It tests the AM attribute names
-`fr-attr-str1` and `fr-attr-multi1` and a wrong IDM field name. The between-pass
-managed-record assertion is deferred until the call-level diagnostics are
-known, so it cannot obscure them. The fixture is deleted by the test's
-cleanup hook.
+The AIC result did not directly prove the managed-record shape after
+`store()`; the external between-pass IDM assertion was removed during
+diagnosis so it could not mask the script-visible results. Whether an
+`addAttribute` change is visible before `store()` remains unmeasured.
+`live-identity-writes.e2e.test.ts` retains per-call diagnostics, and its
+fixture cleanup deletes the user.
