@@ -162,6 +162,9 @@ class AdapterAicIo {
     const url = new URL(request.url);
     const path = url.pathname;
     if (request.method === "GET") {
+      if (path.includes("/serverinfo/")) {
+        return Promise.resolve(json(200, { cookieName: "testCookie" }));
+      }
       if (path.endsWith("/openidm/managed/alpha_user/materialized-shape")) {
         return Promise.resolve(
           json(200, {

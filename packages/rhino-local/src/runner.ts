@@ -177,7 +177,16 @@ class JvmProcess {
       this.#pending.set(id, { resolve, reject });
       const ok = this.#child.stdin.write(`${JSON.stringify(payload)}\n`);
       if (!ok) {
-        this.#child.stdin.once("error", reject);
+        const onError = (error: Error): void => {
+          this.#child.stdin.off("drain", onDrain);
+          this.#pending.delete(id);
+          reject(error);
+        };
+        const onDrain = (): void => {
+          this.#child.stdin.off("error", onError);
+        };
+        this.#child.stdin.once("error", onError);
+        this.#child.stdin.once("drain", onDrain);
       }
     });
   }

@@ -141,7 +141,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > patch/wrong-rev 1`] = `
 {
-  "error": "Error: rhino-local: openidm.patch: the expected version '0' does not match the current version 'local-rev'",
+  "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: openidm.patch: The resource could not be accessed because the expected version '0' does not match the current version 'local-rev'",
   "ok": false,
 }
 `;
@@ -190,7 +190,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > update/wrong-rev 1`] = `
 {
-  "error": "Error: rhino-local: openidm.update: the expected version '0' does not match the current version 'local-rev'",
+  "error": "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: openidm.update: The resource could not be accessed because the expected version '0' does not match the current version 'local-rev'",
   "ok": false,
 }
 `;

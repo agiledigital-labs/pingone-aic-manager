@@ -91,6 +91,15 @@ export function diffRecordedEffects(
     disagreements,
     observationGaps
   );
+  compareScalar(
+    "sessionProperties",
+    local.sessionProperties,
+    aic.sessionProperties,
+    localUnobserved,
+    aicUnobserved,
+    disagreements,
+    observationGaps
+  );
   for (const channel of ["callbacks", "openidm", "http", "logs"] as const) {
     compareArray(
       channel,

@@ -48,6 +48,7 @@ export function parseHarvest(raw: string): RecordedEffects {
     sharedState: parseBucket(parsed.sharedState, "harvest.sharedState"),
     transientState: parseBucket(parsed.transientState, "harvest.transientState"),
     secureState: parseBucket(parsed.secureState, "harvest.secureState"),
+    sessionProperties: parseBucket(parsed.sessionProperties, "harvest.sessionProperties"),
     callbacks: parseArray(parsed.callbacks, "harvest.callbacks", parseCallback),
     openidm: parseArray(parsed.openidm, "harvest.openidm", parseOpenidm),
     http: parseArray(parsed.http, "harvest.http", parseHttp),

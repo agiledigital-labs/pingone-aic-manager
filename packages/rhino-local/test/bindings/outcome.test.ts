@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { judge } from "../../src/case/index.ts";
 import { loadBehaviour, runScript } from "./load-behaviour.ts";
 
 describe("outcome", () => {
@@ -71,6 +72,20 @@ describe("outcome", () => {
       ].join("\n")
     );
     expect(effects.outcome).toBeNull();
+  });
+
+  it("records session-property writes as fail-closed effects", () => {
+    const script = 'action.goTo("done").putSessionProperty("new", "value").removeSessionProperty("old");';
+    const given = { existingSession: { old: "before" } };
+    const effects = runScript(script, given);
+    expect(effects.sessionProperties).toEqual({
+      initial: { old: "before" }, final: { new: "value" },
+    });
+    const kase = { name: "session effects", script, given, outcomes: ["done"] };
+    expect(judge({ ...kase, expect: { outcome: "done", sessionProperties: {
+      added: { new: "value" }, removed: ["old"],
+    } } }, effects).pass).toBe(true);
+    expect(judge({ ...kase, expect: { outcome: "done" } }, effects).pass).toBe(false);
   });
 
   it("chains goTo after withErrorMessage", () => {
