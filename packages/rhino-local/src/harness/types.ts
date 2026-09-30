@@ -11,7 +11,7 @@ export interface StateChannels {
 }
 
 /**
- * Everything a run can carry into the script, in one shape. The same five
+ * Everything a run can carry into the script, in one shape. The same
  * channels are declarable on the suite (`always`), overridable per test, and
  * reachable from `beforeRun` — so there is one place to look, whichever
  * surface you are reading.
@@ -19,12 +19,12 @@ export interface StateChannels {
 export interface Channels {
   state?: StateChannels;
   /**
-   * ESV overrides. NOT the `systemEnv` binding — these compile to shared
-   * state under `esv.<name>`, which the tenant's config library consults
-   * before falling back to the real ESV. Seed the real binding with
-   * `given.esv` instead; both mechanisms exist and mean different things.
+   * Declared `systemEnv.getProperty("esv.<name>")` values for the local lane.
+   * AIC reads its own tenant ESVs; the harness never changes tenant ESVs.
    */
-  esv?: Readonly<Record<string, string>>;
+  esv?: Readonly<Record<string, string | null>>;
+  /** Also seed declared ESVs under `esv.<name>` in shared state on both lanes. */
+  esvInState?: boolean;
   /** Sent on the authenticate request. No script can assign these bindings. */
   headers?: WireMap;
   /** Sent on the authenticate request. */
@@ -50,7 +50,8 @@ export interface Channels {
 /** The mutable draft `beforeRun` is handed. */
 export interface RequestDraft {
   state: { shared: JsonObject; transient: JsonObject };
-  esv: Record<string, string>;
+  esv: Record<string, string | null>;
+  esvInState: boolean;
   headers: Record<string, string[]>;
   params: Record<string, string[]>;
   session: JsonObject;

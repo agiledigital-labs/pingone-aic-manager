@@ -43,6 +43,12 @@ describe("aicUnsupportedReason", () => {
     ).toBeUndefined();
   });
 
+  it("allows declared ESVs because AIC resolves them from the tenant", () => {
+    expect(
+      aicUnsupportedReason(caseWith({ given: { esv: { "esv.flag": "on" } } }))
+    ).toBeUndefined();
+  });
+
   it("skips secureState because next-gen has no putSecure", () => {
     expect(
       aicUnsupportedReason(

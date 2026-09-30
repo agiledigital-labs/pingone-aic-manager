@@ -160,6 +160,37 @@ Expect `outcome: null` and the emitted callbacks, then use `.step({ reply })`
 to submit a response and run the next pass. A pass with no queued callbacks
 keeps its `goTo` outcome. Legacy `Action.send` behavior is separate.
 
+### ESV declarations
+
+Declare values read through `systemEnv.getProperty("esv.<name>")` with the
+`esv` channel. It is available in `always`, per-test `.esv()`, and `beforeRun`'s
+`request.esv`. The local lane seeds `given.esv`; the AIC lane reads the tenant's
+real ESVs and never writes them. Declare an absent ESV as `null` to test its
+one-argument `null` result or a supplied default. An undeclared local read
+throws with the missing key, even if other ESVs were declared.
+
+Before this change, `esv: { feature: "on" }` only wrote `esv.feature` into
+shared state. Now it makes `systemEnv.getProperty("esv.feature")` return
+`"on"` locally. If a script uses a config library that reads shared-state
+overrides, opt in to both behaviors:
+
+```ts
+const suite = defineSuite({
+  name: "feature check",
+  script: 'action.goTo(systemEnv.getProperty("esv.feature") === "on" ? "on" : "off");',
+  outcomes: ["on", "off"],
+  always: { esv: { feature: "on" }, esvInState: true },
+});
+// One test can also call lease.run().esvInState() before .expect(...).
+```
+
+`esvInState` writes `esv.feature` into shared state on both lanes. With it on,
+an input named `esv.feature` is rejected as a collision. A declared local
+value can differ from the tenant's ESV; conformance can detect a difference
+only when the script exposes it in recorded effects. Check tenant ESV values
+before using the AIC lane for value-sensitive tests. Tenant ESV changes require
+a restart and are outside the lease.
+
 ### Match a value's shape
 
 An expected JSON value can be a `RegExp` (for a string) or a synchronous

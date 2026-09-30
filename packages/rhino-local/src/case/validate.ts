@@ -175,7 +175,18 @@ function parseGiven(raw: unknown, path: string): Given {
     raw.existingSession,
     `${path}.existingSession`
   );
-  assignStringMap(given, "esv", raw.esv, `${path}.esv`);
+  if (raw.esv !== undefined) {
+    if (raw.esv === null || typeof raw.esv !== "object" || Array.isArray(raw.esv)) {
+      throw new Error(`rhino-local: ${path}.esv must be an object`);
+    }
+    given.esv = {};
+    for (const [name, value] of Object.entries(raw.esv)) {
+      if (value !== null && typeof value !== "string") {
+        throw new Error(`rhino-local: ${path}.esv.${name} must be a string or null`);
+      }
+      given.esv[name] = value;
+    }
+  }
   assignStringMap(given, "secrets", raw.secrets, `${path}.secrets`);
   assignStringMap(given, "libraries", raw.libraries, `${path}.libraries`);
   if (raw.callbacks !== undefined) {

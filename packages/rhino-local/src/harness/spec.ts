@@ -13,7 +13,7 @@ import type {
   WireValue,
 } from "./types.ts";
 
-/** Shared-state key prefix the tenant's config library reads before the ESV. */
+/** ESV property prefix; optional shared-state overrides use the same key. */
 export const ESV_STATE_PREFIX = "esv.";
 
 /**
@@ -37,6 +37,7 @@ export function mergeChannels(
       },
     },
     esv: { ...(always?.esv ?? {}), ...(override?.esv ?? {}) },
+    esvInState: override?.esvInState ?? always?.esvInState ?? false,
     headers: { ...normaliseWire(always?.headers), ...normaliseWire(override?.headers) },
     params: { ...normaliseWire(always?.params), ...normaliseWire(override?.params) },
     session: { ...(always?.session ?? {}), ...(override?.session ?? {}) },
@@ -80,27 +81,26 @@ function wireValues(key: string, value: WireValue): string[] {
 }
 
 /**
- * Fold the parsed inputs and the ESV overrides into shared state.
+ * Fold parsed inputs into shared state and optionally mirror ESV declarations.
  *
- * Inputs land under their own names and ESVs under `esv.<name>`, so a suite
- * declaring an input called `esv.x` would be ambiguous; that is rejected
- * rather than resolved by precedence, because either precedence is a
- * defensible guess and neither is visible at the call site.
+ * An input under `esv.` collides only when the shared-state mirror is enabled.
  */
 export function applyInputsAndEsv(
   draft: RequestDraft,
   input: Readonly<Record<string, unknown>>
 ): void {
   for (const [key, value] of Object.entries(input)) {
-    if (key.startsWith(ESV_STATE_PREFIX)) {
+    if (draft.esvInState && key.startsWith(ESV_STATE_PREFIX)) {
       throw new Error(
         `rhino-local: input ${JSON.stringify(key)} collides with the ${JSON.stringify(ESV_STATE_PREFIX)} namespace reserved for ESV overrides; rename the input`
       );
     }
     draft.state.shared[key] = value as JsonObject[string];
   }
-  for (const [name, value] of Object.entries(draft.esv)) {
-    draft.state.shared[`${ESV_STATE_PREFIX}${name}`] = value;
+  if (draft.esvInState) {
+    for (const [name, value] of Object.entries(draft.esv)) {
+      draft.state.shared[`${ESV_STATE_PREFIX}${name}`] = value;
+    }
   }
 }
 
@@ -142,6 +142,9 @@ export function toGiven(
   realm = "alpha"
 ): Given {
   const given: Given = { ...base };
+  given.esv = { ...(base.esv ?? {}), ...Object.fromEntries(
+    Object.entries(draft.esv).map(([name, value]) => [`${ESV_STATE_PREFIX}${name}`, value])
+  ) };
   if (draft.sessionRequested) {
     given.existingSession = {
       ...sessionFromPrincipal(sessionPrincipal(draft), realm),

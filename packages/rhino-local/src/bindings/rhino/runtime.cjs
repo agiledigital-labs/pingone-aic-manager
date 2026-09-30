@@ -2397,17 +2397,16 @@ systemEnv = {
       throw new Error("rhino-local: systemEnv.getProperty arity=" + arguments.length);
     }
     var k = String(key);
-    if (!__rhinoLocal.esvProvided) {
+    if (!__rhinoLocal.esvProvided || !__rhinoLocalHas(__rhinoLocal.esv, k)) {
       throw new Error(
         "rhino-local: systemEnv.getProperty: no given.esv entry for " +
           JSON.stringify(k)
       );
     }
-    var value = __rhinoLocalHas(__rhinoLocal.esv, k)
-      ? __rhinoLocal.esv[k]
-      : arguments.length === 1
-        ? null
-        : defaultValue;
+    var value = __rhinoLocal.esv[k];
+    if (value === null && arguments.length > 1) {
+      value = defaultValue;
+    }
     if (arguments.length < 3 || value === null) {
       return value;
     }

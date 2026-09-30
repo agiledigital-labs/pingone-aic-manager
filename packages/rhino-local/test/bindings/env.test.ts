@@ -15,6 +15,24 @@ describe("systemEnv", () => {
       /no given\.esv entry for "esv\.missing"/
     );
   });
+
+  // Regression: one declared ESV used to make every other key read as null.
+  it("throws for an undeclared key even when another ESV is seeded", () => {
+    const sandbox = loadBehaviour({ esv: { "esv.known": "value" } });
+    const systemEnv = sandbox.systemEnv as { getProperty: (key: string) => string };
+    expect(() => systemEnv.getProperty("esv.missing")).toThrow(
+      /no given\.esv entry for "esv\.missing"/
+    );
+  });
+
+  it("returns null or the supplied default for an explicitly absent ESV", () => {
+    const sandbox = loadBehaviour({ esv: { "esv.absent": null } });
+    const systemEnv = sandbox.systemEnv as {
+      getProperty: (key: string, fallback?: string) => string | null;
+    };
+    expect(systemEnv.getProperty("esv.absent")).toBeNull();
+    expect(systemEnv.getProperty("esv.absent", "fallback")).toBe("fallback");
+  });
 });
 
 describe("secrets", () => {
