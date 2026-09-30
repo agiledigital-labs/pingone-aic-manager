@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/index.ts";
 import { judge } from "../../src/case/index.ts";
-import type { CallbackEffect } from "../../src/case/types.ts";
+import type { CallbackEffect, CallbackExpect } from "../../src/case/types.ts";
 import type { RunCaseOptions } from "../../src/bindings/run.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { blockedCases, gapCases, realCases, runnableCases } from "../../cases/real/index.ts";
@@ -136,9 +136,9 @@ function emitted(
 
 /** `expected` with its HiddenValueCallback's value replaced by the one in `actual`. */
 function withPayload(
-  expected: readonly CallbackEffect[],
+  expected: readonly CallbackExpect[],
   actual: readonly CallbackEffect[]
-): CallbackEffect[] {
+): CallbackExpect[] {
   const payload = actual.find((callback) => callback.type === "HiddenValueCallback");
   const value = payload?.value;
   if (value === undefined) {

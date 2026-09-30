@@ -19,6 +19,47 @@ import {
 import { makeEffects, bucket } from "../case/helpers.ts";
 
 describe("diffRecordedEffects", () => {
+  it("ignores only matched state values while preserving presence, bucket, and exact differences", () => {
+    const declaration = caseWith({ expect: { outcome: "true", sharedState: {
+      added: { trackingId: /^[0-9a-f]{32}$/ },
+    } } }).expect;
+    const local = makeEffects({ sharedState: bucket({}, { trackingId: "a".repeat(32), exact: "same" }) });
+    const aic = makeEffects({ sharedState: bucket({}, { trackingId: "b".repeat(32), exact: "same" }) });
+    expect(diffRecordedEffects(local, aic, declaration).disagreements).toEqual([]);
+    expect(diffRecordedEffects(local, makeEffects({ sharedState: bucket({}, {
+      trackingId: "b".repeat(32), exact: "different",
+    }) }), declaration).disagreements).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "exact" })
+    );
+    expect(diffRecordedEffects(local, makeEffects({ sharedState: bucket({}, { exact: "same" }) }), declaration)
+      .disagreements).toContainEqual(expect.objectContaining({ path: "trackingId", aic: "(none)" }));
+    expect(diffRecordedEffects(local, makeEffects({ transientState: bucket({}, {
+      trackingId: "b".repeat(32),
+    }), sharedState: bucket({}, { exact: "same" }) }), declaration).disagreements)
+      .toContainEqual(expect.objectContaining({ path: "trackingId" }));
+  });
+
+  it("compares callback fields and openidm and HTTP bodies outside matcher leaves exactly", () => {
+    const declaration = caseWith({ expect: { outcome: "true",
+      callbacks: [{ type: "TextOutputCallback", message: /^id-[0-9]+$/, fixed: 1 }],
+      openidm: [{ method: "create", resource: "managed/alpha_user", body: { id: /^id-/ } }],
+      http: [{ url: "https://tenant.example.com/x", body: { id: /^id-/ } }],
+    } }).expect;
+    const local = makeEffects({
+      callbacks: [{ type: "TextOutputCallback", message: "id-1", fixed: 1 }],
+      openidm: [{ method: "create", resource: "managed/alpha_user", body: { id: "id-1" } }],
+      http: [{ url: "https://tenant.example.com/x", method: "POST", body: { id: "id-1" } }],
+    });
+    const aic = makeEffects({
+      callbacks: [{ type: "TextOutputCallback", message: "id-2", fixed: 1 }],
+      openidm: [{ method: "create", resource: "managed/alpha_user", body: { id: "id-2" } }],
+      http: [{ url: "https://tenant.example.com/x", method: "POST", body: { id: "id-2" } }],
+    });
+    expect(diffRecordedEffects(local, aic, declaration).disagreements).toEqual([]);
+    aic.callbacks[0] = { type: "TextOutputCallback", message: "id-2", fixed: 2 };
+    expect(diffRecordedEffects(local, aic, declaration).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "callbacks" }));
+  });
   it("is silent when both lanes recorded the same effects", () => {
     const effects = makeEffects({
       sharedState: bucket({}, { verified: true }),

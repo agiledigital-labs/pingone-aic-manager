@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { fillCallbackInputs } from "../../src/aic/callbacks.ts";
 import { headerValues } from "../../src/aic/http.ts";
 import { runAicChain } from "../../src/aic/run.ts";
@@ -65,6 +66,25 @@ describe("fillCallbackInputs", () => {
 });
 
 describe("runAicChain", () => {
+  it("checks a carried matcher against the tenant's own seed on the resumed pass", async () => {
+    const local = "123e4567-e89b-42d3-a456-426614174000";
+    const tenant = "123e4567-e89b-42d3-a456-426614174001";
+    const fake = mockChain({ responses: [
+      callbackResponse("NameCallback", "jwt-1"),
+      finalResponse("done", { trackingId: tenant }, { trackingId: tenant }),
+    ] });
+    const first = caseWith({ name: "random [step 1]", expect: {
+      outcome: null, callbacks: [{ type: "NameCallback" }],
+      sharedState: { added: { trackingId: z.string().uuid() } },
+    } });
+    const second = caseWith({ name: "random", given: { sharedState: { trackingId: local } },
+      expect: { outcome: "done" } });
+    const effects = await runAicChain([first, second], SCRIPT, {
+      io: fake.io, runId: "matcher-carry", project: "/tmp/rhino-local-aic-test",
+      replies: [[{ type: "NameCallback", value: "alice" }]],
+    });
+    expect(effects[1]?.outcome).toBe("done");
+  });
   it("re-enters the same node, seeding only the first pass", async () => {
     const fake = mockChain({ before: { username: "alice", stage: "asked" } });
     const first = caseWith({

@@ -1,5 +1,6 @@
 import type {
   CallbackEffect,
+  Expect,
   Given,
   JsonObject,
   RecordedEffects,
@@ -8,8 +9,9 @@ import type {
 } from "../case/types.ts";
 import { STATE_CHANNELS } from "../case/types.ts";
 import { deepEqual } from "../case/equal.ts";
+import { containsMatcher, seedMatches } from "../case/matcher.ts";
 import { diffState } from "../case/state.ts";
-import { isPlainObject, parseJsonObject } from "../case/util.ts";
+import { formatValue, isPlainObject, parseJsonObject } from "../case/util.ts";
 
 const AIC_UNOBSERVED = ["openidm", "http", "logs"] as const;
 
@@ -65,6 +67,7 @@ export function assembleEffects(args: {
   given: Given;
   dump?: SubjectDump;
   callbacks: CallbackEffect[];
+  priorExpectations?: readonly Expect[];
 }): RecordedEffects {
   const sharedInitial = args.given.sharedState ?? {};
   const transientInitial = args.given.transientState ?? {};
@@ -98,7 +101,8 @@ export function assembleEffects(args: {
   const classified = classifyFinal(
     args.given,
     args.dump.before,
-    args.dump.final
+    args.dump.final,
+    args.priorExpectations
   );
   return {
     outcome: args.dump.outcome,
@@ -123,15 +127,31 @@ export function assembleEffects(args: {
 export function classifyFinal(
   given: Given,
   before: JsonObject,
-  final: JsonObject
+  final: JsonObject,
+  priorExpectations: readonly Expect[] = []
 ): Pick<
   Required<RecordedEffects>,
   "sharedState" | "transientState" | "secureState" | "evidence"
 > {
-  const sharedInitial = given.sharedState ?? {};
-  const transientInitial = given.transientState ?? {};
-  const secureInitial = given.secureState ?? {};
-  verifySeedsVisible(given, before);
+  const sharedInitial = { ...(given.sharedState ?? {}) };
+  const transientInitial = { ...(given.transientState ?? {}) };
+  const secureInitial = { ...(given.secureState ?? {}) };
+  verifySeedsVisible(given, before, priorExpectations);
+
+  // Once a prior matcher permits a different tenant value, carry that observed
+  // value into the AIC effects rather than reporting the local random seed.
+  for (const key of Object.keys(before)) {
+    if (priorMatcherForSeed(given, key, priorExpectations) === undefined) continue;
+    const value = before[key];
+    if (value === undefined) continue;
+    if (Object.prototype.hasOwnProperty.call(transientInitial, key)) {
+      transientInitial[key] = value;
+    } else if (Object.prototype.hasOwnProperty.call(secureInitial, key)) {
+      secureInitial[key] = value;
+    } else if (Object.prototype.hasOwnProperty.call(sharedInitial, key)) {
+      sharedInitial[key] = value;
+    }
+  }
 
   const sharedFinal: JsonObject = { ...sharedInitial };
   const transientFinal: JsonObject = { ...transientInitial };
@@ -189,7 +209,7 @@ function seedBuckets(given: Given, key: string): StateChannel[] {
   return buckets;
 }
 
-function verifySeedsVisible(given: Given, before: JsonObject): void {
+function verifySeedsVisible(given: Given, before: JsonObject, priorExpectations: readonly Expect[]): void {
   const keys = new Set([
     ...Object.keys(given.sharedState ?? {}),
     ...Object.keys(given.secureState ?? {}),
@@ -197,15 +217,38 @@ function verifySeedsVisible(given: Given, before: JsonObject): void {
   ]);
   for (const key of keys) {
     const expected = visibleSeed(given, key);
+    const matcher = priorMatcherForSeed(given, key, priorExpectations);
     if (
       !Object.prototype.hasOwnProperty.call(before, key) ||
-      !deepEqual(before[key], expected)
+      (matcher === undefined
+        ? !deepEqual(before[key], expected)
+        : !seedMatches(matcher, expected, before[key]))
     ) {
       throw new Error(
-        `rhino-local: AIC subject state did not contain the declared seed ${JSON.stringify(key)}`
+        `rhino-local: AIC subject state did not contain the declared seed ${JSON.stringify(key)}${matcher === undefined ? "" : ` matching ${formatValue(matcher)}`}`
       );
     }
   }
+}
+
+function priorMatcherForSeed(given: Given, key: string, prior: readonly Expect[]): unknown {
+  const bucket = Object.prototype.hasOwnProperty.call(given.transientState ?? {}, key)
+    ? "transientState"
+    : Object.prototype.hasOwnProperty.call(given.secureState ?? {}, key)
+      ? "secureState" : "sharedState";
+  for (const expect of prior.slice().reverse()) {
+    const diff = expect[bucket];
+    if (Object.prototype.hasOwnProperty.call(diff?.added ?? {}, key)) {
+      const value = diff?.added?.[key];
+      return containsMatcher(value) ? value : undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(diff?.changed ?? {}, key)) {
+      const value = diff?.changed?.[key];
+      return containsMatcher(value) ? value : undefined;
+    }
+    if (diff?.removed?.includes(key)) return undefined;
+  }
+  return undefined;
 }
 
 function visibleSeed(given: Given, key: string): unknown {

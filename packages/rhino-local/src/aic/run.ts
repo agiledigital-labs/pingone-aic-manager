@@ -1,6 +1,6 @@
 import type { TenantProvider } from "./provider.ts";
 import { randomUUID } from "node:crypto";
-import type { Case, JsonValue, RecordedEffects } from "../case/types.ts";
+import type { Case, Expect, JsonValue, RecordedEffects } from "../case/types.ts";
 import { projectRoot } from "../project.ts";
 import { fillCallbackInputs, parseAuthenticateCallbacks } from "./callbacks.ts";
 import { emitWrapperJourney, type WrapperJourney } from "./emit-journey.ts";
@@ -391,7 +391,10 @@ export async function driveJourney(
     response = await invokeJourney(io, session, wrapper, tx.next(), body);
   }
   const finalIndex = cases.length - 1;
-  const final = recordFromAuthenticate(cases[finalIndex] as Case, response, proof);
+  const final = recordFromAuthenticate(
+    cases[finalIndex] as Case, response, proof,
+    cases.slice(0, finalIndex).map((kase) => kase.expect)
+  );
   passes.push(final);
   await observePass?.(finalIndex, final);
   return passes;
@@ -472,7 +475,8 @@ export async function invokeJourney(
 function recordFromAuthenticate(
   kase: Case,
   response: AmResponse,
-  proof?: { leaseDigest: string; invocationNonce: string; subjectDigest: string }
+  proof?: { leaseDigest: string; invocationNonce: string; subjectDigest: string },
+  priorExpectations: readonly Expect[] = []
 ): RecordedEffects {
   const parsed = parseAuthenticateCallbacks(response.body);
   if (parsed.dumpRaw !== undefined) {
@@ -489,6 +493,7 @@ function recordFromAuthenticate(
       given: kase.given,
       dump,
       callbacks: parsed.callbacks,
+      priorExpectations,
     });
   }
   if (parsed.callbacks.length > 0) {

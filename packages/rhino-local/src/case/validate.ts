@@ -15,10 +15,13 @@ import type {
   AllowUndeclared,
   AllowUndeclaredChannel,
   CallbackEffect,
+  CallbackExpect,
   Case,
   CaseInit,
   Engine,
   Expect,
+  ExpectedObject,
+  ExpectedValue,
   Given,
   HttpExpect,
   HttpMatch,
@@ -33,7 +36,7 @@ import type {
   Pattern,
   StateDiff,
 } from "./types.ts";
-import { isPlainObject, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
+import { isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
 
 const GIVEN_BINDING_SEED_SET: ReadonlySet<string> = new Set(GIVEN_BINDING_SEEDS);
 const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
@@ -232,7 +235,7 @@ function parseExpect(raw: unknown, path: string): Expect {
     expect.callbacks = parseArray(
       raw.callbacks,
       `${path}.callbacks`,
-      parseCallback
+      parseCallbackExpect
     );
   }
   if (raw.openidm !== undefined) {
@@ -259,8 +262,8 @@ function parseStateDiff(raw: unknown, path: string): StateDiff {
   }
   rejectUnknownKeys(path, raw, STATE_DIFF_KEYS);
   const diff: StateDiff = {};
-  assignJsonObject(diff, "added", raw.added, `${path}.added`);
-  assignJsonObject(diff, "changed", raw.changed, `${path}.changed`);
+  assignExpectedObject(diff, "added", raw.added, `${path}.added`);
+  assignExpectedObject(diff, "changed", raw.changed, `${path}.changed`);
   if (raw.removed !== undefined) {
     if (!Array.isArray(raw.removed) || raw.removed.some((key) => typeof key !== "string")) {
       throw new Error(`rhino-local: ${path}.removed must be an array of strings`);
@@ -320,12 +323,15 @@ function parseHttpExpect(raw: unknown, path: string): HttpExpect {
   if (!isPlainObject(raw)) {
     throw new Error(`rhino-local: ${path} is not an object`);
   }
-  rejectUnknownKeys(path, raw, ["url", "method", "times"]);
+  rejectUnknownKeys(path, raw, ["url", "method", "body", "times"]);
   if (raw.url === undefined) {
     throw new Error(`rhino-local: ${path}.url is required`);
   }
   const expect: HttpExpect = { url: parsePattern(raw.url, `${path}.url`) };
   assignOptionalString(expect, "method", raw.method, `${path}.method`);
+  if (raw.body !== undefined) {
+    expect.body = parseExpectedValue(raw.body, `${path}.body`);
+  }
   assignTimes(expect, raw.times, `${path}.times`);
   return expect;
 }
@@ -352,7 +358,7 @@ function parseOpenidmExpect(raw: unknown, path: string): OpenidmExpect {
     resource: parsePattern(raw.resource, `${path}.resource`),
   };
   if (raw.body !== undefined) {
-    expect.body = parseJsonValue(raw.body, `${path}.body`);
+    expect.body = parseExpectedValue(raw.body, `${path}.body`);
   }
   if (raw.actionName !== undefined) {
     expect.actionName = parsePattern(raw.actionName, `${path}.actionName`);
@@ -394,6 +400,45 @@ function parseCallback(raw: unknown, path: string): CallbackEffect {
     callback[key] = parseJsonValue(value, `${path}.${key}`);
   }
   return callback;
+}
+
+function parseCallbackExpect(raw: unknown, path: string): CallbackExpect {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  if (typeof raw.type !== "string" || raw.type.trim() === "") {
+    throw new Error(`rhino-local: ${path}.type must be a non-empty string`);
+  }
+  const callback: CallbackExpect = { type: raw.type };
+  for (const [key, value] of Object.entries(raw)) {
+    if (key !== "type") callback[key] = parseExpectedValue(value, `${path}.${key}`);
+  }
+  return callback;
+}
+
+function parseExpectedValue(raw: unknown, path: string): ExpectedValue {
+  if (raw instanceof RegExp || isStandardSchema(raw)) return raw;
+  if (Array.isArray(raw)) return raw.map((item, index) =>
+    parseExpectedValue(item, `${path}[${index}]`));
+  if (isPlainObject(raw)) return parseExpectedObject(raw, path);
+  return parseJsonValue(raw, path);
+}
+
+function parseExpectedObject(raw: unknown, path: string): ExpectedObject {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} must be an object`);
+  }
+  const out: ExpectedObject = {};
+  for (const [key, value] of Object.entries(raw)) {
+    out[key] = parseExpectedValue(value, `${path}.${key}`);
+  }
+  return out;
+}
+
+function assignExpectedObject<K extends string>(
+  target: { [P in K]?: ExpectedObject }, key: K, raw: unknown, path: string
+): void {
+  if (raw !== undefined) target[key] = parseExpectedObject(raw, path);
 }
 
 function parseAllowUndeclared(raw: unknown, path: string): AllowUndeclared {
@@ -653,4 +698,3 @@ function rejectUnknownKeys(
     }
   }
 }
-
