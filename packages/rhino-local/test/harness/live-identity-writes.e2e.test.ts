@@ -7,18 +7,37 @@ const RESOURCE = `managed/alpha_user/${ID}`;
 const suite = defineSuite({
   name: "identity-write-sequence",
   script: [
-    `var identity = idRepository.getIdentity("${ID}");`,
+    'function t(f) { try { return String(f()); } catch (e) { return "threw:" + e; } }',
+    'var identity = null;',
+    `var lookupResult = t(function () { identity = idRepository.getIdentity("${ID}"); return identity ? "object" : "null"; });`,
     "if (callbacks.isEmpty()) {",
-    '  identity.setAttribute("fr-attr-str1", ["new"]);',
-    '  nodeState.putShared("preStore", String(identity.getAttributeValues("fr-attr-str1").toArray()[0]));',
-    '  identity.addAttribute("fr-attr-multi1", "second");',
-    "  identity.store();",
+    '  nodeState.putShared("lookupResult", lookupResult);',
+    '  nodeState.putShared("setResult", t(function () { identity.setAttribute("fr-attr-str1", ["new"]); return "ok"; }));',
+    '  nodeState.putShared("preStore", t(function () { return identity.getAttributeValues("fr-attr-str1").toArray()[0]; }));',
+    '  nodeState.putShared("addResult", t(function () { identity.addAttribute("fr-attr-multi1", "second"); return "ok"; }));',
+    '  nodeState.putShared("storeResult", t(function () { identity.store(); return "ok"; }));',
     '  callbacksBuilder.nameCallback("Continue");',
     "} else {",
-    '  var values = identity.getAttributeValues("fr-attr-multi1");',
-    '  var correctName = identity.getAttributeValues("fr-attr-str1").toArray()[0];',
-    '  var wrongName = identity.getAttributeValues("frUnindexedString1");',
-    '  action.goTo(nodeState.get("preStore") === "new" && correctName === "new" && values.size() === 2 && values.contains("first") && values.contains("second") && wrongName.size() === 0 ? "match" : "mismatch");',
+    '  nodeState.putShared("observedLookup", lookupResult);',
+    '  var before = t(function () { return nodeState.get("preStore"); });',
+    '  var setResult = t(function () { return nodeState.get("setResult"); });',
+    '  var addResult = t(function () { return nodeState.get("addResult"); });',
+    '  var storeResult = t(function () { return nodeState.get("storeResult"); });',
+    '  var correctName = t(function () { return identity.getAttributeValues("fr-attr-str1").toArray()[0]; });',
+    '  var count = t(function () { return identity.getAttributeValues("fr-attr-multi1").size(); });',
+    '  var first = t(function () { return identity.getAttributeValues("fr-attr-multi1").contains("first"); });',
+    '  var second = t(function () { return identity.getAttributeValues("fr-attr-multi1").contains("second"); });',
+    '  var wrongName = t(function () { return identity.getAttributeValues("frUnindexedString1").size(); });',
+    '  nodeState.putShared("observedPreStore", before);',
+    '  nodeState.putShared("observedSet", setResult);',
+    '  nodeState.putShared("observedAdd", addResult);',
+    '  nodeState.putShared("observedStore", storeResult);',
+    '  nodeState.putShared("observedString", correctName);',
+    '  nodeState.putShared("observedCount", count);',
+    '  nodeState.putShared("observedFirst", first);',
+    '  nodeState.putShared("observedSecond", second);',
+    '  nodeState.putShared("observedWrongName", wrongName);',
+    '  action.goTo(lookupResult === "object" && before === "new" && setResult === "ok" && addResult === "ok" && storeResult === "ok" && correctName === "new" && count === "2" && first === "true" && second === "true" && wrongName === "0" ? "match" : "mismatch");',
     "}",
   ].join("\n"),
   outcomes: ["match", "mismatch"],
@@ -41,19 +60,34 @@ describe("identity writes", () => {
     const run = await lease.run().step({
       expect: {
         callbacks: [{ type: "NameCallback", prompt: "Continue" }],
-        sharedState: { added: { preStore: "new" } },
+        sharedState: { added: {
+          lookupResult: /^.*$/,
+          setResult: /^.*$/,
+          preStore: /^.*$/,
+          addResult: /^.*$/,
+          storeResult: /^.*$/,
+        } },
         openidm: [{ method: "patch", resource: RESOURCE, body: [
           { operation: "replace", field: "frUnindexedString1", value: ["new"] },
           { operation: "replace", field: "frUnindexedMultivalued1", value: ["first", "second"] },
         ] }],
       },
-      check: async (idm) => {
-        const record = await idm.read(RESOURCE);
-        expect(record?.frUnindexedString1).toBe("new");
-        expect(record?.frUnindexedMultivalued1).toEqual(["first", "second"]);
-      },
       reply: [{ type: "NameCallback", value: "continue" }],
-    }).expect({ outcome: "match" });
+    }).expect({
+      outcome: "match",
+      sharedState: { added: {
+        observedLookup: "object",
+        observedPreStore: "new",
+        observedSet: "ok",
+        observedAdd: "ok",
+        observedStore: "ok",
+        observedString: "new",
+        observedCount: "2",
+        observedFirst: "true",
+        observedSecond: "true",
+        observedWrongName: "0",
+      } },
+    });
     expect(run.verdict.pass).toBe(true);
   });
 });
