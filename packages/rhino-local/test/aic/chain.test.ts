@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { fillCallbackInputs } from "../../src/aic/callbacks.ts";
 import { headerValues } from "../../src/aic/http.ts";
@@ -66,6 +66,18 @@ describe("fillCallbackInputs", () => {
 });
 
 describe("runAicChain", () => {
+  it("refuses libraries before contacting the tenant on the one-shot path", async () => {
+    const fake = mockChain();
+    const aic = vi.spyOn(fake.io, "aic");
+    const http = vi.spyOn(fake.io, "http");
+    const kase = caseWith({ given: { libraries: { "lib-common": "exports.value = 1;" } } });
+    await expect(runAicChain([kase], SCRIPT, {
+      io: fake.io, project: "/tmp/rhino-local-aic-test",
+    })).rejects.toThrow(/runAicChain cannot provision given\.libraries.*use useLease\(\)/);
+    expect(aic).not.toHaveBeenCalled();
+    expect(http).not.toHaveBeenCalled();
+  });
+
   it("checks a carried matcher against the tenant's own seed on the resumed pass", async () => {
     const local = "123e4567-e89b-42d3-a456-426614174000";
     const tenant = "123e4567-e89b-42d3-a456-426614174001";
