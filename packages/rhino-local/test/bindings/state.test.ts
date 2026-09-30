@@ -106,6 +106,18 @@ describe("nodeState", () => {
     });
   });
 
+  it("mutates the registered objectAttributes map and records the state change", () => {
+    const effects = runScript(
+      [
+        'var attributes = nodeState.get("objectAttributes");',
+        'attributes.put("mail", "a@example.com");',
+        'if (attributes.get("mail") !== "a@example.com" || nodeState.get("objectAttributes").get("mail") !== "a@example.com") throw new Error("map read failed");',
+      ].join("\n"),
+      { sharedState: { objectAttributes: {} } }
+    );
+    expect(effects.sharedState.final).toEqual({ objectAttributes: { mail: "a@example.com" } });
+  });
+
   it("mergeShared adds keys without replacing the whole bucket", () => {
     const effects = runScript(
       'nodeState.mergeShared({ b: 2, objectAttributes: { k: 1 } });',
