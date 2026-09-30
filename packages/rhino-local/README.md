@@ -191,6 +191,23 @@ only when the script exposes it in recorded effects. Check tenant ESV values
 before using the AIC lane for value-sensitive tests. Tenant ESV changes require
 a restart and are outside the lease.
 
+### `scriptName`
+
+The local harness seeds `scriptName` on every run. It defaults to the suite's
+`name`; set `scriptName` on `defineSuite` for a different local-only name.
+With `useLease(..., { aic: ... })`, the local lane instead uses the exact
+generated subject name that AIC uploads (`rl-aic-<hash>-subject`), so scripts
+that depend on the binding compare the same value on both lanes. An explicit
+suite `scriptName` with AIC enabled fails setup because the uploaded name
+cannot be changed to a deployed script's name. A direct low-level `Case` may
+still seed `given.scriptName` locally; the one-shot AIC runner rejects that
+seed. The one-shot `conform(..., { aic: "tenant" })` path supplies its generated
+name to the local runner for the same comparison.
+For a pre-recorded one-shot chain, choose `oneShotRunId`, seed each local
+case's `given.scriptName` with `oneShotSubjectName(oneShotRunId)`, then pass
+that ID to `conformChain`; it checks the name and removes the local-only seed
+before invoking AIC.
+
 ### Match a value's shape
 
 An expected JSON value can be a `RegExp` (for a string) or a synchronous

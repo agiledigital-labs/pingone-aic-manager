@@ -175,6 +175,7 @@ describe("first-pass-callbacks", () => {
   it("sees an empty submitted list without declaring a step", async () => {
     const run = await lease.run().expect({ outcome: "empty" });
     expect(run.kase.given.callbacks).toEqual([]);
+    expect(run.kase.given.scriptName).toBe("first-pass-callbacks");
     expect(run.verdict.pass).toBe(true);
   });
 });
@@ -213,5 +214,23 @@ describe("system-env-esv", () => {
   it("lets beforeRun change the suite ESV declaration", async () => {
     const run = await lease.run().expect({ outcome: "other" });
     expect(run.kase.given.esv).toEqual({ "esv.rl.example": "before" });
+  });
+});
+
+const namedSuite = defineSuite({
+  name: "local script name",
+  scriptName: "explicit-local-name",
+  script: 'action.goTo(scriptName === "explicit-local-name" ? "named" : "wrong");',
+  outcomes: ["named", "wrong"],
+});
+
+describe("local script name", () => {
+  const lease = useLease(namedSuite);
+
+  // Regression: the harness used to leave scriptName at the mock sentinel.
+  it("uses the suite's explicit scriptName", async () => {
+    const run = await lease.run().expect({ outcome: "named" });
+    expect(run.kase.given.scriptName).toBe("explicit-local-name");
+    expect(run.verdict.pass).toBe(true);
   });
 });

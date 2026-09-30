@@ -19,7 +19,7 @@ function objectHasKeys(value: object | undefined): boolean {
  */
 export function aicUnsupportedReason(
   kase: Case,
-  options: { harnessOwnsManaged?: boolean } = {}
+  options: { harnessOwnsManaged?: boolean; harnessOwnsScriptName?: boolean } = {}
 ): string | undefined {
   if (kase.given.engine === "legacy") {
     return "legacy engine: AIC wrapper emit is next-gen only (legacy results go through JavaImporter + Action.send, not callbacksBuilder)";
@@ -40,7 +40,7 @@ export function aicUnsupportedReason(
   if (objectHasKeys(kase.given.secureState)) {
     return "given.secureState: next-gen nodeState has no putSecure";
   }
-  if (kase.given.scriptName !== undefined) {
+  if (kase.given.scriptName !== undefined && options.harnessOwnsScriptName !== true) {
     return "given.scriptName cannot be seeded on AIC (it is the uploaded script's name)";
   }
   if (kase.given.cookieName !== undefined) {

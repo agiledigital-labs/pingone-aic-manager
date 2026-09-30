@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isPortable } from "../case/portable.ts";
 import { STATE_CHANNELS } from "../case/types.ts";
 import type {
@@ -15,6 +16,7 @@ import {
 } from "./diff.ts";
 import { judge } from "../case/verdict.ts";
 import { managedSeedMatches, type ManagedFixture } from "./managed.ts";
+import { oneShotSubjectName } from "./emit-journey.ts";
 import { runAicChain, runAicLane, type AicReply } from "./run.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
 
@@ -62,10 +64,15 @@ export type AicChainRunner = (args: {
   source: string;
   replies: readonly (readonly AicReply[])[];
   managedFixtures?: readonly ManagedFixture[];
+  runId?: string;
 }) => Promise<readonly RecordedEffects[]>;
 
 export interface ChainConformanceInput extends LocalChainResult {
   source: string;
+  /** The file lease supplied the real uploaded name to the local lane. */
+  harnessOwnsScriptName?: boolean;
+  /** For a one-shot chain whose local cases used the generated subject name. */
+  oneShotRunId?: string;
   /** Omit to skip; pass a runner, or `"tenant"` to use `runAicChain`. */
   aic?: AicChainRunner | "tenant";
 }
@@ -95,9 +102,21 @@ export interface ChainConformanceReport {
  * until the bindings slice lands; a missing AIC runner is used by tests.
  */
 export async function conform(input: ConformanceInput): Promise<ConformanceReport> {
-  const local = await runLane(input.local, input, "no local runner provided (bindings lane is a separate slice)");
+  const runId = input.aic === "tenant" && input.kase.given.scriptName === undefined
+    ? randomUUID().replace(/-/g, "").slice(0, 12)
+    : undefined;
+  const localInput = runId === undefined ? input : {
+    ...input,
+    kase: {
+      ...input.kase,
+      given: { ...input.kase.given, scriptName: oneShotSubjectName(runId) },
+    },
+  };
+  const local = await runLane(input.local, localInput, "no local runner provided (bindings lane is a separate slice)");
   const aicSkip = aicUnsupportedReason(input.kase);
-  const aicRunner = input.aic === "tenant" ? tenantRunner : input.aic;
+  const aicRunner: LaneRunner | undefined = input.aic === "tenant"
+    ? ({ kase, source }) => runAicLane(kase, source, runId === undefined ? {} : { runId })
+    : input.aic;
   const aic = aicSkip
     ? skipResult(aicSkip)
     : await runLane(aicRunner, input, "no AIC runner provided");
@@ -139,7 +158,10 @@ export async function conformChain(
       input.managedFixtures
     );
   const unsupported = input.cases.flatMap((kase) => {
-    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged });
+    const reason = aicUnsupportedReason(kase, {
+      harnessOwnsManaged,
+      harnessOwnsScriptName: input.harnessOwnsScriptName === true || input.oneShotRunId !== undefined,
+    });
     return reason === undefined ? [] : [`${kase.name}: ${reason}`];
   });
   const aicRunner = input.aic === "tenant" ? tenantChainRunner : input.aic;
@@ -216,6 +238,14 @@ function validateChainInput(input: ChainConformanceInput): void {
       `conformChain: ${input.cases.length} passes need ${input.cases.length - 1} reply sets, got ${input.replies.length}`
     );
   }
+  if (input.oneShotRunId !== undefined) {
+    const actualName = oneShotSubjectName(input.oneShotRunId);
+    for (const kase of input.cases) {
+      if (kase.given.scriptName !== actualName) {
+        throw new Error(`${kase.name}: local scriptName must be ${JSON.stringify(actualName)} for one-shot conformance`);
+      }
+    }
+  }
 }
 
 async function runChainLane(
@@ -224,9 +254,10 @@ async function runChainLane(
 ): Promise<LaneResult[]> {
   try {
     const effects = await runner({
-      cases: input.cases,
+      cases: input.oneShotRunId === undefined ? input.cases : input.cases.map(withoutScriptName),
       source: input.source,
       replies: input.replies,
+      ...(input.oneShotRunId === undefined ? {} : { runId: input.oneShotRunId }),
       ...(input.managedFixtures !== undefined
         ? { managedFixtures: input.managedFixtures }
         : {}),
@@ -243,6 +274,12 @@ async function runChainLane(
     const message = error instanceof Error ? error.message : String(error);
     return input.cases.map(() => ({ error: message }));
   }
+}
+
+function withoutScriptName(kase: Case): Case {
+  const given = { ...kase.given };
+  delete given.scriptName;
+  return { ...kase, given };
 }
 
 function observedResult(kase: Case, effects: RecordedEffects): LaneResult {
@@ -328,15 +365,15 @@ function skipResult(reason: string): LaneResult {
   return { skipped: reason };
 }
 
-const tenantRunner: LaneRunner = ({ kase, source }) => runAicLane(kase, source);
-
 const tenantChainRunner: AicChainRunner = ({
   cases,
   source,
   replies,
   managedFixtures,
+  runId,
 }) =>
   runAicChain(cases, source, {
     replies,
+    ...(runId === undefined ? {} : { runId }),
     ...(managedFixtures !== undefined ? { managedFixtures } : {}),
   });
