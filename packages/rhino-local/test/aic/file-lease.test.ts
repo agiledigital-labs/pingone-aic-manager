@@ -164,6 +164,46 @@ describe("AicFileLease", () => {
       new URL(call.url).pathname.includes("/scripts/"))).toHaveLength(5);
   });
 
+  it("blanks both sides of a mutual require before deleting the cycle", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-library-cycle-"));
+    try {
+      const fake = new FakeLeaseTenant({ deleteBlockedWhile: [
+        { targetName: "cycleA", blockerName: "cycleB" },
+        { targetName: "cycleB", blockerName: "cycleA" },
+      ] });
+      const lease = new AicFileLease({ id: "library-cycle", suiteName: "library cycle",
+        source: SOURCE, outcomes: ["done"],
+        libraries: {
+          cycleA: 'exports.name = "a"; exports.fromB = require("cycleB").name;',
+          cycleB: 'exports.name = "b"; exports.fromA = require("cycleA").name;',
+        },
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io });
+      await lease.open();
+      await lease.close();
+      const libraryIds = fake.calls.filter((call) => call.method === "PUT" &&
+        ["cycleA", "cycleB"].includes(String((JSON.parse(String(call.body)) as { name?: string }).name)) &&
+        (JSON.parse(String(call.body)) as { script?: string }).script !== "")
+        .map((call) => (JSON.parse(String(call.body)) as { _id: string })._id);
+      expect(libraryIds).toHaveLength(2);
+      const blankIndices = fake.calls.map((call, index) => ({ call, index }))
+        .filter(({ call }) => call.method === "PUT" &&
+          libraryIds.some((id) => new URL(call.url).pathname.endsWith(`/scripts/${id}`)) &&
+          (JSON.parse(String(call.body)) as { script?: string }).script === "")
+        .map(({ index }) => index);
+      expect(blankIndices).toHaveLength(2);
+      const deleteIndices = fake.calls.map((call, index) => ({ call, index }))
+        .filter(({ call }) => call.method === "DELETE" &&
+          libraryIds.some((id) => new URL(call.url).pathname.endsWith(`/scripts/${id}`)))
+        .map(({ index }) => index);
+      expect(deleteIndices).toHaveLength(2);
+      expect(Math.max(...blankIndices)).toBeLessThan(Math.min(...deleteIndices));
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
+      expect(await readLeaseJournal(paths.journalPath)).toBeUndefined();
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("reuses an identical library without deleting it and refuses a source collision before writing", async () => {
     const path = "/am/json/realms/root/realms/alpha/scripts/existing";
     const source = 'exports.value = "ok";';

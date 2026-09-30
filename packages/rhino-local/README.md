@@ -117,15 +117,21 @@ return "ready"; };`. Another library in the same map can call
 lease provisions absent entries as `LIBRARY` scripts in declaration order,
 then creates the subject. AM's write path does not syntax-check scripts;
 whether it validates `require()` targets at create time has not been measured.
+An A → B → C chain resolves locally; a three-library chain has not yet been
+measured on AM. In a diamond (A and B both require C), C runs once per local
+pass; AM's evaluation count is unmeasured. In a cycle (A ↔ B), local Rhino
+hands B A's partially built exports; AM's cycle behavior is unmeasured.
+Declare every name in the suite map: an undeclared name may resolve to a
+tenant-only library on AIC and make the lanes disagree.
 At close, the lease deletes the subject's graph, replaces each owned library's
 source with an empty body, confirms that update by reading it back, then
 retries deletion until no further delete succeeds. The blanking step removes
 references among owned libraries, including possible self-references in comments;
 it can be replayed from the recovery journal after a lost response. The
-orchestrator measured that replacing a library's source with a nonempty,
-reference-free body unblocked deletion on 2026-09-30; AM's acceptance of an
-empty body still needs a live check. An owned library still referenced by a
-reused external library remains journalled and is reported as residue at close.
+orchestrator's 2026-09-30 live run after `d7de205` confirmed that AM accepts
+the empty-source PUT and the tested lease left no library residue. An owned
+library still referenced by a reused external library remains journalled and
+is reported as residue at close.
 Names are realm-wide. If a named library
 already exists on the tenant with byte-identical source, the lease uses it and
 leaves it there. A different source or script context found during preflight
