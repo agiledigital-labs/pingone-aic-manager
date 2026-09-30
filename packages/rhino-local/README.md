@@ -197,6 +197,15 @@ only when the script exposes it in recorded effects. Check tenant ESV values
 before using the AIC lane for value-sensitive tests. Tenant ESV changes require
 a restart and are outside the lease.
 
+### Request cookies
+
+Declare cookies with `always: { cookies: { name: "value" } }`, override one
+name with `.run().cookies({ name: "other" })`, or edit `request.cookies` in
+`beforeRun`. The three sources merge per cookie name. The local lane seeds
+`requestCookies`; the AIC lane sends the same values on `/authenticate`.
+When a test also requests `session`, the harness adds the tenant's session
+cookie and refuses an author cookie with that name instead of overwriting it.
+
 ### `scriptName`
 
 The local harness seeds `scriptName` on every run. It defaults to the suite's

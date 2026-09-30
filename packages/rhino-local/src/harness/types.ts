@@ -30,6 +30,8 @@ export interface Channels {
   headers?: WireMap;
   /** Sent on the authenticate request. */
   params?: WireMap;
+  /** Cookie name/value pairs sent on the authenticate request. */
+  cookies?: Readonly<Record<string, string>>;
   /**
    * `existingSession` — session properties the script sees, as a flat string
    * map. Declaring it at all (`session: {}` included) asks for a logged-in
@@ -55,6 +57,7 @@ export interface RequestDraft {
   esvInState: boolean;
   headers: Record<string, string[]>;
   params: Record<string, string[]>;
+  cookies: Record<string, string>;
   session: JsonObject;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;
