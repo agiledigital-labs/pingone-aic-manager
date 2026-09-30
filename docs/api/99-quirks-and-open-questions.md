@@ -6,6 +6,17 @@ new things are learned.
 
 ---
 
+## 2026-09-30 — queued callbacks supersede `goTo`
+
+The orchestrator measured a next-gen scripted-decision pass through the AIC
+lane: it queued a TextOutputCallback, wrote shared state, and called
+`action.goTo("true")`. The tenant returned the callback and no outcome. This
+contradicts the earlier claim in `12-script-bindings-matrix.md` and
+`09-journeys.md` that callbacks are sent only without `goTo`. The measurement
+was supplied to this change; it was not re-run by the implementing agent.
+
+---
+
 ## Resolved (verified live 2026-05-17)
 
 ### Q1. Script body encoding

@@ -160,6 +160,11 @@ function compareState(
 ): void {
   const localMutations = collectState(local, localUnobserved, "local", gaps);
   const aicMutations = collectState(aic, aicUnobserved, "AIC", gaps);
+  // A callback response has no result-node state dump. Its empty state maps
+  // are placeholders, not evidence that the local writes were absent.
+  if (STATE_CHANNELS.every((bucket) => localUnobserved.has(bucket) || aicUnobserved.has(bucket))) {
+    return;
+  }
   const remaining = aicMutations.slice();
   const pairedAicKeys = new Set<string>();
   for (const localMutation of localMutations) {

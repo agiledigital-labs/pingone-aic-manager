@@ -23,6 +23,7 @@ var __rhinoLocal = {
   httpStubs: [],
   generatedId: 0,
   outcome: null,
+  engine: "next-gen",
   callbacks: [],
   openidm: [],
   http: [],
@@ -2865,6 +2866,7 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
 
 function __rhinoLocalSeed(given) {
   given = given || {};
+  __rhinoLocal.engine = given.engine || "next-gen";
   __rhinoLocal.bindings = __rhinoLocalClone(given.bindings || {});
   var seeded = Object.keys(__rhinoLocal.bindings);
   var s;
@@ -2998,8 +3000,16 @@ function __rhinoLocalHarvest() {
   ) {
     recordedOutcome = String(outcome);
   }
+  // Queued next-gen callbacks suspend the node even after goTo. Preserve the
+  // discarded decision as diagnostic evidence without judging it as an effect.
+  var discardedOutcome = null;
+  if (__rhinoLocal.engine !== "legacy" && __rhinoLocal.callbacks.length > 0) {
+    discardedOutcome = recordedOutcome;
+    recordedOutcome = null;
+  }
   return JSON.stringify({
     outcome: recordedOutcome,
+    discardedOutcome: discardedOutcome,
     sharedState: {
       initial: __rhinoLocal.initialShared,
       final: __rhinoLocalClone(__rhinoLocal.shared),

@@ -53,6 +53,12 @@ export function parseHarvest(raw: string): RecordedEffects {
     http: parseArray(parsed.http, "harvest.http", parseHttp),
     logs: parseArray(parsed.logs, "harvest.logs", parseLog),
   };
+  if (parsed.discardedOutcome !== undefined) {
+    if (parsed.discardedOutcome !== null && typeof parsed.discardedOutcome !== "string") {
+      throw new Error("rhino-local: harvest.discardedOutcome must be a string or null");
+    }
+    effects.discardedOutcome = parsed.discardedOutcome;
+  }
   if (parsed.managedStore !== undefined) {
     effects.managedStore = parseManagedStore(parsed.managedStore);
   }

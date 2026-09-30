@@ -556,8 +556,10 @@ failure  e301438c-0bd0-429c-ab0c-66126501069a
 
 **Next-gen scripted decision has no `action.send`.** The `action` binding
 exposes `goTo`, `withErrorMessage`, `withHeader`, `suspend` and friends — no
-send. Callbacks are _accumulated_ on `callbacksBuilder`, and AM sends whatever
-was built if the script does not `goTo`:
+send. Callbacks are _accumulated_ on `callbacksBuilder`. If a pass queues any, AM
+sends them and suspends the node even if `action.goTo()` also ran. The queued
+callbacks win and the outcome is discarded (orchestrator AIC-lane probe,
+2026-09-30; see `12-script-bindings-matrix.md`):
 
 ```javascript
 if (callbacks.isEmpty()) {

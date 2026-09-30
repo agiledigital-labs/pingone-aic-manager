@@ -749,6 +749,17 @@ the lanes in the one binding a step chain exists to exercise. Each intermediate
 pass is consequently marked `aicObserved: false` and reports an
 `ObservationGap`; the final pass is marked observed and is fully diffed.
 
+If a next-gen pass queues callbacks, AM pauses and waits for the reply even if
+the script called `action.goTo()`. The outcome is discarded. The local recorder
+keeps the discarded decision only for diagnostics. A suspended **final** AIC
+pass observes the callback list and absence of an outcome in the authenticate
+response, but no result node runs to dump state. Its state and other
+unobservable effects are therefore observation gaps; its AIC verdict on those
+channels is unverified. `aicObserved` is false for this final pass too, while
+the observable callbacks and outcome remain judged and lane-compared. This
+rule follows the orchestrator's 2026-09-30 AIC-lane probe; this change did not
+repeat a tenant run.
+
 ## Per-file AIC lease
 
 Suite `libraries` maps exact `require()` names to source strings. The local

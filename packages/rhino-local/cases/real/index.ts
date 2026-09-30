@@ -111,7 +111,7 @@ function entry(
     kind: "nextgen" | "legacy";
     origin: string;
     expect: {
-      outcome: string;
+      outcome: string | null;
       callbacks: ReturnType<typeof hiddenValue>;
       http?: HttpExpect[];
       allowUndeclared?: AllowUndeclared;
@@ -126,7 +126,7 @@ function entry(
     kind,
     origin: `scripts/rhino-script-tester/${originFile}`,
     expect: {
-      outcome: "ok",
+      outcome: kind === "legacy" ? "ok" : null,
       callbacks: hiddenValue(expectPayload),
     },
     given: firstVisit(extras.given),
@@ -294,7 +294,7 @@ export const realCases: RealEntry[] = [
     kind: "nextgen",
     origin: "scripts/rhino-script-tester/fixtures/const-top-level.script.js",
     expect: {
-      outcome: "ok",
+      outcome: null,
       callbacks: hiddenValue({ ok: true, feature: "const-top-level" }),
     },
     given: firstVisit(),
@@ -387,7 +387,7 @@ export const realCases: RealEntry[] = [
     kind: "nextgen",
     origin: "scripts/rhino-script-tester/scripts/rhino-var-control.script.js",
     expect: {
-      outcome: "ok",
+      outcome: null,
       callbacks: hiddenValue({
         ok: true,
         result: {
@@ -4236,9 +4236,8 @@ export const realCases: RealEntry[] = [
     origin: "scripts/rhino-script-tester/fixtures/binding-callbacks-builder.script.js",
     given: firstVisit(),
     expect: {
-      // AIC sends the callbacks and decides nothing; the harness records the
-      // script's outcome alongside them, as for every probe case here.
-      outcome: "ok",
+      // AIC sends the callbacks and suspends, discarding the script's goTo.
+      outcome: null,
       callbacks: [
         {
           "type": "ChoiceCallback",
