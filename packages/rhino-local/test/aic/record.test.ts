@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   assembleEffects,
   classifyFinal,
@@ -6,6 +7,26 @@ import {
 } from "../../src/aic/record.ts";
 
 describe("classifyFinal", () => {
+  it("accepts the tenant's own carried value only when a prior pass matcher validates it", () => {
+    // Regression: pass 2 used the local random seed for byte-exact AIC checking.
+    const prior = { outcome: null, sharedState: { added: {
+      tracking: { id: z.string().uuid(), fixed: "same" },
+    } } } as const;
+    const local = "123e4567-e89b-42d3-a456-426614174000";
+    const tenant = "123e4567-e89b-42d3-a456-426614174001";
+    const given = { sharedState: { tracking: { id: local, fixed: "same" } } };
+    const classified = classifyFinal(given, { tracking: { id: tenant, fixed: "same" } },
+      { tracking: { id: tenant, fixed: "same" } }, [prior]);
+    expect(classified.sharedState.initial).toEqual({ tracking: { id: tenant, fixed: "same" } });
+    expect(classified.sharedState.final).toEqual({ tracking: { id: tenant, fixed: "same" } });
+    expect(() => classifyFinal(given, {}, {}, [prior])).toThrow(/declared seed "tracking"/);
+    expect(() => classifyFinal(given, { tracking: { id: "bad", fixed: "same" } },
+      { tracking: { id: "bad", fixed: "same" } }, [prior])).toThrow(/declared seed "tracking"/);
+    expect(() => classifyFinal(given, { tracking: { id: tenant, fixed: "different" } },
+      { tracking: { id: tenant, fixed: "different" } }, [prior])).toThrow(/declared seed "tracking"/);
+    expect(() => classifyFinal(given, { tracking: { id: tenant, fixed: "same" } },
+      { tracking: { id: tenant, fixed: "same" } })).toThrow(/declared seed "tracking"/);
+  });
   it("derives arbitrary ambient state from the before snapshot without a name allow-list", () => {
     const recorded = classifyFinal(
       {

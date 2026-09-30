@@ -699,6 +699,18 @@ precisely located fidelity gap, which is what the corpus is for.
 
 ## Step chains — both lanes (2026-09-14)
 
+Expected JSON values accept `RegExp` or a synchronous Standard Schema at any
+depth. That includes state `added`/`changed` in all buckets, callback fields,
+OpenIDM bodies, and HTTP request bodies. `z.string().uuid()` checks a random
+tracking id; `z.unknown()` means present with any value. A matcher declares its
+key, so strict undeclared-effect checks still apply. The broad escape hatch
+`allowUndeclared: { sharedState: true }` allows undeclared mutations for the
+whole shared-state channel. The lane diff compares presence and bucket at
+matcher paths while each lane's verdict validates its own value. When a prior
+step declared a matcher, the AIC seed check validates the tenant's carried
+value against it instead of requiring the local lane's random bytes. Matchers
+are refused in input seeds and HTTP stub replies.
+
 A journey that asks the user a question runs the same node twice. One `Case`
 per pass; `.step({ expect, reply, check })` on the lease declares a suspended
 pass, and `runAicChain(cases, source, { replies })` runs the same chain against

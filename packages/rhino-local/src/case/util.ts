@@ -1,4 +1,4 @@
-import type { JsonObject, JsonValue } from "./types.ts";
+import type { JsonObject, JsonValue, StandardSchema } from "./types.ts";
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -8,12 +8,37 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return proto === Object.prototype || proto === null;
 }
 
+export function isStandardSchema(value: unknown): value is StandardSchema {
+  if (typeof value !== "object" || value === null || !("~standard" in value)) return false;
+  const standard = value["~standard"];
+  return typeof standard === "object" && standard !== null &&
+    "validate" in standard && typeof standard.validate === "function";
+}
+
+function describeSchema(value: StandardSchema): string {
+  const vendor = value["~standard"].vendor;
+  const zod = value as unknown as { _zod?: { def?: { type?: unknown; checks?: unknown[] } } };
+  const kind = zod._zod?.def?.type;
+  const checks = zod._zod?.def?.checks ?? [];
+  const formats = checks.flatMap((check) => {
+    const item = check as { _zod?: { def?: { format?: unknown } } };
+    const format = item._zod?.def?.format;
+    return typeof format === "string" ? [format] : [];
+  });
+  const detail = vendor === "zod" && typeof kind === "string"
+    ? `: ${[kind, ...formats].join(" ")}` : "";
+  return `schema (${vendor ?? "unknown"}${detail})`;
+}
+
 export function formatValue(value: unknown): string {
   if (value === undefined) {
     return "<absent>";
   }
   if (value instanceof RegExp) {
     return String(value);
+  }
+  if (isStandardSchema(value)) {
+    return describeSchema(value);
   }
   if (typeof value === "string") {
     return JSON.stringify(value);
@@ -22,10 +47,21 @@ export function formatValue(value: unknown): string {
     return "<function>";
   }
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(formatNested(value));
   } catch {
     return String(value);
   }
+}
+
+function formatNested(value: unknown): unknown {
+  if (value instanceof RegExp) return String(value);
+  if (isStandardSchema(value)) return describeSchema(value);
+  if (Array.isArray(value)) return value.map(formatNested);
+  if (isPlainObject(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) =>
+      [key, formatNested(item)]));
+  }
+  return value;
 }
 
 export function suggestKey(
@@ -92,6 +128,9 @@ function editDistance(a: string, b: string): number {
 }
 
 export function parseJsonValue(raw: unknown, path: string): JsonValue {
+  if (raw instanceof RegExp || isStandardSchema(raw)) {
+    throw new Error(`rhino-local: ${path} cannot contain a matcher; matchers are allowed only in JSON-value expectations`);
+  }
   if (raw === null || typeof raw === "string" || typeof raw === "boolean") {
     return raw;
   }

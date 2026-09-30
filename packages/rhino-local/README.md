@@ -131,6 +131,38 @@ Expect `outcome: null` and the emitted callbacks, then use `.step({ reply })`
 to submit a response and run the next pass. A pass with no queued callbacks
 keeps its `goTo` outcome. Legacy `Action.send` behavior is separate.
 
+### Match a value's shape
+
+An expected JSON value can be a `RegExp` (for a string) or a synchronous
+Standard Schema, such as a zod 4 schema. Matchers work recursively in every
+state channel's `added` and `changed` values, callback fields, OpenIDM bodies,
+and HTTP request bodies:
+
+```ts
+import { z } from "zod";
+
+const run = await lease.run().expect({
+  outcome: "done",
+  sharedState: {
+    added: {
+      tracking: { id: z.string().uuid(), token: /^[0-9a-f]{32}$/ },
+    },
+  },
+});
+```
+
+Use `z.unknown()` when a key must be present but any JSON value is acceptable.
+The key is still declared: missing keys, wrong state buckets, extra object
+fields, and undeclared mutations still fail. Each lane validates its own value;
+the lane comparison ignores value differences only at declared matcher leaves
+and keeps presence, location, and every exact sibling strict. AIC can check a
+matcher only when that channel is observable. For example, state on a pass
+that suspends with callbacks is unverified because the result node did not run.
+`allowUndeclared: { sharedState: true }` is the blunt option: it allows all
+undeclared shared-state mutations, rather than checking one random key's shape.
+Matchers are expectation-only; `given` seeds and HTTP stub replies remain
+plain JSON.
+
 
 **State.** Failure records, the log view and environment profiles can all
 contain tenant data. They go to `<project>/.aic-script-tester/`, which writes its own

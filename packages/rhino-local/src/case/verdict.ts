@@ -1,4 +1,5 @@
 import { deepEqual, matchesPattern } from "./equal.ts";
+import { matchesValue } from "./matcher.ts";
 import { isPortable } from "./portable.ts";
 import {
   ALLOW_UNDECLARED_CHANNELS,
@@ -16,6 +17,7 @@ import type {
   Channel,
   EvidenceChannel,
   Expect,
+  ExpectedValue,
   HttpEffect,
   HttpExpect,
   JsonObject,
@@ -129,7 +131,7 @@ interface StateDeclaration {
   channel: StateChannel;
   key: string;
   operation: StateMutation["operation"];
-  after?: JsonObject[string];
+  after?: ExpectedValue;
 }
 
 type HandledState = { [K in StateChannel]: Set<string> };
@@ -254,7 +256,7 @@ function mutationMatchesDeclaration(
   if (mutation.operation === "removed") {
     return true;
   }
-  return deepEqual(mutation.after, declaration.after);
+  return declaration.after !== undefined && matchesValue(declaration.after, mutation.after);
 }
 
 function formatMutation(mutation: StateMutation): string {
@@ -483,7 +485,7 @@ function judgeState(
     }
     const want = expectedAdded[key];
     if (Object.prototype.hasOwnProperty.call(actual.added, key)) {
-      if (!deepEqual(want, actual.added[key])) {
+      if (want !== undefined && !matchesValue(want, actual.added[key])) {
         mismatches.push(
           miss(
             channel,
@@ -549,7 +551,7 @@ function judgeState(
     }
     const want = expectedChanged[key];
     if (Object.prototype.hasOwnProperty.call(actual.changed, key)) {
-      if (!deepEqual(want, actual.changed[key])) {
+      if (want !== undefined && !matchesValue(want, actual.changed[key])) {
         mismatches.push(
           miss(
             channel,
@@ -719,7 +721,7 @@ function judgeCallbacks(
   for (let index = 0; index < length; index += 1) {
     const want = expected[index];
     const got = actual[index];
-    if (deepEqual(want, got)) {
+    if (want !== undefined && matchesValue(want, got)) {
       continue;
     }
     mismatches.push(
@@ -736,13 +738,13 @@ function judgeCallbacks(
 }
 
 function isSubsequence(
-  expected: CallbackEffect[],
+  expected: NonNullable<Expect["callbacks"]>,
   actual: CallbackEffect[]
 ): boolean {
   let index = 0;
   for (const item of actual) {
     const want = expected[index];
-    if (want !== undefined && deepEqual(want, item)) {
+    if (want !== undefined && matchesValue(want, item)) {
       index += 1;
     }
   }
@@ -926,7 +928,7 @@ function openidmMatches(expected: OpenidmExpect, actual: OpenidmEffect): boolean
   if (!matchesPattern(expected.resource, actual.resource)) {
     return false;
   }
-  if (expected.body !== undefined && !deepEqual(expected.body, actual.body)) {
+  if (expected.body !== undefined && !matchesValue(expected.body, actual.body)) {
     return false;
   }
   if (expected.actionName !== undefined) {
@@ -945,6 +947,9 @@ function httpMatches(expected: HttpExpect, actual: HttpEffect): boolean {
     return false;
   }
   if (expected.method !== undefined && actual.method !== expected.method) {
+    return false;
+  }
+  if (expected.body !== undefined && !matchesValue(expected.body, actual.body)) {
     return false;
   }
   return true;
@@ -1252,7 +1257,8 @@ function formatOpenidmExpect(item: OpenidmExpect): string {
     item.actionName === undefined
       ? ""
       : ` action=${typeof item.actionName === "string" ? formatValue(item.actionName) : String(item.actionName)}`;
-  return `${item.method} ${resource}${action}`;
+  const body = item.body === undefined ? "" : ` body=${formatValue(item.body)}`;
+  return `${item.method} ${resource}${action}${body}`;
 }
 
 function formatHttp(op: HttpEffect): string {
@@ -1262,7 +1268,8 @@ function formatHttp(op: HttpEffect): string {
 function formatHttpExpect(item: HttpExpect): string {
   const url = typeof item.url === "string" ? item.url : String(item.url);
   const method = item.method === undefined ? "" : `${item.method} `;
-  return `${method}${url}`;
+  const body = item.body === undefined ? "" : ` body=${formatValue(item.body)}`;
+  return `${method}${url}${body}`;
 }
 
 function formatLog(op: LogEffect): string {

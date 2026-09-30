@@ -104,7 +104,7 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
 
   const comparison =
     local.effects !== undefined && aic.effects !== undefined
-      ? diffRecordedEffects(local.effects, aic.effects)
+      ? diffRecordedEffects(local.effects, aic.effects, input.kase.expect)
       : { disagreements: [], observationGaps: [] };
 
   return {
@@ -162,7 +162,8 @@ export async function conformChain(
       index,
       isFinal,
       local[index] as LaneResult,
-      aic[index] as LaneResult
+      aic[index] as LaneResult,
+      input.cases.slice(0, index).map((prior) => prior.expect)
     );
   });
   return {
@@ -253,11 +254,12 @@ function chainPassReport(
   index: number,
   final: boolean,
   local: LaneResult,
-  aic: LaneResult
+  aic: LaneResult,
+  priorExpectations: readonly Case["expect"][]
 ): ChainPassReport {
   const comparison =
     final && local.effects !== undefined && aic.effects !== undefined
-      ? diffRecordedEffects(local.effects, aic.effects)
+      ? diffRecordedEffects(local.effects, aic.effects, kase.expect, priorExpectations)
       : { disagreements: [], observationGaps: [] };
   if (!final && aic.effects !== undefined) {
     comparison.observationGaps.push(intermediatePassGap(kase));

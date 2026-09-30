@@ -1,10 +1,14 @@
-import { deepEqual } from "../case/equal.ts";
+import { deepEqual, matchesPattern } from "../case/equal.ts";
+import { containsMatcher, equalExceptMatchers } from "../case/matcher.ts";
 import { diffState, sameMutationValue } from "../case/state.ts";
 import { STATE_CHANNELS } from "../case/types.ts";
 import type {
   Case,
   Channel,
   EvidenceChannel,
+  Expect,
+  HttpEffect,
+  OpenidmEffect,
   RecordedEffects,
   StateChannel,
   StateMutation,
@@ -45,7 +49,9 @@ type LocatedMutation =
 /** Compare observable effects without turning absent evidence into equality. */
 export function diffRecordedEffects(
   local: RecordedEffects,
-  aic: RecordedEffects
+  aic: RecordedEffects,
+  expected?: Expect,
+  priorExpectations: readonly Expect[] = []
 ): EffectsComparison {
   const disagreements: EffectsDisagreement[] = [];
   const observationGaps: ObservationGap[] = [];
@@ -79,6 +85,8 @@ export function diffRecordedEffects(
     aic,
     localUnobserved,
     aicUnobserved,
+    expected,
+    priorExpectations,
     disagreements,
     observationGaps
   );
@@ -89,6 +97,7 @@ export function diffRecordedEffects(
       aic[channel],
       localUnobserved,
       aicUnobserved,
+      expected,
       disagreements,
       observationGaps
     );
@@ -127,6 +136,7 @@ function compareArray(
   aic: unknown[],
   localUnobserved: ReadonlySet<Channel>,
   aicUnobserved: ReadonlySet<Channel>,
+  expected: Expect | undefined,
   disagreements: EffectsDisagreement[],
   gaps: ObservationGap[]
 ): void {
@@ -135,7 +145,8 @@ function compareArray(
   }
   const length = Math.max(local.length, aic.length);
   for (let index = 0; index < length; index += 1) {
-    if (deepEqual(local[index], aic[index])) {
+    const matcher = arrayMatcher(channel, index, local[index], aic[index], expected);
+    if (equalExceptMatchers(matcher, local[index], aic[index])) {
       continue;
     }
     disagreements.push(
@@ -150,11 +161,54 @@ function compareArray(
   }
 }
 
+function arrayMatcher(
+  channel: "callbacks" | "openidm" | "http" | "logs",
+  index: number,
+  local: unknown,
+  aic: unknown,
+  expected: Expect | undefined
+): unknown {
+  if (channel === "callbacks") return expected?.callbacks?.[index];
+  if (channel === "openidm") {
+    const matches = expected?.openidm?.find((item) =>
+      item.body !== undefined && containsMatcher(item.body) &&
+      isOpenidmEffect(local, item.method) && isOpenidmEffect(aic, item.method) &&
+      matchesPattern(item.resource, local.resource) && matchesPattern(item.resource, aic.resource) &&
+      (item.actionName === undefined ||
+        (local.actionName !== undefined && aic.actionName !== undefined &&
+          matchesPattern(item.actionName, local.actionName) &&
+          matchesPattern(item.actionName, aic.actionName))));
+    return matches?.body === undefined ? undefined : { body: matches.body };
+  }
+  if (channel === "http") {
+    const matches = expected?.http?.find((item) =>
+      item.body !== undefined && containsMatcher(item.body) &&
+      isHttpEffect(local) && isHttpEffect(aic) &&
+      matchesPattern(item.url, local.url) && matchesPattern(item.url, aic.url) &&
+      (item.method === undefined ||
+        (local.method === item.method && aic.method === item.method)));
+    return matches?.body === undefined ? undefined : { body: matches.body };
+  }
+  return undefined;
+}
+
+function isOpenidmEffect(value: unknown, method: string): value is OpenidmEffect {
+  return typeof value === "object" && value !== null && "method" in value &&
+    value.method === method && "resource" in value && typeof value.resource === "string";
+}
+
+function isHttpEffect(value: unknown): value is HttpEffect {
+  return typeof value === "object" && value !== null && "url" in value &&
+    typeof value.url === "string";
+}
+
 function compareState(
   local: RecordedEffects,
   aic: RecordedEffects,
   localUnobserved: ReadonlySet<Channel>,
   aicUnobserved: ReadonlySet<Channel>,
+  expected: Expect | undefined,
+  priorExpectations: readonly Expect[],
   disagreements: EffectsDisagreement[],
   gaps: ObservationGap[]
 ): void {
@@ -172,7 +226,7 @@ function compareState(
       .map((candidate, index) => ({ candidate, index }))
       .filter(({ candidate }) => candidate.mutation.key === localMutation.mutation.key);
     const equal = sameKey.find(({ candidate }) =>
-      sameMutationValue(localMutation.mutation, candidate.mutation)
+      sameMutationWithMatchers(localMutation.mutation, candidate.mutation, expected, priorExpectations)
     );
     const index = equal?.index ?? sameKey[0]?.index ?? -1;
     if (index < 0) {
@@ -194,7 +248,7 @@ function compareState(
       continue;
     }
     pairedAicKeys.add(aicMutation.mutation.key);
-    if (!sameMutationValue(localMutation.mutation, aicMutation.mutation)) {
+    if (!sameMutationWithMatchers(localMutation.mutation, aicMutation.mutation, expected, priorExpectations)) {
       disagreements.push(stateDisagreement(localMutation, aicMutation));
       continue;
     }
@@ -226,6 +280,59 @@ function compareState(
       disagreements.push(stateDisagreement(undefined, aicMutation));
     }
   }
+}
+
+function sameMutationWithMatchers(
+  local: StateMutation,
+  aic: StateMutation,
+  expected: Expect | undefined,
+  prior: readonly Expect[]
+): boolean {
+  if (local.operation !== aic.operation || local.key !== aic.key) return false;
+  const after = declarationValue(expected, local.key, local.operation);
+  const before = priorMatcher(prior, local.key);
+  if (local.operation === "added" && aic.operation === "added") {
+    return after === undefined ? sameMutationValue(local, aic) :
+      equalExceptMatchers(after, local.after, aic.after);
+  }
+  if (local.operation === "changed" && aic.operation === "changed") {
+    return (before === undefined
+      ? deepEqual(local.before, aic.before)
+      : equalExceptMatchers(before, local.before, aic.before)) &&
+      (after === undefined
+        ? deepEqual(local.after, aic.after)
+        : equalExceptMatchers(after, local.after, aic.after));
+  }
+  if (local.operation === "removed" && aic.operation === "removed") {
+    return before === undefined ? sameMutationValue(local, aic) :
+      equalExceptMatchers(before, local.before, aic.before);
+  }
+  return false;
+}
+
+function declarationValue(expect: Expect | undefined, key: string, operation: StateMutation["operation"]): unknown {
+  if (expect === undefined || operation === "removed") return undefined;
+  for (const channel of STATE_CHANNELS) {
+    const value = expect[channel]?.[operation]?.[key];
+    if (containsMatcher(value)) return value;
+  }
+  return undefined;
+}
+
+function priorMatcher(prior: readonly Expect[], key: string): unknown {
+  for (const expect of prior.slice().reverse()) {
+    for (const channel of STATE_CHANNELS) {
+      const diff = expect[channel];
+      for (const operation of ["added", "changed"] as const) {
+        if (Object.prototype.hasOwnProperty.call(diff?.[operation] ?? {}, key)) {
+          const value = diff?.[operation]?.[key];
+          return containsMatcher(value) ? value : undefined;
+        }
+      }
+      if (diff?.removed?.includes(key)) return undefined;
+    }
+  }
+  return undefined;
 }
 
 function unifiedBeforeHasKey(effects: RecordedEffects, key: string): boolean {

@@ -10,6 +10,19 @@ export interface JsonObject {
   [key: string]: JsonValue;
 }
 
+/** Standard Schema v1, consumed structurally so the case layer never imports zod. */
+export interface StandardSchema {
+  readonly "~standard": {
+    readonly vendor?: string;
+    validate(value: unknown): unknown;
+  };
+}
+
+export type ExpectedValue = JsonPrimitive | RegExp | StandardSchema | ExpectedObject | ExpectedValue[];
+export interface ExpectedObject {
+  [key: string]: ExpectedValue;
+}
+
 export type Pattern = string | RegExp;
 
 export const CASE_KEYS = ["name", "script", "outcomes", "given", "expect"] as const;
@@ -147,8 +160,8 @@ export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
 
 export interface StateDiff {
-  added?: JsonObject;
-  changed?: JsonObject;
+  added?: ExpectedObject;
+  changed?: ExpectedObject;
   removed?: string[];
 }
 
@@ -171,6 +184,7 @@ export interface HttpStub {
 export interface HttpExpect {
   url: Pattern;
   method?: string;
+  body?: ExpectedValue;
   times?: number;
 }
 
@@ -183,7 +197,7 @@ export interface HttpEffect {
 export interface OpenidmExpect {
   method: OpenidmMethod;
   resource: Pattern;
-  body?: JsonValue;
+  body?: ExpectedValue;
   actionName?: Pattern;
   times?: number;
 }
@@ -209,6 +223,11 @@ export interface LogEffect {
 export interface CallbackEffect {
   type: string;
   [key: string]: JsonValue;
+}
+
+export interface CallbackExpect {
+  type: string;
+  [key: string]: ExpectedValue;
 }
 
 export interface Given {
@@ -264,7 +283,7 @@ export interface Expect {
   sharedState?: StateDiff;
   transientState?: StateDiff;
   secureState?: StateDiff;
-  callbacks?: CallbackEffect[];
+  callbacks?: CallbackExpect[];
   openidm?: OpenidmExpect[];
   http?: HttpExpect[];
   logs?: LogExpect[];
