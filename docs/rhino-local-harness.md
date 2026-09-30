@@ -79,6 +79,15 @@ For a pre-recorded one-shot chain, use `oneShotSubjectName(runId)` to seed
 `given.scriptName` and `oneShotSubjectId(runId)` to seed
 `given.loggerScriptId` in each local case, then pass `oneShotRunId: runId` to
 `conformChain`. It validates both and strips the seeds before the tenant run.
+For a local chain produced by `suite.lease`, pass `oneShotRunId: runId` to
+`suite.lease({ runner, oneShotRunId: runId })` before executing `.run()`. Then
+spread `chainFromRunResult(result)` into `conformChain()`; the bridge carries
+the lease-owned identity and run ID, and the AIC runner receives Cases without
+those local seeds. Plain lease results also carry ownership provenance and
+reach the AIC runner. Their default suite name and placeholder logger ID can
+disagree with the generated one-shot identity if the script reads either
+binding. Forwarding only `result.kase` loses ownership provenance and makes
+the one-shot path reject its seeded identity; use the bridge for lease results.
 
 For next-gen decision nodes, `logger.getName()` locally follows the measured
 `scripts.AUTHENTICATION_TREE_DECISION_NODE.<script _id>.(<script name>)` form.

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { chainFromRunResult, conformChain } from "../../src/aic/conform.ts";
+import { oneShotSubjectId, oneShotSubjectName } from "../../src/aic/emit-journey.ts";
+import { RhinoRunner } from "../../src/runner.ts";
 import {
   aicWhenEnabled,
+  AIC_LANE_ENV,
   defineSuite,
   managed,
   useLease,
@@ -242,4 +247,82 @@ describe("logger-name", () => {
     });
     expect(run.verdict.pass).toBe(true);
   });
+});
+
+const bridgeSuite = defineSuite({
+  name: "lease-chain-bridge",
+  script: 'action.goTo("done");',
+  outcomes: ["done"],
+});
+
+describe("lease result to one-shot conformance", () => {
+  const lease = useLease(bridgeSuite);
+
+  it("invokes the AIC runner for a plain leased script", async () => {
+    const result = await lease.run().expect({ outcome: "done" });
+    let calls = 0;
+    const report = await conformChain({
+      ...chainFromRunResult(result),
+      source: bridgeSuite.spec.script,
+      aic: ({ cases }) => {
+        calls += 1;
+        expect(cases[0]?.given.scriptName).toBeUndefined();
+        return Promise.resolve([result.effects]);
+      },
+    });
+    expect(calls).toBe(1);
+    expect(report.passes[0]?.aic.skipped).toBeUndefined();
+  });
+
+  it("seeds a one-shot identity before local execution", async () => {
+    const runner = await RhinoRunner.spawn();
+    const runId = "leasebridge01";
+    const oneShotLease = bridgeSuite.lease({ runner, oneShotRunId: runId });
+    try {
+      oneShotLease.open();
+      const result = await oneShotLease.run().expect({ outcome: "done" });
+      expect(result.kase.given.scriptName).toBe(oneShotSubjectName(runId));
+      expect(result.kase.given.loggerScriptId).toBe(oneShotSubjectId(runId));
+      const report = await conformChain({
+        ...chainFromRunResult(result),
+        source: bridgeSuite.spec.script,
+        aic: ({ cases, runId: actualRunId }) => {
+          expect(cases[0]?.given.scriptName).toBeUndefined();
+          expect(cases[0]?.given.loggerScriptId).toBeUndefined();
+          expect(actualRunId).toBe(runId);
+          return Promise.resolve([result.effects]);
+        },
+      });
+      expect(report.passes[0]?.aic.skipped).toBeUndefined();
+    } finally {
+      await oneShotLease.close();
+      await runner.close();
+    }
+  });
+
+  it.skipIf(process.env[AIC_LANE_ENV] !== "1")(
+    "compares a one-shot lease result with the tenant",
+    async () => {
+      const runner = await RhinoRunner.spawn();
+      const oneShotLease = bridgeSuite.lease({
+        runner,
+        oneShotRunId: randomUUID().replace(/-/g, "").slice(0, 12),
+      });
+      try {
+        oneShotLease.open();
+        const result = await oneShotLease.run().expect({ outcome: "done" });
+        const report = await conformChain({
+          ...chainFromRunResult(result),
+          source: bridgeSuite.spec.script,
+          aic: "tenant",
+        });
+        expect(report.passes[0]?.aic.verdict?.pass).toBe(true);
+        expect(report.disagreements).toEqual([]);
+      } finally {
+        await oneShotLease.close();
+        await runner.close();
+      }
+    },
+    30_000
+  );
 });

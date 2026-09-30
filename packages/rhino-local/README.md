@@ -217,6 +217,15 @@ case's `given.scriptName` and `given.loggerScriptId` with
 `oneShotSubjectName(oneShotRunId)` and `oneShotSubjectId(oneShotRunId)`, then
 pass that ID to `conformChain`; it checks both values and removes the local-only
 seeds before invoking AIC.
+For a chain produced by `suite.lease`, use
+`suite.lease({ runner, oneShotRunId })` **before** calling `.run()`. The lease
+seeds both bindings and `chainFromRunResult(result)` carries the run ID and
+identity provenance to `conformChain()`. A plain lease result also carries
+provenance, so its AIC runner is called; if the script reads its identity,
+choose `oneShotRunId` before the local pass to make the names and IDs agree.
+Raw author-seeded Cases remain ineligible for one-shot AIC execution. This
+changes the migration path for lease consumers: forwarding a lease's seeded
+Case alone loses provenance; forward `chainFromRunResult(result)` instead.
 
 In next-gen decision-node scripts, local `logger.getName()` uses the measured
 `scripts.AUTHENTICATION_TREE_DECISION_NODE.<script id>.(<script name>)` form.

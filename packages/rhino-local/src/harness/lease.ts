@@ -5,6 +5,7 @@
  */
 import type { z } from "zod";
 import type { ChainConformanceReport } from "../aic/conform.ts";
+import { oneShotSubjectId, oneShotSubjectName } from "../aic/emit-journey.ts";
 import { judge } from "../case/index.ts";
 import type {
   Case,
@@ -49,6 +50,8 @@ export interface RunResult {
    * the AIC lane must not reconstruct them from the final case.
    */
   steps: StepResult[];
+  /** Identity inserted by this lease, rather than supplied by a Case author. */
+  harnessIdentity?: { scriptName: string; loggerScriptId?: string; oneShotRunId?: string };
   /** Present when this lease automatically checked the completed run on AIC. */
   conformance?: ChainConformanceReport;
 }
@@ -84,6 +87,8 @@ export interface LeaseOptions {
   scriptName?: string;
   /** Deterministic uploaded subject UUID when the AIC lease is enabled. */
   loggerScriptId?: string;
+  /** Give a one-shot AIC chain its uploaded identity before the local pass. */
+  oneShotRunId?: string;
   /** Cross-feature port implemented by the tenant-aware AIC vertical. */
   lane?: LeaseLane;
 }
@@ -218,6 +223,14 @@ export class Lease<TSchema extends z.ZodType> {
   #testLedger: FixtureSpec[] = [];
 
   constructor(spec: SuiteSpec<TSchema>, options: LeaseOptions) {
+    if (options.oneShotRunId !== undefined) {
+      if (!/^[A-Za-z0-9-]{1,32}$/.test(options.oneShotRunId)) {
+        throw new Error(`rhino-local: oneShotRunId ${JSON.stringify(options.oneShotRunId)} must be 1–32 letters, digits or hyphens`);
+      }
+      if (spec.scriptName !== undefined || options.scriptName !== undefined || options.loggerScriptId !== undefined || options.lane !== undefined) {
+        throw new Error("rhino-local: oneShotRunId cannot be combined with another script identity or a file lease");
+      }
+    }
     this.#spec = spec;
     this.#options = options;
   }
@@ -301,9 +314,16 @@ export class Lease<TSchema extends z.ZodType> {
       },
       this.#options.realm
     );
-    given.scriptName = this.#options.scriptName ?? this.#spec.scriptName ?? this.#spec.name;
-    if (this.#options.loggerScriptId !== undefined) {
-      given.loggerScriptId = this.#options.loggerScriptId;
+    const oneShotRunId = this.#options.oneShotRunId;
+    const scriptName = oneShotRunId === undefined
+      ? this.#options.scriptName ?? this.#spec.scriptName ?? this.#spec.name
+      : oneShotSubjectName(oneShotRunId);
+    given.scriptName = scriptName;
+    const loggerScriptId = oneShotRunId === undefined
+      ? this.#options.loggerScriptId
+      : oneShotSubjectId(oneShotRunId);
+    if (loggerScriptId !== undefined) {
+      given.loggerScriptId = loggerScriptId;
     }
     if (this.#spec.libraries !== undefined) {
       given = { ...given, libraries: { ...this.#spec.libraries } };
@@ -348,6 +368,11 @@ export class Lease<TSchema extends z.ZodType> {
       verdict,
       fixtures: ledger,
       steps: stepResults,
+      harnessIdentity: {
+        scriptName,
+        ...(loggerScriptId === undefined ? {} : { loggerScriptId }),
+        ...(oneShotRunId === undefined ? {} : { oneShotRunId }),
+      },
     };
     if (this.#options.lane !== undefined) {
       const conformance = await this.#options.lane.run({
