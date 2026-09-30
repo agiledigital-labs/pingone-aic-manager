@@ -185,7 +185,8 @@ export function validateAicRun(
   replies: readonly (readonly AicReply[])[],
   managedFixtures?: readonly ManagedFixture[],
   harnessOwnsScriptName = false,
-  harnessOwnsLoggerScriptId = false
+  harnessOwnsLoggerScriptId = false,
+  harnessOwnsCookieName = false
 ): AicRunValidation {
   const first = cases[0];
   if (first === undefined) {
@@ -205,7 +206,7 @@ export function validateAicRun(
     );
   }
   const unsupported = cases.flatMap((kase) => {
-    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged, harnessOwnsScriptName, harnessOwnsLoggerScriptId });
+    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged, harnessOwnsScriptName, harnessOwnsLoggerScriptId, harnessOwnsCookieName });
     return reason === undefined ? [] : [`${kase.name}: ${reason}`];
   });
   return { harnessOwnsManaged, unsupported };
@@ -283,6 +284,14 @@ export async function fetchCookieName(
     );
   }
   return name;
+}
+
+/** Discover a fixed binding before a one-shot local pass is evaluated. */
+export async function discoverTenantCookieName(): Promise<string> {
+  const project = projectRoot();
+  const io = defaultAicIo(project);
+  const session = await connectTenant(io, { useConfigured: true, project });
+  return fetchCookieName(io, session);
 }
 
 export async function provisionJourney(

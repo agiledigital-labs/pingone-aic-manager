@@ -19,7 +19,7 @@ function objectHasKeys(value: object | undefined): boolean {
  */
 export function aicUnsupportedReason(
   kase: Case,
-  options: { harnessOwnsManaged?: boolean; harnessOwnsScriptName?: boolean; harnessOwnsLoggerScriptId?: boolean } = {}
+  options: { harnessOwnsManaged?: boolean; harnessOwnsScriptName?: boolean; harnessOwnsLoggerScriptId?: boolean; harnessOwnsCookieName?: boolean } = {}
 ): string | undefined {
   if (kase.given.engine === "legacy") {
     return "legacy engine: AIC wrapper emit is next-gen only (legacy results go through JavaImporter + Action.send, not callbacksBuilder)";
@@ -46,7 +46,7 @@ export function aicUnsupportedReason(
   if (kase.given.loggerScriptId !== undefined && options.harnessOwnsLoggerScriptId !== true) {
     return "given.loggerScriptId cannot be seeded on AIC (it is the uploaded script's id)";
   }
-  if (kase.given.cookieName !== undefined) {
+  if (kase.given.cookieName !== undefined && options.harnessOwnsCookieName !== true) {
     return "given.cookieName cannot be seeded on AIC (it is a tenant serverinfo value)";
   }
   if (objectHasKeys(kase.given.locales)) {

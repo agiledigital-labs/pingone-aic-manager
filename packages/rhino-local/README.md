@@ -221,6 +221,13 @@ name to the local runner for the same comparison.
 `aicWhenEnabled()` retains an AIC-intent marker when the lane is off, so a
 suite with explicit `scriptName` fails setup in both modes. Use an explicit
 `scriptName` only for suites that are always local-only.
+
+`cookieName` follows the same fixed-tenant rule. Local-only suites can set it
+in `always`, with `.cookieName(name)`, or in `beforeRun` via
+`request.cookieName`. With `aicWhenEnabled()`, any explicit author value is
+refused even when the AIC lane is off. When AIC is enabled, the lease reads
+`/am/json/serverinfo/*` before the local pass and seeds that tenant value;
+the one-shot `conform` path discovers it before its local pass too.
 For a pre-recorded one-shot chain, choose `oneShotRunId`, seed each local
 case's `given.scriptName` and `given.loggerScriptId` with
 `oneShotSubjectName(oneShotRunId)` and `oneShotSubjectId(oneShotRunId)`, then

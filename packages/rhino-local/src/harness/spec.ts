@@ -28,6 +28,7 @@ export function mergeChannels(
   always: Channels | undefined,
   override: Channels | undefined
 ): RequestDraft {
+  const cookieName = override?.cookieName ?? always?.cookieName;
   return {
     state: {
       shared: { ...(always?.state?.shared ?? {}), ...(override?.state?.shared ?? {}) },
@@ -41,6 +42,7 @@ export function mergeChannels(
     headers: { ...normaliseWire(always?.headers), ...normaliseWire(override?.headers) },
     params: { ...normaliseWire(always?.params), ...normaliseWire(override?.params) },
     cookies: { ...(always?.cookies ?? {}), ...(override?.cookies ?? {}) },
+    ...(cookieName === undefined ? {} : { cookieName }),
     session: { ...(always?.session ?? {}), ...(override?.session ?? {}) },
     // Declared-empty and not-declared are different requests: `session: {}`
     // asks for a logged-in session with no extra properties, which is a real
@@ -176,6 +178,9 @@ export function toGiven(
   }
   if (Object.keys(draft.cookies).length > 0) {
     given.requestCookies = { ...(base.requestCookies ?? {}), ...draft.cookies };
+  }
+  if (draft.cookieName !== undefined) {
+    given.cookieName = draft.cookieName;
   }
   return given;
 }

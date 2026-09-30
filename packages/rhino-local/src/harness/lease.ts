@@ -51,7 +51,7 @@ export interface RunResult {
    */
   steps: StepResult[];
   /** Identity inserted by this lease, rather than supplied by a Case author. */
-  harnessIdentity?: { scriptName: string; loggerScriptId?: string; oneShotRunId?: string };
+  harnessIdentity?: { scriptName: string; loggerScriptId?: string; oneShotRunId?: string; cookieName?: string };
   /** Present when this lease automatically checked the completed run on AIC. */
   conformance?: ChainConformanceReport;
 }
@@ -83,6 +83,10 @@ export interface LeaseOptions {
   testName?: () => string;
   /** Fixed tenant realm; the Vitest AIC adapter supplies it to both lanes. */
   realm?: string;
+  /** Discovered tenant cookie name, supplied before the local AIC pass. */
+  cookieName?: string;
+  /** Keeps fixed-binding validation active when aicWhenEnabled is off. */
+  aicIntent?: boolean;
   /** Actual uploaded subject name when the AIC lane is enabled. */
   scriptName?: string;
   /** Deterministic uploaded subject UUID when the AIC lease is enabled. */
@@ -170,6 +174,11 @@ export class RunBuilder<TInput> {
 
   cookies(cookies: Readonly<Record<string, string>>): this {
     this.#override = { ...this.#override, cookies: { ...this.#override.cookies, ...cookies } };
+    return this;
+  }
+
+  cookieName(name: string): this {
+    this.#override = { ...this.#override, cookieName: name };
     return this;
   }
 
@@ -307,6 +316,9 @@ export class Lease<TSchema extends z.ZodType> {
         fixtures: this.fixtures,
       });
     }
+    if (this.#options.aicIntent === true && draft.cookieName !== undefined) {
+      throw new Error("rhino-local: cookieName is fixed by the tenant when aicWhenEnabled is used; remove the explicit cookieName");
+    }
     applyInputsAndEsv(draft, input);
     const ledger = this.ledger();
     let given = toGiven(
@@ -319,6 +331,9 @@ export class Lease<TSchema extends z.ZodType> {
       },
       this.#options.realm
     );
+    if (this.#options.cookieName !== undefined) {
+      given.cookieName = this.#options.cookieName;
+    }
     const oneShotRunId = this.#options.oneShotRunId;
     const scriptName = oneShotRunId === undefined
       ? this.#options.scriptName ?? this.#spec.scriptName ?? this.#spec.name
@@ -375,6 +390,7 @@ export class Lease<TSchema extends z.ZodType> {
       steps: stepResults,
       harnessIdentity: {
         scriptName,
+        ...(this.#options.cookieName === undefined ? {} : { cookieName: this.#options.cookieName }),
         ...(loggerScriptId === undefined ? {} : { loggerScriptId }),
         ...(oneShotRunId === undefined ? {} : { oneShotRunId }),
       },

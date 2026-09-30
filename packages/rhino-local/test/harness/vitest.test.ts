@@ -28,6 +28,16 @@ describe("useLease AIC file ownership", () => {
     );
   });
 
+  it("rejects an explicit cookieName with AIC intent even when the lane is off", () => {
+    const suite = defineSuite({
+      name: "cookie-name",
+      script: 'action.goTo("done");',
+      outcomes: ["done"],
+      always: { cookieName: "author" },
+    });
+    expect(() => useLease(suite, { aicIntent: true })).toThrow(/fixed by the tenant/);
+  });
+
   // Regression: aicWhenEnabled used to make this invalid only with AIC on.
   it("rejects explicit scriptName even when aicWhenEnabled is off", () => {
     const previous = process.env[AIC_LANE_ENV];
