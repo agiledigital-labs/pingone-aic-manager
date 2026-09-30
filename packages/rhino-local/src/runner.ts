@@ -87,6 +87,7 @@ class JvmProcess {
   #stdoutBuf = "";
   #stderrBuf = "";
   #closed = false;
+  #spawnError: Error | undefined;
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   #exitWaiters: Array<() => void> = [];
   environment: RunnerEnvironment | undefined;
@@ -109,6 +110,7 @@ class JvmProcess {
       // EPIPE after a crash is reported via the exit handler.
     });
     child.on("error", (error) => {
+      this.#spawnError = error;
       this.#stderrBuf += `\n${error.message}`;
     });
     child.on("exit", (code, signal) => {
@@ -139,6 +141,16 @@ class JvmProcess {
         checkEnvironment(env, this.lane);
         this.environment = env;
         return;
+      }
+      if (this.#spawnError) {
+        const remedy =
+          this.lane === "host"
+            ? " Set AIC_SCRIPT_TESTER_JAVA_HOME or JAVA_HOME to a Java 25 installation, or put java on PATH."
+            : "";
+        throw new Error(
+          `rhino-local: could not start ${this.lane} runner: ${this.#spawnError.message}.${remedy}`,
+          { cause: this.#spawnError }
+        );
       }
       if (this.#exit) {
         throw new RhinoRunnerExitError(this.#exit.code, this.#exit.signal, this.#stderrBuf);
@@ -210,6 +222,10 @@ class JvmProcess {
 
   async kill(): Promise<void> {
     this.#closed = true;
+    if (this.#spawnError) {
+      await this.#removeContainer();
+      return;
+    }
     this.#child.kill("SIGKILL");
     await Promise.race([this.#waitForExit(), sleep(2_000)]);
     await this.#removeContainer();
