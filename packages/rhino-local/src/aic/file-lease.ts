@@ -14,10 +14,11 @@ import { conformChain, type ChainConformanceReport, type LocalChainResult } from
 import { emitLeasedJourney, type WrapperJourney } from "./emit-journey.ts";
 import { emitLeasedSessionJourney } from "./emit-session.ts";
 import { instrumentSubject } from "./emit-subject.ts";
-import { createLeaseIdentity, uuidV5, type LeaseIdentity } from "./lease-identity.ts";
+import { createLeaseIdentity, sha256, uuidV5, type LeaseIdentity } from "./lease-identity.ts";
 import {
   acquireLeaseLock,
   addJournalFixture,
+  addJournalOwnedLibrary,
   addJournalResources,
   leaseStatePaths,
   newLeaseJournal,
@@ -27,6 +28,7 @@ import {
   writeLeaseJournal,
   type LeaseLock,
   type LeaseStatePaths,
+  type OwnedLibrary,
 } from "./lease-lock.ts";
 import {
   acquireManagedFixtureLock,
@@ -95,7 +97,7 @@ export class AicFileLease {
   #wrapper: WrapperJourney | undefined;
   #session: TenantSession | undefined;
   #created: CreatedResource[] = [];
-  #ownedLibraries = new Map<string, { name: string; source: string }>();
+  #ownedLibraries = new Map<string, OwnedLibrary>();
   #journalWrittenForOpen = false;
   #writeAttempted = false;
   #state: "new" | "opening" | "open" | "closed" = "new";
@@ -313,7 +315,11 @@ export class AicFileLease {
   async #provisionLibraries(libraries: readonly { name: string; source: string; id: string }[]): Promise<void> {
     for (const library of libraries) {
       const resource: CreatedResource = { kind: "script", id: library.id };
-      await addJournalResources(this.#journalPath(), [resource]);
+      const ownership: OwnedLibrary = {
+        id: library.id, name: library.name,
+        sourceHash: sha256(library.source), marker: this.identity.marker,
+      };
+      await addJournalOwnedLibrary(this.#journalPath(), ownership);
       const path = resourcePath(this.#realm, resource);
       const body = {
         _id: library.id, name: library.name, description: this.identity.marker,
@@ -323,7 +329,7 @@ export class AicFileLease {
       };
       // The journal entry exists before this write. Keep it if the response is
       // lost, since #created is filled only after a confirmed create status.
-      this.#ownedLibraries.set(library.id, { name: library.name, source: library.source });
+      this.#ownedLibraries.set(library.id, ownership);
       this.#writeAttempted = true;
       const response = await amRequest(this.#io, this.#session as TenantSession, {
         method: "PUT", path, headers: amConfigHeaders(), body: JSON.stringify(body),
@@ -694,12 +700,41 @@ export class AicFileLease {
     const errors = await deleteCreatedResources(this.#io, session, this.#realm, graph);
     const libraries = this.#created.filter((resource): resource is { kind: "script"; id: string } =>
       resource.kind === "script" && this.#ownedLibraries.has(resource.id));
-    let pending = libraries.reverse();
+    return [...errors, ...(await this.#cleanupOwnedLibraries(libraries.reverse(), this.#ownedLibraries, this.#realm))];
+  }
+
+  async #cleanupOwnedLibraries(
+    libraries: readonly { kind: "script"; id: string }[],
+    ownership: ReadonlyMap<string, OwnedLibrary>,
+    realm: string
+  ): Promise<string[]> {
+    const errors: string[] = [];
+    const ready: Array<{ kind: "script"; id: string }> = [];
+    // Blank all owned sources before deleting any library. This removes
+    // references among owned libraries, including references AM may count in
+    // comments or in the library's own source. A confirming GET makes a lost
+    // PUT response safe to replay from the journal on the next open.
+    for (const resource of libraries) {
+      const owned = ownership.get(resource.id);
+      if (owned === undefined) {
+        errors.push(`library ${resource.id} remains as residue: ownership metadata is missing`);
+        continue;
+      }
+      const failure = await this.#tryBlankOwnedLibrary(resource, owned, realm);
+      if (failure === undefined) {
+        ready.push(resource);
+      } else {
+        errors.push(`library ${JSON.stringify(owned.name)} (${resource.id}) remains as residue: ${failure}`);
+      }
+    }
+    let pending = ready;
     while (pending.length > 0) {
       const remaining: typeof pending = [];
       const failures = new Map<string, string>();
       for (const resource of pending) {
-        const failure = await this.#tryDeleteOwnedLibrary(resource, session);
+        const failure = await this.#tryDeleteBlankedOwnedLibrary(
+          resource, ownership.get(resource.id) as OwnedLibrary, realm
+        );
         if (failure !== undefined) {
           remaining.push(resource);
           failures.set(resource.id, failure);
@@ -707,7 +742,7 @@ export class AicFileLease {
       }
       if (remaining.length === pending.length) {
         for (const resource of remaining) {
-          const name = this.#ownedLibraries.get(resource.id)?.name ?? resource.id;
+          const name = ownership.get(resource.id)?.name ?? resource.id;
           errors.push(`library ${JSON.stringify(name)} (${resource.id}) remains as residue: ${failures.get(resource.id)}`);
         }
         break;
@@ -717,30 +752,77 @@ export class AicFileLease {
     return errors;
   }
 
-  async #tryDeleteOwnedLibrary(
+  async #tryDeleteBlankedOwnedLibrary(
     resource: { kind: "script"; id: string },
-    session: TenantSession
+    owned: OwnedLibrary,
+    realm: string
   ): Promise<string | undefined> {
-    const owned = this.#ownedLibraries.get(resource.id) as { name: string; source: string };
+    const session = this.#session as TenantSession;
     try {
       const response = await amRequest(this.#io, session, {
-        method: "GET", path: resourcePath(this.#realm, resource), headers: amConfigHeaders(),
+        method: "GET", path: resourcePath(realm, resource), headers: amConfigHeaders(),
       });
       if (response.status === 404) return undefined;
       if (response.status !== 200) {
         return `could not check before delete (HTTP ${response.status})`;
       }
       const current = response.body as Record<string, unknown>;
+      if (current?.name !== owned.name || current.context !== "LIBRARY" ||
+          current.description !== owned.marker || current.script !== "") {
+        return "warning: source or ownership fields changed after blanking; left in place";
+      }
+      return (await deleteCreatedResources(this.#io, session, realm, [resource]))[0];
+    } catch (error) {
+      return `could not check before delete: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  async #tryBlankOwnedLibrary(
+    resource: { kind: "script"; id: string },
+    owned: OwnedLibrary,
+    realm: string
+  ): Promise<string | undefined> {
+    const session = this.#session as TenantSession;
+    const path = resourcePath(realm, resource);
+    try {
+      const response = await amRequest(this.#io, session, {
+        method: "GET", path, headers: amConfigHeaders(),
+      });
+      if (response.status === 404) return undefined;
+      if (response.status !== 200) {
+        return `could not check before blanking (HTTP ${response.status})`;
+      }
+      const current = response.body as Record<string, unknown>;
       const source = typeof current?.script === "string"
         ? Buffer.from(current.script, "base64").toString("utf8")
         : undefined;
       if (current?.name !== owned.name || current.context !== "LIBRARY" ||
-          current.description !== this.identity.marker || source !== owned.source) {
+          current.description !== owned.marker || source === undefined ||
+          (sha256(source) !== owned.sourceHash && source !== "")) {
         return "warning: source or ownership fields changed after the lease created it; left in place";
       }
-      return (await deleteCreatedResources(this.#io, session, this.#realm, [resource]))[0];
+      if (source === "") return undefined;
+      const blank = {
+        _id: resource.id, name: owned.name, description: owned.marker,
+        script: "", default: false, language: "JAVASCRIPT",
+        context: "LIBRARY", evaluatorVersion: "2.0",
+      };
+      const put = await amRequest(this.#io, session, {
+        method: "PUT", path, headers: amConfigHeaders(), body: JSON.stringify(blank),
+      });
+      if (put.status !== 200) {
+        return `blank library source returned HTTP ${put.status}, expected 200`;
+      }
+      const confirmation = await amRequest(this.#io, session, {
+        method: "GET", path, headers: amConfigHeaders(),
+      });
+      if (confirmation.status !== 200) {
+        return `confirm blank library source returned HTTP ${confirmation.status}`;
+      }
+      confirmResourceSnapshot("script", blank, confirmation.body);
+      return undefined;
     } catch (error) {
-      return `could not check before delete: ${error instanceof Error ? error.message : String(error)}`;
+      return `could not blank and confirm: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 
@@ -768,7 +850,19 @@ export class AicFileLease {
       return;
     }
     const residue: string[] = [];
+    const ownership = new Map((journal.ownedLibraries ?? []).map((item) => [item.id, item]));
+    const libraries: Array<{ kind: "script"; id: string }> = [];
     for (const resource of journal.resources) {
+      if (resource.kind === "script" && ownership.has(resource.id)) {
+        const owned = ownership.get(resource.id) as OwnedLibrary;
+        if (resource.id !== uuidV5(`${journal.aicId}:library:${owned.name}`) ||
+            !owned.marker.startsWith(`rhino-local:v1:${sha256(journal.aicId).slice(0, 20)}:${journal.ownerToken}:`)) {
+          residue.push(`library ${JSON.stringify(owned.name)} (${resource.id}) has invalid journal ownership`);
+        } else {
+          libraries.push(resource);
+        }
+        continue;
+      }
       const path = resourcePath(journal.realm, resource);
       const response = await amRequest(this.#io, this.#session as TenantSession, {
         method: "GET",
@@ -802,6 +896,7 @@ export class AicFileLease {
         `could not probe older managed fixture ${fixture.type}/${fixture.id} (HTTP ${response.status})`
       );
     }
+    residue.push(...(await this.#cleanupOwnedLibraries(libraries.reverse(), ownership, journal.realm)));
     if (residue.length > 0) {
       throw new AicLaneError(
         `AIC file lease ${JSON.stringify(journal.aicId)} has owned residue: ${residue.join(", ")}`

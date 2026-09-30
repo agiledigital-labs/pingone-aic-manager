@@ -613,6 +613,15 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
   **`500`** with `"message": "The script <name> is used once"`. Delete the
   consumers first, then the library — the same `DELETE` then returns `200`.
   (Yes, a referential-integrity refusal reported as a 500, not a 409.)
+- **Library source replacement can unblock deletion** (orchestrator measurement,
+  2026-09-30; supplied to the implementing agent). After a subject graph
+  was gone, `DELETE` of owned libraries `outer` and `inner` still returned
+  `500 "The script <name> is used once"`. A `PUT` replacing `outer` source
+  with `exports.value = "x";` returned `200`; then `DELETE outer` and
+  `DELETE inner` each returned `200`. The source of `outer` contained
+  `// Consumers: require("outer")`. It is plausible that AM counted this
+  comment as a self-reference, but that cause was not isolated: removing
+  only the comment was not tested. An empty source update was not tested.
 - **`creationDate` / `lastModifiedDate`** are epoch milliseconds, not ISO 8601
   (unlike ESVs which use ISO 8601). Be careful when serializing.
 - **Realm-scoped storage.** A script ID can exist in alpha but not bravo, or

@@ -117,20 +117,26 @@ return "ready"; };`. Another library in the same map can call
 lease provisions absent entries as `LIBRARY` scripts in declaration order,
 then creates the subject. AM's write path does not syntax-check scripts;
 whether it validates `require()` targets at create time has not been measured.
-At close, the lease deletes the subject's graph first, then retries owned
-library deletion until no further delete succeeds. AM's measured refusal to
-delete a referenced library orders the cleanup. An owned library still
-referenced by a reused external library remains journalled and is reported as
-residue at close. Names are realm-wide. If a named library
+At close, the lease deletes the subject's graph, replaces each owned library's
+source with an empty body, confirms that update by reading it back, then
+retries deletion until no further delete succeeds. The blanking step removes
+references among owned libraries, including possible self-references in comments;
+it can be replayed from the recovery journal after a lost response. The
+orchestrator measured that replacing a library's source with a nonempty,
+reference-free body unblocked deletion on 2026-09-30; AM's acceptance of an
+empty body still needs a live check. An owned library still referenced by a
+reused external library remains journalled and is reported as residue at close.
+Names are realm-wide. If a named library
 already exists on the tenant with byte-identical source, the lease uses it and
 leaves it there. A different source or script context found during preflight
 is an error before any lease write. AM has no measured atomic create
 precondition: another writer could create the deterministic ID between the
 preflight read and the lease's PUT, and that PUT could overwrite it before AM
 reports an update. Use one host per `aic.id`, as for the other leased resources.
-Before deleting a library it created, the lease checks its current source and
-ownership fields; if they changed, it leaves the library and recovery journal
-in place and reports a cleanup warning. Legacy scripts
+Before blanking or deleting a library it created, the lease checks its current
+source and ownership fields; if they changed, it leaves the library and recovery
+journal in place and reports a cleanup warning. It never blanks or deletes a
+reused library. Legacy scripts
 cannot use libraries, and `given.engine: "legacy"` with `libraries` is rejected.
 
 ### Callback suspension
