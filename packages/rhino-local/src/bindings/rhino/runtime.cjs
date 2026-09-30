@@ -343,7 +343,12 @@ function __rhinoLocalIsDefined(key) {
 
 nodeState.get = function (key) {
   __rhinoLocalExpectArity("nodeState.get", arguments, 1);
-  return __rhinoLocalLookupState(String(key));
+  var name = String(key);
+  var value = __rhinoLocalLookupState(name);
+  if (name === "objectAttributes" && __rhinoLocalIsPlainObject(value)) {
+    return __rhinoLocalAsJavaMap(value);
+  }
+  return value;
 };
 
 nodeState.isDefined = function (key) {
@@ -445,18 +450,27 @@ function __rhinoLocalJavaMapString(value) {
 // A plain object dressed as the Java map AIC hands back: it prints as one,
 // and containsKey, size and keySet are functions (measured).
 function __rhinoLocalAsJavaMap(map) {
-  var names = Object.keys(map);
   __rhinoLocalHide(map, "toString", function () {
     return __rhinoLocalJavaMapString(map);
   });
+  __rhinoLocalHide(map, "get", function (name) {
+    var key = String(name);
+    return __rhinoLocalHas(map, key) ? map[key] : null;
+  });
+  __rhinoLocalHide(map, "put", function (name, value) {
+    var key = String(name);
+    var previous = __rhinoLocalHas(map, key) ? map[key] : null;
+    map[key] = value;
+    return previous;
+  });
   __rhinoLocalHide(map, "containsKey", function (name) {
-    return names.indexOf(String(name)) !== -1;
+    return __rhinoLocalHas(map, String(name));
   });
   __rhinoLocalHide(map, "size", function () {
-    return names.length;
+    return Object.keys(map).length;
   });
   __rhinoLocalHide(map, "keySet", function () {
-    return __rhinoLocalJavaList(names.slice());
+    return __rhinoLocalJavaList(Object.keys(map));
   });
   return map;
 }
