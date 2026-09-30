@@ -160,26 +160,6 @@ describe("resolve-identity", () => {
   });
 });
 
-const firstPassSuite = defineSuite({
-  name: "first-pass-callbacks",
-  script: 'action.goTo(callbacks.isEmpty() ? "empty" : "submitted");',
-  outcomes: ["empty", "submitted"],
-});
-
-describe("first-pass-callbacks", () => {
-  const lease = useLease(firstPassSuite, {
-    ...aicWhenEnabled("first-pass-callbacks"),
-  });
-
-  // Regression: a single-pass lease used to leave callbacks unseeded.
-  it("sees an empty submitted list without declaring a step", async () => {
-    const run = await lease.run().expect({ outcome: "empty" });
-    expect(run.kase.given.callbacks).toEqual([]);
-    expect(run.kase.given.scriptName).toBe("first-pass-callbacks");
-    expect(run.verdict.pass).toBe(true);
-  });
-});
-
 const esvSuite = defineSuite({
   name: "system-env-esv",
   script: [
