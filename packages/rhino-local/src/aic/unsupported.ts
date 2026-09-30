@@ -11,7 +11,7 @@ function objectHasKeys(value: object | undefined): boolean {
  * wrapper journey can seed `given` faithfully enough that a green AIC run
  * is evidence, not coincidence.
  *
- * Environment-dependent inputs (`esv` / `secrets` / `managed` / `http`) are
+ * Environment-dependent inputs (`secrets` / `managed` / `http`) are
  * skipped rather than silently running against whatever the tenant holds.
  * The one exception is managed state whose fixture-ledger provenance was
  * checked by the caller; later chain passes may then carry records the subject
@@ -27,7 +27,7 @@ export function aicUnsupportedReason(
   if (!isPortable(kase)) {
     const declared = ENV_INPUT_KEYS.filter(
       (key) =>
-        hasDeclaredEnv(kase.given, key) &&
+        key !== "esv" && hasDeclaredEnv(kase.given, key) &&
         !(key === "managed" && options.harnessOwnsManaged === true)
     );
     if (declared.length > 0) {

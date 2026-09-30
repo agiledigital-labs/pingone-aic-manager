@@ -249,7 +249,8 @@ export interface Given {
    * evaluators (docs/api/12-script-bindings-matrix.md).
    */
   existingSession?: Record<string, string>;
-  esv?: Record<string, string>;
+  /** A null entry explicitly declares an absent ESV. */
+  esv?: Record<string, string | null>;
   secrets?: Record<string, string>;
   /** Library source keyed by the name passed to next-gen `require()`. */
   libraries?: Record<string, string>;

@@ -93,15 +93,14 @@ describe("resolve-identity", () => {
         allowUndeclared: { openidmReads: true, logs: true },
       });
 
-    // `always` state, the ESV override in its state form, the beforeRun
-    // addition and the parsed inputs all arrive through one channel.
+    // State, beforeRun and parsed inputs share a channel; ESVs use systemEnv.
     expect(run.kase.given.sharedState).toMatchObject({
       realmName: "alpha",
-      "esv.idr.match.threshold": "0.80",
       correlationId: `c-${USER_IDS.bob}`,
       userId: USER_IDS.bob,
       locale: "en-AU",
     });
+    expect(run.kase.given.esv).toEqual({ "esv.idr.match.threshold": "0.80" });
   });
 
   it("sees the suite fixture and its own, and not another test's", async () => {
@@ -177,5 +176,42 @@ describe("first-pass-callbacks", () => {
     const run = await lease.run().expect({ outcome: "empty" });
     expect(run.kase.given.callbacks).toEqual([]);
     expect(run.verdict.pass).toBe(true);
+  });
+});
+
+const esvSuite = defineSuite({
+  name: "system-env-esv",
+  script: [
+    'var value = systemEnv.getProperty("esv.rl.example");',
+    'action.goTo(value === "override" ? "override" : "other");',
+  ].join("\n"),
+  outcomes: ["override", "other"],
+  always: { esv: { "rl.example": "suite" } },
+  beforeRun: ({ request }) => {
+    if (request.esv["rl.example"] === "suite") {
+      request.esv["rl.example"] = "before";
+    }
+  },
+});
+
+describe("system-env-esv", () => {
+  const lease = useLease(esvSuite);
+
+  // Regression: the ESV channel used to seed only shared state.
+  it("reads a per-test ESV override through systemEnv", async () => {
+    const run = await lease.run().esv({ "rl.example": "override" }).expect({ outcome: "override" });
+    expect(run.verdict.pass).toBe(true);
+    expect(run.kase.given.sharedState).toBeUndefined();
+  });
+
+  it("can mirror ESV declarations into shared state", async () => {
+    const run = await lease.run().esv({ "rl.example": "override" }).esvInState()
+      .expect({ outcome: "override" });
+    expect(run.kase.given.sharedState).toEqual({ "esv.rl.example": "override" });
+  });
+
+  it("lets beforeRun change the suite ESV declaration", async () => {
+    const run = await lease.run().expect({ outcome: "other" });
+    expect(run.kase.given.esv).toEqual({ "esv.rl.example": "before" });
   });
 });

@@ -28,6 +28,33 @@ bytecode and AIC's observed JS disagree, AIC wins.
 
 ## How to run
 
+### Harness ESV channel
+
+`always.esv`, a per-test `.esv()` override, and `beforeRun`'s `request.esv`
+declare local `systemEnv.getProperty("esv.<name>")` values. AIC reads its own
+tenant ESVs; the harness does not inject or change them. An undeclared local
+ESV read throws with the key, including when another ESV was declared. Use
+`null` to declare a missing property; a one-argument read returns `null` and a
+read with a default returns that default.
+
+Before: `esv: { flag: "on" }` produced only shared-state key `esv.flag`, so
+`systemEnv.getProperty("esv.flag")` was unseeded. After: it seeds that
+`systemEnv` key locally. `esvInState: true` additionally writes `esv.flag`
+to shared state on **both** lanes for config libraries that consult state first.
+The option belongs beside `esv` in `always`, can be changed with
+`.esvInState()` per test, and is mutable as `request.esvInState` in `beforeRun`.
+Only when this mirror is on does an input named `esv.flag` collide and fail.
+
+Declared values are local fixtures, not tenant writes. AIC's real ESV may
+differ, and a script that hides the value from recorded effects may pass both
+lanes despite that difference. The lease does not compare the declared value
+with the ESV management API: `systemEnv` property names do not reliably
+identify `/environment/variables/{id}`, and secret values are unreadable.
+That comparison would also add one GET per distinct declared variable per
+lease, with no equivalent check for secrets. Value-sensitive tests therefore
+need the test author to confirm the tenant's current ESV value; changing a
+tenant ESV requires a restart.
+
 The runner needs a host JDK 25: `AIC_SCRIPT_TESTER_JAVA_HOME`, then `JAVA_HOME`, then
 `java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar
 comes from Maven Central, verified by SHA-256 — it is byte-identical to the one

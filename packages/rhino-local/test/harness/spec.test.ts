@@ -36,6 +36,7 @@ describe("mergeChannels", () => {
     expect(draft).toEqual({
       state: { shared: {}, transient: {} },
       esv: {},
+      esvInState: false,
       headers: {},
       params: {},
       session: {},
@@ -61,21 +62,29 @@ describe("normaliseWire", () => {
 });
 
 describe("applyInputsAndEsv", () => {
-  it("lands inputs under their own names and ESVs under the esv prefix", () => {
+  it("lands inputs in state and ESVs in the systemEnv binding", () => {
     const draft = mergeChannels({ esv: { "idr.threshold": "0.8" } }, undefined);
     applyInputsAndEsv(draft, { userId: "alice", debug: false });
     expect(draft.state.shared).toEqual({
       userId: "alice",
       debug: false,
-      "esv.idr.threshold": "0.8",
     });
+    expect(toGiven(draft).esv).toEqual({ "esv.idr.threshold": "0.8" });
   });
 
-  it("refuses an input that would collide with the esv namespace", () => {
-    const draft = mergeChannels(undefined, undefined);
+  it("mirrors ESVs into state only when requested and rejects collisions then", () => {
+    const draft = mergeChannels({ esv: { x: "1" }, esvInState: true }, undefined);
+    applyInputsAndEsv(draft, { userId: "alice" });
+    expect(draft.state.shared["esv.x"]).toBe("1");
     expect(() => applyInputsAndEsv(draft, { "esv.x": "1" })).toThrow(
       /reserved for ESV overrides/
     );
+  });
+
+  it("allows an esv-prefixed input when the mirror is off", () => {
+    const draft = mergeChannels(undefined, undefined);
+    applyInputsAndEsv(draft, { "esv.x": "input" });
+    expect(draft.state.shared["esv.x"]).toBe("input");
   });
 });
 
@@ -112,9 +121,9 @@ describe("parseInputs", () => {
 });
 
 describe("toGiven", () => {
-  it("omits channels nothing was put in", () => {
+  it("seeds an empty ESV declaration for fail-closed reads", () => {
     const given = toGiven(mergeChannels(undefined, undefined));
-    expect(given).toEqual({});
+    expect(given).toEqual({ esv: {} });
   });
 
   it("compiles the session channel to existingSession, merged per key", () => {

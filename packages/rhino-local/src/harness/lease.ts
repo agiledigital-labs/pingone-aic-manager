@@ -139,8 +139,13 @@ export class RunBuilder<TInput> {
     return this;
   }
 
-  esv(esv: Readonly<Record<string, string>>): this {
+  esv(esv: Readonly<Record<string, string | null>>): this {
     this.#override = { ...this.#override, esv: { ...this.#override.esv, ...esv } };
+    return this;
+  }
+
+  esvInState(enabled = true): this {
+    this.#override = { ...this.#override, esvInState: enabled };
     return this;
   }
 
