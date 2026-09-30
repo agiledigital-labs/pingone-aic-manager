@@ -280,8 +280,8 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
   "ok": true,
   "value": {
     "array": false,
-    "length": 19,
-    "string": "AIC Rhino Let Probe",
+    "length": 84,
+    "string": "scripts.AUTHENTICATION_TREE_DECISION_NODE.<unseeded-script-id>.(AIC Rhino Let Probe)",
     "type": "string",
   },
 }

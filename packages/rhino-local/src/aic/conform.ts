@@ -16,7 +16,7 @@ import {
 } from "./diff.ts";
 import { judge } from "../case/verdict.ts";
 import { managedSeedMatches, type ManagedFixture } from "./managed.ts";
-import { oneShotSubjectName } from "./emit-journey.ts";
+import { oneShotSubjectId, oneShotSubjectName } from "./emit-journey.ts";
 import { runAicChain, runAicLane, type AicReply } from "./run.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
 
@@ -71,6 +71,7 @@ export interface ChainConformanceInput extends LocalChainResult {
   source: string;
   /** The file lease supplied the real uploaded name to the local lane. */
   harnessOwnsScriptName?: boolean;
+  harnessOwnsLoggerScriptId?: boolean;
   /** For a one-shot chain whose local cases used the generated subject name. */
   oneShotRunId?: string;
   /** Omit to skip; pass a runner, or `"tenant"` to use `runAicChain`. */
@@ -109,7 +110,11 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
     ...input,
     kase: {
       ...input.kase,
-      given: { ...input.kase.given, scriptName: oneShotSubjectName(runId) },
+      given: {
+        ...input.kase.given,
+        scriptName: oneShotSubjectName(runId),
+        loggerScriptId: oneShotSubjectId(runId),
+      },
     },
   };
   const local = await runLane(input.local, localInput, "no local runner provided (bindings lane is a separate slice)");
@@ -161,6 +166,7 @@ export async function conformChain(
     const reason = aicUnsupportedReason(kase, {
       harnessOwnsManaged,
       harnessOwnsScriptName: input.harnessOwnsScriptName === true || input.oneShotRunId !== undefined,
+      harnessOwnsLoggerScriptId: input.harnessOwnsLoggerScriptId === true || input.oneShotRunId !== undefined,
     });
     return reason === undefined ? [] : [`${kase.name}: ${reason}`];
   });
@@ -240,9 +246,13 @@ function validateChainInput(input: ChainConformanceInput): void {
   }
   if (input.oneShotRunId !== undefined) {
     const actualName = oneShotSubjectName(input.oneShotRunId);
+    const actualId = oneShotSubjectId(input.oneShotRunId);
     for (const kase of input.cases) {
       if (kase.given.scriptName !== actualName) {
         throw new Error(`${kase.name}: local scriptName must be ${JSON.stringify(actualName)} for one-shot conformance`);
+      }
+      if (kase.given.loggerScriptId !== actualId) {
+        throw new Error(`${kase.name}: local loggerScriptId must be ${JSON.stringify(actualId)} for one-shot conformance`);
       }
     }
   }
@@ -254,7 +264,7 @@ async function runChainLane(
 ): Promise<LaneResult[]> {
   try {
     const effects = await runner({
-      cases: input.oneShotRunId === undefined ? input.cases : input.cases.map(withoutScriptName),
+      cases: input.oneShotRunId === undefined ? input.cases : input.cases.map(withoutScriptIdentity),
       source: input.source,
       replies: input.replies,
       ...(input.oneShotRunId === undefined ? {} : { runId: input.oneShotRunId }),
@@ -276,9 +286,10 @@ async function runChainLane(
   }
 }
 
-function withoutScriptName(kase: Case): Case {
+function withoutScriptIdentity(kase: Case): Case {
   const given = { ...kase.given };
   delete given.scriptName;
+  delete given.loggerScriptId;
   return { ...kase, given };
 }
 

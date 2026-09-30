@@ -6,7 +6,7 @@ import {
   conformChain,
 } from "../../src/aic/conform.ts";
 import { diffRecordedEffects } from "../../src/aic/diff.ts";
-import { oneShotSubjectName } from "../../src/aic/emit-journey.ts";
+import { oneShotSubjectId, oneShotSubjectName } from "../../src/aic/emit-journey.ts";
 import { assembleEffects } from "../../src/aic/record.ts";
 import { runAicChain, type AicReply } from "../../src/aic/run.ts";
 import { judge } from "../../src/case/verdict.ts";
@@ -23,7 +23,10 @@ describe("one-shot scriptName conformance", () => {
   // Regression: the local pass needs the uploaded name, while AIC cannot seed it.
   it("checks the local name and strips it from the AIC case", async () => {
     const runId = "scriptname01";
-    const kase = caseWith({ given: { scriptName: oneShotSubjectName(runId) } });
+    const kase = caseWith({ given: {
+      scriptName: oneShotSubjectName(runId),
+      loggerScriptId: oneShotSubjectId(runId),
+    } });
     const effects = makeEffects();
     const seen: string[] = [];
     const report = await conformChain({
@@ -33,11 +36,11 @@ describe("one-shot scriptName conformance", () => {
       source: kase.script,
       oneShotRunId: runId,
       aic: ({ cases, runId: actualRunId }) => {
-        seen.push(String(cases[0]?.given.scriptName), String(actualRunId));
+        seen.push(String(cases[0]?.given.scriptName), String(cases[0]?.given.loggerScriptId), String(actualRunId));
         return Promise.resolve([effects]);
       },
     });
-    expect(seen).toEqual(["undefined", runId]);
+    expect(seen).toEqual(["undefined", "undefined", runId]);
     expect(report.passes[0]?.aic.skipped).toBeUndefined();
     await expect(conformChain({
       cases: [{ ...kase, given: { scriptName: "wrong" } }],

@@ -71,6 +71,9 @@ describe("aicUnsupportedReason", () => {
       aicUnsupportedReason(caseWith({ given: { scriptName: "x" } }))
     ).toMatch(/scriptName/);
     expect(
+      aicUnsupportedReason(caseWith({ given: { loggerScriptId: "x" } }))
+    ).toMatch(/loggerScriptId/);
+    expect(
       aicUnsupportedReason(caseWith({ given: { bindings: { logger: {} } } }))
     ).toMatch(/bindings/);
   });

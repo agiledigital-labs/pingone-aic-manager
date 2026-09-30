@@ -204,9 +204,17 @@ still seed `given.scriptName` locally; the one-shot AIC runner rejects that
 seed. The one-shot `conform(..., { aic: "tenant" })` path supplies its generated
 name to the local runner for the same comparison.
 For a pre-recorded one-shot chain, choose `oneShotRunId`, seed each local
-case's `given.scriptName` with `oneShotSubjectName(oneShotRunId)`, then pass
-that ID to `conformChain`; it checks the name and removes the local-only seed
-before invoking AIC.
+case's `given.scriptName` and `given.loggerScriptId` with
+`oneShotSubjectName(oneShotRunId)` and `oneShotSubjectId(oneShotRunId)`, then
+pass that ID to `conformChain`; it checks both values and removes the local-only
+seeds before invoking AIC.
+
+In next-gen decision-node scripts, local `logger.getName()` uses the measured
+`scripts.AUTHENTICATION_TREE_DECISION_NODE.<script id>.(<script name>)` form.
+With an AIC lease, the ID is its deterministic subject UUID. A local-only
+suite uses `<unseeded-script-id>` as an obvious placeholder; a raw `Case` can
+provide `given.loggerScriptId`. The logger-name form for other script contexts
+has not been measured, and the legacy mock keeps its earlier bare name.
 
 ### Match a value's shape
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   emitWrapperJourney,
+  oneShotSubjectId,
   subjectOutcomes,
 } from "../../src/aic/emit-journey.ts";
 import { SUCCESS_NODE_ID } from "../../src/aic/constants.ts";
@@ -21,6 +22,11 @@ describe("subjectOutcomes", () => {
 });
 
 describe("emitWrapperJourney", () => {
+  it("assigns the predictable one-shot subject UUID used by local conformance", () => {
+    const wrapper = emitWrapperJourney(caseWith(), SUBJECT, { runId: "named01" });
+    expect(wrapper.scripts[0]?.id).toBe(oneShotSubjectId("named01"));
+  });
+
   it("wires subject → per-outcome result → success, with no setup node", () => {
     const wrapper = emitWrapperJourney(
       caseWith({

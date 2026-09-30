@@ -194,6 +194,7 @@ export class AicFileLease {
       const report = await conformChain({
         ...request,
         harnessOwnsScriptName: true,
+        harnessOwnsLoggerScriptId: true,
         aic: (args) =>
           this.#runEffects(
             args.cases,
@@ -662,6 +663,7 @@ export class AicFileLease {
       request.cases,
       request.replies,
       request.managedFixtures,
+      true,
       true
     );
     if (request.hooks.stepChecks.length !== request.replies.length) {
@@ -675,6 +677,9 @@ export class AicFileLease {
     for (const kase of request.cases) {
       if (kase.given.scriptName !== undefined && kase.given.scriptName !== `${this.identity.treeName}-subject`) {
         throw new AicLaneError(`${kase.name}: local scriptName differs from the uploaded subject name`);
+      }
+      if (kase.given.loggerScriptId !== undefined && kase.given.loggerScriptId !== this.identity.ids.subjectScript) {
+        throw new AicLaneError(`${kase.name}: local loggerScriptId differs from the uploaded subject id`);
       }
       if (kase.script !== this.#options.source) {
         throw new AicLaneError(`${kase.name}: case source differs from the leased suite source`);

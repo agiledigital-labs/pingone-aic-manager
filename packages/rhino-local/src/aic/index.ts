@@ -23,7 +23,7 @@ export type {
   EffectsDisagreement,
   ObservationGap,
 } from "./diff.ts";
-export { emitLeasedJourney, emitWrapperJourney, oneShotSubjectName, subjectOutcomes } from "./emit-journey.ts";
+export { emitLeasedJourney, emitWrapperJourney, oneShotSubjectId, oneShotSubjectName, subjectOutcomes } from "./emit-journey.ts";
 export type {
   EmitJourneyOptions,
   LeasedJourneyOptions,

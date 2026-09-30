@@ -67,8 +67,19 @@ leaving the AIC `Case` unseeded; direct `runAicChain()` still refuses an
 author-supplied `given.scriptName`. A raw local `Case` retains explicit seed
 control for binding tests.
 For a pre-recorded one-shot chain, use `oneShotSubjectName(runId)` to seed
-each local case and pass `oneShotRunId: runId` to `conformChain`. It validates
-the recorded local name and strips the seed before the tenant run.
+`given.scriptName` and `oneShotSubjectId(runId)` to seed
+`given.loggerScriptId` in each local case, then pass `oneShotRunId: runId` to
+`conformChain`. It validates both and strips the seeds before the tenant run.
+
+For next-gen decision nodes, `logger.getName()` locally follows the measured
+`scripts.AUTHENTICATION_TREE_DECISION_NODE.<script _id>.(<script name>)` form.
+The reusable AIC lease uses its deterministic UUIDv5 subject ID. A one-shot
+run with a known run ID uses `oneShotSubjectId(runId)`; local-only runs use the
+visible `<unseeded-script-id>` placeholder unless a raw `Case` supplies
+`given.loggerScriptId`. The format has only been measured for the next-gen
+decision-node context (live AIC-lane probe, 2026-10-01). The legacy mock
+retains its earlier bare-name behavior; that context's tenant format remains
+unmeasured.
 
 The runner needs a host JDK 25: `AIC_SCRIPT_TESTER_JAVA_HOME`, then `JAVA_HOME`, then
 `java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar

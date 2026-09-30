@@ -3112,7 +3112,7 @@ export const realCases: RealEntry[] = [
     given: {
       "realm": "/alpha",
       "scriptName": "AIC Rhino Let Probe",
-      "esv": {},
+      "esv": { "esv.rl.probe.absent": null },
       "secrets": {},
       "bindings": {
         "cacheManager": {},
