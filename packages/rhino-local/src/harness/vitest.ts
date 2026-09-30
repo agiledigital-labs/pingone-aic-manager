@@ -32,7 +32,7 @@ export interface UseLeaseAicOptions {
 }
 
 export interface UseLeaseOptions
-  extends Partial<Omit<LeaseOptions, "runner" | "lane" | "realm">> {
+  extends Partial<Omit<LeaseOptions, "runner" | "lane" | "realm" | "scriptName" | "loggerScriptId" | "oneShotRunId">> {
   spawnTimeoutMs?: number;
   aic?: UseLeaseAicOptions;
   /** Preserved by `aicWhenEnabled()` when the tenant lane is off. */
