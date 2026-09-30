@@ -6,8 +6,8 @@ const suite = defineSuite({
   script: 'nodeState.putShared("value", require("outer").value); action.goTo("done");',
   outcomes: ["done"],
   libraries: {
+    outer: '// Consumers: require("outer")\nvar direct = require("inner"); exports.value = require /* dependency */ ("in" + "ner").value;',
     inner: 'exports.value = "from library";',
-    outer: 'exports.value = require("inner").value;',
   },
 });
 

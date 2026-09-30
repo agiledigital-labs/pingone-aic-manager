@@ -779,7 +779,9 @@ repeat a tenant run.
 Suite `libraries` maps exact `require()` names to source strings. The local
 lane seeds that map on every pass, including resumed passes. The AIC file lease
 looks up all names before its first tenant write, creates absent `LIBRARY`
-scripts before the subject, and confirms each write by reading it back. It
+scripts in declaration order before the subject, and confirms each write by
+reading it back. AM create-time `require()` target validation is unmeasured;
+the lease does not parse library source to infer dependencies. It
 reuses an existing same-name, byte-identical library without owning it; a
 different source or context found during preflight is a refusal. Names are
 realm-wide. AM has no measured atomic create precondition, so another writer
@@ -787,9 +789,10 @@ can create an ID between the read and PUT; simultaneous writers using one
 `aic.id` are unsupported. Before deleting an owned library, the lease checks
 its source and ownership fields and leaves changed libraries with a cleanup
 warning and recovery journal. The lease
-deletes owned libraries only after their consumers. It refuses a reused
-library that requires a new lease-owned one, because that external consumer
-would prevent cleanup. Legacy `require()` is
+deletes the subject graph before owned libraries, then retries library deletes
+until no further delete succeeds. AM refuses to delete a referenced library;
+any owned library still referenced by a reused external consumer remains
+journalled and is reported as residue at close. Legacy `require()` is
 unsupported, so a legacy case with libraries fails validation.
 
 `useLease()` accepts an AIC opt-in alongside the local options:

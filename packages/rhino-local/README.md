@@ -114,8 +114,14 @@ const suite = defineSuite({
 For example, `lib/codeLookup.js` can contain `exports.code = function () {
 return "ready"; };`. Another library in the same map can call
 `require("codeLookup")`. The local lane loads both from the map; the AIC file
-lease provisions them as `LIBRARY` scripts before the subject and deletes its
-owned libraries after the subject. Names are realm-wide. If a named library
+lease provisions absent entries as `LIBRARY` scripts in declaration order,
+then creates the subject. AM's write path does not syntax-check scripts;
+whether it validates `require()` targets at create time has not been measured.
+At close, the lease deletes the subject's graph first, then retries owned
+library deletion until no further delete succeeds. AM's measured refusal to
+delete a referenced library orders the cleanup. An owned library still
+referenced by a reused external library remains journalled and is reported as
+residue at close. Names are realm-wide. If a named library
 already exists on the tenant with byte-identical source, the lease uses it and
 leaves it there. A different source or script context found during preflight
 is an error before any lease write. AM has no measured atomic create
@@ -126,8 +132,6 @@ Before deleting a library it created, the lease checks its current source and
 ownership fields; if they changed, it leaves the library and recovery journal
 in place and reports a cleanup warning. Legacy scripts
 cannot use libraries, and `given.engine: "legacy"` with `libraries` is rejected.
-An existing library that requires a newly created library is refused: the
-existing consumer would prevent the lease from deleting its new dependency.
 
 ### Callback suspension
 
