@@ -1,11 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { validateCase } from "../../src/case/validate.ts";
+import { deepEqual } from "../../src/case/equal.ts";
+import { matchesValue } from "../../src/case/matcher.ts";
+import type { Case, ExpectedValue } from "../../src/case/types.ts";
 import { judge } from "../../src/case/verdict.ts";
 import { bucket, makeCase, makeEffects } from "./helpers.ts";
 
 describe("JSON value matchers", () => {
   const uuid = "123e4567-e89b-42d3-a456-426614174000";
+
+  it("rejects sparse expectations and cannot judge their holes as wildcards", () => {
+    const sparse = new Array(1) as ExpectedValue[];
+    const input = { name: "sparse", script: "1", expect: {
+      outcome: "true", sharedState: { added: { items: sparse } },
+    } };
+    expect(() => validateCase(input)).toThrow(
+      /case\.expect\.sharedState\.added\.items\[0\] is missing; sparse arrays are not allowed/);
+    expect(() => validateCase({ ...input, expect: { outcome: "true",
+      callbacks: new Array(1) } })).toThrow(/case\.expect\.callbacks\[0\].*sparse arrays/);
+    expect(() => validateCase({ ...input, given: { sharedState: { items: sparse } },
+      expect: { outcome: "true" } })).toThrow(/case\.given\.sharedState\.items\[0\].*sparse arrays/);
+
+    const unchecked = { ...input, given: {} } as unknown as Case;
+    const effects = makeEffects({ sharedState: bucket({}, { items: ["unexpected"] }) });
+    expect(() => judge(unchecked, effects)).toThrow(/items\[0\].*sparse arrays/);
+    expect(matchesValue(sparse, ["unexpected"])).toBe(false);
+    expect(deepEqual(sparse, ["unexpected"])).toBe(false);
+    expect(deepEqual(sparse, sparse)).toBe(false);
+  });
 
   it("matches nested state shapes and keeps matched keys declared", () => {
     const kase = makeCase({ expect: { outcome: "true", sharedState: {
@@ -81,7 +104,7 @@ describe("JSON value matchers", () => {
     const missingSlot = makeEffects({ sharedState: bucket({}, {
       tracking: { id: null }, ids: new Array(1),
     }) });
-    expect(judge(kase, missingSlot).pass).toBe(false);
+    expect(() => judge(kase, missingSlot)).toThrow(/ids\[0\].*sparse arrays/);
   });
 
   it("rejects matchers in input seeds and HTTP stubs", () => {

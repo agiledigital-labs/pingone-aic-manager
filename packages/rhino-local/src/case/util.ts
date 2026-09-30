@@ -141,6 +141,7 @@ export function parseJsonValue(raw: unknown, path: string): JsonValue {
     return raw;
   }
   if (Array.isArray(raw)) {
+    assertDenseArray(raw, path);
     return raw.map((item, index) => parseJsonValue(item, `${path}[${index}]`));
   }
   if (isPlainObject(raw)) {
@@ -153,6 +154,14 @@ export function parseJsonValue(raw: unknown, path: string): JsonValue {
   throw new Error(
     `rhino-local: ${path} is not a JSON value (${describeType(raw)})`
   );
+}
+
+export function assertDenseArray(value: readonly unknown[], path: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(value, index)) {
+      throw new Error(`rhino-local: ${path}[${index}] is missing; sparse arrays are not allowed`);
+    }
+  }
 }
 
 export function parseJsonObject(raw: unknown, path: string): JsonObject {

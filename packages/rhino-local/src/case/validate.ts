@@ -36,7 +36,7 @@ import type {
   Pattern,
   StateDiff,
 } from "./types.ts";
-import { isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
+import { assertDenseArray, isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
 
 const GIVEN_BINDING_SEED_SET: ReadonlySet<string> = new Set(GIVEN_BINDING_SEEDS);
 const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
@@ -268,6 +268,7 @@ function parseStateDiff(raw: unknown, path: string): StateDiff {
     if (!Array.isArray(raw.removed) || raw.removed.some((key) => typeof key !== "string")) {
       throw new Error(`rhino-local: ${path}.removed must be an array of strings`);
     }
+    assertDenseArray(raw.removed, `${path}.removed`);
     diff.removed = raw.removed.slice();
   }
   return diff;
@@ -418,8 +419,10 @@ function parseCallbackExpect(raw: unknown, path: string): CallbackExpect {
 
 function parseExpectedValue(raw: unknown, path: string): ExpectedValue {
   if (raw instanceof RegExp || isStandardSchema(raw)) return raw;
-  if (Array.isArray(raw)) return raw.map((item, index) =>
-    parseExpectedValue(item, `${path}[${index}]`));
+  if (Array.isArray(raw)) {
+    assertDenseArray(raw, path);
+    return raw.map((item, index) => parseExpectedValue(item, `${path}[${index}]`));
+  }
   if (isPlainObject(raw)) return parseExpectedObject(raw, path);
   return parseJsonValue(raw, path);
 }
@@ -571,6 +574,7 @@ function parseArray<T>(
   if (!Array.isArray(raw)) {
     throw new Error(`rhino-local: ${path} is not an array`);
   }
+  assertDenseArray(raw, path);
   return raw.map((value, index) => item(value, `${path}[${index}]`));
 }
 
