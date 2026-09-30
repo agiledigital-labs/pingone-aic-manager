@@ -1,18 +1,21 @@
 import { isPlainObject } from "./util.ts";
 
 export function deepEqual(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) {
-    return true;
-  }
-  if (Array.isArray(left) && Array.isArray(right)) {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
     if (left.length !== right.length) {
       return false;
     }
     for (let index = 0; index < left.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(left, index) ||
+          !Object.prototype.hasOwnProperty.call(right, index)) return false;
       if (!deepEqual(left[index], right[index])) {
         return false;
       }
     }
+    return true;
+  }
+  if (Object.is(left, right)) {
     return true;
   }
   if (isPlainObject(left) && isPlainObject(right)) {

@@ -29,9 +29,13 @@ export function matchesValue(expected: ExpectedValue, actual: unknown): boolean 
       (Array.isArray(result.issues) && result.issues.length === 0);
   }
   if (Array.isArray(expected)) {
-    return Array.isArray(actual) && actual.length === expected.length &&
-      expected.every((item, index) =>
-        Object.prototype.hasOwnProperty.call(actual, index) && matchesValue(item, actual[index]));
+    if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+    for (let index = 0; index < expected.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(expected, index) ||
+          !Object.prototype.hasOwnProperty.call(actual, index) ||
+          !matchesValue(expected[index] as ExpectedValue, actual[index])) return false;
+    }
+    return true;
   }
   if (isPlainObject(expected)) {
     if (!isPlainObject(actual)) return false;
@@ -48,8 +52,14 @@ export function matchesValue(expected: ExpectedValue, actual: unknown): boolean 
 export function equalExceptMatchers(expected: unknown, left: unknown, right: unknown): boolean {
   if (isMatcher(expected)) return left !== undefined && right !== undefined;
   if (Array.isArray(expected) && Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length && left.every((item, index) =>
-      equalExceptMatchers(expected[index], item, right[index]));
+    if (left.length !== right.length || expected.length !== left.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(expected, index) ||
+          !Object.prototype.hasOwnProperty.call(left, index) ||
+          !Object.prototype.hasOwnProperty.call(right, index) ||
+          !equalExceptMatchers(expected[index], left[index], right[index])) return false;
+    }
+    return true;
   }
   if (isPlainObject(expected) && isPlainObject(left) && isPlainObject(right)) {
     const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
@@ -67,9 +77,14 @@ export function equalExceptMatchers(expected: unknown, left: unknown, right: unk
 export function seedMatches(expected: unknown, local: unknown, tenant: unknown): boolean {
   if (isMatcher(expected)) return tenant !== undefined && matchesValue(expected, tenant);
   if (Array.isArray(expected) && Array.isArray(local) && Array.isArray(tenant)) {
-    return local.length === tenant.length && local.every((item, index) =>
-      Object.prototype.hasOwnProperty.call(tenant, index) &&
-      seedMatches(expected[index], item, tenant[index]));
+    if (local.length !== tenant.length || expected.length !== local.length) return false;
+    for (let index = 0; index < local.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(expected, index) ||
+          !Object.prototype.hasOwnProperty.call(local, index) ||
+          !Object.prototype.hasOwnProperty.call(tenant, index) ||
+          !seedMatches(expected[index], local[index], tenant[index])) return false;
+    }
+    return true;
   }
   if (isPlainObject(expected) && isPlainObject(local) && isPlainObject(tenant)) {
     const keys = new Set([...Object.keys(local), ...Object.keys(tenant)]);
