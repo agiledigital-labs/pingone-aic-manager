@@ -57,6 +57,8 @@ export interface LocalChainResult {
   replies: readonly (readonly AicReply[])[];
   /** Present only when the local result came through the lease fixture ledger. */
   managedFixtures?: readonly ManagedFixture[];
+  /** Identity seeded by Lease.execute, with provenance retained for AIC. */
+  harnessIdentity?: { scriptName: string; loggerScriptId?: string; oneShotRunId?: string };
 }
 
 export type AicChainRunner = (args: {
@@ -165,8 +167,8 @@ export async function conformChain(
   const unsupported = input.cases.flatMap((kase) => {
     const reason = aicUnsupportedReason(kase, {
       harnessOwnsManaged,
-      harnessOwnsScriptName: input.harnessOwnsScriptName === true || input.oneShotRunId !== undefined,
-      harnessOwnsLoggerScriptId: input.harnessOwnsLoggerScriptId === true || input.oneShotRunId !== undefined,
+      harnessOwnsScriptName: input.harnessOwnsScriptName === true || input.oneShotRunId !== undefined || input.harnessIdentity !== undefined,
+      harnessOwnsLoggerScriptId: input.harnessOwnsLoggerScriptId === true || input.oneShotRunId !== undefined || input.harnessIdentity?.loggerScriptId !== undefined,
     });
     return reason === undefined ? [] : [`${kase.name}: ${reason}`];
   });
@@ -214,6 +216,7 @@ export function chainFromRunResult(result: RunResult): LocalChainResult {
     localEffects: [...result.steps.map((step) => step.effects), result.effects],
     replies: result.steps.map((step) => submittedToAicReplies(step.submitted)),
     managedFixtures: result.fixtures,
+    ...(result.harnessIdentity === undefined ? {} : { harnessIdentity: result.harnessIdentity }),
   };
 }
 
@@ -244,9 +247,21 @@ function validateChainInput(input: ChainConformanceInput): void {
       `conformChain: ${input.cases.length} passes need ${input.cases.length - 1} reply sets, got ${input.replies.length}`
     );
   }
-  if (input.oneShotRunId !== undefined) {
-    const actualName = oneShotSubjectName(input.oneShotRunId);
-    const actualId = oneShotSubjectId(input.oneShotRunId);
+  if (input.harnessIdentity !== undefined) {
+    const identity = input.harnessIdentity;
+    for (const kase of input.cases) {
+      if (kase.given.scriptName !== identity.scriptName || kase.given.loggerScriptId !== identity.loggerScriptId) {
+        throw new Error(`${kase.name}: local script identity differs from the lease-recorded identity`);
+      }
+    }
+  }
+  if (input.harnessIdentity?.oneShotRunId !== undefined && input.oneShotRunId !== undefined && input.oneShotRunId !== input.harnessIdentity.oneShotRunId) {
+    throw new Error("conformChain: oneShotRunId differs from the lease-recorded run ID");
+  }
+  const oneShotRunId = input.oneShotRunId ?? input.harnessIdentity?.oneShotRunId;
+  if (oneShotRunId !== undefined) {
+    const actualName = oneShotSubjectName(oneShotRunId);
+    const actualId = oneShotSubjectId(oneShotRunId);
     for (const kase of input.cases) {
       if (kase.given.scriptName !== actualName) {
         throw new Error(`${kase.name}: local scriptName must be ${JSON.stringify(actualName)} for one-shot conformance`);
@@ -263,11 +278,12 @@ async function runChainLane(
   input: ChainConformanceInput
 ): Promise<LaneResult[]> {
   try {
+    const runId = input.oneShotRunId ?? input.harnessIdentity?.oneShotRunId;
     const effects = await runner({
-      cases: input.oneShotRunId === undefined ? input.cases : input.cases.map(withoutScriptIdentity),
+      cases: input.oneShotRunId === undefined && input.harnessIdentity === undefined ? input.cases : input.cases.map(withoutScriptIdentity),
       source: input.source,
       replies: input.replies,
-      ...(input.oneShotRunId === undefined ? {} : { runId: input.oneShotRunId }),
+      ...(runId === undefined ? {} : { runId }),
       ...(input.managedFixtures !== undefined
         ? { managedFixtures: input.managedFixtures }
         : {}),
