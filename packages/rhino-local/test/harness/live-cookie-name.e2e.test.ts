@@ -16,11 +16,13 @@ describe("tenant cookie name", () => {
   it("uses the same serverinfo value on both lanes", async () => {
     const run = await lease.run().expect({
       outcome: "match",
-      allowUndeclared: { sharedState: true },
+      sharedState: { added: { cookieValue: /^.+$/ } },
     });
     expect(run.verdict.pass).toBe(true);
     if (run.conformance !== undefined) {
       expect(run.conformance.disagreements).toEqual([]);
+      expect(run.conformance.passes[0]?.aic.effects?.sharedState.final.cookieValue)
+        .toEqual(run.effects.sharedState.final.cookieValue);
     }
   });
 });
