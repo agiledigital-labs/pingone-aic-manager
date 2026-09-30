@@ -253,7 +253,14 @@ async function mintSession(
     );
   }
   const cookieName = await fetchCookieName(io, session);
-  wrapper.invoke.cookies[cookieName] = body.tokenId;
+  attachSessionCookie(wrapper.invoke.cookies, cookieName, body.tokenId);
+}
+
+export function attachSessionCookie(cookies: Record<string, string>, name: string, value: string): void {
+  if (Object.prototype.hasOwnProperty.call(cookies, name)) {
+    throw new AicLaneError(`request cookie ${JSON.stringify(name)} collides with the tenant session cookie`);
+  }
+  cookies[name] = value;
 }
 
 /**

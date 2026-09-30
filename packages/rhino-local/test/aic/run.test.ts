@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HARNESS_CALLBACK_ID } from "../../src/aic/constants.ts";
 import { headerValues, type HttpRequest, type HttpResponse } from "../../src/aic/http.ts";
 import type { ManagedFixture } from "../../src/aic/managed.ts";
-import { runAicLane } from "../../src/aic/run.ts";
+import { attachSessionCookie, runAicLane } from "../../src/aic/run.ts";
 import { AicLaneError, type AicIo, type CliResult } from "../../src/aic/tenant.ts";
 import { clearAicTrace, peekAicTrace } from "../../src/aic/trace.ts";
 import { TX_HEADER } from "../../src/aic/txid.ts";
@@ -19,6 +19,14 @@ const MANAGED_FIXTURE: ManagedFixture = {
   type: "managed/alpha_user",
   record: { _id: MANAGED_ID, userName: "alice" },
 };
+
+describe("attachSessionCookie", () => {
+  it("refuses to overwrite an author request cookie", () => {
+    const cookies = { sid: "author" };
+    expect(() => attachSessionCookie(cookies, "sid", "tenant")).toThrow(/collides with the tenant session cookie/);
+    expect(cookies.sid).toBe("author");
+  });
+});
 
 describe("runAicLane", () => {
   it("creates namespaced resources, invokes authenticate, records effects, and deletes", async () => {

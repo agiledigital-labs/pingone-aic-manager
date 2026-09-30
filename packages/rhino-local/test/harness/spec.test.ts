@@ -39,9 +39,16 @@ describe("mergeChannels", () => {
       esvInState: false,
       headers: {},
       params: {},
+      cookies: {},
       session: {},
       sessionRequested: false,
     });
+  });
+
+  it("merges request cookies per name and emits them in Given", () => {
+    const draft = mergeChannels({ cookies: { suite: "one", same: "old" } }, { cookies: { same: "new" } });
+    draft.cookies.hook = "three";
+    expect(toGiven(draft).requestCookies).toEqual({ suite: "one", same: "new", hook: "three" });
   });
 });
 

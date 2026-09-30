@@ -168,6 +168,11 @@ export class RunBuilder<TInput> {
     return this;
   }
 
+  cookies(cookies: Readonly<Record<string, string>>): this {
+    this.#override = { ...this.#override, cookies: { ...this.#override.cookies, ...cookies } };
+    return this;
+  }
+
   session(session: JsonObject): this {
     this.#override = { ...this.#override, session: { ...this.#override.session, ...session } };
     return this;

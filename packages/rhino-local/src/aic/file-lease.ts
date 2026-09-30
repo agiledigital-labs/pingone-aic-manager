@@ -42,6 +42,7 @@ import {
 } from "./managed.ts";
 import { confirmResourceSnapshot } from "./resource-snapshot.ts";
 import {
+  attachSessionCookie,
   deleteCreatedResources,
   driveJourney,
   fetchCookieName,
@@ -535,7 +536,7 @@ export class AicFileLease {
       cookies: { ...(first.given.requestCookies ?? {}) },
     };
     if (sessionCookie !== undefined) {
-      wrapper.invoke.cookies[sessionCookie.name] = sessionCookie.value;
+      attachSessionCookie(wrapper.invoke.cookies, sessionCookie.name, sessionCookie.value);
     }
     const observePass: AicPassObserver = async (index, effects) => {
       const final = index === cases.length - 1;
