@@ -222,9 +222,15 @@ and scripted decision (`idRepository.getIdentity(uuid): Identity`).
 The local script tester models `setAttribute` as a staged replacement visible to
 `getAttributeValues` before `store()`, and `addAttribute` as adding a distinct
 value to the staged collection. `store()` commits those values to the seeded
-managed record. **These write semantics are unmeasured on AIC.** The
-`live-identity-writes.e2e.test.ts` harness test checks the pre-store read,
-AM attribute names (`fr-attr-str1` and `fr-attr-multi1`), a wrong IDM field
-name, the post-store managed record, and a later callback pass. A tenant run
-will show a conformance disagreement if this model is wrong. The fixture is
-deleted by the test's cleanup hook.
+managed record. These write semantics remain unmeasured on AIC.
+
+The first AIC-enabled run on 2026-10-01 reached a later pass without the
+locally expected `preStore` state seed. That does not identify which identity
+operation differed. The revised
+`live-identity-writes.e2e.test.ts` catches lookup,
+`setAttribute`, the pre-store read, `addAttribute`, `store()`, and later reads, and
+records each result in shared state. It tests the AM attribute names
+`fr-attr-str1` and `fr-attr-multi1` and a wrong IDM field name. The between-pass
+managed-record assertion is deferred until the call-level diagnostics are
+known, so it cannot obscure them. The fixture is deleted by the test's
+cleanup hook.
