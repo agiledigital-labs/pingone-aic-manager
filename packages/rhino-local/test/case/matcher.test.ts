@@ -45,6 +45,45 @@ describe("JSON value matchers", () => {
     })).pass).toBe(false);
   });
 
+  it("requires matcher-declared bodies and callback fields to be present", () => {
+    const kase = makeCase({ expect: {
+      outcome: "true",
+      callbacks: [{ type: "TextOutputCallback", message: z.unknown() }],
+      openidm: [{ method: "create", resource: "managed/alpha_user", body: z.unknown() }],
+      http: [{ url: "https://tenant.example.com/collect", body: z.unknown() }],
+    } });
+    const complete = makeEffects({
+      callbacks: [{ type: "TextOutputCallback", message: null }],
+      openidm: [{ method: "create", resource: "managed/alpha_user", body: null }],
+      http: [{ url: "https://tenant.example.com/collect", method: "POST", body: null }],
+    });
+    expect(judge(kase, complete).pass).toBe(true);
+    expect(judge(kase, makeEffects({ ...complete,
+      callbacks: [{ type: "TextOutputCallback" }],
+    })).pass).toBe(false);
+    expect(judge(kase, makeEffects({ ...complete,
+      openidm: [{ method: "create", resource: "managed/alpha_user" }],
+    })).pass).toBe(false);
+    expect(judge(kase, makeEffects({ ...complete,
+      http: [{ url: "https://tenant.example.com/collect", method: "POST" }],
+    })).pass).toBe(false);
+  });
+
+  it("requires nested matcher keys and array slots to be present", () => {
+    const kase = makeCase({ expect: { outcome: "true", sharedState: { added: {
+      tracking: { id: z.unknown() },
+      ids: [z.unknown()],
+    } } } });
+    const missingKey = makeEffects({ sharedState: bucket({}, {
+      tracking: {}, ids: [null],
+    }) });
+    expect(judge(kase, missingKey).pass).toBe(false);
+    const missingSlot = makeEffects({ sharedState: bucket({}, {
+      tracking: { id: null }, ids: new Array(1),
+    }) });
+    expect(judge(kase, missingSlot).pass).toBe(false);
+  });
+
   it("rejects matchers in input seeds and HTTP stubs", () => {
     expect(() => validateCase({ name: "bad seed", script: "1", given: {
       sharedState: { tracking: /x/ },

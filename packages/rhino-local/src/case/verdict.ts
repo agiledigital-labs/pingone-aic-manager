@@ -928,7 +928,9 @@ function openidmMatches(expected: OpenidmExpect, actual: OpenidmEffect): boolean
   if (!matchesPattern(expected.resource, actual.resource)) {
     return false;
   }
-  if (expected.body !== undefined && !matchesValue(expected.body, actual.body)) {
+  if (expected.body !== undefined &&
+    (!Object.prototype.hasOwnProperty.call(actual, "body") ||
+      !matchesValue(expected.body, actual.body))) {
     return false;
   }
   if (expected.actionName !== undefined) {
@@ -949,7 +951,9 @@ function httpMatches(expected: HttpExpect, actual: HttpEffect): boolean {
   if (expected.method !== undefined && actual.method !== expected.method) {
     return false;
   }
-  if (expected.body !== undefined && !matchesValue(expected.body, actual.body)) {
+  if (expected.body !== undefined &&
+    (!Object.prototype.hasOwnProperty.call(actual, "body") ||
+      !matchesValue(expected.body, actual.body))) {
     return false;
   }
   return true;
