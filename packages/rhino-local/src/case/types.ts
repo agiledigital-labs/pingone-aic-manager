@@ -336,6 +336,8 @@ export interface RecordingEvidence {
  */
 export interface RecordedEffects {
   outcome: string | null;
+  /** Decision discarded when next-gen callbacks suspend; diagnostic only. */
+  discardedOutcome?: string | null;
   sharedState: StateBucket;
   transientState: StateBucket;
   secureState: StateBucket;

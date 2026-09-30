@@ -379,6 +379,40 @@ describe("conform", () => {
 });
 
 describe("conformChain", () => {
+  it("keeps callbacks and outcome observed on a suspended final pass while state is a gap", async () => {
+    // Regression: local state writes were compared to the AIC placeholder maps.
+    const kase = caseWith({ name: "suspended final", expect: {
+      outcome: null,
+      callbacks: [{ type: "NameCallback" }],
+      sharedState: { added: { reachedEnd: "yes" } },
+    } });
+    const fake = mockChain({ responses: [callbackResponse("NameCallback", "jwt-1")] });
+    const report = await conformChain({
+      cases: [kase],
+      localEffects: [makeEffects({ outcome: null,
+        callbacks: [{ type: "NameCallback" }],
+        sharedState: bucket({}, { reachedEnd: "yes" }) })],
+      replies: [],
+      source: 'callbacksBuilder.nameCallback("Name"); action.goTo("done");',
+      aic: ({ cases, source, replies }) => runAicChain(cases, source, {
+        io: fake.io, runId: "suspended-final", project: "/tmp/rhino-local-aic-test", replies,
+      }),
+    });
+    const pass = report.passes[0];
+    expect(pass?.aicObserved).toBe(false);
+    expect(pass?.aic.effects?.outcome).toBeNull();
+    expect(pass?.aic.effects?.callbacks).toEqual([{ type: "NameCallback" }]);
+    expect(pass?.aic.verdict?.pass).toBe(true);
+    expect(pass?.aic.verdict?.conclusive).toBe(false);
+    expect(pass?.aic.verdict?.unverified).toContainEqual(
+      expect.objectContaining({ channel: "sharedState" })
+    );
+    expect(report.disagreements).toEqual([]);
+    expect(report.observationGaps).toContainEqual(
+      expect.objectContaining({ channel: "sharedState", aic: "unobserved" })
+    );
+  });
+
   it("reports every pass and marks intermediate AIC observations as gaps", async () => {
     const cases = [
       caseWith({

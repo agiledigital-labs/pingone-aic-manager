@@ -423,7 +423,9 @@ function judgeOutcome(kase: Case, effects: RecordedEffects): Mismatch[] {
   }
   const message =
     effects.outcome === null
-      ? `outcome: expected ${wanted}, script produced no outcome`
+      ? effects.callbacks.length > 0
+        ? `outcome: expected ${wanted}, but the script queued ${effects.callbacks.length} callbacks, so AM suspends${effects.discardedOutcome === null || effects.discardedOutcome === undefined ? "" : ` and discards the recorded outcome ${formatValue(effects.discardedOutcome)}`}`
+        : `outcome: expected ${wanted}, script produced no outcome`
       : `outcome: expected ${wanted}, actual ${actual}`;
   return [miss("outcome", "outcome", wanted, actual, message)];
 }
@@ -982,6 +984,12 @@ function parseEffects(raw: unknown): RecordedEffects {
     http: parseArray(raw.http, "effects.http", parseHttpEffect),
     logs: parseArray(raw.logs, "effects.logs", parseLogEffect),
   };
+  if (raw.discardedOutcome !== undefined) {
+    if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
+      throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
+    }
+    recorded.discardedOutcome = raw.discardedOutcome;
+  }
   if (raw.evidence !== undefined) {
     recorded.evidence = parseRecordingEvidence(raw.evidence);
     for (const channel of recorded.evidence.unobservedChannels) {

@@ -123,6 +123,14 @@ cannot use libraries, and `given.engine: "legacy"` with `libraries` is rejected.
 An existing library that requires a newly created library is refused: the
 existing consumer would prevent the lease from deleting its new dependency.
 
+### Callback suspension
+
+On a next-gen pass, queued callbacks make AM pause and wait for a reply. They
+win even if the script also called `action.goTo()`: the pass has no outcome.
+Expect `outcome: null` and the emitted callbacks, then use `.step({ reply })`
+to submit a response and run the next pass. A pass with no queued callbacks
+keeps its `goTo` outcome. Legacy `Action.send` behavior is separate.
+
 
 **State.** Failure records, the log view and environment profiles can all
 contain tenant data. They go to `<project>/.aic-script-tester/`, which writes its own

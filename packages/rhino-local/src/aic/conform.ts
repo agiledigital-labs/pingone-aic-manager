@@ -1,4 +1,5 @@
 import { isPortable } from "../case/portable.ts";
+import { STATE_CHANNELS } from "../case/types.ts";
 import type {
   Case,
   CallbackEffect,
@@ -264,7 +265,10 @@ function chainPassReport(
   return {
     pass: index + 1,
     final,
-    aicObserved: final && aic.effects !== undefined,
+    aicObserved: final && aic.effects !== undefined &&
+      !STATE_CHANNELS.every((channel) =>
+        aic.effects?.evidence?.unobservedChannels.includes(channel)
+      ),
     name: kase.name,
     portable: isPortable(kase),
     local,
