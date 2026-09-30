@@ -30,7 +30,8 @@ export function matchesValue(expected: ExpectedValue, actual: unknown): boolean 
   }
   if (Array.isArray(expected)) {
     return Array.isArray(actual) && actual.length === expected.length &&
-      expected.every((item, index) => matchesValue(item, actual[index]));
+      expected.every((item, index) =>
+        Object.prototype.hasOwnProperty.call(actual, index) && matchesValue(item, actual[index]));
   }
   if (isPlainObject(expected)) {
     if (!isPlainObject(actual)) return false;
@@ -67,6 +68,7 @@ export function seedMatches(expected: unknown, local: unknown, tenant: unknown):
   if (isMatcher(expected)) return tenant !== undefined && matchesValue(expected, tenant);
   if (Array.isArray(expected) && Array.isArray(local) && Array.isArray(tenant)) {
     return local.length === tenant.length && local.every((item, index) =>
+      Object.prototype.hasOwnProperty.call(tenant, index) &&
       seedMatches(expected[index], item, tenant[index]));
   }
   if (isPlainObject(expected) && isPlainObject(local) && isPlainObject(tenant)) {
