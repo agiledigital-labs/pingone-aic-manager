@@ -64,9 +64,13 @@ const suite = defineSuite({
 });
 
 describe("resolve-identity", () => {
+  const aic = aicWhenEnabled("resolve-identity");
+  // AIC adds subject PUT, confirming GET, authenticate, and fixture I/O to
+  // a run whose Rhino evaluation alone may use the 10-second budget below.
+  const testTimeoutMs = aic.aic === undefined ? 5_000 : 20_000;
   const lease = useLease(suite, {
     timeoutMs: 10_000,
-    ...aicWhenEnabled("resolve-identity"),
+    ...aic,
   });
 
   it("matches the seeded candidate", async () => {
@@ -79,7 +83,7 @@ describe("resolve-identity", () => {
         allowUndeclared: { openidmReads: true },
       });
     expect(run.verdict.summary, run.verdict.summary).toBe("");
-  });
+  }, testTimeoutMs);
 
   it("applies declared defaults and the always channels", async () => {
     const run = await lease
@@ -101,7 +105,7 @@ describe("resolve-identity", () => {
       locale: "en-AU",
     });
     expect(run.kase.given.esv).toEqual({ "esv.idr.match.threshold": "0.80" });
-  });
+  }, testTimeoutMs);
 
   it("sees the suite fixture and its own, and not another test's", async () => {
     const run = await lease
@@ -122,14 +126,14 @@ describe("resolve-identity", () => {
         allowUndeclared: { openidmReads: true, logs: true },
       });
     expect(run.verdict.summary, run.verdict.summary).toBe("");
-  });
+  }, testTimeoutMs);
 
   it("names the missing required input before anything runs", async () => {
     await expect(
       // @ts-expect-error userId is required, which is the point
       lease.run({}).expect({ outcome: "matched" })
     ).rejects.toThrow(/userId/);
-  });
+  }, testTimeoutMs);
 
   it("reports an undeclared outcome as a configuration fault", async () => {
     const run = await lease
@@ -141,7 +145,7 @@ describe("resolve-identity", () => {
       });
     expect(run.kase.outcomes).toEqual(["matched", "notFound"]);
     expect(run.verdict.summary, run.verdict.summary).toBe("");
-  });
+  }, testTimeoutMs);
 
   it("runs cleanup when a final check throws", async () => {
     const before = cleanedInputs.length;
@@ -157,7 +161,7 @@ describe("resolve-identity", () => {
         })
     ).rejects.toThrow(/deliberate check failure/);
     expect(cleanedInputs.slice(before)).toEqual([USER_IDS.dave]);
-  });
+  }, testTimeoutMs);
 });
 
 const esvSuite = defineSuite({
