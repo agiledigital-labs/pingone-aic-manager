@@ -2611,6 +2611,31 @@ journey.identityResource = function () {
 var __rhinoLocalRealJavaImporter =
   typeof JavaImporter === "function" ? JavaImporter : null;
 
+var __rhinoLocalJsonValueClass = {
+  object: function () {
+    var values = {};
+    __rhinoLocalHide(values, "put", function (key, value) {
+      values[String(key)] = value;
+      return values;
+    });
+    __rhinoLocalHide(values, "get", function (key) {
+      var name = String(key);
+      return __rhinoLocalHas(values, name) ? values[name] : null;
+    });
+    __rhinoLocalHide(values, "toString", function () {
+      return __rhinoLocalJavaMapString(values);
+    });
+    return values;
+  },
+  json: function (value) {
+    return value;
+  }
+};
+
+// Rhino may provide `org` as a JavaPackage; use a narrow JS path for the
+// measured fully-qualified JsonValue call as well as JavaImporter.
+var org = { forgerock: { json: { JsonValue: __rhinoLocalJsonValueClass } } };
+
 function __rhinoLocalHiddenValueCallback(id, value) {
   this.type = "HiddenValueCallback";
   this.id = String(id);
@@ -2666,8 +2691,15 @@ var __rhinoLocalActionClass = {
 
 JavaImporter = function () {
   var real = null;
+  var imports = [];
+  var i;
+  for (i = 0; i < arguments.length; i += 1) {
+    if (arguments[i] !== __rhinoLocalJsonValueClass) {
+      imports.push(arguments[i]);
+    }
+  }
   if (typeof __rhinoLocalRealJavaImporter === "function") {
-    real = __rhinoLocalRealJavaImporter.apply(null, arguments);
+    real = __rhinoLocalRealJavaImporter.apply(null, imports);
   }
   function Importer() {}
   if (real) {
@@ -2676,6 +2708,7 @@ JavaImporter = function () {
   var wrapper = new Importer();
   wrapper.Action = __rhinoLocalActionClass;
   wrapper.HiddenValueCallback = __rhinoLocalHiddenValueCallback;
+  wrapper.JsonValue = __rhinoLocalJsonValueClass;
   return wrapper;
 };
 
