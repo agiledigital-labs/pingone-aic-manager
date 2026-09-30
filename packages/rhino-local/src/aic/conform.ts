@@ -105,7 +105,8 @@ export interface ChainConformanceReport {
  * until the bindings slice lands; a missing AIC runner is used by tests.
  */
 export async function conform(input: ConformanceInput): Promise<ConformanceReport> {
-  const runId = input.aic === "tenant" && input.kase.given.scriptName === undefined
+  const aicSkip = aicUnsupportedReason(input.kase);
+  const runId = input.aic === "tenant" && aicSkip === undefined
     ? randomUUID().replace(/-/g, "").slice(0, 12)
     : undefined;
   const localInput = runId === undefined ? input : {
@@ -120,7 +121,6 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
     },
   };
   const local = await runLane(input.local, localInput, "no local runner provided (bindings lane is a separate slice)");
-  const aicSkip = aicUnsupportedReason(input.kase);
   const aicRunner: LaneRunner | undefined = input.aic === "tenant"
     ? ({ kase, source }) => runAicLane(kase, source, runId === undefined ? {} : { runId })
     : input.aic;
