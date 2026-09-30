@@ -17,7 +17,12 @@ The orchestrator then `PUT` `outer` with source
 both returned 200. The fixture retains a comment containing
 `require("outer")` inside `outer`; AM counting that text as a
 self-reference is inferred, not isolated. A control removing only
-the comment was not run, and an empty-source update was not measured.
+the comment was not run in that probe. Later on 2026-09-30, the
+orchestrator ran the lease after `d7de205`: the five e2e files passed
+17/17, close succeeded with empty-source PUT, and the sandbox returned
+to 13 LIBRARY scripts. This confirms the tested cleanup but does not
+isolate the comment as the original cause. Neither live run was
+performed by the implementing agent.
 
 ---
 

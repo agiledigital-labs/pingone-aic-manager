@@ -2660,7 +2660,8 @@ function __rhinoLocalLoadLibrary(name) {
   }
   if (!__rhinoLocalHas(__rhinoLocal.libraries, id)) {
     throw new Error(
-      "rhino-local: require: no given.libraries entry for " + JSON.stringify(id)
+      "rhino-local: require: library " + JSON.stringify(id) +
+        " is not declared on the suite (given.libraries); if this name exists on AIC, AM would load the tenant's copy and the lanes would disagree"
     );
   }
   var exports = {};

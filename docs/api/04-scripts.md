@@ -621,7 +621,11 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
   `DELETE inner` each returned `200`. The source of `outer` contained
   `// Consumers: require("outer")`. It is plausible that AM counted this
   comment as a self-reference, but that cause was not isolated: removing
-  only the comment was not tested. An empty source update was not tested.
+  only the comment was not tested in that probe. A subsequent orchestrator
+  live run on 2026-09-30, after `d7de205`, completed the lease close with
+  the empty-source update and returned the sandbox to 13 LIBRARY scripts,
+  confirming no residue from that test. The implementing agent did not
+  run either tenant check.
 - **`creationDate` / `lastModifiedDate`** are epoch milliseconds, not ISO 8601
   (unlike ESVs which use ISO 8601). Be careful when serializing.
 - **Realm-scoped storage.** A script ID can exist in alpha but not bravo, or

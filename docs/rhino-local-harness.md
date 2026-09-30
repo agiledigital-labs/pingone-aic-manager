@@ -794,8 +794,9 @@ Before blanking and again before deleting, the lease checks source and ownership
 fields and leaves changed libraries with a cleanup warning and recovery journal.
 It never changes a reused library. Any owned library still referenced by a
 reused external consumer remains journalled and is reported as residue at close.
-The orchestrator measured a reference-free source replacement unblocking delete
-on 2026-09-30; empty-source acceptance is not yet measured live. Legacy `require()` is
+The orchestrator's 2026-09-30 live run after `d7de205` confirmed that AM
+accepted the empty-source PUT and the tested lease left no library residue.
+Legacy `require()` is
 unsupported, so a legacy case with libraries fails validation.
 
 `useLease()` accepts an AIC opt-in alongside the local options:

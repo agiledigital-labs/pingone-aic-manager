@@ -7,9 +7,17 @@ describe("require", () => {
     expect(typeof loadBehaviour({ engine: "legacy" }).require).toBe("undefined");
   });
 
-  it("throws naming a missing given.libraries entry", () => {
+  it("explains why an undeclared top-level require would diverge from AIC", () => {
     expect(() => runScript('require("missing-lib");')).toThrow(
-      /no given\.libraries entry for "missing-lib"/
+      /library "missing-lib" is not declared on the suite \(given\.libraries\); if this name exists on AIC, AM would load the tenant's copy and the lanes would disagree/
+    );
+  });
+
+  it("explains a declared library requiring an undeclared tenant library", () => {
+    expect(() => runScript('require("declared");', {}, {
+      libraries: { declared: 'exports.value = require("tenant-only").value;' },
+    })).toThrow(
+      /library "tenant-only" is not declared on the suite \(given\.libraries\); if this name exists on AIC, AM would load the tenant's copy and the lanes would disagree/
     );
   });
 
@@ -74,6 +82,52 @@ describe("require", () => {
     expect(requireFn("outer").stamp).toBe("from-inner");
   });
 
+  it("resolves a chain of three libraries", () => {
+    const effects = runScript('nodeState.putShared("value", require("chainA").value);', {}, {
+      libraries: {
+        chainA: 'exports.value = require("chainB").value;',
+        chainB: 'exports.value = require("chainC").value;',
+        chainC: 'exports.value = "from-c";',
+      },
+    });
+    expect(effects.sharedState.final).toEqual({ value: "from-c" });
+  });
+
+  it("runs a shared dependency once per pass", () => {
+    const libraries = {
+      diamondA: 'exports.value = require("diamondC").value;',
+      diamondB: 'exports.value = require("diamondC").value;',
+      diamondC: [
+        'var count = Number(nodeState.get("cLoads") || 0) + 1;',
+        'nodeState.putShared("cLoads", count);',
+        'exports.value = "from-c";',
+      ].join("\n"),
+    };
+    const script = [
+      'nodeState.putShared("values", require("diamondA").value + ":" + require("diamondB").value);',
+      'nodeState.putShared("observedLoads", nodeState.get("cLoads"));',
+    ].join("\n");
+    for (let pass = 0; pass < 2; pass += 1) {
+      const effects = runScript(script, {}, { libraries });
+      expect(effects.sharedState.final).toEqual({
+        cLoads: 1, values: "from-c:from-c", observedLoads: 1,
+      });
+    }
+  });
+
+  it("returns partially built exports to the second library in a mutual require", () => {
+    const effects = runScript([
+      'var a = require("cycleA");',
+      'nodeState.putShared("value", a.fromB);',
+    ].join("\n"), {}, {
+      libraries: {
+        cycleA: 'exports.name = "a"; exports.fromB = require("cycleB").sawA;',
+        cycleB: 'exports.sawA = require("cycleA").name;',
+      },
+    });
+    expect(effects.sharedState.final).toEqual({ value: "a" });
+  });
+
   it("rejects the wrong arity", () => {
     const requireFn = loadBehaviour().require as (...args: unknown[]) => unknown;
     expect(() => requireFn()).toThrow(/require arity=0 \(expected 1\)/);
@@ -93,5 +147,3 @@ describe("require cache", () => {
     expect(first.n).toBe(1);
   });
 });
-
-
