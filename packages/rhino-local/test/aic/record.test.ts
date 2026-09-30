@@ -7,6 +7,16 @@ import {
 } from "../../src/aic/record.ts";
 
 describe("classifyFinal", () => {
+  it("does not apply a prior shared matcher to a transient seed with the same key", () => {
+    const prior = { outcome: null, sharedState: { added: { id: /^id-/ } } } as const;
+    expect(() => classifyFinal(
+      { transientState: { id: "id-local" } },
+      { id: "id-tenant" },
+      { id: "id-tenant" },
+      [prior]
+    )).toThrow(/did not contain the declared seed "id"/);
+  });
+
   it("accepts the tenant's own carried value only when a prior pass matcher validates it", () => {
     // Regression: pass 2 used the local random seed for byte-exact AIC checking.
     const prior = { outcome: null, sharedState: { added: {

@@ -244,7 +244,7 @@ function compareState(
       .map((candidate, index) => ({ candidate, index }))
       .filter(({ candidate }) => candidate.mutation.key === localMutation.mutation.key);
     const equal = sameKey.find(({ candidate }) =>
-      sameMutationWithMatchers(localMutation.mutation, candidate.mutation, expected, priorExpectations)
+      sameMutationWithMatchers(localMutation, candidate, expected, priorExpectations)
     );
     const index = equal?.index ?? sameKey[0]?.index ?? -1;
     if (index < 0) {
@@ -266,7 +266,7 @@ function compareState(
       continue;
     }
     pairedAicKeys.add(aicMutation.mutation.key);
-    if (!sameMutationWithMatchers(localMutation.mutation, aicMutation.mutation, expected, priorExpectations)) {
+    if (!sameMutationWithMatchers(localMutation, aicMutation, expected, priorExpectations)) {
       disagreements.push(stateDisagreement(localMutation, aicMutation));
       continue;
     }
@@ -301,14 +301,18 @@ function compareState(
 }
 
 function sameMutationWithMatchers(
-  local: StateMutation,
-  aic: StateMutation,
+  localLocated: LocatedMutation,
+  aicLocated: LocatedMutation,
   expected: Expect | undefined,
   prior: readonly Expect[]
 ): boolean {
+  const local = localLocated.mutation;
+  const aic = aicLocated.mutation;
   if (local.operation !== aic.operation || local.key !== aic.key) return false;
-  const after = declarationValue(expected, local.key, local.operation);
-  const before = priorMatcher(prior, local.key);
+  const bucket = matchingBucket(localLocated, aicLocated);
+  const after = bucket === undefined ? undefined :
+    declarationValue(expected, bucket, local.key, local.operation);
+  const before = bucket === undefined ? undefined : priorMatcher(prior, bucket, local.key);
   if (local.operation === "added" && aic.operation === "added") {
     return after === undefined ? sameMutationValue(local, aic) :
       equalWhenMatcherMatches(after, local.after, aic.after);
@@ -328,6 +332,20 @@ function sameMutationWithMatchers(
   return false;
 }
 
+function matchingBucket(local: LocatedMutation, aic: LocatedMutation): StateChannel | undefined {
+  if (local.kind === "bucketed" && aic.kind === "bucketed") {
+    return local.bucket === aic.bucket ? local.bucket : undefined;
+  }
+  if (local.kind === "bucketed") {
+    return aic.kind === "unbucketed" && aic.possibleBuckets.includes(local.bucket)
+      ? local.bucket : undefined;
+  }
+  if (aic.kind === "bucketed") {
+    return local.possibleBuckets.includes(aic.bucket) ? aic.bucket : undefined;
+  }
+  return undefined;
+}
+
 function equalWhenMatcherMatches(expected: unknown, local: unknown, aic: unknown): boolean {
   return matchesValue(expected as ExpectedValue, local) &&
     matchesValue(expected as ExpectedValue, aic)
@@ -335,27 +353,23 @@ function equalWhenMatcherMatches(expected: unknown, local: unknown, aic: unknown
     : deepEqual(local, aic);
 }
 
-function declarationValue(expect: Expect | undefined, key: string, operation: StateMutation["operation"]): unknown {
+function declarationValue(expect: Expect | undefined, bucket: StateChannel, key: string,
+  operation: StateMutation["operation"]): unknown {
   if (expect === undefined || operation === "removed") return undefined;
-  for (const channel of STATE_CHANNELS) {
-    const value = expect[channel]?.[operation]?.[key];
-    if (containsMatcher(value)) return value;
-  }
-  return undefined;
+  const value = expect[bucket]?.[operation]?.[key];
+  return containsMatcher(value) ? value : undefined;
 }
 
-function priorMatcher(prior: readonly Expect[], key: string): unknown {
+function priorMatcher(prior: readonly Expect[], bucket: StateChannel, key: string): unknown {
   for (const expect of prior.slice().reverse()) {
-    for (const channel of STATE_CHANNELS) {
-      const diff = expect[channel];
-      for (const operation of ["added", "changed"] as const) {
-        if (Object.prototype.hasOwnProperty.call(diff?.[operation] ?? {}, key)) {
-          const value = diff?.[operation]?.[key];
-          return containsMatcher(value) ? value : undefined;
-        }
+    const diff = expect[bucket];
+    for (const operation of ["added", "changed"] as const) {
+      if (Object.prototype.hasOwnProperty.call(diff?.[operation] ?? {}, key)) {
+        const value = diff?.[operation]?.[key];
+        return containsMatcher(value) ? value : undefined;
       }
-      if (diff?.removed?.includes(key)) return undefined;
     }
+    if (diff?.removed?.includes(key)) return undefined;
   }
   return undefined;
 }
