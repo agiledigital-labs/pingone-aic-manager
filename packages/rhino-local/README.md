@@ -314,7 +314,9 @@ calls too.
 
 `runAicChain()` remains the one-shot compatibility facade for external callers.
 It provisions and deletes a throwaway graph per call. `useLease()` uses the
-pre-opened file runner and does not route through that facade.
+pre-opened file runner and does not route through that facade. The one-shot
+facade refuses `given.libraries` before contacting the tenant; use `useLease()`
+for library-backed suites.
 
 `npm run generate` reads the captured JSON (offline; it does not call the
 tenant) and overwrites the two artefacts. Completeness tests fail if the

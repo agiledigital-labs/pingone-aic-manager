@@ -852,7 +852,8 @@ indistinguishable successful zero-row result. `delete()` accepts the measured
 200 response carrying the deleted record and treats 404 as already absent.
 
 `runAicChain()` remains a one-shot compatibility facade that provisions and
-deletes a throwaway graph around one call. The Vitest adapter instead sends
+deletes a throwaway graph around one call. It refuses `given.libraries` before
+tenant I/O; library-backed suites must use the file lease. The Vitest adapter sends
 `chainFromRunResult()` to its pre-opened `AicFileLease`.
 
 ### Call cost — formula measured 2026-09-14

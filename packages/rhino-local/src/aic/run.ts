@@ -117,6 +117,12 @@ export async function runAicChain(
 ): Promise<RecordedEffects[]> {
   const replies = options.replies ?? [];
   const validation = validateAicRun(cases, replies, options.managedFixtures);
+  const libraryCase = cases.find((kase) => Object.keys(kase.given.libraries ?? {}).length > 0);
+  if (libraryCase !== undefined) {
+    throw new AicLaneError(
+      `runAicChain cannot provision given.libraries for ${libraryCase.name}; use useLease() for library-backed suites`
+    );
+  }
   const last = cases[cases.length - 1] as Case;
   const managedFixtures = options.managedFixtures ?? [];
   if (validation.unsupported.length > 0) {
