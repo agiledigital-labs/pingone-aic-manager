@@ -1590,8 +1590,11 @@ no matching method.
 **Session-property effects pending live verification (2026-10-01).** The
 local script tester records `action.putSessionProperty` and
 `removeSessionProperty` as changes to the supplied session and carries them
-into `existingSession` on a later callback pass. This timing is **unmeasured**
-on AIC. `live-session-properties.e2e.test.ts` uses a pre-existing session,
+into `existingSession` on a later callback pass. The first AIC-enabled
+run on 2026-10-01 chose mismatch on the resumed pass where the local model
+chose match. The combined local next-pass assumption is wrong; the first run
+did not reveal which property differed.
+`live-session-properties.e2e.test.ts` uses a pre-existing session,
 sets one custom property, removes another, and reads both on the next pass.
 The AIC recorder does not read the finished session: the measured way to
 observe properties is a separate journey with the returned session cookie
@@ -1617,6 +1620,11 @@ this channel as an observation gap until such a read is implemented.
   `containsKey`, `size` and `keySet` are functions on it. `keys()` is
   a Java collection, iterated with `iterator()`, that includes **transient**
   keys.
+
+A 2026-10-01 AIC test calling `put` on the returned `objectAttributes` map
+ended with an uncaught script error (authenticate HTTP 401). Map retrieval is
+measured; mutation of that returned map is not yet established. The revised
+`live-object-attributes.e2e.test.ts` catches lookup, `put`, and both reads separately.
 
 **`openidm` writes** (`binding-openidm-writes`, on a throwaway
 `managed/alpha_role` record):
