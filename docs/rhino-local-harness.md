@@ -36,6 +36,12 @@ tenant ESVs; the harness does not inject or change them. An undeclared local
 ESV read throws with the key, including when another ESV was declared. Use
 `null` to declare a missing property; a one-argument read returns `null` and a
 read with a default returns that default.
+Channel keys are the suffix of the script property: `esv: { flag: "on" }` is
+for `systemEnv.getProperty("esv.flag")`. Full `esv.flag` keys are rejected
+instead of double-prefixed. Hyphenated `esv-...` management API IDs are also
+rejected; their mapping to script property names is not reliable. The check
+runs after `beforeRun`, so it covers suite defaults, per-test overrides, and
+hook edits before either lane executes.
 
 Before: `esv: { flag: "on" }` produced only shared-state key `esv.flag`, so
 `systemEnv.getProperty("esv.flag")` was unseeded. After: it seeds that

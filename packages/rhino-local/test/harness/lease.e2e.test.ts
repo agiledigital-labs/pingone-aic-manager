@@ -199,6 +199,12 @@ describe("system-env-esv", () => {
     const run = await lease.run().expect({ outcome: "other" });
     expect(run.kase.given.esv).toEqual({ "esv.rl.example": "before" });
   });
+
+  it("names the fix for an already-prefixed per-test ESV key", async () => {
+    await expect(
+      lease.run().esv({ "esv.rl.example": "override" }).expect({ outcome: "override" })
+    ).rejects.toThrow(/use "rl\.example" for systemEnv/);
+  });
 });
 
 const namedSuite = defineSuite({

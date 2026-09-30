@@ -89,6 +89,9 @@ export function applyInputsAndEsv(
   draft: RequestDraft,
   input: Readonly<Record<string, unknown>>
 ): void {
+  for (const name of Object.keys(draft.esv)) {
+    esvPropertyKey(name);
+  }
   for (const [key, value] of Object.entries(input)) {
     if (draft.esvInState && key.startsWith(ESV_STATE_PREFIX)) {
       throw new Error(
@@ -99,7 +102,7 @@ export function applyInputsAndEsv(
   }
   if (draft.esvInState) {
     for (const [name, value] of Object.entries(draft.esv)) {
-      draft.state.shared[`${ESV_STATE_PREFIX}${name}`] = value;
+      draft.state.shared[esvPropertyKey(name)] = value;
     }
   }
 }
@@ -143,7 +146,7 @@ export function toGiven(
 ): Given {
   const given: Given = { ...base };
   given.esv = { ...(base.esv ?? {}), ...Object.fromEntries(
-    Object.entries(draft.esv).map(([name, value]) => [`${ESV_STATE_PREFIX}${name}`, value])
+    Object.entries(draft.esv).map(([name, value]) => [esvPropertyKey(name), value])
   ) };
   if (draft.sessionRequested) {
     given.existingSession = {
@@ -171,6 +174,23 @@ export function toGiven(
     };
   }
   return given;
+}
+
+function esvPropertyKey(name: string): string {
+  if (name.length === 0) {
+    throw new Error('rhino-local: esv key "" is empty; use the name after "esv." in systemEnv.getProperty');
+  }
+  if (name.startsWith(ESV_STATE_PREFIX)) {
+    throw new Error(
+      `rhino-local: esv key ${JSON.stringify(name)} already includes "esv."; use ${JSON.stringify(name.slice(ESV_STATE_PREFIX.length))} for systemEnv.getProperty(${JSON.stringify(name)})`
+    );
+  }
+  if (name.startsWith("esv-")) {
+    throw new Error(
+      `rhino-local: esv key ${JSON.stringify(name)} looks like a management API id; use the name after "esv." in the script's systemEnv.getProperty call instead`
+    );
+  }
+  return `${ESV_STATE_PREFIX}${name}`;
 }
 
 /** Assemble the `Case` both lanes are judged against. One definition. */
