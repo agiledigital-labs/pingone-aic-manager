@@ -19,6 +19,40 @@ import {
 import { makeEffects, bucket } from "../case/helpers.ts";
 
 describe("diffRecordedEffects", () => {
+  it("does not mask undeclared transient writes with a shared-state matcher", () => {
+    const kase = caseWith({ expect: { outcome: "true",
+      sharedState: { added: { id: /^id-/ } },
+      allowUndeclared: { transientState: true },
+    } });
+    const local = makeEffects({
+      sharedState: bucket({}, { id: "id-shared" }),
+      transientState: bucket({}, { id: "id-local" }),
+    });
+    const aic = makeEffects({
+      sharedState: bucket({}, { id: "id-shared" }),
+      transientState: bucket({}, { id: "id-aic" }),
+    });
+    expect(judge(kase, local).pass).toBe(true);
+    expect(judge(kase, aic).pass).toBe(true);
+    const comparison = diffRecordedEffects(local, aic, kase.expect);
+    expect(comparison.disagreements).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "id" }));
+    expect(comparison.observationGaps).toEqual([]);
+  });
+
+  it("keeps a prior shared-state matcher off a transient seed mutation", () => {
+    const prior = caseWith({ expect: { outcome: "true",
+      sharedState: { added: { id: /^id-/ } },
+    } }).expect;
+    const current = caseWith({ expect: { outcome: "true",
+      transientState: { changed: { id: "done" } },
+    } }).expect;
+    const local = makeEffects({ transientState: bucket({ id: "id-local" }, { id: "done" }) });
+    const aic = makeEffects({ transientState: bucket({ id: "id-aic" }, { id: "done" }) });
+    expect(diffRecordedEffects(local, aic, current, [prior]).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "nodeState", path: "id" }));
+  });
+
   it("ignores only matched state values while preserving presence, bucket, and exact differences", () => {
     const declaration = caseWith({ expect: { outcome: "true", sharedState: {
       added: { trackingId: /^[0-9a-f]{32}$/ },
