@@ -21,8 +21,10 @@ describe("tenant cookie name", () => {
     expect(run.verdict.pass).toBe(true);
     if (run.conformance !== undefined) {
       expect(run.conformance.disagreements).toEqual([]);
+      const cookieWrite = run.conformance.passes[0]?.aic.effects?.evidence?.unbucketedState
+        .find((mutation) => mutation.key === "cookieValue" && mutation.operation === "added");
       expect(
-        run.conformance.passes[0]?.aic.effects?.sharedState.final.cookieValue ===
+        cookieWrite?.operation === "added" && cookieWrite.after ===
         run.effects.sharedState.final.cookieValue
       ).toBe(true);
     }
