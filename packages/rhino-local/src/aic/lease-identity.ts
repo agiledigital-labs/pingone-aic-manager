@@ -58,8 +58,9 @@ export function createLeaseIdentity(options: LeaseIdentityOptions): LeaseIdentit
   );
   const ownerToken = options.ownerToken ?? randomUUID();
   const marker = [
-    "rhino-local:v1",
+    "rhino-local:v2",
     idHash,
+    encodeURIComponent(id),
     ownerToken,
     authorDigest,
     structuralDigest,
@@ -84,6 +85,29 @@ export function createLeaseIdentity(options: LeaseIdentityOptions): LeaseIdentit
     ownerToken,
     marker,
   };
+}
+
+export function parseLeaseMarker(value: unknown): {
+  id?: string;
+  idHash: string;
+  ownerToken: string;
+} | undefined {
+  if (typeof value !== "string") return undefined;
+  const parts = value.split(":");
+  if (parts[0] !== "rhino-local") return undefined;
+  if (parts[1] === "v1" && parts.length === 6) {
+    return { idHash: parts[2] as string, ownerToken: parts[3] as string };
+  }
+  if (parts[1] === "v2" && parts.length === 7) {
+    try {
+      const id = decodeURIComponent(parts[3] as string);
+      if (sha256(id).slice(0, 20) !== parts[2]) return undefined;
+      return { id, idHash: parts[2] as string, ownerToken: parts[4] as string };
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 export function normalizedLeaseOutcomes(outcomes: readonly string[]): string[] {

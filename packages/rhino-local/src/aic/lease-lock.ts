@@ -26,6 +26,8 @@ export interface OwnedLibrary {
   name: string;
   sourceHash: string;
   marker: string;
+  /** A 200 create response means our PUT replaced a resource we do not own. */
+  status?: "not-owned";
 }
 
 interface LockOwner {
@@ -210,6 +212,19 @@ export async function addJournalOwnedLibrary(
   if (!journal.ownedLibraries?.some((item) => item.id === library.id)) {
     journal.ownedLibraries = [...(journal.ownedLibraries ?? []), library];
   }
+  await writeLeaseJournal(path, journal);
+}
+
+export async function markJournalLibraryNotOwned(
+  path: string,
+  id: string
+): Promise<void> {
+  const journal = await requireJournal(path);
+  const owned = journal.ownedLibraries?.find((item) => item.id === id);
+  if (owned === undefined) {
+    throw new AicLaneError(`AIC file lease library ${id} has no write intent in the journal`);
+  }
+  owned.status = "not-owned";
   await writeLeaseJournal(path, journal);
 }
 

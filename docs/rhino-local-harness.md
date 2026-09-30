@@ -782,11 +782,17 @@ looks up all names before its first tenant write, creates absent `LIBRARY`
 scripts in declaration order before the subject, and confirms each write by
 reading it back. AM create-time `require()` target validation is unmeasured;
 the lease does not parse library source to infer dependencies. It
-reuses an existing same-name, byte-identical library without owning it; a
-different source or context found during preflight is a refusal. Names are
-realm-wide. AM has no measured atomic create precondition, so another writer
-can create an ID between the read and PUT; simultaneous writers using one
-`aic.id` are unsupported. The lease deletes the subject graph, blanks the
+reuses an existing same-name, byte-identical ordinary library without owning
+it; a library carrying another file lease's ownership marker is refused with
+the owning `aic.id` (or the id hash from an older marker). Give libraries
+distinct names or use one lease with one `aic.id`. A different source or
+context found during preflight is a refusal. Names are realm-wide. AM has no
+measured atomic create precondition, so another writer can create an ID
+between the read and PUT; simultaneous writers using one `aic.id` are
+unsupported. A create response of 200 means the lease overwrote a resource it
+does not own; the journal records that collision and blocks automatic blank,
+delete, and recreate on this and later opens pending operator inspection.
+The lease deletes the subject graph, blanks the
 source of each owned library, confirms the update by GET, then retries deletes
 until no further delete succeeds. The journal records ownership and a source
 hash before create, so a lost blank response can be replayed on the next open.

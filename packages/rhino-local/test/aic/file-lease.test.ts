@@ -225,6 +225,50 @@ describe("AicFileLease", () => {
     expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(writes);
   });
 
+  it("refuses to reuse another active lease's library before any write", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-cross-lease-"));
+    try {
+      const fake = new FakeLeaseTenant();
+      const shared = { suiteName: "shared library", source: SOURCE, outcomes: ["done"],
+        libraries: { common: 'exports.value = "shared";' },
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io };
+      const owner = new AicFileLease({ ...shared, id: "library-owner-a" });
+      await owner.open();
+      const writes = fake.calls.filter((call) => call.method === "PUT").length;
+      const borrower = new AicFileLease({ ...shared, id: "library-borrower-b" });
+      await expect(borrower.open()).rejects.toThrow(
+        /library "common" belongs to an AIC file lease with aic.id "library-owner-a"; give the libraries distinct names or use one aic.id/
+      );
+      expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(writes);
+      await owner.close();
+      const paths = leaseStatePaths("https://tenant.example.com", owner.identity, stateDir);
+      expect(await readLeaseJournal(paths.journalPath)).toBeUndefined();
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a matching library with an older hash-only lease marker", async () => {
+    const fake = new FakeLeaseTenant();
+    const oldOwner = createLeaseIdentity({ id: "older-owner", source: SOURCE,
+      outcomes: ["done"], ownerToken: "older-token" });
+    const marker = ["rhino-local:v1", oldOwner.idHash, oldOwner.ownerToken,
+      oldOwner.authorDigest, oldOwner.structuralDigest].join(":");
+    fake.seed("/am/json/realms/root/realms/alpha/scripts/older-library", {
+      _id: "older-library", name: "shared", context: "LIBRARY",
+      script: Buffer.from('exports.value = "shared";').toString("base64"),
+      description: marker,
+    });
+    const lease = new AicFileLease({ id: "new-borrower", suiteName: "new borrower",
+      source: SOURCE, outcomes: ["done"],
+      libraries: { shared: 'exports.value = "shared";' },
+      project: "/tmp/rhino-local-aic-test", io: fake.io });
+    await expect(lease.open()).rejects.toThrow(
+      new RegExp(`library "shared" belongs to an AIC file lease with aic.id hash "${oldOwner.idHash}"`)
+    );
+    expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+  });
+
   it.each([
     ["commented call", 'exports.value = require /* dependency */ ("inner").value;'],
     ["computed name", 'exports.value = require("in" + "ner").value;'],
@@ -327,17 +371,26 @@ describe("AicFileLease", () => {
     }
   });
 
-  it("retains the journal when a library is created in the preflight-to-PUT gap", async () => {
+  it("marks a preflight-to-PUT collision not owned and never replays it", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-racing-library-"));
     try {
       const fake = new FakeLeaseTenant({ racingLibrary: "lib-common" });
-      const lease = new AicFileLease({ id: "racing-library", suiteName: "racing library",
+      const options = { id: "racing-library", suiteName: "racing library",
         source: SOURCE, outcomes: ["done"], libraries: { "lib-common": "exports.value = 1;" },
-        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io });
-      await expect(lease.open()).rejects.toThrow(/expected 201/);
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io };
+      const lease = new AicFileLease(options);
+      await expect(lease.open()).rejects.toThrow(/library "lib-common".*source was overwritten by the lease.*operator inspection is required/);
       const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
-      expect(await readLeaseJournal(paths.journalPath)).toBeDefined();
+      expect((await readLeaseJournal(paths.journalPath))?.ownedLibraries)
+        .toContainEqual(expect.objectContaining({ name: "lib-common", status: "not-owned" }));
       expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+      const writes = fake.calls.filter((call) => call.method === "PUT").length;
+      const retry = new AicFileLease(options);
+      await expect(retry.open()).rejects.toThrow(/library "lib-common".*source was overwritten by the lease.*operator inspection is required/);
+      expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(writes);
+      expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+      expect((await readLeaseJournal(paths.journalPath))?.ownedLibraries)
+        .toContainEqual(expect.objectContaining({ name: "lib-common", status: "not-owned" }));
     } finally {
       await rm(stateDir, { recursive: true, force: true });
     }
