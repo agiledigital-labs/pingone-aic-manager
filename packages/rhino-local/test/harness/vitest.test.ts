@@ -7,8 +7,15 @@ import {
   releaseAicLeaseForFile,
   useLease,
 } from "../../src/harness/vitest.ts";
+import type { UseLeaseOptions } from "../../src/harness/vitest.ts";
 
 describe("useLease AIC file ownership", () => {
+  it("does not expose identity fields that the adapter cannot honor", () => {
+    const identityKeysAreAbsent: Extract<keyof UseLeaseOptions,
+      "scriptName" | "loggerScriptId" | "oneShotRunId"> extends never ? true : false = true;
+    expect(identityKeysAreAbsent).toBe(true);
+  });
+
   it("refuses a local scriptName that cannot be uploaded under that name", () => {
     const suite = defineSuite({
       name: "named",
