@@ -132,13 +132,18 @@ orchestrator's 2026-09-30 live run after `d7de205` confirmed that AM accepts
 the empty-source PUT and the tested lease left no library residue. An owned
 library still referenced by a reused external library remains journalled and
 is reported as residue at close.
-Names are realm-wide. If a named library
-already exists on the tenant with byte-identical source, the lease uses it and
-leaves it there. A different source or script context found during preflight
-is an error before any lease write. AM has no measured atomic create
-precondition: another writer could create the deterministic ID between the
-preflight read and the lease's PUT, and that PUT could overwrite it before AM
-reports an update. Use one host per `aic.id`, as for the other leased resources.
+Names are realm-wide. A same-name library with byte-identical source can be
+reused only if it has no lease ownership marker. A library owned by another
+file lease is refused even when the source matches; the error names its
+`aic.id` (or its hash for older markers). Give libraries distinct names or run
+them through one lease with one `aic.id`. A different source or script context
+found during preflight is an error before any lease write. AM has no measured
+atomic create precondition: another writer could create the deterministic ID
+between the preflight read and the lease's PUT. If AM returns 200 for that
+PUT, the lease may already have overwritten the other library's source. It
+marks the ID not owned in its journal, leaves it for operator inspection, and
+will not automatically blank, delete, or recreate it on a later open. Use one
+host per `aic.id`, as for the other leased resources.
 Before blanking or deleting a library it created, the lease checks its current
 source and ownership fields; if they changed, it leaves the library and recovery
 journal in place and reports a cleanup warning. It never blanks or deletes a

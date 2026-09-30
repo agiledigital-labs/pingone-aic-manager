@@ -14,13 +14,14 @@ import { conformChain, type ChainConformanceReport, type LocalChainResult } from
 import { emitLeasedJourney, type WrapperJourney } from "./emit-journey.ts";
 import { emitLeasedSessionJourney } from "./emit-session.ts";
 import { instrumentSubject } from "./emit-subject.ts";
-import { createLeaseIdentity, sha256, uuidV5, type LeaseIdentity } from "./lease-identity.ts";
+import { createLeaseIdentity, parseLeaseMarker, sha256, uuidV5, type LeaseIdentity } from "./lease-identity.ts";
 import {
   acquireLeaseLock,
   addJournalFixture,
   addJournalOwnedLibrary,
   addJournalResources,
   leaseStatePaths,
+  markJournalLibraryNotOwned,
   newLeaseJournal,
   readLeaseJournal,
   removeLeaseJournal,
@@ -289,6 +290,14 @@ export class AicFileLease {
       }
       const existing = matches[0];
       if (existing !== undefined) {
+        if (typeof existing.description === "string" &&
+            existing.description.startsWith("rhino-local:")) {
+          const owner = parseLeaseMarker(existing.description);
+          const ownerName = owner?.id === undefined
+            ? `aic.id hash ${JSON.stringify(owner?.idHash ?? "unknown")}`
+            : `aic.id ${JSON.stringify(owner.id)}`;
+          throw new AicLaneError(`library ${JSON.stringify(name)} belongs to an AIC file lease with ${ownerName}; give the libraries distinct names or use one aic.id`);
+        }
         if (existing.context !== "LIBRARY" || typeof existing.script !== "string" ||
             Buffer.from(existing.script, "base64").toString("utf8") !== source) {
           throw new AicLaneError(`library ${JSON.stringify(name)} already exists with different context or source; refusing to overwrite it`);
@@ -334,6 +343,11 @@ export class AicFileLease {
       const response = await amRequest(this.#io, this.#session as TenantSession, {
         method: "PUT", path, headers: amConfigHeaders(), body: JSON.stringify(body),
       });
+      if (response.status === 200) {
+        ownership.status = "not-owned";
+        await markJournalLibraryNotOwned(this.#journalPath(), library.id);
+        throw new AicLaneError(collisionResidue(ownership));
+      }
       if (response.status !== 201) {
         throw new AicLaneError(`create library ${JSON.stringify(library.name)} returned HTTP ${response.status}, expected 201`);
       }
@@ -720,6 +734,10 @@ export class AicFileLease {
         errors.push(`library ${resource.id} remains as residue: ownership metadata is missing`);
         continue;
       }
+      if (owned.status === "not-owned") {
+        errors.push(collisionResidue(owned));
+        continue;
+      }
       const failure = await this.#tryBlankOwnedLibrary(resource, owned, realm);
       if (failure === undefined) {
         ready.push(resource);
@@ -855,8 +873,15 @@ export class AicFileLease {
     for (const resource of journal.resources) {
       if (resource.kind === "script" && ownership.has(resource.id)) {
         const owned = ownership.get(resource.id) as OwnedLibrary;
+        if (owned.status === "not-owned") {
+          residue.push(collisionResidue(owned));
+          continue;
+        }
+        const marker = parseLeaseMarker(owned.marker);
         if (resource.id !== uuidV5(`${journal.aicId}:library:${owned.name}`) ||
-            !owned.marker.startsWith(`rhino-local:v1:${sha256(journal.aicId).slice(0, 20)}:${journal.ownerToken}:`)) {
+            marker?.idHash !== sha256(journal.aicId).slice(0, 20) ||
+            marker.ownerToken !== journal.ownerToken ||
+            (marker.id !== undefined && marker.id !== journal.aicId)) {
           residue.push(`library ${JSON.stringify(owned.name)} (${resource.id}) has invalid journal ownership`);
         } else {
           libraries.push(resource);
@@ -971,6 +996,10 @@ function resourceLabel(resource: CreatedResource): string {
   return resource.kind === "tree"
     ? `tree ${resource.name}`
     : `${resource.kind} ${resource.id}`;
+}
+
+function collisionResidue(library: OwnedLibrary): string {
+  return `library ${JSON.stringify(library.name)} (${library.id}) remains as residue after a create collision: its source was overwritten by the lease; operator inspection is required and automatic cleanup is disabled`;
 }
 
 function scriptBody(

@@ -2,10 +2,26 @@ import { describe, expect, it } from "vitest";
 import { emitLeasedJourney } from "../../src/aic/emit-journey.ts";
 import {
   createLeaseIdentity,
+  parseLeaseMarker,
   uuidV5,
 } from "../../src/aic/lease-identity.ts";
 
 describe("AIC lease identity", () => {
+  it("names the lease in new markers and recognizes hash-only older markers", () => {
+    const identity = createLeaseIdentity({
+      id: "owner:with/slash", source: "source", outcomes: ["done"],
+      ownerToken: "owner-token",
+    });
+    expect(parseLeaseMarker(identity.marker)).toEqual({
+      id: "owner:with/slash", idHash: identity.idHash, ownerToken: "owner-token",
+    });
+    const old = ["rhino-local:v1", identity.idHash, identity.ownerToken,
+      identity.authorDigest, identity.structuralDigest].join(":");
+    expect(parseLeaseMarker(old)).toEqual({
+      idHash: identity.idHash, ownerToken: "owner-token",
+    });
+  });
+
   it("keeps addresses and the snapshot key stable across source edits and opens", () => {
     const first = createLeaseIdentity({
       id: "resolve-identity",
