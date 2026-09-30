@@ -21,8 +21,10 @@ describe("tenant cookie name", () => {
     expect(run.verdict.pass).toBe(true);
     if (run.conformance !== undefined) {
       expect(run.conformance.disagreements).toEqual([]);
-      expect(run.conformance.passes[0]?.aic.effects?.sharedState.final.cookieValue)
-        .toEqual(run.effects.sharedState.final.cookieValue);
+      expect(
+        run.conformance.passes[0]?.aic.effects?.sharedState.final.cookieValue ===
+        run.effects.sharedState.final.cookieValue
+      ).toBe(true);
     }
   });
 });
