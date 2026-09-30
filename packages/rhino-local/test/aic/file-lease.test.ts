@@ -95,6 +95,67 @@ describe("AicFileLease", () => {
     expect(treeName).toMatch(/^rl-aic-[0-9a-f]{20}$/);
   });
 
+  it("creates suite libraries before the subject and deletes them after it", async () => {
+    const fake = new FakeLeaseTenant();
+    const lease = new AicFileLease({
+      id: "libraries", suiteName: "libraries", source: SOURCE, outcomes: ["done"],
+      libraries: { outer: 'exports.value = require("inner").value;', inner: 'exports.value = "ok";' },
+      project: "/tmp/rhino-local-aic-test", io: fake.io,
+    });
+    await lease.open();
+    const libraryPuts = fake.calls.filter((call) => call.method === "PUT" &&
+      ["inner", "outer"].includes(String((JSON.parse(String(call.body)) as { name?: string }).name)));
+    expect(libraryPuts).toHaveLength(2);
+    expect(libraryPuts.map((call) => (JSON.parse(String(call.body)) as { name: string }).name))
+      .toEqual(["inner", "outer"]);
+    expect(fake.calls.findIndex((call) => call === libraryPuts[0])).toBeLessThan(
+      fake.calls.findIndex((call) => call.method === "PUT" &&
+        String((JSON.parse(String(call.body)) as { name?: string }).name).endsWith("-subject"))
+    );
+    await lease.close();
+    const deletes = fake.calls.filter((call) => call.method === "DELETE");
+    const libraryIds = libraryPuts.map((call) => (JSON.parse(String(call.body)) as { _id: string })._id);
+    expect(deletes.slice(-2).map((call) => new URL(call.url).pathname.split("/").at(-1)))
+      .toEqual(libraryIds.reverse());
+    expect(deletes).toHaveLength(11);
+  });
+
+  it("reuses an identical library without deleting it and refuses a source collision before writing", async () => {
+    const path = "/am/json/realms/root/realms/alpha/scripts/existing";
+    const source = 'exports.value = "ok";';
+    const fake = new FakeLeaseTenant();
+    fake.seed(path, { _id: "existing", name: "shared", context: "LIBRARY",
+      script: Buffer.from(source).toString("base64") });
+    const lease = new AicFileLease({ id: "reuse", suiteName: "reuse", source: SOURCE,
+      outcomes: ["done"], libraries: { shared: source },
+      project: "/tmp/rhino-local-aic-test", io: fake.io });
+    await lease.open();
+    await lease.close();
+    expect(fake.calls.some((call) => call.method === "DELETE" && new URL(call.url).pathname === path)).toBe(false);
+
+    const conflict = new AicFileLease({ id: "conflict", suiteName: "conflict", source: SOURCE,
+      outcomes: ["done"], libraries: { shared: "exports.value = 2;" },
+      project: "/tmp/rhino-local-aic-test", io: fake.io });
+    const writes = fake.calls.filter((call) => call.method === "PUT").length;
+    await expect(conflict.open()).rejects.toThrow(/library "shared" already exists/);
+    expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(writes);
+  });
+
+  it("refuses a reused library that requires a new owned library before writing", async () => {
+    const fake = new FakeLeaseTenant();
+    const outer = 'exports.value = require("inner").value;';
+    fake.seed("/am/json/realms/root/realms/alpha/scripts/existing", {
+      _id: "existing", name: "outer", context: "LIBRARY",
+      script: Buffer.from(outer).toString("base64"),
+    });
+    const lease = new AicFileLease({ id: "mixed-dependencies", suiteName: "mixed",
+      source: SOURCE, outcomes: ["done"],
+      libraries: { outer, inner: 'exports.value = "ok";' },
+      project: "/tmp/rhino-local-aic-test", io: fake.io });
+    await expect(lease.open()).rejects.toThrow(/reused library "outer" requires new library "inner"/);
+    expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+  });
+
   it("serializes concurrent cases around the shared subject slot", async () => {
     const fake = new FakeLeaseTenant({ delayFirstArm: true });
     const lease = makeLease(fake);
@@ -617,6 +678,10 @@ class FakeLeaseTenant {
       const path = new URL(req.url).pathname;
       const url = new URL(req.url);
       if (req.method === "GET") {
+        if (path.endsWith("/scripts") && url.searchParams.has("_queryFilter")) {
+          const name = /^name eq "(.*)"$/.exec(url.searchParams.get("_queryFilter") ?? "")?.[1];
+          return json(200, { result: [...this.#resources.values()].filter((resource) => resource.name === name) });
+        }
         if (path.includes("/serverinfo/")) {
           return json(200, { cookieName: "testCookie" });
         }

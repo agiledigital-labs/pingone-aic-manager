@@ -33,6 +33,7 @@ export const GIVEN_KEYS = [
   "existingSession",
   "esv",
   "secrets",
+  "libraries",
   "callbacks",
   "managed",
   "http",
@@ -231,6 +232,8 @@ export interface Given {
   existingSession?: Record<string, string>;
   esv?: Record<string, string>;
   secrets?: Record<string, string>;
+  /** Library source keyed by the name passed to next-gen `require()`. */
+  libraries?: Record<string, string>;
   /**
    * Submitted callback values a resumed script reads via `callbacks.getXCallbacks()`.
    * Omit to leave the binding unseeded (a read throws naming `given.callbacks`);

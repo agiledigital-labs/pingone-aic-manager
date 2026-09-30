@@ -172,7 +172,7 @@ export function toGiven(
 
 /** Assemble the `Case` both lanes are judged against. One definition. */
 export function toCase<TSchema extends z.ZodType>(
-  spec: Pick<SuiteSpec<TSchema>, "name" | "script" | "outcomes">,
+  spec: Pick<SuiteSpec<TSchema>, "name" | "script" | "outcomes" | "libraries">,
   /**
    * Used verbatim. The vitest adapter supplies an already-qualified
    * "describe > test" path, so prefixing the suite name here would print it
@@ -195,7 +195,7 @@ export function toCase<TSchema extends z.ZodType>(
  * the top on every step.
  */
 export function caseWithGiven<TSchema extends z.ZodType>(
-  spec: Pick<SuiteSpec<TSchema>, "name" | "script" | "outcomes">,
+  spec: Pick<SuiteSpec<TSchema>, "name" | "script" | "outcomes" | "libraries">,
   caseName: string,
   given: Given,
   expect: Expect
@@ -204,7 +204,7 @@ export function caseWithGiven<TSchema extends z.ZodType>(
     name: caseName,
     script: spec.script,
     outcomes: spec.outcomes,
-    given,
+    given: spec.libraries === undefined ? given : { ...given, libraries: { ...spec.libraries } },
     expect,
   };
 }

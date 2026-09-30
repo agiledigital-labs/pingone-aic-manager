@@ -174,6 +174,7 @@ function parseGiven(raw: unknown, path: string): Given {
   );
   assignStringMap(given, "esv", raw.esv, `${path}.esv`);
   assignStringMap(given, "secrets", raw.secrets, `${path}.secrets`);
+  assignStringMap(given, "libraries", raw.libraries, `${path}.libraries`);
   if (raw.callbacks !== undefined) {
     given.callbacks = parseArray(
       raw.callbacks,
@@ -189,6 +190,9 @@ function parseGiven(raw: unknown, path: string): Given {
   }
   if (raw.engine !== undefined) {
     given.engine = parseEngine(raw.engine, `${path}.engine`);
+  }
+  if (given.engine === "legacy" && given.libraries !== undefined) {
+    throw new Error(`rhino-local: ${path}.libraries requires the next-gen engine; legacy has no require()`);
   }
   if (raw.bindings !== undefined) {
     given.bindings = parseBindings(raw.bindings, `${path}.bindings`);
@@ -649,5 +653,4 @@ function rejectUnknownKeys(
     }
   }
 }
-
 

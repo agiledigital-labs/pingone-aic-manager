@@ -122,6 +122,7 @@ export function useLease<TSchema extends z.ZodType>(
         suiteName: suite.spec.name,
         source: suite.spec.script,
         outcomes: suite.spec.outcomes,
+        ...(suite.spec.libraries === undefined ? {} : { libraries: suite.spec.libraries }),
         ...(options.aic.realm === undefined ? {} : { realm: options.aic.realm }),
         ...(options.aic.tenant === undefined ? {} : { tenant: options.aic.tenant }),
         ...(options.aic.project === undefined ? {} : { project: options.aic.project }),
