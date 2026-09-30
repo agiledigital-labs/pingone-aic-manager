@@ -56,9 +56,10 @@ npm -w packages/rhino-local run measure
 
 `packages/rhino-local` builds to an npm package (`npm -w packages/rhino-local
 run build`, then `npm pack`) published as `@agiledigital/pingone-aic-script-tester`
-on npm when a `script-tester-v*` tag is pushed
-(`.github/workflows/release-script-tester.yml`). Until the first release is
-cut, install the `npm pack` tarball. What a consumer needs:
+on npm. Pushing a `script-tester-v*` tag stages the version
+(`.github/workflows/release-script-tester.yml`), and it goes public only when a
+maintainer approves it with 2FA (`npm stage list`, then `npm stage approve
+<stage-id>`). What a consumer needs:
 
 - **Node 24 and a Java 25 runtime** — `java` only. The package ships runner
   classes compiled at build time (`dist/classes/`, with a SHA-256 manifest keyed

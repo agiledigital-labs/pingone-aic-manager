@@ -13,10 +13,23 @@ name: Release script tester
 # tag this workflow sees is the next version.
 #
 # No npm token exists anywhere: npm's trusted publishing exchanges this job's
-# GitHub OIDC token for a short-lived publish credential, and attaches
-# provenance. The trusted publisher configured on npmjs.com names this file and
-# the `npm` environment, so renaming either breaks publishing until it is
-# updated there too.
+# GitHub OIDC token for a short-lived credential, and attaches provenance. The
+# trusted publisher configured on npmjs.com names this file and the `npm`
+# environment, so renaming either breaks publishing until it is updated there
+# too.
+#
+# This job STAGES the version; it does not publish it. The trusted publisher is
+# allowed `npm stage publish` only, so a misused CI identity can put a version
+# in front of a maintainer but never in front of users. The human gate is the
+# approval, with 2FA, after the run:
+#
+#   npm stage list @agiledigital/pingone-aic-script-tester
+#   npm stage approve <stage-id>
+#
+# That is why the `npm` environment has no required reviewers: the approval
+# lives at npm, and a second one here would only gate the staging. The
+# environment still exists for its `script-tester-v*` tag policy and because
+# the trusted publisher names it.
 
 on:
   push:
@@ -90,9 +103,11 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       # An existing version fails rather than skips: a green run must mean this
-      # tag's commit is what npm serves, and a version already there came from
-      # somewhere else (an earlier tag, or the hand-made bootstrap publish).
-      - name: npm publish
+      # tag's commit is what is staged, and a version already there came from
+      # somewhere else (an earlier tag, or the hand-made bootstrap publish). A
+      # version that is only staged is invisible to `npm view`, but staged and
+      # published versions share one index, so `npm stage publish` refuses it.
+      - name: npm stage publish
         working-directory: packages/rhino-local
         run: |
           set -euo pipefail
@@ -102,4 +117,4 @@ jobs:
             echo "npm already has ${name}@${version}; bump the version and tag again" >&2
             exit 1
           fi
-          npm publish --provenance --access public
+          npm stage publish --provenance --access public
