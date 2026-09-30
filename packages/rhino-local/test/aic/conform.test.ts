@@ -516,7 +516,9 @@ describe("conform", () => {
     expect(report.portable).toBe(false);
     expect(report.aic.skipped).toMatch(/managed/);
     expect(report.disagreements).toEqual([]);
-    expect(report.observationGaps).toEqual([]);
+    expect(report.observationGaps).toEqual([expect.objectContaining({
+      channel: "outcome", path: "aic-lane", aic: "ineligible",
+    })]);
   });
 
   it("skips missing runners with stated reasons", async () => {

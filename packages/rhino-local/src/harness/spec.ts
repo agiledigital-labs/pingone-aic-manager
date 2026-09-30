@@ -43,6 +43,7 @@ export function mergeChannels(
     params: { ...normaliseWire(always?.params), ...normaliseWire(override?.params) },
     cookies: { ...(always?.cookies ?? {}), ...(override?.cookies ?? {}) },
     ...(cookieName === undefined ? {} : { cookieName }),
+    http: [...(override?.http ?? []), ...(always?.http ?? [])],
     session: { ...(always?.session ?? {}), ...(override?.session ?? {}) },
     // Declared-empty and not-declared are different requests: `session: {}`
     // asks for a logged-in session with no extra properties, which is a real
@@ -181,6 +182,9 @@ export function toGiven(
   }
   if (draft.cookieName !== undefined) {
     given.cookieName = draft.cookieName;
+  }
+  if (draft.http.length > 0) {
+    given.http = [...draft.http];
   }
   return given;
 }

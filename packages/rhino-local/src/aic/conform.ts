@@ -134,7 +134,7 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
   const comparison =
     local.effects !== undefined && aic.effects !== undefined
       ? diffRecordedEffects(local.effects, aic.effects, input.kase.expect)
-      : { disagreements: [], observationGaps: [] };
+      : { disagreements: [], observationGaps: aicSkip === undefined ? [] : [unsupportedGap(aicSkip)] };
 
   return {
     name: input.kase.name,
@@ -333,6 +333,9 @@ function chainPassReport(
   if (!final && aic.effects !== undefined) {
     comparison.observationGaps.push(intermediatePassGap(kase));
   }
+  if (aic.skipped?.startsWith("AIC lane skipped for the whole chain:")) {
+    comparison.observationGaps.push(unsupportedGap(aic.skipped));
+  }
   return {
     pass: index + 1,
     final,
@@ -347,6 +350,16 @@ function chainPassReport(
     disagreements: comparison.disagreements,
     observationGaps: comparison.observationGaps,
     ambientState: collectAmbient(local, aic),
+  };
+}
+
+function unsupportedGap(reason: string): ObservationGap {
+  return {
+    channel: "outcome",
+    path: "aic-lane",
+    local: "observed",
+    aic: "ineligible",
+    message: reason,
   };
 }
 
