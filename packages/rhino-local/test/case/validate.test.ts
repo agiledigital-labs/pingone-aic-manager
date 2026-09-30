@@ -174,6 +174,20 @@ describe("defineCase / validateCase", () => {
     );
   });
 
+  it("accepts known binding expressions and rejects unknown or empty replacements", () => {
+    const input = {
+      name: "replacement",
+      script: "action.goTo('true');",
+      given: { bindingOverrides: { logger: "({getName: function(){return 'probe';}})" } },
+      expect: { outcome: "true" },
+    };
+    expect(validateCase(input).given.bindingOverrides).toEqual(input.given.bindingOverrides);
+    expect(() => validateCase({ ...input, given: { bindingOverrides: { openidmm: "({})" } } }))
+      .toThrow(/bindingOverrides has unknown key "openidmm"/);
+    expect(() => validateCase({ ...input, given: { bindingOverrides: { logger: " " } } }))
+      .toThrow(/bindingOverrides.logger must be a non-empty JavaScript expression/);
+  });
+
   it("rejects seeding nodeState via bindings", () => {
     const input = {
       name: "nodeState",

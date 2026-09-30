@@ -52,6 +52,7 @@ export const GIVEN_KEYS = [
   "managed",
   "http",
   "openidmFailures",
+  "bindingOverrides",
   "engine",
   "bindings",
 ] as const;
@@ -162,7 +163,7 @@ export const STATE_CHANNELS = [
 export type StateChannel = (typeof STATE_CHANNELS)[number];
 export type EvidenceChannel = Channel | "nodeState";
 
-export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmFailures"] as const;
+export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
 
 export interface StateDiff {
@@ -277,6 +278,8 @@ export interface Given {
   managed?: Record<string, JsonObject[]>;
   http?: HttpStub[];
   openidmFailures?: OpenidmFailureStub[];
+  /** Local binding replacements, as JavaScript expressions keyed by binding name. */
+  bindingOverrides?: Record<string, string>;
   engine?: Engine;
   /**
    * Extra binding seeds keyed by generated mock binding name. Unknown names

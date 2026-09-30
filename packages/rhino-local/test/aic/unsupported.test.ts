@@ -3,6 +3,10 @@ import { aicUnsupportedReason } from "../../src/aic/unsupported.ts";
 import { caseWith } from "./helpers.ts";
 
 describe("aicUnsupportedReason", () => {
+  it("rejects a local binding replacement on the tenant lane", () => {
+    expect(aicUnsupportedReason(caseWith({ given: { bindingOverrides: { logger: "({})" } } })))
+      .toMatch(/given.bindingOverrides/);
+  });
   it("allows a portable sharedState + requestHeaders case", () => {
     expect(
       aicUnsupportedReason(

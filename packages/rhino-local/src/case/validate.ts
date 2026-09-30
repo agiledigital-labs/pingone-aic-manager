@@ -207,6 +207,9 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.openidmFailures !== undefined) {
     given.openidmFailures = parseArray(raw.openidmFailures, `${path}.openidmFailures`, parseOpenidmFailureStub);
   }
+  if (raw.bindingOverrides !== undefined) {
+    given.bindingOverrides = parseBindingOverrides(raw.bindingOverrides, `${path}.bindingOverrides`);
+  }
   if (raw.engine !== undefined) {
     given.engine = parseEngine(raw.engine, `${path}.engine`);
   }
@@ -565,6 +568,24 @@ function parseBindings(
     bindings[key] = parseJsonValue(value, `${path}.${key}`);
   }
   return bindings;
+}
+
+function parseBindingOverrides(raw: unknown, path: string): Record<string, string> {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  const known = knownBindingNames();
+  const overrides: Record<string, string> = {};
+  for (const [name, expression] of Object.entries(raw)) {
+    if (!known.has(name)) {
+      throw unknownKeyError(path, name, [...known]);
+    }
+    if (typeof expression !== "string" || expression.trim() === "") {
+      throw new Error(`rhino-local: ${path}.${name} must be a non-empty JavaScript expression`);
+    }
+    overrides[name] = expression;
+  }
+  return overrides;
 }
 
 function parseEngine(raw: unknown, path: string): Engine {

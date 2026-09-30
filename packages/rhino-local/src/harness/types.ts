@@ -38,6 +38,8 @@ export interface Channels {
   http?: readonly HttpStub[];
   /** Fail one numbered `openidm` call locally. AIC cannot inject failures. */
   openidmFailures?: readonly OpenidmFailureStub[];
+  /** Local binding replacements as JavaScript expressions. AIC cannot inject these. */
+  bindingOverrides?: Readonly<Record<string, string>>;
   /**
    * `existingSession` — session properties the script sees, as a flat string
    * map. Declaring it at all (`session: {}` included) asks for a logged-in
@@ -67,6 +69,7 @@ export interface RequestDraft {
   cookieName?: string;
   http: HttpStub[];
   openidmFailures: OpenidmFailureStub[];
+  bindingOverrides: Record<string, string>;
   session: JsonObject;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;

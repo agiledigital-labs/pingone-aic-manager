@@ -42,6 +42,7 @@ describe("mergeChannels", () => {
       cookies: {},
       http: [],
       openidmFailures: [],
+      bindingOverrides: {},
       session: {},
       sessionRequested: false,
     });
@@ -58,6 +59,15 @@ describe("mergeChannels", () => {
     const testStub = { match: { url: "https://example.com/api" }, reply: { status: 503 } };
     const draft = mergeChannels({ http: [suiteStub] }, { http: [testStub] });
     expect(toGiven(draft).http).toEqual([testStub, suiteStub]);
+  });
+
+  it("merges binding replacements by name and keeps beforeRun changes", () => {
+    const draft = mergeChannels(
+      { bindingOverrides: { logger: "({getName: function(){return 'suite';}})", idRepository: "({})" } },
+      { bindingOverrides: { logger: "({getName: function(){return 'test';}})" } }
+    );
+    draft.bindingOverrides.idRepository = "({getIdentity: function(){return 'hook';}})";
+    expect(toGiven(draft).bindingOverrides).toEqual(draft.bindingOverrides);
   });
 });
 

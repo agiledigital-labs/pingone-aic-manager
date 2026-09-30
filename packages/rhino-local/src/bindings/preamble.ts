@@ -40,7 +40,10 @@ export function mockPreamble(
     seed.profileTenant = options.profile.tenant;
     seed.profilePulledAt = options.profile.pulledAt;
   }
-  return `${generated}\n${runtime}\n__rhinoLocalSeed(${serializeSeed(seed)});\n`;
+  const overrides = Object.entries(given.bindingOverrides ?? {})
+    .map(([name, expression]) => `${name} = (${expression});`)
+    .join("\n");
+  return `${generated}\n${runtime}\n__rhinoLocalSeed(${serializeSeed(seed)});\n${overrides}\n`;
 }
 
 /** Append a harvest call without shifting author line numbers. */
