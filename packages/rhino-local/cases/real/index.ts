@@ -1115,11 +1115,6 @@ export const realCases: RealEntry[] = [
   }, {
     given: identityGiven,
     rewrites: probeUserIs(ALICE_ID),
-    gap: {
-      reason:
-        "AIC exposes the managed user's userName as the AM attribute `uid` (count 1); the local mock does not map it (count 0). Every other count agrees.",
-      differs: ["value"],
-    },
   }),
   ng(
     "identity-getattribute-shape",

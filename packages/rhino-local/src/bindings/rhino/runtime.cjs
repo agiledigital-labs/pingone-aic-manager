@@ -157,6 +157,14 @@ function __rhinoLocalJavaList(items) {
   __rhinoLocalHide(list, "contains", function (value) {
     return this.indexOf(value) !== -1;
   });
+  __rhinoLocalHide(list, "toArray", function () {
+    var out = { length: this.length };
+    var i;
+    for (i = 0; i < this.length; i += 1) {
+      out[i] = this[i];
+    }
+    return out;
+  });
   return list;
 }
 
@@ -2333,12 +2341,14 @@ idRepository.getIdentity = function (userName) {
   var i;
   var record;
   var found = null;
+  var collection = null;
   for (c = 0; c < collections.length; c += 1) {
     rows = __rhinoLocal.managed[collections[c]];
     for (i = 0; i < rows.length; i += 1) {
       record = rows[i];
       if (String(record._id) === wanted) {
         found = record;
+        collection = collections[c];
         break;
       }
     }
@@ -2353,6 +2363,43 @@ idRepository.getIdentity = function (userName) {
     );
     error.name = "InternalError";
     throw error;
+  }
+  var pending = {};
+  var dirty = {};
+  function field(name) {
+    var key = String(name);
+    var match = /^fr-attr-str([1-5])$/.exec(key);
+    if (match) {
+      return "frUnindexedString" + match[1];
+    }
+    match = /^fr-attr-multi([1-5])$/.exec(key);
+    if (match) {
+      return "frUnindexedMultivalued" + match[1];
+    }
+    if (key === "uid") {
+      return "userName";
+    }
+    if (key === "inetUserStatus") {
+      return "accountStatus";
+    }
+    if (key === "fr-idm-uuid") {
+      return "_id";
+    }
+    if (key === "userName" || key === "accountStatus" || /^frUnindexed(String|Multivalued)[1-5]$/.test(key)) {
+      return "<not-an-AM-attribute>";
+    }
+    return key;
+  }
+  function values(name) {
+    var key = field(name);
+    var value = __rhinoLocalHas(pending, key) ? pending[key] : found[key];
+    if (value === undefined && key === "accountStatus") {
+      value = found.inetUserStatus;
+    }
+    if (value === undefined || value === null) {
+      return [];
+    }
+    return Array.isArray(value) ? value.slice() : [String(value)];
   }
   return {
     getName: function () {
@@ -2374,46 +2421,61 @@ idRepository.getIdentity = function (userName) {
       if (!found) {
         missing("getAttributeValues(String)");
       }
-      var value = found[attributeName];
-      if (value === undefined || value === null) {
-        return __rhinoLocalJavaList([]);
-      }
-      if (Array.isArray(value)) {
-        return __rhinoLocalJavaList(value);
-      }
-      return __rhinoLocalJavaList([value]);
+      var list = __rhinoLocalJavaList(values(attributeName));
+      __rhinoLocalHide(list, "includes", undefined);
+      __rhinoLocalHide(list, "toString", function () {
+        return "[" + this.join(", ") + "]";
+      });
+      return list;
     },
-    setAttribute: function () {
+    setAttribute: function (attributeName, attributeValues) {
       if (!found) {
         missing("setAttribute(String, String[])");
       }
-      __rhinoLocalNotMocked("idRepository.getIdentity()", "setAttribute", arguments, [
-        {
-          arity: 2,
-          types: ["string", "array"],
-          label: "setAttribute(attributeName: string, attributeValues: array)",
-        },
-      ]);
+      __rhinoLocalExpectArity("idRepository.getIdentity().setAttribute", arguments, 2);
+      if (!Array.isArray(attributeValues)) {
+        throw new Error("rhino-local: setAttribute requires an array of strings");
+      }
+      var key = field(attributeName);
+      pending[key] = attributeValues.map(String);
+      dirty[key] = true;
     },
-    addAttribute: function () {
+    addAttribute: function (attributeName, attributeValue) {
       if (!found) {
         missing("addAttribute(String, String)");
       }
-      __rhinoLocalNotMocked("idRepository.getIdentity()", "addAttribute", arguments, [
-        {
-          arity: 2,
-          types: ["string", "string"],
-          label: "addAttribute(attributeName: string, attributeValue: string)",
-        },
-      ]);
+      __rhinoLocalExpectArity("idRepository.getIdentity().addAttribute", arguments, 2);
+      var key = field(attributeName);
+      var existing = values(attributeName);
+      var value = String(attributeValue);
+      if (existing.indexOf(value) === -1) {
+        existing.push(value);
+      }
+      pending[key] = existing;
+      dirty[key] = true;
     },
     store: function () {
       if (!found) {
         missing("storeAndThrow()");
       }
-      __rhinoLocalNotMocked("idRepository.getIdentity()", "store", arguments, [
-        { arity: 0, types: [], label: "store()" },
-      ]);
+      __rhinoLocalExpectArity("idRepository.getIdentity().store", arguments, 0);
+      var names = Object.keys(dirty);
+      var patches = [];
+      var i;
+      for (i = 0; i < names.length; i += 1) {
+        var key = names[i];
+        var value = pending[key];
+        found[key] = value.length === 1 ? value[0] : value.slice();
+        patches.push({ operation: "replace", field: key, value: value.slice() });
+        delete dirty[key];
+      }
+      if (patches.length > 0) {
+        __rhinoLocal.openidm.push({
+          method: "patch",
+          resource: collection + "/" + found._id,
+          body: patches
+        });
+      }
     },
     toString: function () {
       return "org.forgerock.openam.scripting.api.ScriptedIdentityScriptWrapper@1b6d3586";
@@ -2652,9 +2714,16 @@ var __rhinoLocalJsonValueClass = {
   }
 };
 
-// Rhino may provide `org` as a JavaPackage; use a narrow JS path for the
-// measured fully-qualified JsonValue call as well as JavaImporter.
-var org = { forgerock: { json: { JsonValue: __rhinoLocalJsonValueClass } } };
+// Keep native Java package lookup for every other `org` class.
+var __rhinoLocalRealOrg = typeof org === "undefined" ? null : org;
+var org = __rhinoLocalRealOrg ? Object.create(__rhinoLocalRealOrg) : {};
+org.forgerock = __rhinoLocalRealOrg
+  ? Object.create(__rhinoLocalRealOrg.forgerock)
+  : {};
+org.forgerock.json = __rhinoLocalRealOrg
+  ? Object.create(__rhinoLocalRealOrg.forgerock.json)
+  : {};
+org.forgerock.json.JsonValue = __rhinoLocalJsonValueClass;
 
 function __rhinoLocalHiddenValueCallback(id, value) {
   this.type = "HiddenValueCallback";

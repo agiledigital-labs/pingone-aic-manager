@@ -209,8 +209,22 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-services — differs on logger.getName, secrets.getGenericSecret, secrets.getDecryptionKey, secrets.getEncryptionKey, secrets.getSigningKey, secrets.getVerificationKey, jwtAssertion.generateJwt, jwtValidator.validateJwtClaims, policy.evaluate, policy.evaluateTree, idRepository.getIdentity, emailService/typeof-enumeration, locales, jwtAssertion.generateJwt/empty, jwtAssertion.generateJwt/HS256, jwtAssertion.generateJwt/HS256/string-key, jwtValidator.validateJwtClaims/empty, jwtValidator.validateJwtClaims/HS256, policy.evaluate/claims/oauth2Scopes, policy.evaluateTree/claims/oauth2Scopes, policy.evaluate/ssoToken, policy.evaluate/jwt, policy.evaluate/claims > idRepository.getIdentity 1`] = `
 {
-  "error": "Error: rhino-local: idRepository.getIdentity: no given.managed record for "rl-probe-absent"",
-  "ok": false,
+  "ok": true,
+  "value": {
+    "array": false,
+    "keys": [
+      "addAttribute",
+      "exists",
+      "getAttributeValues",
+      "getName",
+      "getUniversalId",
+      "setAttribute",
+      "store",
+      "toString",
+    ],
+    "string": "org.forgerock.openam.scripting.api.ScriptedIdentityScriptWrapper@<hash>",
+    "type": "object",
+  },
 }
 `;
 
@@ -555,13 +569,11 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > httpclient-bo
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-attr-mapping — differs on value > value 1`] = `"{"user":"00000000-0000-0000-0000-000000000000","counts":{"uid":0,"cn":1,"givenName":1,"sn":1,"mail":1,"displayName":0,"description":0,"telephoneNumber":1,"l":0,"st":0,"co":0,"postalCode":0,"inetUserStatus":1,"fr-idm-uuid":1,"fr-idm-managed-user-manager":0,"manager":0,"fr-idm-managed-user-roles":0,"fr-idm-managed-application-member":0,"fr-idm-consentedMapping":0,"fr-idm-custom-attrs":1,"frGivenName":0,"givenNameXYZ":0},"customKeys":[]}"`;
-
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-enum-attrs — differs on value > value 1`] = `"{"methods":{"getAttributeValues":"function","getAttributes":"undefined","getAttributeNames":"undefined","asMap":"undefined"},"counts":{"manager":0,"fr-idm-managed-user-manager":1,"reports":0,"fr-idm-managed-user-reports":0,"dn":0,"entryDN":0}}"`;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-getattribute-shape — differs on value > value 1`] = `"{"getAttribute_customAttrs":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}},"getAttributeValues_customAttrs":{"call":{"ok":true,"undef":false,"isNull":false},"lengthProp":"number","size":{"ok":true,"undef":false,"isNull":false},"toArray":{"ok":false,"threw":"TypeError: Cannot find function toArray"},"contains":{"ok":true,"undef":false,"isNull":false},"includes":{"ok":true,"undef":false,"isNull":false},"get0":{"ok":true,"undef":false,"isNull":false},"index0":{"ok":true,"undef":false,"isNull":false},"charAt":{"ok":false,"threw":"TypeError: Cannot find function charAt"},"substring":{"ok":false,"threw":"TypeError: Cannot find function substring"},"lengthValue":1,"count":1,"asString":"{}","keys":{"ok":true,"undef":false,"isNull":false},"customKeys":[]},"getAttribute_mail":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}},"getAttributeValues_mail":{"call":{"ok":true,"undef":false,"isNull":false},"lengthProp":"number","size":{"ok":true,"undef":false,"isNull":false},"toArray":{"ok":false,"threw":"TypeError: Cannot find function toArray"},"contains":{"ok":true,"undef":false,"isNull":false},"includes":{"ok":true,"undef":false,"isNull":false},"get0":{"ok":true,"undef":false,"isNull":false},"index0":{"ok":true,"undef":false,"isNull":false},"charAt":{"ok":false,"threw":"TypeError: Cannot find function charAt"},"substring":{"ok":false,"threw":"TypeError: Cannot find function substring"},"lengthValue":1,"count":1},"getAttribute_bogus":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}}}"`;
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-getattribute-shape — differs on value > value 1`] = `"{"getAttribute_customAttrs":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}},"getAttributeValues_customAttrs":{"call":{"ok":true,"undef":false,"isNull":false},"lengthProp":"number","size":{"ok":true,"undef":false,"isNull":false},"toArray":{"ok":true,"undef":false,"isNull":false},"contains":{"ok":true,"undef":false,"isNull":false},"includes":{"ok":false,"threw":"TypeError: Cannot call property includes"},"get0":{"ok":true,"undef":false,"isNull":false},"index0":{"ok":true,"undef":false,"isNull":false},"charAt":{"ok":false,"threw":"TypeError: Cannot find function charAt"},"substring":{"ok":false,"threw":"TypeError: Cannot find function substring"},"lengthValue":1,"count":1,"toArrayLen":1,"asString":"[{}]","keys":{"ok":true,"undef":false,"isNull":false},"customKeys":[]},"getAttribute_mail":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}},"getAttributeValues_mail":{"call":{"ok":true,"undef":false,"isNull":false},"lengthProp":"number","size":{"ok":true,"undef":false,"isNull":false},"toArray":{"ok":true,"undef":false,"isNull":false},"contains":{"ok":true,"undef":false,"isNull":false},"includes":{"ok":false,"threw":"TypeError: Cannot call property includes"},"get0":{"ok":true,"undef":false,"isNull":false},"index0":{"ok":true,"undef":false,"isNull":false},"charAt":{"ok":false,"threw":"TypeError: Cannot find function charAt"},"substring":{"ok":false,"threw":"TypeError: Cannot find function substring"},"lengthValue":1,"count":1,"toArrayLen":1},"getAttribute_bogus":{"call":{"ok":false,"threw":"TypeError: Cannot find function getAttribute"}}}"`;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-resolve-diag — differs on value > value 1`] = `"{"alice":"ok givenName-size=1","00000000-0000-0000-0000-000000000000":"ok givenName-size=1","amadmin":"getIdentity-error: Error: rhino-local: idRepository.getIdentity: no given.managed record for \\"amadmin\\"","idRepository_typeof":"object","nodeState_username":"null"}"`;
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > identity-resolve-diag — differs on value > value 1`] = `"{"alice":"attr-error: InternalError: Cannot invoke \\"org.forgerock.openam.scripting.api.ScriptedIdentity.getAttributeValues(String)\\" because \\"this.amIdentity\\" is null","00000000-0000-0000-0000-000000000000":"ok givenName-size=1","amadmin":"attr-error: InternalError: Cannot invoke \\"org.forgerock.openam.scripting.api.ScriptedIdentity.getAttributeValues(String)\\" because \\"this.amIdentity\\" is null","idRepository_typeof":"object","nodeState_username":"null"}"`;
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > java-collections — differs on value > value 1`] = `
 [

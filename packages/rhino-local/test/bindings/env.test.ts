@@ -94,7 +94,12 @@ describe("idRepository", () => {
   it("returns a non-null stub whose attribute operations fail on null amIdentity", () => {
     const sandbox = loadBehaviour();
     const repository = sandbox.idRepository as {
-      getIdentity: (id: string) => Record<string, (...args: unknown[]) => unknown>;
+      getIdentity: (id: string) => {
+        getAttributeValues: (name: string) => unknown;
+        setAttribute: (name: string, values: string[]) => unknown;
+        store: () => unknown;
+        getAttribute?: unknown;
+      };
     };
     const identity = repository.getIdentity("missing-id");
     expect(identity).not.toBeNull();
@@ -106,5 +111,25 @@ describe("idRepository", () => {
     expect(() => identity.getAttributeValues("mail")).toThrow(/getAttributeValues\(String\).*this\.amIdentity.*null/);
     expect(() => identity.setAttribute("mail", ["a@example.com"])).toThrow(/setAttribute\(String, String\[\]\).*this\.amIdentity.*null/);
     expect(() => identity.store()).toThrow(/storeAndThrow\(\).*this\.amIdentity.*null/);
+  });
+
+  it("stages AM-named writes until store and records the persisted change", () => {
+    const effects = runScript(
+      [
+        'var identity = idRepository.getIdentity("uuid-1");',
+        'identity.setAttribute("fr-attr-str1", ["new"]);',
+        'if (identity.getAttributeValues("fr-attr-str1").toArray()[0] !== "new") throw new Error("staged value missing");',
+        'identity.addAttribute("fr-attr-multi1", "second");',
+        'identity.store();',
+      ].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1", frUnindexedString1: "old", frUnindexedMultivalued1: ["first"] }] } }
+    );
+    expect(effects.openidm).toEqual([{ method: "patch", resource: "managed/alpha_user/uuid-1", body: [
+      { operation: "replace", field: "frUnindexedString1", value: ["new"] },
+      { operation: "replace", field: "frUnindexedMultivalued1", value: ["first", "second"] },
+    ] }]);
+    expect(effects.managedStore?.["managed/alpha_user"]?.[0]).toMatchObject({
+      frUnindexedString1: "new", frUnindexedMultivalued1: ["first", "second"],
+    });
   });
 });

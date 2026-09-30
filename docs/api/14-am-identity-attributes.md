@@ -216,3 +216,15 @@ template improvement, not a generated-per-tenant artifact: give
 attributes. Applies to the contexts that expose the binding: OIDC claims
 (`identity: AMIdentity`), oidc-claims-ng / SAML mappers (`identity: Identity`),
 and scripted decision (`idRepository.getIdentity(uuid): Identity`).
+
+## Identity writes pending live verification (2026-10-01)
+
+The local script tester models `setAttribute` as a staged replacement visible to
+`getAttributeValues` before `store()`, and `addAttribute` as adding a distinct
+value to the staged collection. `store()` commits those values to the seeded
+managed record. **These write semantics are unmeasured on AIC.** The
+`live-identity-writes.e2e.test.ts` harness test checks the pre-store read,
+AM attribute names (`fr-attr-str1` and `fr-attr-multi1`), a wrong IDM field
+name, the post-store managed record, and a later callback pass. A tenant run
+will show a conformance disagreement if this model is wrong. The fixture is
+deleted by the test's cleanup hook.
