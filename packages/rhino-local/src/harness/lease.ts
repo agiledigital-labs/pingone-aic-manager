@@ -295,11 +295,9 @@ export class Lease<TSchema extends z.ZodType> {
     if (this.#spec.libraries !== undefined) {
       given = { ...given, libraries: { ...this.#spec.libraries } };
     }
-    if (steps.length > 0 && given.callbacks === undefined) {
-      // Declaring a step says the script suspends, and a script that suspends
-      // reads `callbacks` to tell its first pass from its later ones. AM's
-      // first pass carries an empty list, so seed one rather than leaving the
-      // binding unseeded and failing on a read the chain guarantees.
+    if (given.callbacks === undefined) {
+      // AM supplies an empty submitted list on every first pass, including
+      // runs that never suspend.
       given = { ...given, callbacks: [] };
     }
     const stepResults: StepResult[] = [];
