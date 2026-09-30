@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LaneDivergenceError, RhinoRunner, RhinoRunnerExitError } from "../src/runner.ts";
-import { EXPECTED_ENVIRONMENT } from "../src/jvm.ts";
+import { cacheDir, ensureRhinoJar, ensureRunnerClasses, EXPECTED_ENVIRONMENT } from "../src/jvm.ts";
 
 describe("RhinoRunner", () => {
   let runner: RhinoRunner;
@@ -247,4 +247,42 @@ describe("RhinoRunner crash", () => {
       await runner.close();
     }
   }, 60_000);
+});
+
+describe("RhinoRunner startup", () => {
+  it("reports a missing java executable immediately with the Java home remedies", async () => {
+    const cache = cacheDir();
+    const jar = await ensureRhinoJar(cache);
+    await ensureRunnerClasses(jar, { cache });
+
+    const toolsDir = mkdtempSync(join(tmpdir(), "rhino-local-path-"));
+    const javac = (process.env.PATH ?? "")
+      .split(delimiter)
+      .map((dir) => join(dir, "javac"))
+      .find(existsSync);
+    if (!javac) throw new Error("test setup requires javac on PATH");
+    symlinkSync(javac, join(toolsDir, "javac"));
+    const previous = {
+      path: process.env.PATH,
+      aicJavaHome: process.env.AIC_SCRIPT_TESTER_JAVA_HOME,
+      javaHome: process.env.JAVA_HOME,
+    };
+    try {
+      process.env.PATH = toolsDir;
+      delete process.env.AIC_SCRIPT_TESTER_JAVA_HOME;
+      delete process.env.JAVA_HOME;
+      const started = Date.now();
+      await expect(RhinoRunner.spawn({ lane: "host", cache, spawnTimeoutMs: 8_000 })).rejects.toThrow(
+        /could not start host runner: spawn java ENOENT.*AIC_SCRIPT_TESTER_JAVA_HOME or JAVA_HOME/s
+      );
+      expect(Date.now() - started).toBeLessThan(3_000);
+    } finally {
+      process.env.PATH = previous.path;
+      if (previous.aicJavaHome === undefined) delete process.env.AIC_SCRIPT_TESTER_JAVA_HOME;
+      else process.env.AIC_SCRIPT_TESTER_JAVA_HOME = previous.aicJavaHome;
+      if (previous.javaHome === undefined) delete process.env.JAVA_HOME;
+      else process.env.JAVA_HOME = previous.javaHome;
+      rmSync(toolsDir, { recursive: true, force: true });
+    }
+  });
 });
