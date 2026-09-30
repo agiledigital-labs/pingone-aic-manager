@@ -26,8 +26,8 @@ export interface OwnedLibrary {
   name: string;
   sourceHash: string;
   marker: string;
-  /** A 200 create response means our PUT replaced a resource we do not own. */
-  status?: "not-owned";
+  /** Absent only in unreleased, pre-status journals; those are probe-only. */
+  status?: "owned" | "not-owned";
 }
 
 interface LockOwner {
@@ -210,7 +210,7 @@ export async function addJournalOwnedLibrary(
     journal.resources.push({ kind: "script", id: library.id });
   }
   if (!journal.ownedLibraries?.some((item) => item.id === library.id)) {
-    journal.ownedLibraries = [...(journal.ownedLibraries ?? []), library];
+    journal.ownedLibraries = [...(journal.ownedLibraries ?? []), { ...library, status: "owned" }];
   }
   await writeLeaseJournal(path, journal);
 }

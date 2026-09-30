@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { HARNESS_CALLBACK_ID } from "../../src/aic/constants.ts";
 import { AicFileLease } from "../../src/aic/file-lease.ts";
-import { createLeaseIdentity } from "../../src/aic/lease-identity.ts";
+import { createLeaseIdentity, sha256, uuidV5 } from "../../src/aic/lease-identity.ts";
 import {
   leaseStatePaths,
   newLeaseJournal,
@@ -313,7 +313,7 @@ describe("AicFileLease", () => {
       expect((await readLeaseJournal(paths.journalPath))?.resources)
         .toContainEqual({ kind: "script", id });
       expect((await readLeaseJournal(paths.journalPath))?.ownedLibraries)
-        .toContainEqual(expect.objectContaining({ id, name: "lib-common" }));
+        .toContainEqual(expect.objectContaining({ id, name: "lib-common", status: "owned" }));
       expect(fake.calls.some((call) => call.method === "DELETE" &&
         new URL(call.url).pathname.endsWith(`/scripts/${id}`))).toBe(false);
 
@@ -391,6 +391,43 @@ describe("AicFileLease", () => {
       expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
       expect((await readLeaseJournal(paths.journalPath))?.ownedLibraries)
         .toContainEqual(expect.objectContaining({ name: "lib-common", status: "not-owned" }));
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("probes an old collision journal on later opens without blanking or deleting", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-old-collision-"));
+    try {
+      const fake = new FakeLeaseTenant();
+      const source = "exports.value = 1;";
+      const name = "lib-common";
+      const identity = createLeaseIdentity({ id: "old-collision", source: SOURCE,
+        outcomes: ["done"], ownerToken: "old-owner" });
+      const marker = ["rhino-local:v1", identity.idHash, identity.ownerToken,
+        identity.authorDigest, identity.structuralDigest].join(":");
+      const id = uuidV5(`${identity.id}:library:${name}`);
+      const path = `/am/json/realms/root/realms/alpha/scripts/${id}`;
+      const paths = leaseStatePaths("https://tenant.example.com", identity, stateDir);
+      const journal = newLeaseJournal(paths, identity, "alpha", [{ kind: "script", id }]);
+      journal.ownedLibraries = [{ id, name, sourceHash: sha256(source), marker }];
+      await writeLeaseJournal(paths.journalPath, journal);
+      fake.seed(path, { _id: id, name, context: "LIBRARY", description: marker,
+        script: Buffer.from(source).toString("base64") });
+      const options = { id: identity.id, suiteName: "old collision", source: SOURCE,
+        outcomes: ["done"], libraries: { [name]: source },
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(new AicFileLease(options).open()).rejects.toThrow(
+          /library "lib-common".*legacy journal entry without ownership status \(present\).*operator inspection is required/
+        );
+      }
+      expect(fake.calls.some((call) => call.method === "GET" &&
+        new URL(call.url).pathname === path)).toBe(true);
+      expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+      expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+      expect((await readLeaseJournal(paths.journalPath))?.ownedLibraries?.[0])
+        .not.toHaveProperty("status");
     } finally {
       await rm(stateDir, { recursive: true, force: true });
     }
