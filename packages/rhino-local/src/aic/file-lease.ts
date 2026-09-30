@@ -126,6 +126,12 @@ export class AicFileLease {
     return this.#identity;
   }
 
+  async cookieName(): Promise<string> {
+    this.#requireOpen();
+    this.#cookieName ??= await fetchCookieName(this.#io, this.#session as TenantSession);
+    return this.#cookieName;
+  }
+
   async open(): Promise<void> {
     if (this.#state !== "new") {
       throw new AicLaneError(`AIC file lease cannot open from state ${this.#state}`);
@@ -196,6 +202,7 @@ export class AicFileLease {
         ...request,
         harnessOwnsScriptName: true,
         harnessOwnsLoggerScriptId: true,
+        harnessOwnsCookieName: true,
         aic: (args) =>
           this.#runEffects(
             args.cases,
@@ -665,8 +672,14 @@ export class AicFileLease {
       request.replies,
       request.managedFixtures,
       true,
+      true,
       true
     );
+    for (const kase of request.cases) {
+      if (kase.given.cookieName !== undefined && kase.given.cookieName !== this.#cookieName) {
+        throw new AicLaneError(`${kase.name}: local cookieName differs from the tenant serverinfo value`);
+      }
+    }
     if (request.hooks.stepChecks.length !== request.replies.length) {
       throw new AicLaneError(
         `AIC file lease received ${request.hooks.stepChecks.length} step hook slots for ${request.replies.length} steps`

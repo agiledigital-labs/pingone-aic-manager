@@ -17,7 +17,7 @@ import {
 import { judge } from "../case/verdict.ts";
 import { managedSeedMatches, type ManagedFixture } from "./managed.ts";
 import { oneShotSubjectId, oneShotSubjectName } from "./emit-journey.ts";
-import { runAicChain, runAicLane, type AicReply } from "./run.ts";
+import { discoverTenantCookieName, runAicChain, runAicLane, type AicReply } from "./run.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
 
 export type LaneRunner = (args: {
@@ -58,7 +58,7 @@ export interface LocalChainResult {
   /** Present only when the local result came through the lease fixture ledger. */
   managedFixtures?: readonly ManagedFixture[];
   /** Identity seeded by Lease.execute, with provenance retained for AIC. */
-  harnessIdentity?: { scriptName: string; loggerScriptId?: string; oneShotRunId?: string };
+  harnessIdentity?: { scriptName: string; loggerScriptId?: string; oneShotRunId?: string; cookieName?: string };
 }
 
 export type AicChainRunner = (args: {
@@ -74,6 +74,7 @@ export interface ChainConformanceInput extends LocalChainResult {
   /** The file lease supplied the real uploaded name to the local lane. */
   harnessOwnsScriptName?: boolean;
   harnessOwnsLoggerScriptId?: boolean;
+  harnessOwnsCookieName?: boolean;
   /** For a one-shot chain whose local cases used the generated subject name. */
   oneShotRunId?: string;
   /** Omit to skip; pass a runner, or `"tenant"` to use `runAicChain`. */
@@ -109,6 +110,7 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
   const runId = input.aic === "tenant" && aicSkip === undefined
     ? randomUUID().replace(/-/g, "").slice(0, 12)
     : undefined;
+  const cookieName = runId === undefined ? undefined : await discoverTenantCookieName();
   const localInput = runId === undefined ? input : {
     ...input,
     kase: {
@@ -117,6 +119,7 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
         ...input.kase.given,
         scriptName: oneShotSubjectName(runId),
         loggerScriptId: oneShotSubjectId(runId),
+        ...(cookieName === undefined ? {} : { cookieName }),
       },
     },
   };
@@ -169,6 +172,7 @@ export async function conformChain(
       harnessOwnsManaged,
       harnessOwnsScriptName: input.harnessOwnsScriptName === true || input.oneShotRunId !== undefined || input.harnessIdentity !== undefined,
       harnessOwnsLoggerScriptId: input.harnessOwnsLoggerScriptId === true || input.oneShotRunId !== undefined || input.harnessIdentity?.loggerScriptId !== undefined,
+      harnessOwnsCookieName: input.harnessOwnsCookieName === true || input.harnessIdentity?.cookieName !== undefined,
     });
     return reason === undefined ? [] : [`${kase.name}: ${reason}`];
   });
@@ -250,7 +254,7 @@ function validateChainInput(input: ChainConformanceInput): void {
   if (input.harnessIdentity !== undefined) {
     const identity = input.harnessIdentity;
     for (const kase of input.cases) {
-      if (kase.given.scriptName !== identity.scriptName || kase.given.loggerScriptId !== identity.loggerScriptId) {
+      if (kase.given.scriptName !== identity.scriptName || kase.given.loggerScriptId !== identity.loggerScriptId || kase.given.cookieName !== identity.cookieName) {
         throw new Error(`${kase.name}: local script identity differs from the lease-recorded identity`);
       }
     }
@@ -306,6 +310,7 @@ function withoutScriptIdentity(kase: Case): Case {
   const given = { ...kase.given };
   delete given.scriptName;
   delete given.loggerScriptId;
+  delete given.cookieName;
   return { ...kase, given };
 }
 

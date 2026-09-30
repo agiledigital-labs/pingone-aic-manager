@@ -32,6 +32,8 @@ export interface Channels {
   params?: WireMap;
   /** Cookie name/value pairs sent on the authenticate request. */
   cookies?: Readonly<Record<string, string>>;
+  /** Local `cookieName` binding; AIC uses the tenant's serverinfo value. */
+  cookieName?: string;
   /**
    * `existingSession` — session properties the script sees, as a flat string
    * map. Declaring it at all (`session: {}` included) asks for a logged-in
@@ -58,6 +60,7 @@ export interface RequestDraft {
   headers: Record<string, string[]>;
   params: Record<string, string[]>;
   cookies: Record<string, string>;
+  cookieName?: string;
   session: JsonObject;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;

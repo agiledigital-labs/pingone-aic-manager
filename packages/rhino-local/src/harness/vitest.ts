@@ -91,11 +91,15 @@ export function useLease<TSchema extends z.ZodType>(
       `rhino-local: suite ${JSON.stringify(suite.spec.name)} sets scriptName, but AIC uploads the subject under a generated name; remove scriptName for AIC conformance`
     );
   }
+  if ((options.aic !== undefined || options.aicIntent === true) && suite.spec.always?.cookieName !== undefined) {
+    throw new Error("rhino-local: cookieName is fixed by the tenant when aicWhenEnabled is used; remove the explicit cookieName");
+  }
   const uploadedIdentity = options.aic === undefined ? undefined :
     createLeaseIdentity({ id: options.aic.id, source: suite.spec.script, outcomes: suite.spec.outcomes });
   const uploadedName = uploadedIdentity === undefined ? undefined : `${uploadedIdentity.treeName}-subject`;
   let runner: RhinoRunner | undefined;
   let aicLease: AicFileLease | undefined;
+  let tenantCookieName: string | undefined;
   const lane: LeaseLane | undefined =
     options.aic === undefined
       ? undefined
@@ -122,6 +126,8 @@ export function useLease<TSchema extends z.ZodType>(
     ...(options.allowResidue !== undefined ? { allowResidue: options.allowResidue } : {}),
     ...(lane === undefined ? {} : { lane }),
     ...(options.aic === undefined ? {} : { realm: options.aic.realm ?? "alpha" }),
+    aicIntent: options.aic !== undefined || options.aicIntent === true,
+    get cookieName(): string | undefined { return tenantCookieName; },
     ...(uploadedName === undefined ? {} : { scriptName: uploadedName }),
     ...(uploadedIdentity === undefined ? {} : { loggerScriptId: uploadedIdentity.ids.subjectScript }),
     testName: () => expect.getState().currentTestName ?? suite.spec.name,
@@ -153,6 +159,7 @@ export function useLease<TSchema extends z.ZodType>(
           : { stateDir: options.aicStateDir }),
       });
       await aicLease.open();
+      tenantCookieName = await aicLease.cookieName();
     }
   }, options.spawnTimeoutMs ?? 60_000);
 
