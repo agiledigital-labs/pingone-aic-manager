@@ -2423,7 +2423,8 @@ idRepository.getIdentity = function (userName) {
   }
   function values(name) {
     var key = field(name);
-    var value = __rhinoLocalHas(pending, key) ? pending[key] : found[key];
+    // AM reads the persisted identity until store(), even after setAttribute.
+    var value = found[key];
     if (value === undefined && key === "accountStatus") {
       value = found.inetUserStatus;
     }
@@ -2477,7 +2478,9 @@ idRepository.getIdentity = function (userName) {
       }
       __rhinoLocalExpectArity("idRepository.getIdentity().addAttribute", arguments, 2);
       var key = field(attributeName);
-      var existing = values(attributeName);
+      var existing = __rhinoLocalHas(pending, key)
+        ? pending[key].slice()
+        : values(attributeName);
       var value = String(attributeValue);
       if (existing.indexOf(value) === -1) {
         existing.push(value);
