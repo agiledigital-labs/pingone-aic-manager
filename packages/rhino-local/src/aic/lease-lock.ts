@@ -1,4 +1,4 @@
-/** Local process lock and identifier-only crash journal for an AIC file lease. */
+/** Local process lock and metadata-only crash journal for an AIC file lease. */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,7 +16,16 @@ export interface LeaseJournal {
   treeName: string;
   ownerToken: string;
   resources: CreatedResource[];
+  /** Absent in journals written before library cleanup became replayable. */
+  ownedLibraries?: OwnedLibrary[];
   managedFixtures: Array<{ type: string; id: string }>;
+}
+
+export interface OwnedLibrary {
+  id: string;
+  name: string;
+  sourceHash: string;
+  marker: string;
 }
 
 interface LockOwner {
@@ -133,6 +142,7 @@ export function newLeaseJournal(
     treeName: identity.treeName,
     ownerToken: identity.ownerToken,
     resources: resources.map((resource) => ({ ...resource })),
+    ownedLibraries: [],
     managedFixtures: [],
   };
 }
@@ -185,6 +195,20 @@ export async function addJournalResources(
     if (!journal.resources.some((item) => sameResource(item, resource))) {
       journal.resources.push({ ...resource });
     }
+  }
+  await writeLeaseJournal(path, journal);
+}
+
+export async function addJournalOwnedLibrary(
+  path: string,
+  library: OwnedLibrary
+): Promise<void> {
+  const journal = await requireJournal(path);
+  if (!journal.resources.some((item) => item.kind === "script" && item.id === library.id)) {
+    journal.resources.push({ kind: "script", id: library.id });
+  }
+  if (!journal.ownedLibraries?.some((item) => item.id === library.id)) {
+    journal.ownedLibraries = [...(journal.ownedLibraries ?? []), library];
   }
   await writeLeaseJournal(path, journal);
 }

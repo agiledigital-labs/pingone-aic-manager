@@ -786,13 +786,16 @@ reuses an existing same-name, byte-identical library without owning it; a
 different source or context found during preflight is a refusal. Names are
 realm-wide. AM has no measured atomic create precondition, so another writer
 can create an ID between the read and PUT; simultaneous writers using one
-`aic.id` are unsupported. Before deleting an owned library, the lease checks
-its source and ownership fields and leaves changed libraries with a cleanup
-warning and recovery journal. The lease
-deletes the subject graph before owned libraries, then retries library deletes
-until no further delete succeeds. AM refuses to delete a referenced library;
-any owned library still referenced by a reused external consumer remains
-journalled and is reported as residue at close. Legacy `require()` is
+`aic.id` are unsupported. The lease deletes the subject graph, blanks the
+source of each owned library, confirms the update by GET, then retries deletes
+until no further delete succeeds. The journal records ownership and a source
+hash before create, so a lost blank response can be replayed on the next open.
+Before blanking and again before deleting, the lease checks source and ownership
+fields and leaves changed libraries with a cleanup warning and recovery journal.
+It never changes a reused library. Any owned library still referenced by a
+reused external consumer remains journalled and is reported as residue at close.
+The orchestrator measured a reference-free source replacement unblocking delete
+on 2026-09-30; empty-source acceptance is not yet measured live. Legacy `require()` is
 unsupported, so a legacy case with libraries fails validation.
 
 `useLease()` accepts an AIC opt-in alongside the local options:

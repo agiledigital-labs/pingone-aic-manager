@@ -6,6 +6,21 @@ new things are learned.
 
 ---
 
+## 2026-09-30 — library deletion after source replacement
+
+The orchestrator ran `libraries.e2e` on a sandbox tenant against
+`ec34a49`: all 17 lane assertions passed, but lease close and manual
+`DELETE` left both owned `outer` and `inner` libraries with HTTP 500
+`"The script <name> is used once"` after the subject graph was gone.
+The orchestrator then `PUT` `outer` with source
+`exports.value = "x";` (200), and `DELETE outer` and `DELETE inner`
+both returned 200. The fixture retains a comment containing
+`require("outer")` inside `outer`; AM counting that text as a
+self-reference is inferred, not isolated. A control removing only
+the comment was not run, and an empty-source update was not measured.
+
+---
+
 ## 2026-09-30 — queued callbacks supersede `goTo`
 
 The orchestrator measured a next-gen scripted-decision pass through the AIC

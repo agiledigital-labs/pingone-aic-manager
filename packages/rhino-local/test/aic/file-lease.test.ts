@@ -127,18 +127,41 @@ describe("AicFileLease", () => {
     expect(deletes.filter((call) => libraryIds.some((id) =>
       new URL(call.url).pathname.endsWith(`/scripts/${id}`)))
       .map((call) => new URL(call.url).pathname.split("/").at(-1)))
-      .toEqual([innerId, outerId, innerId]);
-    expect(deletes).toHaveLength(12);
+      .toEqual([innerId, outerId]);
+    expect(deletes).toHaveLength(11);
+    for (const id of libraryIds) {
+      const blank = fake.calls.findIndex((call) => call.method === "PUT" &&
+        new URL(call.url).pathname.endsWith(`/scripts/${id}`) &&
+        (JSON.parse(String(call.body)) as { script?: string }).script === "");
+      const confirmation = fake.calls.findIndex((call, index) => index > blank &&
+        call.method === "GET" && new URL(call.url).pathname.endsWith(`/scripts/${id}`));
+      const deletion = fake.calls.findIndex((call) => call.method === "DELETE" &&
+        new URL(call.url).pathname.endsWith(`/scripts/${id}`));
+      const subjectDeletion = fake.calls.findIndex((call) => call.method === "DELETE" &&
+        new URL(call.url).pathname.endsWith(`/scripts/${lease.identity.ids.subjectScript}`));
+      expect(blank).toBeGreaterThan(subjectDeletion);
+      expect(confirmation).toBeGreaterThan(blank);
+      expect(confirmation).toBeLessThan(deletion);
+      expect(blank).toBeLessThan(deletion);
+    }
   });
 
-  it("does not invent a require cycle from a library comment", async () => {
-    const fake = new FakeLeaseTenant();
+  it("blanks a self-referencing library comment before delete", async () => {
+    const fake = new FakeLeaseTenant({ deleteBlockedWhile: [
+      { targetName: "outer", blockerName: "outer" },
+    ] });
     const lease = new AicFileLease({ id: "comment-require", suiteName: "comment require",
       source: SOURCE, outcomes: ["done"],
       libraries: { outer: '// Consumers: require("outer")\nexports.value = "ok";' },
       project: "/tmp/rhino-local-aic-test", io: fake.io });
     await lease.open();
     await lease.close();
+    const writes = fake.calls.filter((call) => call.method === "PUT" &&
+      (JSON.parse(String(call.body)) as { name?: string }).name === "outer");
+    expect(writes.map((call) => (JSON.parse(String(call.body)) as { script: string }).script))
+      .toEqual([Buffer.from('// Consumers: require("outer")\nexports.value = "ok";').toString("base64"), ""]);
+    expect(fake.calls.filter((call) => call.method === "DELETE" &&
+      new URL(call.url).pathname.includes("/scripts/"))).toHaveLength(5);
   });
 
   it("reuses an identical library without deleting it and refuses a source collision before writing", async () => {
@@ -205,12 +228,37 @@ describe("AicFileLease", () => {
       const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
       expect((await readLeaseJournal(paths.journalPath))?.resources)
         .toContainEqual({ kind: "script", id });
+      expect((await readLeaseJournal(paths.journalPath))?.ownedLibraries)
+        .toContainEqual(expect.objectContaining({ id, name: "lib-common" }));
       expect(fake.calls.some((call) => call.method === "DELETE" &&
         new URL(call.url).pathname.endsWith(`/scripts/${id}`))).toBe(false);
 
       const retry = new AicFileLease(options);
-      await expect(retry.open()).rejects.toThrow(/has owned residue/);
-      expect(await readLeaseJournal(paths.journalPath)).toBeDefined();
+      await retry.open();
+      await retry.close();
+      expect(await readLeaseJournal(paths.journalPath)).toBeUndefined();
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("replays a confirmed blank after its PUT response is lost", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-lost-blank-"));
+    try {
+      const fake = new FakeLeaseTenant({ lostBlankResponseOnce: true,
+        deleteBlockedWhile: [{ targetName: "outer", blockerName: "outer" }] });
+      const options = { id: "lost-blank", suiteName: "lost blank", source: SOURCE,
+        outcomes: ["done"], libraries: { outer: '// Consumers: require("outer")\nexports.value = "ok";' },
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io };
+      const lease = new AicFileLease(options);
+      await lease.open();
+      await expect(lease.close()).rejects.toThrow(/library "outer".*remains as residue.*simulated lost blank response/);
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
+      expect((await readLeaseJournal(paths.journalPath))?.ownedLibraries).toHaveLength(1);
+      const retry = new AicFileLease(options);
+      await retry.open();
+      await retry.close();
+      expect(await readLeaseJournal(paths.journalPath)).toBeUndefined();
     } finally {
       await rm(stateDir, { recursive: true, force: true });
     }
@@ -735,6 +783,7 @@ interface FakeLeaseOptions {
   managedCreateStatus?: number;
   stepChain?: boolean;
   lostLibraryResponse?: string;
+  lostBlankResponseOnce?: boolean;
   racingLibrary?: string;
   deleteBlockedWhile?: readonly { targetName: string; blockerName: string }[];
 }
@@ -755,6 +804,8 @@ class FakeLeaseTenant {
   #sessionTree = "";
   #managedRecord: Record<string, unknown> | undefined;
   #subjectAuthCount = 0;
+  #lostLibraryResponseSent = false;
+  #lostBlankResponseSent = false;
 
   constructor(options: FakeLeaseOptions = {}) {
     this.#options = options;
@@ -842,8 +893,14 @@ class FakeLeaseTenant {
         }
         this.#resources.set(path, read);
         if (this.#options.lostLibraryResponse !== undefined &&
-            body.name === this.#options.lostLibraryResponse) {
+            body.name === this.#options.lostLibraryResponse && !this.#lostLibraryResponseSent) {
+          this.#lostLibraryResponseSent = true;
           throw new Error(`simulated lost response for ${String(body.name)}`);
+        }
+        if (this.#options.lostBlankResponseOnce === true && body.context === "LIBRARY" &&
+            body.script === "" && !this.#lostBlankResponseSent) {
+          this.#lostBlankResponseSent = true;
+          throw new Error("simulated lost blank response");
         }
         return json(exists ? (this.#options.armStatus ?? 200) : 201, {});
       }
@@ -862,7 +919,8 @@ class FakeLeaseTenant {
         const target = this.#resources.get(path)?.name;
         const blocker = this.#options.deleteBlockedWhile?.find((rule) =>
           rule.targetName === target &&
-          [...this.#resources.values()].some((resource) => resource.name === rule.blockerName));
+          [...this.#resources.values()].some((resource) => resource.name === rule.blockerName &&
+            resource.script !== ""));
         if (blocker !== undefined) {
           return json(500, { message: `The script ${String(target)} is used once` });
         }
