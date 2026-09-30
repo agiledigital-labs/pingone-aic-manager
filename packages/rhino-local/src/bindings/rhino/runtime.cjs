@@ -21,6 +21,8 @@ var __rhinoLocal = {
   bindings: {},
   submittedCallbacks: null,
   httpStubs: [],
+  openidmFailures: [],
+  openidmCallCounts: {},
   generatedId: 0,
   outcome: null,
   engine: "next-gen",
@@ -1649,6 +1651,30 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
     rec.actionName = actionName;
   }
   __rhinoLocal.openidm.push(rec);
+  var key = method + " " + resource;
+  var ordinal = (__rhinoLocal.openidmCallCounts[key] || 0) + 1;
+  __rhinoLocal.openidmCallCounts[key] = ordinal;
+  var stubs = __rhinoLocal.openidmFailures;
+  var i;
+  var stub;
+  var pattern;
+  for (i = 0; i < stubs.length; i += 1) {
+    stub = stubs[i];
+    if (stub.match.method !== method || stub.match.ordinal !== ordinal) {
+      continue;
+    }
+    pattern = __rhinoLocalAsPattern(stub.match.resource);
+    if (typeof pattern === "string" ? pattern !== resource : !pattern.test(resource)) {
+      continue;
+    }
+    var error = new Error(
+      "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: " +
+        "injected ResourceException code " + stub.reply.code
+    );
+    error.name = "JavaException";
+    error.code = stub.reply.code;
+    throw error;
+  }
 }
 
 function __rhinoLocalFilterError(filter) {
@@ -1660,15 +1686,16 @@ function __rhinoLocalFilterError(filter) {
 // update and patch with a stale non-null _rev (measured on both).
 function __rhinoLocalCheckRev(method, rev, record) {
   if (rev !== null && rev !== undefined && String(rev) !== String(record._rev)) {
-    throw new Error(
-      "rhino-local: openidm." +
-        method +
-        ": the expected version '" +
+    var error = new Error(
+      "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: openidm." +
+        method + ": The resource could not be accessed because the expected version '" +
         String(rev) +
         "' does not match the current version '" +
         String(record._rev) +
         "'"
     );
+    error.name = "JavaException";
+    throw error;
   }
 }
 
@@ -3084,6 +3111,10 @@ function __rhinoLocalSeed(given) {
     __rhinoLocal.submittedCallbacks = __rhinoLocalClone(given.callbacks);
   }
   __rhinoLocal.httpStubs = given.http ? __rhinoLocalClone(given.http) : [];
+  __rhinoLocal.openidmFailures = given.openidmFailures
+    ? __rhinoLocalClone(given.openidmFailures)
+    : [];
+  __rhinoLocal.openidmCallCounts = {};
   __rhinoLocal.generatedId = 0;
   __rhinoLocal.outcome = null;
   __rhinoLocal.callbacks = [];

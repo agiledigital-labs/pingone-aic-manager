@@ -187,6 +187,14 @@ export class RunBuilder<TInput> {
     return this;
   }
 
+  openidmFailures(stubs: NonNullable<Channels["openidmFailures"]>): this {
+    this.#override = {
+      ...this.#override,
+      openidmFailures: [...stubs, ...(this.#override.openidmFailures ?? [])],
+    };
+    return this;
+  }
+
   session(session: JsonObject): this {
     this.#override = { ...this.#override, session: { ...this.#override.session, ...session } };
     return this;

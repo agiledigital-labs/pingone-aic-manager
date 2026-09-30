@@ -214,6 +214,15 @@ so such cases are AIC-ineligible and report an observation gap. Set the file
 lease's `aic.unsupported` to `"skip"` to keep the local verdict while making
 that gap explicit.
 
+Use `openidmFailures` to make one local IDM call fail: each stub has
+`match: { method, resource, ordinal }` and `reply: { code }`. `ordinal` is
+one-based among calls with the same method and resource, so a second patch
+can fail after the first succeeds. Declare stubs in `always`, add them with
+`.run().openidmFailures()`, or edit `request.openidmFailures` in `beforeRun`.
+The failed call is still recorded in `expect.openidm`. These stubs are
+AIC-ineligible and produce an observation gap; the script-visible shape of an
+arbitrary injected ResourceException code is unmeasured on AIC.
+
 ### `scriptName`
 
 The local harness seeds `scriptName` on every run. It defaults to the suite's
