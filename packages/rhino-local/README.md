@@ -168,6 +168,12 @@ Declare values read through `systemEnv.getProperty("esv.<name>")` with the
 real ESVs and never writes them. Declare an absent ESV as `null` to test its
 one-argument `null` result or a supplied default. An undeclared local read
 throws with the missing key, even if other ESVs were declared.
+Use only the part after `esv.` as a channel key: for
+`systemEnv.getProperty("esv.feature")`, declare `esv: { feature: "on" }`.
+`esv: { "esv.feature": "on" }` is rejected instead of becoming
+`esv.esv.feature`. A management API ID such as `esv-feature` is also rejected:
+the ID does not reliably identify the script property name. Look at the
+script's `getProperty` call and declare its suffix.
 
 Before this change, `esv: { feature: "on" }` only wrote `esv.feature` into
 shared state. Now it makes `systemEnv.getProperty("esv.feature")` return

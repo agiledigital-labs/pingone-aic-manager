@@ -19,7 +19,8 @@ export interface StateChannels {
 export interface Channels {
   state?: StateChannels;
   /**
-   * Declared `systemEnv.getProperty("esv.<name>")` values for the local lane.
+   * Declared `systemEnv.getProperty("esv.<name>")` values, keyed by `<name>`.
+   * Full `esv.<name>` properties and `esv-...` management IDs are rejected.
    * AIC reads its own tenant ESVs; the harness never changes tenant ESVs.
    */
   esv?: Readonly<Record<string, string | null>>;

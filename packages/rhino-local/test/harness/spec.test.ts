@@ -86,6 +86,22 @@ describe("applyInputsAndEsv", () => {
     applyInputsAndEsv(draft, { "esv.x": "input" });
     expect(draft.state.shared["esv.x"]).toBe("input");
   });
+
+  // Regression: full property names used to become silently double-prefixed.
+  it("rejects full property names and management API ids", () => {
+    const property = mergeChannels({ esv: { "esv.x": "1" }, esvInState: true }, undefined);
+    expect(() => applyInputsAndEsv(property, {})).toThrow(/use "x" for systemEnv/);
+    expect(property.state.shared).toEqual({});
+    expect(() => toGiven(property)).toThrow(/already includes "esv\."/);
+
+    const managementId = mergeChannels({ esv: { "esv-x": "1" } }, undefined);
+    expect(() => applyInputsAndEsv(managementId, {})).toThrow(/management API id/);
+    expect(() => toGiven(managementId)).toThrow(/management API id/);
+
+    const mutated = mergeChannels(undefined, undefined);
+    mutated.esv["esv.x"] = "1";
+    expect(() => applyInputsAndEsv(mutated, {})).toThrow(/already includes "esv\."/);
+  });
 });
 
 describe("parseInputs", () => {
