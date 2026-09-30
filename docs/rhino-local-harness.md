@@ -66,6 +66,9 @@ likewise gives its local runner the one-shot generated subject name while
 leaving the AIC `Case` unseeded; direct `runAicChain()` still refuses an
 author-supplied `given.scriptName`. A raw local `Case` retains explicit seed
 control for binding tests.
+`aicWhenEnabled()` keeps an intent marker even when its environment switch is
+off, so that explicit-name suite fails in both modes. An always-local suite
+can still use `scriptName` without that marker.
 For a pre-recorded one-shot chain, use `oneShotSubjectName(runId)` to seed
 `given.scriptName` and `oneShotSubjectId(runId)` to seed
 `given.loggerScriptId` in each local case, then pass `oneShotRunId: runId` to

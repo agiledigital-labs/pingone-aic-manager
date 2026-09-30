@@ -35,6 +35,8 @@ export interface UseLeaseOptions
   extends Partial<Omit<LeaseOptions, "runner" | "lane" | "realm">> {
   spawnTimeoutMs?: number;
   aic?: UseLeaseAicOptions;
+  /** Preserved by `aicWhenEnabled()` when the tenant lane is off. */
+  aicIntent?: true;
   /** Injected fake seam for adapter tests; production uses the default AIC I/O. */
   aicIo?: AicIo;
   /** Injected filesystem seam for adapter tests. */
@@ -56,13 +58,17 @@ export const AIC_LANE_ENV = "AIC_SCRIPT_TESTER_AIC";
  *     AIC_SCRIPT_TESTER_AIC=1 npm test    # both lanes, against the sandbox
  *
  * `id` must be unique per file: it seeds the deterministic resource ids, and
- * one AIC lease per file is enforced.
+ * one AIC lease per file is enforced. The returned intent marker remains when
+ * disabled so suite validation is the same with and without the env var.
  */
 export function aicWhenEnabled(
   id: string,
   realm = "alpha"
-): { aic?: UseLeaseAicOptions } {
-  return process.env[AIC_LANE_ENV] === "1" ? { aic: { id, realm } } : {};
+): { aicIntent: true; aic?: UseLeaseAicOptions } {
+  return {
+    aicIntent: true,
+    ...(process.env[AIC_LANE_ENV] === "1" ? { aic: { id, realm } } : {}),
+  };
 }
 
 const aicLeaseByFile = new Map<string, string>();
@@ -80,7 +86,7 @@ export function useLease<TSchema extends z.ZodType>(
   suite: Suite<TSchema>,
   options: UseLeaseOptions = {}
 ): Lease<TSchema> {
-  if (options.aic !== undefined && suite.spec.scriptName !== undefined) {
+  if ((options.aic !== undefined || options.aicIntent === true) && suite.spec.scriptName !== undefined) {
     throw new Error(
       `rhino-local: suite ${JSON.stringify(suite.spec.name)} sets scriptName, but AIC uploads the subject under a generated name; remove scriptName for AIC conformance`
     );
