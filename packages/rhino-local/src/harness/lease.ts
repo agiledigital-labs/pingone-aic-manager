@@ -195,6 +195,14 @@ export class RunBuilder<TInput> {
     return this;
   }
 
+  bindingOverrides(overrides: NonNullable<Channels["bindingOverrides"]>): this {
+    this.#override = {
+      ...this.#override,
+      bindingOverrides: { ...this.#override.bindingOverrides, ...overrides },
+    };
+    return this;
+  }
+
   session(session: JsonObject): this {
     this.#override = { ...this.#override, session: { ...this.#override.session, ...session } };
     return this;

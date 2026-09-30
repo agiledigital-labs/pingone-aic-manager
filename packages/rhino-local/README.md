@@ -231,6 +231,17 @@ The failed call is still recorded in `expect.openidm`. These stubs are
 AIC-ineligible and produce an observation gap; the script-visible shape of an
 arbitrary injected ResourceException code is unmeasured on AIC.
 
+For a local method that the mock does not implement, use `bindingOverrides`.
+Each value is a JavaScript expression evaluated after the normal seed and
+assigned to a known binding, for example
+`always: { bindingOverrides: { logger: '({getName: function(){return "probe";}})' } }`.
+Use `.run().bindingOverrides({ logger: expression })` for one test, or edit
+`request.bindingOverrides` in `beforeRun`. Entries merge by binding name;
+per-test values take precedence over suite defaults. These replacements are
+local only. An AIC-enabled run with one reports an observation gap and skips
+the tenant lane. This is separate from `given.bindings`, which supplies JSON
+seed data to supported mocks.
+
 ### `scriptName`
 
 The local harness seeds `scriptName` on every run. It defaults to the suite's

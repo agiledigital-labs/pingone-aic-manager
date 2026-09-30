@@ -45,6 +45,7 @@ export function mergeChannels(
     ...(cookieName === undefined ? {} : { cookieName }),
     http: [...(override?.http ?? []), ...(always?.http ?? [])],
     openidmFailures: [...(override?.openidmFailures ?? []), ...(always?.openidmFailures ?? [])],
+    bindingOverrides: { ...(always?.bindingOverrides ?? {}), ...(override?.bindingOverrides ?? {}) },
     session: { ...(always?.session ?? {}), ...(override?.session ?? {}) },
     // Declared-empty and not-declared are different requests: `session: {}`
     // asks for a logged-in session with no extra properties, which is a real
@@ -189,6 +190,9 @@ export function toGiven(
   }
   if (draft.openidmFailures.length > 0) {
     given.openidmFailures = [...draft.openidmFailures];
+  }
+  if (Object.keys(draft.bindingOverrides).length > 0) {
+    given.bindingOverrides = { ...draft.bindingOverrides };
   }
   return given;
 }
