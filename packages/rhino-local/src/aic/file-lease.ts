@@ -327,6 +327,7 @@ export class AicFileLease {
       const ownership: OwnedLibrary = {
         id: library.id, name: library.name,
         sourceHash: sha256(library.source), marker: this.identity.marker,
+        status: "owned",
       };
       await addJournalOwnedLibrary(this.#journalPath(), ownership);
       const path = resourcePath(this.#realm, resource);
@@ -738,6 +739,10 @@ export class AicFileLease {
         errors.push(collisionResidue(owned));
         continue;
       }
+      if (owned.status !== "owned") {
+        errors.push(ambiguousLibraryResidue(owned, "unprobed"));
+        continue;
+      }
       const failure = await this.#tryBlankOwnedLibrary(resource, owned, realm);
       if (failure === undefined) {
         ready.push(resource);
@@ -877,6 +882,18 @@ export class AicFileLease {
           residue.push(collisionResidue(owned));
           continue;
         }
+        if (owned.status !== "owned") {
+          const response = await amRequest(this.#io, this.#session as TenantSession, {
+            method: "GET", path: resourcePath(journal.realm, resource),
+            headers: amConfigHeaders(),
+          });
+          if (response.status !== 200 && response.status !== 404) {
+            throw new AicLaneError(`could not probe older library ${JSON.stringify(owned.name)} (HTTP ${response.status})`);
+          }
+          residue.push(ambiguousLibraryResidue(owned,
+            response.status === 200 ? "present" : "absent"));
+          continue;
+        }
         const marker = parseLeaseMarker(owned.marker);
         if (resource.id !== uuidV5(`${journal.aicId}:library:${owned.name}`) ||
             marker?.idHash !== sha256(journal.aicId).slice(0, 20) ||
@@ -1000,6 +1017,10 @@ function resourceLabel(resource: CreatedResource): string {
 
 function collisionResidue(library: OwnedLibrary): string {
   return `library ${JSON.stringify(library.name)} (${library.id}) remains as residue after a create collision: its source was overwritten by the lease; operator inspection is required and automatic cleanup is disabled`;
+}
+
+function ambiguousLibraryResidue(library: OwnedLibrary, presence: string): string {
+  return `library ${JSON.stringify(library.name)} (${library.id}) has a legacy journal entry without ownership status (${presence}); operator inspection is required and automatic cleanup or recreation is disabled`;
 }
 
 function scriptBody(

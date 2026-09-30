@@ -127,7 +127,9 @@ At close, the lease deletes the subject's graph, replaces each owned library's
 source with an empty body, confirms that update by reading it back, then
 retries deletion until no further delete succeeds. The blanking step removes
 references among owned libraries, including possible self-references in comments;
-it can be replayed from the recovery journal after a lost response. The
+it can be replayed from a journal with explicit owned status after a lost
+response. Unreleased, older library journals without that status are read-only
+probes and require operator inspection. The
 orchestrator's 2026-09-30 live run after `d7de205` confirmed that AM accepts
 the empty-source PUT and the tested lease left no library residue. An owned
 library still referenced by a reused external library remains journalled and

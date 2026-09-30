@@ -796,6 +796,9 @@ The lease deletes the subject graph, blanks the
 source of each owned library, confirms the update by GET, then retries deletes
 until no further delete succeeds. The journal records ownership and a source
 hash before create, so a lost blank response can be replayed on the next open.
+Unreleased library journals without an explicit owned status are probe-only:
+the lease reports them for operator inspection and will not blank, delete, or
+recreate their libraries.
 Before blanking and again before deleting, the lease checks source and ownership
 fields and leaves changed libraries with a cleanup warning and recovery journal.
 It never changes a reused library. Any owned library still referenced by a
