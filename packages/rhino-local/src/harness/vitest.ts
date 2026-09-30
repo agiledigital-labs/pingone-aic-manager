@@ -6,6 +6,7 @@ import type {
   RunnerTestSuite as VitestSuite,
 } from "vitest";
 import { AicFileLease } from "../aic/file-lease.ts";
+import { createLeaseIdentity } from "../aic/lease-identity.ts";
 import { chainFromRunResult } from "../aic/conform.ts";
 import type { AicIo } from "../aic/tenant.ts";
 import type { TenantProvider } from "../aic/provider.ts";
@@ -79,6 +80,13 @@ export function useLease<TSchema extends z.ZodType>(
   suite: Suite<TSchema>,
   options: UseLeaseOptions = {}
 ): Lease<TSchema> {
+  if (options.aic !== undefined && suite.spec.scriptName !== undefined) {
+    throw new Error(
+      `rhino-local: suite ${JSON.stringify(suite.spec.name)} sets scriptName, but AIC uploads the subject under a generated name; remove scriptName for AIC conformance`
+    );
+  }
+  const uploadedName = options.aic === undefined ? undefined :
+    `${createLeaseIdentity({ id: options.aic.id, source: suite.spec.script, outcomes: suite.spec.outcomes }).treeName}-subject`;
   let runner: RhinoRunner | undefined;
   let aicLease: AicFileLease | undefined;
   const lane: LeaseLane | undefined =
@@ -107,6 +115,7 @@ export function useLease<TSchema extends z.ZodType>(
     ...(options.allowResidue !== undefined ? { allowResidue: options.allowResidue } : {}),
     ...(lane === undefined ? {} : { lane }),
     ...(options.aic === undefined ? {} : { realm: options.aic.realm ?? "alpha" }),
+    ...(uploadedName === undefined ? {} : { scriptName: uploadedName }),
     testName: () => expect.getState().currentTestName ?? suite.spec.name,
   } as LeaseOptions);
 

@@ -5,7 +5,7 @@ import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
 import type { AicIo } from "../../src/aic/tenant.ts";
 import { defineSuite, useLease } from "../../src/harness/index.ts";
 
-const SOURCE = 'action.goTo("done");\n';
+const SOURCE = 'action.goTo(typeof scriptName === "string" && scriptName.indexOf("rl-aic-") === 0 ? "done" : "wrong");\n';
 
 const suite = defineSuite({
   name: "vitest-aic-adapter",
@@ -46,6 +46,7 @@ describe("useLease AIC adapter", () => {
 
     expect(run.conformance?.passes).toHaveLength(1);
     expect(run.kase.given.realm).toBe("bravo");
+    expect(run.kase.given.scriptName).toMatch(/^rl-aic-[a-f0-9]{20}-subject$/);
     expect(run.conformance?.passes[0]?.aic.verdict?.pass).toBe(true);
     expect(run.conformance?.observationGaps).not.toContainEqual(
       expect.objectContaining({ path: "checks/cleanup" })

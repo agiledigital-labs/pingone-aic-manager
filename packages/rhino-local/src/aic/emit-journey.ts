@@ -64,6 +64,10 @@ export interface LeasedJourneyOptions {
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9-]{1,32}$/;
 
+export function oneShotSubjectName(runId: string): string {
+  return `${RESOURCE_PREFIX}-${runId}-subject`;
+}
+
 /**
  * Outcomes declared on the subject node. Always includes `true` and `false`
  * plus `expect.outcome` and everything `case.outcomes` declares, so a script
@@ -107,7 +111,7 @@ export function emitWrapperJourney(
 
   const subjectScript: ScriptResource = {
     id: nextId(),
-    name: `${treeName}-subject`,
+    name: oneShotSubjectName(runId),
     source: instrumented.source,
     role: "subject",
   };

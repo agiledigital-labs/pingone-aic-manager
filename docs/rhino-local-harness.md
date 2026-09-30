@@ -55,6 +55,21 @@ lease, with no equivalent check for secrets. Value-sensitive tests therefore
 need the test author to confirm the tenant's current ESV value; changing a
 tenant ESV requires a restart.
 
+### Script name binding
+
+The suite seeds the local `scriptName` binding with `spec.scriptName ?? spec.name`.
+For an AIC-enabled `useLease`, the local lane uses the uploaded subject's
+generated `rl-aic-<hash>-subject` name instead. An explicit `spec.scriptName`
+and AIC opt-in fail setup, since a generated lease subject cannot also have
+the name of a deployed script. `conform()` with the one-shot tenant lane
+likewise gives its local runner the one-shot generated subject name while
+leaving the AIC `Case` unseeded; direct `runAicChain()` still refuses an
+author-supplied `given.scriptName`. A raw local `Case` retains explicit seed
+control for binding tests.
+For a pre-recorded one-shot chain, use `oneShotSubjectName(runId)` to seed
+each local case and pass `oneShotRunId: runId` to `conformChain`. It validates
+the recorded local name and strips the seed before the tenant run.
+
 The runner needs a host JDK 25: `AIC_SCRIPT_TESTER_JAVA_HOME`, then `JAVA_HOME`, then
 `java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar
 comes from Maven Central, verified by SHA-256 — it is byte-identical to the one

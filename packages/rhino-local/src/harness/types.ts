@@ -91,6 +91,8 @@ export interface CleanupContext<TInput> {
 
 export interface SuiteSpec<TSchema extends z.ZodType> {
   name: string;
+  /** Local-only binding name; defaults to `name`. AIC uses its uploaded name. */
+  scriptName?: string;
   /** Author source, already loaded. */
   script: string;
   /** The outcome vocabulary. Required here — a lease has to declare it. */

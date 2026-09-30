@@ -4,9 +4,22 @@ import { defineSuite } from "../../src/harness/index.ts";
 import {
   claimAicLeaseForFile,
   releaseAicLeaseForFile,
+  useLease,
 } from "../../src/harness/vitest.ts";
 
 describe("useLease AIC file ownership", () => {
+  it("refuses a local scriptName that cannot be uploaded under that name", () => {
+    const suite = defineSuite({
+      name: "named",
+      scriptName: "deployed-name",
+      script: 'action.goTo("done");',
+      outcomes: ["done"],
+    });
+    expect(() => useLease(suite, { aic: { id: "named" } })).toThrow(
+      /remove scriptName for AIC conformance/
+    );
+  });
+
   it("rejects a second AIC lease in the same file even when its id differs", () => {
     const file = `/tmp/rhino-local-claim-${process.pid}-different-id.test.ts`;
     claimAicLeaseForFile(file, "first");
