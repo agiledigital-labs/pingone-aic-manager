@@ -432,6 +432,7 @@ describe("callbacks (submitted values)", () => {
         size: () => number;
         isEmpty: () => boolean;
         contains: (value: unknown) => boolean;
+        toArray: () => ArrayLike<unknown>;
       };
       getPasswordCallbacks: () => { get: (i: number) => unknown };
       getConfirmationCallbacks: () => { get: (i: number) => unknown };
@@ -449,6 +450,10 @@ describe("callbacks (submitted values)", () => {
     expect(callbacks.getChoiceCallbacks().isEmpty()).toBe(true);
     expect(callbacks.getNameCallbacks().contains("alice.admin")).toBe(true);
     expect(callbacks.getNameCallbacks().contains("bob")).toBe(false);
+    const names = callbacks.getNameCallbacks().toArray();
+    expect(Array.isArray(names)).toBe(false);
+    expect(names.length).toBe(2);
+    expect(names[0]).toBe("alice");
   });
 
   it("treats an explicit empty given.callbacks as a first pass", () => {

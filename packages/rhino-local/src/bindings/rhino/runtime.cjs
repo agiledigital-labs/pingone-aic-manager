@@ -1217,6 +1217,14 @@ function __rhinoLocalCallbackList(items, format) {
   __rhinoLocalHide(list, "contains", function (value) {
     return items.indexOf(value) !== -1;
   });
+  __rhinoLocalHide(list, "toArray", function () {
+    var array = { length: items.length };
+    var j;
+    for (j = 0; j < items.length; j += 1) {
+      array[j] = items[j];
+    }
+    return array;
+  });
   __rhinoLocalHide(list, "toString", function () {
     var values = [];
     var j;
