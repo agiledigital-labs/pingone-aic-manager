@@ -82,6 +82,8 @@ export interface LeaseOptions {
   realm?: string;
   /** Actual uploaded subject name when the AIC lane is enabled. */
   scriptName?: string;
+  /** Deterministic uploaded subject UUID when the AIC lease is enabled. */
+  loggerScriptId?: string;
   /** Cross-feature port implemented by the tenant-aware AIC vertical. */
   lane?: LeaseLane;
 }
@@ -300,6 +302,9 @@ export class Lease<TSchema extends z.ZodType> {
       this.#options.realm
     );
     given.scriptName = this.#options.scriptName ?? this.#spec.scriptName ?? this.#spec.name;
+    if (this.#options.loggerScriptId !== undefined) {
+      given.loggerScriptId = this.#options.loggerScriptId;
+    }
     if (this.#spec.libraries !== undefined) {
       given = { ...given, libraries: { ...this.#spec.libraries } };
     }

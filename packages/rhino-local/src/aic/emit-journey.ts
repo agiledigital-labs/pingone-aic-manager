@@ -8,7 +8,7 @@ import {
 } from "./constants.ts";
 import { emitResultScript } from "./emit-result.ts";
 import { instrumentSubject } from "./emit-subject.ts";
-import type { LeaseIdentity } from "./lease-identity.ts";
+import { uuidV5, type LeaseIdentity } from "./lease-identity.ts";
 
 export interface EmitJourneyOptions {
   /** Short token used in tree/script names. Must match `[A-Za-z0-9-]{1,32}`. */
@@ -68,6 +68,10 @@ export function oneShotSubjectName(runId: string): string {
   return `${RESOURCE_PREFIX}-${runId}-subject`;
 }
 
+export function oneShotSubjectId(runId: string): string {
+  return uuidV5(`one-shot:${runId}:0`);
+}
+
 /**
  * Outcomes declared on the subject node. Always includes `true` and `false`
  * plus `expect.outcome` and everything `case.outcomes` declares, so a script
@@ -104,7 +108,8 @@ export function emitWrapperJourney(
     );
   }
   const realm = options.realm ?? kase.given.realm ?? "alpha";
-  const nextId = options.idFactory ?? randomUUID;
+  let nextIndex = 0;
+  const nextId = options.idFactory ?? (() => uuidV5(`one-shot:${runId}:${nextIndex++}`));
   const outcomes = subjectOutcomes(kase);
   const treeName = `${RESOURCE_PREFIX}-${runId}`;
   const instrumented = instrumentSubject(source, runId, kase.given);

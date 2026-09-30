@@ -141,6 +141,7 @@ function parseGiven(raw: unknown, path: string): Given {
   assignJsonObject(given, "secureState", raw.secureState, `${path}.secureState`);
   assignString(given, "realm", raw.realm, `${path}.realm`);
   assignString(given, "scriptName", raw.scriptName, `${path}.scriptName`);
+  assignString(given, "loggerScriptId", raw.loggerScriptId, `${path}.loggerScriptId`);
   assignString(given, "cookieName", raw.cookieName, `${path}.cookieName`);
   if (raw.resumedFromSuspend !== undefined) {
     if (typeof raw.resumedFromSuspend !== "boolean") {

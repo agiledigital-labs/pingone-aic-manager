@@ -37,6 +37,7 @@ export const GIVEN_KEYS = [
   "secureState",
   "realm",
   "scriptName",
+  "loggerScriptId",
   "cookieName",
   "resumedFromSuspend",
   "requestHeaders",
@@ -236,6 +237,8 @@ export interface Given {
   secureState?: JsonObject;
   realm?: string;
   scriptName?: string;
+  /** Mock metadata for decision-node `logger.getName()`; not a JS binding. */
+  loggerScriptId?: string;
   cookieName?: string;
   resumedFromSuspend?: boolean;
   requestHeaders?: Record<string, string[]>;

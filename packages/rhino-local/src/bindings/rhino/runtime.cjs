@@ -24,6 +24,7 @@ var __rhinoLocal = {
   generatedId: 0,
   outcome: null,
   engine: "next-gen",
+  loggerScriptId: "<unseeded-script-id>",
   callbacks: [],
   openidm: [],
   http: [],
@@ -681,7 +682,11 @@ function __rhinoLocalLog(level, args) {
 }
 
 logger.getName = function () {
-  return scriptName;
+  if (__rhinoLocal.engine === "legacy") {
+    return scriptName;
+  }
+  return "scripts.AUTHENTICATION_TREE_DECISION_NODE." +
+    __rhinoLocal.loggerScriptId + ".(" + scriptName + ")";
 };
 
 logger.trace = function () {
@@ -2867,6 +2872,7 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
 function __rhinoLocalSeed(given) {
   given = given || {};
   __rhinoLocal.engine = given.engine || "next-gen";
+  __rhinoLocal.loggerScriptId = given.loggerScriptId || "<unseeded-script-id>";
   __rhinoLocal.bindings = __rhinoLocalClone(given.bindings || {});
   var seeded = Object.keys(__rhinoLocal.bindings);
   var s;

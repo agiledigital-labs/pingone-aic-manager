@@ -184,7 +184,8 @@ export function validateAicRun(
   cases: readonly Case[],
   replies: readonly (readonly AicReply[])[],
   managedFixtures?: readonly ManagedFixture[],
-  harnessOwnsScriptName = false
+  harnessOwnsScriptName = false,
+  harnessOwnsLoggerScriptId = false
 ): AicRunValidation {
   const first = cases[0];
   if (first === undefined) {
@@ -204,7 +205,7 @@ export function validateAicRun(
     );
   }
   const unsupported = cases.flatMap((kase) => {
-    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged, harnessOwnsScriptName });
+    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged, harnessOwnsScriptName, harnessOwnsLoggerScriptId });
     return reason === undefined ? [] : [`${kase.name}: ${reason}`];
   });
   return { harnessOwnsManaged, unsupported };

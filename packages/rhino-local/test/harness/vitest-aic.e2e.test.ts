@@ -1,11 +1,12 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { HARNESS_CALLBACK_ID } from "../../src/aic/constants.ts";
+import { createLeaseIdentity } from "../../src/aic/lease-identity.ts";
 import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
 import type { AicIo } from "../../src/aic/tenant.ts";
 import { defineSuite, useLease } from "../../src/harness/index.ts";
 
-const SOURCE = 'action.goTo(typeof scriptName === "string" && scriptName.indexOf("rl-aic-") === 0 ? "done" : "wrong");\n';
+const SOURCE = 'action.goTo(typeof scriptName === "string" && scriptName.indexOf("rl-aic-") === 0 && logger.getName().indexOf("scripts.AUTHENTICATION_TREE_DECISION_NODE.") === 0 ? "done" : "wrong");\n';
 
 const suite = defineSuite({
   name: "vitest-aic-adapter",
@@ -47,6 +48,12 @@ describe("useLease AIC adapter", () => {
     expect(run.conformance?.passes).toHaveLength(1);
     expect(run.kase.given.realm).toBe("bravo");
     expect(run.kase.given.scriptName).toMatch(/^rl-aic-[a-f0-9]{20}-subject$/);
+    expect(run.kase.given.loggerScriptId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(run.kase.given.loggerScriptId).toBe(createLeaseIdentity({
+      id: "vitest-aic-adapter",
+      source: SOURCE,
+      outcomes: ["done"],
+    }).ids.subjectScript);
     expect(run.conformance?.passes[0]?.aic.verdict?.pass).toBe(true);
     expect(run.conformance?.observationGaps).not.toContainEqual(
       expect.objectContaining({ path: "checks/cleanup" })

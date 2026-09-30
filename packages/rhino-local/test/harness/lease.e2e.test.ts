@@ -234,3 +234,22 @@ describe("local script name", () => {
     expect(run.verdict.pass).toBe(true);
   });
 });
+
+const loggerNameSuite = defineSuite({
+  name: "logger-name",
+  script: 'logger.info("{}", logger.getName()); action.goTo("done");',
+  outcomes: ["done"],
+});
+
+describe("logger-name", () => {
+  const lease = useLease(loggerNameSuite);
+
+  // Regression: logger.getName returned only scriptName locally.
+  it("uses the measured decision-node format with a placeholder ID", async () => {
+    const run = await lease.run().expect({
+      outcome: "done",
+      logs: [{ level: "info", message: "scripts.AUTHENTICATION_TREE_DECISION_NODE.<unseeded-script-id>.(logger-name)" }],
+    });
+    expect(run.verdict.pass).toBe(true);
+  });
+});
