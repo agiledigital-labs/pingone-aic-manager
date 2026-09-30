@@ -260,7 +260,6 @@ export class AicFileLease {
 
   async #planLibraries(): Promise<Array<{ name: string; source: string; id: string }>> {
     const planned: Array<{ name: string; source: string; id: string }> = [];
-    const reused = new Set<string>();
     for (const [name, source] of Object.entries(this.#options.libraries ?? {})) {
       if (name.trim() === "") {
         throw new AicLaneError("AIC library name must not be empty");
@@ -292,42 +291,14 @@ export class AicFileLease {
             Buffer.from(existing.script, "base64").toString("utf8") !== source) {
           throw new AicLaneError(`library ${JSON.stringify(name)} already exists with different context or source; refusing to overwrite it`);
         }
-        reused.add(name);
         continue;
       }
       planned.push({ name, source, id: uuidV5(`${this.identity.id}:library:${name}`) });
     }
-    const pending = new Map(planned.map((library) => [library.name, library]));
-    for (const name of reused) {
-      const source = this.#options.libraries?.[name] ?? "";
-      if (libraryRequiresDynamicName(source) && pending.size > 0) {
-        throw new AicLaneError(`reused library ${JSON.stringify(name)} has a dynamic require(); cannot safely own and delete new libraries`);
-      }
-      for (const dependency of libraryRequires(source)) {
-        if (pending.has(dependency)) {
-          throw new AicLaneError(`reused library ${JSON.stringify(name)} requires new library ${JSON.stringify(dependency)}; the lease could not delete it`);
-        }
-      }
-    }
-    const ordered: typeof planned = [];
-    const visiting = new Set<string>();
-    const visited = new Set<string>();
-    const visit = (library: (typeof planned)[number]): void => {
-      if (visited.has(library.name)) return;
-      if (visiting.has(library.name)) {
-        throw new AicLaneError(`library ${JSON.stringify(library.name)} has a require() cycle; the lease could not safely delete it`);
-      }
-      visiting.add(library.name);
-      for (const dependency of libraryRequires(library.source)) {
-        const owned = pending.get(dependency);
-        if (owned !== undefined) visit(owned);
-      }
-      visiting.delete(library.name);
-      visited.add(library.name);
-      ordered.push(library);
-    };
-    for (const library of planned) visit(library);
-    for (const library of ordered) {
+    // AM's create-time require-target validation is unmeasured. Preserve the
+    // caller's declaration order; close uses AM's measured delete refusal to
+    // resolve dependencies without parsing source text.
+    for (const library of planned) {
       const response = await amRequest(this.#io, this.#session as TenantSession, {
         method: "GET", path: resourcePath(this.#realm, { kind: "script", id: library.id }),
         headers: amConfigHeaders(),
@@ -336,7 +307,7 @@ export class AicFileLease {
         throw new AicLaneError(`library ${JSON.stringify(library.name)} id already exists or could not be checked (HTTP ${response.status}); refusing to overwrite it`);
       }
     }
-    return ordered;
+    return planned;
   }
 
   async #provisionLibraries(libraries: readonly { name: string; source: string; id: string }[]): Promise<void> {
@@ -723,32 +694,54 @@ export class AicFileLease {
     const errors = await deleteCreatedResources(this.#io, session, this.#realm, graph);
     const libraries = this.#created.filter((resource): resource is { kind: "script"; id: string } =>
       resource.kind === "script" && this.#ownedLibraries.has(resource.id));
-    for (const resource of libraries.reverse()) {
-      const owned = this.#ownedLibraries.get(resource.id) as { name: string; source: string };
-      try {
-        const response = await amRequest(this.#io, session, {
-          method: "GET", path: resourcePath(this.#realm, resource), headers: amConfigHeaders(),
-        });
-        if (response.status === 404) continue;
-        if (response.status !== 200) {
-          errors.push(`could not check library ${JSON.stringify(owned.name)} before delete (HTTP ${response.status})`);
-          continue;
+    let pending = libraries.reverse();
+    while (pending.length > 0) {
+      const remaining: typeof pending = [];
+      const failures = new Map<string, string>();
+      for (const resource of pending) {
+        const failure = await this.#tryDeleteOwnedLibrary(resource, session);
+        if (failure !== undefined) {
+          remaining.push(resource);
+          failures.set(resource.id, failure);
         }
-        const current = response.body as Record<string, unknown>;
-        const source = typeof current?.script === "string"
-          ? Buffer.from(current.script, "base64").toString("utf8")
-          : undefined;
-        if (current?.name !== owned.name || current.context !== "LIBRARY" ||
-            current.description !== this.identity.marker || source !== owned.source) {
-          errors.push(`warning: library ${JSON.stringify(owned.name)} changed after the lease created it; left ${resource.id} in place`);
-          continue;
-        }
-        errors.push(...(await deleteCreatedResources(this.#io, session, this.#realm, [resource])));
-      } catch (error) {
-        errors.push(`could not check library ${JSON.stringify(owned.name)} before delete: ${error instanceof Error ? error.message : String(error)}`);
       }
+      if (remaining.length === pending.length) {
+        for (const resource of remaining) {
+          const name = this.#ownedLibraries.get(resource.id)?.name ?? resource.id;
+          errors.push(`library ${JSON.stringify(name)} (${resource.id}) remains as residue: ${failures.get(resource.id)}`);
+        }
+        break;
+      }
+      pending = remaining;
     }
     return errors;
+  }
+
+  async #tryDeleteOwnedLibrary(
+    resource: { kind: "script"; id: string },
+    session: TenantSession
+  ): Promise<string | undefined> {
+    const owned = this.#ownedLibraries.get(resource.id) as { name: string; source: string };
+    try {
+      const response = await amRequest(this.#io, session, {
+        method: "GET", path: resourcePath(this.#realm, resource), headers: amConfigHeaders(),
+      });
+      if (response.status === 404) return undefined;
+      if (response.status !== 200) {
+        return `could not check before delete (HTTP ${response.status})`;
+      }
+      const current = response.body as Record<string, unknown>;
+      const source = typeof current?.script === "string"
+        ? Buffer.from(current.script, "base64").toString("utf8")
+        : undefined;
+      if (current?.name !== owned.name || current.context !== "LIBRARY" ||
+          current.description !== this.identity.marker || source !== owned.source) {
+        return "warning: source or ownership fields changed after the lease created it; left in place";
+      }
+      return (await deleteCreatedResources(this.#io, session, this.#realm, [resource]))[0];
+    } catch (error) {
+      return `could not check before delete: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   async #cleanupAfterFailedOpen(): Promise<string[]> {
@@ -883,16 +876,6 @@ function resourceLabel(resource: CreatedResource): string {
   return resource.kind === "tree"
     ? `tree ${resource.name}`
     : `${resource.kind} ${resource.id}`;
-}
-
-/** Static names determine provisioning and reverse deletion order. */
-function libraryRequires(source: string): string[] {
-  return [...source.matchAll(/\brequire\s*\(\s*(["'])([^"']+)\1\s*\)/g)]
-    .map((match) => match[2] as string);
-}
-
-function libraryRequiresDynamicName(source: string): boolean {
-  return /\brequire\s*\(\s*[^\s"']/.test(source);
 }
 
 function scriptBody(

@@ -96,7 +96,9 @@ describe("AicFileLease", () => {
   });
 
   it("creates suite libraries before the subject and deletes them after it", async () => {
-    const fake = new FakeLeaseTenant();
+    const fake = new FakeLeaseTenant({ deleteBlockedWhile: [
+      { targetName: "inner", blockerName: "outer" },
+    ] });
     const lease = new AicFileLease({
       id: "libraries", suiteName: "libraries", source: SOURCE, outcomes: ["done"],
       libraries: { outer: 'exports.value = require("inner").value;', inner: 'exports.value = "ok";' },
@@ -107,7 +109,7 @@ describe("AicFileLease", () => {
       ["inner", "outer"].includes(String((JSON.parse(String(call.body)) as { name?: string }).name)));
     expect(libraryPuts).toHaveLength(2);
     expect(libraryPuts.map((call) => (JSON.parse(String(call.body)) as { name: string }).name))
-      .toEqual(["inner", "outer"]);
+      .toEqual(["outer", "inner"]);
     expect(fake.calls.findIndex((call) => call === libraryPuts[0])).toBeLessThan(
       fake.calls.findIndex((call) => call.method === "PUT" &&
         String((JSON.parse(String(call.body)) as { name?: string }).name).endsWith("-subject"))
@@ -115,9 +117,28 @@ describe("AicFileLease", () => {
     await lease.close();
     const deletes = fake.calls.filter((call) => call.method === "DELETE");
     const libraryIds = libraryPuts.map((call) => (JSON.parse(String(call.body)) as { _id: string })._id);
-    expect(deletes.slice(-2).map((call) => new URL(call.url).pathname.split("/").at(-1)))
-      .toEqual(libraryIds.reverse());
-    expect(deletes).toHaveLength(11);
+    const [outerId, innerId] = libraryIds;
+    const subjectDelete = deletes.findIndex((call) =>
+      new URL(call.url).pathname.endsWith(`/scripts/${lease.identity.ids.subjectScript}`));
+    const firstLibraryDelete = deletes.findIndex((call) =>
+      libraryIds.some((id) => new URL(call.url).pathname.endsWith(`/scripts/${id}`)));
+    expect(subjectDelete).toBeGreaterThanOrEqual(0);
+    expect(subjectDelete).toBeLessThan(firstLibraryDelete);
+    expect(deletes.filter((call) => libraryIds.some((id) =>
+      new URL(call.url).pathname.endsWith(`/scripts/${id}`)))
+      .map((call) => new URL(call.url).pathname.split("/").at(-1)))
+      .toEqual([innerId, outerId, innerId]);
+    expect(deletes).toHaveLength(12);
+  });
+
+  it("does not invent a require cycle from a library comment", async () => {
+    const fake = new FakeLeaseTenant();
+    const lease = new AicFileLease({ id: "comment-require", suiteName: "comment require",
+      source: SOURCE, outcomes: ["done"],
+      libraries: { outer: '// Consumers: require("outer")\nexports.value = "ok";' },
+      project: "/tmp/rhino-local-aic-test", io: fake.io });
+    await lease.open();
+    await lease.close();
   });
 
   it("reuses an identical library without deleting it and refuses a source collision before writing", async () => {
@@ -141,19 +162,32 @@ describe("AicFileLease", () => {
     expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(writes);
   });
 
-  it("refuses a reused library that requires a new owned library before writing", async () => {
-    const fake = new FakeLeaseTenant();
-    const outer = 'exports.value = require("inner").value;';
-    fake.seed("/am/json/realms/root/realms/alpha/scripts/existing", {
-      _id: "existing", name: "outer", context: "LIBRARY",
-      script: Buffer.from(outer).toString("base64"),
-    });
-    const lease = new AicFileLease({ id: "mixed-dependencies", suiteName: "mixed",
-      source: SOURCE, outcomes: ["done"],
-      libraries: { outer, inner: 'exports.value = "ok";' },
-      project: "/tmp/rhino-local-aic-test", io: fake.io });
-    await expect(lease.open()).rejects.toThrow(/reused library "outer" requires new library "inner"/);
-    expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+  it.each([
+    ["commented call", 'exports.value = require /* dependency */ ("inner").value;'],
+    ["computed name", 'exports.value = require("in" + "ner").value;'],
+  ])("reports owned residue when a reused consumer uses a %s", async (_label, outer) => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-reused-consumer-"));
+    try {
+      const fake = new FakeLeaseTenant({ deleteBlockedWhile: [
+        { targetName: "inner", blockerName: "outer" },
+      ] });
+      fake.seed("/am/json/realms/root/realms/alpha/scripts/existing", {
+        _id: "existing", name: "outer", context: "LIBRARY",
+        script: Buffer.from(outer).toString("base64"),
+      });
+      const lease = new AicFileLease({ id: `mixed-${_label}`, suiteName: "mixed",
+        source: SOURCE, outcomes: ["done"],
+        libraries: { outer, inner: 'exports.value = "ok";' },
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io });
+      await lease.open();
+      await expect(lease.close()).rejects.toThrow(/library "inner".*remains as residue.*HTTP 500/);
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
+      expect(await readLeaseJournal(paths.journalPath)).toBeDefined();
+      expect(fake.calls.some((call) => call.method === "DELETE" &&
+        new URL(call.url).pathname.endsWith("/scripts/existing"))).toBe(false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 
   it("keeps a library write intent when PUT lands but its response is lost", async () => {
@@ -195,7 +229,7 @@ describe("AicFileLease", () => {
       const body = JSON.parse(String(put?.body)) as Record<string, unknown>;
       const path = `/am/json/realms/root/realms/alpha/scripts/${String(body._id)}`;
       fake.seed(path, { ...body, script: Buffer.from("another writer").toString("base64") });
-      await expect(lease.close()).rejects.toThrow(/warning: library "lib-common" changed.*left .* in place/);
+      await expect(lease.close()).rejects.toThrow(/library "lib-common".*remains as residue: warning: source.*left in place/);
       expect(fake.calls.some((call) => call.method === "DELETE" &&
         new URL(call.url).pathname === path)).toBe(false);
       const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
@@ -702,6 +736,7 @@ interface FakeLeaseOptions {
   stepChain?: boolean;
   lostLibraryResponse?: string;
   racingLibrary?: string;
+  deleteBlockedWhile?: readonly { targetName: string; blockerName: string }[];
 }
 
 class FakeLeaseTenant {
@@ -823,6 +858,13 @@ class FakeLeaseTenant {
           }
           this.events.push(`hook-delete:${id}`);
           return json(404, { code: 404 });
+        }
+        const target = this.#resources.get(path)?.name;
+        const blocker = this.#options.deleteBlockedWhile?.find((rule) =>
+          rule.targetName === target &&
+          [...this.#resources.values()].some((resource) => resource.name === rule.blockerName));
+        if (blocker !== undefined) {
+          return json(500, { message: `The script ${String(target)} is used once` });
         }
         this.#deleteCount += 1;
         if (this.#deleteCount === this.#options.deleteFailureAt) {
