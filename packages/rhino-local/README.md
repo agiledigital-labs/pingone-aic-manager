@@ -117,8 +117,14 @@ return "ready"; };`. Another library in the same map can call
 lease provisions them as `LIBRARY` scripts before the subject and deletes its
 owned libraries after the subject. Names are realm-wide. If a named library
 already exists on the tenant with byte-identical source, the lease uses it and
-leaves it there. A different source or script context is an error before any
-tenant write; the lease never overwrites an existing library. Legacy scripts
+leaves it there. A different source or script context found during preflight
+is an error before any lease write. AM has no measured atomic create
+precondition: another writer could create the deterministic ID between the
+preflight read and the lease's PUT, and that PUT could overwrite it before AM
+reports an update. Use one host per `aic.id`, as for the other leased resources.
+Before deleting a library it created, the lease checks its current source and
+ownership fields; if they changed, it leaves the library and recovery journal
+in place and reports a cleanup warning. Legacy scripts
 cannot use libraries, and `given.engine: "legacy"` with `libraries` is rejected.
 An existing library that requires a newly created library is refused: the
 existing consumer would prevent the lease from deleting its new dependency.
