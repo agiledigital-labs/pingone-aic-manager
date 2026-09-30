@@ -40,6 +40,7 @@ describe("mergeChannels", () => {
       headers: {},
       params: {},
       cookies: {},
+      http: [],
       session: {},
       sessionRequested: false,
     });
@@ -49,6 +50,13 @@ describe("mergeChannels", () => {
     const draft = mergeChannels({ cookies: { suite: "one", same: "old" } }, { cookies: { same: "new" } });
     draft.cookies.hook = "three";
     expect(toGiven(draft).requestCookies).toEqual({ suite: "one", same: "new", hook: "three" });
+  });
+
+  it("places per-test HTTP stubs before suite defaults", () => {
+    const suiteStub = { match: { url: "https://example.com/api" }, reply: { status: 200 } };
+    const testStub = { match: { url: "https://example.com/api" }, reply: { status: 503 } };
+    const draft = mergeChannels({ http: [suiteStub] }, { http: [testStub] });
+    expect(toGiven(draft).http).toEqual([testStub, suiteStub]);
   });
 });
 

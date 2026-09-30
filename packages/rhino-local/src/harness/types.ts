@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { Expect, Given, JsonObject, JsonValue } from "../case/types.ts";
+import type { Expect, Given, HttpStub, JsonObject, JsonValue } from "../case/types.ts";
 
 /** A header or parameter value. An array is sent as repeated occurrences. */
 export type WireValue = string | readonly string[];
@@ -34,6 +34,8 @@ export interface Channels {
   cookies?: Readonly<Record<string, string>>;
   /** Local `cookieName` binding; AIC uses the tenant's serverinfo value. */
   cookieName?: string;
+  /** Ordered local HTTP replies; AIC cannot inject them. */
+  http?: readonly HttpStub[];
   /**
    * `existingSession` — session properties the script sees, as a flat string
    * map. Declaring it at all (`session: {}` included) asks for a logged-in
@@ -61,6 +63,7 @@ export interface RequestDraft {
   params: Record<string, string[]>;
   cookies: Record<string, string>;
   cookieName?: string;
+  http: HttpStub[];
   session: JsonObject;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;

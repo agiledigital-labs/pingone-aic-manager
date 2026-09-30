@@ -206,6 +206,14 @@ name with `.run().cookies({ name: "other" })`, or edit `request.cookies` in
 When a test also requests `session`, the harness adds the tenant's session
 cookie and refuses an author cookie with that name instead of overwriting it.
 
+HTTP replies can be declared in `always.http`, supplied with `.run().http()`,
+or edited in `beforeRun` via `request.http`. The first matching stub wins;
+per-test stubs precede suite defaults. They feed local `httpClient.send()` and
+the request is judged through `expect.http`. AIC cannot inject an HTTP reply,
+so such cases are AIC-ineligible and report an observation gap. Set the file
+lease's `aic.unsupported` to `"skip"` to keep the local verdict while making
+that gap explicit.
+
 ### `scriptName`
 
 The local harness seeds `scriptName` on every run. It defaults to the suite's

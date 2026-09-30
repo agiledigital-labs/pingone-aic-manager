@@ -182,6 +182,11 @@ export class RunBuilder<TInput> {
     return this;
   }
 
+  http(stubs: NonNullable<Channels["http"]>): this {
+    this.#override = { ...this.#override, http: [...stubs, ...(this.#override.http ?? [])] };
+    return this;
+  }
+
   session(session: JsonObject): this {
     this.#override = { ...this.#override, session: { ...this.#override.session, ...session } };
     return this;
