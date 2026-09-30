@@ -11,6 +11,7 @@ const SCRIPT_SERVER_FIELDS = new Set([
   "lastModifiedBy",
   "lastModifiedDate",
   "_rev",
+  "exports",
 ]);
 const NODE_SERVER_FIELDS = new Set(["_id", "_rev", "_type", "_outcomes"]);
 const TREE_SERVER_FIELDS = new Set([

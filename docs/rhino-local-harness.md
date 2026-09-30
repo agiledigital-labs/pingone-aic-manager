@@ -751,6 +751,17 @@ pass is consequently marked `aicObserved: false` and reports an
 
 ## Per-file AIC lease
 
+Suite `libraries` maps exact `require()` names to source strings. The local
+lane seeds that map on every pass, including resumed passes. The AIC file lease
+looks up all names before its first tenant write, creates absent `LIBRARY`
+scripts before the subject, and confirms each write by reading it back. It
+reuses an existing same-name, byte-identical library without owning it; a
+different source or context is a refusal. Names are realm-wide. The lease
+deletes owned libraries only after their consumers. It refuses a reused
+library that requires a new lease-owned one, because that external consumer
+would prevent cleanup. Legacy `require()` is
+unsupported, so a legacy case with libraries fails validation.
+
 `useLease()` accepts an AIC opt-in alongside the local options:
 
 ```ts

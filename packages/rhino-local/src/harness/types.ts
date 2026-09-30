@@ -94,6 +94,8 @@ export interface SuiteSpec<TSchema extends z.ZodType> {
   script: string;
   /** The outcome vocabulary. Required here — a lease has to declare it. */
   outcomes: readonly string[];
+  /** AM LIBRARY source keyed by the name passed to `require()`. */
+  libraries?: Readonly<Record<string, string>>;
   inputs?: TSchema;
   always?: Channels;
   fixtures?: Readonly<Record<string, FixtureSpec>>;

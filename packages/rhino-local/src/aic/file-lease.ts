@@ -5,6 +5,7 @@ import type { TenantProvider } from "./provider.ts";
  * this tenant-aware side of the seam.
  */
 import { randomUUID } from "node:crypto";
+import { deepEqual } from "../case/equal.ts";
 import type { Case, RecordedEffects } from "../case/types.ts";
 import { judge } from "../case/verdict.ts";
 import type { LeaseLaneHooks } from "../harness/lease.ts";
@@ -13,7 +14,7 @@ import { conformChain, type ChainConformanceReport, type LocalChainResult } from
 import { emitLeasedJourney, type WrapperJourney } from "./emit-journey.ts";
 import { emitLeasedSessionJourney } from "./emit-session.ts";
 import { instrumentSubject } from "./emit-subject.ts";
-import { createLeaseIdentity, type LeaseIdentity } from "./lease-identity.ts";
+import { createLeaseIdentity, uuidV5, type LeaseIdentity } from "./lease-identity.ts";
 import {
   acquireLeaseLock,
   addJournalFixture,
@@ -66,6 +67,7 @@ export interface AicFileLeaseOptions {
   suiteName: string;
   source: string;
   outcomes: readonly string[];
+  libraries?: Readonly<Record<string, string>>;
   realm?: string;
   tenant?: string;
   project?: string;
@@ -150,6 +152,7 @@ export class AicFileLease {
           : { timeoutMs: this.#options.lockTimeoutMs }),
       });
       await this.#handleOlderJournal();
+      const libraries = await this.#planLibraries();
       await writeLeaseJournal(
         this.#paths.journalPath,
         newLeaseJournal(
@@ -159,6 +162,7 @@ export class AicFileLease {
           staticResources(this.#wrapper)
         )
       );
+      await this.#provisionLibraries(libraries);
       await provisionJourney(this.#io, this.#session, this.#wrapper, this.#created);
       this.#state = "open";
     } catch (error) {
@@ -244,6 +248,115 @@ export class AicFileLease {
     }
     if (errors.length > 0) {
       throw new AicLaneError(`AIC file lease cleanup failed: ${errors.join("; ")}`);
+    }
+  }
+
+  async #planLibraries(): Promise<Array<{ name: string; source: string; id: string }>> {
+    const planned: Array<{ name: string; source: string; id: string }> = [];
+    const reused = new Set<string>();
+    for (const [name, source] of Object.entries(this.#options.libraries ?? {})) {
+      if (name.trim() === "") {
+        throw new AicLaneError("AIC library name must not be empty");
+      }
+      if (typeof source !== "string") {
+        throw new AicLaneError(`library ${JSON.stringify(name)} source must be a string`);
+      }
+      const filter = encodeURIComponent(`name eq ${JSON.stringify(name)}`);
+      const path = `${realmJsonPath(this.#realm)}/scripts?_queryFilter=${filter}`;
+      const response = await amRequest(this.#io, this.#session as TenantSession, {
+        method: "GET", path, headers: amConfigHeaders(),
+      });
+      if (response.status !== 200) {
+        throw new AicLaneError(`library ${JSON.stringify(name)} lookup returned HTTP ${response.status}`);
+      }
+      const result = (response.body as { result?: unknown }).result;
+      if (!Array.isArray(result)) {
+        throw new AicLaneError(`library ${JSON.stringify(name)} lookup returned no result array`);
+      }
+      const matches = result.filter((item): item is Record<string, unknown> =>
+        typeof item === "object" && item !== null && (item as { name?: unknown }).name === name
+      );
+      if (matches.length > 1) {
+        throw new AicLaneError(`library ${JSON.stringify(name)} lookup returned duplicate names`);
+      }
+      const existing = matches[0];
+      if (existing !== undefined) {
+        if (existing.context !== "LIBRARY" || typeof existing.script !== "string" ||
+            Buffer.from(existing.script, "base64").toString("utf8") !== source) {
+          throw new AicLaneError(`library ${JSON.stringify(name)} already exists with different context or source; refusing to overwrite it`);
+        }
+        reused.add(name);
+        continue;
+      }
+      planned.push({ name, source, id: uuidV5(`${this.identity.id}:library:${name}`) });
+    }
+    const pending = new Map(planned.map((library) => [library.name, library]));
+    for (const name of reused) {
+      const source = this.#options.libraries?.[name] ?? "";
+      if (libraryRequiresDynamicName(source) && pending.size > 0) {
+        throw new AicLaneError(`reused library ${JSON.stringify(name)} has a dynamic require(); cannot safely own and delete new libraries`);
+      }
+      for (const dependency of libraryRequires(source)) {
+        if (pending.has(dependency)) {
+          throw new AicLaneError(`reused library ${JSON.stringify(name)} requires new library ${JSON.stringify(dependency)}; the lease could not delete it`);
+        }
+      }
+    }
+    const ordered: typeof planned = [];
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (library: (typeof planned)[number]): void => {
+      if (visited.has(library.name)) return;
+      if (visiting.has(library.name)) {
+        throw new AicLaneError(`library ${JSON.stringify(library.name)} has a require() cycle; the lease could not safely delete it`);
+      }
+      visiting.add(library.name);
+      for (const dependency of libraryRequires(library.source)) {
+        const owned = pending.get(dependency);
+        if (owned !== undefined) visit(owned);
+      }
+      visiting.delete(library.name);
+      visited.add(library.name);
+      ordered.push(library);
+    };
+    for (const library of planned) visit(library);
+    for (const library of ordered) {
+      const response = await amRequest(this.#io, this.#session as TenantSession, {
+        method: "GET", path: resourcePath(this.#realm, { kind: "script", id: library.id }),
+        headers: amConfigHeaders(),
+      });
+      if (response.status !== 404) {
+        throw new AicLaneError(`library ${JSON.stringify(library.name)} id already exists or could not be checked (HTTP ${response.status}); refusing to overwrite it`);
+      }
+    }
+    return ordered;
+  }
+
+  async #provisionLibraries(libraries: readonly { name: string; source: string; id: string }[]): Promise<void> {
+    for (const library of libraries) {
+      const resource: CreatedResource = { kind: "script", id: library.id };
+      await addJournalResources(this.#journalPath(), [resource]);
+      const path = resourcePath(this.#realm, resource);
+      const body = {
+        _id: library.id, name: library.name, description: this.identity.marker,
+        script: Buffer.from(library.source, "utf8").toString("base64"),
+        default: false, language: "JAVASCRIPT", context: "LIBRARY",
+        evaluatorVersion: "2.0",
+      };
+      const response = await amRequest(this.#io, this.#session as TenantSession, {
+        method: "PUT", path, headers: amConfigHeaders(), body: JSON.stringify(body),
+      });
+      if (response.status !== 201) {
+        throw new AicLaneError(`create library ${JSON.stringify(library.name)} returned HTTP ${response.status}, expected 201`);
+      }
+      this.#created.push(resource);
+      const confirmation = await amRequest(this.#io, this.#session as TenantSession, {
+        method: "GET", path, headers: amConfigHeaders(),
+      });
+      if (confirmation.status !== 200) {
+        throw new AicLaneError(`confirm library ${JSON.stringify(library.name)} returned HTTP ${confirmation.status}`);
+      }
+      confirmResourceSnapshot("script", body, confirmation.body);
     }
   }
 
@@ -558,6 +671,9 @@ export class AicFileLease {
       if (kase.script !== this.#options.source) {
         throw new AicLaneError(`${kase.name}: case source differs from the leased suite source`);
       }
+      if (!deepEqual(kase.given.libraries ?? {}, this.#options.libraries ?? {})) {
+        throw new AicLaneError(`${kase.name}: case libraries differ from the leased suite libraries`);
+      }
       const realm = kase.given.realm ?? "alpha";
       if (realm !== this.#realm) {
         throw new AicLaneError(
@@ -725,6 +841,16 @@ function resourceLabel(resource: CreatedResource): string {
   return resource.kind === "tree"
     ? `tree ${resource.name}`
     : `${resource.kind} ${resource.id}`;
+}
+
+/** Static names determine provisioning and reverse deletion order. */
+function libraryRequires(source: string): string[] {
+  return [...source.matchAll(/\brequire\s*\(\s*(["'])([^"']+)\1\s*\)/g)]
+    .map((match) => match[2] as string);
+}
+
+function libraryRequiresDynamicName(source: string): boolean {
+  return /\brequire\s*\(\s*[^\s"']/.test(source);
 }
 
 function scriptBody(

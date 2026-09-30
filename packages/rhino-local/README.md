@@ -91,6 +91,39 @@ setTenantProvider(
 );
 ```
 
+### Libraries used by `require()`
+
+Put each next-gen library on the suite, keyed by the exact name passed to
+`require()`. The value is the JavaScript source, not a path. Load source from a
+file before defining the suite:
+
+```ts
+import { readFileSync } from "node:fs";
+import { defineSuite } from "@agiledigital/pingone-aic-script-tester";
+
+const suite = defineSuite({
+  name: "library example",
+  script: 'nodeState.putShared("code", require("codeLookup").code()); action.goTo("done");',
+  outcomes: ["done"],
+  libraries: {
+    codeLookup: readFileSync(new URL("./lib/codeLookup.js", import.meta.url), "utf8"),
+  },
+});
+```
+
+For example, `lib/codeLookup.js` can contain `exports.code = function () {
+return "ready"; };`. Another library in the same map can call
+`require("codeLookup")`. The local lane loads both from the map; the AIC file
+lease provisions them as `LIBRARY` scripts before the subject and deletes its
+owned libraries after the subject. Names are realm-wide. If a named library
+already exists on the tenant with byte-identical source, the lease uses it and
+leaves it there. A different source or script context is an error before any
+tenant write; the lease never overwrites an existing library. Legacy scripts
+cannot use libraries, and `given.engine: "legacy"` with `libraries` is rejected.
+An existing library that requires a newly created library is refused: the
+existing consumer would prevent the lease from deleting its new dependency.
+
+
 **State.** Failure records, the log view and environment profiles can all
 contain tenant data. They go to `<project>/.aic-script-tester/`, which writes its own
 `*` `.gitignore`; the files are `0600`. `<project>` is the nearest ancestor with

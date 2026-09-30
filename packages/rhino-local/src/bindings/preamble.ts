@@ -5,9 +5,8 @@ import { bindingsRuntimePath, generatedJsPath } from "../paths.ts";
 
 export interface MockPreambleOptions {
   /**
-   * AM library script bodies keyed by `require()` id. Not a `given` field —
-   * the case type does not name libraries yet — so the runner passes them
-   * alongside the seed.
+   * Optional override for direct runner callers. Suite cases carry libraries
+   * in `given` and need no separate runner option.
    */
   libraries?: Record<string, string>;
   /**

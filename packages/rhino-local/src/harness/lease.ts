@@ -292,6 +292,9 @@ export class Lease<TSchema extends z.ZodType> {
       },
       this.#options.realm
     );
+    if (this.#spec.libraries !== undefined) {
+      given = { ...given, libraries: { ...this.#spec.libraries } };
+    }
     if (steps.length > 0 && given.callbacks === undefined) {
       // Declaring a step says the script suspends, and a script that suspends
       // reads `callbacks` to tell its first pass from its later ones. AM's

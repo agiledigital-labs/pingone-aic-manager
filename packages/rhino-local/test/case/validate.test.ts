@@ -39,6 +39,15 @@ function validInput() {
 }
 
 describe("defineCase / validateCase", () => {
+  it("accepts string library sources and refuses legacy or non-string sources", () => {
+    const input = validInput();
+    expect(validateCase({ ...input, given: { ...input.given, libraries: { lib: "exports.x = 1;" } } }).given.libraries)
+      .toEqual({ lib: "exports.x = 1;" });
+    expect(() => validateCase({ ...input, given: { ...input.given, libraries: { lib: 1 } } }))
+      .toThrow(/given\.libraries\.lib must be a string/);
+    expect(() => validateCase({ ...input, given: { ...input.given, libraries: { lib: "" }, engine: "legacy" } }))
+      .toThrow(/libraries requires the next-gen engine/);
+  });
   it("accepts the design-note shape", () => {
     const kase = defineCase(validInput());
     expect(kase.name).toBe("grants access when the user has a verified email");
