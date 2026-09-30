@@ -40,6 +40,24 @@ describe("logger", () => {
 });
 
 describe("openidm", () => {
+  it("fails only the selected ordinal and retains the first write", () => {
+    const effects = runScript(
+      [
+        'openidm.patch("managed/alpha_user/alice", null, [{ operation: "replace", field: "sn", value: "first" }]);',
+        'try { openidm.patch("managed/alpha_user/alice", null, [{ operation: "replace", field: "sn", value: "second" }]); } catch (error) {',
+        '  nodeState.putShared("failure", String(error));',
+        '}',
+      ].join("\n"),
+      {
+        managed: { "managed/alpha_user": [{ _id: "alice", sn: "old" }] },
+        openidmFailures: [{ match: { method: "patch", resource: "managed/alpha_user/alice", ordinal: 2 }, reply: { code: 409 } }],
+      }
+    );
+    expect(effects.openidm).toHaveLength(2);
+    expect(effects.managedStore?.["managed/alpha_user"]?.[0]?.sn).toBe("first");
+    expect(effects.sharedState.final.failure).toMatch(/JavaException:.*ResourceExceptionScriptAdapter:.*409/);
+  });
+
   it("reads a seeded record and records the effect without a body", () => {
     const effects = runScript('openidm.read("managed/alpha_user/alice");', {
       managed: {

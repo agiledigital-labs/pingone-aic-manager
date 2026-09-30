@@ -51,6 +51,7 @@ export const GIVEN_KEYS = [
   "callbacks",
   "managed",
   "http",
+  "openidmFailures",
   "engine",
   "bindings",
 ] as const;
@@ -157,7 +158,7 @@ export const STATE_CHANNELS = [
 export type StateChannel = (typeof STATE_CHANNELS)[number];
 export type EvidenceChannel = Channel | "nodeState";
 
-export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http"] as const;
+export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmFailures"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
 
 export interface StateDiff {
@@ -180,6 +181,12 @@ export interface HttpReply {
 export interface HttpStub {
   match: HttpMatch;
   reply: HttpReply;
+}
+
+/** One numbered call among calls with the same method and resource. */
+export interface OpenidmFailureStub {
+  match: { method: OpenidmMethod; resource: Pattern; ordinal: number };
+  reply: { code: number };
 }
 
 export interface HttpExpect {
@@ -265,6 +272,7 @@ export interface Given {
   callbacks?: CallbackEffect[];
   managed?: Record<string, JsonObject[]>;
   http?: HttpStub[];
+  openidmFailures?: OpenidmFailureStub[];
   engine?: Engine;
   /**
    * Extra binding seeds keyed by generated mock binding name. Unknown names

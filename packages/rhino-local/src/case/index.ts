@@ -47,6 +47,7 @@ export type {
   Mismatch,
   OpenidmEffect,
   OpenidmExpect,
+  OpenidmFailureStub,
   OpenidmMethod,
   OpenidmReadMethod,
   OpenidmWriteMethod,

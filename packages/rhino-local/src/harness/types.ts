@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { Expect, Given, HttpStub, JsonObject, JsonValue } from "../case/types.ts";
+import type { Expect, Given, HttpStub, JsonObject, JsonValue, OpenidmFailureStub } from "../case/types.ts";
 
 /** A header or parameter value. An array is sent as repeated occurrences. */
 export type WireValue = string | readonly string[];
@@ -36,6 +36,8 @@ export interface Channels {
   cookieName?: string;
   /** Ordered local HTTP replies; AIC cannot inject them. */
   http?: readonly HttpStub[];
+  /** Fail one numbered `openidm` call locally. AIC cannot inject failures. */
+  openidmFailures?: readonly OpenidmFailureStub[];
   /**
    * `existingSession` — session properties the script sees, as a flat string
    * map. Declaring it at all (`session: {}` included) asks for a logged-in
@@ -64,6 +66,7 @@ export interface RequestDraft {
   cookies: Record<string, string>;
   cookieName?: string;
   http: HttpStub[];
+  openidmFailures: OpenidmFailureStub[];
   session: JsonObject;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;

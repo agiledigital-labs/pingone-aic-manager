@@ -41,6 +41,7 @@ describe("mergeChannels", () => {
       params: {},
       cookies: {},
       http: [],
+      openidmFailures: [],
       session: {},
       sessionRequested: false,
     });

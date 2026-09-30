@@ -32,6 +32,7 @@ import type {
   LogExpect,
   LogLevel,
   OpenidmExpect,
+  OpenidmFailureStub,
   OpenidmMethod,
   Pattern,
   StateDiff,
@@ -203,6 +204,9 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.http !== undefined) {
     given.http = parseArray(raw.http, `${path}.http`, parseHttpStub);
   }
+  if (raw.openidmFailures !== undefined) {
+    given.openidmFailures = parseArray(raw.openidmFailures, `${path}.openidmFailures`, parseOpenidmFailureStub);
+  }
   if (raw.engine !== undefined) {
     given.engine = parseEngine(raw.engine, `${path}.engine`);
   }
@@ -300,6 +304,32 @@ function parseHttpStub(raw: unknown, path: string): HttpStub {
   return {
     match: parseHttpMatch(raw.match, `${path}.match`),
     reply: parseHttpReply(raw.reply, `${path}.reply`),
+  };
+}
+
+function parseOpenidmFailureStub(raw: unknown, path: string): OpenidmFailureStub {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  rejectUnknownKeys(path, raw, ["match", "reply"]);
+  if (!isPlainObject(raw.match) || !isPlainObject(raw.reply)) {
+    throw new Error(`rhino-local: ${path} needs match and reply objects`);
+  }
+  rejectUnknownKeys(`${path}.match`, raw.match, ["method", "resource", "ordinal"]);
+  rejectUnknownKeys(`${path}.reply`, raw.reply, ["code"]);
+  if (!Number.isInteger(raw.match.ordinal) || (raw.match.ordinal as number) < 1) {
+    throw new Error(`rhino-local: ${path}.match.ordinal must be a positive integer`);
+  }
+  if (!Number.isInteger(raw.reply.code) || (raw.reply.code as number) < 400 || (raw.reply.code as number) > 599) {
+    throw new Error(`rhino-local: ${path}.reply.code must be an HTTP error code (400–599)`);
+  }
+  return {
+    match: {
+      method: parseOpenidmMethod(raw.match.method, `${path}.match.method`),
+      resource: parsePattern(raw.match.resource, `${path}.match.resource`),
+      ordinal: raw.match.ordinal as number,
+    },
+    reply: { code: raw.reply.code as number },
   };
 }
 
