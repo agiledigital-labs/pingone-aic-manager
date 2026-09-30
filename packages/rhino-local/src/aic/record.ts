@@ -13,7 +13,7 @@ import { containsMatcher, seedMatches } from "../case/matcher.ts";
 import { diffState } from "../case/state.ts";
 import { formatValue, isPlainObject, parseJsonObject } from "../case/util.ts";
 
-const AIC_UNOBSERVED = ["openidm", "http", "logs"] as const;
+const AIC_UNOBSERVED = ["openidm", "http", "logs", "sessionProperties"] as const;
 
 export interface SubjectDump {
   outcome: string;
@@ -81,6 +81,7 @@ export function assembleEffects(args: {
       sharedState: { initial: sharedInitial, final: { ...sharedInitial } },
       transientState: { initial: transientInitial, final: { ...transientInitial } },
       secureState: { initial: secureInitial, final: { ...secureInitial } },
+      sessionProperties: { initial: args.given.existingSession ?? {}, final: { ...(args.given.existingSession ?? {}) } },
       callbacks: args.callbacks,
       openidm: [],
       http: [],
@@ -109,6 +110,7 @@ export function assembleEffects(args: {
     sharedState: classified.sharedState,
     transientState: classified.transientState,
     secureState: classified.secureState,
+    sessionProperties: { initial: args.given.existingSession ?? {}, final: { ...(args.given.existingSession ?? {}) } },
     callbacks: args.callbacks,
     openidm: [],
     http: [],

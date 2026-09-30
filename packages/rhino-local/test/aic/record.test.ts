@@ -151,6 +151,7 @@ describe("assembleEffects", () => {
       "openidm",
       "http",
       "logs",
+      "sessionProperties",
     ]);
   });
 
@@ -171,6 +172,7 @@ describe("assembleEffects", () => {
       "openidm",
       "http",
       "logs",
+      "sessionProperties",
     ]);
   });
 

@@ -13,6 +13,8 @@ var __rhinoLocal = {
   initialShared: {},
   initialTransient: {},
   initialSecure: {},
+  sessionProperties: {},
+  initialSessionProperties: {},
   managed: {},
   esv: {},
   esvProvided: false,
@@ -572,11 +574,13 @@ action.withLockoutMessage = function (lockoutMessage) {
 
 action.putSessionProperty = function (key, value) {
   __rhinoLocalExpectArity("action.putSessionProperty", arguments, 2);
+  __rhinoLocal.sessionProperties[String(key)] = String(value);
   return action;
 };
 
 action.removeSessionProperty = function (key) {
   __rhinoLocalExpectArity("action.removeSessionProperty", arguments, 1);
+  delete __rhinoLocal.sessionProperties[String(key)];
   return action;
 };
 
@@ -2741,16 +2745,18 @@ var __rhinoLocalJsonValueClass = {
   }
 };
 
-// Keep native Java package lookup for every other `org` class.
+// Preserve native Java package branches used by other imports.
 var __rhinoLocalRealOrg = typeof org === "undefined" ? null : org;
-var org = __rhinoLocalRealOrg ? Object.create(__rhinoLocalRealOrg) : {};
-org.forgerock = __rhinoLocalRealOrg
-  ? Object.create(__rhinoLocalRealOrg.forgerock)
-  : {};
-org.forgerock.json = __rhinoLocalRealOrg
-  ? Object.create(__rhinoLocalRealOrg.forgerock.json)
-  : {};
-org.forgerock.json.JsonValue = __rhinoLocalJsonValueClass;
+var __rhinoLocalOrgOverlay = {
+  forgerock: {
+    json: { JsonValue: __rhinoLocalJsonValueClass }
+  }
+};
+if (__rhinoLocalRealOrg) {
+  __rhinoLocalOrgOverlay.forgerock.openam = __rhinoLocalRealOrg.forgerock.openam;
+  __rhinoLocalOrgOverlay.mozilla = __rhinoLocalRealOrg.mozilla;
+}
+var org = __rhinoLocalOrgOverlay;
 
 function __rhinoLocalHiddenValueCallback(id, value) {
   this.type = "HiddenValueCallback";
@@ -3080,6 +3086,8 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.initialShared = __rhinoLocalClone(__rhinoLocal.shared);
   __rhinoLocal.initialTransient = __rhinoLocalClone(__rhinoLocal.transient);
   __rhinoLocal.initialSecure = __rhinoLocalClone(__rhinoLocal.secure);
+  __rhinoLocal.sessionProperties = __rhinoLocalClone(given.existingSession || {});
+  __rhinoLocal.initialSessionProperties = __rhinoLocalClone(__rhinoLocal.sessionProperties);
   __rhinoLocal.managed = __rhinoLocalClone(given.managed || {});
   // Set of `managed/<name>` this environment declares. Membership only — every
   // schema RULE (properties, required, enum) is checked in the Node layer, so
@@ -3202,6 +3210,10 @@ function __rhinoLocalHarvest() {
     secureState: {
       initial: __rhinoLocal.initialSecure,
       final: __rhinoLocalClone(__rhinoLocal.secure),
+    },
+    sessionProperties: {
+      initial: __rhinoLocal.initialSessionProperties,
+      final: __rhinoLocalClone(__rhinoLocal.sessionProperties),
     },
     callbacks: __rhinoLocal.callbacks,
     openidm: __rhinoLocal.openidm,

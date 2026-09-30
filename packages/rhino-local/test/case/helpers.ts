@@ -40,6 +40,7 @@ export function makeEffects(
     sharedState: { initial: {}, final: {} },
     transientState: { initial: {}, final: {} },
     secureState: { initial: {}, final: {} },
+    sessionProperties: { initial: {}, final: {} },
     callbacks: [],
     openidm: [],
     http: [],
@@ -62,6 +63,9 @@ export function makeEffects(
   }
   if (overrides.secureState !== undefined) {
     effects.secureState = overrides.secureState;
+  }
+  if (overrides.sessionProperties !== undefined) {
+    effects.sessionProperties = overrides.sessionProperties;
   }
   if (overrides.callbacks !== undefined) {
     effects.callbacks = overrides.callbacks;

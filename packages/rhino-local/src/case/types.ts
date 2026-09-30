@@ -75,6 +75,7 @@ export const EXPECT_KEYS = [
   "sharedState",
   "transientState",
   "secureState",
+  "sessionProperties",
   "callbacks",
   "openidm",
   "http",
@@ -94,6 +95,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "sharedState",
   "transientState",
   "secureState",
+  "sessionProperties",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -117,6 +119,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   sharedState: false,
   transientState: false,
   secureState: false,
+  sessionProperties: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -143,6 +146,7 @@ export const CHANNELS = [
   "sharedState",
   "transientState",
   "secureState",
+  "sessionProperties",
   "callbacks",
   "openidm",
   "http",
@@ -295,6 +299,7 @@ export interface Expect {
   sharedState?: StateDiff;
   transientState?: StateDiff;
   secureState?: StateDiff;
+  sessionProperties?: StateDiff;
   callbacks?: CallbackExpect[];
   openidm?: OpenidmExpect[];
   http?: HttpExpect[];
@@ -372,6 +377,7 @@ export interface RecordedEffects {
   sharedState: StateBucket;
   transientState: StateBucket;
   secureState: StateBucket;
+  sessionProperties: StateBucket;
   callbacks: CallbackEffect[];
   openidm: OpenidmEffect[];
   http: HttpEffect[];

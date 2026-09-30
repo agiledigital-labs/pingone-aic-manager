@@ -46,6 +46,7 @@ const EFFECTS_KEYS = [
   "sharedState",
   "transientState",
   "secureState",
+  "sessionProperties",
   "callbacks",
   "openidm",
   "http",
@@ -103,6 +104,12 @@ export function judge(input: unknown, effects: unknown): Verdict {
       recorded.secureState,
       strictness.secureState,
       reconciled.handled.secureState
+    )),
+    ...(unobserved.has("sessionProperties") ? [] : judgeState(
+      "sessionProperties",
+      kase.expect.sessionProperties,
+      recorded.sessionProperties,
+      strictness.sessionProperties
     )),
     ...(unobserved.has("callbacks")
       ? []
@@ -327,7 +334,7 @@ function needsObservation(
   if (channel === "outcome") {
     return true;
   }
-  if (channel === "sharedState" || channel === "transientState" || channel === "secureState") {
+  if (channel === "sharedState" || channel === "transientState" || channel === "secureState" || channel === "sessionProperties") {
     return stateDiffHasEntries(expect[channel]) || !strictness[channel];
   }
   if (channel === "callbacks") {
@@ -466,7 +473,7 @@ function diffState(
 }
 
 function judgeState(
-  channel: "sharedState" | "transientState" | "secureState",
+  channel: "sharedState" | "transientState" | "secureState" | "sessionProperties",
   expected: StateDiff | undefined,
   bucket: StateBucket,
   allowUndeclared: boolean,
@@ -990,6 +997,7 @@ function parseEffects(raw: unknown): RecordedEffects {
       "effects.transientState"
     ),
     secureState: parseStateBucket(raw.secureState, "effects.secureState"),
+    sessionProperties: parseStateBucket(raw.sessionProperties, "effects.sessionProperties"),
     callbacks: parseArray(raw.callbacks, "effects.callbacks", parseCallbackEffect),
     openidm: parseArray(raw.openidm, "effects.openidm", parseOpenidmEffect),
     http: parseArray(raw.http, "effects.http", parseHttpEffect),
@@ -1128,7 +1136,7 @@ function recordedChannelHasValues(
   if (channel === "outcome") {
     return effects.outcome !== null;
   }
-  if (channel === "sharedState" || channel === "transientState" || channel === "secureState") {
+  if (channel === "sharedState" || channel === "transientState" || channel === "secureState" || channel === "sessionProperties") {
     return !deepEqual(effects[channel].initial, effects[channel].final);
   }
   return effects[channel].length > 0;

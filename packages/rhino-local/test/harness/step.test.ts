@@ -8,6 +8,7 @@ function effects(over: Partial<RecordedEffects> = {}): RecordedEffects {
     sharedState: { initial: {}, final: {} },
     transientState: { initial: {}, final: {} },
     secureState: { initial: {}, final: {} },
+    sessionProperties: { initial: {}, final: {} },
     callbacks: [],
     openidm: [],
     http: [],
@@ -24,6 +25,16 @@ describe("carryGiven", () => {
     existingSession: { tier: "gold" },
     esv: { threshold: "0.8" },
   };
+
+  it("carries session-property changes into the next pass", () => {
+    const next = carryGiven(previous, effects({
+      sessionProperties: {
+        initial: { tier: "gold" },
+        final: { tier: "silver", added: "yes" },
+      },
+    }), []);
+    expect(next.existingSession).toEqual({ tier: "silver", added: "yes" });
+  });
 
   it("carries shared state as the pass left it", () => {
     const next = carryGiven(

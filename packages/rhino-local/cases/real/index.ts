@@ -2497,6 +2497,7 @@ export const realCases: RealEntry[] = [
       "error": "InternalError: Cannot convert x to java.lang.Integer (AIC Rhino Let Probe#120)"
     }
   }, {
+    allowUndeclared: { sessionProperties: true },
     gap: {
       reason:
         "withMaxSessionTime/withMaxIdleTime reject \"x\" and null with the same messages locally, but AIC appends the calling script's \"(name#line)\" and a mock-thrown InternalError carries none.",

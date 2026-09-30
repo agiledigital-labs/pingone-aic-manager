@@ -160,6 +160,14 @@ Expect `outcome: null` and the emitted callbacks, then use `.step({ reply })`
 to submit a response and run the next pass. A pass with no queued callbacks
 keeps its `goTo` outcome. Legacy `Action.send` behavior is separate.
 
+`action.putSessionProperty` and `removeSessionProperty` produce a judged
+`sessionProperties` state diff. Declare `added`, `changed`, and `removed` keys
+in the pass's expectation; undeclared changes fail locally. The local step
+runner carries those properties into `existingSession` on the next pass. AIC
+cannot currently read the completed subject session, so this effect channel
+reports an observation gap there; a live callback-pass test probes the carry
+timing.
+
 ### ESV declarations
 
 Declare values read through `systemEnv.getProperty("esv.<name>")` with the

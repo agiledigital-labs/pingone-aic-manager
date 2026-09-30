@@ -247,6 +247,9 @@ function parseExpect(raw: unknown, path: string): Expect {
   if (raw.secureState !== undefined) {
     expect.secureState = parseStateDiff(raw.secureState, `${path}.secureState`);
   }
+  if (raw.sessionProperties !== undefined) {
+    expect.sessionProperties = parseStateDiff(raw.sessionProperties, `${path}.sessionProperties`);
+  }
   if (raw.callbacks !== undefined) {
     expect.callbacks = parseArray(
       raw.callbacks,
