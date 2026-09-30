@@ -66,7 +66,7 @@ describe("secrets", () => {
 });
 
 describe("idRepository", () => {
-  it("resolves a managed record by _id or userName", () => {
+  it("resolves a managed record by _id", () => {
     const sandbox = loadBehaviour({
       managed: {
         "managed/alpha_user": [
@@ -88,12 +88,23 @@ describe("idRepository", () => {
     expect(byId.exists()).toBe(true);
     expect(byId.getAttributeValues("mail").get(0)).toBe("alice@example.com");
     const byName = idRepository.getIdentity("alice");
-    expect(byName.getUniversalId()).toBe("uuid-1");
+    expect(byName.exists()).toBe(false);
   });
 
-  it("throws naming a missing identity", () => {
-    expect(() => runScript('idRepository.getIdentity("nobody");')).toThrow(
-      /no given\.managed record for "nobody"/
-    );
+  it("returns a non-null stub whose attribute operations fail on null amIdentity", () => {
+    const sandbox = loadBehaviour();
+    const repository = sandbox.idRepository as {
+      getIdentity: (id: string) => Record<string, (...args: unknown[]) => unknown>;
+    };
+    const identity = repository.getIdentity("missing-id");
+    expect(identity).not.toBeNull();
+    expect(typeof identity.getAttribute).toBe("undefined");
+    expect(Object.keys(identity).sort()).toEqual([
+      "addAttribute", "exists", "getAttributeValues", "getName",
+      "getUniversalId", "setAttribute", "store", "toString",
+    ].sort());
+    expect(() => identity.getAttributeValues("mail")).toThrow(/getAttributeValues\(String\).*this\.amIdentity.*null/);
+    expect(() => identity.setAttribute("mail", ["a@example.com"])).toThrow(/setAttribute\(String, String\[\]\).*this\.amIdentity.*null/);
+    expect(() => identity.store()).toThrow(/storeAndThrow\(\).*this\.amIdentity.*null/);
   });
 });

@@ -2337,7 +2337,7 @@ idRepository.getIdentity = function (userName) {
     rows = __rhinoLocal.managed[collections[c]];
     for (i = 0; i < rows.length; i += 1) {
       record = rows[i];
-      if (String(record._id) === wanted || String(record.userName) === wanted) {
+      if (String(record._id) === wanted) {
         found = record;
         break;
       }
@@ -2346,26 +2346,34 @@ idRepository.getIdentity = function (userName) {
       break;
     }
   }
-  if (!found) {
-    throw new Error(
-      "rhino-local: idRepository.getIdentity: no given.managed record for " +
-        JSON.stringify(wanted)
+  function missing(method) {
+    var error = new Error(
+      'Cannot invoke "org.forgerock.openam.scripting.api.ScriptedIdentity.' +
+        method + '" because "this.amIdentity" is null'
     );
+    error.name = "InternalError";
+    throw error;
   }
   return {
     getName: function () {
+      if (!found) {
+        return wanted;
+      }
       if (found.userName !== undefined) {
         return found.userName;
       }
       return found._id;
     },
     getUniversalId: function () {
-      return found._id;
+      return found ? found._id : wanted;
     },
     exists: function () {
-      return true;
+      return Boolean(found);
     },
     getAttributeValues: function (attributeName) {
+      if (!found) {
+        missing("getAttributeValues(String)");
+      }
       var value = found[attributeName];
       if (value === undefined || value === null) {
         return __rhinoLocalJavaList([]);
@@ -2376,6 +2384,9 @@ idRepository.getIdentity = function (userName) {
       return __rhinoLocalJavaList([value]);
     },
     setAttribute: function () {
+      if (!found) {
+        missing("setAttribute(String, String[])");
+      }
       __rhinoLocalNotMocked("idRepository.getIdentity()", "setAttribute", arguments, [
         {
           arity: 2,
@@ -2385,6 +2396,9 @@ idRepository.getIdentity = function (userName) {
       ]);
     },
     addAttribute: function () {
+      if (!found) {
+        missing("addAttribute(String, String)");
+      }
       __rhinoLocalNotMocked("idRepository.getIdentity()", "addAttribute", arguments, [
         {
           arity: 2,
@@ -2394,9 +2408,15 @@ idRepository.getIdentity = function (userName) {
       ]);
     },
     store: function () {
+      if (!found) {
+        missing("storeAndThrow()");
+      }
       __rhinoLocalNotMocked("idRepository.getIdentity()", "store", arguments, [
         { arity: 0, types: [], label: "store()" },
       ]);
+    },
+    toString: function () {
+      return "org.forgerock.openam.scripting.api.ScriptedIdentityScriptWrapper@1b6d3586";
     },
   };
 };
