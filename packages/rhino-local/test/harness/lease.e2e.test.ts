@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { chainFromRunResult, conformChain } from "../../src/aic/conform.ts";
+import { conform } from "../../src/aic/conform.ts";
 import { oneShotSubjectId, oneShotSubjectName } from "../../src/aic/emit-journey.ts";
+import { runCase } from "../../src/bindings/index.ts";
 import { RhinoRunner } from "../../src/runner.ts";
+import { caseWith } from "../aic/helpers.ts";
 import {
   aicWhenEnabled,
   AIC_LANE_ENV,
@@ -325,4 +328,28 @@ describe("lease result to one-shot conformance", () => {
     },
     30_000
   );
+});
+
+describe("unsupported one-shot identity", () => {
+  it("preserves an author logger ID for local execution", async () => {
+    const runner = await RhinoRunner.spawn();
+    const kase = caseWith({
+      given: { loggerScriptId: "caller-id" },
+      script: 'action.goTo(logger.getName().indexOf(".caller-id.") >= 0 ? "bad" : "good");',
+      expect: { outcome: "good" },
+    });
+    try {
+      const report = await conform({
+        kase,
+        source: kase.script,
+        local: async ({ kase: localCase }) => (await runCase(runner, localCase)).effects,
+        aic: "tenant",
+      });
+      expect(report.local.effects?.outcome).toBe("bad");
+      expect(report.local.verdict?.pass).toBe(false);
+      expect(report.aic.skipped).toMatch(/given\.loggerScriptId/);
+    } finally {
+      await runner.close();
+    }
+  });
 });
