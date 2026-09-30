@@ -759,7 +759,9 @@ observable — but that extra `HiddenValueCallback` would be visible to a script
 calling `callbacks.getHiddenValueCallbacks()`, which is a divergence between
 the lanes in the one binding a step chain exists to exercise. Each intermediate
 pass is consequently marked `aicObserved: false` and reports an
-`ObservationGap`; the final pass is marked observed and is fully diffed.
+`ObservationGap`. A final pass that reaches the result node has a state dump
+and is fully observed and diffed. A final pass that suspends has only the
+partial observations described below.
 
 If a next-gen pass queues callbacks, AM pauses and waits for the reply even if
 the script called `action.goTo()`. The outcome is discarded. The local recorder
