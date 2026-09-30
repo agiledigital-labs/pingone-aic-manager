@@ -1724,6 +1724,12 @@ requiring the harness to serialize the map.
   not called: it sends mail.
 - `realm` is `/alpha`, `scriptName` the script's name, `resumedFromSuspend`
   `false`, `cookieName` a string, `locales` a `ScriptedLocalizedMessageImpl`.
+  A live AIC-lane probe, 2026-10-01, confirmed the subject's cookieName
+  is nonempty. Its first exact-value assertion read the AIC recorder's empty
+  shared-state bucket for a new key; the recorder stores new unified-state
+  writes as unbucketed evidence. That false assertion does not establish a
+  different tenant value. The corrected probe compares that evidence with
+  the local serverinfo seed without printing the value.
 
 ### AM script families (folder slugs)
 
