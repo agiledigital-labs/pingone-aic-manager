@@ -1622,9 +1622,13 @@ this channel as an observation gap until such a read is implemented.
   keys.
 
 A 2026-10-01 AIC test calling `put` on the returned `objectAttributes` map
-ended with an uncaught script error (authenticate HTTP 401). Map retrieval is
-measured; mutation of that returned map is not yet established. The revised
-`live-object-attributes.e2e.test.ts` catches lookup, `put`, and both reads separately.
+ended with HTTP 401. The harness also snapshots the seeded map before author
+source and calls `keySet()` during that snapshot, so the error may precede the
+author call. Map retrieval is measured; mutation and snapshot safety are not.
+The revised `live-object-attributes.e2e.test.ts` creates the map after the
+before snapshot, catches lookup, `put`, and both reads, then removes it before
+the after snapshot. Its diagnostics test the local map-write model without
+requiring the harness to serialize the map.
 
 **`openidm` writes** (`binding-openidm-writes`, on a throwaway
 `managed/alpha_role` record):
