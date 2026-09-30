@@ -280,7 +280,8 @@ export async function provisionJourney(
   io: AicIo,
   session: TenantSession,
   wrapper: WrapperJourney,
-  created: CreatedResource[]
+  created: CreatedResource[],
+  beforeWrite?: () => void
 ): Promise<void> {
   const base = realmJsonPath(wrapper.realm);
   const resources: Array<{
@@ -337,6 +338,7 @@ export async function provisionJourney(
   }
   for (const resource of resources) {
     const submitted = resourceRequestProjection(resource.kind, resource.body);
+    beforeWrite?.();
     const response = await amRequest(io, session, {
       method: "PUT",
       path: resource.path,

@@ -156,6 +156,71 @@ describe("AicFileLease", () => {
     expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(0);
   });
 
+  it("keeps a library write intent when PUT lands but its response is lost", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-lost-library-"));
+    try {
+      const fake = new FakeLeaseTenant({ lostLibraryResponse: "lib-common" });
+      const options = { id: "lost-library", suiteName: "lost library", source: SOURCE,
+        outcomes: ["done"], libraries: { "lib-common": "exports.value = 1;" },
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io };
+      const lease = new AicFileLease(options);
+      await expect(lease.open()).rejects.toThrow(/simulated lost response/);
+      const put = fake.calls.find((call) => call.method === "PUT" &&
+        (JSON.parse(String(call.body)) as { name?: string }).name === "lib-common");
+      const id = (JSON.parse(String(put?.body)) as { _id: string })._id;
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
+      expect((await readLeaseJournal(paths.journalPath))?.resources)
+        .toContainEqual({ kind: "script", id });
+      expect(fake.calls.some((call) => call.method === "DELETE" &&
+        new URL(call.url).pathname.endsWith(`/scripts/${id}`))).toBe(false);
+
+      const retry = new AicFileLease(options);
+      await expect(retry.open()).rejects.toThrow(/has owned residue/);
+      expect(await readLeaseJournal(paths.journalPath)).toBeDefined();
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a changed owned library in place when closing", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-changed-library-"));
+    try {
+      const fake = new FakeLeaseTenant();
+      const lease = new AicFileLease({ id: "changed-library", suiteName: "changed library",
+        source: SOURCE, outcomes: ["done"], libraries: { "lib-common": "exports.value = 1;" },
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io });
+      await lease.open();
+      const put = fake.calls.find((call) => call.method === "PUT" &&
+        (JSON.parse(String(call.body)) as { name?: string }).name === "lib-common");
+      const body = JSON.parse(String(put?.body)) as Record<string, unknown>;
+      const path = `/am/json/realms/root/realms/alpha/scripts/${String(body._id)}`;
+      fake.seed(path, { ...body, script: Buffer.from("another writer").toString("base64") });
+      await expect(lease.close()).rejects.toThrow(/warning: library "lib-common" changed.*left .* in place/);
+      expect(fake.calls.some((call) => call.method === "DELETE" &&
+        new URL(call.url).pathname === path)).toBe(false);
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
+      expect(await readLeaseJournal(paths.journalPath)).toBeDefined();
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retains the journal when a library is created in the preflight-to-PUT gap", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-racing-library-"));
+    try {
+      const fake = new FakeLeaseTenant({ racingLibrary: "lib-common" });
+      const lease = new AicFileLease({ id: "racing-library", suiteName: "racing library",
+        source: SOURCE, outcomes: ["done"], libraries: { "lib-common": "exports.value = 1;" },
+        project: "/tmp/rhino-local-aic-test", stateDir, io: fake.io });
+      await expect(lease.open()).rejects.toThrow(/expected 201/);
+      const paths = leaseStatePaths("https://tenant.example.com", lease.identity, stateDir);
+      expect(await readLeaseJournal(paths.journalPath)).toBeDefined();
+      expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("serializes concurrent cases around the shared subject slot", async () => {
     const fake = new FakeLeaseTenant({ delayFirstArm: true });
     const lease = makeLease(fake);
@@ -364,6 +429,7 @@ describe("AicFileLease", () => {
       });
       await expect(lease.open()).rejects.toThrow(new RegExp(oldResult));
       expect(fake.calls.some((call) => new URL(call.url).pathname.endsWith(oldResult))).toBe(true);
+      expect(await readLeaseJournal(paths.journalPath)).toBeDefined();
     } finally {
       await rm(stateDir, { recursive: true, force: true });
     }
@@ -634,6 +700,8 @@ interface FakeLeaseOptions {
   subjectAuthStatus?: number;
   managedCreateStatus?: number;
   stepChain?: boolean;
+  lostLibraryResponse?: string;
+  racingLibrary?: string;
 }
 
 class FakeLeaseTenant {
@@ -703,6 +771,13 @@ class FakeLeaseTenant {
       }
       if (req.method === "PUT") {
         const body = JSON.parse(String(req.body)) as Record<string, unknown>;
+        if (this.#options.racingLibrary !== undefined &&
+            body.name === this.#options.racingLibrary && !this.#resources.has(path)) {
+          this.#resources.set(path, { ...body,
+            script: Buffer.from("external source").toString("base64"),
+            description: "external owner",
+          });
+        }
         const exists = this.#resources.has(path);
         if (exists && path.includes("/scripts/") && String(body.name).endsWith("-subject")) {
           this.#armCount += 1;
@@ -731,6 +806,10 @@ class FakeLeaseTenant {
           read.enabled = false;
         }
         this.#resources.set(path, read);
+        if (this.#options.lostLibraryResponse !== undefined &&
+            body.name === this.#options.lostLibraryResponse) {
+          throw new Error(`simulated lost response for ${String(body.name)}`);
+        }
         return json(exists ? (this.#options.armStatus ?? 200) : 201, {});
       }
       if (req.method === "DELETE") {

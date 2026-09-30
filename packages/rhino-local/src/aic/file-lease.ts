@@ -95,6 +95,9 @@ export class AicFileLease {
   #wrapper: WrapperJourney | undefined;
   #session: TenantSession | undefined;
   #created: CreatedResource[] = [];
+  #ownedLibraries = new Map<string, { name: string; source: string }>();
+  #journalWrittenForOpen = false;
+  #writeAttempted = false;
   #state: "new" | "opening" | "open" | "closed" = "new";
   #queue: Promise<void> = Promise.resolve();
   #lock: LeaseLock | undefined;
@@ -162,12 +165,21 @@ export class AicFileLease {
           staticResources(this.#wrapper)
         )
       );
+      this.#journalWrittenForOpen = true;
       await this.#provisionLibraries(libraries);
-      await provisionJourney(this.#io, this.#session, this.#wrapper, this.#created);
+      await provisionJourney(this.#io, this.#session, this.#wrapper, this.#created,
+        () => { this.#writeAttempted = true; });
       this.#state = "open";
     } catch (error) {
-      await this.#cleanupAfterFailedOpen();
+      const cleanupErrors = await this.#cleanupAfterFailedOpen();
       this.#state = "closed";
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...cleanupErrors.map((message) => new AicLaneError(message))],
+          `AIC file lease open failed and cleanup left resources: ${cleanupErrors.join("; ")}`,
+          { cause: error }
+        );
+      }
       throw error;
     }
   }
@@ -225,12 +237,7 @@ export class AicFileLease {
           ))
         );
         errors.push(
-          ...(await deleteCreatedResources(
-            this.#io,
-            session,
-            this.#realm,
-            this.#created
-          ))
+          ...(await this.#deleteCreatedResourcesSafely())
         );
       }
       if (errors.length === 0) {
@@ -343,6 +350,10 @@ export class AicFileLease {
         default: false, language: "JAVASCRIPT", context: "LIBRARY",
         evaluatorVersion: "2.0",
       };
+      // The journal entry exists before this write. Keep it if the response is
+      // lost, since #created is filled only after a confirmed create status.
+      this.#ownedLibraries.set(library.id, { name: library.name, source: library.source });
+      this.#writeAttempted = true;
       const response = await amRequest(this.#io, this.#session as TenantSession, {
         method: "PUT", path, headers: amConfigHeaders(), body: JSON.stringify(body),
       });
@@ -705,25 +716,56 @@ export class AicFileLease {
     }
   }
 
-  async #cleanupAfterFailedOpen(): Promise<void> {
-    if (this.#session !== undefined && this.#created.length > 0) {
-      const errors = await deleteCreatedResources(
-        this.#io,
-        this.#session,
-        this.#realm,
-        this.#created
-      );
-      if (errors.length === 0) {
-        this.#created = [];
-        if (this.#paths !== undefined) {
-          await removeLeaseJournal(this.#paths.journalPath);
+  async #deleteCreatedResourcesSafely(): Promise<string[]> {
+    const session = this.#session as TenantSession;
+    const graph = this.#created.filter((resource) =>
+      resource.kind !== "script" || !this.#ownedLibraries.has(resource.id));
+    const errors = await deleteCreatedResources(this.#io, session, this.#realm, graph);
+    const libraries = this.#created.filter((resource): resource is { kind: "script"; id: string } =>
+      resource.kind === "script" && this.#ownedLibraries.has(resource.id));
+    for (const resource of libraries.reverse()) {
+      const owned = this.#ownedLibraries.get(resource.id) as { name: string; source: string };
+      try {
+        const response = await amRequest(this.#io, session, {
+          method: "GET", path: resourcePath(this.#realm, resource), headers: amConfigHeaders(),
+        });
+        if (response.status === 404) continue;
+        if (response.status !== 200) {
+          errors.push(`could not check library ${JSON.stringify(owned.name)} before delete (HTTP ${response.status})`);
+          continue;
         }
+        const current = response.body as Record<string, unknown>;
+        const source = typeof current?.script === "string"
+          ? Buffer.from(current.script, "base64").toString("utf8")
+          : undefined;
+        if (current?.name !== owned.name || current.context !== "LIBRARY" ||
+            current.description !== this.identity.marker || source !== owned.source) {
+          errors.push(`warning: library ${JSON.stringify(owned.name)} changed after the lease created it; left ${resource.id} in place`);
+          continue;
+        }
+        errors.push(...(await deleteCreatedResources(this.#io, session, this.#realm, [resource])));
+      } catch (error) {
+        errors.push(`could not check library ${JSON.stringify(owned.name)} before delete: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (this.#created.length === 0 && this.#paths !== undefined) {
-      await removeLeaseJournal(this.#paths.journalPath);
+    return errors;
+  }
+
+  async #cleanupAfterFailedOpen(): Promise<string[]> {
+    try {
+      const errors = this.#session !== undefined && this.#created.length > 0
+        ? await this.#deleteCreatedResourcesSafely()
+        : [];
+      // An older journal is never ours to erase here. Once any PUT was sent,
+      // a lost response can leave residue absent from #created; retain the
+      // journal for the next open to probe even if known deletes succeeded.
+      if (this.#journalWrittenForOpen && !this.#writeAttempted && this.#paths !== undefined) {
+        await removeLeaseJournal(this.#paths.journalPath);
+      }
+      return errors;
+    } finally {
+      await this.#lock?.release();
     }
-    await this.#lock?.release();
   }
 
   async #handleOlderJournal(): Promise<void> {
