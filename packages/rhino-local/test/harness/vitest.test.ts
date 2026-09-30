@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { RhinoRunner } from "../../src/runner.ts";
-import { defineSuite } from "../../src/harness/index.ts";
+import { aicWhenEnabled, defineSuite } from "../../src/harness/index.ts";
 import {
+  AIC_LANE_ENV,
   claimAicLeaseForFile,
   releaseAicLeaseForFile,
   useLease,
@@ -18,6 +19,33 @@ describe("useLease AIC file ownership", () => {
     expect(() => useLease(suite, { aic: { id: "named" } })).toThrow(
       /remove scriptName for AIC conformance/
     );
+  });
+
+  // Regression: aicWhenEnabled used to make this invalid only with AIC on.
+  it("rejects explicit scriptName even when aicWhenEnabled is off", () => {
+    const previous = process.env[AIC_LANE_ENV];
+    const suite = defineSuite({
+      name: "named",
+      scriptName: "deployed-name",
+      script: 'action.goTo("done");',
+      outcomes: ["done"],
+    });
+    try {
+      process.env[AIC_LANE_ENV] = "0";
+      const off = aicWhenEnabled("named");
+      expect(off.aic).toBeUndefined();
+      expect(() => useLease(suite, off)).toThrow(/remove scriptName for AIC conformance/);
+      process.env[AIC_LANE_ENV] = "1";
+      expect(() => useLease(suite, aicWhenEnabled("named"))).toThrow(
+        /remove scriptName for AIC conformance/
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env[AIC_LANE_ENV];
+      } else {
+        process.env[AIC_LANE_ENV] = previous;
+      }
+    }
   });
 
   it("rejects a second AIC lease in the same file even when its id differs", () => {

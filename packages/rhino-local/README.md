@@ -203,6 +203,9 @@ cannot be changed to a deployed script's name. A direct low-level `Case` may
 still seed `given.scriptName` locally; the one-shot AIC runner rejects that
 seed. The one-shot `conform(..., { aic: "tenant" })` path supplies its generated
 name to the local runner for the same comparison.
+`aicWhenEnabled()` retains an AIC-intent marker when the lane is off, so a
+suite with explicit `scriptName` fails setup in both modes. Use an explicit
+`scriptName` only for suites that are always local-only.
 For a pre-recorded one-shot chain, choose `oneShotRunId`, seed each local
 case's `given.scriptName` and `given.loggerScriptId` with
 `oneShotSubjectName(oneShotRunId)` and `oneShotSubjectId(oneShotRunId)`, then
