@@ -1,5 +1,5 @@
-import { deepEqual, matchesPattern } from "../case/equal.ts";
-import { containsMatcher, equalExceptMatchers } from "../case/matcher.ts";
+import { deepEqual } from "../case/equal.ts";
+import { containsMatcher, equalExceptMatchers, matchesValue } from "../case/matcher.ts";
 import { diffState, sameMutationValue } from "../case/state.ts";
 import { STATE_CHANNELS } from "../case/types.ts";
 import type {
@@ -7,6 +7,7 @@ import type {
   Channel,
   EvidenceChannel,
   Expect,
+  ExpectedValue,
   HttpEffect,
   OpenidmEffect,
   RecordedEffects,
@@ -15,7 +16,7 @@ import type {
   Verdict,
 } from "../case/types.ts";
 import { formatValue } from "../case/util.ts";
-import { judge } from "../case/verdict.ts";
+import { httpMatches, judge, openidmMatches } from "../case/verdict.ts";
 
 export interface EffectsDisagreement {
   channel: EvidenceChannel;
@@ -145,7 +146,7 @@ function compareArray(
   }
   const length = Math.max(local.length, aic.length);
   for (let index = 0; index < length; index += 1) {
-    const matcher = arrayMatcher(channel, index, local[index], aic[index], expected);
+    const matcher = arrayMatcher(channel, index, local, aic, expected);
     if (equalExceptMatchers(matcher, local[index], aic[index])) {
       continue;
     }
@@ -164,32 +165,49 @@ function compareArray(
 function arrayMatcher(
   channel: "callbacks" | "openidm" | "http" | "logs",
   index: number,
-  local: unknown,
-  aic: unknown,
+  localEffects: unknown[],
+  aicEffects: unknown[],
   expected: Expect | undefined
 ): unknown {
-  if (channel === "callbacks") return expected?.callbacks?.[index];
+  const local = localEffects[index];
+  const aic = aicEffects[index];
+  if (channel === "callbacks") {
+    const declarations = expected?.callbacks ?? [];
+    const localIndices = callbackIndices(declarations, localEffects);
+    const aicIndices = callbackIndices(declarations, aicEffects);
+    return declarations.find((item, declaredIndex) =>
+      containsMatcher(item) &&
+      localIndices[declaredIndex] === index &&
+      aicIndices[declaredIndex] === index);
+  }
   if (channel === "openidm") {
     const matches = expected?.openidm?.find((item) =>
       item.body !== undefined && containsMatcher(item.body) &&
       isOpenidmEffect(local, item.method) && isOpenidmEffect(aic, item.method) &&
-      matchesPattern(item.resource, local.resource) && matchesPattern(item.resource, aic.resource) &&
-      (item.actionName === undefined ||
-        (local.actionName !== undefined && aic.actionName !== undefined &&
-          matchesPattern(item.actionName, local.actionName) &&
-          matchesPattern(item.actionName, aic.actionName))));
+      openidmMatches(item, local) && openidmMatches(item, aic));
     return matches?.body === undefined ? undefined : { body: matches.body };
   }
   if (channel === "http") {
     const matches = expected?.http?.find((item) =>
       item.body !== undefined && containsMatcher(item.body) &&
       isHttpEffect(local) && isHttpEffect(aic) &&
-      matchesPattern(item.url, local.url) && matchesPattern(item.url, aic.url) &&
-      (item.method === undefined ||
-        (local.method === item.method && aic.method === item.method)));
+      httpMatches(item, local) && httpMatches(item, aic));
     return matches?.body === undefined ? undefined : { body: matches.body };
   }
   return undefined;
+}
+
+function callbackIndices(declarations: NonNullable<Expect["callbacks"]>, effects: unknown[]): number[] {
+  const indices: number[] = [];
+  let next = 0;
+  for (const declaration of declarations) {
+    while (next < effects.length && !matchesValue(declaration, effects[next])) {
+      next += 1;
+    }
+    indices.push(next < effects.length ? next : -1);
+    next += 1;
+  }
+  return indices;
 }
 
 function isOpenidmEffect(value: unknown, method: string): value is OpenidmEffect {
@@ -293,21 +311,28 @@ function sameMutationWithMatchers(
   const before = priorMatcher(prior, local.key);
   if (local.operation === "added" && aic.operation === "added") {
     return after === undefined ? sameMutationValue(local, aic) :
-      equalExceptMatchers(after, local.after, aic.after);
+      equalWhenMatcherMatches(after, local.after, aic.after);
   }
   if (local.operation === "changed" && aic.operation === "changed") {
     return (before === undefined
       ? deepEqual(local.before, aic.before)
-      : equalExceptMatchers(before, local.before, aic.before)) &&
+      : equalWhenMatcherMatches(before, local.before, aic.before)) &&
       (after === undefined
         ? deepEqual(local.after, aic.after)
-        : equalExceptMatchers(after, local.after, aic.after));
+        : equalWhenMatcherMatches(after, local.after, aic.after));
   }
   if (local.operation === "removed" && aic.operation === "removed") {
     return before === undefined ? sameMutationValue(local, aic) :
-      equalExceptMatchers(before, local.before, aic.before);
+      equalWhenMatcherMatches(before, local.before, aic.before);
   }
   return false;
+}
+
+function equalWhenMatcherMatches(expected: unknown, local: unknown, aic: unknown): boolean {
+  return matchesValue(expected as ExpectedValue, local) &&
+    matchesValue(expected as ExpectedValue, aic)
+    ? equalExceptMatchers(expected, local, aic)
+    : deepEqual(local, aic);
 }
 
 function declarationValue(expect: Expect | undefined, key: string, operation: StateMutation["operation"]): unknown {

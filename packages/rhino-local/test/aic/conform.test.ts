@@ -60,6 +60,49 @@ describe("diffRecordedEffects", () => {
     expect(diffRecordedEffects(local, aic, declaration).disagreements)
       .toContainEqual(expect.objectContaining({ channel: "callbacks" }));
   });
+  it("keeps an extra same-URL HTTP request exact when its body fails the matcher", () => {
+    const kase = caseWith({ expect: { outcome: "true", allowUndeclared: { http: true },
+      http: [{ url: "https://tenant.example.com/collect", body: { id: /^id-/ } }],
+    } });
+    const local = makeEffects({ http: [
+      { url: "https://tenant.example.com/collect", method: "POST", body: { id: "id-local" } },
+      { url: "https://tenant.example.com/collect", method: "POST", body: { id: "other-local" } },
+    ] });
+    const aic = makeEffects({ http: [
+      { url: "https://tenant.example.com/collect", method: "POST", body: { id: "id-aic" } },
+      { url: "https://tenant.example.com/collect", method: "POST", body: { id: "other-aic" } },
+    ] });
+    expect(judge(kase, local).pass).toBe(true);
+    expect(judge(kase, aic).pass).toBe(true);
+    expect(diffRecordedEffects(local, aic, kase.expect).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "http", path: "[1]" }));
+  });
+
+  it("keeps extra callbacks and invalid state values exact", () => {
+    const kase = caseWith({ expect: { outcome: "true", allowUndeclared: { callbacks: true },
+      callbacks: [{ type: "TextOutputCallback", message: /^id-/ }],
+      sharedState: { added: { tracking: /^id-/ } },
+    } });
+    const local = makeEffects({
+      callbacks: [
+        { type: "TextOutputCallback", message: "id-local" },
+        { type: "TextOutputCallback", message: "other-local" },
+      ],
+      sharedState: bucket({}, { tracking: "other-local" }),
+    });
+    const aic = makeEffects({
+      callbacks: [
+        { type: "TextOutputCallback", message: "id-aic" },
+        { type: "TextOutputCallback", message: "other-aic" },
+      ],
+      sharedState: bucket({}, { tracking: "other-aic" }),
+    });
+    expect(diffRecordedEffects(local, aic, kase.expect).disagreements)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ channel: "callbacks", path: "[1]" }),
+        expect.objectContaining({ channel: "nodeState", path: "tracking" }),
+      ]));
+  });
   it("is silent when both lanes recorded the same effects", () => {
     const effects = makeEffects({
       sharedState: bucket({}, { verified: true }),

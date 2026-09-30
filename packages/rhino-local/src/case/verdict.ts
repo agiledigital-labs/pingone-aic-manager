@@ -921,7 +921,8 @@ function matchIndices<E, A>(
   return indices;
 }
 
-function openidmMatches(expected: OpenidmExpect, actual: OpenidmEffect): boolean {
+/** Also used by the lane diff to identify effects actually declared by a body matcher. */
+export function openidmMatches(expected: OpenidmExpect, actual: OpenidmEffect): boolean {
   if (actual.method !== expected.method) {
     return false;
   }
@@ -944,7 +945,8 @@ function openidmMatches(expected: OpenidmExpect, actual: OpenidmEffect): boolean
   return true;
 }
 
-function httpMatches(expected: HttpExpect, actual: HttpEffect): boolean {
+/** Also used by the lane diff to identify effects actually declared by a body matcher. */
+export function httpMatches(expected: HttpExpect, actual: HttpEffect): boolean {
   if (!matchesPattern(expected.url, actual.url)) {
     return false;
   }
