@@ -3,6 +3,7 @@ import { matchesValue } from "./matcher.ts";
 import { isPortable } from "./portable.ts";
 import {
   ALLOW_UNDECLARED_CHANNELS,
+  CHANNELS,
   DEFAULT_ALLOW_UNDECLARED,
   LOG_LEVELS,
   OPENIDM_METHODS,
@@ -20,6 +21,8 @@ import type {
   ExpectedValue,
   HttpEffect,
   HttpExpect,
+  IdentityWriteEffect,
+  IdentityWriteExpect,
   JsonObject,
   LogEffect,
   LogExpect,
@@ -38,25 +41,21 @@ import type {
   Unverified,
   Verdict,
 } from "./types.ts";
-import { formatValue, isPlainObject, parseJsonObject, parseJsonValue } from "./util.ts";
+import { formatValue, isPlainObject, parseIdentityWriteEffect, parseJsonObject, parseJsonValue } from "./util.ts";
 import { validateCase } from "./validate.ts";
 
-const EFFECTS_KEYS = [
-  "outcome",
-  "sharedState",
-  "transientState",
-  "secureState",
-  "sessionProperties",
-  "callbacks",
-  "openidm",
-  "http",
-  "logs",
-] as const;
+/**
+ * Channels 0.1.2 did not record. 0.1.2 accepted `putSessionProperty` and
+ * `identity.store()` and recorded neither, so effects without these keys are
+ * parsed as UNOBSERVED rather than empty: an empty bucket would assert "the
+ * script changed nothing" about a run that may have.
+ */
+const LATER_CHANNELS: ReadonlySet<Channel> = new Set<Channel>(["sessionProperties", "identityWrites"]);
 
 const WRITE_METHODS: ReadonlySet<string> = new Set(OPENIDM_WRITE_METHODS);
 const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
 const LOG_LEVEL_SET: ReadonlySet<string> = new Set(LOG_LEVELS);
-const CHANNEL_SET: ReadonlySet<string> = new Set(EFFECTS_KEYS);
+const CHANNEL_SET: ReadonlySet<string> = new Set(CHANNELS);
 const STATE_CHANNEL_SET: ReadonlySet<string> = new Set(STATE_CHANNELS);
 
 type Strictness = { [K in AllowUndeclaredChannel]: boolean };
@@ -123,6 +122,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
     ...(unobserved.has("logs")
       ? []
       : judgeLogs(kase.expect, recorded, strictness.logs)),
+    ...(unobserved.has("identityWrites")
+      ? []
+      : judgeIdentityWrites(kase.expect, recorded, strictness.identityWrites)),
   ];
   return {
     pass: mismatches.length === 0,
@@ -172,7 +174,8 @@ function reconcileUnbucketedState(
             mutation.key,
             "(none)",
             formatMutation(mutation),
-            `nodeState: undeclared ${formatMutation(mutation)}; bucket is unobservable (could be ${mutation.possibleBuckets.join(", ")})`
+            `nodeState: undeclared ${formatMutation(mutation)}; bucket is unobservable (could be ${mutation.possibleBuckets.join(", ")})` +
+              `; declare this key in one of expect.${mutation.possibleBuckets.join("/")}, or set ${closed.map((bucket) => `allowUndeclared.${bucket}: true`).join(" and ")}`
           )
         );
       }
@@ -350,7 +353,27 @@ function needsObservation(
   if (channel === "http") {
     return (expect.http?.length ?? 0) > 0 || !strictness.http;
   }
+  if (channel === "identityWrites") {
+    return (expect.identityWrites?.length ?? 0) > 0 || !strictness.identityWrites;
+  }
   return (expect.logs?.length ?? 0) > 0 || !strictness.logs;
+}
+
+/**
+ * The remedy every undeclared-effect failure ends with. `declared` is true
+ * when the failure exists only because the expectation named the channel —
+ * reads and log lines are fail-open until then — which is the surprise the
+ * hint has to explain.
+ */
+function remedy(
+  flag: AllowUndeclaredChannel,
+  key: keyof Expect,
+  noun: string,
+  declared: boolean
+): string {
+  return declared
+    ? `; declaring expect.${key} makes it exhaustive — declare this ${noun}, or set allowUndeclared.${flag}: true`
+    : `; declare this ${noun} in expect.${key}, or set allowUndeclared.${flag}: true`;
 }
 
 function stateDiffHasEntries(diff: StateDiff | undefined): boolean {
@@ -674,7 +697,7 @@ function judgeState(
         key,
         "(none)",
         formatValue(actual.added[key]),
-        `${channel}: undeclared added ${formatValue(key)}`
+        `${channel}: undeclared added ${formatValue(key)}${remedy(channel, channel, "key", false)}`
       )
     );
   }
@@ -688,7 +711,7 @@ function judgeState(
         key,
         "(none)",
         formatValue(actual.changed[key]),
-        `${channel}: undeclared changed ${formatValue(key)}`
+        `${channel}: undeclared changed ${formatValue(key)}${remedy(channel, channel, "key", false)}`
       )
     );
   }
@@ -702,7 +725,7 @@ function judgeState(
         key,
         "(none)",
         "removed",
-        `${channel}: undeclared removed ${formatValue(key)}`
+        `${channel}: undeclared removed ${formatValue(key)}${remedy(channel, channel, "key", false)}`
       )
     );
   }
@@ -744,7 +767,9 @@ function judgeCallbacks(
         `[${index}]`,
         want === undefined ? "(none)" : formatValue(want),
         got === undefined ? "(none)" : formatValue(got),
-        `callbacks: [${index}] differed`
+        want === undefined
+          ? `callbacks: [${index}] differed${remedy("callbacks", "callbacks", "callback", false)}`
+          : `callbacks: [${index}] differed`
       )
     );
   }
@@ -813,7 +838,10 @@ function judgeOpenidm(
         formatOpenidm(actual),
         "(none)",
         formatOpenidm(actual),
-        `openidm: undeclared ${kind} ${formatOpenidm(actual)}`
+        `openidm: undeclared ${kind} ${formatOpenidm(actual)}` +
+          (write
+            ? remedy("openidmWrites", "openidm", "call", false)
+            : remedy("openidmReads", "openidm", "call", expect.openidm !== undefined))
       )
     );
   }
@@ -863,7 +891,7 @@ function judgeHttp(
         formatHttp(actual),
         "(none)",
         formatHttp(actual),
-        `http: undeclared request ${formatHttp(actual)}`
+        `http: undeclared request ${formatHttp(actual)}${remedy("http", "http", "request", false)}`
       )
     );
   }
@@ -913,11 +941,72 @@ function judgeLogs(
         formatLog(actual),
         "(none)",
         formatLog(actual),
-        `logs: undeclared line ${formatLog(actual)}`
+        `logs: undeclared line ${formatLog(actual)}${remedy("logs", "logs", "line", expect.logs !== undefined)}`
       )
     );
   }
   return mismatches;
+}
+
+function judgeIdentityWrites(
+  expect: Expect,
+  effects: RecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const expected = expect.identityWrites ?? [];
+  const mismatches: Mismatch[] = [];
+  const declared = new Set<number>();
+  for (const item of expected) {
+    const matched = matchIndices(item, effects.identityWrites, identityWriteMatches);
+    const times = item.times !== undefined ? item.times : 1;
+    for (const index of matched) {
+      declared.add(index);
+    }
+    if (matched.length !== times) {
+      mismatches.push(
+        miss(
+          "identityWrites",
+          formatIdentityWriteExpect(item),
+          `${times}`,
+          `${matched.length}`,
+          `identityWrites: expected ${times} write matching ${formatIdentityWriteExpect(item)}, actual ${matched.length}`
+        )
+      );
+    }
+  }
+  if (allowUndeclared) {
+    return mismatches;
+  }
+  effects.identityWrites.forEach((actual, index) => {
+    if (declared.has(index)) {
+      return;
+    }
+    mismatches.push(
+      miss(
+        "identityWrites",
+        formatIdentityWrite(actual),
+        "(none)",
+        formatIdentityWrite(actual),
+        `identityWrites: undeclared write ${formatIdentityWrite(actual)}${remedy("identityWrites", "identityWrites", "write", false)}`
+      )
+    );
+  });
+  return mismatches;
+}
+
+function identityWriteMatches(expected: IdentityWriteExpect, actual: IdentityWriteEffect): boolean {
+  return matchesPattern(expected.identity, actual.identity) &&
+    matchesPattern(expected.attribute, actual.attribute) &&
+    (expected.values === undefined || matchesValue(expected.values, actual.values));
+}
+
+function formatIdentityWrite(op: IdentityWriteEffect): string {
+  return `${op.identity} ${op.attribute}=${formatValue(op.values)}`;
+}
+
+function formatIdentityWriteExpect(item: IdentityWriteExpect): string {
+  const values = item.values === undefined ? "" : `=${formatValue(item.values)}`;
+  return `${String(item.identity)} ${String(item.attribute)}${values}`;
 }
 
 function matchIndices<E, A>(
@@ -986,12 +1075,17 @@ function parseEffects(raw: unknown): RecordedEffects {
   if (!isPlainObject(raw)) {
     throw new Error("rhino-local: effects is not an object");
   }
-  for (const key of EFFECTS_KEYS) {
-    if (!(key in raw)) {
+  const absent: Channel[] = [];
+  for (const key of CHANNELS) {
+    if (key in raw) {
+      continue;
+    }
+    if (!LATER_CHANNELS.has(key)) {
       throw new Error(
         `rhino-local: effects is missing ${key} — a runner that does not record a channel would silently assert nothing`
       );
     }
+    absent.push(key);
   }
   if (raw.outcome !== null && typeof raw.outcome !== "string") {
     throw new Error("rhino-local: effects.outcome must be a string or null");
@@ -1004,11 +1098,16 @@ function parseEffects(raw: unknown): RecordedEffects {
       "effects.transientState"
     ),
     secureState: parseStateBucket(raw.secureState, "effects.secureState"),
-    sessionProperties: parseStateBucket(raw.sessionProperties, "effects.sessionProperties"),
+    sessionProperties: raw.sessionProperties === undefined
+      ? { initial: {}, final: {} }
+      : parseStateBucket(raw.sessionProperties, "effects.sessionProperties"),
     callbacks: parseArray(raw.callbacks, "effects.callbacks", parseCallbackEffect),
     openidm: parseArray(raw.openidm, "effects.openidm", parseOpenidmEffect),
     http: parseArray(raw.http, "effects.http", parseHttpEffect),
     logs: parseArray(raw.logs, "effects.logs", parseLogEffect),
+    identityWrites: raw.identityWrites === undefined
+      ? []
+      : parseArray(raw.identityWrites, "effects.identityWrites", parseIdentityWriteEffect),
   };
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
@@ -1025,6 +1124,13 @@ function parseEffects(raw: unknown): RecordedEffects {
         );
       }
     }
+  }
+  if (absent.length > 0) {
+    const evidence = recorded.evidence ?? exactEvidence();
+    recorded.evidence = {
+      ...evidence,
+      unobservedChannels: [...new Set([...evidence.unobservedChannels, ...absent])],
+    };
   }
   return recorded;
 }

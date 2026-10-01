@@ -114,8 +114,8 @@ describe("existingSession on the real Rhino engine", () => {
     });
     expect(result.verdict.pass).toBe(false);
     expect(result.verdict.mismatches.map((item) => item.message)).toEqual([
-      'sessionProperties: undeclared added "new"',
-      'sessionProperties: undeclared removed "old"',
+      'sessionProperties: undeclared added "new"; declare this key in expect.sessionProperties, or set allowUndeclared.sessionProperties: true',
+      'sessionProperties: undeclared removed "old"; declare this key in expect.sessionProperties, or set allowUndeclared.sessionProperties: true',
     ]);
   });
 

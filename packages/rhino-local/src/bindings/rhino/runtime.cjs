@@ -33,6 +33,7 @@ var __rhinoLocal = {
   openidm: [],
   http: [],
   logs: [],
+  identityWrites: [],
   libraries: {},
   requireCache: {},
 };
@@ -2370,14 +2371,12 @@ idRepository.getIdentity = function (userName) {
   var i;
   var record;
   var found = null;
-  var collection = null;
   for (c = 0; c < collections.length; c += 1) {
     rows = __rhinoLocal.managed[collections[c]];
     for (i = 0; i < rows.length; i += 1) {
       record = rows[i];
       if (String(record._id) === wanted) {
         found = record;
-        collection = collections[c];
         break;
       }
     }
@@ -2418,6 +2417,24 @@ idRepository.getIdentity = function (userName) {
       return "<not-an-AM-attribute>";
     }
     return key;
+  }
+  // A wrong-name READ is measured (no values); what store() does with a
+  // wrong-name WRITE is not, so the local lane refuses one rather than guess.
+  function writable(method, name) {
+    var key = field(name);
+    if (key !== "<not-an-AM-attribute>") {
+      return key;
+    }
+    var am = String(name)
+      .replace(/^userName$/, "uid")
+      .replace(/^accountStatus$/, "inetUserStatus")
+      .replace(/^frUnindexedString([1-5])$/, "fr-attr-str$1")
+      .replace(/^frUnindexedMultivalued([1-5])$/, "fr-attr-multi$1");
+    throw new Error(
+      "rhino-local: idRepository.getIdentity()." + method + ": " +
+        JSON.stringify(String(name)) + " is the IDM field name; AM names this attribute " +
+        JSON.stringify(am) + ". What AM stores for an unknown attribute name is unmeasured, so the local lane refuses it"
+    );
   }
   function values(name) {
     var key = field(name);
@@ -2466,16 +2483,16 @@ idRepository.getIdentity = function (userName) {
       if (!Array.isArray(attributeValues)) {
         throw new Error("rhino-local: setAttribute requires an array of strings");
       }
-      var key = field(attributeName);
+      var key = writable("setAttribute", attributeName);
       pending[key] = attributeValues.map(String);
-      dirty[key] = true;
+      dirty[key] = String(attributeName);
     },
     addAttribute: function (attributeName, attributeValue) {
       if (!found) {
         missing("addAttribute(String, String)");
       }
       __rhinoLocalExpectArity("idRepository.getIdentity().addAttribute", arguments, 2);
-      var key = field(attributeName);
+      var key = writable("addAttribute", attributeName);
       var existing = __rhinoLocalHas(pending, key)
         ? pending[key].slice()
         : values(attributeName);
@@ -2484,29 +2501,29 @@ idRepository.getIdentity = function (userName) {
         existing.push(value);
       }
       pending[key] = existing;
-      dirty[key] = true;
+      dirty[key] = String(attributeName);
     },
     store: function () {
       if (!found) {
         missing("storeAndThrow()");
       }
       __rhinoLocalExpectArity("idRepository.getIdentity().store", arguments, 0);
+      // Recorded as an identity write, not an `openidm` patch: AM persists
+      // through its identity repository, never the openidm binding, so IDM
+      // failure stubs and openidm expectations must not see it. Updating the
+      // local record is only so later reads in this run see the value.
       var names = Object.keys(dirty);
-      var patches = [];
       var i;
       for (i = 0; i < names.length; i += 1) {
         var key = names[i];
         var value = pending[key];
         found[key] = value.length === 1 ? value[0] : value.slice();
-        patches.push({ operation: "replace", field: key, value: value.slice() });
-        delete dirty[key];
-      }
-      if (patches.length > 0) {
-        __rhinoLocal.openidm.push({
-          method: "patch",
-          resource: collection + "/" + found._id,
-          body: patches
+        __rhinoLocal.identityWrites.push({
+          identity: String(found._id),
+          attribute: dirty[key],
+          values: value.slice()
         });
+        delete dirty[key];
       }
     },
     toString: function () {
@@ -3135,6 +3152,7 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.openidm = [];
   __rhinoLocal.http = [];
   __rhinoLocal.logs = [];
+  __rhinoLocal.identityWrites = [];
 
   requestHeaders = __rhinoLocalRequestMap(given.requestHeaders || {}, {
     caseInsensitive: true,
@@ -3226,5 +3244,6 @@ function __rhinoLocalHarvest() {
     managedStore: __rhinoLocalClone(__rhinoLocal.managed),
     http: __rhinoLocal.http,
     logs: __rhinoLocal.logs,
+    identityWrites: __rhinoLocal.identityWrites,
   });
 }

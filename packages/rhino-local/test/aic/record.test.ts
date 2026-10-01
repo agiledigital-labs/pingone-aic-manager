@@ -164,6 +164,7 @@ describe("assembleEffects", () => {
       "http",
       "logs",
       "sessionProperties",
+      "identityWrites",
     ]);
   });
 
@@ -185,6 +186,7 @@ describe("assembleEffects", () => {
       "http",
       "logs",
       "sessionProperties",
+      "identityWrites",
     ]);
   });
 

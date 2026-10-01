@@ -24,6 +24,7 @@ import type {
   ExpectedValue,
   Given,
   HttpExpect,
+  IdentityWriteExpect,
   HttpMatch,
   HttpReply,
   HttpStub,
@@ -274,6 +275,9 @@ function parseExpect(raw: unknown, path: string): Expect {
   if (raw.logs !== undefined) {
     expect.logs = parseArray(raw.logs, `${path}.logs`, parseLogExpect);
   }
+  if (raw.identityWrites !== undefined) {
+    expect.identityWrites = parseArray(raw.identityWrites, `${path}.identityWrites`, parseIdentityWriteExpect);
+  }
   if (raw.allowUndeclared !== undefined) {
     expect.allowUndeclared = parseAllowUndeclared(
       raw.allowUndeclared,
@@ -416,6 +420,28 @@ function parseOpenidmExpect(raw: unknown, path: string): OpenidmExpect {
   }
   if (raw.actionName !== undefined) {
     expect.actionName = parsePattern(raw.actionName, `${path}.actionName`);
+  }
+  assignTimes(expect, raw.times, `${path}.times`);
+  return expect;
+}
+
+function parseIdentityWriteExpect(raw: unknown, path: string): IdentityWriteExpect {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  rejectUnknownKeys(path, raw, ["identity", "attribute", "values", "times"]);
+  if (raw.identity === undefined) {
+    throw new Error(`rhino-local: ${path}.identity is required`);
+  }
+  if (raw.attribute === undefined) {
+    throw new Error(`rhino-local: ${path}.attribute is required`);
+  }
+  const expect: IdentityWriteExpect = {
+    identity: parsePattern(raw.identity, `${path}.identity`),
+    attribute: parsePattern(raw.attribute, `${path}.attribute`),
+  };
+  if (raw.values !== undefined) {
+    expect.values = parseExpectedValue(raw.values, `${path}.values`);
   }
   assignTimes(expect, raw.times, `${path}.times`);
   return expect;

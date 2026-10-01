@@ -45,6 +45,7 @@ export function makeEffects(
     openidm: [],
     http: [],
     logs: [],
+    identityWrites: [],
     evidence: {
       stateBuckets: "exact",
       ambientState: {},
@@ -78,6 +79,9 @@ export function makeEffects(
   }
   if (overrides.logs !== undefined) {
     effects.logs = overrides.logs;
+  }
+  if (overrides.identityWrites !== undefined) {
+    effects.identityWrites = overrides.identityWrites;
   }
   if (overrides.evidence !== undefined) {
     effects.evidence = overrides.evidence;

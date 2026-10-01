@@ -147,12 +147,48 @@ describe("idRepository", () => {
       ].join("\n"),
       { managed: { "managed/alpha_user": [{ _id: "uuid-1", frUnindexedString1: "old", frUnindexedMultivalued1: ["first"] }] } }
     );
-    expect(effects.openidm).toEqual([{ method: "patch", resource: "managed/alpha_user/uuid-1", body: [
-      { operation: "replace", field: "frUnindexedString1", value: ["new"] },
-      { operation: "replace", field: "frUnindexedMultivalued1", value: ["first", "second"] },
-    ] }]);
+    // Regression: store() used to be recorded as an invented openidm patch.
+    // AM persists through its identity repository, so it is an identity
+    // write named by AM attribute, and the openidm channel stays empty.
+    expect(effects.openidm).toEqual([]);
+    expect(effects.identityWrites).toEqual([
+      { identity: "uuid-1", attribute: "fr-attr-str1", values: ["new"] },
+      { identity: "uuid-1", attribute: "fr-attr-multi1", values: ["first", "second"] },
+    ]);
     expect(effects.managedStore?.["managed/alpha_user"]?.[0]).toMatchObject({
       frUnindexedString1: "new", frUnindexedMultivalued1: ["first", "second"],
     });
+  });
+
+  it("keeps store() out of the openidm channel and its failure stubs", () => {
+    const effects = runScript(
+      [
+        'var identity = idRepository.getIdentity("uuid-1");',
+        'identity.setAttribute("mail", ["new@example.com"]);',
+        'identity.store();',
+        'try { openidm.patch("managed/alpha_user/uuid-1", null, [{ operation: "replace", field: "sn", value: "x" }]); }',
+        'catch (e) { nodeState.putShared("failed", true); }',
+      ].join("\n"),
+      {
+        managed: { "managed/alpha_user": [{ _id: "uuid-1", mail: "old@example.com" }] },
+        openidmFailures: [{ match: { method: "patch", resource: "managed/alpha_user/uuid-1", ordinal: 1 }, reply: { code: 500 } }],
+      }
+    );
+    expect(effects.sharedState.final.failed).toBe(true);
+    expect(effects.openidm).toHaveLength(1);
+    expect(effects.identityWrites).toEqual([
+      { identity: "uuid-1", attribute: "mail", values: ["new@example.com"] },
+    ]);
+  });
+
+  it.each([
+    ["setAttribute", 'identity.setAttribute("userName", ["bob"]);', "uid"],
+    ["addAttribute", 'identity.addAttribute("frUnindexedString2", "x");', "fr-attr-str2"],
+  ])("refuses an IDM field name passed to %s rather than writing a sentinel", (_method, call, am) => {
+    // Regression: the write used to land on a "<not-an-AM-attribute>" field.
+    expect(() => runScript(
+      ['var identity = idRepository.getIdentity("uuid-1");', call, "identity.store();"].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1", userName: "alice" }] } }
+    )).toThrow(new RegExp(`IDM field name; AM names this attribute "${am}"`));
   });
 });

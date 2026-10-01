@@ -27,7 +27,7 @@ describe("per-channel strictness — openidm", () => {
         expected: "(none)",
         actual: 'create managed/alpha_user/alice body={"userName":"alice"}',
         message:
-          'openidm: undeclared write create managed/alpha_user/alice body={"userName":"alice"}',
+          'openidm: undeclared write create managed/alpha_user/alice body={"userName":"alice"}; declare this call in expect.openidm, or set allowUndeclared.openidmWrites: true',
       },
     ]);
   });
@@ -114,8 +114,8 @@ describe("per-channel strictness — openidm", () => {
       ],
     }));
     expect(verdict.mismatches.map((item) => item.message)).toEqual([
-      "openidm: undeclared read read managed/alpha_user/alice",
-      "openidm: undeclared read query managed/alpha_user",
+      "openidm: undeclared read read managed/alpha_user/alice; declaring expect.openidm makes it exhaustive — declare this call, or set allowUndeclared.openidmReads: true",
+      "openidm: undeclared read query managed/alpha_user; declaring expect.openidm makes it exhaustive — declare this call, or set allowUndeclared.openidmReads: true",
     ]);
   });
 
@@ -127,7 +127,7 @@ describe("per-channel strictness — openidm", () => {
     const expected = [{ method: "create" as const, resource: "managed/alpha_user/alice" }];
     expect(judge(makeCase({ expect: { outcome: "true", openidm: expected } }), effects)
       .mismatches.map((item) => item.message)).toEqual([
-      "openidm: undeclared read read managed/alpha_user/alice",
+      "openidm: undeclared read read managed/alpha_user/alice; declaring expect.openidm makes it exhaustive — declare this call, or set allowUndeclared.openidmReads: true",
     ]);
     expect(judge(makeCase({ expect: {
       outcome: "true", openidm: expected, allowUndeclared: { openidmReads: true },
@@ -153,7 +153,7 @@ describe("per-channel strictness — openidm", () => {
         path: "query managed/alpha_user",
         expected: "(none)",
         actual: "query managed/alpha_user",
-        message: "openidm: undeclared read query managed/alpha_user",
+        message: "openidm: undeclared read query managed/alpha_user; declare this call in expect.openidm, or set allowUndeclared.openidmReads: true",
       },
     ]);
   });
@@ -173,7 +173,7 @@ describe("per-channel strictness — openidm", () => {
       })
     );
     expect(verdict.mismatches[0]?.message).toBe(
-      'openidm: undeclared write action managed/alpha_user/alice action="resetPassword"'
+      'openidm: undeclared write action managed/alpha_user/alice action="resetPassword"; declare this call in expect.openidm, or set allowUndeclared.openidmWrites: true'
     );
   });
 });
@@ -201,7 +201,7 @@ describe("per-channel strictness — http", () => {
         path: "POST https://example.com/other",
         expected: "(none)",
         actual: "POST https://example.com/other",
-        message: "http: undeclared request POST https://example.com/other",
+        message: "http: undeclared request POST https://example.com/other; declare this request in expect.http, or set allowUndeclared.http: true",
       },
     ]);
   });
@@ -263,7 +263,7 @@ describe("per-channel strictness — logs", () => {
     const effects = makeEffects({ logs: [{ level: "info", message: "extra" }] });
     expect(judge(makeCase({ expect: { outcome: "true", logs: [] } }), effects)
       .mismatches.map((item) => item.message)).toEqual([
-      'logs: undeclared line info "extra"',
+      'logs: undeclared line info "extra"; declaring expect.logs makes it exhaustive — declare this line, or set allowUndeclared.logs: true',
     ]);
     expect(judge(makeCase({ expect: {
       outcome: "true", logs: [], allowUndeclared: { logs: true },
@@ -296,7 +296,7 @@ describe("per-channel strictness — logs", () => {
         path: 'info "checking email for alice"',
         expected: "(none)",
         actual: 'info "checking email for alice"',
-        message: 'logs: undeclared line info "checking email for alice"',
+        message: 'logs: undeclared line info "checking email for alice"; declaring expect.logs makes it exhaustive — declare this line, or set allowUndeclared.logs: true',
       },
     ]);
   });
@@ -324,7 +324,7 @@ describe("per-channel strictness — logs", () => {
         path: 'debug "noise"',
         expected: "(none)",
         actual: 'debug "noise"',
-        message: 'logs: undeclared line debug "noise"',
+        message: 'logs: undeclared line debug "noise"; declaring expect.logs makes it exhaustive — declare this line, or set allowUndeclared.logs: true',
       },
     ]);
   });
@@ -347,7 +347,7 @@ describe("per-channel strictness — callbacks", () => {
         path: "[0]",
         expected: "(none)",
         actual: '{"type":"NameCallback","prompt":"User Name"}',
-        message: "callbacks: [0] differed",
+        message: "callbacks: [0] differed; declare this callback in expect.callbacks, or set allowUndeclared.callbacks: true",
       },
     ]);
   });
@@ -392,5 +392,63 @@ describe("per-channel strictness — callbacks", () => {
       })
     );
     expect(verdict.pass).toBe(true);
+  });
+});
+
+describe("per-channel strictness — identityWrites", () => {
+  const write = { identity: "uuid-1", attribute: "fr-attr-str1", values: ["new"] };
+
+  it("fails an undeclared store() by default, like an openidm write", () => {
+    const verdict = judge(makeCase(), makeEffects({ identityWrites: [write] }));
+    expect(verdict.mismatches.map((item) => item.message)).toEqual([
+      'identityWrites: undeclared write uuid-1 fr-attr-str1=["new"]; declare this write in expect.identityWrites, or set allowUndeclared.identityWrites: true',
+    ]);
+  });
+
+  it("passes a declared write and rejects a values mismatch", () => {
+    const declared = (values: string[]) => makeCase({
+      expect: { outcome: "true", identityWrites: [{ identity: "uuid-1", attribute: "fr-attr-str1", values }] },
+    });
+    expect(judge(declared(["new"]), makeEffects({ identityWrites: [write] })).pass).toBe(true);
+    expect(judge(declared(["other"]), makeEffects({ identityWrites: [write] })).pass).toBe(false);
+  });
+
+  it("allows undeclared writes only with an explicit opt-out", () => {
+    const kase = makeCase({ expect: { outcome: "true", allowUndeclared: { identityWrites: true } } });
+    expect(judge(kase, makeEffects({ identityWrites: [write] })).pass).toBe(true);
+  });
+});
+
+describe("effects recorded before a channel existed", () => {
+  // 0.1.2 effects carry neither sessionProperties nor identityWrites; 0.1.2
+  // accepted putSessionProperty and store() and recorded neither.
+  const legacy = (): Record<string, unknown> => {
+    const effects: Record<string, unknown> = { ...makeEffects() };
+    delete effects.sessionProperties;
+    delete effects.identityWrites;
+    delete effects.evidence;
+    return effects;
+  };
+
+  it("judges 0.1.2-shaped effects instead of throwing", () => {
+    const verdict = judge(makeCase(), legacy());
+    expect(verdict.pass).toBe(true);
+  });
+
+  it("reports the missing channels unobserved, not empty", () => {
+    // The discriminating case: parsed as empty, this expectation would pass
+    // conclusively although no 0.1.2 run could have recorded the put.
+    const kase = makeCase({ expect: { outcome: "true", sessionProperties: { added: { tier: "gold" } } } });
+    const verdict = judge(kase, legacy());
+    expect(verdict.pass).toBe(true);
+    expect(verdict.conclusive).toBe(false);
+    expect(verdict.unverified.map((item) => item.channel).sort()).toEqual(["identityWrites", "sessionProperties"]);
+  });
+
+  it("is conclusive when the case opts out of both channels", () => {
+    const kase = makeCase({
+      expect: { outcome: "true", allowUndeclared: { sessionProperties: true, identityWrites: true } },
+    });
+    expect(judge(kase, legacy()).conclusive).toBe(true);
   });
 });

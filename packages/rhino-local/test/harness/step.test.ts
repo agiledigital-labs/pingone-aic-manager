@@ -13,6 +13,7 @@ function effects(over: Partial<RecordedEffects> = {}): RecordedEffects {
     openidm: [],
     http: [],
     logs: [],
+    identityWrites: [],
     ...over,
   };
 }

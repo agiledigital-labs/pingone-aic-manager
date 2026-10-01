@@ -233,5 +233,13 @@ The AIC result did not directly prove the managed-record shape after
 `store()`; the external between-pass IDM assertion was removed during
 diagnosis so it could not mask the script-visible results. Whether an
 `addAttribute` change is visible before `store()` remains unmeasured.
+
+Because that shape is unproven, the local script tester does not model
+`store()` as an IDM write. It records an `identityWrites` effect per stored
+attribute, named by the AM attribute the script used, and keeps it out of the
+`openidm` channel and its failure stubs (AM persists through the identity
+repository, not the `openidm` binding). It refuses an IDM field name passed to
+`setAttribute`/`addAttribute`: a wrong-name *read* returning no values is
+measured above, but what `store()` does with a wrong-name *write* is not.
 `live-identity-writes.e2e.test.ts` retains per-call diagnostics, and its
 fixture cleanup deletes the user.

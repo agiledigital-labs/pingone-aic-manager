@@ -10,7 +10,7 @@ import type {
   RecordedEffects,
   StateBucket,
 } from "../case/types.ts";
-import { isPlainObject, parseJsonObject, parseJsonValue } from "../case/util.ts";
+import { isPlainObject, parseIdentityWriteEffect, parseJsonObject, parseJsonValue } from "../case/util.ts";
 
 const LOG_LEVEL_SET: ReadonlySet<string> = new Set(LOG_LEVELS);
 const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
@@ -53,6 +53,7 @@ export function parseHarvest(raw: string): RecordedEffects {
     openidm: parseArray(parsed.openidm, "harvest.openidm", parseOpenidm),
     http: parseArray(parsed.http, "harvest.http", parseHttp),
     logs: parseArray(parsed.logs, "harvest.logs", parseLog),
+    identityWrites: parseArray(parsed.identityWrites, "harvest.identityWrites", parseIdentityWriteEffect),
   };
   if (parsed.discardedOutcome !== undefined) {
     if (parsed.discardedOutcome !== null && typeof parsed.discardedOutcome !== "string") {

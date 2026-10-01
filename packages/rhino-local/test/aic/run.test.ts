@@ -59,6 +59,7 @@ describe("runAicLane", () => {
       "http",
       "logs",
       "sessionProperties",
+      "identityWrites",
     ]);
     expect(effects.openidm).toEqual([]);
     expect(fake.aicArgs.every((args) => args[0] === "--no-prompt")).toBe(true);

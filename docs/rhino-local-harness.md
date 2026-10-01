@@ -657,8 +657,8 @@ The verdict and comparison report distinguish all three cases:
   gaps, and make a passing verdict non-conclusive;
 - pre-subject state absent from `given` is ambient state in its own report.
 
-The AIC recorder also marks `openidm`, `http`, and `logs` unobserved. Their
-empty arrays are placeholders required by the common effect shape, not claims
+The AIC recorder also marks `openidm`, `http`, `logs`, `sessionProperties`
+and `identityWrites` unobserved. Their empty values are placeholders required by the common effect shape, not claims
 that no such effects occurred. Its evidence also carries a standing `unified`
 state-bucket qualification: same-value and lower-precedence writes may produce
 no unified delta at all. The subject-snapshot wrapper and these revised

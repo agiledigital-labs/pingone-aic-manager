@@ -171,7 +171,7 @@ describe("verdict engine — state diffs", () => {
         path: "debugFlag",
         expected: "(none)",
         actual: '"yes"',
-        message: 'sharedState: undeclared added "debugFlag"',
+        message: 'sharedState: undeclared added "debugFlag"; declare this key in expect.sharedState, or set allowUndeclared.sharedState: true',
       },
     ]);
   });
@@ -288,7 +288,7 @@ outcome: expected "true", actual "false"
 sharedState: missing added "verified"
   expected: true
   actual: <absent>
-openidm: undeclared write create managed/alpha_user/alice body={"userName":"alice"}
+openidm: undeclared write create managed/alpha_user/alice body={"userName":"alice"}; declare this call in expect.openidm, or set allowUndeclared.openidmWrites: true
   expected: (none)
   actual: create managed/alpha_user/alice body={"userName":"alice"}`
     );
