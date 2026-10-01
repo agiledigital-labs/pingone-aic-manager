@@ -6,6 +6,7 @@ import type {
   Given,
   JsonObject,
   RecordedEffects,
+  CompleteRecordedEffects,
   StateBucket,
 } from "../../src/case/index.ts";
 
@@ -34,8 +35,8 @@ export function makeCase(
 
 export function makeEffects(
   overrides: Partial<RecordedEffects> = {}
-): RecordedEffects {
-  const effects: RecordedEffects = {
+): CompleteRecordedEffects {
+  const effects: CompleteRecordedEffects = {
     outcome: "true",
     sharedState: { initial: {}, final: {} },
     transientState: { initial: {}, final: {} },

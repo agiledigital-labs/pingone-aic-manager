@@ -60,23 +60,38 @@ export interface Channels {
   session?: JsonObject;
 }
 
-/** The mutable draft `beforeRun` is handed. */
+/**
+ * A request draft as `toGiven`, `toCase` and `applyInputsAndEsv` accept it.
+ *
+ * Channels added after 0.1.2 are optional, so a draft written against 0.1.2
+ * still compiles and runs; an absent channel means an empty one. `beforeRun`
+ * is handed the populated form, `ResolvedRequestDraft`.
+ */
 export interface RequestDraft {
   state: { shared: JsonObject; transient: JsonObject };
   /** Assign an object here in beforeRun when no suite or test value exists. */
   registeredObjectAttributes?: JsonObject;
   esv: Record<string, string | null>;
-  esvInState: boolean;
+  esvInState?: boolean;
   headers: Record<string, string[]>;
   params: Record<string, string[]>;
-  cookies: Record<string, string>;
+  cookies?: Record<string, string>;
   cookieName?: string;
-  http: HttpStub[];
-  openidmFailures: OpenidmFailureStub[];
-  bindingOverrides: Record<string, string>;
+  http?: HttpStub[];
+  openidmFailures?: OpenidmFailureStub[];
+  bindingOverrides?: Record<string, string>;
   session: JsonObject;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;
+}
+
+/** The mutable draft `beforeRun` is handed: every channel present. */
+export interface ResolvedRequestDraft extends RequestDraft {
+  esvInState: boolean;
+  cookies: Record<string, string>;
+  http: HttpStub[];
+  openidmFailures: OpenidmFailureStub[];
+  bindingOverrides: Record<string, string>;
 }
 
 /** A managed record the harness creates and is therefore responsible for. */
@@ -87,7 +102,7 @@ export interface FixtureSpec {
 
 export interface BeforeRunContext<TInput> {
   input: TInput;
-  request: RequestDraft;
+  request: ResolvedRequestDraft;
   fixtures: FixtureCreator;
 }
 

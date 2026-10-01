@@ -11,12 +11,13 @@ import type {
   HttpEffect,
   OpenidmEffect,
   RecordedEffects,
+  CompleteRecordedEffects,
   StateChannel,
   StateMutation,
   Verdict,
 } from "../case/types.ts";
 import { formatValue } from "../case/util.ts";
-import { httpMatches, judge, openidmMatches } from "../case/verdict.ts";
+import { httpMatches, judge, normaliseEffects, openidmMatches } from "../case/verdict.ts";
 
 export interface EffectsDisagreement {
   channel: EvidenceChannel;
@@ -49,11 +50,14 @@ type LocatedMutation =
 
 /** Compare observable effects without turning absent evidence into equality. */
 export function diffRecordedEffects(
-  local: RecordedEffects,
-  aic: RecordedEffects,
+  localInput: RecordedEffects,
+  aicInput: RecordedEffects,
   expected?: Expect,
   priorExpectations: readonly Expect[] = []
 ): EffectsComparison {
+  // A channel either producer omitted becomes unobserved here, never empty.
+  const local = normaliseEffects(localInput);
+  const aic = normaliseEffects(aicInput);
   const disagreements: EffectsDisagreement[] = [];
   const observationGaps: ObservationGap[] = [];
   const localUnobserved = new Set(local.evidence?.unobservedChannels ?? []);
@@ -230,8 +234,8 @@ function isHttpEffect(value: unknown): value is HttpEffect {
 }
 
 function compareState(
-  local: RecordedEffects,
-  aic: RecordedEffects,
+  local: CompleteRecordedEffects,
+  aic: CompleteRecordedEffects,
   localUnobserved: ReadonlySet<Channel>,
   aicUnobserved: ReadonlySet<Channel>,
   expected: Expect | undefined,
@@ -383,7 +387,7 @@ function priorMatcher(prior: readonly Expect[], bucket: StateChannel, key: strin
   return undefined;
 }
 
-function unifiedBeforeHasKey(effects: RecordedEffects, key: string): boolean {
+function unifiedBeforeHasKey(effects: CompleteRecordedEffects, key: string): boolean {
   if (Object.prototype.hasOwnProperty.call(effects.evidence?.ambientState ?? {}, key)) {
     return true;
   }
@@ -406,7 +410,7 @@ function hiddenMutationGap(
 }
 
 function collectState(
-  effects: RecordedEffects,
+  effects: CompleteRecordedEffects,
   unobserved: ReadonlySet<Channel>,
   lane: string,
   gaps: ObservationGap[]
@@ -516,8 +520,8 @@ function disagree(
 
 export function judgeBoth(
   kase: Case,
-  local: RecordedEffects,
-  aic: RecordedEffects
+  local: CompleteRecordedEffects,
+  aic: CompleteRecordedEffects
 ): { local: Verdict; aic: Verdict } {
   return { local: judge(kase, local), aic: judge(kase, aic) };
 }

@@ -1,6 +1,6 @@
 export { isPortable } from "./portable.ts";
 export { defineCase, validateCase } from "./validate.ts";
-export { judge } from "./verdict.ts";
+export { judge, normaliseEffects } from "./verdict.ts";
 export {
   ALLOW_UNDECLARED_CHANNELS,
   CASE_KEYS,
@@ -56,6 +56,7 @@ export type {
   Pattern,
   RecordingEvidence,
   RecordedEffects,
+  CompleteRecordedEffects,
   StateBucket,
   StateChannel,
   StateDiff,

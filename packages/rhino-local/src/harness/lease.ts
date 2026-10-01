@@ -12,7 +12,7 @@ import type {
   CallbackEffect,
   Expect,
   JsonObject,
-  RecordedEffects,
+  CompleteRecordedEffects,
   Verdict,
 } from "../case/types.ts";
 import { runCase } from "../bindings/index.ts";
@@ -40,7 +40,7 @@ import type {
 
 export interface RunResult {
   kase: Case;
-  effects: RecordedEffects;
+  effects: CompleteRecordedEffects;
   verdict: Verdict;
   /** Fixture provenance for the AIC lane; author-declared managed data has none. */
   fixtures: readonly FixtureSpec[];
@@ -59,7 +59,7 @@ export interface RunResult {
 /** One pass of a step chain: what it was asked, what it did, what was sent back. */
 export interface StepResult {
   kase: Case;
-  effects: RecordedEffects;
+  effects: CompleteRecordedEffects;
   verdict: Verdict;
   /** Exactly what the next pass was handed as `given.callbacks`. */
   submitted: CallbackEffect[];
@@ -67,7 +67,7 @@ export interface StepResult {
 
 export interface CheckContext<TInput> {
   input: TInput;
-  effects: RecordedEffects;
+  effects: CompleteRecordedEffects;
 }
 
 export interface LeaseOptions {
@@ -115,7 +115,7 @@ export type Check<TInput> = (
 
 export type LeaseLaneCheck = (
   idm: IdmHandle,
-  effects: RecordedEffects
+  effects: CompleteRecordedEffects
 ) => void | Promise<void>;
 
 /** Hooks bound to parsed input but replayed with each lane's own effects/IDM. */

@@ -8,6 +8,7 @@ import {
 import type {
   Channels,
   RequestDraft,
+  ResolvedRequestDraft,
   SuiteSpec,
   WireMap,
   WireValue,
@@ -27,7 +28,7 @@ export const ESV_STATE_PREFIX = "esv.";
 export function mergeChannels(
   always: Channels | undefined,
   override: Channels | undefined
-): RequestDraft {
+): ResolvedRequestDraft {
   const cookieName = override?.cookieName ?? always?.cookieName;
   const registeredObjectAttributes = always?.registeredObjectAttributes === undefined &&
       override?.registeredObjectAttributes === undefined
@@ -104,18 +105,33 @@ export function applyInputsAndEsv(
     esvPropertyKey(name);
   }
   for (const [key, value] of Object.entries(input)) {
-    if (draft.esvInState && key.startsWith(ESV_STATE_PREFIX)) {
+    if (draft.esvInState === true && key.startsWith(ESV_STATE_PREFIX)) {
       throw new Error(
         `rhino-local: input ${JSON.stringify(key)} collides with the ${JSON.stringify(ESV_STATE_PREFIX)} namespace reserved for ESV overrides; rename the input`
       );
     }
     draft.state.shared[key] = value as JsonObject[string];
   }
-  if (draft.esvInState) {
+  if (draft.esvInState === true) {
     for (const [name, value] of Object.entries(draft.esv)) {
       draft.state.shared[esvPropertyKey(name)] = value;
     }
   }
+}
+
+/**
+ * Fill the channels a 0.1.2 draft did not have. Absent means empty, which is
+ * what `mergeChannels` produces when neither level declares the channel.
+ */
+export function resolveDraft(draft: RequestDraft): ResolvedRequestDraft {
+  return {
+    ...draft,
+    esvInState: draft.esvInState ?? false,
+    cookies: draft.cookies ?? {},
+    http: draft.http ?? [],
+    openidmFailures: draft.openidmFailures ?? [],
+    bindingOverrides: draft.bindingOverrides ?? {},
+  };
 }
 
 /** Parse a run's inputs against the suite's schema, or reject extras. */
@@ -151,10 +167,11 @@ export function parseInputs<TSchema extends z.ZodType>(
  * `putSessionProperty` — sends exactly what the local lane seeded.
  */
 export function toGiven(
-  draft: RequestDraft,
+  input: RequestDraft,
   base: Given = {},
   realm = "alpha"
 ): Given {
+  const draft = resolveDraft(input);
   const given: Given = { ...base };
   given.esv = { ...(base.esv ?? {}), ...Object.fromEntries(
     Object.entries(draft.esv).map(([name, value]) => [esvPropertyKey(name), value])

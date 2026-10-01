@@ -231,6 +231,19 @@ It reports the two as unobserved rather than empty — a 0.1.2 run may have made
 writes it never recorded — so the verdict passes but is not `conclusive` unless
 the case opts out of both channels.
 
+The same holds at compile time. In the public `RecordedEffects` type both
+channels are optional, so a 0.1.2 producer still type-checks;
+`diffRecordedEffects()` reports an omitted one as an observation gap, and
+`normaliseEffects()` fills it in and marks it unobserved. Effects the harness
+hands back (`RunResult.effects`) are `CompleteRecordedEffects`, with both
+present. Likewise the channels `RequestDraft` gained since 0.1.2 (`cookies`,
+`http`, `openidmFailures`, `bindingOverrides`, `esvInState`) are optional, and
+`toGiven()` reads an absent one as empty (`resolveDraft()` fills them).
+`beforeRun` is handed a `ResolvedRequestDraft`, with all of them present.
+`esv` values widened from `string` to `string | null` (a `null` declares an
+absent ESV), so code that reads a draft's `esv` value as a `string` needs a
+null check.
+
 ### ESV declarations
 
 Declare values read through `systemEnv.getProperty("esv.<name>")` with the
