@@ -44,7 +44,7 @@ const suite = defineSuite({
 describe("session property effects", () => {
   const lease = useLease(suite, aicWhenEnabled("live-session-properties"));
 
-  it("judges put/remove and reads the updated session on the next pass", async () => {
+  it("judges put/remove while later passes read the starting session", async () => {
     const run = await lease.run().step({
       expect: {
         callbacks: [{ type: "NameCallback", prompt: "Continue" }],
