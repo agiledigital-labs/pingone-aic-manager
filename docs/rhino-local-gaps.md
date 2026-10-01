@@ -164,9 +164,14 @@ and is `undefined` on `JavaImporter()` or `JavaImporter(java.util)` (measured
 2026-10-01, `live-java-importer-scope`); the local lane matches all four.
 `object()` is the same local Java-map model as a registered `objectAttributes`,
 so an entry named `get`, `put` or `size` neither shadows nor replaces a method.
-The legacy `Action`/`HiddenValueCallback` importer members are still added to
-every local importer; legacy scripts are unsupported and that scope is
-unmeasured.
+The legacy result classes `Action` and `HiddenValueCallback` are `undefined`
+on next-gen from every importer — `JavaImporter()`, `JavaImporter(java.util)`,
+and even one naming `org.forgerock.openam.auth.node.api.Action` or
+`com.sun.identity.authentication.callbacks.HiddenValueCallback` (measured
+2026-10-01, `live-java-importer-scope`); the local lane matches all six.
+Locally the legacy engine exposes each one only to an importer that names its
+class or its package. That legacy scope is **unmeasured**: the AIC wrapper
+emit is next-gen only, so no legacy script reaches the tenant lane.
 
 What the 2026-09-12 ranking called the shutter gap is closed:
 `java-class-shutter`, `for-each-java-collection` and
