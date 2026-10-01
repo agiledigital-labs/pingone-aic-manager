@@ -76,6 +76,17 @@ describe("request maps", () => {
     expect(cookies.size()).toBe(1);
   });
 
+  it.each([
+    ["with a session", { existingSession: {} }, "string", 2],
+    ["without a session", {}, "object", 1],
+  ])("lists the session cookie %s", (_name, given, type, size) => {
+    const sandbox = loadBehaviour({ cookieName: "sid", requestCookies: { testCookie: "one" }, ...given });
+    const cookies = sandbox.requestCookies as { get: (key: string) => unknown; size: () => number };
+    expect(typeof cookies.get("sid")).toBe(type);
+    expect(cookies.size()).toBe(size);
+    expect(cookies.get("testCookie")).toBe("one");
+  });
+
   describe("session cookie collision", () => {
     it.each([
       ["refuses an author cookie named like the session cookie", { existingSession: {}, requestCookies: { sid: "x" } }, true],

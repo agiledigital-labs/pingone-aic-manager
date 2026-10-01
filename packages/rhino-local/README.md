@@ -271,10 +271,12 @@ name with `.run().cookies({ name: "other" })`, or edit `request.cookies` in
 `requestCookies`; the AIC lane sends the same values on `/authenticate`.
 When a test also requests `session`, the harness adds the tenant's session
 cookie and refuses an author cookie with that name instead of overwriting it.
-The local lane refuses the same collision against its `cookieName`. It does
-not add the session cookie to `requestCookies`: whether AM's `requestCookies`
-lists the session cookie has not been measured, so a script that reads it
-there may see it on AIC and not locally.
+AM lists that session cookie in `requestCookies` as a string, beside the
+author's cookies (measured, `live-session-cookie`). The local lane does the
+same under its `cookieName`, with the fixed value
+`"rhino-local-session-token"`, and refuses the same collision. Presence,
+`size()` and type agree across lanes; the value cannot, because the tenant's
+token changes every run, so do not copy it into an effect you compare.
 
 `state.shared.objectAttributes` seeds a plain object, just as `putShared`
 does on AIC. To seed the registered Java-map container, use

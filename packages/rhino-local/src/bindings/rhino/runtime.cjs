@@ -3167,10 +3167,6 @@ function __rhinoLocalSeed(given) {
     caseInsensitive: false,
     asList: true,
   });
-  requestCookies = __rhinoLocalRequestMap(given.requestCookies || {}, {
-    caseInsensitive: false,
-    asList: false,
-  });
 
   // Assigned either way: the runner's scope outlives one case, so leaving a
   // previous case's session installed would seed a binding nobody declared.
@@ -3188,20 +3184,27 @@ function __rhinoLocalSeed(given) {
   if (given.cookieName !== undefined) {
     cookieName = given.cookieName;
   }
-  // Mirrors the AIC lane's attachSessionCookie refusal, so a case that cannot
-  // run there fails here too. Whether AM's requestCookies also lists the
-  // session cookie itself is unmeasured, so this lane does not add it.
-  if (
-    given.existingSession !== undefined &&
-    given.requestCookies !== undefined &&
-    Object.prototype.hasOwnProperty.call(given.requestCookies, String(cookieName))
-  ) {
-    throw new Error(
-      "rhino-local: request cookie " +
-        JSON.stringify(String(cookieName)) +
-        " collides with the tenant session cookie"
-    );
+  // A request that carries a session carries its cookie, and AM lists it in
+  // requestCookies as a string beside the author's cookies (measured
+  // 2026-10-01, live-session-cookie). The token is per-run on the tenant, so
+  // the local value is a fixed placeholder: presence, count and type agree,
+  // the value never can. An author cookie of the same name is refused, as
+  // the AIC lane's attachSessionCookie refuses it.
+  var cookies = __rhinoLocalClone(given.requestCookies || {});
+  if (given.existingSession !== undefined) {
+    if (Object.prototype.hasOwnProperty.call(cookies, String(cookieName))) {
+      throw new Error(
+        "rhino-local: request cookie " +
+          JSON.stringify(String(cookieName)) +
+          " collides with the tenant session cookie"
+      );
+    }
+    cookies[String(cookieName)] = "rhino-local-session-token";
   }
+  requestCookies = __rhinoLocalRequestMap(cookies, {
+    caseInsensitive: false,
+    asList: false,
+  });
   if (given.resumedFromSuspend !== undefined) {
     resumedFromSuspend = given.resumedFromSuspend;
   }
