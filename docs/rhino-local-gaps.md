@@ -127,6 +127,25 @@ live run was a curl with its own headers and parameters, not the case's
 `given`, and its payload carries the tenant host and client-certificate
 headers, so it is not committed.
 
+`identity.store()` follows the layouts measured 2026-10-01
+(`live-identity-store-families`, `docs/api/14` "What `store()` writes"): every
+`fr-attr-*` family by one representative, plus `givenName`, `sn`, `mail` and
+`telephoneNumber`, including AM's own `IdentityUpdateException` for the
+refusals DS makes. What remains:
+
+- **`cn`** is refused locally. AM stores it outside the IDM managed record,
+  and the local lane holds only that record, so a `cn` written in one pass
+  could not be read back in the next. A local `cn` *read* returns the seeded
+  record's `cn` (normally none), where AIC derives `"<givenName> <sn>"`.
+- **Family members other than the representative** (`fr-attr-istr2`..`20`,
+  …) are assumed to match it, not measured.
+- **Any other attribute** throws until the suite declares its layout in
+  `identityAttributes`. The declaration is trusted locally and checked only by
+  conformance, through whatever the script reads back.
+- **An unset IDM property** reads `null` on AIC (the property is in the
+  schema) and is missing locally (`undefined`), including after `store()`
+  removes it. The families probe compares the two as "absent".
+
 With a session requested, AM lists the session cookie in `requestCookies` as
 a string (measured 2026-10-01, `live-session-cookie`). The local lane adds it
 under `cookieName` with a fixed placeholder value, so presence, count and type
