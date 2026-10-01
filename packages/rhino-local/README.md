@@ -370,7 +370,11 @@ in `always`, with `.cookieName(name)`, or in `beforeRun` via
 `request.cookieName`. With `aicWhenEnabled()`, any explicit author value is
 refused even when the AIC lane is off. When AIC is enabled, the lease reads
 `/am/json/serverinfo/*` before the local pass and seeds that tenant value;
-the one-shot `conform` path discovers it before its local pass too.
+the one-shot `conform` path discovers it before its local pass too. A failed
+discovery is handled like any other tenant failure on that path: the lease
+fails the file's setup, as a failed lease `open()` does, while `conform`
+reports it as `report.aic.error`, skips the AIC lane and still runs the local
+lane, without a cookie name rather than with an invented one.
 For a pre-recorded one-shot chain, choose `oneShotRunId`, seed each local
 case's `given.scriptName` and `given.loggerScriptId` with
 `oneShotSubjectName(oneShotRunId)` and `oneShotSubjectId(oneShotRunId)`, then
