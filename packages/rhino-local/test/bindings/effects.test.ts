@@ -476,6 +476,9 @@ describe("callbacks (submitted values)", () => {
     expect(Array.isArray(names)).toBe(false);
     expect(names.length).toBe(2);
     expect(names[0]).toBe("alice");
+    // Regression: an enumerable `length` showed up in for...in / Object.keys,
+    // which an array's indices never include.
+    expect(Object.keys(names)).toEqual(["0", "1"]);
   });
 
   it("treats an explicit empty given.callbacks as a first pass", () => {

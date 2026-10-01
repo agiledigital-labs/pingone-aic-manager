@@ -160,6 +160,20 @@ describe("idRepository", () => {
     });
   });
 
+  it("enumerates only indices on a getAttributeValues toArray()", () => {
+    const effects = runScript(
+      [
+        'var keys = [];',
+        'var arr = idRepository.getIdentity("uuid-1").getAttributeValues("fr-attr-multi1").toArray();',
+        'for (var k in arr) { keys.push(k); }',
+        'nodeState.putShared("keys", keys.join(","));',
+        'nodeState.putShared("length", arr.length);',
+      ].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1", frUnindexedMultivalued1: ["a", "b"] }] } }
+    );
+    expect(effects.sharedState.final).toMatchObject({ keys: "0,1", length: 2 });
+  });
+
   it("keeps store() out of the openidm channel and its failure stubs", () => {
     const effects = runScript(
       [
