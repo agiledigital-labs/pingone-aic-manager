@@ -26,14 +26,14 @@ describe("carryGiven", () => {
     esv: { threshold: "0.8" },
   };
 
-  it("carries session-property changes into the next pass", () => {
+  it("keeps the starting session visible after property effects", () => {
     const next = carryGiven(previous, effects({
       sessionProperties: {
         initial: { tier: "gold" },
         final: { tier: "silver", added: "yes" },
       },
     }), []);
-    expect(next.existingSession).toEqual({ tier: "silver", added: "yes" });
+    expect(next.existingSession).toEqual({ tier: "gold" });
   });
 
   it("carries shared state as the pass left it", () => {

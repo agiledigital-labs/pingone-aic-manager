@@ -1587,19 +1587,23 @@ returns the same wrapper, which prints as
 convert, `"x"` throws `Cannot convert x to java.lang.Integer`, and `null` has
 no matching method.
 
-**Session-property effects pending live verification (2026-10-01).** The
-local script tester records `action.putSessionProperty` and
-`removeSessionProperty` as changes to the supplied session and carries them
-into `existingSession` on a later callback pass. The first AIC-enabled
-run on 2026-10-01 chose mismatch on the resumed pass where the local model
-chose match. The combined local next-pass assumption is wrong; the first run
-did not reveal which property differed.
-`live-session-properties.e2e.test.ts` uses a pre-existing session,
-sets one custom property, removes another, and reads both on the next pass.
-The AIC recorder does not read the finished session: the measured way to
-observe properties is a separate journey with the returned session cookie
-(`09-journeys.md`), which would need another graph and invocation. It reports
-this channel as an observation gap until such a read is implemented.
+**Session properties across a callback (live AIC-lane probe,
+2026-10-01).** A journey started with `existingSession.before = "initial"`.
+The script successfully called `action.putSessionProperty("probe", "after")`
+and `removeSessionProperty("before")` before sending a callback. On the
+resumed pass, `existingSession.before` and `get("before")` still returned
+"initial", with `containsKey("before")` true. The new `probe` property was
+absent: dot access was `undefined`, `get("probe")` was `null`, and
+`containsKey("probe")` was false. Thus action property effects do not change
+the `existingSession` binding during the same journey. The local tester now
+keeps the original session across callback passes while still judging each
+put/remove effect.
+
+This probe did not read the session after journey completion, so exactly when
+AM applies those effects remains unmeasured. The AIC recorder cannot observe
+the completed session with its current result dump; it marks this effect
+channel as an observation gap. A separate journey with the returned session
+cookie would measure the completed session (see `09-journeys.md`).
 
 
 **`nodeState`** (`binding-nodestate`):

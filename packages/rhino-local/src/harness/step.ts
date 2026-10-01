@@ -103,10 +103,8 @@ export function carryGiven(
     // or a chain can never test a journey that writes and then reads back.
     next.managed = clone(effects.managedStore);
   }
-  if (JSON.stringify(effects.sessionProperties.initial) !==
-      JSON.stringify(effects.sessionProperties.final)) {
-    next.existingSession = clone(effects.sessionProperties.final) as Record<string, string>;
-  }
+  // AM exposes the session supplied at journey start on every callback pass.
+  // Action property writes are judged effects, not changes to this binding.
   return next;
 }
 
