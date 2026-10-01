@@ -75,4 +75,19 @@ describe("request maps", () => {
     expect(cookies.containsKey("session")).toBe(true);
     expect(cookies.size()).toBe(1);
   });
+
+  describe("session cookie collision", () => {
+    it.each([
+      ["refuses an author cookie named like the session cookie", { existingSession: {}, requestCookies: { sid: "x" } }, true],
+      ["accepts it without a session", { requestCookies: { sid: "x" } }, false],
+      ["accepts other cookie names with a session", { existingSession: {}, requestCookies: { testCookie: "x" } }, false],
+    ])("%s", (_name, given, refused) => {
+      const run = () => loadBehaviour({ cookieName: "sid", ...given });
+      if (refused) {
+        expect(run).toThrow(/request cookie "sid" collides with the tenant session cookie/);
+      } else {
+        expect(run).not.toThrow();
+      }
+    });
+  });
 });
