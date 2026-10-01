@@ -79,4 +79,66 @@ describe("existingSession on the real Rhino engine", () => {
     );
     expect(result.verdict.summary).toBe("");
   });
+
+  it("fails when a session-property value is wrong", async () => {
+    const result = await runCase(runner, defineCase({
+      name: "session-property-value",
+      script: 'action.putSessionProperty("group", "wrong").goTo("done");',
+      outcomes: ["done"],
+      expect: {
+        outcome: "done",
+        sessionProperties: { added: { group: "right" } },
+      },
+    }));
+    expect(result.effects.sessionProperties.final).toEqual({ group: "wrong" });
+    expect(result.verdict.pass).toBe(false);
+    expect(result.verdict.mismatches.map((item) => item.message)).toEqual([
+      'sessionProperties: added "group" differed',
+    ]);
+  });
+
+  it("fails on undeclared puts and removals", async () => {
+    const result = await runCase(runner, defineCase({
+      name: "session-property-undeclared",
+      script: [
+        'action.putSessionProperty("new", "value");',
+        'action.removeSessionProperty("old");',
+        'action.goTo("done");',
+      ].join("\n"),
+      outcomes: ["done"],
+      given: { existingSession: { old: "before" } },
+      expect: { outcome: "done" },
+    }));
+    expect(result.effects.sessionProperties).toEqual({
+      initial: { old: "before" }, final: { new: "value" },
+    });
+    expect(result.verdict.pass).toBe(false);
+    expect(result.verdict.mismatches.map((item) => item.message)).toEqual([
+      'sessionProperties: undeclared added "new"',
+      'sessionProperties: undeclared removed "old"',
+    ]);
+  });
+
+  it("distinguishes removal from leaving a seeded property alone", async () => {
+    const common = {
+      outcomes: ["done"],
+      given: { existingSession: { old: "before" } },
+      expect: { outcome: "done", sessionProperties: { removed: ["old"] } },
+    };
+    const removed = await runCase(runner, defineCase({
+      ...common,
+      name: "session-property-removed",
+      script: 'action.removeSessionProperty("old").goTo("done");',
+    }));
+    const untouched = await runCase(runner, defineCase({
+      ...common,
+      name: "session-property-untouched",
+      script: 'action.goTo("done");',
+    }));
+    expect(removed.verdict.pass).toBe(true);
+    expect(untouched.verdict.pass).toBe(false);
+    expect(untouched.verdict.mismatches.map((item) => item.message)).toEqual([
+      'sessionProperties: "old" was not removed',
+    ]);
+  });
 });
