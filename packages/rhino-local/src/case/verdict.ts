@@ -994,7 +994,7 @@ function judgeIdentityWrites(
   return mismatches;
 }
 
-function identityWriteMatches(expected: IdentityWriteExpect, actual: IdentityWriteEffect): boolean {
+export function identityWriteMatches(expected: IdentityWriteExpect, actual: IdentityWriteEffect): boolean {
   return matchesPattern(expected.identity, actual.identity) &&
     matchesPattern(expected.attribute, actual.attribute) &&
     (expected.values === undefined || matchesValue(expected.values, actual.values));
