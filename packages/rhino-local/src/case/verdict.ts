@@ -68,7 +68,7 @@ type Strictness = { [K in AllowUndeclaredChannel]: boolean };
 export function judge(input: unknown, effects: unknown): Verdict {
   const kase = validateCase(input);
   const recorded = parseEffects(effects);
-  const strictness = resolveStrictness(kase.expect.allowUndeclared);
+  const strictness = resolveStrictness(kase.expect);
   const evidence = recorded.evidence ?? exactEvidence();
   const unobserved = new Set(evidence.unobservedChannels);
   const reconciled = reconcileUnbucketedState(
@@ -370,8 +370,15 @@ function exactEvidence(): RecordingEvidence {
   };
 }
 
-function resolveStrictness(flags: AllowUndeclared | undefined): Strictness {
+function resolveStrictness(expect: Expect): Strictness {
   const resolved: Strictness = { ...DEFAULT_ALLOW_UNDECLARED };
+  if (expect.openidm !== undefined) {
+    resolved.openidmReads = false;
+  }
+  if (expect.logs !== undefined) {
+    resolved.logs = false;
+  }
+  const flags: AllowUndeclared | undefined = expect.allowUndeclared;
   if (flags === undefined) {
     return resolved;
   }

@@ -105,6 +105,35 @@ describe("per-channel strictness — openidm", () => {
     expect(verdict.pass).toBe(true);
   });
 
+  it("treats a declared empty channel as no reads or queries", () => {
+    const kase = makeCase({ expect: { outcome: "true", openidm: [] } });
+    const verdict = judge(kase, makeEffects({
+      openidm: [
+        { method: "read", resource: "managed/alpha_user/alice" },
+        { method: "query", resource: "managed/alpha_user" },
+      ],
+    }));
+    expect(verdict.mismatches.map((item) => item.message)).toEqual([
+      "openidm: undeclared read read managed/alpha_user/alice",
+      "openidm: undeclared read query managed/alpha_user",
+    ]);
+  });
+
+  it("makes a declared write list exhaustive for reads unless explicitly allowed", () => {
+    const effects = makeEffects({ openidm: [
+      { method: "create", resource: "managed/alpha_user/alice" },
+      { method: "read", resource: "managed/alpha_user/alice" },
+    ] });
+    const expected = [{ method: "create" as const, resource: "managed/alpha_user/alice" }];
+    expect(judge(makeCase({ expect: { outcome: "true", openidm: expected } }), effects)
+      .mismatches.map((item) => item.message)).toEqual([
+      "openidm: undeclared read read managed/alpha_user/alice",
+    ]);
+    expect(judge(makeCase({ expect: {
+      outcome: "true", openidm: expected, allowUndeclared: { openidmReads: true },
+    } }), effects).pass).toBe(true);
+  });
+
   it("fails undeclared reads when the case tightens the channel", () => {
     const kase = makeCase({
       expect: {
@@ -230,7 +259,18 @@ describe("per-channel strictness — logs", () => {
     expect(verdict.mismatches).toEqual([]);
   });
 
-  it("still requires listed log lines to appear", () => {
+  it("treats a declared empty log channel as no lines", () => {
+    const effects = makeEffects({ logs: [{ level: "info", message: "extra" }] });
+    expect(judge(makeCase({ expect: { outcome: "true", logs: [] } }), effects)
+      .mismatches.map((item) => item.message)).toEqual([
+      'logs: undeclared line info "extra"',
+    ]);
+    expect(judge(makeCase({ expect: {
+      outcome: "true", logs: [], allowUndeclared: { logs: true },
+    } }), effects).pass).toBe(true);
+  });
+
+  it("requires listed log lines and rejects extra lines", () => {
     const kase = makeCase({
       expect: {
         outcome: "true",
@@ -251,10 +291,17 @@ describe("per-channel strictness — logs", () => {
         actual: "0",
         message: "logs: expected 1 line matching error /denied/, actual 0",
       },
+      {
+        channel: "logs",
+        path: 'info "checking email for alice"',
+        expected: "(none)",
+        actual: 'info "checking email for alice"',
+        message: 'logs: undeclared line info "checking email for alice"',
+      },
     ]);
   });
 
-  it("fails extra log lines only when the case tightens the channel", () => {
+  it("fails extra log lines when the case declares the channel", () => {
     const kase = makeCase({
       expect: {
         outcome: "true",
