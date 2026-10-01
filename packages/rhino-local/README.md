@@ -250,6 +250,16 @@ local only. An AIC-enabled run with one reports an observation gap and skips
 the tenant lane. This is separate from `given.bindings`, which supplies JSON
 seed data to supported mocks.
 
+An override expression can also wrap the original binding and call through to
+it. This is useful for a local-only call spy, but the expression is arbitrary
+JavaScript: the harness cannot prove that it preserves arguments, return
+values, or errors. It therefore remains AIC-ineligible. For the reported
+observation-only preambles, use the judged `sessionProperties` effect and the
+`esv`/`esvInState` channels instead. A generic AIC-eligible spy would produce
+call evidence only on the local lane, with no tenant call trace to compare, so
+there is no separate spy channel. Replacements for still-unimplemented
+binding behavior remain supported through `bindingOverrides`.
+
 ### `scriptName`
 
 The local harness seeds `scriptName` on every run. It defaults to the suite's
