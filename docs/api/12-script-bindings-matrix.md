@@ -1642,8 +1642,11 @@ for a map seeded that way: `typeof nodeState.get("objectAttributes").put` is
 "function"; `put("probe", "value")` succeeds; `get("probe")` on the same
 reference and on a fresh `nodeState.get("objectAttributes")` both return
 "value"; and the wrapper snapshots it, recording `objectAttributes` as
-**changed** to the seeded keys plus the put. Removing the map, or replacing it
-with a scalar, was not probed.
+**changed** to the seeded keys plus the put. Across a callback round trip
+(measured 2026-10-01, `live-object-attributes-removed` and
+`live-object-attributes-replaced`): after `nodeState.remove("objectAttributes")`
+on pass 1, pass 2 reads `null`; after `putShared("objectAttributes", "scalar")`
+it reads the string `"scalar"`. The registered map does not come back.
 
 **`openidm` writes** (`binding-openidm-writes`, on a throwaway
 `managed/alpha_role` record):
