@@ -127,10 +127,11 @@ live run was a curl with its own headers and parameters, not the case's
 `given`, and its payload carries the tenant host and client-certificate
 headers, so it is not committed.
 
-One request gap is **unmeasured**, not measured: with a session requested the
-AIC lane sends the tenant session cookie alongside the case's cookies, and
-whether `requestCookies` then lists it has not been probed. The local lane does
-not add it. Both lanes refuse an author cookie with the session cookie's name.
+With a session requested, AM lists the session cookie in `requestCookies` as
+a string (measured 2026-10-01, `live-session-cookie`). The local lane adds it
+under `cookieName` with a fixed placeholder value, so presence, count and type
+match; the value is per-run on the tenant and never matches. Both lanes refuse
+an author cookie with the session cookie's name.
 
 `JsonValue` prints the measured forms on both lanes
 (`test/harness/live-json-value.e2e.test.ts`): `object()` after `put("a", "b")`
