@@ -164,9 +164,10 @@ keeps its `goTo` outcome. Legacy `Action.send` behavior is separate.
 `sessionProperties` state diff. Declare `added`, `changed`, and `removed` keys
 in the pass's expectation; undeclared changes fail locally. The local step
 runner keeps the journey's starting `existingSession` on the next callback
-pass; action writes are not visible through that binding within the journey. AIC
-cannot currently read the completed subject session, so this effect channel
-reports an observation gap there.
+pass; action writes are not visible through that binding within the journey
+(measured). When AM applies them to the session — at journey completion or
+otherwise — is unmeasured. AIC cannot currently read the completed subject
+session, so this effect channel reports an observation gap there.
 
 `identity.store()` on an `idRepository.getIdentity(id)` handle produces judged
 `identityWrites` effects, one per attribute stored:

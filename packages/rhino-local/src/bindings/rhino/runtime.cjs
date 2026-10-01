@@ -2527,7 +2527,7 @@ idRepository.getIdentity = function (userName) {
       }
     },
     toString: function () {
-      return "org.forgerock.openam.scripting.api.ScriptedIdentityScriptWrapper@1b6d3586";
+      return "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper@1b6d3586";
     },
   };
 };

@@ -1065,8 +1065,8 @@ export const realCases: RealEntry[] = [
   ng("identity-resolve-diag", "fixtures/identity-resolve-diag.script.js", {
     // Live (docs/api/14): UUID resolves; userName and amadmin do not
     // (`this.amIdentity is null`). Placeholders stand in for the sandbox
-    // test user. Local getIdentity currently also matches userName — a
-    // predicted fidelity gap, recorded in docs/rhino-local-gaps.md.
+    // test user. Local resolution matches; the committed live payload
+    // abbreviates the two errors, so the value still differs as text.
     value: JSON.stringify({
       alice: "attr-error",
       [ALICE_ID]: "ok givenName-size=1",
@@ -1079,7 +1079,7 @@ export const realCases: RealEntry[] = [
     rewrites: resolveDiagUsers,
     gap: {
       reason:
-        "AIC's idRepository.getIdentity resolves a managed-user UUID only; a userName (and amadmin) gives an identity whose getAttributeValues throws `this.amIdentity is null`. The local mock also resolves by userName.",
+        "Resolution matches: both lanes resolve a managed-user UUID only, and a userName (or amadmin) gives an identity whose getAttributeValues throws `this.amIdentity is null`. The committed live payload abbreviates those two results to `attr-error`, while the probe emits `attr-error: <message>`; the full AIC text (including any `(name#line)` suffix) was not recorded, so the value cannot be compared verbatim until the probe is re-run live.",
       differs: ["value"],
     },
   }),
@@ -1126,7 +1126,7 @@ export const realCases: RealEntry[] = [
       rewrites: probeUserIs(ALICE_ID),
       gap: {
         reason:
-          "AIC's getAttributeValues returns a Java collection: it has toArray (length 1), has no includes, and String() prints `[{}]`. The local mock returns a JS array — includes, no toArray, `{}`.",
+          "Only the failed includes() call differs. Both lanes' getAttributeValues have length, size, get, [0], toArray and contains, lack includes, and print `[{}]`. On AIC the Java collection has no includes member, so the call throws `Cannot find function includes`; the local list is a JS array with includes shadowed by undefined, so it throws `Cannot call property includes`.",
         differs: ["value"],
       },
     }
@@ -3122,7 +3122,7 @@ export const realCases: RealEntry[] = [
     },
     gap: {
       reason:
-        "57/80 measured payload keys now match: ESV defaults and conversions, cacheManager, the seeded journey values and flags, null SAML/OAuth bindings, and logger.isTraceEnabled. Remaining gaps are tenant-backed JWT creation/validation and policy results; idRepository.getIdentity on an absent user (AIC returns its Java wrapper, which this mock does not model); JavaException wrappers for absent secrets; logger.getName includes the tenant script id; and Java reflection shapes for emailService enumeration and locales.",
+        "57/80 measured payload keys now match: ESV defaults and conversions, cacheManager, the seeded journey values and flags, null SAML/OAuth bindings, and logger.isTraceEnabled. Remaining gaps are tenant-backed JWT creation/validation and policy results; idRepository.getIdentity on an absent user (both lanes return the wrapper with the same class name and methods, but AIC's Java object also enumerates bean properties and java.lang.Object members such as class, getClass and wait); JavaException wrappers for absent secrets; logger.getName includes the tenant script id; and Java reflection shapes for emailService enumeration and locales.",
       differs: ["logger.getName","secrets.getGenericSecret","secrets.getDecryptionKey","secrets.getEncryptionKey","secrets.getSigningKey","secrets.getVerificationKey","jwtAssertion.generateJwt","jwtValidator.validateJwtClaims","policy.evaluate","policy.evaluateTree","idRepository.getIdentity","emailService/typeof-enumeration","locales","jwtAssertion.generateJwt/empty","jwtAssertion.generateJwt/HS256","jwtAssertion.generateJwt/HS256/string-key","jwtValidator.validateJwtClaims/empty","jwtValidator.validateJwtClaims/HS256","policy.evaluate/claims/oauth2Scopes","policy.evaluateTree/claims/oauth2Scopes","policy.evaluate/ssoToken","policy.evaluate/jwt","policy.evaluate/claims"],
     },
   }),
