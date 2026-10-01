@@ -1679,16 +1679,14 @@ Those two results remain pending live confirmation.
     `The value 'name eq' for parameter '_queryFilter' could not be parsed as a valid query filter`.
   - An unknown managed type throws `Resource 'managed/<type>' not found`.
 - Errors surface as `JavaException: …ResourceExceptionScriptAdapter: …`.
-- **Unmeasured for next-gen injected failures (2026-10-01):** the local script
-  tester can fail a numbered `openidm` call with a chosen HTTP ResourceException
-  code. The existing live probes establish the `JavaException: …
-  ResourceExceptionScriptAdapter: …` family for real IDM failures, but do not
-  establish how an arbitrary injected code appears on the script exception
-  (`code`, `getCode()`, or only text). `live-openidm-error-shape.e2e.test.ts`
-  makes a revision-mismatch patch that cannot alter the fixture, captures the
-  adapter family and `typeof error.code`, and deletes the fixture. Its result
-  must be checked before treating the local injected error's `code` property
-  as an AIC contract.
+- **The script exception has no `code` property (measured).**
+  `live-openidm-error-shape.e2e.test.ts` makes a revision-mismatch `patch` that
+  cannot alter its fixture and records `typeof error.code` as `"undefined"`
+  alongside the `ResourceExceptionScriptAdapter` family. The HTTP code is not
+  in the measured messages either; they carry the reason text (above). So the
+  local script tester's injected failures (`openidmFailures`) carry no `code`
+  property and put the code in their own message text,
+  `injected ResourceException code <code>`. `getCode()` was not probed.
 
 
 **`systemEnv.getProperty`**

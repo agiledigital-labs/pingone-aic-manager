@@ -258,9 +258,13 @@ Use `openidmFailures` to make one local IDM call fail: each stub has
 one-based among calls with the same method and resource, so a second patch
 can fail after the first succeeds. Declare stubs in `always`, add them with
 `.run().openidmFailures()`, or edit `request.openidmFailures` in `beforeRun`.
-The failed call is still recorded in `expect.openidm`. These stubs are
-AIC-ineligible and produce an observation gap; the script-visible shape of an
-arbitrary injected ResourceException code is unmeasured on AIC.
+The failed call is still recorded in `expect.openidm`. The script sees a
+`JavaException` whose text reads
+`…ResourceExceptionScriptAdapter: injected ResourceException code <code>`, and
+no `code` property — AIC's adapter has none (`typeof error.code` measured
+`"undefined"`), so a script cannot route on one there either. The message text
+is the harness's own; AIC's carries the reason phrase, not the number. These
+stubs are AIC-ineligible and produce an observation gap.
 
 For a local method that the mock does not implement, use `bindingOverrides`.
 Each value is a JavaScript expression evaluated after the normal seed and
