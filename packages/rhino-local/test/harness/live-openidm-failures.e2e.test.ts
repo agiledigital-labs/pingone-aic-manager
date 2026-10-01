@@ -10,7 +10,7 @@ const suite = defineSuite({
   script: [
     `openidm.patch("${RESOURCE}", null, ${JSON.stringify(first)});`,
     `try { openidm.patch("${RESOURCE}", null, ${JSON.stringify(second)}); }`,
-    'catch (error) { action.goTo(error.code === 409 && String(error).indexOf("ResourceExceptionScriptAdapter") !== -1 ? "caught" : "wrongError"); }',
+    'catch (error) { action.goTo(String(error).indexOf("ResourceExceptionScriptAdapter: injected ResourceException code 409") !== -1 ? "caught" : "wrongError"); }',
   ].join("\n"),
   outcomes: ["caught", "wrongError"],
   fixtures: {

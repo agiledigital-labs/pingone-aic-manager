@@ -1667,12 +1667,14 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
     if (typeof pattern === "string" ? pattern !== resource : !pattern.test(resource)) {
       continue;
     }
+    // No `code` property: AIC's ResourceExceptionScriptAdapter has none
+    // (live-openidm-error-shape.e2e.test.ts measured typeof error.code as
+    // "undefined"), so the code travels in the message text only.
     var error = new Error(
       "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: " +
         "injected ResourceException code " + stub.reply.code
     );
     error.name = "JavaException";
-    error.code = stub.reply.code;
     throw error;
   }
 }

@@ -46,6 +46,7 @@ describe("openidm", () => {
         'openidm.patch("managed/alpha_user/alice", null, [{ operation: "replace", field: "sn", value: "first" }]);',
         'try { openidm.patch("managed/alpha_user/alice", null, [{ operation: "replace", field: "sn", value: "second" }]); } catch (error) {',
         '  nodeState.putShared("failure", String(error));',
+        '  nodeState.putShared("codeType", typeof error.code);',
         '}',
       ].join("\n"),
       {
@@ -56,6 +57,9 @@ describe("openidm", () => {
     expect(effects.openidm).toHaveLength(2);
     expect(effects.managedStore?.["managed/alpha_user"]?.[0]?.sn).toBe("first");
     expect(effects.sharedState.final.failure).toMatch(/JavaException:.*ResourceExceptionScriptAdapter:.*409/);
+    // AIC's adapter has no `code` property (live-openidm-error-shape.e2e);
+    // an injected one must not invent it.
+    expect(effects.sharedState.final.codeType).toBe("undefined");
   });
 
   it("reads a seeded record and records the effect without a body", () => {
