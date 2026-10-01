@@ -1086,7 +1086,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   }
   const absent: Channel[] = [];
   for (const key of CHANNELS) {
-    if (key in raw) {
+    // An own key holding `undefined` is an absent channel, not an empty one:
+    // `{identityWrites: undefined}` must not read as "observed, no writes".
+    if (raw[key] !== undefined) {
       continue;
     }
     if (!LATER_CHANNELS.has(key)) {
@@ -1124,6 +1126,11 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
     }
     recorded.discardedOutcome = raw.discardedOutcome;
   }
+  if (raw.managedStore !== undefined) {
+    // What carryGiven seeds the next pass from; dropping it would replay the
+    // pass's starting records and undo every write the pass made.
+    recorded.managedStore = parseManagedStore(raw.managedStore);
+  }
   if (raw.evidence !== undefined) {
     recorded.evidence = parseRecordingEvidence(raw.evidence);
     for (const channel of recorded.evidence.unobservedChannels) {
@@ -1142,6 +1149,21 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
     };
   }
   return recorded;
+}
+
+function parseManagedStore(raw: unknown): Record<string, JsonObject[]> {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.managedStore is not an object");
+  }
+  const store: Record<string, JsonObject[]> = {};
+  for (const [collection, rows] of Object.entries(raw)) {
+    store[collection] = parseArray(
+      rows,
+      `effects.managedStore.${collection}`,
+      (value, path) => parseJsonObject(value, path)
+    );
+  }
+  return store;
 }
 
 function parseRecordingEvidence(raw: unknown): RecordingEvidence {
