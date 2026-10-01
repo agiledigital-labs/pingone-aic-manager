@@ -12,8 +12,11 @@ import {
   AIC_LANE_ENV,
   defineSuite,
   managed,
+  localIdmHandle,
   useLease,
 } from "../../src/harness/index.ts";
+import type { LeaseLaneHooks, RunResultInput } from "../../src/harness/index.ts";
+import type { RecordedEffects } from "../../src/case/index.ts";
 
 const USER_IDS = {
   alice: "00000000-0000-4000-8000-000000000011",
@@ -349,6 +352,65 @@ describe("unsupported one-shot identity", () => {
       expect(report.local.verdict?.pass).toBe(false);
       expect(report.aic.skipped).toMatch(/given\.loggerScriptId/);
     } finally {
+      await runner.close();
+    }
+  });
+});
+
+// A 0.1.2 consumer hands back effects without the two later channels, both
+// through chainFromRunResult and through a lane it implemented itself. Each
+// boundary must fill them in and mark them unobserved, never leave them out.
+describe("0.1.2-shaped effects at the lane boundaries", () => {
+  const lease = useLease(bridgeSuite);
+  const strip = (effects: Record<string, unknown>): RecordedEffects => {
+    const { sessionProperties: _s, identityWrites: _i, ...rest } = effects;
+    return rest as unknown as RecordedEffects;
+  };
+
+  it("chainFromRunResult normalises a 0.1.2 result", async () => {
+    const result = await lease.run().expect({ outcome: "done" });
+    const old: RunResultInput = { ...result, effects: strip({ ...result.effects }) };
+    const chain = chainFromRunResult(old);
+    expect(chain.localEffects[0]?.sessionProperties).toEqual({ initial: {}, final: {} });
+    expect(chain.localEffects[0]?.identityWrites).toEqual([]);
+    expect(chain.localEffects[0]?.evidence?.unobservedChannels).toEqual([
+      "sessionProperties",
+      "identityWrites",
+    ]);
+  });
+
+  it("a lane's check hook hands the author complete effects", async () => {
+    const runner = await RhinoRunner.spawn();
+    let hooks: LeaseLaneHooks | undefined;
+    const laneLease = bridgeSuite.lease({
+      runner,
+      lane: {
+        run: (request) => {
+          hooks = request.hooks;
+          return Promise.reject(new Error("lane stops here"));
+        },
+        endTest: () => Promise.resolve(),
+      },
+    });
+    const seen: unknown[] = [];
+    try {
+      laneLease.open();
+      await expect(
+        laneLease
+          .run()
+          .check((_idm, { effects }) => {
+            seen.push(effects.identityWrites, effects.evidence?.unobservedChannels);
+          })
+          .expect({ outcome: "done" })
+      ).rejects.toThrow(/lane stops here/);
+      seen.length = 0;
+      const check = hooks?.finalChecks[0];
+      expect(check).toBeDefined();
+      const result = await lease.run().expect({ outcome: "done" });
+      await check?.(localIdmHandle({}, () => undefined), strip({ ...result.effects }));
+      expect(seen).toEqual([[], ["sessionProperties", "identityWrites"]]);
+    } finally {
+      await laneLease.close();
       await runner.close();
     }
   });

@@ -129,7 +129,8 @@ export declare class Lease<TSchema extends z.ZodType> {
 }
 export interface Suite<TSchema extends z.ZodType> {
     spec: SuiteSpec<TSchema>;
-    lease(options: LeaseOptions): Lease<TSchema>;
+    /** compat-accepted: an instance always comes from HEAD (see the import above). */
+    lease(options: LeaseOptions): HeadLease<TSchema>;
 }
 export declare function defineSuite<TSchema extends z.ZodType>(spec: SuiteSpec<TSchema>): Suite<TSchema>;
 /** A managed record the suite creates once, for the whole file. */

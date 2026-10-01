@@ -6,13 +6,14 @@
 import type { z } from "zod";
 import type { ChainConformanceReport } from "../aic/conform.ts";
 import { oneShotSubjectId, oneShotSubjectName } from "../aic/emit-journey.ts";
-import { judge } from "../case/index.ts";
+import { judge, normaliseEffects } from "../case/index.ts";
 import type {
   Case,
   CallbackEffect,
   Expect,
   JsonObject,
   CompleteRecordedEffects,
+  RecordedEffects,
   Verdict,
 } from "../case/types.ts";
 import { runCase } from "../bindings/index.ts";
@@ -54,6 +55,21 @@ export interface RunResult {
   harnessIdentity?: { scriptName: string; loggerScriptId?: string; oneShotRunId?: string; cookieName?: string };
   /** Present when this lease automatically checked the completed run on AIC. */
   conformance?: ChainConformanceReport;
+}
+
+/**
+ * A run as `chainFromRunResult` accepts it. Effects are `RecordedEffects`, so
+ * a 0.1.2 result, whose effects lack the later channels, is still accepted;
+ * a lease hands back the complete `RunResult`, which is one of these.
+ */
+export interface RunResultInput extends Omit<RunResult, "effects" | "steps"> {
+  effects: RecordedEffects;
+  steps: readonly StepResultInput[];
+}
+
+/** One pass as `RunResultInput` carries it. */
+export interface StepResultInput extends Omit<StepResult, "effects"> {
+  effects: RecordedEffects;
 }
 
 /** One pass of a step chain: what it was asked, what it did, what was sent back. */
@@ -113,9 +129,14 @@ export type Check<TInput> = (
   ctx: CheckContext<TInput>
 ) => void | Promise<void>;
 
+/**
+ * Takes `RecordedEffects`, not the complete form, because a lane implemented
+ * against 0.1.2 calls it with effects lacking the later channels. The bound
+ * hook normalises them, so the author's check still sees every channel.
+ */
 export type LeaseLaneCheck = (
   idm: IdmHandle,
-  effects: CompleteRecordedEffects
+  effects: RecordedEffects
 ) => void | Promise<void>;
 
 /** Hooks bound to parsed input but replayed with each lane's own effects/IDM. */
@@ -503,16 +524,19 @@ export class Lease<TSchema extends z.ZodType> {
         const check = step.check;
         return check === undefined
           ? undefined
-          : (idm, effects) =>
-              check(idm, {
+          : (idm, recorded) => {
+              const effects = normaliseEffects(recorded);
+              return check(idm, {
                 input,
                 step: index + 1,
                 callbacks: effects.callbacks,
                 effects,
               });
+            };
       }),
       finalChecks: checks.map(
-        (check) => (idm, effects) => check(idm, { input, effects })
+        (check) => (idm, recorded) =>
+          check(idm, { input, effects: normaliseEffects(recorded) })
       ),
       ...(cleanup === undefined
         ? {}

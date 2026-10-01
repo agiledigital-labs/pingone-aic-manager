@@ -13,6 +13,8 @@ export default tseslint.config(
       "src/bindings/rhino/**",
       "cases/**/*.cjs",
       "failures/**",
+      // Declaration output of the 0.1.2 tag, vendored for test/compat.
+      "test/compat/v0.1.2/**",
     ],
   },
   eslint.configs.recommended,
