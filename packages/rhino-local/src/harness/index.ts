@@ -25,6 +25,7 @@ export {
   mergeChannels,
   normaliseWire,
   parseInputs,
+  resolveDraft,
   toCase,
   toGiven,
 } from "./spec.ts";

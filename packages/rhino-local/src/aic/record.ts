@@ -4,6 +4,7 @@ import type {
   Given,
   JsonObject,
   RecordedEffects,
+  CompleteRecordedEffects,
   RecordingEvidence,
   StateChannel,
 } from "../case/types.ts";
@@ -78,7 +79,7 @@ export function assembleEffects(args: {
   dump?: SubjectDump;
   callbacks: CallbackEffect[];
   priorExpectations?: readonly Expect[];
-}): RecordedEffects {
+}): CompleteRecordedEffects {
   const sharedInitial = sharedSeed(args.given);
   const transientInitial = args.given.transientState ?? {};
   const secureInitial = args.given.secureState ?? {};

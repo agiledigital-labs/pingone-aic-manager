@@ -31,7 +31,7 @@ import type {
   OpenidmEffect,
   OpenidmExpect,
   OpenidmMethod,
-  RecordedEffects,
+  CompleteRecordedEffects,
   RecordingEvidence,
   StateBucket,
   StateChannel,
@@ -414,7 +414,7 @@ function resolveStrictness(expect: Expect): Strictness {
   return resolved;
 }
 
-function judgeOutcome(kase: Case, effects: RecordedEffects): Mismatch[] {
+function judgeOutcome(kase: Case, effects: CompleteRecordedEffects): Mismatch[] {
   if (effects.outcome === kase.expect.outcome) {
     return [];
   }
@@ -734,7 +734,7 @@ function judgeState(
 
 function judgeCallbacks(
   expect: Expect,
-  effects: RecordedEffects,
+  effects: CompleteRecordedEffects,
   allowUndeclared: boolean
 ): Mismatch[] {
   const expected = expect.callbacks ?? [];
@@ -792,7 +792,7 @@ function isSubsequence(
 
 function judgeOpenidm(
   expect: Expect,
-  effects: RecordedEffects,
+  effects: CompleteRecordedEffects,
   strictness: Strictness
 ): Mismatch[] {
   const expected = expect.openidm ?? [];
@@ -850,7 +850,7 @@ function judgeOpenidm(
 
 function judgeHttp(
   expect: Expect,
-  effects: RecordedEffects,
+  effects: CompleteRecordedEffects,
   allowUndeclared: boolean
 ): Mismatch[] {
   const expected = expect.http ?? [];
@@ -900,7 +900,7 @@ function judgeHttp(
 
 function judgeLogs(
   expect: Expect,
-  effects: RecordedEffects,
+  effects: CompleteRecordedEffects,
   allowUndeclared: boolean
 ): Mismatch[] {
   const expected = expect.logs ?? [];
@@ -950,7 +950,7 @@ function judgeLogs(
 
 function judgeIdentityWrites(
   expect: Expect,
-  effects: RecordedEffects,
+  effects: CompleteRecordedEffects,
   allowUndeclared: boolean
 ): Mismatch[] {
   const expected = expect.identityWrites ?? [];
@@ -1071,7 +1071,16 @@ function logMatches(expected: LogExpect, actual: LogEffect): boolean {
   return matchesPattern(expected.message, actual.message);
 }
 
-function parseEffects(raw: unknown): RecordedEffects {
+/**
+ * Validate effects from any producer and fill the channels it omitted. The
+ * omitted ones are listed in `evidence.unobservedChannels`, so a judge or a
+ * diff reports them as gaps instead of reading them as empty.
+ */
+export function normaliseEffects(raw: unknown): CompleteRecordedEffects {
+  return parseEffects(raw);
+}
+
+function parseEffects(raw: unknown): CompleteRecordedEffects {
   if (!isPlainObject(raw)) {
     throw new Error("rhino-local: effects is not an object");
   }
@@ -1090,7 +1099,7 @@ function parseEffects(raw: unknown): RecordedEffects {
   if (raw.outcome !== null && typeof raw.outcome !== "string") {
     throw new Error("rhino-local: effects.outcome must be a string or null");
   }
-  const recorded: RecordedEffects = {
+  const recorded: CompleteRecordedEffects = {
     outcome: raw.outcome,
     sharedState: parseStateBucket(raw.sharedState, "effects.sharedState"),
     transientState: parseStateBucket(
@@ -1243,7 +1252,7 @@ function parseStringArray(
 }
 
 function recordedChannelHasValues(
-  effects: RecordedEffects,
+  effects: CompleteRecordedEffects,
   channel: Channel
 ): boolean {
   if (channel === "outcome") {

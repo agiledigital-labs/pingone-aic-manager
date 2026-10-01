@@ -404,10 +404,13 @@ export interface RecordingEvidence {
 }
 
 /**
- * Observed effects of one run. Every channel is required: omitting a
- * fail-closed channel would silently assert nothing, which is the failure
- * mode this harness exists to avoid. The runner fills this in; the verdict
- * engine treats it as data.
+ * Observed effects of one run, as a runner hands them in. Every channel 0.1.2
+ * had is required: omitting a fail-closed channel would silently assert
+ * nothing, which is the failure mode this harness exists to avoid. The two
+ * channels added since (`sessionProperties`, `identityWrites`) are optional
+ * so a 0.1.2 producer still compiles; an absent one is judged **unobserved**,
+ * never empty, because 0.1.2 accepted those calls without recording them.
+ * What the harness hands back is `CompleteRecordedEffects`.
  */
 export interface RecordedEffects {
   outcome: string | null;
@@ -416,12 +419,12 @@ export interface RecordedEffects {
   sharedState: StateBucket;
   transientState: StateBucket;
   secureState: StateBucket;
-  sessionProperties: StateBucket;
+  sessionProperties?: StateBucket;
   callbacks: CallbackEffect[];
   openidm: OpenidmEffect[];
   http: HttpEffect[];
   logs: LogEffect[];
-  identityWrites: IdentityWriteEffect[];
+  identityWrites?: IdentityWriteEffect[];
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**
@@ -434,6 +437,16 @@ export interface RecordedEffects {
    * object where "unknown" belongs.
    */
   managedStore?: Record<string, JsonObject[]>;
+}
+
+/**
+ * Effects with every channel present, as the harness's own recorders and
+ * `normaliseEffects` produce them. A channel a producer omitted is empty here
+ * and listed in `evidence.unobservedChannels`.
+ */
+export interface CompleteRecordedEffects extends RecordedEffects {
+  sessionProperties: StateBucket;
+  identityWrites: IdentityWriteEffect[];
 }
 
 export interface Mismatch {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { judge } from "../../src/case/index.ts";
+import { diffRecordedEffects } from "../../src/aic/diff.ts";
+import { judge, type RecordedEffects } from "../../src/case/index.ts";
 import { makeCase, makeEffects } from "./helpers.ts";
 
 describe("per-channel strictness — openidm", () => {
@@ -422,12 +423,11 @@ describe("per-channel strictness — identityWrites", () => {
 describe("effects recorded before a channel existed", () => {
   // 0.1.2 effects carry neither sessionProperties nor identityWrites; 0.1.2
   // accepted putSessionProperty and store() and recorded neither.
-  const legacy = (): Record<string, unknown> => {
-    const effects: Record<string, unknown> = { ...makeEffects() };
-    delete effects.sessionProperties;
-    delete effects.identityWrites;
-    delete effects.evidence;
-    return effects;
+  // Typed as the public RecordedEffects: this literal is also the compile-time
+  // check that a 0.1.2 producer still type-checks.
+  const legacy = (): RecordedEffects => {
+    const { sessionProperties: _s, identityWrites: _i, evidence: _e, ...rest } = makeEffects();
+    return rest;
   };
 
   it("judges 0.1.2-shaped effects instead of throwing", () => {
@@ -443,6 +443,14 @@ describe("effects recorded before a channel existed", () => {
     expect(verdict.pass).toBe(true);
     expect(verdict.conclusive).toBe(false);
     expect(verdict.unverified.map((item) => item.channel).sort()).toEqual(["identityWrites", "sessionProperties"]);
+  });
+
+  it("diffs against complete effects as gaps, never as disagreements", () => {
+    // Discriminating: read as empty, the local put would be a disagreement.
+    const local = makeEffects({ sessionProperties: { initial: {}, final: { tier: "gold" } } });
+    const comparison = diffRecordedEffects(local, legacy());
+    expect(comparison.disagreements).toEqual([]);
+    expect(comparison.observationGaps.map((gap) => gap.channel).sort()).toEqual(["identityWrites", "sessionProperties"]);
   });
 
   it("is conclusive when the case opts out of both channels", () => {

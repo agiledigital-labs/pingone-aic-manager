@@ -4,6 +4,7 @@ import type {
   Given,
   JsonValue,
   RecordedEffects,
+  CompleteRecordedEffects,
 } from "../case/types.ts";
 import type { IdmHandle } from "./types.ts";
 
@@ -23,7 +24,7 @@ export interface StepContext<TInput> {
   step: number;
   /** What this pass emitted, in order. */
   callbacks: CallbackEffect[];
-  effects: RecordedEffects;
+  effects: CompleteRecordedEffects;
 }
 
 /** Everything an intermediate pass can assert, minus the outcome it cannot have. */

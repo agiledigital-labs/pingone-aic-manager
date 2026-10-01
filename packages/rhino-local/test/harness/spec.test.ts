@@ -9,6 +9,7 @@ import {
   toCase,
   toGiven,
 } from "../../src/harness/spec.ts";
+import type { RequestDraft } from "../../src/harness/index.ts";
 
 describe("mergeChannels", () => {
   it("merges per key, so a test override keeps the suite's other keys", () => {
@@ -252,5 +253,39 @@ describe("toCase", () => {
     expect(kase.name).toBe("resolve-identity > matches one");
     expect(kase.outcomes).toEqual(["matched", "notFound"]);
     expect(kase.given.sharedState).toEqual({ a: 1 });
+  });
+});
+
+describe("a request draft written against 0.1.2", () => {
+  // The 0.1.2 RequestDraft had none of cookies, http, openidmFailures,
+  // bindingOverrides or esvInState. Typed as the public RequestDraft, this
+  // literal is also the compile-time check that it still type-checks.
+  function draft012(): RequestDraft {
+    return {
+      state: { shared: { username: "alice" }, transient: {} },
+      esv: { probe: "value" },
+      headers: { "x-probe": ["1"] },
+      params: {},
+      session: {},
+      sessionRequested: false,
+    };
+  }
+
+  it("turns into a Given with the new channels empty", () => {
+    const given = toGiven(draft012());
+    expect(given.sharedState).toEqual({ username: "alice" });
+    expect(given.esv).toEqual({ "esv.probe": "value" });
+    expect(given.requestHeaders).toEqual({ "x-probe": ["1"] });
+    expect(given.requestCookies).toBeUndefined();
+    expect(given.http).toBeUndefined();
+    expect(given.openidmFailures).toBeUndefined();
+    expect(given.bindingOverrides).toBeUndefined();
+  });
+
+  it("goes through applyInputsAndEsv and toCase", () => {
+    const draft = draft012();
+    applyInputsAndEsv(draft, { extra: "x" });
+    const kase = toCase({ name: "compat", script: "", outcomes: ["true"] }, "compat", draft, { outcome: "true" });
+    expect(kase.given.sharedState).toEqual({ username: "alice", extra: "x" });
   });
 });

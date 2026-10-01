@@ -7,7 +7,7 @@ import type { TenantProvider } from "./provider.ts";
 import { randomUUID } from "node:crypto";
 import { deepEqual } from "../case/equal.ts";
 import type { Case, RecordedEffects } from "../case/types.ts";
-import { judge } from "../case/verdict.ts";
+import { judge, normaliseEffects } from "../case/verdict.ts";
 import type { LeaseLaneHooks } from "../harness/lease.ts";
 import { tenantIdmHandle } from "./idm.ts";
 import { conformChain, type ChainConformanceReport, type LocalChainResult } from "./conform.ts";
@@ -558,7 +558,7 @@ export class AicFileLease {
           : [stepCheck];
       for (const [checkIndex, check] of checks.entries()) {
         try {
-          await check(tenantIdmHandle(this.#io, session), effects);
+          await check(tenantIdmHandle(this.#io, session), normaliseEffects(effects));
         } catch (error) {
           const label = final
             ? `final check() ${checkIndex + 1}`

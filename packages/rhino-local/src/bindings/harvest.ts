@@ -7,7 +7,7 @@ import type {
   LogLevel,
   OpenidmEffect,
   OpenidmMethod,
-  RecordedEffects,
+  CompleteRecordedEffects,
   StateBucket,
 } from "../case/types.ts";
 import { isPlainObject, parseIdentityWriteEffect, parseJsonObject, parseJsonValue } from "../case/util.ts";
@@ -20,7 +20,7 @@ const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
  * only carry primitives as completion values (`JsValues` stringifies objects),
  * so harvest is a string on purpose.
  */
-export function parseHarvest(raw: string): RecordedEffects {
+export function parseHarvest(raw: string): CompleteRecordedEffects {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
@@ -43,7 +43,7 @@ export function parseHarvest(raw: string): RecordedEffects {
   if (parsed.outcome !== null && typeof parsed.outcome !== "string") {
     throw new Error("rhino-local: harvest.outcome must be a string or null");
   }
-  const effects: RecordedEffects = {
+  const effects: CompleteRecordedEffects = {
     outcome: parsed.outcome,
     sharedState: parseBucket(parsed.sharedState, "harvest.sharedState"),
     transientState: parseBucket(parsed.transientState, "harvest.transientState"),

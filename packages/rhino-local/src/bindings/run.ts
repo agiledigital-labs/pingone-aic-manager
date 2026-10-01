@@ -1,5 +1,5 @@
 import { judge, validateCase } from "../case/index.ts";
-import type { Case, RecordedEffects, Verdict } from "../case/types.ts";
+import type { Case, CompleteRecordedEffects, Verdict } from "../case/types.ts";
 import type { JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
@@ -29,7 +29,7 @@ export interface RunCaseOptions {
 }
 
 export interface CaseRun {
-  effects: RecordedEffects;
+  effects: CompleteRecordedEffects;
   verdict: Verdict;
   response: JobResponse;
 }
