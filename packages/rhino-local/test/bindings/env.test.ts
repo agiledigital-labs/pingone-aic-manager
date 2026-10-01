@@ -2,6 +2,27 @@ import { describe, expect, it } from "vitest";
 import { loadBehaviour, runScript } from "./load-behaviour.ts";
 
 describe("systemEnv", () => {
+  it("lets a local replacement wrap and call through to the original binding", () => {
+    const effects = runScript(
+      [
+        'var value = systemEnv.getProperty("esv.flag");',
+        'action.goTo(value === "on" && systemEnv.callCount() === 1 ? "match" : "mismatch");',
+      ].join("\n"),
+      {
+        esv: { "esv.flag": "on" },
+        bindingOverrides: { systemEnv: [
+          "(function (original) {",
+          "  var count = 0;",
+          "  return {",
+          "    getProperty: function () { count += 1; return original.getProperty.apply(original, arguments); },",
+          "    callCount: function () { return count; }",
+          "  };",
+          "})(systemEnv)",
+        ].join("\n") },
+      }
+    );
+    expect(effects.outcome).toBe("match");
+  });
   it("looks up given.esv", () => {
     const sandbox = loadBehaviour({ esv: { "esv.foo": "bar" } });
     const systemEnv = sandbox.systemEnv as {
