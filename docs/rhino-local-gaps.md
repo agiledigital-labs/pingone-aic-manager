@@ -113,14 +113,14 @@ Each is a `gap` entry with its reason; this is the index.
 | `httpclient-body-coercion`    | `java.lang.Integer`/`Long` body fields are sent                                              | the mock drops them                                                |
 | `java-collections`            | `new (JavaImporter(java.util)).HashSet()` works                                              | throws                                                             |
 | `lib-openidm-miss-consumer`   | read of a nonexistent managed **type** → `null`                                              | throws `no given.managed entry` (deliberate — see above)           |
-| `identity-resolve-diag`       | `getIdentity` resolves a UUID only                                                           | also resolves a userName                                           |
-| `identity-attr-mapping`       | `uid` is mapped (count 1)                                                                    | not mapped (count 0)                                               |
-| `identity-getattribute-shape` | `getAttributeValues` is a Java collection: `toArray` yes, `includes` no, prints `[{}]`       | JS array: `includes` yes, `toArray` no                             |
+| `identity-resolve-diag`       | `getIdentity` resolves a UUID only; payload committed abbreviated                            | same resolution; emits the full `attr-error: <message>` text       |
+| `identity-getattribute-shape` | Java collection: no `includes` member (`Cannot find function`), prints `[{}]`                | `toArray`/`contains`/`[{}]` match; shadowed `includes` (`Cannot call property`) |
 | `identity-enum-attrs`         | **not measured** — every count came back `err`; the probe's IDM setup users are gone         | —                                                                  |
 
-Two of these are dangerous rather than cosmetic: `.includes()` on
-`getAttributeValues` and a `getClass()` on a request map both behave better
-locally than on AIC, so a script relying on them passes here and fails live.
+`.includes()` on `getAttributeValues` and `getClass()` on a request map were
+once dangerous — they worked locally and failed live. Both now throw on both
+lanes and differ only in the message. `identity-attr-mapping` left this table
+when the local identity binding gained AM's `uid` mapping; it now matches.
 
 Two request cases are also **not comparable** beyond their `getClass` row: the
 live run was a curl with its own headers and parameters, not the case's
@@ -160,7 +160,7 @@ them as REST JSON).
 | `binding-utils`             | 24/29        | error suffixes name the mock, not the script; `checkBcrypt` unmocked (no bcrypt in the JDK); PBKDF2 JS-array salt message          |
 | `binding-action`            | 13/16        | a mock-thrown `InternalError` carries no `(name#line)`                                                                              |
 | `binding-utils-interop`     | 17/20        | AIC wraps as `JavaException ScriptCryptoException`; arity and `(name#line)` wording                                                 |
-| `binding-services`          | 57/80        | tenant-backed JWT and policy results; absent-user `getIdentity` wrapper; secret `JavaException`s; tenant script id in `getName`     |
+| `binding-services`          | 57/80        | tenant-backed JWT and policy results; absent-user `getIdentity` wrapper's Java members; secret `JavaException`s; tenant script id in `getName`     |
 | `binding-openidm-writes`    | 18/36        | AIC throws `JavaException` wrappers carrying the LDAP DN; `validateObject` answers from tenant policy; unsupported query filters     |
 
 Two conventions keep these honest. An AIC `InternalError:` is reproduced with

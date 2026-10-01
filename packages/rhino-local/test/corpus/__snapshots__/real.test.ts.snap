@@ -222,7 +222,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-servi
       "store",
       "toString",
     ],
-    "string": "org.forgerock.openam.scripting.api.ScriptedIdentityScriptWrapper@<hash>",
+    "string": "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper@<hash>",
     "type": "object",
   },
 }

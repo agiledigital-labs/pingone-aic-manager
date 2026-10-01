@@ -1637,9 +1637,13 @@ seeded object before author source.
 The local script tester now has a separate
 `registeredObjectAttributes` channel. Its AIC seed calls
 `nodeState.mergeShared({objectAttributes: ...})`, the documented registered
-container path. The revised live test retains per-call diagnostics and checks
-whether `put` mutates that map and whether the wrapper can snapshot it.
-Those two results remain pending live confirmation.
+container path. `live-object-attributes.e2e.test.ts` encodes the tenant result
+for a map seeded that way: `typeof nodeState.get("objectAttributes").put` is
+"function"; `put("probe", "value")` succeeds; `get("probe")` on the same
+reference and on a fresh `nodeState.get("objectAttributes")` both return
+"value"; and the wrapper snapshots it, recording `objectAttributes` as
+**changed** to the seeded keys plus the put. Removing the map, or replacing it
+with a scalar, was not probed.
 
 **`openidm` writes** (`binding-openidm-writes`, on a throwaway
 `managed/alpha_role` record):
