@@ -174,6 +174,19 @@ describe("defineCase / validateCase", () => {
     );
   });
 
+  it("keeps registered and plain objectAttributes seeds distinct", () => {
+    const input = {
+      name: "registered-map",
+      script: "action.goTo('true');",
+      given: { registeredObjectAttributes: { probe: "old" } },
+      expect: { outcome: "true" },
+    };
+    expect(validateCase(input).given.registeredObjectAttributes).toEqual({ probe: "old" });
+    expect(() => validateCase({ ...input, given: {
+      ...input.given, sharedState: { objectAttributes: {} },
+    } })).toThrow(/collides with sharedState.objectAttributes/);
+  });
+
   it("accepts known binding expressions and rejects unknown or empty replacements", () => {
     const input = {
       name: "replacement",

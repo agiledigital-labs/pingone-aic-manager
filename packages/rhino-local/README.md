@@ -214,6 +214,14 @@ name with `.run().cookies({ name: "other" })`, or edit `request.cookies` in
 When a test also requests `session`, the harness adds the tenant's session
 cookie and refuses an author cookie with that name instead of overwriting it.
 
+`state.shared.objectAttributes` seeds a plain object, just as `putShared`
+does on AIC. To seed the registered Java-map container, use
+`always: { registeredObjectAttributes: { key: "value" } }`, override keys with
+`.run().registeredObjectAttributes({ key: "other" })`, or set
+`request.registeredObjectAttributes` in `beforeRun`. This channel uses
+`mergeShared` on AIC and is eligible for conformance. The two seed paths
+cannot be declared together for the same run.
+
 HTTP replies can be declared in `always.http`, supplied with `.run().http()`,
 or edited in `beforeRun` via `request.http`. The first matching stub wins;
 per-test stubs precede suite defaults. They feed local `httpClient.send()` and

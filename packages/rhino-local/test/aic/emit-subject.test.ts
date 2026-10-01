@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
 import { instrumentSubject } from "../../src/aic/emit-subject.ts";
 import { lintAmScript } from "./helpers.ts";
 
@@ -63,6 +64,45 @@ describe("instrumentSubject", () => {
     expect(emitted.source.indexOf(".seed(")).toBeLessThan(
       emitted.source.indexOf(".before =")
     );
+  });
+
+  it("seeds a registered objectAttributes map through mergeShared", () => {
+    const emitted = instrumentSubject('action.goTo("true");', "registered", {
+      registeredObjectAttributes: { item: "value" },
+    });
+    expect(emitted.source).toContain("nodeState.mergeShared(");
+    expect(emitted.source.indexOf("nodeState.mergeShared(")).toBeLessThan(
+      emitted.source.indexOf(".before =")
+    );
+  });
+
+  it("snapshots a registered map when keySet is blocked", () => {
+    const emitted = instrumentSubject('action.goTo("true");', "map-snapshot", {
+      registeredObjectAttributes: { probe: "value" },
+    });
+    const shared: Record<string, unknown> = {};
+    const transient: Record<string, unknown> = {};
+    runInNewContext(emitted.source, {
+      callbacks: { isEmpty: () => true },
+      action: { goTo: () => undefined },
+      nodeState: {
+        keys: () => Object.keys(shared),
+        get: (key: string) => shared[key],
+        putShared: (key: string, value: unknown) => { shared[key] = value; },
+        putTransient: (key: string, value: unknown) => { transient[key] = value; },
+        mergeShared: (value: { objectAttributes: Record<string, unknown> }) => {
+          shared.objectAttributes = {
+            ...value.objectAttributes,
+            get(name: string) { return value.objectAttributes[name]; },
+            keySet() { throw new Error("class shutter"); },
+          };
+        },
+      },
+    });
+    const payload = JSON.parse(String(transient[emitted.snapshotKey])) as {
+      before: { objectAttributes: Record<string, unknown> };
+    };
+    expect(payload.before.objectAttributes).toEqual({ probe: "value" });
   });
 
   it("seeds nothing when the case seeds nothing", () => {

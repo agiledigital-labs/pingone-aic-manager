@@ -7,6 +7,18 @@ import {
 } from "../../src/aic/record.ts";
 
 describe("classifyFinal", () => {
+  it("treats a registered objectAttributes map as a declared shared seed", () => {
+    const recorded = classifyFinal(
+      { registeredObjectAttributes: { probe: "old" } },
+      { objectAttributes: { probe: "old" } },
+      { objectAttributes: { probe: "new" } }
+    );
+    expect(recorded.sharedState.initial.objectAttributes).toEqual({ probe: "old" });
+    expect(recorded.evidence.unbucketedState).toEqual([
+      { operation: "changed", key: "objectAttributes", before: { probe: "old" },
+        after: { probe: "new" }, possibleBuckets: ["sharedState", "transientState", "secureState"] },
+    ]);
+  });
   it("does not apply a prior shared matcher to a transient seed with the same key", () => {
     const prior = { outcome: null, sharedState: { added: { id: /^id-/ } } } as const;
     expect(() => classifyFinal(

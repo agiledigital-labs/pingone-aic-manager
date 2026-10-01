@@ -15,6 +15,12 @@ import { formatValue, isPlainObject, parseJsonObject } from "../case/util.ts";
 
 const AIC_UNOBSERVED = ["openidm", "http", "logs", "sessionProperties"] as const;
 
+function sharedSeed(given: Given): JsonObject {
+  return given.registeredObjectAttributes === undefined
+    ? { ...(given.sharedState ?? {}) }
+    : { ...(given.sharedState ?? {}), objectAttributes: given.registeredObjectAttributes };
+}
+
 export interface SubjectDump {
   outcome: string;
   before: JsonObject;
@@ -69,7 +75,7 @@ export function assembleEffects(args: {
   callbacks: CallbackEffect[];
   priorExpectations?: readonly Expect[];
 }): RecordedEffects {
-  const sharedInitial = args.given.sharedState ?? {};
+  const sharedInitial = sharedSeed(args.given);
   const transientInitial = args.given.transientState ?? {};
   const secureInitial = args.given.secureState ?? {};
   if (args.dump === undefined) {
@@ -135,7 +141,7 @@ export function classifyFinal(
   Required<RecordedEffects>,
   "sharedState" | "transientState" | "secureState" | "evidence"
 > {
-  const sharedInitial = { ...(given.sharedState ?? {}) };
+  const sharedInitial = sharedSeed(given);
   const transientInitial = { ...(given.transientState ?? {}) };
   const secureInitial = { ...(given.secureState ?? {}) };
   verifySeedsVisible(given, before, priorExpectations);
@@ -199,7 +205,7 @@ export function classifyFinal(
 
 function seedBuckets(given: Given, key: string): StateChannel[] {
   const buckets: StateChannel[] = [];
-  if (Object.prototype.hasOwnProperty.call(given.sharedState ?? {}, key)) {
+  if (Object.prototype.hasOwnProperty.call(sharedSeed(given), key)) {
     buckets.push("sharedState");
   }
   if (Object.prototype.hasOwnProperty.call(given.transientState ?? {}, key)) {
@@ -213,7 +219,7 @@ function seedBuckets(given: Given, key: string): StateChannel[] {
 
 function verifySeedsVisible(given: Given, before: JsonObject, priorExpectations: readonly Expect[]): void {
   const keys = new Set([
-    ...Object.keys(given.sharedState ?? {}),
+    ...Object.keys(sharedSeed(given)),
     ...Object.keys(given.secureState ?? {}),
     ...Object.keys(given.transientState ?? {}),
   ]);
@@ -261,7 +267,7 @@ function visibleSeed(given: Given, key: string): unknown {
   if (Object.prototype.hasOwnProperty.call(given.secureState ?? {}, key)) {
     return given.secureState?.[key];
   }
-  return given.sharedState?.[key];
+  return sharedSeed(given)[key];
 }
 
 function finalFor(

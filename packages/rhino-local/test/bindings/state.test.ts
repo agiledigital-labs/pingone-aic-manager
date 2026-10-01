@@ -106,14 +106,25 @@ describe("nodeState", () => {
     });
   });
 
-  it("mutates the registered objectAttributes map and records the state change", () => {
+  it("keeps a plain objectAttributes seed plain", () => {
+    const effects = runScript(
+      [
+        'var attributes = nodeState.get("objectAttributes");',
+        'if (typeof attributes.put !== "undefined" || attributes.mail !== "old") throw new Error("seed was converted");',
+      ].join("\n"),
+      { sharedState: { objectAttributes: { mail: "old" } } }
+    );
+    expect(effects.sharedState.final).toEqual({ objectAttributes: { mail: "old" } });
+  });
+
+  it("mutates a registered objectAttributes map and records the state change", () => {
     const effects = runScript(
       [
         'var attributes = nodeState.get("objectAttributes");',
         'attributes.put("mail", "a@example.com");',
         'if (attributes.get("mail") !== "a@example.com" || nodeState.get("objectAttributes").get("mail") !== "a@example.com") throw new Error("map read failed");',
       ].join("\n"),
-      { sharedState: { objectAttributes: {} } }
+      { registeredObjectAttributes: {} }
     );
     expect(effects.sharedState.final).toEqual({ objectAttributes: { mail: "a@example.com" } });
   });

@@ -72,14 +72,24 @@ function valueToJson(value) {
   }
   if (typeof value.keySet === "function" && typeof value.get === "function") {
     out = {};
-    mapKeys = value.keySet();
-    if (typeof mapKeys.toArray === "function") {
-      arr = mapKeys.toArray();
-      for (i = 0; i < arr.length; i += 1) {
-        out[String(arr[i])] = valueToJson(value.get(arr[i]));
+    try {
+      mapKeys = value.keySet();
+      if (typeof mapKeys.toArray === "function") {
+        arr = mapKeys.toArray();
+        for (i = 0; i < arr.length; i += 1) {
+          out[String(arr[i])] = valueToJson(value.get(arr[i]));
+        }
+        return out;
       }
-      return out;
+    } catch (ignored) {
+      // Some AM map keySet return classes are blocked by the class shutter.
     }
+    for (k in value) {
+      if (typeof value[k] !== "function") {
+        out[String(k)] = valueToJson(value[k]);
+      }
+    }
+    return out;
   }
   if (typeof value.size === "function" && typeof value.get === "function") {
     out = [];
@@ -186,6 +196,9 @@ export function instrumentSubject(
       `  ${bindingName}.seed(${jsonParseCall(given.sharedState ?? {})}, function (k, v) {`,
       `    nodeState.putShared(k, v);`,
       `  });`,
+      ...(given.registeredObjectAttributes === undefined
+        ? []
+        : [`  nodeState.mergeShared(${jsonParseCall({ objectAttributes: given.registeredObjectAttributes })});`]),
       `  ${bindingName}.seed(${jsonParseCall(given.transientState ?? {})}, function (k, v) {`,
       `    nodeState.putTransient(k, v);`,
       `  });`,
