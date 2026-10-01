@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import { runScript } from "./load-behaviour.ts";
 
 // Both Java-map surfaces share one model, so both are driven through it.
+// Expected values are the ones measured on AIC (live-java-map-enumeration).
 const SOURCES = [
-  ["registered objectAttributes", 'var map = nodeState.get("objectAttributes");', { registeredObjectAttributes: { seeded: "s", get: "seeded-get" } }],
-  ["JsonValue.object()", 'var map = org.forgerock.json.JsonValue.object(); map.put("seeded", "s"); map.put("get", "seeded-get");', {}],
+  ["registered objectAttributes", 'var map = nodeState.get("objectAttributes");', { registeredObjectAttributes: { plain: "p" } }],
+  ["JsonValue.object()", 'var map = org.forgerock.json.JsonValue.object(); map.put("plain", "p");', {}],
 ] as const;
 
-describe.each(SOURCES)("%s keys named like its methods", (_name, open, given) => {
+const shutter = (javaClass: string) =>
+  `threw:InternalError: Access to Java class "${javaClass}" is prohibited.`;
+
+describe.each(SOURCES)("%s as a Java map", (_name, open, given) => {
   function probe(lines: string[]) {
     const effects = runScript(
       [
@@ -20,37 +24,62 @@ describe.each(SOURCES)("%s keys named like its methods", (_name, open, given) =>
     return effects.sharedState.final;
   }
 
-  it("treats a missing method-named key as absent", () => {
+  it("keeps its methods while no entry is named like one", () => {
     expect(probe([
+      'nodeState.putShared("getMissing", t(function () { return map.get("size"); }));',
       'nodeState.putShared("hasPut", t(function () { return map.containsKey("put"); }));',
-      'nodeState.putShared("getSize", t(function () { return map.get("size"); }));',
-    ])).toMatchObject({ hasPut: "false", getSize: "null" });
-  });
-
-  it("reads a seeded method-named key without losing the method", () => {
-    expect(probe([
-      'nodeState.putShared("hasGet", t(function () { return map.containsKey("get"); }));',
-      'nodeState.putShared("getGet", t(function () { return map.get("get"); }));',
       'nodeState.putShared("size", t(function () { return map.size(); }));',
-    ])).toMatchObject({ hasGet: "true", getGet: "seeded-get", size: "2" });
+      'nodeState.putShared("putNew", t(function () { return map.put("fresh", "f"); }));',
+      'nodeState.putShared("putExisting", t(function () { return map.put("plain", "p2"); }));',
+    ])).toMatchObject({ getMissing: "null", hasPut: "false", size: "1", putNew: "null", putExisting: "p" });
   });
 
-  it("inserts method-named keys, keeps the methods, and harvests every entry", () => {
-    const final = probe([
-      'nodeState.putShared("putPrevious", t(function () { return map.put("put", "p"); }));',
-      'map.put("size", "z");',
-      'map.put("after", "a");',
-      'nodeState.putShared("afterGet", t(function () { return map.get("put") + "," + map.get("size") + "," + map.get("seeded"); }));',
-      'nodeState.putShared("afterSize", t(function () { return map.size(); }));',
+  // The discriminating case: an entry named like a method replaces it.
+  it("lets an entry named like a method shadow it, and enumerates it", () => {
+    expect(probe([
+      'map.put("get", "g");',
+      'nodeState.putShared("dot", t(function () { return typeof map.get; }));',
+      'nodeState.putShared("index", t(function () { return map["get"]; }));',
+      'nodeState.putShared("call", t(function () { try { map.get("plain"); return "ok"; } catch (e) { return e.name; } }));',
+      'nodeState.putShared("contains", t(function () { return map.containsKey("get"); }));',
+      'nodeState.putShared("forIn", t(function () { var out = []; for (var k in map) { out.push(k); } return out.sort().join(","); }));',
+      'nodeState.putShared("keys", t(function () { return Object.keys(map).sort().join(","); }));',
       'nodeState.putShared("printed", String(map));',
-      'nodeState.putShared("copy", JSON.parse(JSON.stringify(map)));',
-    ]);
-    expect(final).toMatchObject({
-      putPrevious: "null",
-      afterGet: "p,z,s",
-      afterSize: "5",
-      printed: '{ "seeded": "s", "get": "seeded-get", "put": "p", "size": "z", "after": "a" }',
-      copy: { seeded: "s", get: "seeded-get", put: "p", size: "z", after: "a" },
+    ])).toMatchObject({
+      dot: "string",
+      index: "g",
+      call: "TypeError",
+      contains: "true",
+      forIn: "get,plain",
+      keys: "get,plain",
+      printed: '{ "plain": "p", "get": "g" }',
+    });
+  });
+
+  it("refuses keySet and the entries of entrySet, and snapshots both views", () => {
+    expect(probe([
+      'map.put("other", "o");',
+      'nodeState.putShared("keySet", t(function () { map.keySet(); return "ok"; }));',
+      'nodeState.putShared("entrySize", t(function () { var es = map.entrySet(); map.put("later", "l"); return es.size(); }));',
+      'nodeState.putShared("entryHasNext", t(function () { return map.entrySet().iterator().hasNext(); }));',
+      'nodeState.putShared("entryNext", t(function () { return map.entrySet().iterator().next(); }));',
+      'nodeState.putShared("entryLength", t(function () { return map.entrySet().toArray().length; }));',
+      'nodeState.putShared("entryElement", t(function () { return map.entrySet().toArray()[0]; }));',
+      'nodeState.putShared("valuesSize", t(function () { var vs = map.values(); map.put("later2", "l2"); return vs.size(); }));',
+      'nodeState.putShared("valuesGet", t(function () { return map.values().get(0); }));',
+      'nodeState.putShared("valuesArray", t(function () { return Array.prototype.slice.call(map.values().toArray()).join(","); }));',
+      'nodeState.putShared("valuesIter", t(function () { return map.values().iterator(); }));',
+    ])).toMatchObject({
+      keySet: shutter("java.util.LinkedHashMap$LinkedKeySet"),
+      entrySize: "2",
+      entryHasNext: "true",
+      entryNext: shutter("java.util.LinkedHashMap$Entry"),
+      entryLength: "3",
+      entryElement: shutter("java.util.LinkedHashMap$Entry"),
+      valuesSize: "3",
+      valuesGet: "p",
+      valuesArray: "p,o,l,l2",
+      valuesIter: shutter("java.util.ArrayList$Itr"),
     });
   });
 });

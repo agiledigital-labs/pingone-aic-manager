@@ -473,78 +473,137 @@ function __rhinoLocalJavaMapString(value) {
 }
 
 // A plain object dressed as the Java map AIC hands back: it prints as one,
-// and containsKey, size and keySet are functions (measured). Dot access to an
-// entry works on AIC (getObject(k).nested.b, measured), so ordinary entries
-// stay own properties. An entry named like a method cannot, or put("get", v)
-// would replace get(); those live in a hidden side table instead, and toJSON
-// hands the harvest every entry from both places.
-var __rhinoLocalJavaMapMethods = {
-  get: true, put: true, containsKey: true, size: true, keySet: true,
-  toString: true, toJSON: true, __rhinoLocalShadow: true
-};
+// and containsKey, size and keySet are functions (measured). Every entry is an
+// ordinary enumerable property, so dot access, `map[k]`, for...in and
+// Object.keys all see it (measured 2026-10-01, live-java-map-enumeration).
+// That includes an entry named like a method: on AIC it SHADOWS the method, so
+// with a "get" entry `map.get` is the entry's value and `map.get(k)` throws
+// "is not a function" (measured, same probe). The harness reads entries
+// through the hidden __rhinoLocalMapEntries, which no script key can shadow.
+function __rhinoLocalShutterError(className) {
+  var error = new Error('Access to Java class "' + className + '" is prohibited.');
+  error.name = "InternalError";
+  return error;
+}
 
 function __rhinoLocalEntries(value) {
-  if (value && typeof value.__rhinoLocalShadow === "object" && typeof value.toJSON === "function") {
-    return value.toJSON();
+  if (value && typeof value.__rhinoLocalMapEntries === "function") {
+    return value.__rhinoLocalMapEntries();
   }
   return value;
 }
 
 function __rhinoLocalAsJavaMap(source) {
   var map = {};
-  var shadow = {};
-  function owner(key) {
-    return __rhinoLocalHas(__rhinoLocalJavaMapMethods, key) ? shadow : map;
-  }
-  // Insertion order across both tables; an entry assigned by dot access
-  // (map.x = 1) is picked up after them.
+  // Insertion order. An entry assigned by dot access (map.x = 1) is picked up
+  // after these.
   var order = [];
+  function has(key) {
+    return Object.prototype.propertyIsEnumerable.call(map, key);
+  }
   function keys() {
     var extra = Object.keys(map).filter(function (key) {
       return order.indexOf(key) === -1;
     });
-    return order.filter(function (key) {
-      return __rhinoLocalHas(owner(key), key);
-    }).concat(extra);
+    return order.filter(has).concat(extra);
   }
   function set(key, value) {
-    if (!__rhinoLocalHas(owner(key), key) && order.indexOf(key) === -1) {
+    if (!has(key) && order.indexOf(key) === -1) {
       order.push(key);
     }
-    owner(key)[key] = value;
+    // defineProperty, because a method-named key replaces a hidden
+    // (non-enumerable) method and must become an enumerable entry.
+    Object.defineProperty(map, key, {
+      value: value,
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
   }
-  __rhinoLocalHide(map, "__rhinoLocalShadow", shadow);
-  __rhinoLocalHide(map, "toJSON", function () {
+  function entries() {
     var out = {};
     var names = keys();
     var i;
     for (i = 0; i < names.length; i += 1) {
-      out[names[i]] = owner(names[i])[names[i]];
+      out[names[i]] = map[names[i]];
     }
     return out;
-  });
+  }
+  function values() {
+    var names = keys();
+    var out = [];
+    var i;
+    for (i = 0; i < names.length; i += 1) {
+      out.push(map[names[i]]);
+    }
+    return out;
+  }
+  __rhinoLocalHide(map, "__rhinoLocalMapEntries", entries);
+  __rhinoLocalHide(map, "toJSON", entries);
   __rhinoLocalHide(map, "toString", function () {
     return __rhinoLocalJavaMapString(map);
   });
   __rhinoLocalHide(map, "get", function (name) {
     var key = String(name);
-    return __rhinoLocalHas(owner(key), key) ? owner(key)[key] : null;
+    return has(key) ? map[key] : null;
   });
   __rhinoLocalHide(map, "put", function (name, value) {
     var key = String(name);
-    var previous = __rhinoLocalHas(owner(key), key) ? owner(key)[key] : null;
+    var previous = has(key) ? map[key] : null;
     set(key, value);
     return previous;
   });
   __rhinoLocalHide(map, "containsKey", function (name) {
-    var key = String(name);
-    return __rhinoLocalHas(owner(key), key);
+    return has(String(name));
   });
   __rhinoLocalHide(map, "size", function () {
     return keys().length;
   });
+  // keySet() itself is refused: AM's class shutter blocks the
+  // LinkedHashMap$LinkedKeySet it returns (measured). Iterate with for...in.
   __rhinoLocalHide(map, "keySet", function () {
-    return __rhinoLocalJavaList(keys());
+    throw __rhinoLocalShutterError("java.util.LinkedHashMap$LinkedKeySet");
+  });
+  // Measured: a snapshot. size(), iterator().hasNext() and toArray().length
+  // work; an entry itself is a LinkedHashMap$Entry, which the class shutter
+  // refuses, so next() and reading a toArray() element throw. Nothing else
+  // on the view is modelled.
+  __rhinoLocalHide(map, "entrySet", function () {
+    var size = keys().length;
+    var view = {};
+    function refused() {
+      throw __rhinoLocalShutterError("java.util.LinkedHashMap$Entry");
+    }
+    __rhinoLocalHide(view, "size", function () {
+      return size;
+    });
+    __rhinoLocalHide(view, "iterator", function () {
+      var seen = 0;
+      var iterator = {};
+      __rhinoLocalHide(iterator, "hasNext", function () {
+        return seen < size;
+      });
+      __rhinoLocalHide(iterator, "next", refused);
+      return iterator;
+    });
+    __rhinoLocalHide(view, "toArray", function () {
+      var array = [];
+      var i;
+      for (i = 0; i < size; i += 1) {
+        Object.defineProperty(array, String(i), { get: refused, enumerable: true });
+      }
+      return array;
+    });
+    return view;
+  });
+  // Measured: a snapshot list; size(), get(i) and toArray() work, iterator()
+  // is refused (ArrayList$Itr).
+  __rhinoLocalHide(map, "values", function () {
+    var list = __rhinoLocalJavaList(values());
+    __rhinoLocalHide(list, "iterator", function () {
+      throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
+    });
+    return list;
   });
   var names = Object.keys(source || {});
   var i;
