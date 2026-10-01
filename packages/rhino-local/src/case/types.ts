@@ -439,12 +439,12 @@ export interface RecordedEffects {
   sharedState: StateBucket;
   transientState: StateBucket;
   secureState: StateBucket;
-  sessionProperties?: StateBucket;
+  sessionProperties?: StateBucket | undefined;
   callbacks: CallbackEffect[];
   openidm: OpenidmEffect[];
   http: HttpEffect[];
   logs: LogEffect[];
-  identityWrites?: IdentityWriteEffect[];
+  identityWrites?: IdentityWriteEffect[] | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

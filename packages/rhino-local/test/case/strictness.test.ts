@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { diffRecordedEffects } from "../../src/aic/diff.ts";
-import { judge, type RecordedEffects } from "../../src/case/index.ts";
+import { parseHarvest } from "../../src/bindings/harvest.ts";
+import { judge, normaliseEffects, type RecordedEffects } from "../../src/case/index.ts";
+import { carryGiven } from "../../src/harness/step.ts";
 import { makeCase, makeEffects } from "./helpers.ts";
 
 describe("per-channel strictness — openidm", () => {
@@ -451,6 +453,38 @@ describe("effects recorded before a channel existed", () => {
     const comparison = diffRecordedEffects(local, legacy());
     expect(comparison.disagreements).toEqual([]);
     expect(comparison.observationGaps.map((gap) => gap.channel).sort()).toEqual(["identityWrites", "sessionProperties"]);
+  });
+
+  it("reads an explicit undefined channel as unobserved, like an omitted one", () => {
+    // Discriminating: a `key in raw` test reads this as present and empty, so
+    // the declared put passes conclusively.
+    const kase = makeCase({ expect: { outcome: "true", sessionProperties: { added: { tier: "gold" } } } });
+    const explicit: RecordedEffects = { ...legacy(), sessionProperties: undefined, identityWrites: undefined };
+    const verdict = judge(kase, explicit);
+    expect(verdict.conclusive).toBe(false);
+    expect(normaliseEffects(explicit).evidence?.unobservedChannels.slice().sort()).toEqual(["identityWrites", "sessionProperties"]);
+  });
+
+  it("keeps unobserved channels unobserved through serialisation", () => {
+    // Discriminating: parseHarvest used to drop `evidence`, so the filled-in
+    // empty channels came back as observed.
+    const kase = makeCase({ expect: { outcome: "true", sessionProperties: { added: { tier: "gold" } } } });
+    const reparsed = parseHarvest(JSON.stringify(normaliseEffects(legacy())));
+    expect(reparsed.evidence?.unobservedChannels.slice().sort()).toEqual(["identityWrites", "sessionProperties"]);
+    expect(judge(kase, reparsed).conclusive).toBe(false);
+    // And a 0.1.2 document, serialised as 0.1.2 wrote it, is read, not rejected.
+    expect(judge(kase, parseHarvest(JSON.stringify(legacy()))).conclusive).toBe(false);
+  });
+
+  it("keeps managedStore, so a normalised pass carries what it wrote", () => {
+    const record = { _id: "uuid-1", frUnindexedString1: "new" };
+    const effects = { ...makeEffects(), managedStore: { "managed/alpha_user": [record] } };
+    const previous = { managed: { "managed/alpha_user": [{ _id: "uuid-1", frUnindexedString1: "old" }] } };
+    // Discriminating: without managedStore, carryGiven keeps "old".
+    const next = carryGiven(previous, normaliseEffects(effects), []);
+    expect(next.managed).toEqual({ "managed/alpha_user": [record] });
+    expect(() => normaliseEffects({ ...effects, managedStore: { "managed/alpha_user": ["not-a-record"] } }))
+      .toThrow(/effects.managedStore.managed\/alpha_user\[0\]/);
   });
 
   it("is conclusive when the case opts out of both channels", () => {
