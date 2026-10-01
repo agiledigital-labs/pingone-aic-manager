@@ -29,6 +29,10 @@ export function mergeChannels(
   override: Channels | undefined
 ): RequestDraft {
   const cookieName = override?.cookieName ?? always?.cookieName;
+  const registeredObjectAttributes = always?.registeredObjectAttributes === undefined &&
+      override?.registeredObjectAttributes === undefined
+    ? undefined
+    : { ...(always?.registeredObjectAttributes ?? {}), ...(override?.registeredObjectAttributes ?? {}) };
   return {
     state: {
       shared: { ...(always?.state?.shared ?? {}), ...(override?.state?.shared ?? {}) },
@@ -37,6 +41,7 @@ export function mergeChannels(
         ...(override?.state?.transient ?? {}),
       },
     },
+    ...(registeredObjectAttributes === undefined ? {} : { registeredObjectAttributes }),
     esv: { ...(always?.esv ?? {}), ...(override?.esv ?? {}) },
     esvInState: override?.esvInState ?? always?.esvInState ?? false,
     headers: { ...normaliseWire(always?.headers), ...normaliseWire(override?.headers) },
@@ -163,6 +168,12 @@ export function toGiven(
   }
   if (Object.keys(draft.state.shared).length > 0) {
     given.sharedState = { ...(base.sharedState ?? {}), ...draft.state.shared };
+  }
+  if (draft.registeredObjectAttributes !== undefined) {
+    if (Object.prototype.hasOwnProperty.call(given.sharedState ?? {}, "objectAttributes")) {
+      throw new Error("rhino-local: registeredObjectAttributes collides with state.shared.objectAttributes; use one seed path");
+    }
+    given.registeredObjectAttributes = { ...draft.registeredObjectAttributes };
   }
   if (Object.keys(draft.state.transient).length > 0) {
     given.transientState = {

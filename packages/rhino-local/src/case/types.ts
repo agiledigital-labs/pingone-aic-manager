@@ -33,6 +33,7 @@ export type Engine = (typeof ENGINES)[number];
 
 export const GIVEN_KEYS = [
   "sharedState",
+  "registeredObjectAttributes",
   "transientState",
   "secureState",
   "realm",
@@ -245,6 +246,8 @@ export interface CallbackExpect {
 
 export interface Given {
   sharedState?: JsonObject;
+  /** Seed objectAttributes through AM's registered-container merge path. */
+  registeredObjectAttributes?: JsonObject;
   transientState?: JsonObject;
   secureState?: JsonObject;
   realm?: string;

@@ -47,6 +47,19 @@ describe("carryGiven", () => {
     expect(next.sharedState).toEqual({ username: "alice", stage: "2" });
   });
 
+  it("carries a registered map without turning it into a plain shared seed", () => {
+    const next = carryGiven(
+      { registeredObjectAttributes: { probe: "old" } },
+      effects({ sharedState: {
+        initial: { objectAttributes: { probe: "old" } },
+        final: { objectAttributes: { probe: "new" } },
+      } }),
+      []
+    );
+    expect(next.registeredObjectAttributes).toEqual({ probe: "new" });
+    expect(next.sharedState).toEqual({});
+  });
+
   it("drops transient state, because the tenant does", () => {
     // The discriminating assertion. Measured 2026-09-14: a value put with
     // nodeState.putTransient reads back null on the resumed pass and is gone

@@ -19,6 +19,19 @@ describe("mergeChannels", () => {
     expect(draft.headers).toEqual({ "accept-language": ["en-AU"], "x-a": ["2"] });
   });
 
+  it("merges registered object attributes through suite, test, and beforeRun", () => {
+    const draft = mergeChannels(
+      { registeredObjectAttributes: { suite: "one", same: "old" } },
+      { registeredObjectAttributes: { same: "new" } }
+    );
+    if (draft.registeredObjectAttributes === undefined) throw new Error("missing registered map");
+    draft.registeredObjectAttributes.hook = "three";
+    expect(toGiven(draft).registeredObjectAttributes).toEqual({ suite: "one", same: "new", hook: "three" });
+    expect(() => toGiven(mergeChannels(
+      { state: { shared: { objectAttributes: {} } }, registeredObjectAttributes: {} }, undefined
+    ))).toThrow(/collides with state.shared.objectAttributes/);
+  });
+
   // The discriminating case. A channel-level merge — `{...always, ...override}`
   // one level up — passes any test that only overrides, and silently drops
   // `accept-language` here. That is the shape that makes `always` useless and

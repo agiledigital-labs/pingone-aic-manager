@@ -356,11 +356,7 @@ function __rhinoLocalIsDefined(key) {
 nodeState.get = function (key) {
   __rhinoLocalExpectArity("nodeState.get", arguments, 1);
   var name = String(key);
-  var value = __rhinoLocalLookupState(name);
-  if (name === "objectAttributes" && __rhinoLocalIsPlainObject(value)) {
-    return __rhinoLocalAsJavaMap(value);
-  }
-  return value;
+  return __rhinoLocalLookupState(name);
 };
 
 nodeState.isDefined = function (key) {
@@ -3086,6 +3082,11 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.shared = __rhinoLocalClone(given.sharedState || {});
   __rhinoLocal.transient = __rhinoLocalClone(given.transientState || {});
   __rhinoLocal.secure = __rhinoLocalClone(given.secureState || {});
+  if (given.registeredObjectAttributes !== undefined) {
+    __rhinoLocalMergeBucket("shared", {
+      objectAttributes: __rhinoLocalClone(given.registeredObjectAttributes)
+    });
+  }
   __rhinoLocal.initialShared = __rhinoLocalClone(__rhinoLocal.shared);
   __rhinoLocal.initialTransient = __rhinoLocalClone(__rhinoLocal.transient);
   __rhinoLocal.initialSecure = __rhinoLocalClone(__rhinoLocal.secure);

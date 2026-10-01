@@ -18,6 +18,8 @@ export interface StateChannels {
  */
 export interface Channels {
   state?: StateChannels;
+  /** Registered objectAttributes map, seeded through mergeShared on AIC. */
+  registeredObjectAttributes?: JsonObject;
   /**
    * Declared `systemEnv.getProperty("esv.<name>")` values, keyed by `<name>`.
    * Full `esv.<name>` properties and `esv-...` management IDs are rejected.
@@ -61,6 +63,8 @@ export interface Channels {
 /** The mutable draft `beforeRun` is handed. */
 export interface RequestDraft {
   state: { shared: JsonObject; transient: JsonObject };
+  /** Assign an object here in beforeRun when no suite or test value exists. */
+  registeredObjectAttributes?: JsonObject;
   esv: Record<string, string | null>;
   esvInState: boolean;
   headers: Record<string, string[]>;

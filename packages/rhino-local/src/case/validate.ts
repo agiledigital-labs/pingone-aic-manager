@@ -133,6 +133,11 @@ function parseGiven(raw: unknown, path: string): Given {
   rejectUnknownKeys(path, raw, GIVEN_KEYS);
   const given: Given = {};
   assignJsonObject(given, "sharedState", raw.sharedState, `${path}.sharedState`);
+  assignJsonObject(given, "registeredObjectAttributes", raw.registeredObjectAttributes, `${path}.registeredObjectAttributes`);
+  if (given.registeredObjectAttributes !== undefined &&
+      Object.prototype.hasOwnProperty.call(given.sharedState ?? {}, "objectAttributes")) {
+    throw new Error(`rhino-local: ${path}.registeredObjectAttributes collides with sharedState.objectAttributes; use one seed path`);
+  }
   assignJsonObject(
     given,
     "transientState",

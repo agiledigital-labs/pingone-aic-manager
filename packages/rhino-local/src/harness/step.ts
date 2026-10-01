@@ -82,6 +82,13 @@ export function carryGiven(
 ): Given {
   const next: Given = { ...previous };
   next.sharedState = clone(effects.sharedState.final);
+  if (previous.registeredObjectAttributes !== undefined) {
+    const registered = next.sharedState.objectAttributes;
+    if (registered !== null && typeof registered === "object" && !Array.isArray(registered)) {
+      next.registeredObjectAttributes = clone(registered);
+      delete next.sharedState.objectAttributes;
+    }
+  }
   // Not `{}`: absent and empty differ elsewhere in `Given`, and "the tenant
   // dropped it" is absence.
   delete next.transientState;

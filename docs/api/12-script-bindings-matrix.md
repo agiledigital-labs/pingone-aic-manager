@@ -1621,14 +1621,21 @@ this channel as an observation gap until such a read is implemented.
   a Java collection, iterated with `iterator()`, that includes **transient**
   keys.
 
-A 2026-10-01 AIC test calling `put` on the returned `objectAttributes` map
-ended with HTTP 401. The harness also snapshots the seeded map before author
-source and calls `keySet()` during that snapshot, so the error may precede the
-author call. Map retrieval is measured; mutation and snapshot safety are not.
-The revised `live-object-attributes.e2e.test.ts` creates the map after the
-before snapshot, catches lookup, `put`, and both reads, then removes it before
-the after snapshot. Its diagnostics test the local map-write model without
-requiring the harness to serialize the map.
+**Plain versus registered objectAttributes (live AIC-lane probe,
+2026-10-01).** A value supplied by `nodeState.putShared("objectAttributes", {})`
+came back as a plain JS object: `typeof value.put` was "undefined", and
+calling `put` or `get` threw `Cannot find function ... in object
+[object Object]`. That explains why a plain `state.shared.objectAttributes`
+seed must stay plain locally. The earlier HTTP 401 did not prove that a Java
+map's `put` failed; the AIC wrapper may have failed while snapshotting the
+seeded object before author source.
+
+The local script tester now has a separate
+`registeredObjectAttributes` channel. Its AIC seed calls
+`nodeState.mergeShared({objectAttributes: ...})`, the documented registered
+container path. The revised live test retains per-call diagnostics and checks
+whether `put` mutates that map and whether the wrapper can snapshot it.
+Those two results remain pending live confirmation.
 
 **`openidm` writes** (`binding-openidm-writes`, on a throwaway
 `managed/alpha_role` record):
