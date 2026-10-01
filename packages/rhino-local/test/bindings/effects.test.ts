@@ -62,6 +62,21 @@ describe("openidm", () => {
     expect(effects.sharedState.final.codeType).toBe("undefined");
   });
 
+  it.each([
+    [1, false],
+    [2, true],
+  ])("numbers failure ordinals after the journey's prior calls (stub ordinal %i fails: %s)", (ordinal, fails) => {
+    const effects = runScript(
+      'try { openidm.patch("managed/alpha_user/alice", null, []); } catch (error) { nodeState.putShared("failed", true); }',
+      {
+        managed: { "managed/alpha_user": [{ _id: "alice" }] },
+        openidmPriorCalls: { "patch managed/alpha_user/alice": 1 },
+        openidmFailures: [{ match: { method: "patch", resource: "managed/alpha_user/alice", ordinal }, reply: { code: 409 } }],
+      }
+    );
+    expect(effects.sharedState.final.failed === true).toBe(fails);
+  });
+
   it("reads a seeded record and records the effect without a body", () => {
     const effects = runScript('openidm.read("managed/alpha_user/alice");', {
       managed: {

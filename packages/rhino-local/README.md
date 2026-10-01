@@ -291,7 +291,10 @@ that gap explicit.
 Use `openidmFailures` to make one local IDM call fail: each stub has
 `match: { method, resource, ordinal }` and `reply: { code }`. `ordinal` is
 one-based among calls with the same method and resource, so a second patch
-can fail after the first succeeds. Declare stubs in `always`, add them with
+can fail after the first succeeds. On a `.step()` chain the count runs across
+the whole journey, not per pass: "patch #1" fails once, so a retry on the
+next pass reaches #2 and succeeds. (HTTP stubs keep no count; a stub answers
+every matching request on every pass.) Declare stubs in `always`, add them with
 `.run().openidmFailures()`, or edit `request.openidmFailures` in `beforeRun`.
 The failed call is still recorded in `expect.openidm`. The script sees a
 `JavaException` whose text reads

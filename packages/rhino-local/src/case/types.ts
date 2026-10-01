@@ -53,6 +53,7 @@ export const GIVEN_KEYS = [
   "managed",
   "http",
   "openidmFailures",
+  "openidmPriorCalls",
   "bindingOverrides",
   "engine",
   "bindings",
@@ -306,6 +307,12 @@ export interface Given {
   managed?: Record<string, JsonObject[]>;
   http?: HttpStub[];
   openidmFailures?: OpenidmFailureStub[];
+  /**
+   * `openidm` calls already made earlier in the journey, counted per
+   * `"<method> <resource>"`. The step runner seeds it so `openidmFailures`
+   * ordinals number calls across callback passes, not within each pass.
+   */
+  openidmPriorCalls?: Record<string, number>;
   /** Local binding replacements, as JavaScript expressions keyed by binding name. */
   bindingOverrides?: Record<string, string>;
   engine?: Engine;
