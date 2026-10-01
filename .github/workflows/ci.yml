@@ -147,9 +147,19 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
 
+      # The toolchain is pinned in rust-toolchain.toml; read it rather than
+      # repeat it, so a bump is one edit (see that file's header).
+      - name: Read the pinned toolchain
+        id: toolchain
+        run: |
+          channel="$(grep -oP '^channel = "\K[^"]+' rust-toolchain.toml)"
+          [ -n "$channel" ] || { echo "no channel in rust-toolchain.toml"; exit 1; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           components: rustfmt, clippy
 
       - name: Cache cargo build
@@ -214,6 +224,11 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
+
+      # rust-toolchain.toml would otherwise override the MSRV for every cargo
+      # call below and silently check the pinned version instead.
+      - name: Select the MSRV over the pinned toolchain
+        run: echo "RUSTUP_TOOLCHAIN=${{ steps.msrv.outputs.version }}" >> "$GITHUB_ENV"
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

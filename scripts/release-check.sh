@@ -94,6 +94,18 @@ step "gh authenticated"
 gh auth status >>"$LOG" 2>&1 || fail "gh not authenticated (see: gh auth login)"
 ok
 
+# CI builds with the channel rust-toolchain.toml pins. A local rustc that
+# differs makes every cargo gate below a measurement of the wrong compiler —
+# the drift that let this script pass while CI failed on a newer clippy.
+step "rustc matches rust-toolchain.toml"
+pinned="$(grep -oP '^channel = "\K[^"]+' rust-toolchain.toml)" ||
+  fail "no channel in rust-toolchain.toml"
+local_rustc="$(rustc --version 2>>"$LOG" | awk '{print $2}')"
+[ "$local_rustc" = "$pinned" ] || fail "local rustc is ${local_rustc:-missing}, rust-toolchain.toml pins $pinned.
+  Enter the dev shell (nix-shell, or direnv) or let rustup read the pin. If the
+  pin is what is stale, bump it — see the header of rust-toolchain.toml."
+ok
+
 # --- CI parity ---------------------------------------------------------------
 #
 # Every `- name:` step in ci.yml must appear in exactly one of these lists.
@@ -141,8 +153,10 @@ CI_STEPS_SETUP=(
   "Install rhino-local dependencies"
   "Pull the AM image"
   "Record the JVM builds"
+  "Read the pinned toolchain"
   "Read the declared MSRV"
   "Install the declared MSRV toolchain"
+  "Select the MSRV over the pinned toolchain"
 )
 
 # Asserts that the crate still builds on the `rust-version` Cargo.toml declares.

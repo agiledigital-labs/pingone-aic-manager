@@ -1,0 +1,18 @@
+# The one Rust toolchain for this repository. CI and the release build read the
+# channel from here, shell.nix builds the dev shell from it, rustup honours it
+# directly, and scripts/release-check.sh refuses to report ready when the local
+# rustc differs. Before this pin, CI floated on `stable` while the dev shell
+# took whatever nixpkgs had, so a green release-check could still go red in CI.
+#
+# KEEP THIS CURRENT. Bump it when a new stable ships (about every six weeks),
+# and fix whatever the new clippy reports in the same commit; the bump is the
+# moment those lints are meant to arrive. A stale pin is not safety, it is the
+# same drift moved somewhere quieter. To bump: change `channel`, update the
+# rust-overlay pin in shell.nix if its manifests lack the new version, then run
+# scripts/release-check.sh.
+#
+# This is not the MSRV. Cargo.toml's `rust-version` is the oldest toolchain the
+# crate supports, checked by CI's msrv job; this is the one we build with.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy", "rust-src"]
