@@ -590,8 +590,8 @@ function disagree(
 
 export function judgeBoth(
   kase: Case,
-  local: CompleteRecordedEffects,
-  aic: CompleteRecordedEffects
+  local: RecordedEffects,
+  aic: RecordedEffects
 ): { local: Verdict; aic: Verdict } {
   return { local: judge(kase, local), aic: judge(kase, aic) };
 }

@@ -297,6 +297,17 @@ present. Likewise the channels `RequestDraft` gained since 0.1.2 (`cookies`,
 absent ESV), so code that reads a draft's `esv` value as a `string` needs a
 null check.
 
+Every function that takes effects also takes the 0.1.2 shape and normalises
+it: `judgeBoth()`, `chainFromRunResult()` (whose parameter is
+`RunResultInput`, so a 0.1.2 `RunResult` is accepted), and the `LeaseLaneCheck`
+hooks a `LeaseLane` calls, which hand your `check()` the complete form with
+the missing channels marked unobserved. What the harness hands *to* your code
+(`RunResult`, `StepResult`, `CheckContext`, `StepContext`, `BeforeRunContext`)
+stays complete, so a test that builds one of those by hand needs the new
+fields. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
+0.1.2 export's shape against the current one, and `npm run typecheck` fails on
+any new break.
+
 ### ESV declarations
 
 Declare values read through `systemEnv.getProperty("esv.<name>")` with the

@@ -8,13 +8,13 @@ import type {
   RecordedEffects,
   Verdict,
 } from "../case/types.ts";
-import type { RunResult } from "../harness/lease.ts";
+import type { RunResultInput } from "../harness/lease.ts";
 import {
   diffRecordedEffects,
   type EffectsDisagreement,
   type ObservationGap,
 } from "./diff.ts";
-import { judge } from "../case/verdict.ts";
+import { judge, normaliseEffects } from "../case/verdict.ts";
 import { managedSeedMatches, type ManagedFixture } from "./managed.ts";
 import { oneShotSubjectId, oneShotSubjectName } from "./emit-journey.ts";
 import { discoverTenantCookieName, runAicChain, runAicLane, type AicReply } from "./run.ts";
@@ -227,10 +227,13 @@ export async function conformChain(
  * External one-shot callers may use this too; `useLease()` sends it to the
  * file's already-open `AicFileLease`, not to `runAicChain()`.
  */
-export function chainFromRunResult(result: RunResult): LocalChainResult {
+export function chainFromRunResult(result: RunResultInput): LocalChainResult {
   return {
     cases: [...result.steps.map((step) => step.kase), result.kase],
-    localEffects: [...result.steps.map((step) => step.effects), result.effects],
+    localEffects: [
+      ...result.steps.map((step) => normaliseEffects(step.effects)),
+      normaliseEffects(result.effects),
+    ],
     replies: result.steps.map((step) => submittedToAicReplies(step.submitted)),
     managedFixtures: result.fixtures,
     ...(result.harnessIdentity === undefined ? {} : { harnessIdentity: result.harnessIdentity }),

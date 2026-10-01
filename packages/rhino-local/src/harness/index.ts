@@ -9,6 +9,8 @@ export type {
   CheckContext,
   Check,
   LeaseLaneCheck,
+  RunResultInput,
+  StepResultInput,
   LeaseLaneHooks,
 } from "./lease.ts";
 export { carryGiven, submittedCallbacks } from "./step.ts";
