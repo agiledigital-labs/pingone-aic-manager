@@ -13,13 +13,24 @@
 #   --tracked    every tracked file in the work tree   (default; CI)
 #   --history [REV-RANGE]
 #                every blob introduced by the range    (audit/CI)
-#                defaults to every reachable commit
+#                defaults to every reachable commit; over the whole history,
+#                SENSITIVE_HISTORY_EXPECTED=N passes on EXACTLY N findings
 #   --selftest   prove the rules still fire            (CI runs this first)
 #   --redact     filter stdin -> stdout, sanitised    (capture-time)
 #                REDACT_VALUES=1 additionally strips ESV valueBase64 payloads
 #   --fix        rewrite tracked files in place       (same redactions)
 #
 # Exit 0 clean, 1 findings, 2 usage/internal error.
+#
+# Known historic findings. A value added to the denylist after it was committed
+# is in old blobs for good: history is append-only, and the remote keeps
+# force-pushed objects anyway. SENSITIVE_HISTORY_EXPECTED records how many
+# findings the whole-history scan is known to produce, and the scan passes only
+# on exactly that many. Exact, not a ceiling: a rewrite that drops old findings
+# would otherwise leave room for new ones to hide under the old total. It is a
+# per-denylist number, so it lives beside the denylist — .envrc locally, a
+# repository variable in CI — never in a committed file. Range scans ignore it:
+# a range is new commits, and any finding there is new.
 set -uo pipefail
 
 MODE=tracked
@@ -69,6 +80,22 @@ if [ -n "${SENSITIVE_DENYLIST_CONTENT:-}" ]; then
 elif [ -n "${SENSITIVE_DENYLIST:-}" ] && [ -f "${SENSITIVE_DENYLIST}" ]; then
   DENY_RE=$(grep -vE '^\s*(#|$)' "${SENSITIVE_DENYLIST}" | paste -sd '|' -)
 fi
+EXPECTED="${SENSITIVE_HISTORY_EXPECTED:-}"
+if [ -n "$EXPECTED" ] && ! [[ "$EXPECTED" =~ ^[0-9]+$ ]]; then
+  echo "error: SENSITIVE_HISTORY_EXPECTED must be a count, got '$EXPECTED'" >&2
+  exit 2
+fi
+# Only the whole-history scan is counted; see the header. The requirement
+# applies to that scan alone, so one environment serves every mode.
+COUNTED=0
+if [ "$MODE" = history ] && [ "$HISTORY_RANGE" = --all ]; then
+  if [ "${REQUIRE_SENSITIVE_HISTORY_EXPECTED:-0}" = 1 ] && [ -z "$EXPECTED" ]; then
+    echo "error: SENSITIVE_HISTORY_EXPECTED is required (0 if the history is clean)" >&2
+    exit 2
+  fi
+  [ -n "$EXPECTED" ] && COUNTED=1
+fi
+
 if [ "${REQUIRE_SENSITIVE_DENYLIST:-0}" = 1 ] && [ -z "$DENY_RE" ]; then
   echo "error: a non-empty sensitive metadata denylist is required" >&2
   exit 2
@@ -224,11 +251,26 @@ redact_stream() {
 }
 
 findings=0
+held=""
 
 # report FILE LINE RULE DETAIL REMEDY
+# A counted scan holds its findings: printed only if the count is wrong, so a
+# pass is not 69 blocks of known noise.
 report() {
   findings=$((findings + 1))
-  printf '\n%s:%s\n  rule:   %s\n  found:  %s\n  fix:    %s\n' "$1" "$2" "$3" "$4" "$5"
+  local block
+  block=$(printf '\n%s:%s\n  rule:   %s\n  found:  %s\n  fix:    %s' "$1" "$2" "$3" "$4" "$5")
+  if [ "$COUNTED" = 1 ]; then
+    held+="$block"$'\n'
+  else
+    printf '%s\n' "$block"
+  fi
+}
+
+# history_verdict FOUND EXPECTED — 0 when they match exactly, 1 otherwise.
+# Split out so --selftest drives the real comparison.
+history_verdict() {
+  [ "$1" -eq "$2" ]
 }
 
 is_placeholder_host() {
@@ -429,6 +471,20 @@ case "$MODE" in
       fails=$((fails + 1))
     fi
 
+    # The known-count comparison is exact in both directions: fewer findings
+    # than expected means history changed and the number needs resetting
+    # deliberately, not that a new finding has room to hide.
+    for case in "69 69 0" "70 69 1" "68 69 1" "0 0 0" "1 0 1"; do
+      read -r f e want <<<"$case"
+      history_verdict "$f" "$e"; got=$?
+      if [ "$got" = "$want" ]; then
+        echo "ok    history count: $f found, $e expected -> $want"
+      else
+        echo "FAIL  history count: $f found, $e expected -> $got, want $want"
+        fails=$((fails + 1))
+      fi
+    done
+
     if [ "$fails" -gt 0 ]; then
       echo; echo "selftest FAILED ($fails)"; exit 1
     fi
@@ -490,6 +546,21 @@ case "$MODE" in
     )
     ;;
 esac
+
+if [ "$COUNTED" = 1 ]; then
+  if history_verdict "$findings" "$EXPECTED"; then
+    echo "check-sensitive-metadata: clean (history) — $findings known historic finding(s), as SENSITIVE_HISTORY_EXPECTED says"
+    exit 0
+  fi
+  printf '%s' "$held"
+  printf '\n%s findings in the whole history; SENSITIVE_HISTORY_EXPECTED is %s.\n' "$findings" "$EXPECTED"
+  if [ "$findings" -gt "$EXPECTED" ]; then
+    printf 'Something new reached history. Find it among the findings above, and redact it before it is pushed.\n'
+  else
+    printf 'History lost findings, so it was rewritten or the denylist changed. Check that, then set the new count.\n'
+  fi
+  exit 1
+fi
 
 if [ "$findings" -gt 0 ]; then
   printf '\n%s findings. Nothing was committed.\n' "$findings"

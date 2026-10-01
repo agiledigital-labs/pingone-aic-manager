@@ -125,6 +125,7 @@ CI_STEPS_REPRODUCED=(
   "Scanner selftest"
   "Scan tracked files"
   "Scan introduced history"
+  "Scan full history (known count)"
   "Gitleaks (credentials)"
   "Cargo audit (advisories)"
   "npm audit (rhino-local lockfile)"
@@ -202,12 +203,21 @@ ok
 # denylist in the environment looks exactly like a clean one. .envrc exports
 # SENSITIVE_DENYLIST; direnv, or `source .envrc`, puts it in scope.
 export REQUIRE_SENSITIVE_DENYLIST=1
+# Same for the known-history count: CI requires it, so a release does too. It
+# lives beside the denylist (.envrc), because it is a count of that denylist's
+# hits; 0 if the history is clean.
+export REQUIRE_SENSITIVE_HISTORY_EXPECTED=1
 
 if [ -z "${SENSITIVE_DENYLIST_CONTENT:-}" ] &&
   { [ -z "${SENSITIVE_DENYLIST:-}" ] || [ ! -f "${SENSITIVE_DENYLIST}" ]; }; then
   fail "no sensitive-metadata denylist in the environment.
   CI requires one and so does a release. Set SENSITIVE_DENYLIST to a file
   outside the repo (\`source .envrc\`, or let direnv do it)."
+fi
+if [ -z "${SENSITIVE_HISTORY_EXPECTED:-}" ]; then
+  fail "SENSITIVE_HISTORY_EXPECTED is not set.
+  CI requires it and so does a release: it is the number of findings your
+  denylist already has in history (0 if none). Export it in .envrc."
 fi
 
 # --selftest first, for the reason ci.yml gives: a scanner whose rules silently
@@ -220,8 +230,8 @@ gate "metadata: tracked files" \
   "tenant or client metadata in tracked files (see the findings above)" \
   scripts/check-sensitive-metadata.sh --tracked
 
-# CI scans only the range it received; a release scans the whole history, which
-# is the superset — every blob that a clone of this tag can reach.
+# Every blob a clone of this tag can reach, against the known count of historic
+# findings — the same scan as CI's "Scan full history (known count)".
 gate "metadata: full history" \
   "tenant or client metadata reachable in history (see the findings above)" \
   scripts/check-sensitive-metadata.sh --history
