@@ -243,3 +243,17 @@ repository, not the `openidm` binding). It refuses an IDM field name passed to
 measured above, but what `store()` does with a wrong-name *write* is not.
 `live-identity-writes.e2e.test.ts` retains per-call diagnostics, and its
 fixture cleanup deletes the user.
+
+**Measured 2026-10-01** (`live-identity-store-visibility.e2e.test.ts`, one
+pass, then a callback round trip):
+
+- After `store()`, the **same** wrapper and a **fresh** `getIdentity` both read
+  the new value immediately.
+- The IDM record (read with `openidm.read` in the same pass and the next)
+  holds `setAttribute("fr-attr-multi1", ["only"])` as `["only"]` — an array even
+  with one value — while `fr-attr-str1` and `mail` hold a plain string.
+- A `setAttribute` with **no** `store()` on another wrapper never reaches IDM
+  or a later `getIdentity`, even across the callback round trip.
+
+The local lane stores by that measured cardinality and refuses a write to any
+other attribute name, or several values to a single-valued one, as unmeasured.
