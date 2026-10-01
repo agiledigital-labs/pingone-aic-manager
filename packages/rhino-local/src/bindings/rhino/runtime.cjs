@@ -3121,20 +3121,82 @@ var __rhinoLocalActionClass = {
   },
 };
 
+// The legacy result path's classes, reachable the way a script names them:
+// `org.forgerock.openam.auth.node.api.Action` and
+// `com.sun.identity.authentication.callbacks.HiddenValueCallback`, as the
+// class or its package. Neither class is on the local classpath, so on the
+// JVM those expressions are Rhino package objects and are recognised by name;
+// in the Node path the branches do not exist and are supplied here.
+var __rhinoLocalActionPackage = { Action: __rhinoLocalActionClass };
+var __rhinoLocalCallbacksPackage = {
+  HiddenValueCallback: __rhinoLocalHiddenValueCallback
+};
+if (!__rhinoLocalOrgOverlay.forgerock.openam) {
+  __rhinoLocalOrgOverlay.forgerock.openam = {
+    auth: { node: { api: __rhinoLocalActionPackage } }
+  };
+}
+if (typeof com === "undefined") {
+  var com = {
+    sun: {
+      identity: { authentication: { callbacks: __rhinoLocalCallbacksPackage } }
+    }
+  };
+}
+
+function __rhinoLocalImportNames(arg, local, localPackage, className) {
+  var name;
+  if (arg === local || arg === localPackage) {
+    return true;
+  }
+  if (arg === null || arg === undefined || typeof arg !== "object" && typeof arg !== "function") {
+    return false;
+  }
+  try {
+    name = String(arg);
+  } catch (e) {
+    return false;
+  }
+  return (
+    name === "[JavaPackage " + className + "]" ||
+    name === "[JavaPackage " + className.replace(/\.[^.]+$/, "") + "]"
+  );
+}
+
 JavaImporter = function () {
   var real = null;
   var imports = [];
   var jsonValue = false;
+  var actionClass = false;
+  var hiddenValueCallback = false;
   var i;
-  // JsonValue is reachable through its class or its package, and through
-  // nothing else: JavaImporter() and JavaImporter(java.util) leave it
-  // undefined (measured 2026-10-01, live-java-importer-scope).
+  // Each modelled class is reachable through its class or its package, and
+  // through nothing else: JavaImporter() and JavaImporter(java.util) leave it
+  // undefined (measured 2026-10-01 on next-gen, live-java-importer-scope).
   for (i = 0; i < arguments.length; i += 1) {
     if (
       arguments[i] === __rhinoLocalJsonValueClass ||
       arguments[i] === __rhinoLocalOrgOverlay.forgerock.json
     ) {
       jsonValue = true;
+    } else if (
+      __rhinoLocalImportNames(
+        arguments[i],
+        __rhinoLocalActionClass,
+        __rhinoLocalActionPackage,
+        "org.forgerock.openam.auth.node.api.Action"
+      )
+    ) {
+      actionClass = true;
+    } else if (
+      __rhinoLocalImportNames(
+        arguments[i],
+        __rhinoLocalHiddenValueCallback,
+        __rhinoLocalCallbacksPackage,
+        "com.sun.identity.authentication.callbacks.HiddenValueCallback"
+      )
+    ) {
+      hiddenValueCallback = true;
     } else {
       imports.push(arguments[i]);
     }
@@ -3147,8 +3209,15 @@ JavaImporter = function () {
     Importer.prototype = real;
   }
   var wrapper = new Importer();
-  wrapper.Action = __rhinoLocalActionClass;
-  wrapper.HiddenValueCallback = __rhinoLocalHiddenValueCallback;
+  // Next-gen hides both classes even from an importer that names them
+  // (typeof "undefined", measured 2026-10-01, live-java-importer-scope), so
+  // only the legacy engine, whose result path they are, gets them.
+  if (actionClass && __rhinoLocal.engine === "legacy") {
+    wrapper.Action = __rhinoLocalActionClass;
+  }
+  if (hiddenValueCallback && __rhinoLocal.engine === "legacy") {
+    wrapper.HiddenValueCallback = __rhinoLocalHiddenValueCallback;
+  }
   if (jsonValue) {
     wrapper.JsonValue = __rhinoLocalJsonValueClass;
   }
