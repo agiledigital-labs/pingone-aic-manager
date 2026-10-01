@@ -256,8 +256,10 @@ package `org.forgerock.json` both expose `JsonValue` with `typeof` `"function"`
 (and `.object` a function); `JavaImporter()` and `JavaImporter(java.util)`
 leave it `undefined`.
 
-So a **mutable** Java `Map` is unavailable to next-gen AM scripts by any of the
-probed routes. `Collections.singletonMap`/`emptyMap` return usable (immutable)
+So a **mutable** `java.util` `Map` is unavailable to next-gen AM scripts by any
+of the probed routes. (`org.forgerock.json.JsonValue.object()`, measured
+separately in `live-json-value.e2e.test.ts`, does return one that accepts
+`put`/`get`.) `Collections.singletonMap`/`emptyMap` return usable (immutable)
 maps, and `Set`/`List` types are fine. For accumulating key→value data in a
 next-gen script, a plain JS object remains the only verified option.
 
@@ -583,6 +585,11 @@ Consequences:
   journey, same script, no cookie) still reported `undefined`, which is what
   makes the populated arm a measurement of the cookie rather than of the
   probe.
+- With that session cookie sent, `requestCookies` lists it too: under the
+  tenant's `cookieName`, `get` returns a string, `containsKey` is true, and
+  `size()` counts it beside the request's other cookies (measured 2026-10-01,
+  `live-session-cookie.e2e.test.ts`; only presence and type are asserted,
+  since the token is per-run).
 
 ### `existingSession` access surface (both evaluators, 2026-09-14)
 
