@@ -180,7 +180,12 @@ AM persists through its identity repository — so it never appears in
 `expect.openidm` and `openidmFailures` stubs do not count or fail it. Passing an
 IDM field name (`userName`, `frUnindexedString1`, …) to `setAttribute` or
 `addAttribute` throws naming the AM attribute (`uid`, `fr-attr-str1`), because
-what AM stores for an unknown name is unmeasured. The AIC lane cannot observe
+what AM stores for an unknown name is unmeasured. Writes are limited to the
+attributes whose IDM layout was measured — `fr-attr-str1`..`5` and `mail`
+(single-valued) and `fr-attr-multi1`..`5` (always an array) — and anything
+else, or several values on a single-valued attribute, throws. After `store()`
+the same wrapper and a fresh `getIdentity` see the new values at once; without
+`store()` nothing persists, matching AIC. The AIC lane cannot observe
 the write itself (only what the script reads back), so this channel reports an
 observation gap there.
 

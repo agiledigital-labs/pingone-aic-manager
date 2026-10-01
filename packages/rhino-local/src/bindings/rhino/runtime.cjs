@@ -2423,11 +2423,33 @@ idRepository.getIdentity = function (userName) {
     }
     return key;
   }
+  // How store() lays an attribute out in IDM, for the AM names where that was
+  // measured (2026-10-01, live-identity-store-visibility): fr-attr-strN and
+  // mail land as a string, fr-attr-multiN as an array even with one value.
+  // Anything else is refused, because guessing the cardinality is exactly how
+  // a one-element list once came out as a scalar.
+  function cardinality(name) {
+    var key = String(name);
+    if (/^fr-attr-multi[1-5]$/.test(key)) {
+      return "multi";
+    }
+    if (/^fr-attr-str[1-5]$/.test(key) || key === "mail") {
+      return "single";
+    }
+    return null;
+  }
   // A wrong-name READ is measured (no values); what store() does with a
   // wrong-name WRITE is not, so the local lane refuses one rather than guess.
   function writable(method, name) {
     var key = field(name);
     if (key !== "<not-an-AM-attribute>") {
+      if (cardinality(name) === null) {
+        throw new Error(
+          "rhino-local: idRepository.getIdentity()." + method + ": how AM stores " +
+            JSON.stringify(String(name)) +
+            " in IDM is unmeasured, so the local lane refuses the write; measured: fr-attr-str1..5, fr-attr-multi1..5, mail"
+        );
+      }
       return key;
     }
     var am = String(name)
@@ -2519,10 +2541,20 @@ idRepository.getIdentity = function (userName) {
       // local record is only so later reads in this run see the value.
       var names = Object.keys(dirty);
       var i;
+      // Checked before anything is applied, so a refusal leaves no half-store.
+      for (i = 0; i < names.length; i += 1) {
+        if (cardinality(dirty[names[i]]) === "single" && pending[names[i]].length !== 1) {
+          throw new Error(
+            "rhino-local: idRepository.getIdentity().store: " + JSON.stringify(dirty[names[i]]) +
+              " is single-valued and was given " + pending[names[i]].length +
+              " values; what AM stores then is unmeasured, so the local lane refuses it"
+          );
+        }
+      }
       for (i = 0; i < names.length; i += 1) {
         var key = names[i];
         var value = pending[key];
-        found[key] = value.length === 1 ? value[0] : value.slice();
+        found[key] = cardinality(dirty[key]) === "multi" ? value.slice() : value[0];
         __rhinoLocal.identityWrites.push({
           identity: String(found._id),
           attribute: dirty[key],

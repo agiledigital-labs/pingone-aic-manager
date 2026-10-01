@@ -205,4 +205,33 @@ describe("idRepository", () => {
       { managed: { "managed/alpha_user": [{ _id: "uuid-1", userName: "alice" }] } }
     )).toThrow(new RegExp(`IDM field name; AM names this attribute "${am}"`));
   });
+
+  // Measured 2026-10-01 (live-identity-store-visibility): one value on a
+  // multivalued attribute is stored as a one-element array, not a scalar.
+  it.each([
+    ["fr-attr-multi1", "frUnindexedMultivalued1", ["only"], ["only"]],
+    ["fr-attr-multi1", "frUnindexedMultivalued1", ["a", "b"], ["a", "b"]],
+    ["fr-attr-str1", "frUnindexedString1", ["new"], "new"],
+    ["mail", "mail", ["new@example.com"], "new@example.com"],
+  ])("store() keeps %s's IDM cardinality for %j", (attribute, field, values, stored) => {
+    const effects = runScript(
+      [
+        'var identity = idRepository.getIdentity("uuid-1");',
+        `identity.setAttribute(${JSON.stringify(attribute)}, ${JSON.stringify(values)});`,
+        "identity.store();",
+      ].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1", frUnindexedMultivalued1: ["x", "y"] }] } }
+    );
+    expect(effects.managedStore?.["managed/alpha_user"]?.[0]?.[field]).toEqual(stored);
+  });
+
+  it.each([
+    ["an attribute with no measured cardinality", 'identity.setAttribute("givenName", ["Bob"]);', /how AM stores "givenName" in IDM is unmeasured/],
+    ["several values on a single-valued attribute", 'identity.setAttribute("fr-attr-str1", ["a", "b"]);', /"fr-attr-str1" is single-valued and was given 2 values/],
+  ])("refuses %s", (_name, call, message) => {
+    expect(() => runScript(
+      ['var identity = idRepository.getIdentity("uuid-1");', call, "identity.store();"].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1" }] } }
+    )).toThrow(message);
+  });
 });
