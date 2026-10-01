@@ -110,7 +110,18 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
   const runId = input.aic === "tenant" && aicSkip === undefined
     ? randomUUID().replace(/-/g, "").slice(0, 12)
     : undefined;
-  const cookieName = runId === undefined ? undefined : await discoverTenantCookieName();
+  // Discovery is the AIC lane's first tenant call, so its failure belongs to
+  // the AIC side of the report like any other tenant failure: the local lane
+  // still runs, and runs without a cookie name rather than with a made-up one.
+  let cookieName: string | undefined;
+  let discoveryError: string | undefined;
+  if (runId !== undefined) {
+    try {
+      cookieName = await discoverTenantCookieName();
+    } catch (error) {
+      discoveryError = `tenant cookie-name discovery failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   const localInput = runId === undefined ? input : {
     ...input,
     kase: {
@@ -129,7 +140,9 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
     : input.aic;
   const aic = aicSkip
     ? skipResult(aicSkip)
-    : await runLane(aicRunner, input, "no AIC runner provided");
+    : discoveryError !== undefined
+      ? { error: discoveryError }
+      : await runLane(aicRunner, input, "no AIC runner provided");
 
   const comparison =
     local.effects !== undefined && aic.effects !== undefined
