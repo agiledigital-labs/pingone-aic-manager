@@ -250,6 +250,12 @@ Via `JavaImporter` the same block reads
 `TypeError: org.mozilla.javascript.Undefined@… is not a function, it is undefined.`
 Either way it is a runtime failure at the construction site, not a parse error.
 
+`org.forgerock.json.JsonValue` through `JavaImporter` (next-gen, measured
+2026-10-01, `live-java-importer-scope.e2e.test.ts`): importing the class or the
+package `org.forgerock.json` both expose `JsonValue` with `typeof` `"function"`
+(and `.object` a function); `JavaImporter()` and `JavaImporter(java.util)`
+leave it `undefined`.
+
 So a **mutable** Java `Map` is unavailable to next-gen AM scripts by any of the
 probed routes. `Collections.singletonMap`/`emptyMap` return usable (immutable)
 maps, and `Set`/`List` types are fine. For accumulating key→value data in a

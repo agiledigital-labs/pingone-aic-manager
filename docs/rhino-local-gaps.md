@@ -139,6 +139,15 @@ prints `{ "a": "b" }`, and `json(object())` prints `{  }`. Locally `json(x)`
 returns `x`, so those two match because `object()` already prints as a map.
 `json()` of anything else — a JavaScript object literal, an array, a scalar —
 is **unmeasured** on AIC, and locally prints whatever `x` prints.
+`JsonValue` is reachable through `JavaImporter(org.forgerock.json.JsonValue)`
+or `JavaImporter(org.forgerock.json)`, as a class (`typeof` is `"function"`),
+and is `undefined` on `JavaImporter()` or `JavaImporter(java.util)` (measured
+2026-10-01, `live-java-importer-scope`); the local lane matches all four.
+`object()` is the same local Java-map model as a registered `objectAttributes`,
+so an entry named `get`, `put` or `size` neither shadows nor replaces a method.
+The legacy `Action`/`HiddenValueCallback` importer members are still added to
+every local importer; legacy scripts are unsupported and that scope is
+unmeasured.
 
 What the 2026-09-12 ranking called the shutter gap is closed:
 `java-class-shutter`, `for-each-java-collection` and
