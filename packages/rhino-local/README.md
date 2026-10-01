@@ -180,12 +180,65 @@ AM persists through its identity repository — so it never appears in
 `expect.openidm` and `openidmFailures` stubs do not count or fail it. Passing an
 IDM field name (`userName`, `frUnindexedString1`, …) to `setAttribute` or
 `addAttribute` throws naming the AM attribute (`uid`, `fr-attr-str1`), because
-what AM stores for an unknown name is unmeasured. Writes are limited to the
-attributes whose IDM layout was measured — `fr-attr-str1`..`5` and `mail`
-(single-valued) and `fr-attr-multi1`..`5` (always an array) — and anything
-else, or several values on a single-valued attribute, throws. After `store()`
-the same wrapper and a fresh `getIdentity` see the new values at once; without
-`store()` nothing persists, matching AIC. The AIC lane cannot observe
+what AM stores for an unknown name is unmeasured. After `store()` the same
+wrapper and a fresh `getIdentity` see the new values at once; without
+`store()` nothing persists, matching AIC.
+
+`store()` lays each attribute out in IDM as measured on AIC
+(`docs/api/14-am-identity-attributes.md`, "What `store()` writes"):
+
+| AM attribute | IDM property | 1 value | 2+ values | `[]` |
+| --- | --- | --- | --- | --- |
+| `fr-attr-str1`..`5`, `fr-attr-istr1`..`20` | `frUnindexedStringN`, `frIndexedStringN` | string | throws | removed |
+| `fr-attr-multi1`..`5`, `fr-attr-imulti1`..`5` | `frUnindexedMultivaluedN`, `frIndexedMultivaluedN` | array | array | `[]` |
+| `fr-attr-int1`..`5`, `fr-attr-iint1`..`5` | `frUnindexedIntegerN`, `frIndexedIntegerN` | number | throws | removed |
+| `fr-attr-date1`..`5`, `fr-attr-idate1`..`5` | `frUnindexedDateN`, `frIndexedDateN` | ISO string | throws | removed |
+| `givenName`, `telephoneNumber`, `mail` | same name | string | array | removed |
+| `sn` | `sn` | string | array | throws |
+
+One member of each family was measured; the rest are assumed to match it.
+Pass integers as decimal strings (`"42"`) and dates as GeneralizedTime
+(`"20261001120000Z"`); `getAttributeValues` returns them in that form. Where
+AIC refuses a store — several values on a single-valued attribute, `[]` on
+`sn`, a non-integer, an ISO date — the script gets AM's own `JavaException`
+(`…IdentityUpdateException: … ldap errorcode=65` or `21`) and nothing in that
+`store()` is applied, so a script's error handling can be tested. Inputs AIC
+was not measured with (a signed integer, a GeneralizedTime with an offset)
+throw a `rhino-local:` refusal instead. `cn` is refused: AM keeps it outside
+the IDM managed record, which the local lane does not model.
+
+Any other attribute — a tenant's own, say — throws until you declare how the
+tenant stores it, keyed by the AM name:
+
+```ts
+const suite = defineSuite({
+  // ...
+  always: {
+    identityAttributes: {
+      "custom-consent-date": { field: "custConsentDate", cardinality: "single" },
+      "custom-history": { field: "custHistory", cardinality: "multi" },
+    },
+  },
+});
+```
+
+`"single"` stores one value as a string and removes the property on `[]`;
+several values are refused, since what DS does then depends on its schema.
+`"multi"` always stores an array. Values are stored as the strings given — a
+declared attribute gets no integer or date conversion. A declaration also
+overrides a measured default. Add or override entries per test with
+`.run().identityAttributes({...})`, or edit `request.identityAttributes` in
+`beforeRun`; entries merge by attribute name. A raw `Case` takes the same map
+as `given.identityAttributes`.
+
+The declaration is **local only** and, unlike `http` and `bindingOverrides`,
+it does **not** make a case AIC-ineligible. Those inputs change what the
+script observes in a way the tenant cannot reproduce, so a tenant run without
+them is a different case. A declaration changes nothing the script can do; it
+is a claim about the tenant's mapping, and the AIC lane simply writes through
+the real one. Keeping the case eligible is what checks the claim: a wrong
+`field` or `cardinality` makes the lanes disagree on whatever the script reads
+back (`live-identity-declared.e2e.test.ts` pins both outcomes). The AIC lane cannot observe
 the write itself (only what the script reads back), so this channel reports an
 observation gap there.
 

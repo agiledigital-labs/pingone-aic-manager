@@ -100,7 +100,7 @@ trusted only where marked ✓live (CLAUDE.md §2).
 | `accountStatus` | `inetUserStatus` | ✓live |
 | `_id` | `fr-idm-uuid` | ✓live |
 | (custom attrs bag) | `fr-idm-custom-attrs` | ✓live (object; `{}` on this tenant) |
-| `displayName` | `displayName` | doc |
+| `displayName` | `displayName` | ✓live store (2026-10-01, one value → string) |
 | `description` | `description` | doc |
 | `password` | `userPassword` | doc |
 | `postalAddress` | `street` | doc |
@@ -132,18 +132,21 @@ trusted only where marked ✓live (CLAUDE.md §2).
 | `_rev` | `etag` | doc |
 | `_meta` | `fr-idm-managed-user-meta` | doc |
 
-General-purpose extension attributes from the Ping reference:
+General-purpose extension attributes from the Ping reference. "✓live store"
+means `identity.store()` was measured writing the representative named, with
+the layout in [What `store()` writes](#what-store-writes-measured-2026-10-01);
+the other members of the family are assumed to behave like it, not measured.
 
 | IDM property | AM attribute | Status |
 |---|---|---|
-| `frIndexedString1` … `frIndexedString20` | `fr-attr-istr1` … `fr-attr-istr20` | doc |
-| `frUnindexedString1` … `frUnindexedString5` | `fr-attr-str1` … `fr-attr-str5` | doc |
-| `frIndexedMultivalued1` … `frIndexedMultivalued5` | `fr-attr-imulti1` … `fr-attr-imulti5` | doc |
-| `frUnindexedMultivalued1` … `frUnindexedMultivalued5` | `fr-attr-multi1` … `fr-attr-multi5` | doc |
-| `frIndexedDate1` … `frIndexedDate5` | `fr-attr-idate1` … `fr-attr-idate5` | doc |
-| `frUnindexedDate1` … `frUnindexedDate5` | `fr-attr-date1` … `fr-attr-date5` | doc |
-| `frIndexedInteger1` … `frIndexedInteger5` | `fr-attr-iint1` … `fr-attr-iint5` | doc |
-| `frUnindexedInteger1` … `frUnindexedInteger5` | `fr-attr-int1` … `fr-attr-int5` | doc |
+| `frIndexedString1` … `frIndexedString20` | `fr-attr-istr1` … `fr-attr-istr20` | ✓live store (measured: istr1; istr2..20 assumed by family) |
+| `frUnindexedString1` … `frUnindexedString5` | `fr-attr-str1` … `fr-attr-str5` | ✓live store (measured: str1, str2; str3..5 assumed by family) |
+| `frIndexedMultivalued1` … `frIndexedMultivalued5` | `fr-attr-imulti1` … `fr-attr-imulti5` | ✓live store (measured: imulti1; imulti2..5 assumed by family) |
+| `frUnindexedMultivalued1` … `frUnindexedMultivalued5` | `fr-attr-multi1` … `fr-attr-multi5` | ✓live store (measured: multi1, multi2; multi3..5 assumed by family) |
+| `frIndexedDate1` … `frIndexedDate5` | `fr-attr-idate1` … `fr-attr-idate5` | ✓live store (measured: idate1; idate2..5 assumed by family) |
+| `frUnindexedDate1` … `frUnindexedDate5` | `fr-attr-date1` … `fr-attr-date5` | ✓live store (measured: date1; date2..5 assumed by family) |
+| `frIndexedInteger1` … `frIndexedInteger5` | `fr-attr-iint1` … `fr-attr-iint5` | ✓live store (measured: iint1; iint2..5 assumed by family) |
+| `frUnindexedInteger1` … `frUnindexedInteger5` | `fr-attr-int1` … `fr-attr-int5` | ✓live store (measured: int1, int2; int3..5 assumed by family) |
 
 Multivalue 2FA profile attributes from the Ping reference:
 
@@ -255,5 +258,54 @@ pass, then a callback round trip):
 - A `setAttribute` with **no** `store()` on another wrapper never reaches IDM
   or a later `getIdentity`, even across the callback round trip.
 
-The local lane stores by that measured cardinality and refuses a write to any
-other attribute name, or several values to a single-valued one, as unmeasured.
+The local lane stores by the layouts below and refuses a write to any other
+attribute name unless the suite declares one (`identityAttributes`).
+
+### What `store()` writes (measured 2026-10-01)
+
+`live-identity-store-families.e2e.test.ts`, `live-identity-cn.e2e.test.ts` and
+`live-identity-declared.e2e.test.ts`, alpha realm, next-gen scripted decision.
+Each row was its own `store()` through a fresh `getIdentity` wrapper; the IDM
+side was read with `openidm.read(path, null, [field])` in the same pass.
+
+| AM attribute (representative) | 1 value in IDM | 2+ values | `[]` | Value the script passes |
+|---|---|---|---|---|
+| `fr-attr-str1`, `fr-attr-istr1` | string | **throws** errorcode 65 | property removed (reads `null`) | any string |
+| `fr-attr-multi1`, `fr-attr-imulti1` | **array** (`["only"]`) | array | `[]` | any string |
+| `fr-attr-int1`, `fr-attr-iint1` | **number** (`"42"` → `42`) | **throws** 65 | removed | decimal integer string; `"abc"`, `"4.5"` **throw** errorcode 21 |
+| `fr-attr-date1`, `fr-attr-idate1` | ISO string (`"20261001120000Z"` → `"2026-10-01T12:00:00Z"`) | **throws** 65 | removed | LDAP GeneralizedTime `YYYYMMDDHHMMSSZ`; an ISO timestamp, a bare `2026-10-03` and free text **throw** 21 |
+| `givenName`, `telephoneNumber`, `mail` | string | **array** | removed | any string |
+| `sn` | string | array | **throws** 65 (required) | any string |
+| `displayName` | string | unmeasured | unmeasured | any string |
+| `cn` | not in IDM at all | unmeasured | **throws** 65 (required) | any string |
+
+- **The thrown error** is a `JavaException` whose text is
+  `org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper$IdentityUpdateException: Exception persisting attribute: Plug-in org.forgerock.openam.idrepo.ldap.DJLDAPv3Repo encountered a ldap exception.  ldap errorcode=<n>`
+  — 21 is LDAP invalidAttributeSyntax, 65 objectClassViolation. A script can
+  catch it.
+- **A refused store applies nothing.** One `store()` with a good
+  `fr-attr-str3` and a bad `fr-attr-int2` threw 21 and left `fr-attr-str3`
+  unset. After any refused row, the previous value was still in place in both
+  IDM and `getAttributeValues`.
+- **`getAttributeValues` returns what the script wrote**, as strings: an
+  integer reads `"42"`, a date reads back as GeneralizedTime, not as the ISO
+  string IDM holds.
+- **Standard attributes are multi-valued in DS**, so the IDM type is not fixed:
+  `givenName` is a string with one value and an array with two. A reader of the
+  managed object has to accept both.
+- **`cn` lives outside the managed record.** It starts as `"<givenName> <sn>"`
+  (`"Identity Probe"` for a user created through IDM with those names),
+  `store()` changes it and AM reads the new value back, but `openidm.read` of
+  the full record has no `cn` key before or after.
+- `getAttributeValues(n).toArray()` supports `Array.prototype` methods:
+  `.toArray().map(String)` ran in every row.
+- Not measured: several values on `displayName` or `cn`; `[]` on
+  `displayName`; signed or zero-padded integers; GeneralizedTime with
+  fractions, offsets or no seconds; what a second `store()` on a wrapper whose
+  first `store()` threw sends.
+
+The local lane follows this table. It throws the same `JavaException` for
+the measured refusals, refuses the unmeasured cases, and refuses a `cn` write
+— AM keeps it outside the IDM record, which is all the local lane holds.
+`displayName` is not given a layout locally on one measurement; the declared
+probe shows a suite declaring it agrees with the tenant.
