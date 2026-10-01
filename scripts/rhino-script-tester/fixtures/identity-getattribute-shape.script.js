@@ -24,7 +24,7 @@
 // Safe to delete. Reads only. PROBE_USER is the test account's fr-idm-uuid —
 // getIdentity() resolves by managed-object UUID, not userName (see
 // identity-resolve-diag).
-var PROBE_USER = "838e77f6-0999-4afe-8a3f-13a02b28bf37"; // vuthikTestUsername
+var PROBE_USER = "838e77f6-0999-4afe-8a3f-13a02b28bf37"; // a sandbox test user
 
 function emit(payload) {
   if (callbacks.isEmpty()) {
