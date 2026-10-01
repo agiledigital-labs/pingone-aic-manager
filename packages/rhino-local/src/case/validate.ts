@@ -213,6 +213,9 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.openidmFailures !== undefined) {
     given.openidmFailures = parseArray(raw.openidmFailures, `${path}.openidmFailures`, parseOpenidmFailureStub);
   }
+  if (raw.openidmPriorCalls !== undefined) {
+    given.openidmPriorCalls = parseCallCounts(raw.openidmPriorCalls, `${path}.openidmPriorCalls`);
+  }
   if (raw.bindingOverrides !== undefined) {
     given.bindingOverrides = parseBindingOverrides(raw.bindingOverrides, `${path}.bindingOverrides`);
   }
@@ -320,6 +323,20 @@ function parseHttpStub(raw: unknown, path: string): HttpStub {
     match: parseHttpMatch(raw.match, `${path}.match`),
     reply: parseHttpReply(raw.reply, `${path}.reply`),
   };
+}
+
+function parseCallCounts(raw: unknown, path: string): Record<string, number> {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  const counts: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!Number.isInteger(value) || (value as number) < 0) {
+      throw new Error(`rhino-local: ${path}.${key} must be a non-negative integer`);
+    }
+    counts[key] = value as number;
+  }
+  return counts;
 }
 
 function parseOpenidmFailureStub(raw: unknown, path: string): OpenidmFailureStub {

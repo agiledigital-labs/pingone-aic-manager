@@ -76,6 +76,18 @@ describe("carryGiven", () => {
     expect(next.sharedState).toEqual(final);
   });
 
+  it("counts openidm calls across passes when failure stubs are declared", () => {
+    // Regression: counts reset per pass, so "patch #1" failed on every pass.
+    const failures = [{ match: { method: "patch" as const, resource: "managed/alpha_user/a", ordinal: 2 }, reply: { code: 409 } }];
+    const pass = (prior: Given) => carryGiven(prior, effects({
+      openidm: [{ method: "patch", resource: "managed/alpha_user/a", body: [] }],
+    }), []);
+    const second = pass({ openidmFailures: failures });
+    expect(second.openidmPriorCalls).toEqual({ "patch managed/alpha_user/a": 1 });
+    expect(pass(second).openidmPriorCalls).toEqual({ "patch managed/alpha_user/a": 2 });
+    expect("openidmPriorCalls" in pass({})).toBe(false);
+  });
+
   it("drops transient state, because the tenant does", () => {
     // The discriminating assertion. Measured 2026-09-14: a value put with
     // nodeState.putTransient reads back null on the resumed pass and is gone

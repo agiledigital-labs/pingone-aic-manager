@@ -3150,7 +3150,7 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.openidmFailures = given.openidmFailures
     ? __rhinoLocalClone(given.openidmFailures)
     : [];
-  __rhinoLocal.openidmCallCounts = {};
+  __rhinoLocal.openidmCallCounts = __rhinoLocalClone(given.openidmPriorCalls || {});
   __rhinoLocal.generatedId = 0;
   __rhinoLocal.outcome = null;
   __rhinoLocal.callbacks = [];

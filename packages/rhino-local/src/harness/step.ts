@@ -103,6 +103,17 @@ export function carryGiven(
     delete next.secureState;
   }
   next.callbacks = submitted.map((callback) => ({ ...callback }));
+  if ((previous.openidmFailures?.length ?? 0) > 0) {
+    // A failure stub's ordinal numbers calls across the journey, so "patch
+    // #1" fails once rather than on every pass. Failed calls are recorded
+    // too, so they count, as they did within the pass.
+    const counts: Record<string, number> = { ...(previous.openidmPriorCalls ?? {}) };
+    for (const call of effects.openidm) {
+      const key = `${call.method} ${call.resource}`;
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    next.openidmPriorCalls = counts;
+  }
   if (effects.managedStore !== undefined) {
     // Records the earlier pass created have to be visible to the later one,
     // or a chain can never test a journey that writes and then reads back.
