@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { aicUnsupportedReason } from "../../src/aic/unsupported.ts";
+import { isPortable } from "../../src/case/portable.ts";
 import { caseWith } from "./helpers.ts";
 
 describe("aicUnsupportedReason", () => {
   it("rejects a local binding replacement on the tenant lane", () => {
     expect(aicUnsupportedReason(caseWith({ given: { bindingOverrides: { logger: "({})" } } })))
       .toMatch(/given.bindingOverrides/);
+  });
+  // A declaration describes the tenant's mapping; the tenant lane uses the
+  // real one, and a wrong declaration shows up as a disagreement — which
+  // making the case ineligible would hide.
+  it("keeps a case with declared identity attributes eligible and portable", () => {
+    const kase = caseWith({ given: { identityAttributes: { "custom-attr": { field: "custTenantField", cardinality: "single" } } } });
+    expect(aicUnsupportedReason(kase)).toBeUndefined();
+    expect(isPortable(kase)).toBe(true);
   });
   it("allows a portable sharedState + requestHeaders case", () => {
     expect(

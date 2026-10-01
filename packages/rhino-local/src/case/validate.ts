@@ -24,6 +24,7 @@ import type {
   ExpectedValue,
   Given,
   HttpExpect,
+  IdentityAttributeMapping,
   IdentityWriteExpect,
   HttpMatch,
   HttpReply,
@@ -218,6 +219,9 @@ function parseGiven(raw: unknown, path: string): Given {
   }
   if (raw.bindingOverrides !== undefined) {
     given.bindingOverrides = parseBindingOverrides(raw.bindingOverrides, `${path}.bindingOverrides`);
+  }
+  if (raw.identityAttributes !== undefined) {
+    given.identityAttributes = parseIdentityAttributes(raw.identityAttributes, `${path}.identityAttributes`);
   }
   if (raw.engine !== undefined) {
     given.engine = parseEngine(raw.engine, `${path}.engine`);
@@ -634,6 +638,40 @@ function parseBindingOverrides(raw: unknown, path: string): Record<string, strin
     overrides[name] = expression;
   }
   return overrides;
+}
+
+const IDM_IDENTITY_FIELD = /^(userName|accountStatus|_id|fr(Unindexed|Indexed)(String|Multivalued|Integer|Date)[0-9]+)$/;
+
+function parseIdentityAttributes(raw: unknown, path: string): Record<string, IdentityAttributeMapping> {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  const out: Record<string, IdentityAttributeMapping> = {};
+  for (const [name, entry] of Object.entries(raw)) {
+    const at = `${path}.${name}`;
+    if (name.trim() === "") {
+      throw new Error(`rhino-local: ${path} has an empty attribute name`);
+    }
+    // Keys are AM attribute names. An IDM property here is the inverted map,
+    // and would silently declare an attribute no script can write.
+    if (IDM_IDENTITY_FIELD.test(name)) {
+      throw new Error(
+        `rhino-local: ${at}: ${JSON.stringify(name)} is an IDM property name; key identityAttributes by the AM attribute name the script passes to setAttribute`
+      );
+    }
+    if (!isPlainObject(entry)) {
+      throw new Error(`rhino-local: ${at} is not an object`);
+    }
+    rejectUnknownKeys(at, entry, ["field", "cardinality"]);
+    if (typeof entry.field !== "string" || entry.field.trim() === "") {
+      throw new Error(`rhino-local: ${at}.field must be a non-empty IDM property name`);
+    }
+    if (entry.cardinality !== "single" && entry.cardinality !== "multi") {
+      throw new Error(`rhino-local: ${at}.cardinality must be "single" or "multi"`);
+    }
+    out[name] = { field: entry.field, cardinality: entry.cardinality };
+  }
+  return out;
 }
 
 function parseEngine(raw: unknown, path: string): Engine {

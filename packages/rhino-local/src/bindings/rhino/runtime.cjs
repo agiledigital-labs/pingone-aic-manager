@@ -34,6 +34,7 @@ var __rhinoLocal = {
   http: [],
   logs: [],
   identityWrites: [],
+  identityAttributes: {},
   libraries: {},
   requireCache: {},
 };
@@ -52,8 +53,11 @@ function __rhinoLocalClone(value) {
 // for...in and Object.keys see only indices, as they would on an array. A
 // real Java array is not built: whether element identity and method access
 // survive Rhino's conversion into Object[] is unproven here.
+// A Java array as Rhino surfaces it: indexed, with length, not
+// Array.isArray, yet Array.prototype methods resolve — getAttributeValues(n)
+// .toArray().map(String) ran on AIC (live-identity-store-families, 2026-10-01).
 function __rhinoLocalArrayLike(items) {
-  var out = {};
+  var out = typeof Object.create === "function" ? Object.create(Array.prototype) : {};
   var i;
   for (i = 0; i < items.length; i += 1) {
     out[i] = items[i];
@@ -2423,6 +2427,144 @@ httpClient.send = function (uri, requestOptions) {
   };
 };
 
+// How store() lays an AM attribute out in IDM. Measured 2026-10-01 on alpha
+// (live-identity-store-visibility, live-identity-store-families): one
+// representative per fr-attr family, plus the standard attributes below. N in
+// a family is assumed from its measured representative (istr1 for istr1..20).
+// `none` / `one` / `many` say what 0, 1 and 2+ values become:
+//   "remove" (the property reads null), "empty" ([]), "scalar", "array",
+//   "violation" (store throws ldap errorcode=65, nothing applied) or
+//   "unmeasured" (the local lane refuses).
+// `syntax` values that DS rejects throw ldap errorcode=21, nothing applied.
+var __rhinoLocalIdentityFamilies = [
+  [/^fr-attr-str([1-5])$/, "frUnindexedString", "single", null],
+  [/^fr-attr-istr([1-9]|1[0-9]|20)$/, "frIndexedString", "single", null],
+  [/^fr-attr-multi([1-5])$/, "frUnindexedMultivalued", "multi", null],
+  [/^fr-attr-imulti([1-5])$/, "frIndexedMultivalued", "multi", null],
+  [/^fr-attr-int([1-5])$/, "frUnindexedInteger", "single", "integer"],
+  [/^fr-attr-iint([1-5])$/, "frIndexedInteger", "single", "integer"],
+  [/^fr-attr-date([1-5])$/, "frUnindexedDate", "single", "date"],
+  [/^fr-attr-idate([1-5])$/, "frIndexedDate", "single", "date"],
+];
+// Standard LDAP attributes are multi-valued in DS: one value is a string in
+// IDM, several are an array, none removes it. sn is required, so none is a
+// violation; mail, givenName and telephoneNumber are not.
+var __rhinoLocalIdentityStandard = {
+  givenName: { field: "givenName", none: "remove", one: "scalar", many: "array", syntax: null },
+  sn: { field: "sn", none: "violation", one: "scalar", many: "array", syntax: null },
+  mail: { field: "mail", none: "remove", one: "scalar", many: "array", syntax: null },
+  telephoneNumber: { field: "telephoneNumber", none: "remove", one: "scalar", many: "array", syntax: null },
+};
+var __rhinoLocalIdentityMeasuredNames =
+  "fr-attr-str1..5, fr-attr-istr1..20, fr-attr-multi1..5, fr-attr-imulti1..5, fr-attr-int1..5, " +
+  "fr-attr-iint1..5, fr-attr-date1..5, fr-attr-idate1..5, givenName, sn, mail, telephoneNumber";
+
+function __rhinoLocalIdentityShape(field, cardinality, syntax) {
+  return cardinality === "multi"
+    ? { field: field, none: "empty", one: "array", many: "array", syntax: syntax }
+    : { field: field, none: "remove", one: "scalar", many: "violation", syntax: syntax };
+}
+
+// A declaration (given.identityAttributes) wins over a measurement: it is the
+// suite's statement of this tenant's mapping, and only the local lane reads it.
+function __rhinoLocalIdentityLayout(name) {
+  var key = String(name);
+  var declared = __rhinoLocal.identityAttributes || {};
+  if (__rhinoLocalHas(declared, key)) {
+    var shape = __rhinoLocalIdentityShape(declared[key].field, declared[key].cardinality, null);
+    // What 2+ values do to an attribute nobody measured is DS schema detail
+    // the declaration does not carry.
+    if (shape.many === "violation") {
+      shape.many = "unmeasured";
+    }
+    shape.declared = true;
+    return shape;
+  }
+  var i;
+  var match;
+  for (i = 0; i < __rhinoLocalIdentityFamilies.length; i += 1) {
+    match = __rhinoLocalIdentityFamilies[i][0].exec(key);
+    if (match) {
+      return __rhinoLocalIdentityShape(
+        __rhinoLocalIdentityFamilies[i][1] + match[1],
+        __rhinoLocalIdentityFamilies[i][2],
+        __rhinoLocalIdentityFamilies[i][3]
+      );
+    }
+  }
+  if (__rhinoLocalHas(__rhinoLocalIdentityStandard, key)) {
+    var standard = __rhinoLocalIdentityStandard[key];
+    return {
+      field: standard.field, none: standard.none, one: standard.one,
+      many: standard.many, syntax: standard.syntax
+    };
+  }
+  return null;
+}
+
+// The exception AM's store() throws when DS refuses the modify (measured text).
+function __rhinoLocalIdentityUpdateError(code) {
+  var error = new Error(
+    "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper$IdentityUpdateException: " +
+      "Exception persisting attribute: Plug-in org.forgerock.openam.idrepo.ldap.DJLDAPv3Repo " +
+      "encountered a ldap exception.  ldap errorcode=" + code
+  );
+  error.name = "JavaException";
+  return error;
+}
+
+// Script value -> IDM value for a typed family. Returns {value} when stored,
+// {code: 21} when DS refuses it, {unmeasured: reason} otherwise.
+function __rhinoLocalIdentityConvert(syntax, raw) {
+  var text = String(raw);
+  var match;
+  if (syntax === "integer") {
+    // Measured: "42" -> 42. "abc" and "4.5" -> errorcode=21.
+    if (/^(0|[1-9][0-9]*)$/.test(text) && Number(text) <= 9007199254740991) {
+      return { value: Number(text) };
+    }
+    if (/^[+-]?[0-9]+$/.test(text)) {
+      return { unmeasured: "a signed, zero-padded or out-of-range integer" };
+    }
+    return { code: 21 };
+  }
+  if (syntax === "date") {
+    // Measured: "20261001120000Z" -> "2026-10-01T12:00:00Z". An ISO
+    // timestamp, a bare date and free text -> errorcode=21.
+    match = /^([0-9]{4})([0-9]{2})([0-9]{2})([0-9]{2})([0-9]{2})([0-9]{2})Z$/.exec(text);
+    if (match) {
+      var iso = match[1] + "-" + match[2] + "-" + match[3] + "T" + match[4] + ":" + match[5] + ":" + match[6] + "Z";
+      var parsed = new Date(iso);
+      if (!isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 19) + "Z" === iso) {
+        return { value: iso };
+      }
+      return { unmeasured: "an out-of-range GeneralizedTime" };
+    }
+    if (/^[0-9]{10}([0-9]{2}([0-9]{2})?)?([.,][0-9]+)?(Z|[+-][0-9]{2}([0-9]{2})?)$/.test(text)) {
+      return { unmeasured: "a GeneralizedTime other than YYYYMMDDHHMMSSZ" };
+    }
+    return { code: 21 };
+  }
+  return { value: text };
+}
+
+// IDM value -> what getAttributeValues returns: always strings, and a date in
+// the GeneralizedTime the script wrote (measured round trip).
+function __rhinoLocalIdentityRender(syntax, value, name) {
+  if (syntax === "date") {
+    var match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z$/.exec(String(value));
+    if (!match) {
+      throw new Error(
+        "rhino-local: idRepository.getIdentity().getAttributeValues: how AM renders the IDM date " +
+          JSON.stringify(String(value)) + " of " + JSON.stringify(String(name)) +
+          " is unmeasured; seed it as YYYY-MM-DDTHH:MM:SSZ"
+      );
+    }
+    return match[1] + match[2] + match[3] + match[4] + match[5] + match[6] + "Z";
+  }
+  return String(value);
+}
+
 idRepository.getIdentity = function (userName) {
   __rhinoLocalExpectArity("idRepository.getIdentity", arguments, 1);
   var wanted = String(userName);
@@ -2453,17 +2595,14 @@ idRepository.getIdentity = function (userName) {
     error.name = "InternalError";
     throw error;
   }
+  // Keyed by the AM attribute name the script used.
   var pending = {};
-  var dirty = {};
+  var IDM_NAME = "<not-an-AM-attribute>";
   function field(name) {
     var key = String(name);
-    var match = /^fr-attr-str([1-5])$/.exec(key);
-    if (match) {
-      return "frUnindexedString" + match[1];
-    }
-    match = /^fr-attr-multi([1-5])$/.exec(key);
-    if (match) {
-      return "frUnindexedMultivalued" + match[1];
+    var layout = __rhinoLocalIdentityLayout(key);
+    if (layout) {
+      return layout.field;
     }
     if (key === "uid") {
       return "userName";
@@ -2474,53 +2613,65 @@ idRepository.getIdentity = function (userName) {
     if (key === "fr-idm-uuid") {
       return "_id";
     }
-    if (key === "userName" || key === "accountStatus" || /^frUnindexed(String|Multivalued)[1-5]$/.test(key)) {
-      return "<not-an-AM-attribute>";
+    if (
+      key === "userName" || key === "accountStatus" ||
+      /^fr(Unindexed|Indexed)(String|Multivalued|Integer|Date)[0-9]+$/.test(key)
+    ) {
+      return IDM_NAME;
     }
     return key;
   }
-  // How store() lays an attribute out in IDM, for the AM names where that was
-  // measured (2026-10-01, live-identity-store-visibility): fr-attr-strN and
-  // mail land as a string, fr-attr-multiN as an array even with one value.
-  // Anything else is refused, because guessing the cardinality is exactly how
-  // a one-element list once came out as a scalar.
-  function cardinality(name) {
-    var key = String(name);
-    if (/^fr-attr-multi[1-5]$/.test(key)) {
-      return "multi";
+  function amName(idmName) {
+    var key = String(idmName);
+    var families = {
+      UnindexedString: "str", IndexedString: "istr", UnindexedMultivalued: "multi",
+      IndexedMultivalued: "imulti", UnindexedInteger: "int", IndexedInteger: "iint",
+      UnindexedDate: "date", IndexedDate: "idate"
+    };
+    var match = /^fr(Unindexed|Indexed)(String|Multivalued|Integer|Date)([0-9]+)$/.exec(key);
+    if (match) {
+      return "fr-attr-" + families[match[1] + match[2]] + match[3];
     }
-    if (/^fr-attr-str[1-5]$/.test(key) || key === "mail") {
-      return "single";
-    }
-    return null;
+    return key === "userName" ? "uid" : key === "accountStatus" ? "inetUserStatus" : key;
+  }
+  function unmeasured(method, name, detail) {
+    return new Error(
+      "rhino-local: idRepository.getIdentity()." + method + ": " + detail +
+        "; measured: " + __rhinoLocalIdentityMeasuredNames +
+        ". Declare a tenant attribute's IDM layout with identityAttributes: { " +
+        JSON.stringify(String(name)) +
+        ': { field: "<IDM property>", cardinality: "single" | "multi" } } ' +
+        "(defineSuite always, .run().identityAttributes(), or given.identityAttributes)"
+    );
   }
   // A wrong-name READ is measured (no values); what store() does with a
   // wrong-name WRITE is not, so the local lane refuses one rather than guess.
   function writable(method, name) {
     var key = field(name);
-    if (key !== "<not-an-AM-attribute>") {
-      if (cardinality(name) === null) {
-        throw new Error(
-          "rhino-local: idRepository.getIdentity()." + method + ": how AM stores " +
-            JSON.stringify(String(name)) +
-            " in IDM is unmeasured, so the local lane refuses the write; measured: fr-attr-str1..5, fr-attr-multi1..5, mail"
-        );
-      }
-      return key;
+    if (key === IDM_NAME) {
+      throw new Error(
+        "rhino-local: idRepository.getIdentity()." + method + ": " +
+          JSON.stringify(String(name)) + " is the IDM field name; AM names this attribute " +
+          JSON.stringify(amName(name)) + ". What AM stores for an unknown attribute name is unmeasured, so the local lane refuses it"
+      );
     }
-    var am = String(name)
-      .replace(/^userName$/, "uid")
-      .replace(/^accountStatus$/, "inetUserStatus")
-      .replace(/^frUnindexedString([1-5])$/, "fr-attr-str$1")
-      .replace(/^frUnindexedMultivalued([1-5])$/, "fr-attr-multi$1");
-    throw new Error(
-      "rhino-local: idRepository.getIdentity()." + method + ": " +
-        JSON.stringify(String(name)) + " is the IDM field name; AM names this attribute " +
-        JSON.stringify(am) + ". What AM stores for an unknown attribute name is unmeasured, so the local lane refuses it"
-    );
+    if (String(name) === "cn" && !__rhinoLocalHas(__rhinoLocal.identityAttributes || {}, "cn")) {
+      // Measured: AM stores cn and reads it back, but IDM's managed user has
+      // no cn property, so the value lives outside the record this lane keeps.
+      throw new Error(
+        "rhino-local: idRepository.getIdentity()." + method +
+          ': AM stores "cn" outside the IDM managed record (measured), which the local lane does not model, so it refuses the write'
+      );
+    }
+    var layout = __rhinoLocalIdentityLayout(name);
+    if (layout === null) {
+      throw unmeasured(method, name, "how AM stores " + JSON.stringify(String(name)) + " in IDM is unmeasured, so the local lane refuses the write");
+    }
+    return layout;
   }
   function values(name) {
     var key = field(name);
+    var layout = __rhinoLocalIdentityLayout(name);
     // AM reads the persisted identity until store(), even after setAttribute.
     var value = found[key];
     if (value === undefined && key === "accountStatus") {
@@ -2529,7 +2680,11 @@ idRepository.getIdentity = function (userName) {
     if (value === undefined || value === null) {
       return [];
     }
-    return Array.isArray(value) ? value.slice() : [String(value)];
+    var syntax = layout ? layout.syntax : null;
+    var list = Array.isArray(value) ? value : [value];
+    return list.map(function (entry) {
+      return __rhinoLocalIdentityRender(syntax, entry, name);
+    });
   }
   return {
     getName: function () {
@@ -2566,25 +2721,24 @@ idRepository.getIdentity = function (userName) {
       if (!Array.isArray(attributeValues)) {
         throw new Error("rhino-local: setAttribute requires an array of strings");
       }
-      var key = writable("setAttribute", attributeName);
-      pending[key] = attributeValues.map(String);
-      dirty[key] = String(attributeName);
+      writable("setAttribute", attributeName);
+      pending[String(attributeName)] = attributeValues.map(String);
     },
     addAttribute: function (attributeName, attributeValue) {
       if (!found) {
         missing("addAttribute(String, String)");
       }
       __rhinoLocalExpectArity("idRepository.getIdentity().addAttribute", arguments, 2);
-      var key = writable("addAttribute", attributeName);
-      var existing = __rhinoLocalHas(pending, key)
-        ? pending[key].slice()
+      writable("addAttribute", attributeName);
+      var name = String(attributeName);
+      var existing = __rhinoLocalHas(pending, name)
+        ? pending[name].slice()
         : values(attributeName);
       var value = String(attributeValue);
       if (existing.indexOf(value) === -1) {
         existing.push(value);
       }
-      pending[key] = existing;
-      dirty[key] = String(attributeName);
+      pending[name] = existing;
     },
     store: function () {
       if (!found) {
@@ -2595,28 +2749,76 @@ idRepository.getIdentity = function (userName) {
       // through its identity repository, never the openidm binding, so IDM
       // failure stubs and openidm expectations must not see it. Updating the
       // local record is only so later reads in this run see the value.
-      var names = Object.keys(dirty);
+      var names = Object.keys(pending);
+      var plan = [];
+      var codes = [];
       var i;
-      // Checked before anything is applied, so a refusal leaves no half-store.
+      var j;
+      // Everything is checked before anything is applied: a store DS refuses
+      // leaves every attribute in it unchanged (measured, one good and one
+      // bad attribute in a single store()).
       for (i = 0; i < names.length; i += 1) {
-        if (cardinality(dirty[names[i]]) === "single" && pending[names[i]].length !== 1) {
-          throw new Error(
-            "rhino-local: idRepository.getIdentity().store: " + JSON.stringify(dirty[names[i]]) +
-              " is single-valued and was given " + pending[names[i]].length +
-              " values; what AM stores then is unmeasured, so the local lane refuses it"
+        var layout = __rhinoLocalIdentityLayout(names[i]);
+        var given = pending[names[i]];
+        var rule = given.length === 0 ? layout.none : given.length === 1 ? layout.one : layout.many;
+        if (rule === "unmeasured") {
+          throw unmeasured(
+            "store",
+            names[i],
+            "what AM stores for " + given.length + " values of " + JSON.stringify(names[i]) +
+              " is unmeasured, so the local lane refuses it"
           );
         }
+        if (rule === "violation" && codes.indexOf(65) === -1) {
+          codes.push(65);
+        }
+        var converted = [];
+        for (j = 0; j < given.length; j += 1) {
+          var result = __rhinoLocalIdentityConvert(layout.syntax, given[j]);
+          if (result.unmeasured) {
+            throw unmeasured(
+              "store",
+              names[i],
+              "how DS treats " + JSON.stringify(given[j]) + " (" + result.unmeasured + ") in " +
+                JSON.stringify(names[i]) + " is unmeasured, so the local lane refuses it"
+            );
+          }
+          if (result.code !== undefined) {
+            if (codes.indexOf(result.code) === -1) {
+              codes.push(result.code);
+            }
+          } else {
+            converted.push(result.value);
+          }
+        }
+        plan.push({ name: names[i], layout: layout, rule: rule, given: given, converted: converted });
       }
-      for (i = 0; i < names.length; i += 1) {
-        var key = names[i];
-        var value = pending[key];
-        found[key] = cardinality(dirty[key]) === "multi" ? value.slice() : value[0];
+      if (codes.length > 1) {
+        throw new Error(
+          "rhino-local: idRepository.getIdentity().store: this store breaks two DS rules at once (ldap errorcodes " +
+            codes.join(" and ") + "); which one AM reports is unmeasured, so the local lane refuses it"
+        );
+      }
+      if (codes.length === 1) {
+        throw __rhinoLocalIdentityUpdateError(codes[0]);
+      }
+      for (i = 0; i < plan.length; i += 1) {
+        var step = plan[i];
+        if (step.rule === "remove") {
+          delete found[step.layout.field];
+        } else if (step.rule === "empty") {
+          found[step.layout.field] = [];
+        } else if (step.rule === "scalar") {
+          found[step.layout.field] = step.converted[0];
+        } else {
+          found[step.layout.field] = step.converted.slice();
+        }
         __rhinoLocal.identityWrites.push({
           identity: String(found._id),
-          attribute: dirty[key],
-          values: value.slice()
+          attribute: step.name,
+          values: step.given.slice()
         });
-        delete dirty[key];
+        delete pending[step.name];
       }
     },
     toString: function () {
@@ -3254,6 +3456,8 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.http = [];
   __rhinoLocal.logs = [];
   __rhinoLocal.identityWrites = [];
+  // Local-only: the AIC lane runs against the tenant's real mapping.
+  __rhinoLocal.identityAttributes = __rhinoLocalClone(given.identityAttributes || {});
 
   requestHeaders = __rhinoLocalRequestMap(given.requestHeaders || {}, {
     caseInsensitive: true,
