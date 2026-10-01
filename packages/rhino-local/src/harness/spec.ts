@@ -52,6 +52,7 @@ export function mergeChannels(
     http: [...(override?.http ?? []), ...(always?.http ?? [])],
     openidmFailures: [...(override?.openidmFailures ?? []), ...(always?.openidmFailures ?? [])],
     bindingOverrides: { ...(always?.bindingOverrides ?? {}), ...(override?.bindingOverrides ?? {}) },
+    identityAttributes: { ...(always?.identityAttributes ?? {}), ...(override?.identityAttributes ?? {}) },
     session: { ...(always?.session ?? {}), ...(override?.session ?? {}) },
     // Declared-empty and not-declared are different requests: `session: {}`
     // asks for a logged-in session with no extra properties, which is a real
@@ -131,6 +132,7 @@ export function resolveDraft(draft: RequestDraft): ResolvedRequestDraft {
     http: draft.http ?? [],
     openidmFailures: draft.openidmFailures ?? [],
     bindingOverrides: draft.bindingOverrides ?? {},
+    identityAttributes: draft.identityAttributes ?? {},
   };
 }
 
@@ -221,6 +223,11 @@ export function toGiven(
   }
   if (Object.keys(draft.bindingOverrides).length > 0) {
     given.bindingOverrides = { ...draft.bindingOverrides };
+  }
+  if (Object.keys(draft.identityAttributes).length > 0) {
+    given.identityAttributes = Object.fromEntries(
+      Object.entries(draft.identityAttributes).map(([name, mapping]) => [name, { ...mapping }])
+    );
   }
   return given;
 }

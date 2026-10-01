@@ -211,6 +211,14 @@ export class RunBuilder<TInput> {
     return this;
   }
 
+  identityAttributes(attributes: NonNullable<Channels["identityAttributes"]>): this {
+    this.#override = {
+      ...this.#override,
+      identityAttributes: { ...this.#override.identityAttributes, ...attributes },
+    };
+    return this;
+  }
+
   session(session: JsonObject): this {
     this.#override = { ...this.#override, session: { ...this.#override.session, ...session } };
     return this;

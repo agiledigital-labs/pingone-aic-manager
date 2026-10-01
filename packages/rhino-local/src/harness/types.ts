@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { Expect, Given, HttpStub, JsonObject, JsonValue, OpenidmFailureStub } from "../case/types.ts";
+import type { Expect, Given, HttpStub, IdentityAttributeMapping, JsonObject, JsonValue, OpenidmFailureStub } from "../case/types.ts";
 
 /** A header or parameter value. An array is sent as repeated occurrences. */
 export type WireValue = string | readonly string[];
@@ -43,6 +43,14 @@ export interface Channels {
   /** Local binding replacements as JavaScript expressions. AIC cannot inject these. */
   bindingOverrides?: Readonly<Record<string, string>>;
   /**
+   * The IDM layout of AM attributes the harness has no measurement for (a
+   * tenant's own attributes), keyed by AM attribute name, for the local
+   * `identity.store()`. Overrides a measured default. Local only — the AIC
+   * lane uses the tenant's real mapping — and it does not make a case
+   * AIC-ineligible: a wrong declaration surfaces as a lane disagreement.
+   */
+  identityAttributes?: Readonly<Record<string, IdentityAttributeMapping>>;
+  /**
    * `existingSession` — session properties the script sees, as a flat string
    * map. Declaring it at all (`session: {}` included) asks for a logged-in
    * session; the AIC lane pays for it with an extra round trip, because a
@@ -80,6 +88,7 @@ export interface RequestDraft {
   http?: HttpStub[];
   openidmFailures?: OpenidmFailureStub[];
   bindingOverrides?: Record<string, string>;
+  identityAttributes?: Record<string, IdentityAttributeMapping>;
   session: JsonObject;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;
@@ -92,6 +101,7 @@ export interface ResolvedRequestDraft extends RequestDraft {
   http: HttpStub[];
   openidmFailures: OpenidmFailureStub[];
   bindingOverrides: Record<string, string>;
+  identityAttributes: Record<string, IdentityAttributeMapping>;
 }
 
 /** A managed record the harness creates and is therefore responsible for. */

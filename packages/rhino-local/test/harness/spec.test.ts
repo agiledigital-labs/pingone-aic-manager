@@ -57,6 +57,7 @@ describe("mergeChannels", () => {
       http: [],
       openidmFailures: [],
       bindingOverrides: {},
+      identityAttributes: {},
       session: {},
       sessionRequested: false,
     });
@@ -82,6 +83,19 @@ describe("mergeChannels", () => {
     );
     draft.bindingOverrides.idRepository = "({getIdentity: function(){return 'hook';}})";
     expect(toGiven(draft).bindingOverrides).toEqual(draft.bindingOverrides);
+  });
+
+  it("merges declared identity attributes per attribute and carries them into given", () => {
+    const draft = mergeChannels(
+      { identityAttributes: { a: { field: "suiteA", cardinality: "single" }, b: { field: "suiteB", cardinality: "multi" } } },
+      { identityAttributes: { a: { field: "testA", cardinality: "multi" } } }
+    );
+    expect(draft.identityAttributes).toEqual({
+      a: { field: "testA", cardinality: "multi" },
+      b: { field: "suiteB", cardinality: "multi" },
+    });
+    expect(toGiven(draft).identityAttributes).toEqual(draft.identityAttributes);
+    expect(toGiven(mergeChannels(undefined, undefined)).identityAttributes).toBeUndefined();
   });
 });
 

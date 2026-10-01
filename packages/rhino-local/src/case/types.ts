@@ -55,6 +55,7 @@ export const GIVEN_KEYS = [
   "openidmFailures",
   "openidmPriorCalls",
   "bindingOverrides",
+  "identityAttributes",
   "engine",
   "bindings",
 ] as const;
@@ -178,6 +179,17 @@ export interface StateDiff {
   added?: ExpectedObject;
   changed?: ExpectedObject;
   removed?: string[];
+}
+
+/** One declared AM attribute -> IDM property layout for local `identity.store()`. */
+export interface IdentityAttributeMapping {
+  /** The IDM managed-object property the AM attribute is stored in. */
+  field: string;
+  /**
+   * `"single"`: one value is stored as a scalar and none removes the property.
+   * `"multi"`: always an array, `[]` for none.
+   */
+  cardinality: "single" | "multi";
 }
 
 export interface HttpMatch {
@@ -315,6 +327,14 @@ export interface Given {
   openidmPriorCalls?: Record<string, number>;
   /** Local binding replacements, as JavaScript expressions keyed by binding name. */
   bindingOverrides?: Record<string, string>;
+  /**
+   * How the local `identity.store()` lays out AM attributes the harness has
+   * no measurement for, keyed by AM attribute name. A declaration overrides
+   * a measured default. Local only: the AIC lane writes through the tenant's
+   * real mapping, so a declaration never makes a case AIC-ineligible, and a
+   * wrong one shows up as a conformance disagreement.
+   */
+  identityAttributes?: Record<string, IdentityAttributeMapping>;
   engine?: Engine;
   /**
    * Extra binding seeds keyed by generated mock binding name. Unknown names

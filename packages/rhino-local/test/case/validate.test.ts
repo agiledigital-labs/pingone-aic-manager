@@ -201,6 +201,22 @@ describe("defineCase / validateCase", () => {
       .toThrow(/bindingOverrides.logger must be a non-empty JavaScript expression/);
   });
 
+  it("accepts declared identity attribute layouts and rejects malformed ones", () => {
+    const input = {
+      name: "declared",
+      script: "action.goTo('true');",
+      given: { identityAttributes: { "custom-attr": { field: "custTenantField", cardinality: "multi" } } },
+      expect: { outcome: "true" },
+    };
+    expect(validateCase(input).given.identityAttributes).toEqual(input.given.identityAttributes);
+    const bad = (identityAttributes: unknown) => () => validateCase({ ...input, given: { identityAttributes } });
+    expect(bad({ frUnindexedString1: { field: "x", cardinality: "single" } }))
+      .toThrow(/"frUnindexedString1" is an IDM property name; key identityAttributes by the AM attribute name/);
+    expect(bad({ a: { field: "x", cardinality: "many" } })).toThrow(/identityAttributes.a.cardinality must be "single" or "multi"/);
+    expect(bad({ a: { field: " ", cardinality: "single" } })).toThrow(/identityAttributes.a.field must be a non-empty IDM property name/);
+    expect(bad({ a: { field: "x", cardinality: "single", type: "date" } })).toThrow(/unknown key "type"/);
+  });
+
   it("rejects seeding nodeState via bindings", () => {
     const input = {
       name: "nodeState",

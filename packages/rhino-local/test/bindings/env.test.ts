@@ -225,13 +225,123 @@ describe("idRepository", () => {
     expect(effects.managedStore?.["managed/alpha_user"]?.[0]?.[field]).toEqual(stored);
   });
 
+  // Measured 2026-10-01 on alpha (live-identity-store-families): one row per
+  // family representative and standard attribute, as the IDM property reads.
   it.each([
-    ["an attribute with no measured cardinality", 'identity.setAttribute("givenName", ["Bob"]);', /how AM stores "givenName" in IDM is unmeasured/],
-    ["several values on a single-valued attribute", 'identity.setAttribute("fr-attr-str1", ["a", "b"]);', /"fr-attr-str1" is single-valued and was given 2 values/],
+    ["fr-attr-istr1", ["v"], "frIndexedString1", "v"],
+    ["fr-attr-istr20", ["v"], "frIndexedString20", "v"],
+    ["fr-attr-istr1", [], "frIndexedString1", undefined],
+    ["fr-attr-imulti1", ["only"], "frIndexedMultivalued1", ["only"]],
+    ["fr-attr-imulti1", [], "frIndexedMultivalued1", []],
+    ["fr-attr-multi1", [], "frUnindexedMultivalued1", []],
+    ["fr-attr-iint1", ["42"], "frIndexedInteger1", 42],
+    ["fr-attr-int1", ["7"], "frUnindexedInteger1", 7],
+    ["fr-attr-idate1", ["20261001120000Z"], "frIndexedDate1", "2026-10-01T12:00:00Z"],
+    ["fr-attr-date1", ["20261005083000Z"], "frUnindexedDate1", "2026-10-05T08:30:00Z"],
+    ["givenName", ["Given"], "givenName", "Given"],
+    ["givenName", ["x", "y"], "givenName", ["x", "y"]],
+    ["givenName", [], "givenName", undefined],
+    ["sn", ["p", "q"], "sn", ["p", "q"]],
+    ["telephoneNumber", ["1"], "telephoneNumber", "1"],
+    ["mail", ["p@example.com", "q@example.com"], "mail", ["p@example.com", "q@example.com"]],
+  ])("store() lays %s = %j out as IDM %s", (attribute, values, field, stored) => {
+    const effects = runScript(
+      [
+        'var identity = idRepository.getIdentity("uuid-1");',
+        `identity.setAttribute(${JSON.stringify(attribute)}, ${JSON.stringify(values)});`,
+        "identity.store();",
+      ].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1", [field]: "seeded" }] } }
+    );
+    expect(effects.managedStore?.["managed/alpha_user"]?.[0]?.[field]).toEqual(stored);
+    expect(effects.identityWrites).toEqual([{ identity: "uuid-1", attribute, values }]);
+  });
+
+  it("reads a date back in the GeneralizedTime the script wrote, and an integer as a string", () => {
+    const effects = runScript(
+      [
+        'var identity = idRepository.getIdentity("uuid-1");',
+        'nodeState.putShared("date", identity.getAttributeValues("fr-attr-idate1").toArray()[0]);',
+        'nodeState.putShared("int", identity.getAttributeValues("fr-attr-int1").toArray()[0]);',
+        'nodeState.putShared("mapped", identity.getAttributeValues("fr-attr-int1").toArray().map(function (v) { return v + "!"; }).join());',
+      ].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1", frIndexedDate1: "2026-10-01T12:00:00Z", frUnindexedInteger1: 42 }] } }
+    );
+    expect(effects.sharedState.final).toMatchObject({ date: "20261001120000Z", int: "42", mapped: "42!" });
+  });
+
+  const updateError = (code: number) =>
+    "JavaException: org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper$IdentityUpdateException: " +
+    "Exception persisting attribute: Plug-in org.forgerock.openam.idrepo.ldap.DJLDAPv3Repo encountered a ldap exception.  " +
+    `ldap errorcode=${code}`;
+
+  // The script sees AM's exception, so its own error handling can be tested;
+  // nothing in the store is applied.
+  it.each([
+    ["two values on a single-valued family", 'identity.setAttribute("fr-attr-str1", ["a", "b"]);', 65],
+    ["no value on sn, which DS requires", 'identity.setAttribute("sn", []);', 65],
+    ["a non-integer", 'identity.setAttribute("fr-attr-iint1", ["4.5"]);', 21],
+    ["an ISO timestamp for a date", 'identity.setAttribute("fr-attr-date1", ["2026-10-02T12:00:00Z"]);', 21],
+    ["a bare date", 'identity.setAttribute("fr-attr-idate1", ["2026-10-03"]);', 21],
+    ["one bad attribute beside a good one", 'identity.setAttribute("fr-attr-str3", ["good"]); identity.setAttribute("fr-attr-int2", ["bad"]);', 21],
+  ])("throws AM's IdentityUpdateException for %s", (_name, call, code) => {
+    const effects = runScript(
+      [
+        'var identity = idRepository.getIdentity("uuid-1");',
+        call,
+        'try { identity.store(); nodeState.putShared("result", "ok"); } catch (e) { nodeState.putShared("result", String(e)); }',
+      ].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1", sn: "Probe", frUnindexedString1: "old" }] } }
+    );
+    expect(effects.sharedState.final.result).toBe(updateError(code));
+    expect(effects.identityWrites).toEqual([]);
+    expect(effects.managedStore?.["managed/alpha_user"]?.[0]).toEqual({ _id: "uuid-1", sn: "Probe", frUnindexedString1: "old" });
+  });
+
+  it.each([
+    ["an attribute with no measurement", 'identity.setAttribute("displayName", ["Bob"]);', /how AM stores "displayName" in IDM is unmeasured.*identityAttributes: \{ "displayName": \{ field: "<IDM property>", cardinality: "single" \| "multi" \} \}/],
+    ["cn, which AM keeps outside IDM", 'identity.setAttribute("cn", ["Bob"]);', /AM stores "cn" outside the IDM managed record/],
+    ["a negative integer", 'identity.setAttribute("fr-attr-int1", ["-5"]);', /"-5" \(a signed, zero-padded or out-of-range integer\)/],
+    ["a GeneralizedTime with no seconds", 'identity.setAttribute("fr-attr-date1", ["202610011200Z"]);', /GeneralizedTime other than YYYYMMDDHHMMSSZ/],
+    ["two DS rules broken at once", 'identity.setAttribute("fr-attr-int1", ["x", "y"]);', /two DS rules at once \(ldap errorcodes 65 and 21\)/],
   ])("refuses %s", (_name, call, message) => {
     expect(() => runScript(
       ['var identity = idRepository.getIdentity("uuid-1");', call, "identity.store();"].join("\n"),
       { managed: { "managed/alpha_user": [{ _id: "uuid-1" }] } }
     )).toThrow(message);
+  });
+
+  describe("declared identityAttributes", () => {
+    const store = (call: string, identityAttributes: Record<string, { field: string; cardinality: "single" | "multi" }>) => runScript(
+      ['var identity = idRepository.getIdentity("uuid-1");', call, "identity.store();",
+        'nodeState.putShared("read", JSON.stringify(identity.getAttributeValues("custom-attr").toArray().map(String)));'].join("\n"),
+      { managed: { "managed/alpha_user": [{ _id: "uuid-1" }] }, identityAttributes }
+    );
+
+    it("adds an attribute the harness has no measurement for", () => {
+      const single = store('identity.setAttribute("custom-attr", ["x"]);', { "custom-attr": { field: "custTenantField", cardinality: "single" } });
+      expect(single.managedStore?.["managed/alpha_user"]?.[0]?.custTenantField).toBe("x");
+      expect(single.sharedState.final.read).toBe('["x"]');
+      const multi = store('identity.setAttribute("custom-attr", ["x"]);', { "custom-attr": { field: "custTenantField", cardinality: "multi" } });
+      expect(multi.managedStore?.["managed/alpha_user"]?.[0]?.custTenantField).toEqual(["x"]);
+    });
+
+    it("overrides a measured default", () => {
+      const effects = runScript(
+        'var identity = idRepository.getIdentity("uuid-1"); identity.setAttribute("fr-attr-str1", ["x"]); identity.store();',
+        { managed: { "managed/alpha_user": [{ _id: "uuid-1" }] }, identityAttributes: { "fr-attr-str1": { field: "elsewhere", cardinality: "multi" } } }
+      );
+      expect(effects.managedStore?.["managed/alpha_user"]?.[0]).toEqual({ _id: "uuid-1", elsewhere: ["x"] });
+    });
+
+    it("still refuses several values on a declared single-valued attribute", () => {
+      expect(() => store('identity.setAttribute("custom-attr", ["x", "y"]);', { "custom-attr": { field: "custTenantField", cardinality: "single" } }))
+        .toThrow(/what AM stores for 2 values of "custom-attr" is unmeasured/);
+    });
+
+    it("leaves an undeclared attribute refused", () => {
+      expect(() => store('identity.setAttribute("other-attr", ["x"]);', { "custom-attr": { field: "custTenantField", cardinality: "single" } }))
+        .toThrow(/how AM stores "other-attr" in IDM is unmeasured/);
+    });
   });
 });
