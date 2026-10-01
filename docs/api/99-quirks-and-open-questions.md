@@ -516,8 +516,8 @@ client_id. pingone-aic-manager stores them directly. (Same path as
 
 #### Pattern 1 wire details
 
-1. `GET /am/json/serverinfo/*` → `cookieName` (per-tenant hex, e.g.
-   `da4bb2cc51f31d3`). Do NOT hardcode; AIC randomises per tenant.
+1. `GET /am/json/serverinfo/*` → `cookieName` (a per-tenant hex string,
+   e.g. `<per-tenant-hex>`). Do NOT hardcode; AIC randomises per tenant.
 2. PKCE: `code_verifier` random URL-safe 32 bytes,
    `code_challenge = base64url(SHA256(verifier))`.
 3. `GET /am/oauth2/realms/root/authorize` with:
