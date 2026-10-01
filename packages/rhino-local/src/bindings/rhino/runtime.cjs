@@ -105,6 +105,7 @@ function __rhinoLocalAssignPlain(target, source) {
   if (!__rhinoLocalIsPlainObject(source)) {
     return;
   }
+  source = __rhinoLocalEntries(source);
   var keys = Object.keys(source);
   var i;
   for (i = 0; i < keys.length; i += 1) {
@@ -449,6 +450,7 @@ function __rhinoLocalJavaMapString(value) {
     return "[ " + items.join(", ") + " ]";
   }
   if (__rhinoLocalIsPlainObject(value)) {
+    value = __rhinoLocalEntries(value);
     var keys = Object.keys(value);
     var pairs = [];
     var j;
@@ -467,30 +469,84 @@ function __rhinoLocalJavaMapString(value) {
 }
 
 // A plain object dressed as the Java map AIC hands back: it prints as one,
-// and containsKey, size and keySet are functions (measured).
-function __rhinoLocalAsJavaMap(map) {
+// and containsKey, size and keySet are functions (measured). Dot access to an
+// entry works on AIC (getObject(k).nested.b, measured), so ordinary entries
+// stay own properties. An entry named like a method cannot, or put("get", v)
+// would replace get(); those live in a hidden side table instead, and toJSON
+// hands the harvest every entry from both places.
+var __rhinoLocalJavaMapMethods = {
+  get: true, put: true, containsKey: true, size: true, keySet: true,
+  toString: true, toJSON: true, __rhinoLocalShadow: true
+};
+
+function __rhinoLocalEntries(value) {
+  if (value && typeof value.__rhinoLocalShadow === "object" && typeof value.toJSON === "function") {
+    return value.toJSON();
+  }
+  return value;
+}
+
+function __rhinoLocalAsJavaMap(source) {
+  var map = {};
+  var shadow = {};
+  function owner(key) {
+    return __rhinoLocalHas(__rhinoLocalJavaMapMethods, key) ? shadow : map;
+  }
+  // Insertion order across both tables; an entry assigned by dot access
+  // (map.x = 1) is picked up after them.
+  var order = [];
+  function keys() {
+    var extra = Object.keys(map).filter(function (key) {
+      return order.indexOf(key) === -1;
+    });
+    return order.filter(function (key) {
+      return __rhinoLocalHas(owner(key), key);
+    }).concat(extra);
+  }
+  function set(key, value) {
+    if (!__rhinoLocalHas(owner(key), key) && order.indexOf(key) === -1) {
+      order.push(key);
+    }
+    owner(key)[key] = value;
+  }
+  __rhinoLocalHide(map, "__rhinoLocalShadow", shadow);
+  __rhinoLocalHide(map, "toJSON", function () {
+    var out = {};
+    var names = keys();
+    var i;
+    for (i = 0; i < names.length; i += 1) {
+      out[names[i]] = owner(names[i])[names[i]];
+    }
+    return out;
+  });
   __rhinoLocalHide(map, "toString", function () {
     return __rhinoLocalJavaMapString(map);
   });
   __rhinoLocalHide(map, "get", function (name) {
     var key = String(name);
-    return __rhinoLocalHas(map, key) ? map[key] : null;
+    return __rhinoLocalHas(owner(key), key) ? owner(key)[key] : null;
   });
   __rhinoLocalHide(map, "put", function (name, value) {
     var key = String(name);
-    var previous = __rhinoLocalHas(map, key) ? map[key] : null;
-    map[key] = value;
+    var previous = __rhinoLocalHas(owner(key), key) ? owner(key)[key] : null;
+    set(key, value);
     return previous;
   });
   __rhinoLocalHide(map, "containsKey", function (name) {
-    return __rhinoLocalHas(map, String(name));
+    var key = String(name);
+    return __rhinoLocalHas(owner(key), key);
   });
   __rhinoLocalHide(map, "size", function () {
-    return Object.keys(map).length;
+    return keys().length;
   });
   __rhinoLocalHide(map, "keySet", function () {
-    return __rhinoLocalJavaList(Object.keys(map));
+    return __rhinoLocalJavaList(keys());
   });
+  var names = Object.keys(source || {});
+  var i;
+  for (i = 0; i < names.length; i += 1) {
+    set(names[i], source[names[i]]);
+  }
   return map;
 }
 
@@ -2779,26 +2835,23 @@ journey.identityResource = function () {
 var __rhinoLocalRealJavaImporter =
   typeof JavaImporter === "function" ? JavaImporter : null;
 
-var __rhinoLocalJsonValueClass = {
+// A function, because AM hands back a Java class and `typeof` of one is
+// "function" (measured 2026-10-01, live-java-importer-scope).
+var __rhinoLocalJsonValueClass = function () {
+  throw new Error("rhino-local: new JsonValue(...) is not modelled; use JsonValue.json or JsonValue.object");
+};
+var __rhinoLocalJsonValueStatics = {
+  // A Java map (measured: put/get, prints `{ "a": "b" }`), so it shares the
+  // registered map's model rather than keeping a second one.
   object: function () {
-    var values = {};
-    __rhinoLocalHide(values, "put", function (key, value) {
-      values[String(key)] = value;
-      return values;
-    });
-    __rhinoLocalHide(values, "get", function (key) {
-      var name = String(key);
-      return __rhinoLocalHas(values, name) ? values[name] : null;
-    });
-    __rhinoLocalHide(values, "toString", function () {
-      return __rhinoLocalJavaMapString(values);
-    });
-    return values;
+    return __rhinoLocalAsJavaMap({});
   },
   json: function (value) {
     return value;
   }
 };
+__rhinoLocalJsonValueClass.object = __rhinoLocalJsonValueStatics.object;
+__rhinoLocalJsonValueClass.json = __rhinoLocalJsonValueStatics.json;
 
 // Preserve native Java package branches used by other imports.
 var __rhinoLocalRealOrg = typeof org === "undefined" ? null : org;
@@ -2869,9 +2922,18 @@ var __rhinoLocalActionClass = {
 JavaImporter = function () {
   var real = null;
   var imports = [];
+  var jsonValue = false;
   var i;
+  // JsonValue is reachable through its class or its package, and through
+  // nothing else: JavaImporter() and JavaImporter(java.util) leave it
+  // undefined (measured 2026-10-01, live-java-importer-scope).
   for (i = 0; i < arguments.length; i += 1) {
-    if (arguments[i] !== __rhinoLocalJsonValueClass) {
+    if (
+      arguments[i] === __rhinoLocalJsonValueClass ||
+      arguments[i] === __rhinoLocalOrgOverlay.forgerock.json
+    ) {
+      jsonValue = true;
+    } else {
       imports.push(arguments[i]);
     }
   }
@@ -2885,7 +2947,9 @@ JavaImporter = function () {
   var wrapper = new Importer();
   wrapper.Action = __rhinoLocalActionClass;
   wrapper.HiddenValueCallback = __rhinoLocalHiddenValueCallback;
-  wrapper.JsonValue = __rhinoLocalJsonValueClass;
+  if (jsonValue) {
+    wrapper.JsonValue = __rhinoLocalJsonValueClass;
+  }
   return wrapper;
 };
 
