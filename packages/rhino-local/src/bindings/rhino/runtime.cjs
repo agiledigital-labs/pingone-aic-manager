@@ -47,6 +47,21 @@ function __rhinoLocalClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// What a Java `toArray()` hands a script: indexable with a working `length`,
+// but not a JS array (measured: Array.isArray false). `length` is hidden so
+// for...in and Object.keys see only indices, as they would on an array. A
+// real Java array is not built: whether element identity and method access
+// survive Rhino's conversion into Object[] is unproven here.
+function __rhinoLocalArrayLike(items) {
+  var out = {};
+  var i;
+  for (i = 0; i < items.length; i += 1) {
+    out[i] = items[i];
+  }
+  __rhinoLocalHide(out, "length", items.length);
+  return out;
+}
+
 function __rhinoLocalHide(object, name, fn) {
   if (typeof Object.defineProperty === "function") {
     Object.defineProperty(object, name, {
@@ -163,12 +178,7 @@ function __rhinoLocalJavaList(items) {
     return this.indexOf(value) !== -1;
   });
   __rhinoLocalHide(list, "toArray", function () {
-    var out = { length: this.length };
-    var i;
-    for (i = 0; i < this.length; i += 1) {
-      out[i] = this[i];
-    }
-    return out;
+    return __rhinoLocalArrayLike(this);
   });
   return list;
 }
@@ -1243,12 +1253,7 @@ function __rhinoLocalCallbackList(items, format) {
     return items.indexOf(value) !== -1;
   });
   __rhinoLocalHide(list, "toArray", function () {
-    var array = { length: items.length };
-    var j;
-    for (j = 0; j < items.length; j += 1) {
-      array[j] = items[j];
-    }
-    return array;
+    return __rhinoLocalArrayLike(items);
   });
   __rhinoLocalHide(list, "toString", function () {
     var values = [];
