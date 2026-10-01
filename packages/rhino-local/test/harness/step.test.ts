@@ -60,6 +60,21 @@ describe("carryGiven", () => {
     expect(next.sharedState).toEqual({});
   });
 
+  it.each([
+    ["removes", {}],
+    ["replaces with a scalar", { objectAttributes: "flat" }],
+  ])("pass 1 %s objectAttributes: the map is not reseeded", (_label, final) => {
+    // Regression: carryGiven spread `previous`, so a removed map survived in
+    // `registeredObjectAttributes` and came back on the next local pass.
+    const next = carryGiven(
+      { registeredObjectAttributes: { probe: "old" } },
+      effects({ sharedState: { initial: { objectAttributes: { probe: "old" } }, final } }),
+      []
+    );
+    expect("registeredObjectAttributes" in next).toBe(false);
+    expect(next.sharedState).toEqual(final);
+  });
+
   it("drops transient state, because the tenant does", () => {
     // The discriminating assertion. Measured 2026-09-14: a value put with
     // nodeState.putTransient reads back null on the resumed pass and is gone

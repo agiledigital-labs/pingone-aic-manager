@@ -87,6 +87,11 @@ export function carryGiven(
     if (registered !== null && typeof registered === "object" && !Array.isArray(registered)) {
       next.registeredObjectAttributes = clone(registered);
       delete next.sharedState.objectAttributes;
+    } else {
+      // The pass removed the map or replaced it with a scalar. Whatever is
+      // left is ordinary shared state, and reseeding the old map would undo a
+      // removal that persists on the tenant.
+      delete next.registeredObjectAttributes;
     }
   }
   // Not `{}`: absent and empty differ elsewhere in `Given`, and "the tenant
