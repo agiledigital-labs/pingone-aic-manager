@@ -63,8 +63,9 @@ describe("greet", () => {
 ```
 
 To run the same suite against a tenant, spread `aicWhenEnabled("<unique-id>")`
-into the `useLease` options, then run with `AIC_SCRIPT_TESTER_AIC=1`. The tenant
-comes from the first of these that is configured:
+into the `useLease` options, then run with `AIC_SCRIPT_TESTER_AIC=1` and
+Vitest's `--no-file-parallelism`: with test files in parallel, AM answers
+journey writes and node deletes with 500s. The tenant comes from the first of these that is configured:
 
 1. a `provider` passed in the options;
 2. a provider registered with `setTenantProvider()`, typically from a Vitest
