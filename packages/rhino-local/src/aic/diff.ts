@@ -9,15 +9,17 @@ import type {
   Expect,
   ExpectedValue,
   HttpEffect,
+  IdentityWriteEffect,
   OpenidmEffect,
   RecordedEffects,
   CompleteRecordedEffects,
+  StateBucket,
   StateChannel,
   StateMutation,
   Verdict,
 } from "../case/types.ts";
 import { formatValue } from "../case/util.ts";
-import { httpMatches, judge, normaliseEffects, openidmMatches } from "../case/verdict.ts";
+import { httpMatches, identityWriteMatches, judge, normaliseEffects, openidmMatches } from "../case/verdict.ts";
 
 export interface EffectsDisagreement {
   channel: EvidenceChannel;
@@ -95,12 +97,12 @@ export function diffRecordedEffects(
     disagreements,
     observationGaps
   );
-  compareScalar(
-    "sessionProperties",
+  compareSession(
     local.sessionProperties,
     aic.sessionProperties,
     localUnobserved,
     aicUnobserved,
+    expected,
     disagreements,
     observationGaps
   );
@@ -142,6 +144,58 @@ function compareScalar(
       )
     );
   }
+}
+
+/**
+ * Session buckets compared exactly, except a final value whose key the pass
+ * declared with a matcher: there two different values that both satisfy it
+ * agree, as they do for state. The starting session is always exact.
+ */
+function compareSession(
+  local: StateBucket,
+  aic: StateBucket,
+  localUnobserved: ReadonlySet<Channel>,
+  aicUnobserved: ReadonlySet<Channel>,
+  expected: Expect | undefined,
+  disagreements: EffectsDisagreement[],
+  gaps: ObservationGap[]
+): void {
+  if (recordGapIfUnobserved("sessionProperties", localUnobserved, aicUnobserved, gaps)) {
+    return;
+  }
+  const keys = new Set([...Object.keys(local.final), ...Object.keys(aic.final)]);
+  const finalAgrees = [...keys].every((key) => {
+    const localHas = Object.prototype.hasOwnProperty.call(local.final, key);
+    const aicHas = Object.prototype.hasOwnProperty.call(aic.final, key);
+    if (localHas !== aicHas) {
+      return false;
+    }
+    const matcher = sessionMatcher(expected, key);
+    return matcher === undefined
+      ? deepEqual(local.final[key], aic.final[key])
+      : equalWhenMatcherMatches(matcher, local.final[key], aic.final[key]);
+  });
+  if (!deepEqual(local.initial, aic.initial) || !finalAgrees) {
+    disagreements.push(
+      disagree(
+        "sessionProperties",
+        "sessionProperties",
+        formatValue(local),
+        formatValue(aic),
+        `sessionProperties: local ${formatValue(local)}, AIC ${formatValue(aic)}`
+      )
+    );
+  }
+}
+
+function sessionMatcher(expect: Expect | undefined, key: string): unknown {
+  for (const operation of ["added", "changed"] as const) {
+    const value = expect?.sessionProperties?.[operation]?.[key];
+    if (containsMatcher(value)) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function compareArray(
@@ -200,6 +254,15 @@ function arrayMatcher(
       openidmMatches(item, local) && openidmMatches(item, aic));
     return matches?.body === undefined ? undefined : { body: matches.body };
   }
+  if (channel === "identityWrites") {
+    const matches = expected?.identityWrites?.find((item) =>
+      containsMatcher(item) &&
+      isIdentityWriteEffect(local) && isIdentityWriteEffect(aic) &&
+      identityWriteMatches(item, local) && identityWriteMatches(item, aic));
+    return matches === undefined
+      ? undefined
+      : { identity: matches.identity, attribute: matches.attribute, values: matches.values };
+  }
   if (channel === "http") {
     const matches = expected?.http?.find((item) =>
       item.body !== undefined && containsMatcher(item.body) &&
@@ -226,6 +289,13 @@ function callbackIndices(declarations: NonNullable<Expect["callbacks"]>, effects
 function isOpenidmEffect(value: unknown, method: string): value is OpenidmEffect {
   return typeof value === "object" && value !== null && "method" in value &&
     value.method === method && "resource" in value && typeof value.resource === "string";
+}
+
+function isIdentityWriteEffect(value: unknown): value is IdentityWriteEffect {
+  return typeof value === "object" && value !== null &&
+    "identity" in value && typeof value.identity === "string" &&
+    "attribute" in value && typeof value.attribute === "string" &&
+    "values" in value && Array.isArray(value.values);
 }
 
 function isHttpEffect(value: unknown): value is HttpEffect {

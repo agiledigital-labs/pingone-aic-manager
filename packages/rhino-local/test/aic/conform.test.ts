@@ -128,6 +128,41 @@ describe("diffRecordedEffects", () => {
     expect(diffRecordedEffects(local, aic, declaration).disagreements)
       .toContainEqual(expect.objectContaining({ channel: "callbacks" }));
   });
+  it("lets a declared matcher absorb a session value difference, and only that", () => {
+    const declared = caseWith({ expect: { outcome: "true", sessionProperties: { added: { tracking: /^id-/ } } } }).expect;
+    const session = (tracking: string, other = "same") => makeEffects({
+      sessionProperties: { initial: { start: "s" }, final: { start: "s", tracking, other } },
+    });
+    // Discriminating: an exact comparison reports id-a vs id-b.
+    expect(diffRecordedEffects(session("id-a"), session("id-b"), declared).disagreements).toEqual([]);
+    // No matcher: exact.
+    expect(diffRecordedEffects(session("id-a"), session("id-b")).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "sessionProperties" }));
+    // A value failing the matcher, and an undeclared key, stay exact.
+    expect(diffRecordedEffects(session("id-a"), session("xx-b"), declared).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "sessionProperties" }));
+    expect(diffRecordedEffects(session("id-a", "one"), session("id-b", "two"), declared).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "sessionProperties" }));
+  });
+
+  it("lets a declared matcher absorb an identity write difference, and only that", () => {
+    const declared = caseWith({ expect: { outcome: "true",
+      identityWrites: [{ identity: "uuid-1", attribute: "fr-attr-str1", values: [/^id-/] }],
+    } }).expect;
+    const write = (value: string, identity = "uuid-1") => makeEffects({
+      identityWrites: [{ identity, attribute: "fr-attr-str1", values: [value] }],
+    });
+    // Discriminating: an exact comparison reports id-a vs id-b.
+    expect(diffRecordedEffects(write("id-a"), write("id-b"), declared).disagreements).toEqual([]);
+    expect(diffRecordedEffects(write("id-a"), write("id-b")).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "identityWrites" }));
+    expect(diffRecordedEffects(write("id-a"), write("xx-b"), declared).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "identityWrites" }));
+    // The identity is outside the matcher leaf, so it stays exact.
+    expect(diffRecordedEffects(write("id-a"), write("id-b", "uuid-2"), declared).disagreements)
+      .toContainEqual(expect.objectContaining({ channel: "identityWrites" }));
+  });
+
   it("keeps an extra same-URL HTTP request exact when its body fails the matcher", () => {
     const kase = caseWith({ expect: { outcome: "true", allowUndeclared: { http: true },
       http: [{ url: "https://tenant.example.com/collect", body: { id: /^id-/ } }],
