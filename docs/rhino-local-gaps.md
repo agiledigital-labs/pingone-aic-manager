@@ -127,6 +127,11 @@ live run was a curl with its own headers and parameters, not the case's
 `given`, and its payload carries the tenant host and client-certificate
 headers, so it is not committed.
 
+One request gap is **unmeasured**, not measured: with a session requested the
+AIC lane sends the tenant session cookie alongside the case's cookies, and
+whether `requestCookies` then lists it has not been probed. The local lane does
+not add it. Both lanes refuse an author cookie with the session cookie's name.
+
 What the 2026-09-12 ranking called the shutter gap is closed:
 `java-class-shutter`, `for-each-java-collection` and
 `lib-java-collections-consumer` now equal the live payload exactly, as does

@@ -3188,6 +3188,20 @@ function __rhinoLocalSeed(given) {
   if (given.cookieName !== undefined) {
     cookieName = given.cookieName;
   }
+  // Mirrors the AIC lane's attachSessionCookie refusal, so a case that cannot
+  // run there fails here too. Whether AM's requestCookies also lists the
+  // session cookie itself is unmeasured, so this lane does not add it.
+  if (
+    given.existingSession !== undefined &&
+    given.requestCookies !== undefined &&
+    Object.prototype.hasOwnProperty.call(given.requestCookies, String(cookieName))
+  ) {
+    throw new Error(
+      "rhino-local: request cookie " +
+        JSON.stringify(String(cookieName)) +
+        " collides with the tenant session cookie"
+    );
+  }
   if (given.resumedFromSuspend !== undefined) {
     resumedFromSuspend = given.resumedFromSuspend;
   }

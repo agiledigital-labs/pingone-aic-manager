@@ -271,6 +271,10 @@ name with `.run().cookies({ name: "other" })`, or edit `request.cookies` in
 `requestCookies`; the AIC lane sends the same values on `/authenticate`.
 When a test also requests `session`, the harness adds the tenant's session
 cookie and refuses an author cookie with that name instead of overwriting it.
+The local lane refuses the same collision against its `cookieName`. It does
+not add the session cookie to `requestCookies`: whether AM's `requestCookies`
+lists the session cookie has not been measured, so a script that reads it
+there may see it on AIC and not locally.
 
 `state.shared.objectAttributes` seeds a plain object, just as `putShared`
 does on AIC. To seed the registered Java-map container, use
