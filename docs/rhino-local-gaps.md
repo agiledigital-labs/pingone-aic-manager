@@ -132,6 +132,13 @@ AIC lane sends the tenant session cookie alongside the case's cookies, and
 whether `requestCookies` then lists it has not been probed. The local lane does
 not add it. Both lanes refuse an author cookie with the session cookie's name.
 
+`JsonValue` prints the measured forms on both lanes
+(`test/harness/live-json-value.e2e.test.ts`): `object()` after `put("a", "b")`
+prints `{ "a": "b" }`, and `json(object())` prints `{  }`. Locally `json(x)`
+returns `x`, so those two match because `object()` already prints as a map.
+`json()` of anything else — a JavaScript object literal, an array, a scalar —
+is **unmeasured** on AIC, and locally prints whatever `x` prints.
+
 What the 2026-09-12 ranking called the shutter gap is closed:
 `java-class-shutter`, `for-each-java-collection` and
 `lib-java-collections-consumer` now equal the live payload exactly, as does
