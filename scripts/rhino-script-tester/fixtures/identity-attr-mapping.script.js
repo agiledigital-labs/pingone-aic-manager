@@ -10,7 +10,7 @@
 // Safe to delete. Reads attribute counts only. idRepository.getIdentity() in a
 // scripted decision resolves by managed-object UUID (fr-idm-uuid), NOT userName
 // (verified — see identity-resolve-diag). PROBE_USER is the test account's uuid.
-var PROBE_USER = "838e77f6-0999-4afe-8a3f-13a02b28bf37"; // vuthikTestUsername
+var PROBE_USER = "838e77f6-0999-4afe-8a3f-13a02b28bf37"; // a sandbox test user
 
 function emit(payload) {
   if (callbacks.isEmpty()) {
