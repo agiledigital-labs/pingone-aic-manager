@@ -162,8 +162,16 @@ is **unmeasured** on AIC, and locally prints whatever `x` prints.
 or `JavaImporter(org.forgerock.json)`, as a class (`typeof` is `"function"`),
 and is `undefined` on `JavaImporter()` or `JavaImporter(java.util)` (measured
 2026-10-01, `live-java-importer-scope`); the local lane matches all four.
-`object()` is the same local Java-map model as a registered `objectAttributes`,
-so an entry named `get`, `put` or `size` neither shadows nor replaces a method.
+`object()` is the same local Java-map model as a registered `objectAttributes`.
+Both follow `live-java-map-enumeration` (2026-10-01): an entry named like a
+method shadows it, `for…in` and `Object.keys` list every entry, `keySet()` is
+refused, and `entrySet()`/`values()` are snapshots whose entries and iterator
+respectively are refused (`docs/api/12-script-bindings-matrix.md`). An
+earlier local model kept method-named entries apart from the methods; that was
+never measured, and AIC does the opposite. Not modelled: anything on an
+`entrySet()` view beyond `size`, `iterator().hasNext/next` and `toArray`;
+`for…in` over a view (AIC enumerates the Java object's members); a key named
+`toString` or `toJSON` (the local map uses those to print and harvest).
 The legacy result classes `Action` and `HiddenValueCallback` are `undefined`
 on next-gen from every importer — `JavaImporter()`, `JavaImporter(java.util)`,
 and even one naming `org.forgerock.openam.auth.node.api.Action` or

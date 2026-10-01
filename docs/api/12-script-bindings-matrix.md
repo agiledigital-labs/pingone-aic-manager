@@ -1661,6 +1661,27 @@ reference and on a fresh `nodeState.get("objectAttributes")` both return
 on pass 1, pass 2 reads `null`; after `putShared("objectAttributes", "scalar")`
 it reads the string `"scalar"`. The registered map does not come back.
 
+**Enumerating a registered map or `JsonValue.object()` (measured 2026-10-01,
+`live-java-map-enumeration.e2e.test.ts`, next-gen, both surfaces identical).**
+Each map held `plain`, `get` and `size`.
+
+| Expression                                      | Result                                                                        |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| `for (k in map)`, `Object.keys(map)`            | every key, method-named ones included: `get`, `plain`, `size`                 |
+| `map.get`, `map["get"]` with a `get` entry      | the entry's value (`"string"`): **an entry shadows the method of that name**  |
+| `map.get("plain")` with a `get` entry           | throws `TypeError` (`... It is not a function, it is "string".`)              |
+| `map.keySet()`                                  | throws `Access to Java class "java.util.LinkedHashMap$LinkedKeySet" is prohibited.` |
+| `map.entrySet().size()`                         | `3`; a **snapshot** (a later `put` leaves it at 3)                            |
+| `entrySet().iterator().hasNext()`, `toArray().length` | work                                                                    |
+| `entrySet().iterator().next()`, `toArray()[0]`  | throw `... "java.util.LinkedHashMap$Entry" is prohibited.`                    |
+| `map.values()`                                  | a snapshot list: `size()`, `get(i)` and `toArray()` work                      |
+| `map.values().iterator()`                       | throws `... "java.util.ArrayList$Itr" is prohibited.`                         |
+| `map.put(k, v)`                                 | the previous value, or `null` for a new key                                   |
+
+So the only way to list a map's keys is `for…in` (or `Object.keys`), and the
+only way to its values is `values().toArray()` or `map[k]`. A key named `get`,
+`put`, `size` or `containsKey` disables that method on the map.
+
 **`openidm` writes** (`binding-openidm-writes`, on a throwaway
 `managed/alpha_role` record):
 
