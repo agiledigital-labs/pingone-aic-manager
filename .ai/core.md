@@ -296,6 +296,13 @@ does not rebuild it: run `cargo build` before measuring any behaviour through
 `aic`, or you measure the previous build. `.ai/local.md` records the local
 detail and the wrong measurement this caused.
 
+**One Rust toolchain, pinned in `rust-toolchain.toml`.** CI and the release
+build read its channel, `shell.nix` builds the dev shell from it, and
+`scripts/release-check.sh` refuses to report ready when your `rustc` differs.
+**Keep the pin current**: bump it when a new stable ships and fix the new clippy
+findings in the same commit. The file's header says how. It is not the MSRV;
+that is `rust-version` in `Cargo.toml`, checked by CI's msrv job.
+
 **The gate CI enforces** (`.github/workflows/ci.yml`) — run all five before
 declaring a change green, because the DuckDB log-store lives behind an opt-in
 feature and rots silently otherwise:
