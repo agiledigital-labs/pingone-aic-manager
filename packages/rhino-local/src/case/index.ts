@@ -38,6 +38,8 @@ export type {
   HttpMatch,
   HttpReply,
   HttpStub,
+  IdentityWriteEffect,
+  IdentityWriteExpect,
   JsonObject,
   JsonPrimitive,
   JsonValue,

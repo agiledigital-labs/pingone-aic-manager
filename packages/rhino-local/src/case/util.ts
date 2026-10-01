@@ -1,4 +1,4 @@
-import type { JsonObject, JsonValue, StandardSchema } from "./types.ts";
+import type { IdentityWriteEffect, JsonObject, JsonValue, StandardSchema } from "./types.ts";
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -183,4 +183,21 @@ function describeType(value: unknown): string {
     return "RegExp";
   }
   return typeof value;
+}
+
+/** Shared by the harvest parser and `judge`, which both accept recorded effects. */
+export function parseIdentityWriteEffect(raw: unknown, path: string): IdentityWriteEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  if (typeof raw.identity !== "string") {
+    throw new Error(`rhino-local: ${path}.identity must be a string`);
+  }
+  if (typeof raw.attribute !== "string") {
+    throw new Error(`rhino-local: ${path}.attribute must be a string`);
+  }
+  if (!Array.isArray(raw.values) || raw.values.some((value) => typeof value !== "string")) {
+    throw new Error(`rhino-local: ${path}.values must be an array of strings`);
+  }
+  return { identity: raw.identity, attribute: raw.attribute, values: (raw.values as string[]).slice() };
 }

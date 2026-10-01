@@ -13,7 +13,11 @@ import { containsMatcher, seedMatches } from "../case/matcher.ts";
 import { diffState } from "../case/state.ts";
 import { formatValue, isPlainObject, parseJsonObject } from "../case/util.ts";
 
-const AIC_UNOBSERVED = ["openidm", "http", "logs", "sessionProperties"] as const;
+// `identityWrites`: the lane sees only what the script itself reads back. A
+// lane-side read of the managed record would have to translate AM attribute
+// names to IDM fields, and what store() leaves on that record is unmeasured
+// (docs/api/14-am-identity-attributes.md → "Identity writes").
+const AIC_UNOBSERVED = ["openidm", "http", "logs", "sessionProperties", "identityWrites"] as const;
 
 function sharedSeed(given: Given): JsonObject {
   return given.registeredObjectAttributes === undefined
@@ -92,6 +96,7 @@ export function assembleEffects(args: {
       openidm: [],
       http: [],
       logs: [],
+      identityWrites: [],
       evidence: {
         stateBuckets: "unified",
         ambientState: {},
@@ -121,6 +126,7 @@ export function assembleEffects(args: {
     openidm: [],
     http: [],
     logs: [],
+    identityWrites: [],
     evidence: classified.evidence,
   };
 }

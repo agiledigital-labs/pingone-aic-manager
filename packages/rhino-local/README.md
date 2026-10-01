@@ -17,7 +17,7 @@ overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
 legacy `sharedState`/`transientState` when `given.engine === "legacy"`,
 request maps, `outcome` / `action.goTo`, `logger`, `openidm`, `httpClient`,
 `callbacksBuilder` (the six authenticate-response types), `systemEnv`,
-`idRepository.getIdentity`, next-gen `require()` (CommonJS eval of seeded
+`idRepository.getIdentity` (reads, and `store()` as `identityWrites`), next-gen `require()` (CommonJS eval of seeded
 library bodies; a missing id throws naming `given.libraries`), legacy
 `JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
 in `cases/`.
@@ -168,6 +168,21 @@ pass; action writes are not visible through that binding within the journey. AIC
 cannot currently read the completed subject session, so this effect channel
 reports an observation gap there.
 
+`identity.store()` on an `idRepository.getIdentity(id)` handle produces judged
+`identityWrites` effects, one per attribute stored:
+`{ identity: id, attribute: <AM attribute name>, values: [...] }`. Declare them
+in `expect.identityWrites` (`identity` and `attribute` take a string or RegExp,
+`values` any expected value, `times` a count). The channel is fail-closed like
+`openidm` writes: an undeclared write fails unless
+`allowUndeclared: { identityWrites: true }`. `store()` is not an `openidm` call —
+AM persists through its identity repository — so it never appears in
+`expect.openidm` and `openidmFailures` stubs do not count or fail it. Passing an
+IDM field name (`userName`, `frUnindexedString1`, …) to `setAttribute` or
+`addAttribute` throws naming the AM attribute (`uid`, `fr-attr-str1`), because
+what AM stores for an unknown name is unmeasured. The AIC lane cannot observe
+the write itself (only what the script reads back), so this channel reports an
+observation gap there.
+
 ### Declared call and log channels
 
 An omitted `openidm` expectation permits undeclared reads and queries, while
@@ -190,6 +205,25 @@ set `allowUndeclared: { openidmReads: true }` or
 undeclared writes unless `openidmWrites: true` is explicit. This changes
 verdicts for 0.1.x tests that declared either channel while relying on its
 former fail-open default.
+
+Two more channels are new since 0.1.2 and fail closed on undeclared effects:
+
+- `sessionProperties`. 0.1.2 accepted `action.putSessionProperty` and
+  `removeSessionProperty` and recorded nothing. Now every put or removal must
+  be declared in `expect.sessionProperties`, or the test opts out with
+  `allowUndeclared: { sessionProperties: true }` in its expectation.
+- `identityWrites`. 0.1.2 recorded `identity.store()` as an `openidm` patch with
+  an invented body. Move such declarations from `expect.openidm` to
+  `expect.identityWrites`, or opt out with
+  `allowUndeclared: { identityWrites: true }`.
+
+Every undeclared-effect failure names its remedy: the channel to declare it in
+and the `allowUndeclared` flag that waives it.
+
+`judge()` still accepts effects recorded by 0.1.2, which carry neither channel.
+It reports the two as unobserved rather than empty — a 0.1.2 run may have made
+writes it never recorded — so the verdict passes but is not `conclusive` unless
+the case opts out of both channels.
 
 ### ESV declarations
 

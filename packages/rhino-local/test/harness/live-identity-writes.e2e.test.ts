@@ -67,10 +67,10 @@ describe("identity writes", () => {
           addResult: /^.*$/,
           storeResult: /^.*$/,
         } },
-        openidm: [{ method: "patch", resource: RESOURCE, body: [
-          { operation: "replace", field: "frUnindexedString1", value: ["new"] },
-          { operation: "replace", field: "frUnindexedMultivalued1", value: ["first", "second"] },
-        ] }],
+        identityWrites: [
+          { identity: ID, attribute: "fr-attr-str1", values: ["new"] },
+          { identity: ID, attribute: "fr-attr-multi1", values: ["first", "second"] },
+        ],
       },
       reply: [{ type: "NameCallback", value: "continue" }],
     }).expect({

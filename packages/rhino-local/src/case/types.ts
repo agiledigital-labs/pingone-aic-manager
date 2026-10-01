@@ -82,6 +82,7 @@ export const EXPECT_KEYS = [
   "openidm",
   "http",
   "logs",
+  "identityWrites",
   "allowUndeclared",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
@@ -98,6 +99,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "transientState",
   "secureState",
   "sessionProperties",
+  "identityWrites",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -107,7 +109,8 @@ export type AllowUndeclared = {
 
 /**
  * Per-channel defaults when the expectation omits the channel. Fail-closed
- * on undeclared writes, HTTP, callbacks, and state mutations; fail-open on
+ * on undeclared writes (OpenIDM and identity), HTTP, callbacks, and state
+ * mutations; fail-open on
  * OpenIDM reads and log lines. Declaring `openidm` or `logs` makes those
  * channels exhaustive unless `allowUndeclared` explicitly loosens them.
  */
@@ -123,6 +126,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   transientState: false,
   secureState: false,
   sessionProperties: false,
+  identityWrites: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -154,6 +158,7 @@ export const CHANNELS = [
   "openidm",
   "http",
   "logs",
+  "identityWrites",
 ] as const;
 export type Channel = (typeof CHANNELS)[number];
 
@@ -222,6 +227,25 @@ export interface OpenidmEffect {
   resource: string;
   body?: JsonValue;
   actionName?: string;
+}
+
+/**
+ * One attribute an `idRepository.getIdentity(id)` handle persisted with
+ * `store()`. Named as the script named it (AM's attribute name), because the
+ * write goes through AM's identity repository rather than the `openidm`
+ * binding, and the managed-record shape it lands as is unmeasured.
+ */
+export interface IdentityWriteEffect {
+  identity: string;
+  attribute: string;
+  values: string[];
+}
+
+export interface IdentityWriteExpect {
+  identity: Pattern;
+  attribute: Pattern;
+  values?: ExpectedValue;
+  times?: number;
 }
 
 export interface LogExpect {
@@ -311,6 +335,7 @@ export interface Expect {
   openidm?: OpenidmExpect[];
   http?: HttpExpect[];
   logs?: LogExpect[];
+  identityWrites?: IdentityWriteExpect[];
   allowUndeclared?: AllowUndeclared;
 }
 
@@ -389,6 +414,7 @@ export interface RecordedEffects {
   openidm: OpenidmEffect[];
   http: HttpEffect[];
   logs: LogEffect[];
+  identityWrites: IdentityWriteEffect[];
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

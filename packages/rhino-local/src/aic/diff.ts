@@ -100,7 +100,7 @@ export function diffRecordedEffects(
     disagreements,
     observationGaps
   );
-  for (const channel of ["callbacks", "openidm", "http", "logs"] as const) {
+  for (const channel of ["callbacks", "openidm", "http", "logs", "identityWrites"] as const) {
     compareArray(
       channel,
       local[channel],
@@ -141,7 +141,7 @@ function compareScalar(
 }
 
 function compareArray(
-  channel: "callbacks" | "openidm" | "http" | "logs",
+  channel: "callbacks" | "openidm" | "http" | "logs" | "identityWrites",
   local: unknown[],
   aic: unknown[],
   localUnobserved: ReadonlySet<Channel>,
@@ -172,7 +172,7 @@ function compareArray(
 }
 
 function arrayMatcher(
-  channel: "callbacks" | "openidm" | "http" | "logs",
+  channel: "callbacks" | "openidm" | "http" | "logs" | "identityWrites",
   index: number,
   localEffects: unknown[],
   aicEffects: unknown[],
