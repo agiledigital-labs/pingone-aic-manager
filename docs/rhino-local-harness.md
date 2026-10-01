@@ -191,8 +191,14 @@ the tarball into a consumer outside the checkout, then:
 invocation:
 
 ```bash
-AIC_SCRIPT_TESTER_AIC=1 npm -w packages/rhino-local test
+AIC_SCRIPT_TESTER_AIC=1 npm -w packages/rhino-local test -- --no-file-parallelism
 ```
+
+Run the test files **one at a time** (`--no-file-parallelism`). With files in
+parallel, every file holds its own lease on the one tenant, and AM answers
+journey writes and node deletes with 500s; run serially, the same files pass.
+The cause is on the tenant side and was not narrowed further, so treat serial
+as required rather than as a workaround for one flaky file.
 
 It is off by default because the tenant lane needs an unlocked agent
 (`aic login`) and network, and CI has neither — a checkout without them must
