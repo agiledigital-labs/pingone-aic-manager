@@ -960,18 +960,23 @@ tree. For `N` one-pass cases without sessions or managed fixtures:
 
 ```text
 2 CLI session calls
++ 1 at open        (serverinfo GET: the session cookie's name; added after
+                    the 2026-09-14 measurement below)
 + 3R at open       (existence GET + PUT + confirming GET)
 + R at close       (DELETE)
 + 3N per run       (subject PUT + confirming GET + authenticate)
-= 2 + 4R + 3N
+= 3 + 4R + 3N
 ```
 
-For the smallest outcome graph, `O = 3` and `R = 9`, giving **`38 + 3N`** before
-user hooks. If those hooks perform `H` `IdmHandle` operations, each encodable
-read, query, or delete is one REST call, so the total is **`38 + 3N + H`**.
+For the smallest outcome graph, `O = 3` and `R = 9`, giving an estimated
+**`39 + 3N`** before user hooks. If those hooks perform `H` `IdmHandle`
+operations, each encodable read, query, or delete is one REST call, so the
+total is **`39 + 3N + H`**.
 Rejected query filters make no call.
 
-**Measured 2026-09-14** against the sandbox tenant: a three-case file lease
+**Measured 2026-09-14** (historical — before the lease discovered the cookie
+name, so the formula was then `2 + 4R + 3N` = `38 + 3N`) against the sandbox
+tenant: a three-case file lease
 counted through an instrumented `AicIo` made **47 calls** — exactly `38 + 3×3`
 — broken down as 2 CLI, 21 `GET`, 12 `PUT`, 9 `DELETE` and 3 `authenticate`,
 with 10 provisioning `PUT`s landing before the first `authenticate` and the
@@ -980,17 +985,20 @@ passed on both lanes with no disagreements. The formula above is therefore
 measured at `N = 3`, not merely derived; the per-case marginal cost of **3**
 is the number that matters, against **30** before the lease.
 
-| Cases in a file | Before | With the lease |
-| ---------------: | -----: | -------------: |
-|                3 |     90 |         **47** |
-|               10 |    300 |         **68** |
-|               20 |    600 |         **98** |
+| Cases in a file | Before | With the lease (2026-09-14) |
+| ---------------: | -----: | --------------------------: |
+|                3 |     90 |                      **47** |
+|               10 |    300 |                      **68** |
+|               20 |    600 |                      **98** |
+
+The table is the 2026-09-14 lease; the cookie-name discovery adds one call to
+each row today (48, 69, 99), an estimate that has not been re-measured.
 
 Each additional outcome adds two graph resources and an estimated eight
 file-lifetime calls — that part is still derived, not measured. Step chains add
 one authenticate per pass; checks and cleanup add their actual `IdmHandle`
-operations. Managed fixtures, lazy session minting and
-cookie-name discovery add separate costs. Bearer refresh does not: the token
+operations. Managed fixtures and lazy session minting add separate
+costs. Bearer refresh does not: the token
 captured at open is reused, and is re-fetched only after a non-anonymous 401
 (measured 2026-09-14 — `aic whoami --token` can hand back a token already near
 the end of the agent's ~898s rotation, so refreshing on a schedule would cost a

@@ -326,7 +326,9 @@ The failed call is still recorded in `expect.openidm`. The script sees a
 no `code` property — AIC's adapter has none (`typeof error.code` measured
 `"undefined"`), so a script cannot route on one there either. The message text
 is the harness's own; AIC's carries the reason phrase, not the number. These
-stubs are AIC-ineligible and produce an observation gap.
+stubs are AIC-ineligible. An AIC-enabled file lease refuses such a case unless
+its `aic.unsupported` is `"skip"`, which keeps the local verdict and reports
+the observation gap.
 
 For a local method that the mock does not implement, use `bindingOverrides`.
 Each value is a JavaScript expression evaluated after the normal seed and
@@ -335,8 +337,9 @@ assigned to a known binding, for example
 Use `.run().bindingOverrides({ logger: expression })` for one test, or edit
 `request.bindingOverrides` in `beforeRun`. Entries merge by binding name;
 per-test values take precedence over suite defaults. These replacements are
-local only. An AIC-enabled run with one reports an observation gap and skips
-the tenant lane. This is separate from `given.bindings`, which supplies JSON
+local only. An AIC-enabled file lease refuses a case with one unless its
+`aic.unsupported` is `"skip"`; with `"skip"` it keeps the local verdict,
+reports the observation gap and does not run the tenant lane. This is separate from `given.bindings`, which supplies JSON
 seed data to supported mocks.
 
 An override expression can also wrap the original binding and call through to
@@ -570,9 +573,11 @@ secrets in them.
 For capacity planning only, the design estimate uses `O` distinct subject
 outcomes after adding `true` and `false`, and `R = 2O + 3` graph resources. For
 `N` one-pass cases without managed fixtures or sessions, the base call count is
-`2 + 4R + 3N`: two CLI session calls, three calls per resource at
-open, one delete per resource at close, and three calls per case. At the
-smallest `R = 9`, that is an estimated `38 + 3N`, or 68 calls for ten cases.
+`3 + 4R + 3N`: two CLI session calls, one `serverinfo` read to discover the
+session cookie's name, three calls per resource at open, one delete per
+resource at close, and three calls per case. At the smallest `R = 9`, that is
+an estimated `39 + 3N`, or 69 calls for ten cases. (The `38 + 3N` measured on
+2026-09-14 predates the cookie-name discovery.)
 Each `IdmHandle` read, encodable query, or delete in checks/cleanup adds one REST
 call. Each additional outcome adds an estimated eight file-lifetime calls.
 Step chains, managed fixtures, session minting, and credential refresh add
