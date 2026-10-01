@@ -168,6 +168,29 @@ pass; action writes are not visible through that binding within the journey. AIC
 cannot currently read the completed subject session, so this effect channel
 reports an observation gap there.
 
+### Declared call and log channels
+
+An omitted `openidm` expectation permits undeclared reads and queries, while
+still rejecting undeclared writes. An omitted `logs` expectation permits log
+lines. Declaring either channel makes its list exhaustive, including an empty
+list:
+
+```ts
+// Before 0.1.x change: a query could run and this expectation still passed.
+// Now: the query fails the verdict as an undeclared OpenIDM read.
+.expect({ outcome: "done", openidm: [] })
+
+// Now: any emitted log line fails as undeclared.
+.expect({ outcome: "done", logs: [] })
+```
+
+For a declared channel that intentionally permits extra reads or log lines,
+set `allowUndeclared: { openidmReads: true }` or
+`allowUndeclared: { logs: true }`. A declared `openidm` list still rejects
+undeclared writes unless `openidmWrites: true` is explicit. This changes
+verdicts for 0.1.x tests that declared either channel while relying on its
+former fail-open default.
+
 ### ESV declarations
 
 Declare values read through `systemEnv.getProperty("esv.<name>")` with the

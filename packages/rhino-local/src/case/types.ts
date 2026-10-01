@@ -106,9 +106,10 @@ export type AllowUndeclared = {
 };
 
 /**
- * Per-channel defaults. Fail-closed on undeclared writes, HTTP, callbacks,
- * and state mutations; fail-open on reads and log lines. Loosening a
- * fail-closed channel requires an explicit `allowUndeclared` flag.
+ * Per-channel defaults when the expectation omits the channel. Fail-closed
+ * on undeclared writes, HTTP, callbacks, and state mutations; fail-open on
+ * OpenIDM reads and log lines. Declaring `openidm` or `logs` makes those
+ * channels exhaustive unless `allowUndeclared` explicitly loosens them.
  */
 export const DEFAULT_ALLOW_UNDECLARED: {
   readonly [K in AllowUndeclaredChannel]: boolean;
