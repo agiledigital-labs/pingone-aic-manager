@@ -41,6 +41,9 @@ client names, put one regex per line in a file **outside the repo** (or in
 
 ```sh
 export SENSITIVE_DENYLIST="$HOME/.config/aic/denylist.txt"
+# Findings the whole-history scan already has with this denylist (0 if none).
+# Run `scripts/check-sensitive-metadata.sh --history` once to get the number.
+export SENSITIVE_HISTORY_EXPECTED=0
 ```
 
 Use word boundaries. A bare three-letter abbreviation can match inside ordinary

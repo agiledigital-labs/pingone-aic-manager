@@ -165,10 +165,17 @@ the protected `SENSITIVE_METADATA_DENYLIST` repository secret and fails closed
 when it is absent or empty; the workflow passes its content without writing it
 to the checkout. See `.ai/local.md`.
 
-Known: `--history` reports 4 hits in blob `55b60cc` (the `370c7de` commit) for
-`uat.client-a` / `uat.client-b`. Those are placeholders, not real names — the
-finding is that the redaction was ambiguous, and it stands until the history is
-rewritten again.
+**Values denylisted after they were committed stay in history**, so the
+whole-history scan carries a known count: `SENSITIVE_HISTORY_EXPECTED`, and
+`--history` over the whole history passes on **exactly** that many findings.
+Exact rather than a ceiling, because a rewrite that drops old findings would
+otherwise leave room for new ones to hide. It is a count of _your_ denylist's
+hits, so it lives beside the denylist — `.envrc` locally, the
+`SENSITIVE_HISTORY_EXPECTED` repository variable in CI — never in a committed
+file. `release-check.sh` and CI's "Scan full history (known count)" both
+require it (`0` when the history is clean). When it fails high, something new
+reached history; when it fails low, history was rewritten or the denylist
+changed — check which, then reset the number on purpose.
 
 ## 4. Realm path convention
 

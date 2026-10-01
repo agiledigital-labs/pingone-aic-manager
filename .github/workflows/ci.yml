@@ -58,8 +58,21 @@ jobs:
           elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]; then
             scripts/check-sensitive-metadata.sh --history "$BEFORE_SHA..$HEAD_SHA"
           else
-            scripts/check-sensitive-metadata.sh --history
+            echo "No base to diff against (a new branch); the full-history scan below covers every blob."
           fi
+
+      # Every blob reachable from this commit, against the count of findings
+      # already known to be in history (values denylisted after they were
+      # committed). The count is the SENSITIVE_HISTORY_EXPECTED repository
+      # variable; it must match exactly, so a new finding fails even if an old
+      # one disappeared. See the header of the script.
+      - name: Scan full history (known count)
+        env:
+          REQUIRE_SENSITIVE_DENYLIST: "1"
+          SENSITIVE_DENYLIST_CONTENT: ${{ secrets.SENSITIVE_METADATA_DENYLIST }}
+          REQUIRE_SENSITIVE_HISTORY_EXPECTED: "1"
+          SENSITIVE_HISTORY_EXPECTED: ${{ vars.SENSITIVE_HISTORY_EXPECTED }}
+        run: scripts/check-sensitive-metadata.sh --history
 
       # Orthogonal to the scanner above: that one knows the SHAPE of tenant and
       # client metadata, this one knows credentials — PEM/JWK material, API
