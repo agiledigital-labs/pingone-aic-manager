@@ -34,7 +34,11 @@ export function mergeChannels(
       override?.registeredObjectAttributes === undefined
     ? undefined
     : { ...(always?.registeredObjectAttributes ?? {}), ...(override?.registeredObjectAttributes ?? {}) };
-  return {
+  // The draft is handed to `beforeRun`, which may mutate it in place. Every
+  // channel is plain data, so clone it whole: a spread would share nested
+  // entries (a mapping, a stub, a state object) with `suite.always` and the
+  // override, and one run's edit would become the next run's default.
+  return structuredClone({
     state: {
       shared: { ...(always?.state?.shared ?? {}), ...(override?.state?.shared ?? {}) },
       transient: {
@@ -59,7 +63,7 @@ export function mergeChannels(
     // case and is invisible if you only look at the merged key count.
     sessionRequested:
       always?.session !== undefined || override?.session !== undefined,
-  };
+  });
 }
 
 /**

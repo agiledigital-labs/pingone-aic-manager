@@ -97,6 +97,32 @@ describe("mergeChannels", () => {
     expect(toGiven(draft).identityAttributes).toEqual(draft.identityAttributes);
     expect(toGiven(mergeChannels(undefined, undefined)).identityAttributes).toBeUndefined();
   });
+
+  // A beforeRun hook mutates the draft in place. A nested entry shared with
+  // the suite or the override would carry that edit into every later run.
+  it.each([
+    ["identityAttributes", (d: RequestDraft) => { d.identityAttributes!.displayName!.field = "description"; }],
+    ["http", (d: RequestDraft) => { d.http![0]!.reply.status = 500; }],
+    ["openidmFailures", (d: RequestDraft) => { d.openidmFailures![0]!.reply.code = 500; }],
+    ["state", (d: RequestDraft) => { (d.state.shared.nested as Record<string, unknown>).k = "hook"; }],
+    ["registeredObjectAttributes", (d: RequestDraft) => { (d.registeredObjectAttributes!.nested as Record<string, unknown>).k = "hook"; }],
+    ["session", (d: RequestDraft) => { (d.session.nested as Record<string, unknown>).k = "hook"; }],
+  ] as const)("isolates %s entries from the suite and from the next run", (_channel, mutate) => {
+    const channels = () => ({
+      identityAttributes: { displayName: { field: "displayName", cardinality: "single" as const } },
+      http: [{ match: { url: "https://example.com/api" }, reply: { status: 200 } }],
+      openidmFailures: [{ match: { method: "patch" as const, resource: "managed/alpha_user", ordinal: 1 }, reply: { code: 409 } }],
+      state: { shared: { nested: { k: "suite" } } },
+      registeredObjectAttributes: { nested: { k: "suite" } },
+      session: { nested: { k: "suite" } },
+    });
+    const always = channels();
+    const override = { session: { nested: { k: "suite" } } };
+    mutate(mergeChannels(always, override));
+    expect(always).toEqual(channels());
+    expect(override).toEqual({ session: { nested: { k: "suite" } } });
+    expect(mergeChannels(always, override)).toEqual(mergeChannels(channels(), { session: { nested: { k: "suite" } } }));
+  });
 });
 
 describe("normaliseWire", () => {
