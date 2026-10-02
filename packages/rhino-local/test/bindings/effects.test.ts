@@ -280,6 +280,7 @@ describe("openidm", () => {
   it("records actionName and body as content ?? params", () => {
     const withContent = runScript(
       'openidm.action("managed/alpha_user/alice", "reset", { n: 1 }, { q: true });',
+      { openidmActions: [{ match: { resource: "managed/alpha_user/alice", action: "reset" }, reply: { body: {} } }] },
     );
     expect(withContent.openidm).toEqual([
       {
@@ -291,6 +292,7 @@ describe("openidm", () => {
     ]);
     const paramsOnly = runScript(
       'openidm.action("managed/alpha_user/alice", "reset", null, { q: true });',
+      { openidmActions: [{ match: { resource: "managed/alpha_user/alice", action: "reset" }, reply: { body: {} } }] },
     );
     expect(paramsOnly.openidm).toEqual([
       {

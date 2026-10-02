@@ -51,10 +51,12 @@ describe("mergeChannels", () => {
       state: { shared: {}, transient: {} },
       esv: {},
       esvInState: false,
+      esvUndeclared: "error",
       headers: {},
       params: {},
       cookies: {},
       http: [],
+      openidmActions: [],
       openidmFailures: [],
       bindingOverrides: {},
       identityAttributes: {},
@@ -219,7 +221,7 @@ describe("parseInputs", () => {
 describe("toGiven", () => {
   it("seeds an empty ESV declaration for fail-closed reads", () => {
     const given = toGiven(mergeChannels(undefined, undefined));
-    expect(given).toEqual({ esv: {} });
+    expect(given).toEqual({ esv: {}, esvUndeclared: "error" });
   });
 
   it("compiles the session channel to existingSession, merged per key", () => {

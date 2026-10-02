@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { Expect, Given, HttpStub, IdentityAttributeMapping, JsonObject, JsonValue, OpenidmFailureStub } from "../case/types.ts";
+import type { EsvUndeclared, Expect, Given, HttpStub, OpenidmActionStub, IdentityAttributeMapping, JsonObject, JsonValue, OpenidmFailureStub } from "../case/types.ts";
 
 /** A header or parameter value. An array is sent as repeated occurrences. */
 export type WireValue = string | readonly string[];
@@ -28,6 +28,8 @@ export interface Channels {
   esv?: Readonly<Record<string, string | null>>;
   /** Also seed declared ESVs under `esv.<name>` in shared state on both lanes. */
   esvInState?: boolean;
+  /** Local policy: undeclared ESVs throw by default, or behave as absent on AM. */
+  esvUndeclared?: EsvUndeclared;
   /** Sent on the authenticate request. No script can assign these bindings. */
   headers?: WireMap;
   /** Sent on the authenticate request. */
@@ -38,6 +40,8 @@ export interface Channels {
   cookieName?: string;
   /** Ordered local HTTP replies; AIC cannot inject them. */
   http?: readonly HttpStub[];
+  /** Ordered local OpenIDM action replies; AIC cannot inject them. */
+  openidmActions?: readonly OpenidmActionStub[];
   /** Fail one numbered `openidm` call locally. AIC cannot inject failures. */
   openidmFailures?: readonly OpenidmFailureStub[];
   /** Local binding replacements as JavaScript expressions. AIC cannot inject these. */
@@ -81,11 +85,14 @@ export interface RequestDraft {
   registeredObjectAttributes?: JsonObject;
   esv: Record<string, string | null>;
   esvInState?: boolean;
+  /** Local policy: undeclared ESVs throw by default, or behave as absent on AM. */
+  esvUndeclared?: EsvUndeclared;
   headers: Record<string, string[]>;
   params: Record<string, string[]>;
   cookies?: Record<string, string>;
   cookieName?: string;
   http?: HttpStub[];
+  openidmActions?: OpenidmActionStub[];
   openidmFailures?: OpenidmFailureStub[];
   bindingOverrides?: Record<string, string>;
   identityAttributes?: Record<string, IdentityAttributeMapping>;
@@ -97,8 +104,10 @@ export interface RequestDraft {
 /** The mutable draft `beforeRun` is handed: every channel present. */
 export interface ResolvedRequestDraft extends RequestDraft {
   esvInState: boolean;
+  esvUndeclared: EsvUndeclared;
   cookies: Record<string, string>;
   http: HttpStub[];
+  openidmActions: OpenidmActionStub[];
   openidmFailures: OpenidmFailureStub[];
   bindingOverrides: Record<string, string>;
   identityAttributes: Record<string, IdentityAttributeMapping>;

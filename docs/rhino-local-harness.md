@@ -35,7 +35,11 @@ declare local `systemEnv.getProperty("esv.<name>")` values. AIC reads its own
 tenant ESVs; the harness does not inject or change them. An undeclared local
 ESV read throws with the key, including when another ESV was declared. Use
 `null` to declare a missing property; a one-argument read returns `null` and a
-read with a default returns that default.
+read with a default returns that default. `esvUndeclared: "absent"` opts into
+that behavior for all undeclared ESVs; `"error"` is the default. Declare the
+policy in `always`, `.run().esvUndeclared()`, or `request.esvUndeclared`. A third
+return-type argument follows the declared-null conversion path. This policy
+stays AIC-eligible; real tenant ESVs can still differ from local absence.
 Channel keys are the suffix of the script property: `esv: { flag: "on" }` is
 for `systemEnv.getProperty("esv.flag")`. Full `esv.flag` keys are rejected
 instead of double-prefixed. Hyphenated `esv-...` management API IDs are also
@@ -60,6 +64,19 @@ That comparison would also add one GET per distinct declared variable per
 lease, with no equivalent check for secrets. Value-sensitive tests therefore
 need the test author to confirm the tenant's current ESV value; changing a
 tenant ESV requires a restart.
+
+### OpenIDM action replies
+
+`always.openidmActions`, `.run().openidmActions()`, and `request.openidmActions`
+carry `{ match: { resource, action }, reply: { body } }` stubs. They mirror HTTP
+reply ordering and eligibility: first match wins, per-test before suite, local
+only, AIC-ineligible with the same observation gap. Resource accepts regex;
+content matching is absent on both HTTP and action reply stubs. Calls remain
+on `expect.openidm`; `.openidmFailures()` runs first and wins over replies.
+Unmatched actions throw naming `given.openidmActions`, a breaking change from
+0.2.0's invented `{}`. Managed-collection `patch`, `triggerSyncCheck`, and
+`updateLastSync` retain `{}` unless an explicit reply overrides it; other
+managed-collection actions retain their measured refusal.
 
 ### Script name binding
 

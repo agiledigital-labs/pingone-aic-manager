@@ -33,6 +33,7 @@ import type {
   JsonValue,
   LogExpect,
   LogLevel,
+  OpenidmActionStub,
   OpenidmExpect,
   OpenidmFailureStub,
   OpenidmMethod,
@@ -196,6 +197,12 @@ function parseGiven(raw: unknown, path: string): Given {
       given.esv[name] = value;
     }
   }
+  if (raw.esvUndeclared !== undefined) {
+    if (raw.esvUndeclared !== "error" && raw.esvUndeclared !== "absent") {
+      throw new Error(`rhino-local: ${path}.esvUndeclared must be "error" or "absent"`);
+    }
+    given.esvUndeclared = raw.esvUndeclared;
+  }
   assignStringMap(given, "secrets", raw.secrets, `${path}.secrets`);
   assignStringMap(given, "libraries", raw.libraries, `${path}.libraries`);
   if (raw.callbacks !== undefined) {
@@ -210,6 +217,9 @@ function parseGiven(raw: unknown, path: string): Given {
   }
   if (raw.http !== undefined) {
     given.http = parseArray(raw.http, `${path}.http`, parseHttpStub);
+  }
+  if (raw.openidmActions !== undefined) {
+    given.openidmActions = parseArray(raw.openidmActions, `${path}.openidmActions`, parseOpenidmActionStub);
   }
   if (raw.openidmFailures !== undefined) {
     given.openidmFailures = parseArray(raw.openidmFailures, `${path}.openidmFailures`, parseOpenidmFailureStub);
@@ -326,6 +336,31 @@ function parseHttpStub(raw: unknown, path: string): HttpStub {
   return {
     match: parseHttpMatch(raw.match, `${path}.match`),
     reply: parseHttpReply(raw.reply, `${path}.reply`),
+  };
+}
+
+function parseOpenidmActionStub(raw: unknown, path: string): OpenidmActionStub {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  rejectUnknownKeys(path, raw, ["match", "reply"]);
+  if (!isPlainObject(raw.match) || !isPlainObject(raw.reply)) {
+    throw new Error(`rhino-local: ${path} needs match and reply objects`);
+  }
+  rejectUnknownKeys(`${path}.match`, raw.match, ["resource", "action"]);
+  rejectUnknownKeys(`${path}.reply`, raw.reply, ["body"]);
+  if (typeof raw.match.action !== "string") {
+    throw new Error(`rhino-local: ${path}.match.action must be a string`);
+  }
+  if (raw.reply.body === undefined) {
+    throw new Error(`rhino-local: ${path}.reply.body is required`);
+  }
+  return {
+    match: {
+      resource: parsePattern(raw.match.resource, `${path}.match.resource`),
+      action: raw.match.action,
+    },
+    reply: { body: parseJsonValue(raw.reply.body, `${path}.reply.body`) },
   };
 }
 

@@ -47,11 +47,13 @@ export const GIVEN_KEYS = [
   "locales",
   "existingSession",
   "esv",
+  "esvUndeclared",
   "secrets",
   "libraries",
   "callbacks",
   "managed",
   "http",
+  "openidmActions",
   "openidmFailures",
   "openidmPriorCalls",
   "bindingOverrides",
@@ -172,7 +174,7 @@ export const STATE_CHANNELS = [
 export type StateChannel = (typeof STATE_CHANNELS)[number];
 export type EvidenceChannel = Channel | "nodeState";
 
-export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmFailures", "bindingOverrides"] as const;
+export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
 
 export interface StateDiff {
@@ -190,6 +192,23 @@ export interface IdentityAttributeMapping {
    * `"multi"`: always an array, `[]` for none.
    */
   cardinality: "single" | "multi";
+}
+
+/** Local policy for undeclared systemEnv properties; default: error. */
+export type EsvUndeclared = "error" | "absent";
+
+export interface OpenidmActionMatch {
+  resource: Pattern;
+  action: string;
+}
+
+export interface OpenidmActionReply {
+  body: JsonValue;
+}
+
+export interface OpenidmActionStub {
+  match: OpenidmActionMatch;
+  reply: OpenidmActionReply;
 }
 
 export interface HttpMatch {
@@ -307,6 +326,8 @@ export interface Given {
   existingSession?: Record<string, string>;
   /** A null entry explicitly declares an absent ESV. */
   esv?: Record<string, string | null>;
+  /** Treat undeclared properties as absent on AM, or throw (the default). */
+  esvUndeclared?: EsvUndeclared;
   secrets?: Record<string, string>;
   /** Library source keyed by the name passed to next-gen `require()`. */
   libraries?: Record<string, string>;
@@ -318,6 +339,7 @@ export interface Given {
   callbacks?: CallbackEffect[];
   managed?: Record<string, JsonObject[]>;
   http?: HttpStub[];
+  openidmActions?: OpenidmActionStub[];
   openidmFailures?: OpenidmFailureStub[];
   /**
    * `openidm` calls already made earlier in the journey, counted per
