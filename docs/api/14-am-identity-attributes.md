@@ -287,14 +287,30 @@ A declared layout overrides the measured default **and exempts its seeds from
 this normalization**, just as other declared layouts override measurements.
 
 **Local collision policy, not a tenant measurement:** before persisting, the
-harness refuses bag keys beginning with `_` (including `_id` and `_rev`), known
-ordinary/OOTB identity fields such as `givenName`, and any field targeted by a
-suite's `identityAttributes` declaration. It also refuses an ordinary or
-declared-layout identity write to a currently bag-owned property. Checks cover
-both pending-attribute orders and recheck ownership at `store()`; an unmeasured
-collision cannot partially apply another pending write or first surface at
-harvest. Use non-overlapping bag keys and declared fields. Reserved metadata
-collisions are intentionally not probed on a tenant.
+harness refuses bag keys beginning with `_` (including `_id` and `_rev`) and
+known ordinary/OOTB identity fields such as `givenName`. It refuses a whole-bag
+replacement and another AM attribute write targeting the same property in one
+`store()`, in either pending order. A replacement touches the entire `custom_*`
+set, including omitted keys; use separate stores for overlapping writes.
+Distinct targets may share a store. Reserved metadata collisions are
+intentionally not probed on a tenant.
+
+Declared layouts retain precedence over inferred seed contents and bag-written
+values. A declared layout targeting a `custom_*` property replaces just that
+key in the persisted object bag while updating the record; other bag keys are
+preserved. After an absent `[]` clear, a declared key write restores one object
+element. A single-valued clear removes its key; a multi-valued clear retains
+`[]` as the key's value. Declared writes to persisted unprefixed bag keys follow
+the same rule. Unused declarations permit whole-bag clearing, and a declaration
+of `fr-idm-custom-attrs` itself overrides the measured layout and seed contract.
+
+The complete store is preflighted against the current record and bag before
+any mutation or effect is recorded, including changes after staging. A key
+replacement within a non-object bag (string, number, array, boolean or JSON
+null) is refused as unmeasured; first restore an object bag in a separate store.
+Changing the identity resource through a declared `_id` layout is also refused
+as unmeasured. These are local consistency boundaries, not additional tenant
+measurements.
 
 Public harness `check(idm)`/cleanup handles receive the same bag metadata in
 step and final checks. External materialized read/query behavior for non-object

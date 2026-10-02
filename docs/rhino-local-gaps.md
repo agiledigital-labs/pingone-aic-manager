@@ -165,8 +165,13 @@ What remains:
   mutations are unmeasured and refused. `_id`-only filtered queries remain
   supported for string/number/array/null bags.
 - **Identity-state collisions** are unmeasured and refused before persistence:
-  metadata keys, known ordinary/OOTB identity targets and declared layout fields
-  cannot collide with a bag; identity writes cannot target bag-owned properties.
+  metadata keys and known ordinary/OOTB identity targets cannot be bag keys;
+  a whole-bag replacement and another AM attribute write cannot target the same
+  property in one store. Declared layouts retain precedence over inferred and
+  persisted bag contents: custom-key writes update the object bag and record
+  together, including after an absent `[]` clear. Unused declarations permit
+  bag clearing. Key replacement within a non-object bag and changing the
+  identity resource through an `_id` layout remain unmeasured and refused.
 - **Public check-handle materialization of non-object bags** is unmeasured.
   Both handles receive provenance and refuse affected reads/queries (including
   null), while string deletes report REST 500 and other non-object deletes
