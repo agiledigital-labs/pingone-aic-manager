@@ -106,7 +106,7 @@ describe("custom bag edges (review #1–4)", () => {
       `openidm.update("${resource}", null, {_id:"example", givenName:"Changed"});`,
     ])(`refuses unmeasured IDM access with ${text}: %s`, (call) => {
       expect(() => runScript(identity + write(text) + call, seed)).toThrow(
-        /carries a non-object fr-idm-custom-attrs bag; this IDM access is unmeasured/,
+        /carries a non-object fr-idm-custom-attrs bag \(.+\); this IDM access is unmeasured/,
       );
     });
   }

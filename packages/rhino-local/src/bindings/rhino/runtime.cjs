@@ -1767,31 +1767,35 @@ function __rhinoLocalProject(record, fields) {
       out[field] = record[field];
     } else if (field.indexOf("/") !== -1) {
       parent = field.split("/")[0];
-      if (__rhinoLocalHas(record, parent) && fields.indexOf(parent) === -1) {
-        out[parent] = __rhinoLocalProjectChild(record[parent], field.split("/").slice(1), out[parent]);
+      if (__rhinoLocalHas(record, parent)) {
+        var projected = __rhinoLocalProjectChild(record[parent], field.split("/").slice(1), fields.indexOf(parent) === -1 ? out[parent] : undefined);
+        if (fields.indexOf(parent) === -1) {
+          out[parent] = projected;
+        }
       }
     }
   }
   return out;
 }
 
-// Preserve relationship envelope metadata, but select only requested children.
+// Only the reference envelope documented with _meta/lastChanged is measured.
+var __rhinoLocalReferenceEnvelope = [
+  "_id", "_rev", "_ref", "_refResourceCollection", "_refResourceId", "_refResourceRev", "_refProperties"
+];
 function __rhinoLocalProjectChild(value, path, previous) {
-  if (Array.isArray(value)) {
-    return value.map(function (entry, index) {
-      return __rhinoLocalProjectChild(entry, path, previous && previous[index]);
-    });
-  }
   if (!__rhinoLocalIsPlainObject(value)) {
-    return value;
+    throw new Error("rhino-local: openidm fields: parent/child projection of a scalar or array parent is unmeasured; seed a pre-expanded object parent");
+  }
+  var child = path[0];
+  if (__rhinoLocalHas(value, "_ref") && !__rhinoLocalHas(value, child)) {
+    throw new Error("rhino-local: openidm fields: unresolved _ref or reference expansion is unmeasured; seed the requested child in a pre-expanded object parent");
   }
   var out = previous || {};
-  Object.keys(value).forEach(function (key) {
-    if (key.charAt(0) === "_") {
+  __rhinoLocalReferenceEnvelope.forEach(function (key) {
+    if (__rhinoLocalHas(value, key)) {
       out[key] = value[key];
     }
   });
-  var child = path[0];
   if (__rhinoLocalHas(value, child)) {
     out[child] = path.length === 1 ? value[child] : __rhinoLocalProjectChild(value[child], path.slice(1), out[child]);
   }
@@ -2319,11 +2323,9 @@ openidm.create = function (resourceName, newResourceId, content) {
     __rhinoLocal.managed[collection] = [];
   }
   var rows = __rhinoLocal.managed[collection];
-  if (
-    id !== undefined &&
-    id !== null &&
-    __rhinoLocalFindRecord(collection, id).record
-  ) {
+  var existing = __rhinoLocalFindRecord(collection, id).record;
+  if (existing) {
+    __rhinoLocalBagAccess("create", collection + "/" + id, existing);
     throw new Error(
       "rhino-local: openidm.create: Entry Already Exists: " + recordedResource
     );
@@ -2403,6 +2405,7 @@ openidm.delete = function (resourceName, _rev) {
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("delete", resource);
   var found = __rhinoLocalRequireRecord("delete", resource);
+  __rhinoLocalBagAccess("delete", resource, found.record);
   if (_rev !== null && _rev !== undefined && String(_rev) !== String(found.record._rev)) {
     throw new Error(
       "rhino-local: openidm.delete: Assertion Failed: the entry cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry"
@@ -2589,25 +2592,37 @@ function __rhinoLocalBagObject(values) {
   return values.length === 0 ? {} : JSON.parse(values[0]);
 }
 
+function __rhinoLocalBagCategory(bag) {
+  if (bag === null) { return "null"; }
+  if (Array.isArray(bag)) { return "array"; }
+  return typeof bag;
+}
+
 function __rhinoLocalBagAccess(method, resource, record, fields, params) {
   var bag = __rhinoLocalBagObject(__rhinoLocalCustomBag(resource, record));
-  if (__rhinoLocalIsPlainObject(bag)) {
+  var category = __rhinoLocalBagCategory(bag);
+  if (category === "object") {
     return;
   }
-  if (method === "read" && (fields === undefined || fields === null)) {
-    if (bag === null) {
-      return;
-    }
+  var fullRead = method === "read" && (fields === undefined || fields === null);
+  if (fullRead && category === "null") {
+    return;
+  }
+  // Full reads: string/number/array measured in edges; boolean in nonobject.
+  // Delete: only a string bag was measured. Other categories stay refused.
+  if ((fullRead && ["string", "number", "array", "boolean"].indexOf(category) !== -1) ||
+      (method === "delete" && category === "string")) {
     var error = new Error("org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Response is not application/json");
     error.name = "JavaException";
     throw error;
   }
-  if (method === "query" && params._queryFilter !== undefined && Array.isArray(fields) && fields.length === 1 && fields[0] === "_id") {
+  if (method === "query" && ["string", "number", "array", "null"].indexOf(category) !== -1 &&
+      params._queryFilter !== undefined && Array.isArray(fields) && fields.length === 1 && fields[0] === "_id") {
     return;
   }
   throw new Error(
     "rhino-local: openidm." + method + ": " + resource +
-      " carries a non-object fr-idm-custom-attrs bag; this IDM access is unmeasured (only full read and _id-only filtered query were measured)"
+      " carries a non-object fr-idm-custom-attrs bag (" + category + "); this IDM access is unmeasured; restore an object bag through AM before this access"
   );
 }
 
@@ -2674,6 +2689,44 @@ function __rhinoLocalIdentityLayout(name) {
     };
   }
   return null;
+}
+
+// Collision behavior is unmeasured. Refuse known OOTB/declared targets rather
+// than let a bag corrupt metadata or give one property two identity owners.
+var __rhinoLocalIdentityOtherFields = [
+  "userName", "cn", "givenName", "sn", "mail", "telephoneNumber", "accountStatus",
+  "displayName", "description", "password", "postalAddress", "city", "stateProvince",
+  "postalCode", "country", "aliasList", "applications", "ownerOfApp", "assignedDashboard",
+  "assignments", "consentedMappings", "reports", "manager", "passwordLastChangedTime",
+  "passwordExpirationTime", "groups", "roles", "kbaInfo", "preferences", "profileImage",
+  "adminOfOrg", "ownerOfOrg", "memberOfOrg", "memberOfOrgIDs", "taskPrincipals",
+  "deviceProfiles", "devicePrintProfiles", "webauthnDeviceProfiles", "oathDeviceProfiles",
+  "pushDeviceProfiles", "fr-idm-custom-attrs"
+];
+function __rhinoLocalBagCollision(method, property, reason) {
+  throw new Error("rhino-local: idRepository.getIdentity()." + method + ": fr-idm-custom-attrs key " +
+    JSON.stringify(property) + " collides with " + reason + "; this identity mapping is unmeasured; use non-overlapping bag keys and identityAttributes fields");
+}
+function __rhinoLocalCheckBagKeys(bag) {
+  if (!__rhinoLocalIsPlainObject(bag)) { return; }
+  var declared = __rhinoLocal.identityAttributes || {};
+  Object.keys(bag).forEach(function (property) {
+    if (property.charAt(0) === "_") {
+      __rhinoLocalBagCollision("store", property, "reserved record metadata");
+    }
+    if (__rhinoLocalIdentityOtherFields.indexOf(property) !== -1 ||
+        /^fr(Unindexed|Indexed)(String|Multivalued|Integer|Date)[0-9]+$/.test(property) ||
+        Object.keys(declared).some(function (name) { return declared[name].field === property; })) {
+      __rhinoLocalBagCollision("store", property, "another AM attribute's IDM field");
+    }
+  });
+}
+function __rhinoLocalCheckBagTarget(method, resource, record, layout) {
+  if (layout.syntax === "bag") { return; }
+  var bag = __rhinoLocalBagObject(__rhinoLocalCustomBag(resource, record));
+  if (__rhinoLocalIsPlainObject(bag) && __rhinoLocalHas(bag, layout.field)) {
+    __rhinoLocalBagCollision(method, layout.field, "a write targeting a currently bag-owned property");
+  }
 }
 
 // The exception AM's store() throws when DS refuses the modify (measured text).
@@ -2868,6 +2921,7 @@ idRepository.getIdentity = function (userName) {
     if (layout === null) {
       throw unmeasured(method, name, "how AM stores " + JSON.stringify(String(name)) + " in IDM is unmeasured, so the local lane refuses the write");
     }
+    __rhinoLocalCheckBagTarget(method, resource, found, layout);
     return layout;
   }
   function values(name) {
@@ -2973,6 +3027,7 @@ idRepository.getIdentity = function (userName) {
       // bad attribute in a single store()).
       for (i = 0; i < names.length; i += 1) {
         var layout = __rhinoLocalIdentityLayout(names[i]);
+        __rhinoLocalCheckBagTarget("store", resource, found, layout);
         var given = pending[names[i]];
         var rule = given.length === 0 ? layout.none : given.length === 1 ? layout.one : layout.many;
         if (rule === "unmeasured") {
@@ -3005,6 +3060,10 @@ idRepository.getIdentity = function (userName) {
           } else {
             converted.push(result.value);
           }
+        }
+        if (layout.syntax === "bag") {
+          __rhinoLocalCheckBagKeys(__rhinoLocalBagObject(__rhinoLocalCustomBag(resource, found)));
+          converted.forEach(__rhinoLocalCheckBagKeys);
         }
         // Malformed bag text wins over cardinality in either position (measured).
         if (layout.syntax === "bag" && rule === "violation" && attributeCodes.length === 0) {
