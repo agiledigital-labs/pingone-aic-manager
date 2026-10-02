@@ -48,7 +48,7 @@ export async function runCase(
     // Fail before the JVM sees the case: a fixture that names a property the
     // environment does not define is a test bug, and saying so here names the
     // case rather than surfacing as a puzzling mismatch downstream.
-    checkSeededManaged(options.profile, kase.given.managed, kase.name);
+    checkSeededManaged(options.profile, kase.given.managed, kase.name, kase.given.identityCustomAttrs);
   }
   const request: {
     source: string;
