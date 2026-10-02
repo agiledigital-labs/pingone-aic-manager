@@ -432,7 +432,7 @@ export class Lease<TSchema extends z.ZodType> {
     const verdict = judge(kase, effects.effects);
 
     const store = cloneStore(effects.effects.managedStore);
-    const idm = localIdmHandle(store ?? {}, () => undefined);
+    const idm = localIdmHandle(store ?? {}, () => undefined, structuredClone(effects.effects.identityCustomAttrs ?? {}));
     try {
       for (const check of checks) {
         await check(idm, { input, effects: effects.effects });
