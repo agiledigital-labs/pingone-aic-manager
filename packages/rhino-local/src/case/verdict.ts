@@ -1,4 +1,4 @@
-import { migrateIdentityAbsence, parseIdentityCustomAttrs } from "./identity.ts";
+import { parseIdentityCustomAttrs } from "./identity.ts";
 import { deepEqual, matchesPattern } from "./equal.ts";
 import { matchesValue } from "./matcher.ts";
 import { isPortable } from "./portable.ts";
@@ -1132,15 +1132,8 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
     // pass's starting records and undo every write the pass made.
     recorded.managedStore = parseManagedStore(raw.managedStore);
   }
-  if (raw.identityCustomAttrsAbsent !== undefined || raw.identityCustomAttrs !== undefined) {
-    const migrated = raw.identityCustomAttrsAbsent === undefined ? {} : migrateIdentityAbsence(raw.identityCustomAttrsAbsent, recorded.managedStore, "effects.identityCustomAttrsAbsent");
-    const values = raw.identityCustomAttrs === undefined ? {} : parseIdentityCustomAttrs(raw.identityCustomAttrs, recorded.managedStore, "effects.identityCustomAttrs");
-    for (const resource of Object.keys(migrated)) {
-      if (values[resource] !== undefined && values[resource].length !== 0) {
-        throw new Error(`rhino-local: effects.identityCustomAttrs.${resource} conflicts with identityCustomAttrsAbsent`);
-      }
-    }
-    recorded.identityCustomAttrs = { ...migrated, ...values };
+  if (raw.identityCustomAttrs !== undefined) {
+    recorded.identityCustomAttrs = parseIdentityCustomAttrs(raw.identityCustomAttrs, recorded.managedStore, "effects.identityCustomAttrs");
   }
   if (raw.evidence !== undefined) {
     recorded.evidence = parseRecordingEvidence(raw.evidence);

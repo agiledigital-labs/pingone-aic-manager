@@ -225,9 +225,6 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.openidmFailures !== undefined) {
     given.openidmFailures = parseArray(raw.openidmFailures, `${path}.openidmFailures`, parseOpenidmFailureStub);
   }
-  if (raw.identityCustomAttrsAbsent !== undefined) {
-    given.identityCustomAttrsAbsent = raw.identityCustomAttrsAbsent as string[];
-  }
   if (raw.identityCustomAttrs !== undefined) {
     given.identityCustomAttrs = raw.identityCustomAttrs as Record<string, string[]>;
   }

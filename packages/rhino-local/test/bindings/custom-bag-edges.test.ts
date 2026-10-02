@@ -1,4 +1,3 @@
-import { carryGiven } from "../../src/harness/step.ts";
 import { describe, expect, it } from "vitest";
 import { normaliseEffects, validateCase } from "../../src/case/index.ts";
 import { caseWith } from "../aic/helpers.ts";
@@ -175,42 +174,38 @@ describe("custom bag edges (review #1–4)", () => {
     expect(effects.identityCustomAttrs).toEqual({});
   });
 
-  it("absence markers cannot collide across collections; duplicate compatibility markers canonicalise once", () => {
+  it("bag metadata cannot collide across collections", () => {
     const given = {
       managed: {
         "managed/alpha_user": [record],
         "managed/alpha_role": [{ _id: "example" }],
       },
-      identityCustomAttrsAbsent: [
-        "managed/alpha_role/example",
-        "managed/alpha_role/example",
-      ],
+      identityCustomAttrs: { "managed/alpha_role/example": [] },
     };
     const kase = validateCase(caseWith({ given }));
     expect(kase.given.identityCustomAttrs).toEqual({
       "managed/alpha_role/example": [],
     });
-    expect(kase.given.identityCustomAttrsAbsent).toBeUndefined();
     expect(runScript(identity + get, kase.given).sharedState.final.text).toBe(
       "{}",
     );
   });
 
-  it("duplicate markers reset in one ordinary IDM patch", () => {
+  it("a cleared map entry resets in one ordinary IDM patch", () => {
     const effects = runScript(
       identity +
         `openidm.patch("${resource}", null, [{operation:"replace",field:"givenName",value:"Changed"}]);` +
         get,
-      { ...seed, identityCustomAttrsAbsent: [resource, resource] },
+      { ...seed, identityCustomAttrs: { [resource]: [] } },
     );
     expect(effects.sharedState.final.text).toBe("{}");
     expect(effects.identityCustomAttrs).toEqual({ [resource]: ["{}"] });
   });
 
   it.each([
-    { identityCustomAttrsAbsent: ["example"] },
-    { identityCustomAttrsAbsent: ["managed/alpha_role/missing"] },
-    { identityCustomAttrsAbsent: new Array<string>(1) },
+    { identityCustomAttrs: { example: [] } },
+    { identityCustomAttrs: { "managed/alpha_role/missing": [] } },
+    { identityCustomAttrs: { [resource]: [false] } },
     { identityCustomAttrs: { [resource]: new Array<string>(1) } },
     { identityCustomAttrs: { [resource]: ["not json"] } },
     { identityCustomAttrs: { [resource]: ["{}", "{}"] } },
@@ -247,19 +242,4 @@ describe("custom bag edges (review #1–4)", () => {
       "declared",
     );
   });
-});
-
-it("carryGiven migrates a legacy producer's unique resource markers", () => {
-  const effects = runScript("", seed);
-  delete effects.identityCustomAttrs;
-  effects.identityCustomAttrsAbsent = [resource, resource];
-  const next = carryGiven(seed, effects, []);
-  expect(next.identityCustomAttrs).toEqual({ [resource]: [] });
-  expect(next.identityCustomAttrsAbsent).toBeUndefined();
-  const result = runScript(
-    identity +
-      'nodeState.putShared("size", identity.getAttributeValues("fr-idm-custom-attrs").size());',
-    next,
-  );
-  expect(result.sharedState.final.size).toBe(0);
 });

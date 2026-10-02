@@ -107,10 +107,9 @@ Optional local `identityCustomAttrs` metadata travels with `managedStore`,
 keyed by full managed resource path. It preserves AM text, absence and ownership
 of unprefixed keys that a later replacement must delete. Dense arrays and
 projection consistency are validated against the store. Profile checks exempt
-only proven bag-owned keys; ordinary seeded fields remain strict. The legacy
-`identityCustomAttrsAbsent` input migrates dense, deduplicated full-resource paths
-to this map; bare IDs are refused. This metadata is not a judged channel and
-retains existing AIC eligibility/identity-write observation-gap behavior.
+only proven bag-owned keys; ordinary seeded fields remain strict. This metadata
+is not a judged channel and retains existing AIC eligibility/identity-write
+observation-gap behavior.
 
 Identity wrappers refresh the current record after IDM update. Create/delete
 clears old metadata locally; fresh recreated records derive their own bag.
