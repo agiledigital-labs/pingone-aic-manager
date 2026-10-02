@@ -780,6 +780,15 @@ Four things fall out of that:
   `managed/<realm>_usermeta`. The bare `_meta` form returned the envelope
   without the target's `_id`/`_rev`/`_refResourceRev`.
 
+  The local harness keeps exactly the documented reference-envelope fields
+  `_id`, `_rev`, `_ref`, `_refResourceCollection`, `_refResourceId`,
+  `_refResourceRev` and `_refProperties`, plus explicitly requested children.
+  Other underscore-prefixed siblings are not implicitly included. Child-path
+  projection requires a pre-expanded object parent: scalar/null/array parents,
+  unresolved bare `_ref` values and reference expansion refuse locally as
+  unmeasured. These are local fidelity boundaries, not additional tenant
+  measurements; the harness does not resolve even a separately seeded target.
+
 Two more observations from the same probe:
 
 - **`openidm.query` does not return `remainingPagedResults`.** The envelope was

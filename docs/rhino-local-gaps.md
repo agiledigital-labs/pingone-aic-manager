@@ -147,21 +147,37 @@ headers, so it is not committed.
 refusals DS makes. The 2026-10-02 `identity-custom-attrs.script.js` measurement
 adds `fr-idm-custom-attrs`: whole-bag replacement, deletion of omitted custom keys,
 unknown-key persistence, no coercion, atomic errorcode 65/21 failures, and the
-`[]` versus `["{}"]` read distinction. The `identity-custom-attrs-edges.script.js` fixture at `8f4ff66` extends
-this to every JSON shape, unprefixed object keys, malformed-text precedence,
-full IDM read failures for string/number/array bags, and ordinary patch/update restoring
-an absent bag. Persisted AM values and object-key ownership travel across passes
-in validated full-resource metadata; profile checks exempt these proven keys
+`[]` versus `["{}"]` read distinction. The `identity-custom-attrs-edges.script.js`
+fixture at `8f4ff66` extends this to every JSON shape, unprefixed object keys,
+malformed-text precedence, full IDM read failures for string/number/array bags,
+and ordinary patch/update restoring
+an absent bag. `identity-custom-attrs-nonobject.script.js` at `f7d684b` adds
+boolean full-read failure and string delete failure (user retained; REST 500),
+repaired by an AM `["{}"]` write. Persisted AM values and object-key ownership
+travel across passes in validated full-resource metadata; profile checks exempt these proven keys
 while checking ordinary properties strictly. No layout declaration is needed.
 What remains:
 
-- **Non-object bag IDM access beyond full read and `_id`-only filtered query**
-  is unmeasured and refused locally (projected reads, other query shapes,
-  patch/update). AM `null` permits a full read; strings/numbers/arrays throw the
-  measured response adapter error.
+- **Non-object bag IDM access** is category-specific. Full reads of strings,
+  numbers, arrays and booleans throw the measured adapter error; null permits
+  a full read. String delete throws without mutation. Number/array/boolean/null
+  deletes, boolean queries, projected reads, other query shapes and other IDM
+  mutations are unmeasured and refused. `_id`-only filtered queries remain
+  supported for string/number/array/null bags.
+- **Identity-state collisions** are unmeasured and refused before persistence:
+  metadata keys, known ordinary/OOTB identity targets and declared layout fields
+  cannot collide with a bag; identity writes cannot target bag-owned properties.
+- **Public check-handle materialization of non-object bags** is unmeasured.
+  Both handles receive provenance and refuse affected reads/queries (including
+  null), while string deletes report REST 500 and other non-object deletes
+  refuse. Their object-bag success path remains supported.
+- **Reference projection beyond pre-expanded object parents** is unmeasured.
+  Scalar/null/array traversals, unresolved bare references and expansion refuse;
+  only the seven documented envelope fields are implicitly included, rather
+  than every underscore-prefixed sibling.
 - **Bag lifecycle on create/delete-recreate** is unmeasured. Locally old metadata
-  is cleared and fresh wrappers derive the recreated seed's bag; retained
-  wrappers refuse. Update refreshes retained wrappers from the current record.
+  is cleared after successful operations and fresh wrappers derive the recreated
+  seed's bag; retained wrappers refuse. Update refreshes retained wrappers from the current record.
 - **`cn`** is refused locally. AM stores it outside the IDM managed record,
   and the local lane holds only that record, so a `cn` written in one pass
   could not be read back in the next. A local `cn` *read* returns the seeded
