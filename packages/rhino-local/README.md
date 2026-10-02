@@ -259,12 +259,22 @@ list:
 .expect({ outcome: "done", logs: [] })
 ```
 
-For a declared channel that intentionally permits extra reads or log lines,
-set `allowUndeclared: { openidmReads: true }` or
-`allowUndeclared: { logs: true }`. A declared `openidm` list still rejects
-undeclared writes unless `openidmWrites: true` is explicit. This changes
-verdicts for 0.1.x tests that declared either channel while relying on its
-former fail-open default.
+`allowUndeclared: { logs: true }` permits additional log lines while every
+entry in `expect.logs` remains required, unordered, with `times` honoured:
+
+```ts
+.expect({
+  outcome: "done",
+  logs: [{ level: "info", message: "completed", times: 2 }],
+  allowUndeclared: { logs: true },
+}) // requires exactly two matching lines; other lines are allowed
+```
+
+Likewise, `allowUndeclared: { openidmReads: true }` permits extra reads and
+queries while each entry in `expect.openidm` remains required with its declared
+`times`. Undeclared writes still fail unless `openidmWrites: true` is explicit.
+These waivers do not ignore the declared lists. This changes verdicts for 0.1.x
+tests that declared either channel while relying on its former fail-open default.
 
 Two more channels are new since 0.1.2 and fail closed on undeclared effects:
 
