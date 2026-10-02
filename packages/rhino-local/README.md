@@ -196,7 +196,7 @@ wrapper and a fresh `getIdentity` see the new values at once; without
 | `fr-attr-date1`..`5`, `fr-attr-idate1`..`5` | `frUnindexedDateN`, `frIndexedDateN` | ISO string | throws | removed |
 | `givenName`, `telephoneNumber`, `mail` | same name | string | array | removed |
 | `sn` | `sn` | string | array | throws |
-| `fr-idm-custom-attrs` | all `custom_*` properties | whole-bag replace from JSON | throws 65 | removed; bag size 0 |
+| `fr-idm-custom-attrs` | persisted bag keys (initial seed: `custom_*`) | whole-bag replace from JSON | throws 65 for valid JSON, otherwise 21 | removed; bag size 0 |
 
 One member of each family was measured; the rest are assumed to match it.
 Pass integers as decimal strings (`"42"`) and dates as GeneralizedTime
@@ -209,18 +209,29 @@ was not measured with (a signed integer, a GeneralizedTime with an offset)
 throw a `rhino-local:` refusal instead. `cn` is refused: AM keeps it outside
 the IDM managed record, which the local lane does not model.
 
-`fr-idm-custom-attrs` needs no declared layout. Reads derive one compact JSON
-object from exactly the record's `custom_*` properties, preserving JSON types;
-with no custom properties, the default is one `{}`. Direct IDM `custom_x`
-attribute reads return empty. Parse the bag's element and compare objects;
-JSON key ordering is not a contract. Reads keep showing persisted values until
-`store()`.
+`fr-idm-custom-attrs` needs no declared layout. An initial seed derives one
+compact JSON object from exactly the record's `custom_*` properties, preserving
+JSON types; with none, the default is one `{}`. Ordinary seeded properties are
+not inferred to be bag keys. Direct IDM `custom_x` attribute reads return empty.
+Check the bag's size before parsing its element; JSON key ordering is not a
+contract. Reads show persisted values until `store()`.
 
-A bag write replaces all custom properties, deleting omitted keys, preserving
-unknown `custom_*` keys and performing no type coercion. `["{}"]` leaves one
-empty-object element; `[]` leaves size 0. Two elements throw errorcode 65;
-invalid JSON throws 21. Both are atomic, like other measured writes. Declare
-one effect for the bag using the original string array, not one per IDM key:
+A bag write preserves its exact JSON text. Object bags expose every key as an
+IDM property, including unknown `custom_*` keys, nested values and unprefixed
+keys such as `plain`, with no type coercion. Whole-bag replacement deletes
+omitted bag-owned keys. `["{}"]` leaves one empty-object element; `[]` leaves
+size 0. An ordinary IDM patch or update restores a cleared bag to `["{}"]`.
+Multiple valid JSON elements throw errorcode 65; malformed text throws 21 in
+any position, even with multiple elements. These failures are atomic.
+
+A single JSON string, number, array or `null` also persists and reads back
+through AM. **Tenant hazard:** string, number and array bags make a full IDM
+read throw “Response is not application/json”; JSON `null` permits that read.
+An `_id`-only filtered query still works. Other IDM access to a non-object bag
+(projected reads, other query shapes, patch and update) refuses locally as
+unmeasured. See the maintainer's 2026-10-02
+[edge measurements](../../docs/api/14-am-identity-attributes.md#fr-idm-custom-attrs).
+Declare one effect for the bag using the original string array, not one per IDM key:
 
 ```ts
 identityWrites: [{
@@ -234,8 +245,13 @@ A 0.2.0 explicit `"fr-idm-custom-attrs"` record seed is accepted only when its
 parsed JSON agrees with the derived bag, ignoring key order; it is then
 canonicalised away. Conflicting seeds now fail (**breaking for 0.2.0**): seed
 the IDM `custom_*` properties once. An explicit `identityAttributes` layout
-still wins, consistently with other measured attributes, and stays AIC-eligible.
-Unmeasured bag JSON shapes or non-`custom_*` keys are refused locally.
+still wins and exempts that attribute's seeds from this normalization,
+consistently with other measured overrides, and stays AIC-eligible.
+
+Identity wrappers resolve the current persisted record after IDM update. Create
+and delete/recreate bag lifecycle is unmeasured: locally those operations clear
+old bag metadata, and fresh wrappers derive the new seed's bag. A retained
+wrapper after delete/recreate refuses and requires a fresh wrapper.
 
 Any other attribute — a tenant's own, say — throws until you declare how the
 tenant stores it, keyed by the AM name:
@@ -338,10 +354,16 @@ present. Likewise the channels `RequestDraft` gained since 0.1.2 (`cookies`,
 absent ESV), so code that reads a draft's `esv` value as a `string` needs a
 null check.
 
-The optional `identityCustomAttrsAbsent` runner bookkeeping accompanies
-`managedStore` across callback passes so a stored `[]` retains size 0. It is
-not a judged channel; producers from 0.1.2 can omit it. Bag writes are judged
-only through `identityWrites`.
+Optional `identityCustomAttrs` runner bookkeeping accompanies `managedStore`
+across callback passes. It maps full managed resource paths to persisted AM
+string arrays, preserving exact JSON text, the `[]`/`["{}"]` distinction and
+object-key ownership. Entries must identify existing records, use dense arrays
+and agree with their IDM projection. Proven bag-owned properties pass profile
+checking on the next run; ordinary properties remain strict. It is not a judged
+channel; producers from 0.1.2 can omit it. Bag writes are judged only through
+`identityWrites`. The earlier `identityCustomAttrsAbsent` input is deprecated:
+it accepts dense full-resource paths, deduplicates and migrates to the map;
+bare IDs now fail to prevent collisions across collections.
 
 Every function that takes effects also takes the 0.1.2 shape and normalises
 it: `judgeBoth()`, `chainFromRunResult()` (whose parameter is
@@ -430,8 +452,9 @@ cannot be declared together for the same run.
 
 HTTP replies can be declared in `always.http`, supplied with `.run().http()`,
 or edited in `beforeRun` via `request.http`. The first matching stub wins;
-per-test stubs precede suite defaults. They feed local `httpClient.send()` and
-the request is judged through `expect.http`. AIC cannot inject an HTTP reply,
+per-test stubs precede suite defaults. Each call gets a fresh copy of its reply,
+including body and headers, so response mutations cannot change later replies.
+They feed local `httpClient.send()` and the request is judged through `expect.http`. AIC cannot inject an HTTP reply,
 so such cases are AIC-ineligible and report an observation gap. Set the file
 lease's `aic.unsupported` to `"skip"` to keep the local verdict while making
 that gap explicit.

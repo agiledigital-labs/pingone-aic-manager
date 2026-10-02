@@ -147,8 +147,21 @@ headers, so it is not committed.
 refusals DS makes. The 2026-10-02 `identity-custom-attrs.script.js` measurement
 adds `fr-idm-custom-attrs`: whole-bag replacement, deletion of omitted custom keys,
 unknown-key persistence, no coercion, atomic errorcode 65/21 failures, and the
-`[]` versus `["{}"]` read distinction. No layout declaration is needed. What remains:
+`[]` versus `["{}"]` read distinction. The `identity-custom-attrs-edges.script.js` fixture at `8f4ff66` extends
+this to every JSON shape, unprefixed object keys, malformed-text precedence,
+full IDM read failures for string/number/array bags, and ordinary patch/update restoring
+an absent bag. Persisted AM values and object-key ownership travel across passes
+in validated full-resource metadata; profile checks exempt these proven keys
+while checking ordinary properties strictly. No layout declaration is needed.
+What remains:
 
+- **Non-object bag IDM access beyond full read and `_id`-only filtered query**
+  is unmeasured and refused locally (projected reads, other query shapes,
+  patch/update). AM `null` permits a full read; strings/numbers/arrays throw the
+  measured response adapter error.
+- **Bag lifecycle on create/delete-recreate** is unmeasured. Locally old metadata
+  is cleared and fresh wrappers derive the recreated seed's bag; retained
+  wrappers refuse. Update refreshes retained wrappers from the current record.
 - **`cn`** is refused locally. AM stores it outside the IDM managed record,
   and the local lane holds only that record, so a `cn` written in one pass
   could not be read back in the next. A local `cn` *read* returns the seeded

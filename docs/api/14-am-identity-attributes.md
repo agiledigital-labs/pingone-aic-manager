@@ -159,15 +159,17 @@ Multivalue 2FA profile attributes from the Ping reference:
 | `pushDeviceProfiles` | `pushDeviceProfiles` | doc |
 
 ### `fr-idm-custom-attrs`
-A single object-valued AM attribute holding **all** custom (tenant-added)
-managed-user properties — custom fields are nested inside it, not exposed as
-separate AM attributes. The earlier no-custom-properties measurement returned
-one element `{}` (the Phase-1 schema was all OOTB). Per-field typing can join
-the bag with the managed schema's custom properties.
+An AM attribute holding the custom-property bag as persisted JSON text.
+Custom fields are nested inside it, not exposed as separate AM attributes.
+The earlier no-custom-properties measurement returned one element `{}` (the
+Phase-1 schema was all OOTB). A stored bag can contain any valid JSON, and a
+`[]` clear leaves no element. Per-field typing can join object bags with the
+managed schema's custom properties.
 
 **The getter does not return a string.** It returns the same container every
-other attribute does, holding **one element** whose text is the JSON object —
-so it is `JSON.parse(String(v.toArray()[0]))`, never `JSON.parse(v)`. Measured
+other attribute does. Check its size before reading an element; when present,
+the element is JSON text, so use `JSON.parse(String(v.toArray()[0]))`, never
+`JSON.parse(v)`. Measured
 2026-09-10 both ways: through the next-gen `getAttributeValues` (count 1,
 `String(v)` is `[{}]`, `charAt`/`substring` throw) and through the classic
 `AMIdentity.getAttribute` (a `HashSet`, count 0 on an agent identity that has
@@ -203,17 +205,63 @@ temporary `custom_rlProbe` (string) and `custom_rlProbeFlag` (boolean):
   IDM patch of the declared properties merged them alongside that unknown key.
 - `["{}"]` removed every custom property and read back size 1 with `{}`.
   `[]` also removed every custom property but read back **size 0**.
-- Two elements threw the existing `JavaException: …IdentityUpdateException`
+- Two valid JSON elements threw the existing `JavaException: …IdentityUpdateException`
   with `ldap errorcode=65`; a single `"not json"` threw the same shape with
-  `errorcode=21`. Neither failure changed anything.
+  `errorcode=21`. Neither failure changed anything. Mixed malformed/valid text
+  was measured separately below.
 
-The local harness derives the default bag from IDM `custom_*` properties with
-no `identityAttributes` declaration. An explicit legacy `"fr-idm-custom-attrs"`
-seed is accepted only if its parsed object equals that derivation (key order
-ignored), then removed from the canonical seed. Conflicts fail with a remedy
-pointing at `custom_*`. A declared layout still overrides the measured default,
-just as for other measured attributes. JSON scalars, arrays and non-`custom_*`
-keys in a bag write remain unmeasured and are refused locally.
+**Bag edges — measured 2026-10-02 by the maintainer** with
+`scripts/rhino-script-tester/fixtures/identity-custom-attrs-edges.script.js` at
+`8f4ff66`, next-gen journey, a throwaway managed user with no custom schema
+properties:
+
+- `["not json", "{}"]` and `["{}", "not json"]` both failed with errorcode 21,
+  leaving the bag unchanged. Malformed text wins in either position; 65 applies
+  to multiple elements only when every element is valid JSON.
+- Every single-element write below succeeded, and a fresh AM wrapper returned
+  exactly the text written. The bag is AM's source of truth; IDM exposes every
+  key of an object bag, including unprefixed keys, as a record property.
+
+| Bag element text | Fresh AM read-back | IDM observation |
+| --- | --- | --- |
+| `"x"` | `"x"` | full read throws “Response is not application/json”; `_id`-only filtered query still returns the row |
+| `1` | `1` | same full-read failure; `_id` query works |
+| `[]` | `[]` | same full-read failure; `_id` query works |
+| `null` | `null` | full read works; no `custom_*` keys or `plain` key |
+| `{"plain":"x"}` | `{"plain":"x"}` | full read exposes top-level `plain: "x"` |
+| `{"custom_rlNested":{"a":1}}` | as written | full read exposes the nested `custom_rlNested` property |
+
+The full-read error is
+`JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Response is not application/json`.
+Persisting string, number or array JSON in this attribute can break subsequent
+IDM reads, even though the AM write and read-back succeed.
+
+After a `[]` clear (AM bag size 0), an IDM patch of the ordinary `givenName`
+property restored `["{}"]` (size 1). Updating the whole record read back from
+IDM did the same. Create and delete/recreate were not measured.
+
+The local harness derives an initial bag from seeded IDM `custom_*` properties
+only; ordinary seeded properties cannot be distinguished from bag keys. After
+`store()`, optional resource-keyed `identityCustomAttrs` metadata preserves the
+persisted AM values and the ownership of object keys such as `plain`. Whole-bag
+replacement removes those owned keys as well as all `custom_*` keys. Metadata
+is validated against the managed store when carried to another pass; proven
+bag-owned keys bypass profile property/enum checks, while ordinary properties
+remain strict. No `identityAttributes` declaration is needed.
+
+An explicit legacy `"fr-idm-custom-attrs"` seed is accepted only if its parsed
+object equals the custom_* derivation (key order ignored), then removed from
+the canonical seed. Conflicts fail with a remedy pointing at `custom_*`.
+A declared layout overrides the measured default **and exempts its seeds from
+this normalization**, just as other declared layouts override measurements.
+
+For a non-object persisted bag, the local lane models only the full read and
+`_queryFilter` query projected to `["_id"]` above; other projected reads, query
+shapes, patch and update refuse with an unmeasured error. It clears bag metadata
+on create/delete and derives the bag of a fresh recreated record from its seed;
+this lifecycle choice is not a tenant measurement. Retained identity wrappers
+refresh after update; using one after delete/recreate refuses as unmeasured and
+requires a fresh wrapper.
 
 ### Relationship attributes are NOT exposed via scripted-decision `getAttributeValues` (verified)
 Probed with two purpose-built users — A (`probe-rpt-a`) with `manager` → B
@@ -306,7 +354,7 @@ side was read with `openidm.read(path, null, [field])` in the same pass.
 | `fr-attr-date1`, `fr-attr-idate1` | ISO string (`"20261001120000Z"` → `"2026-10-01T12:00:00Z"`) | **throws** 65 | removed | LDAP GeneralizedTime `YYYYMMDDHHMMSSZ`; an ISO timestamp, a bare `2026-10-03` and free text **throw** 21 |
 | `givenName`, `telephoneNumber`, `mail` | string | **array** | removed | any string |
 | `sn` | string | array | **throws** 65 (required) | any string |
-| `fr-idm-custom-attrs` (2026-10-02) | replaces all `custom_*` properties from JSON | **throws** 65 | all removed; AM bag size 0 | one JSON object string; invalid JSON **throws** 21; `["{}"]` removes all but reads one `{}` |
+| `fr-idm-custom-attrs` (2026-10-02) | whole-bag replace; object keys exposed in IDM, including unprefixed keys | **throws** 65 if all JSON is valid, otherwise 21 | all bag-owned properties removed; AM bag size 0 | one valid JSON string; malformed text **throws** 21; `["{}"]` reads one `{}`; scalar/array JSON can break full IDM reads (see above) |
 | `displayName` | string | unmeasured | unmeasured | any string |
 | `cn` | not in IDM at all | unmeasured | **throws** 65 (required) | any string |
 

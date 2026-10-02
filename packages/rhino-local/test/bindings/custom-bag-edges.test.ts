@@ -1,3 +1,4 @@
+import { carryGiven } from "../../src/harness/step.ts";
 import { describe, expect, it } from "vitest";
 import { normaliseEffects, validateCase } from "../../src/case/index.ts";
 import { caseWith } from "../aic/helpers.ts";
@@ -246,4 +247,19 @@ describe("custom bag edges (review #1–4)", () => {
       "declared",
     );
   });
+});
+
+it("carryGiven migrates a legacy producer's unique resource markers", () => {
+  const effects = runScript("", seed);
+  delete effects.identityCustomAttrs;
+  effects.identityCustomAttrsAbsent = [resource, resource];
+  const next = carryGiven(seed, effects, []);
+  expect(next.identityCustomAttrs).toEqual({ [resource]: [] });
+  expect(next.identityCustomAttrsAbsent).toBeUndefined();
+  const result = runScript(
+    identity +
+      'nodeState.putShared("size", identity.getAttributeValues("fr-idm-custom-attrs").size());',
+    next,
+  );
+  expect(result.sharedState.final.size).toBe(0);
 });
