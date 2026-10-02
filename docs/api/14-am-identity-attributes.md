@@ -161,10 +161,9 @@ Multivalue 2FA profile attributes from the Ping reference:
 ### `fr-idm-custom-attrs`
 A single object-valued AM attribute holding **all** custom (tenant-added)
 managed-user properties — custom fields are nested inside it, not exposed as
-separate AM attributes. On this sandbox it is `{}` (no custom user properties —
-matches the Phase-1 managed schema, all-OOTB fields). Per-field typing of this
-object is possible where a tenant has custom props (join with the managed
-schema's non-OOTB properties); here there are none.
+separate AM attributes. The earlier no-custom-properties measurement returned
+one element `{}` (the Phase-1 schema was all OOTB). Per-field typing can join
+the bag with the managed schema's custom properties.
 
 **The getter does not return a string.** It returns the same container every
 other attribute does, holding **one element** whose text is the JSON object —
@@ -184,6 +183,37 @@ key-extraction has a bracket-stripping fallback that parses either. The counts
 it reported are evidence about which NAMES are populated and not about the
 container. `fixtures/identity-getattribute-shape.script.js` is the
 discriminating half: it calls each candidate member and reports which throw.
+
+**Populated bag and whole-bag writes — measured 2026-10-02 by the maintainer**
+with `scripts/rhino-script-tester/fixtures/identity-custom-attrs.script.js` at
+`42a34b8`, next-gen journey, `getIdentity(<fr-idm-uuid>)` on a user seeded with
+temporary `custom_rlProbe` (string) and `custom_rlProbeFlag` (boolean):
+
+- The read was size 1, one compact JSON element
+  `{"custom_rlProbe":"seeded","custom_rlProbeFlag":true}`. Booleans remain JSON
+  booleans. Key order varied across reads; compare parsed JSON, never its text.
+  Reading the IDM name `custom_rlProbe` returned size 0.
+- Before `store()`, the same wrapper read the persisted bag, ignoring staged
+  values. A successful store became visible on the same and fresh wrappers.
+- One JSON object **replaces the entire custom bag**. Writing only
+  `custom_rlProbe` deleted `custom_rlProbeFlag`; writing both kept exactly both.
+  No coercion: `{"custom_rlProbeFlag":"false"}` stored the string `"false"`,
+  deleting `custom_rlProbe` despite the boolean schema property.
+- Unknown `custom_rlNope` persisted and appeared on a fresh bag read. A later
+  IDM patch of the declared properties merged them alongside that unknown key.
+- `["{}"]` removed every custom property and read back size 1 with `{}`.
+  `[]` also removed every custom property but read back **size 0**.
+- Two elements threw the existing `JavaException: …IdentityUpdateException`
+  with `ldap errorcode=65`; a single `"not json"` threw the same shape with
+  `errorcode=21`. Neither failure changed anything.
+
+The local harness derives the default bag from IDM `custom_*` properties with
+no `identityAttributes` declaration. An explicit legacy `"fr-idm-custom-attrs"`
+seed is accepted only if its parsed object equals that derivation (key order
+ignored), then removed from the canonical seed. Conflicts fail with a remedy
+pointing at `custom_*`. A declared layout still overrides the measured default,
+just as for other measured attributes. JSON scalars, arrays and non-`custom_*`
+keys in a bag write remain unmeasured and are refused locally.
 
 ### Relationship attributes are NOT exposed via scripted-decision `getAttributeValues` (verified)
 Probed with two purpose-built users — A (`probe-rpt-a`) with `manager` → B
@@ -276,6 +306,7 @@ side was read with `openidm.read(path, null, [field])` in the same pass.
 | `fr-attr-date1`, `fr-attr-idate1` | ISO string (`"20261001120000Z"` → `"2026-10-01T12:00:00Z"`) | **throws** 65 | removed | LDAP GeneralizedTime `YYYYMMDDHHMMSSZ`; an ISO timestamp, a bare `2026-10-03` and free text **throw** 21 |
 | `givenName`, `telephoneNumber`, `mail` | string | **array** | removed | any string |
 | `sn` | string | array | **throws** 65 (required) | any string |
+| `fr-idm-custom-attrs` (2026-10-02) | replaces all `custom_*` properties from JSON | **throws** 65 | all removed; AM bag size 0 | one JSON object string; invalid JSON **throws** 21; `["{}"]` removes all but reads one `{}` |
 | `displayName` | string | unmeasured | unmeasured | any string |
 | `cn` | not in IDM at all | unmeasured | **throws** 65 (required) | any string |
 

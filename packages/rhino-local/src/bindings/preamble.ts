@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
 import type { EnvProfile } from "../profile/types.ts";
 import { bindingsRuntimePath, generatedJsPath } from "../paths.ts";
@@ -27,7 +28,7 @@ export function mockPreamble(
 ): string {
   const generated = readFileSync(generatedJsPath, "utf8");
   const runtime = readFileSync(bindingsRuntimePath, "utf8");
-  const seed: Record<string, unknown> = { ...given };
+  const seed: Record<string, unknown> = { ...normaliseIdentitySeeds(given) };
   if (options.libraries !== undefined) {
     seed.libraries = options.libraries;
   }

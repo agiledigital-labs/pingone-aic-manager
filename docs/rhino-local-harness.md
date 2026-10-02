@@ -78,6 +78,28 @@ Unmatched actions throw naming `given.openidmActions`, a breaking change from
 `updateLastSync` retain `{}` unless an explicit reply overrides it; other
 managed-collection actions retain their measured refusal.
 
+### Identity custom attribute bag
+
+The measured default for `fr-idm-custom-attrs` derives one compact JSON element
+from the managed record's `custom_*` properties (`{}` when none), preserving
+JSON types. Direct IDM custom attribute names read empty. `setAttribute` stages
+values; reads remain persisted until `store()`. One JSON object replaces all
+custom properties, including omitted-key deletion, unknown-key persistence and
+no coercion. `["{}"]` leaves one empty bag; `[]` leaves no bag element. Two
+elements throw AM's errorcode 65 shape, invalid JSON throws 21; nothing changes
+on failure. See the maintainer's 2026-10-02 fixture measurement in
+[`api/14-am-identity-attributes.md`](api/14-am-identity-attributes.md).
+
+Expect one `identityWrites` effect named `fr-idm-custom-attrs`, with the original
+string array in `values`. A declared `identityAttributes` layout overrides this
+measured default, as with other attributes. Legacy explicit bag seeds must
+agree with derived `custom_*` values (parsed JSON, order ignored), then are
+canonicalised away; conflicting 0.2.0 workarounds now fail. Optional local
+`identityCustomAttrsAbsent` bookkeeping travels with `managedStore` so callback
+passes retain the `[]`/`["{}"]` distinction without inventing an IDM property.
+It is not a judged channel and does not change AIC eligibility; identity writes
+retain their existing AIC observation gap.
+
 ### Script name binding
 
 The suite seeds the local `scriptName` binding with `spec.scriptName ?? spec.name`.

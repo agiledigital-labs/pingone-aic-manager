@@ -100,6 +100,14 @@ remainder (`frIndexed*`, `effectiveRoles`, `authzRoles`, …) have no recorded
 AM name, so a script reading one through `identity` cannot be tested locally
 until that row is measured.
 
+The downstream 0.2.0 gaps D9/D11 are now explicit input choices. Action replies
+use `given.openidmActions` like local HTTP stubs and have the same AIC
+ineligibility/observation gap. Unstubbed non-collection actions throw rather
+than invent `{}`; measured managed-collection actions retain their default.
+Undeclared ESVs still throw by default; `esvUndeclared: "absent"` opts into AM's
+null/default path and remains AIC-eligible. Comma-joined read/query field elements
+and params `_fields` share projection without trimming (2026-10-02 measurement).
+
 ## Known gaps (measured 2026-09-28)
 
 Each is a `gap` entry with its reason; this is the index.
@@ -121,6 +129,11 @@ Each is a `gap` entry with its reason; this is the index.
 once dangerous — they worked locally and failed live. Both now throw on both
 lanes and differ only in the message. `identity-attr-mapping` left this table
 when the local identity binding gained AM's `uid` mapping; it now matches.
+The custom bag no longer relies on an AM-named property seeded in IDM: the
+2026-10-02 populated-bag measurement is implemented as a projection of exactly
+`custom_*` properties, including boolean JSON types and whole-bag store behavior.
+Equivalent explicit bag seeds remain accepted for 0.2.0 compatibility; conflicting
+ones fail. The `identity-getattribute-shape` row now derives its empty `{}`.
 
 Two request cases are also **not comparable** beyond their `getClass` row: the
 live run was a curl with its own headers and parameters, not the case's
@@ -131,7 +144,10 @@ headers, so it is not committed.
 (`live-identity-store-families`, `docs/api/14` "What `store()` writes"): every
 `fr-attr-*` family by one representative, plus `givenName`, `sn`, `mail` and
 `telephoneNumber`, including AM's own `IdentityUpdateException` for the
-refusals DS makes. What remains:
+refusals DS makes. The 2026-10-02 `identity-custom-attrs.script.js` measurement
+adds `fr-idm-custom-attrs`: whole-bag replacement, deletion of omitted custom keys,
+unknown-key persistence, no coercion, atomic errorcode 65/21 failures, and the
+`[]` versus `["{}"]` read distinction. No layout declaration is needed. What remains:
 
 - **`cn`** is refused locally. AM stores it outside the IDM managed record,
   and the local lane holds only that record, so a `cn` written in one pass
