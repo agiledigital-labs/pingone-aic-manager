@@ -118,6 +118,9 @@ export function carryGiven(
   if (effects.identityCustomAttrs !== undefined) {
     next.identityCustomAttrs = clone(effects.identityCustomAttrs);
   }
+  if (effects.identityCustomAttrsOwnedKeys !== undefined) {
+    next.identityCustomAttrsOwnedKeys = clone(effects.identityCustomAttrsOwnedKeys);
+  }
   if (effects.managedStore !== undefined) {
     // Records the earlier pass created have to be visible to the later one,
     // or a chain can never test a journey that writes and then reads back.

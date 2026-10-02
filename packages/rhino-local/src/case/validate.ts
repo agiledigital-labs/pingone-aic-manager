@@ -228,6 +228,9 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.identityCustomAttrs !== undefined) {
     given.identityCustomAttrs = raw.identityCustomAttrs as Record<string, string[]>;
   }
+  if (raw.identityCustomAttrsOwnedKeys !== undefined) {
+    given.identityCustomAttrsOwnedKeys = raw.identityCustomAttrsOwnedKeys as Record<string, string[]>;
+  }
   if (raw.openidmPriorCalls !== undefined) {
     given.openidmPriorCalls = parseCallCounts(raw.openidmPriorCalls, `${path}.openidmPriorCalls`);
   }

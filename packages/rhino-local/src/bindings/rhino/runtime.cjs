@@ -38,6 +38,7 @@ var __rhinoLocal = {
   identityWrites: [],
   identityAttributes: {},
   identityCustomAttrs: {},
+  identityCustomAttrsOwnedKeys: {},
   identityGenerations: {},
   libraries: {},
   requireCache: {},
@@ -1747,8 +1748,21 @@ function __rhinoLocalProject(record, fields) {
     return names.concat(String(entry).split(","));
   }, []);
   var i;
+  var hasChild = false;
+  for (i = 0; i < fields.length; i += 1) {
+    var parts = fields[i].split("/");
+    if (parts.length > 1) {
+      hasChild = true;
+      if (__rhinoLocalHas(record, parts[0])) {
+        __rhinoLocalProjectChild(record[parts[0]], parts.slice(1));
+      }
+    }
+  }
   for (i = 0; i < fields.length; i += 1) {
     if (fields[i] === "*") {
+      if (hasChild) {
+        throw new Error("rhino-local: openidm fields: combining * with parent/child selectors is unmeasured; use separate selectors without a wildcard");
+      }
       return record;
     }
   }
@@ -2599,6 +2613,18 @@ function __rhinoLocalCustomBag(resource, record) {
   return [JSON.stringify(bag)];
 }
 
+// Clearing a value must not forget that the bag is this key's storage location.
+function __rhinoLocalBagOwnedKeys(resource, record) {
+  var keys = (__rhinoLocal.identityCustomAttrsOwnedKeys[resource] || []).slice();
+  var bag = __rhinoLocalBagObject(__rhinoLocalCustomBag(resource, record));
+  if (__rhinoLocalIsPlainObject(bag)) {
+    Object.keys(bag).forEach(function (key) {
+      if (keys.indexOf(key) === -1) { keys.push(key); }
+    });
+  }
+  return keys.sort();
+}
+
 function __rhinoLocalBagObject(values) {
   return values.length === 0 ? {} : JSON.parse(values[0]);
 }
@@ -2641,19 +2667,21 @@ function __rhinoLocalBagAccess(method, resource, record, fields, params) {
 function __rhinoLocalBagIdmWrite(method, resource, record) {
   if (method === "create" || method === "delete") {
     delete __rhinoLocal.identityCustomAttrs[resource];
+    delete __rhinoLocal.identityCustomAttrsOwnedKeys[resource];
     __rhinoLocal.identityGenerations[resource] = (__rhinoLocal.identityGenerations[resource] || 0) + 1;
     return;
   }
-  var previous = __rhinoLocal.identityCustomAttrs[resource];
-  var oldBag = previous ? __rhinoLocalBagObject(previous) : {};
+  var keys = __rhinoLocalBagOwnedKeys(resource, record);
   var bag = {};
   Object.keys(record).forEach(function (key) {
-    if (key.indexOf("custom_") === 0 || __rhinoLocalHas(oldBag, key)) {
+    if (key.indexOf("custom_") === 0 || keys.indexOf(key) !== -1) {
       bag[key] = record[key];
+      if (keys.indexOf(key) === -1) { keys.push(key); }
     }
   });
   // Even an ordinary IDM write restores an absent bag to one {} (measured).
   __rhinoLocal.identityCustomAttrs[resource] = [JSON.stringify(bag)];
+  __rhinoLocal.identityCustomAttrsOwnedKeys[resource] = keys.sort();
 }
 
 function __rhinoLocalIdentityShape(field, cardinality, syntax) {
@@ -2719,16 +2747,17 @@ function __rhinoLocalBagCollision(method, property, reason) {
   throw new Error("rhino-local: idRepository.getIdentity()." + method + ": fr-idm-custom-attrs key " +
     JSON.stringify(property) + " collides with " + reason + "; this identity mapping is unmeasured; use non-overlapping bag keys and identityAttributes fields");
 }
+function __rhinoLocalCheckBagKey(property) {
+  if (property.charAt(0) === "_") {
+    __rhinoLocalBagCollision("store", property, "reserved record metadata");
+  }
+  if (__rhinoLocalIdentityOrdinaryField(property)) {
+    __rhinoLocalBagCollision("store", property, "another AM attribute's IDM field");
+  }
+}
 function __rhinoLocalCheckBagKeys(bag) {
   if (!__rhinoLocalIsPlainObject(bag)) { return; }
-  Object.keys(bag).forEach(function (property) {
-    if (property.charAt(0) === "_") {
-      __rhinoLocalBagCollision("store", property, "reserved record metadata");
-    }
-    if (__rhinoLocalIdentityOrdinaryField(property)) {
-      __rhinoLocalBagCollision("store", property, "another AM attribute's IDM field");
-    }
-  });
+  Object.keys(bag).forEach(__rhinoLocalCheckBagKey);
 }
 
 // Preflight the whole store on copies. A declared key write changes the object
@@ -2738,6 +2767,7 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
   var next = __rhinoLocalClone(record);
   var values = __rhinoLocalCustomBag(resource, record);
   var previous = __rhinoLocalBagObject(values);
+  var keys = __rhinoLocalBagOwnedKeys(resource, record);
   var changed = false;
   var replacement = plan.filter(function (step) { return step.rule === "bag"; })[0];
   if (replacement) {
@@ -2746,7 +2776,7 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
       var property = step.layout.field;
       var incoming = replacement.converted[0];
       if (property.indexOf("custom_") === 0 ||
-          (__rhinoLocalIsPlainObject(previous) && __rhinoLocalHas(previous, property)) ||
+          keys.indexOf(property) !== -1 ||
           (__rhinoLocalIsPlainObject(incoming) && __rhinoLocalHas(incoming, property))) {
         __rhinoLocalBagCollision("store", property, "a bag replacement and another attribute write in the same store");
       }
@@ -2755,14 +2785,16 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
   plan.forEach(function (step) {
     if (step.rule === "bag") {
       Object.keys(next).forEach(function (property) {
-        if (property.indexOf("custom_") === 0 ||
-            (__rhinoLocalIsPlainObject(previous) && __rhinoLocalHas(previous, property))) {
+        if (property.indexOf("custom_") === 0 || keys.indexOf(property) !== -1) {
           delete next[property];
         }
       });
       var bag = step.converted[0];
       if (__rhinoLocalIsPlainObject(bag)) {
-        Object.keys(bag).forEach(function (property) { next[property] = bag[property]; });
+        Object.keys(bag).forEach(function (property) {
+          next[property] = bag[property];
+          if (keys.indexOf(property) === -1) { keys.push(property); }
+        });
       }
       values = step.given.slice();
       previous = __rhinoLocalBagObject(values);
@@ -2770,8 +2802,7 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
       return;
     }
     var property = step.layout.field;
-    var bagKey = property.indexOf("custom_") === 0 ||
-      (__rhinoLocalIsPlainObject(previous) && __rhinoLocalHas(previous, property));
+    var bagKey = property.indexOf("custom_") === 0 || keys.indexOf(property) !== -1;
     if (bagKey && !__rhinoLocalIsPlainObject(previous)) {
       throw new Error("rhino-local: idRepository.getIdentity().store: replacing " +
         JSON.stringify(property) + " within a non-object fr-idm-custom-attrs bag (" +
@@ -2787,10 +2818,9 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
       next[property] = step.converted.slice();
     }
     if (bagKey) {
+      if (keys.indexOf(property) === -1) { keys.push(property); }
       __rhinoLocalCheckBagKeys(previous);
-      if (__rhinoLocalIdentityOrdinaryField(property)) {
-        __rhinoLocalBagCollision("store", property, "another AM attribute's IDM field");
-      }
+      __rhinoLocalCheckBagKey(property);
       if (__rhinoLocalHas(next, property)) {
         previous[property] = next[property];
       } else {
@@ -2803,7 +2833,7 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
   if (next._id !== record._id) {
     throw new Error("rhino-local: idRepository.getIdentity().store: changing the identity resource through an _id layout is unmeasured; keep the existing _id");
   }
-  return { record: next, bag: values, changed: changed };
+  return { record: next, bag: values, ownedKeys: keys.sort(), changed: changed };
 }
 
 // The exception AM's store() throws when DS refuses the modify (measured text).
@@ -3163,6 +3193,7 @@ idRepository.getIdentity = function (userName) {
       Object.keys(prepared.record).forEach(function (property) { found[property] = prepared.record[property]; });
       if (prepared.changed) {
         __rhinoLocal.identityCustomAttrs[resource] = prepared.bag;
+        __rhinoLocal.identityCustomAttrsOwnedKeys[resource] = prepared.ownedKeys;
       }
       for (i = 0; i < plan.length; i += 1) {
         var step = plan[i];
@@ -3839,6 +3870,7 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.initialSessionProperties = __rhinoLocalClone(__rhinoLocal.sessionProperties);
   __rhinoLocal.managed = __rhinoLocalClone(given.managed || {});
   __rhinoLocal.identityCustomAttrs = __rhinoLocalClone(given.identityCustomAttrs || {});
+  __rhinoLocal.identityCustomAttrsOwnedKeys = __rhinoLocalClone(given.identityCustomAttrsOwnedKeys || {});
   __rhinoLocal.identityGenerations = {};
   // Set of `managed/<name>` this environment declares. Membership only — every
   // schema RULE (properties, required, enum) is checked in the Node layer, so
@@ -3992,6 +4024,7 @@ function __rhinoLocalHarvest() {
     openidm: __rhinoLocal.openidm,
     managedStore: __rhinoLocalClone(__rhinoLocal.managed),
     identityCustomAttrs: __rhinoLocalClone(__rhinoLocal.identityCustomAttrs),
+    identityCustomAttrsOwnedKeys: __rhinoLocalClone(__rhinoLocal.identityCustomAttrsOwnedKeys),
     http: __rhinoLocal.http,
     logs: __rhinoLocal.logs,
     identityWrites: __rhinoLocal.identityWrites,

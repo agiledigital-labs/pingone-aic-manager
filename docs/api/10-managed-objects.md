@@ -788,6 +788,10 @@ Four things fall out of that:
   unresolved bare `_ref` values and reference expansion refuse locally as
   unmeasured. These are local fidelity boundaries, not additional tenant
   measurements; the harness does not resolve even a separately seeded target.
+  Child selectors are checked before any wildcard return. Combining `*` with a
+  `parent/child` selector is also unmeasured and refused locally, even with a
+  pre-expanded parent; standalone `*` remains supported. The same rule applies
+  to read/query fields and params `_fields`, including comma-joined selectors.
 
 Two more observations from the same probe:
 

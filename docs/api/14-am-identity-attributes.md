@@ -274,11 +274,20 @@ object bag through AM.
 The local harness derives an initial bag from seeded IDM `custom_*` properties
 only; ordinary seeded properties cannot be distinguished from bag keys. After
 `store()`, optional resource-keyed `identityCustomAttrs` metadata preserves the
-persisted AM values and the ownership of object keys such as `plain`. Whole-bag
-replacement removes those owned keys as well as all `custom_*` keys. Metadata
-is validated against the managed store when carried to another pass; proven
-bag-owned keys bypass profile property/enum checks, while ordinary properties
-remain strict. No `identityAttributes` declaration is needed.
+persisted AM values, while `identityCustomAttrsOwnedKeys` separately retains
+historical ownership of object keys such as `plain`. Clearing a declared alias,
+an object bag or the whole bag removes values without revoking ownership. A
+later declared re-add restores the key in both record and bag; whole-bag
+replacement removes owned keys as well as all `custom_*` keys. Local successful
+create/delete discards ownership history along with values. This bookkeeping is
+validated against the current managed store when carried to another pass: dense
+unique ownership keys identify existing resources, and a currently present
+owned property must project from the bag. Properties currently projected from a
+proven bag bypass profile property/enum checks; ordinary properties remain
+strict. Both metadata fields are optional; older values-only metadata infers
+present keys but cannot reconstruct cleared historical ownership. These are
+local consistency rules, not additional tenant measurements. No
+`identityAttributes` declaration is needed for the default bag layout.
 
 An explicit legacy `"fr-idm-custom-attrs"` seed is accepted only if its parsed
 object equals the custom_* derivation (key order ignored), then removed from

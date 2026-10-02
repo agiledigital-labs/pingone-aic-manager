@@ -1,4 +1,4 @@
-import { parseIdentityCustomAttrs } from "./identity.ts";
+import { parseIdentityCustomAttrs, parseIdentityCustomAttrsOwnedKeys } from "./identity.ts";
 import { deepEqual, matchesPattern } from "./equal.ts";
 import { matchesValue } from "./matcher.ts";
 import { isPortable } from "./portable.ts";
@@ -1134,6 +1134,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   }
   if (raw.identityCustomAttrs !== undefined) {
     recorded.identityCustomAttrs = parseIdentityCustomAttrs(raw.identityCustomAttrs, recorded.managedStore, "effects.identityCustomAttrs");
+  }
+  if (raw.identityCustomAttrsOwnedKeys !== undefined) {
+    recorded.identityCustomAttrsOwnedKeys = parseIdentityCustomAttrsOwnedKeys(raw.identityCustomAttrsOwnedKeys, recorded.managedStore, recorded.identityCustomAttrs, "effects.identityCustomAttrsOwnedKeys");
   }
   if (raw.evidence !== undefined) {
     recorded.evidence = parseRecordingEvidence(raw.evidence);

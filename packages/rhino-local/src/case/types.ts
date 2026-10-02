@@ -57,6 +57,7 @@ export const GIVEN_KEYS = [
   "openidmFailures",
   "openidmPriorCalls",
   "identityCustomAttrs",
+  "identityCustomAttrsOwnedKeys",
   "bindingOverrides",
   "identityAttributes",
   "engine",
@@ -350,6 +351,8 @@ export interface Given {
   openidmPriorCalls?: Record<string, number>;
   /** Local AM bag source of truth, keyed by full managed resource path; not judged. */
   identityCustomAttrs?: Record<string, string[]>;
+  /** Historical bag-owned keys, retained across value clears; local carry metadata. */
+  identityCustomAttrsOwnedKeys?: Record<string, string[]>;
   /** Local binding replacements, as JavaScript expressions keyed by binding name. */
   bindingOverrides?: Record<string, string>;
   /**
@@ -484,6 +487,8 @@ export interface RecordedEffects {
   managedStore?: Record<string, JsonObject[]>;
   /** Local AM bag source of truth, keyed by full managed resource path; not judged. */
   identityCustomAttrs?: Record<string, string[]>;
+  /** Historical bag-owned keys, retained across value clears; local carry metadata. */
+  identityCustomAttrsOwnedKeys?: Record<string, string[]>;
 }
 
 /**

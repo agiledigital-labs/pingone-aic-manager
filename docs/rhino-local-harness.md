@@ -108,13 +108,20 @@ string array in `values`. A declared `identityAttributes` layout overrides the
 measured default, including the seed contract. Without an override, explicit
 legacy bag seeds must agree with derived `custom_*` values (parsed JSON, order
 ignored), then are canonicalised away; conflicting 0.2.0 workarounds fail.
-Optional local `identityCustomAttrs` metadata travels with `managedStore`,
-keyed by full managed resource path. It preserves AM text, absence and ownership
-of unprefixed keys that a later replacement must delete. Dense arrays and
-projection consistency are validated against the store. Profile checks exempt
-only proven bag-owned keys; ordinary seeded fields remain strict. This metadata
-is not a judged channel and retains existing AIC eligibility/identity-write
-observation-gap behavior.
+Optional local `identityCustomAttrs` and `identityCustomAttrsOwnedKeys` metadata
+travels with `managedStore`, keyed by full managed resource path. The former
+preserves AM text and absence; the latter retains unique historical ownership
+independently of present keys. Clearing an alias, an object bag or the whole
+bag preserves history, so a declared re-add of an unprefixed owned key updates
+both record and bag, and a later whole-bag removal deletes it. Successful local
+create/delete discards history along with values. Older metadata without the
+ownership map can infer present keys but cannot reconstruct cleared history.
+Dense arrays, existing resources and projection consistency are validated
+against the store; a present owned property cannot be absent from the bag.
+Profile checks exempt only properties currently projected from a proven bag;
+ordinary seeded fields remain strict. These optional fields are carry bookkeeping,
+with no draft/builder methods or judged channels, and retain existing AIC
+eligibility/identity-write observation-gap behavior.
 
 Collision behavior is unmeasured. The local lane refuses bag keys colliding
 with `_`-prefixed metadata or known ordinary/OOTB identity fields. It also
@@ -146,7 +153,11 @@ in [`api/10-managed-objects.md`](api/10-managed-objects.md): `_id`, `_rev`, `_re
 `_refResourceCollection`, `_refResourceId`, `_refResourceRev`, `_refProperties`.
 Other underscore siblings require an explicit selector. Traversed scalar/null/
 array parents, unresolved references and reference expansion refuse as
-unmeasured; seed requested children on a pre-expanded object parent.
+unmeasured; seed requested children on a pre-expanded object parent. Child
+selectors are preflighted before wildcard return. Combining `*` with a child
+selector is itself unmeasured and refused, including with pre-expanded parents;
+standalone `*` works. Read/query fields and params `_fields` share this rule,
+including comma-joined elements.
 
 Identity wrappers refresh the current record after IDM update. Successful local
 create/delete clears old metadata; fresh recreated records derive their own bag.
