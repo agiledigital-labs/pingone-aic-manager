@@ -432,7 +432,7 @@ export class Lease<TSchema extends z.ZodType> {
     const verdict = judge(kase, effects.effects);
 
     const store = cloneStore(effects.effects.managedStore);
-    const idm = localIdmHandle(store ?? {}, () => undefined, structuredClone(effects.effects.identityCustomAttrs ?? {}));
+    const idm = localIdmHandle(store ?? {}, () => undefined, structuredClone(effects.effects.identityCustomAttrs ?? {}), structuredClone(effects.effects.identityCustomAttrsOwnedKeys ?? {}));
     try {
       for (const check of checks) {
         await check(idm, { input, effects: effects.effects });
@@ -512,7 +512,7 @@ export class Lease<TSchema extends z.ZodType> {
         run.effects.managedStore = {};
       }
       await step.check(
-        localIdmHandle(run.effects.managedStore, () => undefined, run.effects.identityCustomAttrs),
+        localIdmHandle(run.effects.managedStore, () => undefined, run.effects.identityCustomAttrs, run.effects.identityCustomAttrsOwnedKeys),
         context
       );
     }

@@ -154,8 +154,12 @@ and ordinary patch/update restoring
 an absent bag. `identity-custom-attrs-nonobject.script.js` at `f7d684b` adds
 boolean full-read failure and string delete failure (user retained; REST 500),
 repaired by an AM `["{}"]` write. Persisted AM values and object-key ownership
-travel across passes in validated full-resource metadata; profile checks exempt these proven keys
-while checking ordinary properties strictly. No layout declaration is needed.
+travel across passes in validated full-resource metadata. Historical keys in
+`identityCustomAttrsOwnedKeys` survive alias and whole-bag clears independently
+of current AM values, so declared re-adds and later whole-bag removals retain the
+same storage location. Local create/delete discards prior resource history.
+Profile checks exempt currently projected bag properties while checking ordinary
+properties strictly. No layout declaration is needed.
 What remains:
 
 - **Non-object bag IDM access** is category-specific. Full reads of strings,
@@ -179,7 +183,9 @@ What remains:
 - **Reference projection beyond pre-expanded object parents** is unmeasured.
   Scalar/null/array traversals, unresolved bare references and expansion refuse;
   only the seven documented envelope fields are implicitly included, rather
-  than every underscore-prefixed sibling.
+  than every underscore-prefixed sibling. Child selectors are checked before
+  wildcard returns. Combining `*` with a child selector is unmeasured and refused
+  even for pre-expanded parents, including comma-joined fields and params `_fields`.
 - **Bag lifecycle on create/delete-recreate** is unmeasured. Locally old metadata
   is cleared after successful operations and fresh wrappers derive the recreated
   seed's bag; retained wrappers refuse. Update refreshes retained wrappers from the current record.

@@ -248,7 +248,11 @@ record (REST DELETE returns 500); restoring `["{}"]` through AM permits deletion
 Other non-object deletes are unmeasured and refused locally. `_id`-only filtered
 queries work for string/number/array/null bags; boolean queries are unmeasured.
 Other projected reads, query shapes and IDM mutations refuse locally before
-changing the record. See the maintainer's 2026-10-02
+changing the record. IDM field projection also refuses `*` combined with a
+`parent/child` selector as unmeasured, even for pre-expanded parents. Child
+selectors are checked before wildcard return; standalone `*` remains supported.
+This applies to read/query fields and params `_fields`, including comma-joined
+forms. See the maintainer's 2026-10-02
 [edge measurements](../../docs/api/14-am-identity-attributes.md#fr-idm-custom-attrs),
 including `identity-custom-attrs-nonobject.script.js` at `f7d684b`.
 
@@ -381,14 +385,24 @@ present. Likewise the channels `RequestDraft` gained since 0.1.2 (`cookies`,
 absent ESV), so code that reads a draft's `esv` value as a `string` needs a
 null check.
 
-Optional `identityCustomAttrs` runner bookkeeping accompanies `managedStore`
-across callback passes. It maps full managed resource paths to persisted AM
-string arrays, preserving exact JSON text, the `[]`/`["{}"]` distinction and
-object-key ownership. Entries must identify existing records, use dense arrays
-and agree with their IDM projection. Proven bag-owned properties pass profile
-checking on the next run; ordinary properties remain strict. It is not a judged
-channel; producers from 0.1.2 can omit it. Bag writes are judged only through
-`identityWrites`. Full resource paths prevent collisions across collections.
+Optional `identityCustomAttrs` and `identityCustomAttrsOwnedKeys` runner
+bookkeeping accompanies `managedStore` across callback passes. Both maps use
+full managed resource paths. The first stores persisted AM string arrays,
+preserving exact JSON text and the `[]`/`["{}"]` distinction. The second stores
+unique historical bag-owned keys independently of current values: clearing an
+alias, an object bag or the whole bag does not forget ownership. Re-adding a
+proven unprefixed key such as `plain` through its declared alias restores it in
+the bag and record; a later whole-bag clear removes it. Successful local
+create/delete discards the prior resource's ownership history.
+
+Entries must identify existing records and use dense arrays; every currently
+present owned property must project from the current bag. Only properties
+actually present in a proven bag bypass profile checking; ordinary properties
+remain strict. Older metadata without an ownership map infers ownership from
+current bag values, but cannot reconstruct cleared historical keys. Both fields
+are optional for 0.1.2 producers and local carry metadata, with no draft/builder
+methods or judged channels. Bag writes are judged only through `identityWrites`.
+Full resource paths prevent collisions across collections.
 
 Every function that takes effects also takes the 0.1.2 shape and normalises
 it: `judgeBoth()`, `chainFromRunResult()` (whose parameter is

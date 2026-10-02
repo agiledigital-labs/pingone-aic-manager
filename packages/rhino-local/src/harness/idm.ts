@@ -11,6 +11,7 @@ export function localIdmHandle(
   store: Record<string, JsonObject[]>,
   onDelete: (resource: string) => void,
   identityCustomAttrs: Record<string, string[]> = {},
+  identityCustomAttrsOwnedKeys: Record<string, string[]> = {},
 ): IdmHandle {
   // The AM adapter measurements do not establish the external check handle's
   // materialized response shape. Refuse non-object bags before any operation.
@@ -60,6 +61,7 @@ export function localIdmHandle(
         }
       }
       delete identityCustomAttrs[resource];
+      delete identityCustomAttrsOwnedKeys[resource];
       onDelete(resource);
     },
   };

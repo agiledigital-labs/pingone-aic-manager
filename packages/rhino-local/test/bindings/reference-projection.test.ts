@@ -27,7 +27,9 @@ const projection = (
   runScript(
     method === "read"
       ? `nodeState.putShared("row", openidm.read("managed/alpha_user/example", null, ${JSON.stringify(fields)}));`
-      : `nodeState.putShared("row", openidm.query("managed/alpha_user", {_queryFilter:"true"}, ${JSON.stringify(fields)}).result[0]);`,
+      : method === "query"
+        ? `nodeState.putShared("row", openidm.query("managed/alpha_user", {_queryFilter:"true"}, ${JSON.stringify(fields)}).result[0]);`
+        : `nodeState.putShared("row", openidm.query("managed/alpha_user", {_queryFilter:"true", _fields:${JSON.stringify(method === "_fields array" ? fields : fields.join(","))}}).result[0]);`,
     {
       managed: {
         "managed/alpha_user": [{ _id: "example", _rev: "1", _meta: parent }],
@@ -110,5 +112,71 @@ describe("documented reference-envelope projection (round 3 #2)", () => {
         "_meta/lastChanged/date",
       ]),
     ).toThrow(/unmeasured/);
+  });
+
+  // Round 5: wildcard returns must not bypass any child-path refusal.
+  for (const method of ["read", "query", "_fields array", "_fields string"]) {
+    it.each([
+      { fields: ["*", "_meta/lastChanged"] },
+      { fields: ["_meta/lastChanged", "*"] },
+      { fields: ["*,_meta/lastChanged"] },
+      { fields: ["_meta/lastChanged,*"] },
+    ])(
+      `${method} preflights wildcard/child selectors $fields`,
+      ({ fields }) => {
+        for (const parent of [
+          { _ref: "managed/alpha_usermeta/meta-example" },
+          "scalar",
+          1,
+          null,
+          [meta],
+        ]) {
+          expect(() => projection(parent, fields, method)).toThrow(
+            /unmeasured/,
+          );
+        }
+        // Even with a measured parent the combined selector is unmeasured.
+        expect(() => projection(meta, fields, method)).toThrow(
+          /combining \* with parent\/child selectors is unmeasured/,
+        );
+      },
+    );
+
+    it(`${method} still permits a standalone wildcard`, () => {
+      expect(projection(meta, ["*"], method).sharedState.final.row).toEqual({
+        _id: "example",
+        _rev: "1",
+        _meta: meta,
+      });
+    });
+  }
+
+  it("a wildcard also cannot bypass deep child validation", () => {
+    expect(() =>
+      projection({ ...envelope, lastChanged: [lastChanged] }, [
+        "*,_meta/lastChanged/date",
+      ]),
+    ).toThrow(/scalar or array parent is unmeasured/);
+  });
+
+  it("the explicit fields argument still takes precedence over unmeasured params selectors", () => {
+    const effects = runScript(
+      'nodeState.putShared("row", openidm.query("managed/alpha_user", {_queryFilter:"true", _fields:"*,_meta/lastChanged"}, ["_id"]).result[0]);',
+      {
+        managed: {
+          "managed/alpha_user": [
+            {
+              _id: "example",
+              _rev: "1",
+              _meta: { _ref: "managed/alpha_usermeta/meta-example" },
+            },
+          ],
+        },
+      },
+    );
+    expect(effects.sharedState.final.row).toEqual({
+      _id: "example",
+      _rev: "1",
+    });
   });
 });

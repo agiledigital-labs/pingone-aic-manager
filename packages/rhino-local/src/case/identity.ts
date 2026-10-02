@@ -24,6 +24,14 @@ export function normaliseIdentitySeeds(given: Given): Given {
       "given.identityCustomAttrs",
     );
   }
+  if (given.identityCustomAttrsOwnedKeys !== undefined) {
+    out.identityCustomAttrsOwnedKeys = parseIdentityCustomAttrsOwnedKeys(
+      given.identityCustomAttrsOwnedKeys,
+      managed,
+      out.identityCustomAttrs,
+      "given.identityCustomAttrsOwnedKeys",
+    );
+  }
   return out;
 }
 
@@ -66,13 +74,7 @@ export function parseIdentityCustomAttrs(
     throw new Error(`rhino-local: ${path} is not an object`);
   const out: Record<string, string[]> = {};
   for (const [resource, values] of Object.entries(raw)) {
-    const record = Object.entries(managed ?? {}).flatMap(([collection, rows]) =>
-      rows.filter(
-        (row) =>
-          `${collection}/${String(row._id)}` === resource &&
-          /^managed\/[^/]+\/[^/]+$/.test(resource),
-      ),
-    )[0];
+    const record = identityRecord(managed, resource);
     if (record === undefined)
       throw new Error(
         `rhino-local: ${path}.${resource} does not identify a record in the managed store`,
@@ -120,4 +122,66 @@ export function parseIdentityCustomAttrs(
     out[resource] = values.slice() as string[];
   }
   return out;
+}
+
+/** Historical ownership survives clears; every currently present owned key must project from the bag. */
+export function parseIdentityCustomAttrsOwnedKeys(
+  raw: unknown,
+  managed: Record<string, JsonObject[]> | undefined,
+  bags: Record<string, string[]> = {},
+  path: string,
+): Record<string, string[]> {
+  if (!isPlainObject(raw))
+    throw new Error(`rhino-local: ${path} is not an object`);
+  const out: Record<string, string[]> = {};
+  for (const [resource, keys] of Object.entries(raw)) {
+    const record = identityRecord(managed, resource);
+    if (record === undefined)
+      throw new Error(
+        `rhino-local: ${path}.${resource} does not identify a record in the managed store`,
+      );
+    if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string"))
+      throw new Error(
+        `rhino-local: ${path}.${resource} must be an array of strings`,
+      );
+    assertDenseArray(keys, `${path}.${resource}`);
+    if (new Set(keys).size !== keys.length)
+      throw new Error(
+        `rhino-local: ${path}.${resource} must contain unique keys`,
+      );
+    const values = bags[resource];
+    const parsed: unknown =
+      values === undefined
+        ? Object.fromEntries(
+            Object.entries(record).filter(([key]) => key.startsWith("custom_")),
+          )
+        : values.length === 0
+          ? {}
+          : JSON.parse(values[0] as string);
+    const projected = isPlainObject(parsed) ? parsed : {};
+    for (const key of Object.keys(projected)) {
+      if (!keys.includes(key))
+        throw new Error(
+          `rhino-local: ${path}.${resource} omits a current bag key ${JSON.stringify(key)}`,
+        );
+    }
+    for (const key of keys as string[]) {
+      if (Object.hasOwn(record, key) && !Object.hasOwn(projected, key))
+        throw new Error(
+          `rhino-local: ${path}.${resource} owns managed property ${JSON.stringify(key)} absent from the current bag`,
+        );
+    }
+    out[resource] = (keys as string[]).slice().sort();
+  }
+  return out;
+}
+
+function identityRecord(
+  managed: Record<string, JsonObject[]> | undefined,
+  resource: string,
+): JsonObject | undefined {
+  if (!/^managed\/[^/]+\/[^/]+$/.test(resource)) return undefined;
+  return Object.entries(managed ?? {}).flatMap(([collection, rows]) =>
+    rows.filter((row) => `${collection}/${String(row._id)}` === resource),
+  )[0];
 }
