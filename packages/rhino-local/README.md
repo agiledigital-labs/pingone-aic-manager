@@ -301,7 +301,8 @@ channels are optional, so a 0.1.2 producer still type-checks;
 `normaliseEffects()` fills it in and marks it unobserved. Effects the harness
 hands back (`RunResult.effects`) are `CompleteRecordedEffects`, with both
 present. Likewise the channels `RequestDraft` gained since 0.1.2 (`cookies`,
-`http`, `openidmFailures`, `bindingOverrides`, `esvInState`) are optional, and
+`http`, `openidmActions`, `openidmFailures`, `bindingOverrides`, `esvInState`,
+`esvUndeclared`, `identityAttributes`) are optional, and
 `toGiven()` reads an absent one as empty (`resolveDraft()` fills them).
 `beforeRun` is handed a `ResolvedRequestDraft`, with all of them present.
 `esv` values widened from `string` to `string | null` (a `null` declares an
@@ -356,6 +357,20 @@ only when the script exposes it in recorded effects. Check tenant ESV values
 before using the AIC lane for value-sensitive tests. Tenant ESV changes require
 a restart and are outside the lease.
 
+An explicit `null` reproduces AM's absent-ESV behavior for one property:
+`.esv({ feature: null })`, or raw `given.esv: { "esv.feature": null }`, returns
+`null` without a default and the supplied default otherwise. Harness `.esv()`
+keys omit `esv.`; raw `given.esv` keys include it.
+
+Undeclared ESV reads throw by default. Use `always: { esvUndeclared: "absent" }`,
+`.run().esvUndeclared("absent")`, or `request.esvUndeclared = "absent"` in
+`beforeRun` to make every undeclared property behave like a declared `null`.
+Raw cases use `given.esvUndeclared`. A third `returnType` argument converts a
+non-null default just as for a declared `null`; null bypasses conversion.
+`"error"` restores strict reads. This given-side policy changes script input;
+it does not waive verdict checks. Cases remain AIC-eligible: AIC resolves real
+ESVs, so a tenant property that exists can still produce a disagreement.
+
 ### Request cookies
 
 Declare cookies with `always: { cookies: { name: "value" } }`, override one
@@ -386,6 +401,28 @@ the request is judged through `expect.http`. AIC cannot inject an HTTP reply,
 so such cases are AIC-ineligible and report an observation gap. Set the file
 lease's `aic.unsupported` to `"skip"` to keep the local verdict while making
 that gap explicit.
+
+Declare local action replies in `always.openidmActions`, `.run().openidmActions()`
+or `request.openidmActions` in `beforeRun`:
+
+```ts
+openidmActions: [{
+  match: { resource: "endpoint/example", action: "evaluate" },
+  reply: { body: { accepted: true } },
+}]
+```
+
+Like HTTP stubs, the first matching reply wins, per-test replies precede suite
+defaults, and resource accepts a string or regex. Match uses resource and action
+name; HTTP reply matching also does not inspect request content. The unchanged
+call effect is judged by `expect.openidm` (`actionName`, `body`). Failure stubs
+win over reply stubs. Unmatched actions now throw naming `given.openidmActions`
+(**breaking for 0.2.0**), instead of inventing `{}`. The exception is the measured
+managed-collection actions `patch`, `triggerSyncCheck`, `updateLastSync`, which
+still return `{}` by default; an explicit reply overrides that default. Other
+managed-collection actions still throw the measured refusal, even with a reply.
+Action replies are local only: like HTTP replies, they make cases AIC-ineligible
+and report the same observation gap (`aic.unsupported: "skip"` opts into skipping).
 
 Use `openidmFailures` to make one local IDM call fail: each stub has
 `match: { method, resource, ordinal }` and `reply: { code }`. `ordinal` is

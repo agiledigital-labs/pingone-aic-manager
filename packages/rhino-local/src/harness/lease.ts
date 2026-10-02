@@ -186,6 +186,11 @@ export class RunBuilder<TInput> {
     return this;
   }
 
+  esvUndeclared(mode: NonNullable<Channels["esvUndeclared"]>): this {
+    this.#override = { ...this.#override, esvUndeclared: mode };
+    return this;
+  }
+
   esvInState(enabled = true): this {
     this.#override = { ...this.#override, esvInState: enabled };
     return this;
@@ -213,6 +218,11 @@ export class RunBuilder<TInput> {
 
   http(stubs: NonNullable<Channels["http"]>): this {
     this.#override = { ...this.#override, http: [...stubs, ...(this.#override.http ?? [])] };
+    return this;
+  }
+
+  openidmActions(stubs: NonNullable<Channels["openidmActions"]>): this {
+    this.#override = { ...this.#override, openidmActions: [...stubs, ...(this.#override.openidmActions ?? [])] };
     return this;
   }
 

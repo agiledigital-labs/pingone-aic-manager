@@ -18,11 +18,13 @@ var __rhinoLocal = {
   managed: {},
   esv: {},
   esvProvided: false,
+  esvUndeclared: "error",
   secrets: {},
   secretsProvided: false,
   bindings: {},
   submittedCallbacks: null,
   httpStubs: [],
+  openidmActions: [],
   openidmFailures: [],
   openidmCallCounts: {},
   generatedId: 0,
@@ -2392,9 +2394,10 @@ openidm.action = function (resource, actionName, content, params) {
     body = params;
   }
   __rhinoLocalPushOpenidm("action", String(resource), body, String(actionName));
+  var managedCollection = /^managed\/[^/]+$/.test(String(resource));
   // Measured on a managed collection only; other resources have other actions.
   if (
-    /^managed\/[^/]+$/.test(String(resource)) &&
+    managedCollection &&
     actionName !== "patch" &&
     actionName !== "triggerSyncCheck" &&
     actionName !== "updateLastSync"
@@ -2403,7 +2406,20 @@ openidm.action = function (resource, actionName, content, params) {
       "rhino-local: openidm.action: Expecting String containing one of: patch triggerSyncCheck updateLastSync"
     );
   }
-  return {};
+  var i;
+  for (i = 0; i < __rhinoLocal.openidmActions.length; i += 1) {
+    var stub = __rhinoLocal.openidmActions[i];
+    if (stub.match.action === String(actionName) && __rhinoLocalMatchUrl(stub.match.resource, String(resource))) {
+      return __rhinoLocalClone(stub.reply.body);
+    }
+  }
+  if (managedCollection) {
+    return {};
+  }
+  throw new Error(
+    "rhino-local: openidm.action: no given.openidmActions stub for " +
+      String(actionName) + " " + String(resource)
+  );
 };
 
 function __rhinoLocalAsPattern(value) {
@@ -2916,13 +2932,14 @@ systemEnv = {
       throw new Error("rhino-local: systemEnv.getProperty arity=" + arguments.length);
     }
     var k = String(key);
-    if (!__rhinoLocal.esvProvided || !__rhinoLocalHas(__rhinoLocal.esv, k)) {
+    var declared = __rhinoLocal.esvProvided && __rhinoLocalHas(__rhinoLocal.esv, k);
+    if (!declared && __rhinoLocal.esvUndeclared !== "absent") {
       throw new Error(
         "rhino-local: systemEnv.getProperty: no given.esv entry for " +
-          JSON.stringify(k)
+          JSON.stringify(k) + "; declare it in given.esv or use given.esvUndeclared: \"absent\" (.esvUndeclared(\"absent\"))"
       );
     }
-    var value = __rhinoLocal.esv[k];
+    var value = declared ? __rhinoLocal.esv[k] : null;
     if (value === null && arguments.length > 1) {
       value = defaultValue;
     }
@@ -3560,6 +3577,7 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.profilePulledAt = given.profilePulledAt || null;
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
   __rhinoLocal.esvProvided = given.esv !== undefined;
+  __rhinoLocal.esvUndeclared = given.esvUndeclared || "error";
   __rhinoLocal.secrets = __rhinoLocalClone(given.secrets || {});
   __rhinoLocal.secretsProvided = given.secrets !== undefined;
   __rhinoLocal.libraries = given.libraries
@@ -3580,6 +3598,7 @@ function __rhinoLocalSeed(given) {
     __rhinoLocal.submittedCallbacks = __rhinoLocalClone(given.callbacks);
   }
   __rhinoLocal.httpStubs = given.http ? __rhinoLocalClone(given.http) : [];
+  __rhinoLocal.openidmActions = given.openidmActions ? __rhinoLocalClone(given.openidmActions) : [];
   __rhinoLocal.openidmFailures = given.openidmFailures
     ? __rhinoLocalClone(given.openidmFailures)
     : [];

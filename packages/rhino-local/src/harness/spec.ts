@@ -49,11 +49,13 @@ export function mergeChannels(
     ...(registeredObjectAttributes === undefined ? {} : { registeredObjectAttributes }),
     esv: { ...(always?.esv ?? {}), ...(override?.esv ?? {}) },
     esvInState: override?.esvInState ?? always?.esvInState ?? false,
+    esvUndeclared: override?.esvUndeclared ?? always?.esvUndeclared ?? "error",
     headers: { ...normaliseWire(always?.headers), ...normaliseWire(override?.headers) },
     params: { ...normaliseWire(always?.params), ...normaliseWire(override?.params) },
     cookies: { ...(always?.cookies ?? {}), ...(override?.cookies ?? {}) },
     ...(cookieName === undefined ? {} : { cookieName }),
     http: [...(override?.http ?? []), ...(always?.http ?? [])],
+    openidmActions: [...(override?.openidmActions ?? []), ...(always?.openidmActions ?? [])],
     openidmFailures: [...(override?.openidmFailures ?? []), ...(always?.openidmFailures ?? [])],
     bindingOverrides: { ...(always?.bindingOverrides ?? {}), ...(override?.bindingOverrides ?? {}) },
     identityAttributes: { ...(always?.identityAttributes ?? {}), ...(override?.identityAttributes ?? {}) },
@@ -132,8 +134,10 @@ export function resolveDraft(draft: RequestDraft): ResolvedRequestDraft {
   return {
     ...draft,
     esvInState: draft.esvInState ?? false,
+    esvUndeclared: draft.esvUndeclared ?? "error",
     cookies: draft.cookies ?? {},
     http: draft.http ?? [],
+    openidmActions: draft.openidmActions ?? [],
     openidmFailures: draft.openidmFailures ?? [],
     bindingOverrides: draft.bindingOverrides ?? {},
     identityAttributes: draft.identityAttributes ?? {},
@@ -182,6 +186,9 @@ export function toGiven(
   given.esv = { ...(base.esv ?? {}), ...Object.fromEntries(
     Object.entries(draft.esv).map(([name, value]) => [esvPropertyKey(name), value])
   ) };
+  if (input.esvUndeclared !== undefined) {
+    given.esvUndeclared = draft.esvUndeclared;
+  }
   if (draft.sessionRequested) {
     given.existingSession = {
       ...sessionFromPrincipal(sessionPrincipal(draft), realm),
@@ -221,6 +228,9 @@ export function toGiven(
   }
   if (draft.http.length > 0) {
     given.http = [...draft.http];
+  }
+  if (draft.openidmActions.length > 0) {
+    given.openidmActions = [...draft.openidmActions];
   }
   if (draft.openidmFailures.length > 0) {
     given.openidmFailures = [...draft.openidmFailures];
