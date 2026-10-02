@@ -282,10 +282,16 @@ replacement removes owned keys as well as all `custom_*` keys. Local successful
 create/delete discards ownership history along with values. This bookkeeping is
 validated against the current managed store when carried to another pass: dense
 unique ownership keys identify existing resources, and a currently present
-owned property must project from the bag. Properties currently projected from a
-proven bag bypass profile property/enum checks; ordinary properties remain
-strict. Both metadata fields are optional; older values-only metadata infers
-present keys but cannot reconstruct cleared historical ownership. These are
+owned property must project from the bag. Given/effect validation rejects
+`_`-prefixed metadata and known ordinary/OOTB AM fields in both current bag keys
+and ownership history. Validation and Rhino use the same identity-policy factory,
+layout inventory and checker. IDM patch/update additionally preflight bag
+synchronization before any record or metadata mutation; supplied history cannot
+promote `givenName` or `_rev` into the bag. Only properties currently projected
+from a valid proven bag bypass profile property/enum checks; ordinary properties
+and their enum values remain strict. Both metadata fields are optional; older
+values-only metadata infers present keys but cannot reconstruct cleared
+historical ownership. These are
 local consistency rules, not additional tenant measurements. No
 `identityAttributes` declaration is needed for the default bag layout.
 

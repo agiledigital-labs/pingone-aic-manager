@@ -158,8 +158,11 @@ travel across passes in validated full-resource metadata. Historical keys in
 `identityCustomAttrsOwnedKeys` survive alias and whole-bag clears independently
 of current AM values, so declared re-adds and later whole-bag removals retain the
 same storage location. Local create/delete discards prior resource history.
-Profile checks exempt currently projected bag properties while checking ordinary
-properties strictly. No layout declaration is needed.
+Given/effect validation rejects reserved/underscore and ordinary/OOTB current or
+historical bag keys using the same layout inventory/checker as Rhino. IDM
+patch/update also check synchronization before any record or metadata mutation.
+Profile checks exempt currently projected valid bag properties while checking
+ordinary properties and enum values strictly. No layout declaration is needed.
 What remains:
 
 - **Non-object bag IDM access** is category-specific. Full reads of strings,

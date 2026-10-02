@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createIdentityPolicy } from "../case/identity-policy.ts";
 import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
 import type { EnvProfile } from "../profile/types.ts";
@@ -44,7 +45,8 @@ export function mockPreamble(
   const overrides = Object.entries(given.bindingOverrides ?? {})
     .map(([name, expression]) => `${name} = (${expression});`)
     .join("\n");
-  return `${generated}\n${runtime}\n__rhinoLocalSeed(${serializeSeed(seed)});\n${overrides}\n`;
+  const policy = `var __rhinoLocalIdentityPolicy = (${createIdentityPolicy.toString()})();`;
+  return `${generated}\n${policy}\n${runtime}\n__rhinoLocalSeed(${serializeSeed(seed)});\n${overrides}\n`;
 }
 
 /** Append a harvest call without shifting author line numbers. */

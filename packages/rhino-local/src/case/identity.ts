@@ -1,5 +1,6 @@
 /** Canonicalise the 0.2.0 bag workaround before profile checking or Rhino seeding. */
 import { assertDenseArray, isPlainObject } from "./util.ts";
+import { identityPolicy } from "./identity-policy.ts";
 import { deepEqual } from "./equal.ts";
 import type { Given, JsonObject } from "./types.ts";
 
@@ -104,6 +105,7 @@ export function parseIdentityCustomAttrs(
     }
     const projected = isPlainObject(parsed) ? parsed : {};
     for (const [key, value] of Object.entries(projected)) {
+      checkBagKey(key, `${path}.${resource}`);
       if (!Object.hasOwn(record, key) || !deepEqual(record[key], value)) {
         throw new Error(
           `rhino-local: ${path}.${resource} disagrees with managed property ${JSON.stringify(key)}`,
@@ -166,6 +168,7 @@ export function parseIdentityCustomAttrsOwnedKeys(
         );
     }
     for (const key of keys as string[]) {
+      checkBagKey(key, `${path}.${resource}`);
       if (Object.hasOwn(record, key) && !Object.hasOwn(projected, key))
         throw new Error(
           `rhino-local: ${path}.${resource} owns managed property ${JSON.stringify(key)} absent from the current bag`,
@@ -184,4 +187,13 @@ function identityRecord(
   return Object.entries(managed ?? {}).flatMap(([collection, rows]) =>
     rows.filter((row) => `${collection}/${String(row._id)}` === resource),
   )[0];
+}
+
+function checkBagKey(key: string, path: string): void {
+  const reason = identityPolicy.collisionReason(key);
+  if (reason !== null) {
+    throw new Error(
+      `rhino-local: ${path}: fr-idm-custom-attrs key ${JSON.stringify(key)} collides with ${reason}; this identity mapping is unmeasured; use non-overlapping bag keys and identityAttributes fields`,
+    );
+  }
 }

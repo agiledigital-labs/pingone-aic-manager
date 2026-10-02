@@ -2397,16 +2397,19 @@ openidm.patch = function (resourceName, _rev, patch) {
       );
     }
   }
+  var next = __rhinoLocalClone(found.record);
   for (i = 0; i < patch.length; i += 1) {
     op = patch[i];
     field = String(op.field).replace(/^\//, "");
     if (op.operation === "remove") {
-      delete found.record[field];
+      delete next[field];
     } else {
-      found.record[field] = op.value;
+      next[field] = op.value;
     }
   }
-  __rhinoLocalBagIdmWrite("patch", resource, found.record);
+  __rhinoLocalBagIdmWrite("patch", resource, next);
+  Object.keys(found.record).forEach(function (key) { delete found.record[key]; });
+  Object.keys(next).forEach(function (key) { found.record[key] = next[key]; });
   return __rhinoLocalProject(found.record, arguments.length >= 5 ? arguments[4] : null);
 };
 
@@ -2566,36 +2569,9 @@ httpClient.send = function (uri, requestOptions) {
 //   "violation" (store throws ldap errorcode=65, nothing applied) or
 //   "unmeasured" (the local lane refuses).
 // `syntax` values that DS rejects throw ldap errorcode=21, nothing applied.
-var __rhinoLocalIdentityFamilies = [
-  [/^fr-attr-str([1-5])$/, "frUnindexedString", "single", null],
-  [/^fr-attr-istr([1-9]|1[0-9]|20)$/, "frIndexedString", "single", null],
-  [/^fr-attr-multi([1-5])$/, "frUnindexedMultivalued", "multi", null],
-  [/^fr-attr-imulti([1-5])$/, "frIndexedMultivalued", "multi", null],
-  [/^fr-attr-int([1-5])$/, "frUnindexedInteger", "single", "integer"],
-  [/^fr-attr-iint([1-5])$/, "frIndexedInteger", "single", "integer"],
-  [/^fr-attr-date([1-5])$/, "frUnindexedDate", "single", "date"],
-  [/^fr-attr-idate([1-5])$/, "frIndexedDate", "single", "date"],
-];
-// Standard LDAP attributes are multi-valued in DS: one value is a string in
-// IDM, several are an array, none removes it. sn is required, so none is a
-// violation; mail, givenName and telephoneNumber are not.
-var __rhinoLocalIdentityStandard = {
-  givenName: { field: "givenName", none: "remove", one: "scalar", many: "array", syntax: null },
-  sn: { field: "sn", none: "violation", one: "scalar", many: "array", syntax: null },
-  mail: { field: "mail", none: "remove", one: "scalar", many: "array", syntax: null },
-  telephoneNumber: { field: "telephoneNumber", none: "remove", one: "scalar", many: "array", syntax: null },
-};
-// Documented ordinary IDM targets whose AM write layout is not measured here.
-// Guard-only inventory: these names do not enable getters or writes.
-var __rhinoLocalIdentityDocumentedFields = [
-  "userName", "cn", "accountStatus", "displayName", "description", "password",
-  "postalAddress", "city", "stateProvince", "postalCode", "country", "aliasList",
-  "applications", "ownerOfApp", "assignedDashboard", "assignments", "consentedMappings",
-  "reports", "manager", "passwordLastChangedTime", "passwordExpirationTime", "groups",
-  "roles", "kbaInfo", "preferences", "profileImage", "adminOfOrg", "ownerOfOrg",
-  "memberOfOrg", "memberOfOrgIDs", "taskPrincipals", "deviceProfiles", "devicePrintProfiles",
-  "webauthnDeviceProfiles", "oathDeviceProfiles", "pushDeviceProfiles", "fr-idm-custom-attrs"
-];
+// Inventory and collision policy are shared with Node validation via preamble.
+var __rhinoLocalIdentityFamilies = __rhinoLocalIdentityPolicy.families;
+var __rhinoLocalIdentityStandard = __rhinoLocalIdentityPolicy.standard;
 var __rhinoLocalIdentityMeasuredNames =
   "fr-attr-str1..5, fr-attr-istr1..20, fr-attr-multi1..5, fr-attr-imulti1..5, fr-attr-int1..5, " +
   "fr-attr-iint1..5, fr-attr-date1..5, fr-attr-idate1..5, givenName, sn, mail, telephoneNumber, fr-idm-custom-attrs";
@@ -2672,6 +2648,7 @@ function __rhinoLocalBagIdmWrite(method, resource, record) {
     return;
   }
   var keys = __rhinoLocalBagOwnedKeys(resource, record);
+  keys.forEach(function (key) { __rhinoLocalCheckBagKey(key, "openidm." + method); });
   var bag = {};
   Object.keys(record).forEach(function (key) {
     if (key.indexOf("custom_") === 0 || keys.indexOf(key) !== -1) {
@@ -2730,34 +2707,21 @@ function __rhinoLocalIdentityLayout(name) {
   return null;
 }
 
-// Collision behavior is unmeasured. Known ordinary AM targets come from the
-// same layout inventory as reads/writes; declarations may override bag keys.
-function __rhinoLocalIdentityOrdinaryField(property) {
-  if (__rhinoLocalIdentityDocumentedFields.indexOf(property) !== -1) { return true; }
-  if (Object.keys(__rhinoLocalIdentityStandard).some(function (name) {
-    return __rhinoLocalIdentityStandard[name].field === property;
-  })) { return true; }
-  return __rhinoLocalIdentityFamilies.some(function (family) {
-    // Keep the measured family's numeric bounds, replacing only its AM prefix.
-    var pattern = family[0].source.replace(/^\^fr-attr-[^(]+/, "^" + family[1]);
-    return new RegExp(pattern).test(property);
-  });
-}
+// Collision behavior is unmeasured; declarations may override eligible bag keys.
 function __rhinoLocalBagCollision(method, property, reason) {
-  throw new Error("rhino-local: idRepository.getIdentity()." + method + ": fr-idm-custom-attrs key " +
+  var binding = method.indexOf("openidm.") === 0 ? method : "idRepository.getIdentity()." + method;
+  throw new Error("rhino-local: " + binding + ": fr-idm-custom-attrs key " +
     JSON.stringify(property) + " collides with " + reason + "; this identity mapping is unmeasured; use non-overlapping bag keys and identityAttributes fields");
 }
-function __rhinoLocalCheckBagKey(property) {
-  if (property.charAt(0) === "_") {
-    __rhinoLocalBagCollision("store", property, "reserved record metadata");
-  }
-  if (__rhinoLocalIdentityOrdinaryField(property)) {
-    __rhinoLocalBagCollision("store", property, "another AM attribute's IDM field");
+function __rhinoLocalCheckBagKey(property, method) {
+  var reason = __rhinoLocalIdentityPolicy.collisionReason(property);
+  if (reason !== null) {
+    __rhinoLocalBagCollision(method || "store", property, reason);
   }
 }
 function __rhinoLocalCheckBagKeys(bag) {
   if (!__rhinoLocalIsPlainObject(bag)) { return; }
-  Object.keys(bag).forEach(__rhinoLocalCheckBagKey);
+  Object.keys(bag).forEach(function (property) { __rhinoLocalCheckBagKey(property); });
 }
 
 // Preflight the whole store on copies. A declared key write changes the object
