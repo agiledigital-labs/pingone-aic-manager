@@ -201,18 +201,14 @@ describe("validated historical bag ownership", () => {
           alias: { field: property, cardinality: "single" as const },
         },
       };
-      const effects = runScript(
-        identity +
-          'identity.setAttribute("alias", ["reserved"]); try { identity.store(); } catch(e) { nodeState.putShared("error", String(e)); }',
-        given,
-      );
-      expect(effects.sharedState.final.error).toMatch(
-        /reserved record metadata.*unmeasured/,
-      );
-      expect(effects.identityWrites).toEqual([]);
-      expect(effects.managedStore).toEqual(seed.managed);
-      expect(effects.identityCustomAttrsOwnedKeys).toEqual(
-        given.identityCustomAttrsOwnedKeys,
+      expect(() =>
+        runScript(
+          identity +
+            'identity.setAttribute("alias", ["reserved"]); identity.store();',
+          given,
+        ),
+      ).toThrow(
+        /given.identityCustomAttrsOwnedKeys.*reserved record metadata.*unmeasured/,
       );
     },
   );

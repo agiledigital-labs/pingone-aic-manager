@@ -118,7 +118,13 @@ create/delete discards history along with values. Older metadata without the
 ownership map can infer present keys but cannot reconstruct cleared history.
 Dense arrays, existing resources and projection consistency are validated
 against the store; a present owned property cannot be absent from the bag.
-Profile checks exempt only properties currently projected from a proven bag;
+Current and historical keys reject `_`-prefixed metadata and known ordinary/OOTB
+AM fields at given/effect validation. The Node validator and Rhino share a
+self-contained identity-policy factory with the existing standard/family layouts
+and guard-only documented names, without a second list or checker. IDM
+patch/update preflight synchronization before changing the record or either
+metadata map; invalid history cannot promote an ordinary field into the bag.
+Profile checks exempt only properties currently projected from a valid proven bag;
 ordinary seeded fields remain strict. These optional fields are carry bookkeeping,
 with no draft/builder methods or judged channels, and retain existing AIC
 eligibility/identity-write observation-gap behavior.

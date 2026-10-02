@@ -131,23 +131,19 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
         const text = '{"givenName":"Original"}';
         const target = `identity.${method}("givenName", ${method === "setAttribute" ? '["Changed"]' : '"Changed"'});`;
         const clear = 'identity.setAttribute("fr-idm-custom-attrs", []);';
-        const effects = runScript(
-          identity +
-            catchCall(
+        expect(() =>
+          runScript(
+            identity +
               (first === "target" ? target + clear : clear + target) +
-                "identity.store();",
-            ),
-          {
-            managed: { "managed/alpha_user": [row] },
-            identityCustomAttrs: { [resource]: [text] },
-          },
+              "identity.store();",
+            {
+              managed: { "managed/alpha_user": [row] },
+              identityCustomAttrs: { [resource]: [text] },
+            },
+          ),
+        ).toThrow(
+          /given.identityCustomAttrs.*another AM attribute's IDM field.*unmeasured/,
         );
-        expect(effects.sharedState.final.error).toMatch(
-          /another AM attribute's IDM field.*unmeasured/,
-        );
-        expect(effects.identityWrites).toEqual([]);
-        expect(effects.managedStore).toEqual({ "managed/alpha_user": [row] });
-        expect(effects.identityCustomAttrs).toEqual({ [resource]: [text] });
       });
 
       it(`${method}, ${first} first: refuses a bag replacement and a declared key write in one store`, () => {
