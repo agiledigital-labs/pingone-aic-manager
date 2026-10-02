@@ -1766,10 +1766,33 @@ function __rhinoLocalProject(record, fields) {
       out[field] = record[field];
     } else if (field.indexOf("/") !== -1) {
       parent = field.split("/")[0];
-      if (__rhinoLocalHas(record, parent) && !__rhinoLocalHas(out, parent)) {
-        out[parent] = record[parent];
+      if (__rhinoLocalHas(record, parent) && fields.indexOf(parent) === -1) {
+        out[parent] = __rhinoLocalProjectChild(record[parent], field.split("/").slice(1), out[parent]);
       }
     }
+  }
+  return out;
+}
+
+// Preserve relationship envelope metadata, but select only requested children.
+function __rhinoLocalProjectChild(value, path, previous) {
+  if (Array.isArray(value)) {
+    return value.map(function (entry, index) {
+      return __rhinoLocalProjectChild(entry, path, previous && previous[index]);
+    });
+  }
+  if (!__rhinoLocalIsPlainObject(value)) {
+    return value;
+  }
+  var out = previous || {};
+  Object.keys(value).forEach(function (key) {
+    if (key.charAt(0) === "_") {
+      out[key] = value[key];
+    }
+  });
+  var child = path[0];
+  if (__rhinoLocalHas(value, child)) {
+    out[child] = path.length === 1 ? value[child] : __rhinoLocalProjectChild(value[child], path.slice(1), out[child]);
   }
   return out;
 }
@@ -1789,14 +1812,12 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
   var stubs = __rhinoLocal.openidmFailures;
   var i;
   var stub;
-  var pattern;
   for (i = 0; i < stubs.length; i += 1) {
     stub = stubs[i];
     if (stub.match.method !== method || stub.match.ordinal !== ordinal) {
       continue;
     }
-    pattern = __rhinoLocalAsPattern(stub.match.resource);
-    if (typeof pattern === "string" ? pattern !== resource : !pattern.test(resource)) {
+    if (!__rhinoLocalMatchPattern(stub.match.resource, resource, "openidmFailures", "resource")) {
       continue;
     }
     // No `code` property: AIC's ResourceExceptionScriptAdapter has none
@@ -2416,7 +2437,7 @@ openidm.action = function (resource, actionName, content, params) {
   var i;
   for (i = 0; i < __rhinoLocal.openidmActions.length; i += 1) {
     var stub = __rhinoLocal.openidmActions[i];
-    if (stub.match.action === String(actionName) && __rhinoLocalMatchUrl(stub.match.resource, String(resource))) {
+    if (stub.match.action === String(actionName) && __rhinoLocalMatchPattern(stub.match.resource, String(resource), "openidmActions", "resource")) {
       return __rhinoLocalClone(stub.reply.body);
     }
   }
@@ -2436,15 +2457,15 @@ function __rhinoLocalAsPattern(value) {
   return value;
 }
 
-function __rhinoLocalMatchUrl(pattern, url) {
+function __rhinoLocalMatchPattern(pattern, value, channel, field) {
   var p = __rhinoLocalAsPattern(pattern);
   if (typeof p === "string") {
-    return p === url;
+    return p === value;
   }
   if (p && typeof p.test === "function") {
-    return p.test(url);
+    return p.test(value);
   }
-  throw new Error("rhino-local: given.http match.url is not a string or regexp");
+  throw new Error("rhino-local: given." + channel + " match." + field + " is not a string or regexp");
 }
 
 function __rhinoLocalMatchHttp(url, method) {
@@ -2453,14 +2474,14 @@ function __rhinoLocalMatchHttp(url, method) {
   var wantMethod;
   for (i = 0; i < __rhinoLocal.httpStubs.length; i += 1) {
     stub = __rhinoLocal.httpStubs[i];
-    if (!__rhinoLocalMatchUrl(stub.match.url, url)) {
+    if (!__rhinoLocalMatchPattern(stub.match.url, url, "http", "url")) {
       continue;
     }
     wantMethod = stub.match.method;
     if (wantMethod && String(wantMethod).toUpperCase() !== method) {
       continue;
     }
-    return stub.reply;
+    return __rhinoLocalClone(stub.reply);
   }
   return null;
 }
