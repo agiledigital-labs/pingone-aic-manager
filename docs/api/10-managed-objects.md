@@ -727,6 +727,22 @@ in `idm/types/common.d.ts`, `am/types/nextgen-common.d.ts` and
 | `openidm.query(coll, params, ["userName"])`      | rows of `_id`, `_rev`, `userName`                      |
 | `openidm.query(coll, {…, _fields: "userName"})`  | identical to the line above                            |
 
+**Comma selectors — measured 2026-10-02 by the maintainer**, using
+`scripts/rhino-script-tester/fixtures/query-fields-comma.script.js` at `42a34b8`,
+next-gen journey, `managed/alpha_user`. Both `read(path, null, fields)` and
+`query(coll, params, fields)` returned:
+
+| `fields` | Keys returned |
+| --- | --- |
+| `["givenName", "sn"]` | `_id`, `_rev`, `givenName`, `sn` |
+| `["givenName,sn"]` | `_id`, `_rev`, `givenName`, `sn` |
+| `["givenName, sn"]` | `_id`, `_rev`, `givenName` |
+| `["givenName,sn", "mail"]` | `_id`, `_rev`, `givenName`, `mail`, `sn` |
+
+Each element is split on commas **without trimming**: `" sn"` matches nothing.
+Wildcard and `parent/child` selectors apply to each resulting name. The local
+harness uses the same projection for the third argument and params `_fields`.
+
 Four things fall out of that:
 
 - **`_id` and `_rev` come back whatever you ask for.** A selector cannot drop

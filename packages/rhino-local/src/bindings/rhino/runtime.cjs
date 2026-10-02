@@ -1738,6 +1738,10 @@ function __rhinoLocalProject(record, fields) {
   if (!fields || !Array.isArray(fields) || fields.length === 0) {
     return record;
   }
+  // AM splits every selector element on commas without trimming whitespace.
+  fields = fields.reduce(function (names, entry) {
+    return names.concat(String(entry).split(","));
+  }, []);
   var i;
   for (i = 0; i < fields.length; i += 1) {
     if (fields[i] === "*") {
@@ -2242,6 +2246,9 @@ openidm.query = function (resourceName, params, fields) {
     throw new Error(
       "rhino-local: not mocked: openidm.query _queryId " + String(params._queryId)
     );
+  }
+  if (fields === undefined && params._fields !== undefined) {
+    fields = Array.isArray(params._fields) ? params._fields : [String(params._fields)];
   }
   var filter = params._queryId !== undefined ? "true" : params._queryFilter;
   if (params._queryId !== undefined) {
