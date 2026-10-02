@@ -8,7 +8,8 @@ import type { FixtureSpec, IdmHandle } from "./types.ts";
 /** Local handle over one run's harvested managed store. */
 export function localIdmHandle(
   store: Record<string, JsonObject[]>,
-  onDelete: (resource: string) => void
+  onDelete: (resource: string) => void,
+  identityCustomAttrs: Record<string, string[]> = {}
 ): IdmHandle {
   return {
     read(resource) {
@@ -33,6 +34,7 @@ export function localIdmHandle(
           rows.splice(index, 1);
         }
       }
+      delete identityCustomAttrs[resource];
       onDelete(resource);
       return Promise.resolve();
     },

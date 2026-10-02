@@ -57,7 +57,7 @@ describe("measured custom attribute bag (D10)", () => {
     expect(runScript(identity + read, next).sharedState.final.size).toBe(0);
     const restored = runScript(identity + 'identity.setAttribute("fr-idm-custom-attrs", ["{}"]); identity.store();' + read, next);
     expect(restored.sharedState.final.size).toBe(1);
-    expect(restored.identityCustomAttrsAbsent).toEqual([]);
+    expect(restored.identityCustomAttrs).toEqual({ "managed/alpha_user/example": ["{}"] });
   });
 
   it("an IDM patch merges declared properties alongside unknown custom keys", () => {
@@ -68,7 +68,8 @@ describe("measured custom attribute bag (D10)", () => {
   it.each([
     { values: ["{}", "{}"], code: 65 },
     { values: ["not json"], code: 21 },
-    { values: ["not json", "{}"], code: 65 },
+    { values: ["not json", "{}"], code: 21 },
+    { values: ["{}", "not json"], code: 21 },
   ])("throws errorcode $code and applies nothing for $values", ({ values, code }) => {
     const effects = runScript(identity + `identity.setAttribute("givenName", ["Changed"]); identity.setAttribute(${JSON.stringify(bag)}, ${JSON.stringify(values)}); try { identity.store(); } catch (e) { nodeState.putShared("error", String(e)); }` + read, seed());
     expect(effects.sharedState.final.error).toBe(`JavaException: org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper$IdentityUpdateException: Exception persisting attribute: Plug-in org.forgerock.openam.idrepo.ldap.DJLDAPv3Repo encountered a ldap exception.  ldap errorcode=${code}`);
@@ -77,8 +78,9 @@ describe("measured custom attribute bag (D10)", () => {
     expect(effects.sharedState.final.bag).toEqual({ custom_example: "seeded", custom_flag: true });
   });
 
-  it.each(["null", "[]", '"text"', '{"other":"x"}'])("refuses unmeasured JSON shape %s without inventing a tenant error", (value) => {
-    expect(() => runScript(identity + `identity.setAttribute(${JSON.stringify(bag)}, [${JSON.stringify(value)}]); identity.store();`, seed())).toThrow(/is unmeasured/);
+  it.each(["null", "[]", '"text"', '{"plain":"x"}'])("retains measured JSON text %s", (value) => {
+    const effects = runScript(identity + `identity.setAttribute(${JSON.stringify(bag)}, [${JSON.stringify(value)}]); identity.store(); nodeState.putShared("text", String(identity.getAttributeValues(${JSON.stringify(bag)}).get(0)));`, seed());
+    expect(effects.sharedState.final.text).toBe(value);
   });
 
   it.each(["setAttribute", "addAttribute"])("refuses direct IDM custom name writes via %s", (method) => {

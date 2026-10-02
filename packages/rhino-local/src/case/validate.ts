@@ -226,10 +226,10 @@ function parseGiven(raw: unknown, path: string): Given {
     given.openidmFailures = parseArray(raw.openidmFailures, `${path}.openidmFailures`, parseOpenidmFailureStub);
   }
   if (raw.identityCustomAttrsAbsent !== undefined) {
-    if (!Array.isArray(raw.identityCustomAttrsAbsent) || raw.identityCustomAttrsAbsent.some((id) => typeof id !== "string")) {
-      throw new Error(`rhino-local: ${path}.identityCustomAttrsAbsent must be an array of strings`);
-    }
-    given.identityCustomAttrsAbsent = raw.identityCustomAttrsAbsent.slice();
+    given.identityCustomAttrsAbsent = raw.identityCustomAttrsAbsent as string[];
+  }
+  if (raw.identityCustomAttrs !== undefined) {
+    given.identityCustomAttrs = raw.identityCustomAttrs as Record<string, string[]>;
   }
   if (raw.openidmPriorCalls !== undefined) {
     given.openidmPriorCalls = parseCallCounts(raw.openidmPriorCalls, `${path}.openidmPriorCalls`);

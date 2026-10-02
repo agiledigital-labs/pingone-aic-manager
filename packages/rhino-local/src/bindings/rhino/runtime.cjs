@@ -37,7 +37,8 @@ var __rhinoLocal = {
   logs: [],
   identityWrites: [],
   identityAttributes: {},
-  identityCustomAttrsAbsent: [],
+  identityCustomAttrs: {},
+  identityGenerations: {},
   libraries: {},
   requireCache: {},
 };
@@ -2235,6 +2236,7 @@ openidm.read = function (resourceName, _params, fields) {
     // throws above — that is a missing given.managed fixture.
     return null;
   }
+  __rhinoLocalBagAccess("read", resource, found.record, fields);
   return __rhinoLocalProject(found.record, fields);
 };
 
@@ -2282,6 +2284,7 @@ openidm.query = function (resourceName, params, fields) {
   var i;
   for (i = 0; i < rows.length; i += 1) {
     if (__rhinoLocalMatchesFilter(rows[i], filter)) {
+      __rhinoLocalBagAccess("query", collection + "/" + rows[i]._id, rows[i], fields, params);
       result.push(__rhinoLocalProject(rows[i], fields));
     }
   }
@@ -2331,7 +2334,7 @@ openidm.create = function (resourceName, newResourceId, content) {
     id,
     stored._rev === undefined ? "local-rev" : stored._rev
   );
-  __rhinoLocalResetCustomBag(stored._id);
+  __rhinoLocalBagIdmWrite("create", collection + "/" + stored._id, stored);
   rows.push(stored);
   return __rhinoLocalProject(stored, arguments.length >= 5 ? arguments[4] : null);
 };
@@ -2345,10 +2348,11 @@ openidm.update = function (id, _rev, value) {
   var resource = String(id);
   __rhinoLocalPushOpenidm("update", resource, value);
   var found = __rhinoLocalRequireRecord("update", resource);
+  __rhinoLocalBagAccess("update", resource, found.record);
   __rhinoLocalCheckRev("update", _rev, found.record);
   var next = __rhinoLocalClone(value);
   next = __rhinoLocalOpenidmRecord(next, found.record._id, found.record._rev);
-  __rhinoLocalResetCustomBag(next._id);
+  __rhinoLocalBagIdmWrite("update", resource, next);
   found.rows[found.index] = next;
   return __rhinoLocalProject(next, arguments.length >= 5 ? arguments[4] : null);
 };
@@ -2362,6 +2366,7 @@ openidm.patch = function (resourceName, _rev, patch) {
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("patch", resource, patch);
   var found = __rhinoLocalRequireRecord("patch", resource);
+  __rhinoLocalBagAccess("patch", resource, found.record);
   __rhinoLocalCheckRev("patch", _rev, found.record);
   var i;
   var op;
@@ -2383,11 +2388,9 @@ openidm.patch = function (resourceName, _rev, patch) {
       delete found.record[field];
     } else {
       found.record[field] = op.value;
-      if (field.indexOf("custom_") === 0) {
-        __rhinoLocalResetCustomBag(found.record._id);
-      }
     }
   }
+  __rhinoLocalBagIdmWrite("patch", resource, found.record);
   return __rhinoLocalProject(found.record, arguments.length >= 5 ? arguments[4] : null);
 };
 
@@ -2406,7 +2409,7 @@ openidm.delete = function (resourceName, _rev) {
     );
   }
   var removed = found.record;
-  __rhinoLocalResetCustomBag(removed._id);
+  __rhinoLocalBagIdmWrite("delete", resource, removed);
   found.rows.splice(found.index, 1);
   return __rhinoLocalProject(removed, arguments.length >= 4 ? arguments[3] : null);
 };
@@ -2569,12 +2572,62 @@ var __rhinoLocalIdentityMeasuredNames =
   "fr-attr-str1..5, fr-attr-istr1..20, fr-attr-multi1..5, fr-attr-imulti1..5, fr-attr-int1..5, " +
   "fr-attr-iint1..5, fr-attr-date1..5, fr-attr-idate1..5, givenName, sn, mail, telephoneNumber, fr-idm-custom-attrs";
 
-function __rhinoLocalResetCustomBag(id) {
-  var absent = __rhinoLocal.identityCustomAttrsAbsent;
-  var index = absent.indexOf(String(id));
-  if (index !== -1) {
-    absent.splice(index, 1);
+function __rhinoLocalCustomBag(resource, record) {
+  if (__rhinoLocalHas(__rhinoLocal.identityCustomAttrs, resource)) {
+    return __rhinoLocal.identityCustomAttrs[resource].slice();
   }
+  var bag = {};
+  Object.keys(record).forEach(function (key) {
+    if (key.indexOf("custom_") === 0) {
+      bag[key] = record[key];
+    }
+  });
+  return [JSON.stringify(bag)];
+}
+
+function __rhinoLocalBagObject(values) {
+  return values.length === 0 ? {} : JSON.parse(values[0]);
+}
+
+function __rhinoLocalBagAccess(method, resource, record, fields, params) {
+  var bag = __rhinoLocalBagObject(__rhinoLocalCustomBag(resource, record));
+  if (__rhinoLocalIsPlainObject(bag)) {
+    return;
+  }
+  if (method === "read" && (fields === undefined || fields === null)) {
+    if (bag === null) {
+      return;
+    }
+    var error = new Error("org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Response is not application/json");
+    error.name = "JavaException";
+    throw error;
+  }
+  if (method === "query" && params._queryFilter !== undefined && Array.isArray(fields) && fields.length === 1 && fields[0] === "_id") {
+    return;
+  }
+  throw new Error(
+    "rhino-local: openidm." + method + ": " + resource +
+      " carries a non-object fr-idm-custom-attrs bag; this IDM access is unmeasured (only full read and _id-only filtered query were measured)"
+  );
+}
+
+// One lifecycle path for persisted bag provenance and resource incarnations.
+function __rhinoLocalBagIdmWrite(method, resource, record) {
+  if (method === "create" || method === "delete") {
+    delete __rhinoLocal.identityCustomAttrs[resource];
+    __rhinoLocal.identityGenerations[resource] = (__rhinoLocal.identityGenerations[resource] || 0) + 1;
+    return;
+  }
+  var previous = __rhinoLocal.identityCustomAttrs[resource];
+  var oldBag = previous ? __rhinoLocalBagObject(previous) : {};
+  var bag = {};
+  Object.keys(record).forEach(function (key) {
+    if (key.indexOf("custom_") === 0 || __rhinoLocalHas(oldBag, key)) {
+      bag[key] = record[key];
+    }
+  });
+  // Even an ordinary IDM write restores an absent bag to one {} (measured).
+  __rhinoLocal.identityCustomAttrs[resource] = [JSON.stringify(bag)];
 }
 
 function __rhinoLocalIdentityShape(field, cardinality, syntax) {
@@ -2646,9 +2699,6 @@ function __rhinoLocalIdentityConvert(syntax, raw) {
     } catch (_error) {
       return { code: 21 };
     }
-    if (!__rhinoLocalIsPlainObject(bag) || Object.keys(bag).some(function (key) { return key.indexOf("custom_") !== 0; })) {
-      return { unmeasured: "JSON other than an object of custom_* properties" };
-    }
     return { value: bag };
   }
   if (syntax === "integer") {
@@ -2707,17 +2757,29 @@ idRepository.getIdentity = function (userName) {
   var i;
   var record;
   var found = null;
+  var resource = null;
   for (c = 0; c < collections.length; c += 1) {
     rows = __rhinoLocal.managed[collections[c]];
     for (i = 0; i < rows.length; i += 1) {
       record = rows[i];
       if (String(record._id) === wanted) {
         found = record;
+        resource = collections[c] + "/" + wanted;
         break;
       }
     }
     if (found) {
       break;
+    }
+  }
+  var generation = resource === null ? 0 : (__rhinoLocal.identityGenerations[resource] || 0);
+  function refresh(method) {
+    if (resource !== null) {
+      var split = __rhinoLocalSplitResource(resource);
+      found = __rhinoLocalFindRecord(split.collection, split.recordId).record;
+      if (found && generation !== (__rhinoLocal.identityGenerations[resource] || 0)) {
+        throw new Error("rhino-local: idRepository.getIdentity()." + method + ": retained wrapper behavior after delete and recreate is unmeasured; get a fresh identity wrapper");
+      }
     }
   }
   function missing(method) {
@@ -2816,14 +2878,7 @@ idRepository.getIdentity = function (userName) {
     }
     // AM reads the persisted identity until store(), even after setAttribute.
     if (layout && layout.syntax === "bag") {
-      var bag = {};
-      Object.keys(found).forEach(function (property) {
-        if (property.indexOf("custom_") === 0) {
-          bag[property] = found[property];
-        }
-      });
-      return Object.keys(bag).length === 0 && __rhinoLocal.identityCustomAttrsAbsent.indexOf(String(found._id)) !== -1
-        ? [] : [JSON.stringify(bag)];
+      return __rhinoLocalCustomBag(resource, found);
     }
     var value = found[key];
     if (value === undefined && key === "accountStatus") {
@@ -2840,6 +2895,7 @@ idRepository.getIdentity = function (userName) {
   }
   return {
     getName: function () {
+      refresh("getName");
       if (!found) {
         return wanted;
       }
@@ -2849,12 +2905,15 @@ idRepository.getIdentity = function (userName) {
       return found._id;
     },
     getUniversalId: function () {
+      refresh("getUniversalId");
       return found ? found._id : wanted;
     },
     exists: function () {
+      refresh("exists");
       return Boolean(found);
     },
     getAttributeValues: function (attributeName) {
+      refresh("getAttributeValues");
       if (!found) {
         missing("getAttributeValues(String)");
       }
@@ -2866,6 +2925,7 @@ idRepository.getIdentity = function (userName) {
       return list;
     },
     setAttribute: function (attributeName, attributeValues) {
+      refresh("setAttribute");
       if (!found) {
         missing("setAttribute(String, String[])");
       }
@@ -2877,6 +2937,7 @@ idRepository.getIdentity = function (userName) {
       pending[String(attributeName)] = attributeValues.map(String);
     },
     addAttribute: function (attributeName, attributeValue) {
+      refresh("addAttribute");
       if (!found) {
         missing("addAttribute(String, String)");
       }
@@ -2893,6 +2954,7 @@ idRepository.getIdentity = function (userName) {
       pending[name] = existing;
     },
     store: function () {
+      refresh("store");
       if (!found) {
         missing("storeAndThrow()");
       }
@@ -2921,12 +2983,12 @@ idRepository.getIdentity = function (userName) {
               " is unmeasured, so the local lane refuses it"
           );
         }
-        if (rule === "violation" && codes.indexOf(65) === -1) {
-          codes.push(65);
+        var attributeCodes = [];
+        if (rule === "violation" && layout.syntax !== "bag") {
+          attributeCodes.push(65);
         }
         var converted = [];
-        // Cardinality wins for a bag with 2+ members, even if one is malformed.
-        for (j = 0; j < given.length && !(layout.syntax === "bag" && rule === "violation"); j += 1) {
+        for (j = 0; j < given.length; j += 1) {
           var result = __rhinoLocalIdentityConvert(layout.syntax, given[j]);
           if (result.unmeasured) {
             throw unmeasured(
@@ -2937,13 +2999,20 @@ idRepository.getIdentity = function (userName) {
             );
           }
           if (result.code !== undefined) {
-            if (codes.indexOf(result.code) === -1) {
-              codes.push(result.code);
+            if (attributeCodes.indexOf(result.code) === -1) {
+              attributeCodes.push(result.code);
             }
           } else {
             converted.push(result.value);
           }
         }
+        // Malformed bag text wins over cardinality in either position (measured).
+        if (layout.syntax === "bag" && rule === "violation" && attributeCodes.length === 0) {
+          attributeCodes.push(65);
+        }
+        attributeCodes.forEach(function (code) {
+          if (codes.indexOf(code) === -1) { codes.push(code); }
+        });
         plan.push({ name: names[i], layout: layout, rule: rule, given: given, converted: converted });
       }
       if (codes.length > 1) {
@@ -2958,19 +3027,17 @@ idRepository.getIdentity = function (userName) {
       for (i = 0; i < plan.length; i += 1) {
         var step = plan[i];
         if (step.rule === "bag") {
+          var previous = __rhinoLocalBagObject(__rhinoLocalCustomBag(resource, found));
           Object.keys(found).forEach(function (property) {
-            if (property.indexOf("custom_") === 0) {
+            if (property.indexOf("custom_") === 0 || (__rhinoLocalIsPlainObject(previous) && __rhinoLocalHas(previous, property))) {
               delete found[property];
             }
           });
-          var bag = step.converted[0] || {};
-          Object.keys(bag).forEach(function (property) {
-            found[property] = bag[property];
-          });
-          __rhinoLocalResetCustomBag(found._id);
-          if (step.given.length === 0) {
-            __rhinoLocal.identityCustomAttrsAbsent.push(String(found._id));
+          var bag = step.converted[0];
+          if (__rhinoLocalIsPlainObject(bag)) {
+            Object.keys(bag).forEach(function (property) { found[property] = bag[property]; });
           }
+          __rhinoLocal.identityCustomAttrs[resource] = step.given.slice();
         } else if (step.rule === "remove") {
           delete found[step.layout.field];
         } else if (step.rule === "empty") {
@@ -3652,7 +3719,8 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.sessionProperties = __rhinoLocalClone(given.existingSession || {});
   __rhinoLocal.initialSessionProperties = __rhinoLocalClone(__rhinoLocal.sessionProperties);
   __rhinoLocal.managed = __rhinoLocalClone(given.managed || {});
-  __rhinoLocal.identityCustomAttrsAbsent = (given.identityCustomAttrsAbsent || []).slice();
+  __rhinoLocal.identityCustomAttrs = __rhinoLocalClone(given.identityCustomAttrs || {});
+  __rhinoLocal.identityGenerations = {};
   // Set of `managed/<name>` this environment declares. Membership only — every
   // schema RULE (properties, required, enum) is checked in the Node layer, so
   // there is exactly one implementation of each.
@@ -3804,7 +3872,7 @@ function __rhinoLocalHarvest() {
     callbacks: __rhinoLocal.callbacks,
     openidm: __rhinoLocal.openidm,
     managedStore: __rhinoLocalClone(__rhinoLocal.managed),
-    identityCustomAttrsAbsent: __rhinoLocal.identityCustomAttrsAbsent.slice(),
+    identityCustomAttrs: __rhinoLocalClone(__rhinoLocal.identityCustomAttrs),
     http: __rhinoLocal.http,
     logs: __rhinoLocal.logs,
     identityWrites: __rhinoLocal.identityWrites,

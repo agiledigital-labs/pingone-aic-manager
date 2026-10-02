@@ -512,7 +512,7 @@ export class Lease<TSchema extends z.ZodType> {
         run.effects.managedStore = {};
       }
       await step.check(
-        localIdmHandle(run.effects.managedStore, () => undefined),
+        localIdmHandle(run.effects.managedStore, () => undefined, run.effects.identityCustomAttrs),
         context
       );
     }

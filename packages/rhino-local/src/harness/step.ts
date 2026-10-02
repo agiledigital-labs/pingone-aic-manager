@@ -115,8 +115,9 @@ export function carryGiven(
     }
     next.openidmPriorCalls = counts;
   }
-  if (effects.identityCustomAttrsAbsent !== undefined) {
-    next.identityCustomAttrsAbsent = [...effects.identityCustomAttrsAbsent];
+  if (effects.identityCustomAttrs !== undefined) {
+    next.identityCustomAttrs = clone(effects.identityCustomAttrs);
+    delete next.identityCustomAttrsAbsent;
   }
   if (effects.managedStore !== undefined) {
     // Records the earlier pass created have to be visible to the later one,
