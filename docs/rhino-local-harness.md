@@ -119,9 +119,12 @@ ownership map can infer present keys but cannot reconstruct cleared history.
 Dense arrays, existing resources and projection consistency are validated
 against the store; a present owned property cannot be absent from the bag.
 Current and historical keys reject `_`-prefixed metadata and known ordinary/OOTB
-AM fields at given/effect validation. The Node validator and Rhino share a
-self-contained identity-policy factory with the existing standard/family layouts
-and guard-only documented names, without a second list or checker. IDM
+AM fields at given/effect validation. The Node validator and Rhino share
+`src/bindings/rhino/identity-policy.cjs`, with the existing standard/family
+layouts and guard-only documented names, without a second list or checker.
+Node requires the canonical CommonJS asset; Rhino reads its packaged file text
+just like `runtime.cjs`, independently of host instrumentation/transforms.
+The package ships both assets in place, with no generated copy or build copy. IDM
 patch/update preflight synchronization before changing the record or either
 metadata map; invalid history cannot promote an ordinary field into the bag.
 Profile checks exempt only properties currently projected from a valid proven bag;
@@ -291,6 +294,9 @@ the tarball into a consumer outside the checkout, then:
 
 - type-checks a suite against the shipped declarations, with `skipLibCheck` off;
 - runs the suite with a Java home that has no `javac`, on a fresh cache;
+- verifies the canonical identity-policy asset is shipped and exercises Node
+  ownership validation plus Rhino patch collision preflight from the installed
+  compiled package;
 - fails if anything was compiled, or if state was written into
   `node_modules`.
 

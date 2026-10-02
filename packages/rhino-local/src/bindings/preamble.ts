@@ -1,9 +1,8 @@
 import { readFileSync } from "node:fs";
-import { createIdentityPolicy } from "../case/identity-policy.ts";
 import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
 import type { EnvProfile } from "../profile/types.ts";
-import { bindingsRuntimePath, generatedJsPath } from "../paths.ts";
+import { bindingsIdentityPolicyPath, bindingsRuntimePath, generatedJsPath } from "../paths.ts";
 
 export interface MockPreambleOptions {
   /**
@@ -45,7 +44,7 @@ export function mockPreamble(
   const overrides = Object.entries(given.bindingOverrides ?? {})
     .map(([name, expression]) => `${name} = (${expression});`)
     .join("\n");
-  const policy = `var __rhinoLocalIdentityPolicy = (${createIdentityPolicy.toString()})();`;
+  const policy = readFileSync(bindingsIdentityPolicyPath, "utf8");
   return `${generated}\n${policy}\n${runtime}\n__rhinoLocalSeed(${serializeSeed(seed)});\n${overrides}\n`;
 }
 

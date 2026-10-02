@@ -6,7 +6,8 @@ import { parseHarvest } from "../../src/bindings/harvest.ts";
 import { mockPreamble, withHarvest } from "../../src/bindings/preamble.ts";
 import { normaliseEffects } from "../../src/case/verdict.ts";
 import { validateCase } from "../../src/case/validate.ts";
-import { createIdentityPolicy } from "../../src/case/identity-policy.ts";
+import { readFileSync } from "node:fs";
+import { bindingsIdentityPolicyPath } from "../../src/paths.ts";
 import { carryGiven } from "../../src/harness/step.ts";
 import type { EnvProfile } from "../../src/profile/types.ts";
 import { RhinoRunner } from "../../src/runner.ts";
@@ -58,11 +59,11 @@ describe("ownership collision checks on IDM writes", () => {
     await runner.close();
   });
 
-  it("the factory shared with Node remains AM-safe after host transformation", async () => {
+  it("the canonical policy shared with Node remains AM-safe", async () => {
     expect(
       await lintAmScript(
-        `var policy = (${createIdentityPolicy.toString()})();`,
-        "cases/identity-policy.cjs",
+        readFileSync(bindingsIdentityPolicyPath, "utf8"),
+        "src/bindings/rhino/identity-policy.cjs",
       ),
     ).toEqual([]);
   });

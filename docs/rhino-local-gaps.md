@@ -159,7 +159,8 @@ travel across passes in validated full-resource metadata. Historical keys in
 of current AM values, so declared re-adds and later whole-bag removals retain the
 same storage location. Local create/delete discards prior resource history.
 Given/effect validation rejects reserved/underscore and ordinary/OOTB current or
-historical bag keys using the same layout inventory/checker as Rhino. IDM
+historical bag keys using the same canonical policy asset/inventory/checker as
+Rhino. Raw-text loading isolates Rhino from host coverage transformations. IDM
 patch/update also check synchronization before any record or metadata mutation.
 Profile checks exempt currently projected valid bag properties while checking
 ordinary properties and enum values strictly. No layout declaration is needed.
