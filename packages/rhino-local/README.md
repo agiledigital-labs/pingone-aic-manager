@@ -196,6 +196,7 @@ wrapper and a fresh `getIdentity` see the new values at once; without
 | `fr-attr-date1`..`5`, `fr-attr-idate1`..`5` | `frUnindexedDateN`, `frIndexedDateN` | ISO string | throws | removed |
 | `givenName`, `telephoneNumber`, `mail` | same name | string | array | removed |
 | `sn` | `sn` | string | array | throws |
+| `fr-idm-custom-attrs` | all `custom_*` properties | whole-bag replace from JSON | throws 65 | removed; bag size 0 |
 
 One member of each family was measured; the rest are assumed to match it.
 Pass integers as decimal strings (`"42"`) and dates as GeneralizedTime
@@ -207,6 +208,34 @@ AIC refuses a store — several values on a single-valued attribute, `[]` on
 was not measured with (a signed integer, a GeneralizedTime with an offset)
 throw a `rhino-local:` refusal instead. `cn` is refused: AM keeps it outside
 the IDM managed record, which the local lane does not model.
+
+`fr-idm-custom-attrs` needs no declared layout. Reads derive one compact JSON
+object from exactly the record's `custom_*` properties, preserving JSON types;
+with no custom properties, the default is one `{}`. Direct IDM `custom_x`
+attribute reads return empty. Parse the bag's element and compare objects;
+JSON key ordering is not a contract. Reads keep showing persisted values until
+`store()`.
+
+A bag write replaces all custom properties, deleting omitted keys, preserving
+unknown `custom_*` keys and performing no type coercion. `["{}"]` leaves one
+empty-object element; `[]` leaves size 0. Two elements throw errorcode 65;
+invalid JSON throws 21. Both are atomic, like other measured writes. Declare
+one effect for the bag using the original string array, not one per IDM key:
+
+```ts
+identityWrites: [{
+  identity: "example-id",
+  attribute: "fr-idm-custom-attrs",
+  values: ['{"custom_example":"written"}'],
+}]
+```
+
+A 0.2.0 explicit `"fr-idm-custom-attrs"` record seed is accepted only when its
+parsed JSON agrees with the derived bag, ignoring key order; it is then
+canonicalised away. Conflicting seeds now fail (**breaking for 0.2.0**): seed
+the IDM `custom_*` properties once. An explicit `identityAttributes` layout
+still wins, consistently with other measured attributes, and stays AIC-eligible.
+Unmeasured bag JSON shapes or non-`custom_*` keys are refused locally.
 
 Any other attribute — a tenant's own, say — throws until you declare how the
 tenant stores it, keyed by the AM name:
@@ -308,6 +337,11 @@ present. Likewise the channels `RequestDraft` gained since 0.1.2 (`cookies`,
 `esv` values widened from `string` to `string | null` (a `null` declares an
 absent ESV), so code that reads a draft's `esv` value as a `string` needs a
 null check.
+
+The optional `identityCustomAttrsAbsent` runner bookkeeping accompanies
+`managedStore` across callback passes so a stored `[]` retains size 0. It is
+not a judged channel; producers from 0.1.2 can omit it. Bag writes are judged
+only through `identityWrites`.
 
 Every function that takes effects also takes the 0.1.2 shape and normalises
 it: `judgeBoth()`, `chainFromRunResult()` (whose parameter is

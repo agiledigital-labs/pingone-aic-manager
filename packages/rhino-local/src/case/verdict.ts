@@ -1126,6 +1126,12 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
     }
     recorded.discardedOutcome = raw.discardedOutcome;
   }
+  if (raw.identityCustomAttrsAbsent !== undefined) {
+    if (!Array.isArray(raw.identityCustomAttrsAbsent) || raw.identityCustomAttrsAbsent.some((id) => typeof id !== "string")) {
+      throw new Error("rhino-local: effects.identityCustomAttrsAbsent must be an array of strings");
+    }
+    recorded.identityCustomAttrsAbsent = raw.identityCustomAttrsAbsent.slice();
+  }
   if (raw.managedStore !== undefined) {
     // What carryGiven seeds the next pass from; dropping it would replay the
     // pass's starting records and undo every write the pass made.

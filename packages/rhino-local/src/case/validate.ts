@@ -1,3 +1,4 @@
+import { normaliseIdentitySeeds } from "./identity.ts";
 import { loadContext } from "../load.ts";
 import { bindingsJsonPath } from "../paths.ts";
 import {
@@ -224,6 +225,12 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.openidmFailures !== undefined) {
     given.openidmFailures = parseArray(raw.openidmFailures, `${path}.openidmFailures`, parseOpenidmFailureStub);
   }
+  if (raw.identityCustomAttrsAbsent !== undefined) {
+    if (!Array.isArray(raw.identityCustomAttrsAbsent) || raw.identityCustomAttrsAbsent.some((id) => typeof id !== "string")) {
+      throw new Error(`rhino-local: ${path}.identityCustomAttrsAbsent must be an array of strings`);
+    }
+    given.identityCustomAttrsAbsent = raw.identityCustomAttrsAbsent.slice();
+  }
   if (raw.openidmPriorCalls !== undefined) {
     given.openidmPriorCalls = parseCallCounts(raw.openidmPriorCalls, `${path}.openidmPriorCalls`);
   }
@@ -242,7 +249,7 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.bindings !== undefined) {
     given.bindings = parseBindings(raw.bindings, `${path}.bindings`);
   }
-  return given;
+  return normaliseIdentitySeeds(given);
 }
 
 function parseExpect(raw: unknown, path: string): Expect {
@@ -689,7 +696,7 @@ function parseIdentityAttributes(raw: unknown, path: string): Record<string, Ide
     }
     // Keys are AM attribute names. An IDM property here is the inverted map,
     // and would silently declare an attribute no script can write.
-    if (IDM_IDENTITY_FIELD.test(name)) {
+    if (IDM_IDENTITY_FIELD.test(name) || name.startsWith("custom_")) {
       throw new Error(
         `rhino-local: ${at}: ${JSON.stringify(name)} is an IDM property name; key identityAttributes by the AM attribute name the script passes to setAttribute`
       );

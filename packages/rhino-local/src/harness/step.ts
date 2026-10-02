@@ -115,6 +115,9 @@ export function carryGiven(
     }
     next.openidmPriorCalls = counts;
   }
+  if (effects.identityCustomAttrsAbsent !== undefined) {
+    next.identityCustomAttrsAbsent = [...effects.identityCustomAttrsAbsent];
+  }
   if (effects.managedStore !== undefined) {
     // Records the earlier pass created have to be visible to the later one,
     // or a chain can never test a journey that writes and then reads back.
