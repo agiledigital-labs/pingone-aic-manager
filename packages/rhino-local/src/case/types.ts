@@ -56,7 +56,6 @@ export const GIVEN_KEYS = [
   "openidmActions",
   "openidmFailures",
   "openidmPriorCalls",
-  "identityCustomAttrsAbsent",
   "identityCustomAttrs",
   "bindingOverrides",
   "identityAttributes",
@@ -349,8 +348,6 @@ export interface Given {
    * ordinals number calls across callback passes, not within each pass.
    */
   openidmPriorCalls?: Record<string, number>;
-  /** Deprecated compatibility input: full resource paths whose bag was cleared. */
-  identityCustomAttrsAbsent?: string[];
   /** Local AM bag source of truth, keyed by full managed resource path; not judged. */
   identityCustomAttrs?: Record<string, string[]>;
   /** Local binding replacements, as JavaScript expressions keyed by binding name. */
@@ -485,8 +482,6 @@ export interface RecordedEffects {
    * object where "unknown" belongs.
    */
   managedStore?: Record<string, JsonObject[]>;
-  /** Deprecated compatibility input, normalised to identityCustomAttrs. */
-  identityCustomAttrsAbsent?: string[];
   /** Local AM bag source of truth, keyed by full managed resource path; not judged. */
   identityCustomAttrs?: Record<string, string[]>;
 }

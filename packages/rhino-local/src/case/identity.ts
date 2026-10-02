@@ -17,35 +17,12 @@ export function normaliseIdentitySeeds(given: Given): Given {
             ]),
           );
   const out = { ...given, ...(managed === undefined ? {} : { managed }) };
-  const migrated =
-    given.identityCustomAttrsAbsent === undefined
-      ? {}
-      : migrateIdentityAbsence(
-          given.identityCustomAttrsAbsent,
-          managed,
-          "given.identityCustomAttrsAbsent",
-        );
-  const values =
-    given.identityCustomAttrs === undefined
-      ? {}
-      : parseIdentityCustomAttrs(
-          given.identityCustomAttrs,
-          managed,
-          "given.identityCustomAttrs",
-        );
-  for (const resource of Object.keys(migrated)) {
-    if (values[resource] !== undefined && values[resource].length !== 0) {
-      throw new Error(
-        `rhino-local: given.identityCustomAttrs.${resource} conflicts with identityCustomAttrsAbsent`,
-      );
-    }
-  }
-  delete out.identityCustomAttrsAbsent;
-  if (
-    given.identityCustomAttrs !== undefined ||
-    given.identityCustomAttrsAbsent !== undefined
-  ) {
-    out.identityCustomAttrs = { ...migrated, ...values };
+  if (given.identityCustomAttrs !== undefined) {
+    out.identityCustomAttrs = parseIdentityCustomAttrs(
+      given.identityCustomAttrs,
+      managed,
+      "given.identityCustomAttrs",
+    );
   }
   return out;
 }
@@ -143,21 +120,4 @@ export function parseIdentityCustomAttrs(
     out[resource] = values.slice() as string[];
   }
   return out;
-}
-
-/** Compatibility input for round 1; canonical storage uses resource-keyed values. */
-export function migrateIdentityAbsence(
-  raw: unknown,
-  managed: Record<string, JsonObject[]> | undefined,
-  path: string,
-): Record<string, string[]> {
-  if (!Array.isArray(raw) || raw.some((value) => typeof value !== "string")) {
-    throw new Error(`rhino-local: ${path} must be an array of strings`);
-  }
-  assertDenseArray(raw, path);
-  return parseIdentityCustomAttrs(
-    Object.fromEntries(raw.map((resource) => [resource, []])),
-    managed,
-    path,
-  );
 }

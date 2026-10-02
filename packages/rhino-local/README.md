@@ -361,9 +361,7 @@ object-key ownership. Entries must identify existing records, use dense arrays
 and agree with their IDM projection. Proven bag-owned properties pass profile
 checking on the next run; ordinary properties remain strict. It is not a judged
 channel; producers from 0.1.2 can omit it. Bag writes are judged only through
-`identityWrites`. The earlier `identityCustomAttrsAbsent` input is deprecated:
-it accepts dense full-resource paths, deduplicates and migrates to the map;
-bare IDs now fail to prevent collisions across collections.
+`identityWrites`. Full resource paths prevent collisions across collections.
 
 Every function that takes effects also takes the 0.1.2 shape and normalises
 it: `judgeBoth()`, `chainFromRunResult()` (whose parameter is

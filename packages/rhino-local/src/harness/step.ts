@@ -6,7 +6,6 @@ import type {
   RecordedEffects,
   CompleteRecordedEffects,
 } from "../case/types.ts";
-import { migrateIdentityAbsence } from "../case/identity.ts";
 import type { IdmHandle } from "./types.ts";
 
 /**
@@ -118,10 +117,6 @@ export function carryGiven(
   }
   if (effects.identityCustomAttrs !== undefined) {
     next.identityCustomAttrs = clone(effects.identityCustomAttrs);
-    delete next.identityCustomAttrsAbsent;
-  } else if (effects.identityCustomAttrsAbsent !== undefined) {
-    next.identityCustomAttrs = migrateIdentityAbsence(effects.identityCustomAttrsAbsent, effects.managedStore ?? previous.managed, "effects.identityCustomAttrsAbsent");
-    delete next.identityCustomAttrsAbsent;
   }
   if (effects.managedStore !== undefined) {
     // Records the earlier pass created have to be visible to the later one,
