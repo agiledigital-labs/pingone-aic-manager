@@ -80,25 +80,42 @@ managed-collection actions retain their measured refusal.
 
 ### Identity custom attribute bag
 
-The measured default for `fr-idm-custom-attrs` derives one compact JSON element
-from the managed record's `custom_*` properties (`{}` when none), preserving
+An initial `fr-idm-custom-attrs` seed derives one compact JSON element from
+exactly the managed record's `custom_*` properties (`{}` when none), preserving
 JSON types. Direct IDM custom attribute names read empty. `setAttribute` stages
-values; reads remain persisted until `store()`. One JSON object replaces all
-custom properties, including omitted-key deletion, unknown-key persistence and
-no coercion. `["{}"]` leaves one empty bag; `[]` leaves no bag element. Two
-elements throw AM's errorcode 65 shape, invalid JSON throws 21; nothing changes
-on failure. See the maintainer's 2026-10-02 fixture measurement in
-[`api/14-am-identity-attributes.md`](api/14-am-identity-attributes.md).
+values; reads remain persisted until `store()`. A write preserves any single
+valid JSON text. Object bags expose all keys in IDM, prefix or not, and replace
+the whole bag, deleting omitted owned keys without coercion. `["{}"]` leaves
+one empty bag; `[]` leaves no element. Multiple valid JSON elements throw AM's
+errorcode 65 shape; malformed text anywhere wins with 21. Failures are atomic.
+Ordinary IDM patch/update restores a `[]` clear to `["{}"]`.
+
+AM accepts scalar/array bags, but strings, numbers and arrays then break full
+IDM reads with “Response is not application/json”; `null` permits full reads.
+`_queryFilter` queries with `["_id"]` still work. Other IDM access to non-object
+bags refuses locally as unmeasured. See the maintainer's 2026-10-02 measurements
+from `identity-custom-attrs.script.js` at `42a34b8` and
+`identity-custom-attrs-edges.script.js` at `8f4ff66` in
+[`api/14-am-identity-attributes.md`](api/14-am-identity-attributes.md#fr-idm-custom-attrs).
 
 Expect one `identityWrites` effect named `fr-idm-custom-attrs`, with the original
-string array in `values`. A declared `identityAttributes` layout overrides this
-measured default, as with other attributes. Legacy explicit bag seeds must
-agree with derived `custom_*` values (parsed JSON, order ignored), then are
-canonicalised away; conflicting 0.2.0 workarounds now fail. Optional local
-`identityCustomAttrsAbsent` bookkeeping travels with `managedStore` so callback
-passes retain the `[]`/`["{}"]` distinction without inventing an IDM property.
-It is not a judged channel and does not change AIC eligibility; identity writes
-retain their existing AIC observation gap.
+string array in `values`. A declared `identityAttributes` layout overrides the
+measured default, including the seed contract. Without an override, explicit
+legacy bag seeds must agree with derived `custom_*` values (parsed JSON, order
+ignored), then are canonicalised away; conflicting 0.2.0 workarounds fail.
+Optional local `identityCustomAttrs` metadata travels with `managedStore`,
+keyed by full managed resource path. It preserves AM text, absence and ownership
+of unprefixed keys that a later replacement must delete. Dense arrays and
+projection consistency are validated against the store. Profile checks exempt
+only proven bag-owned keys; ordinary seeded fields remain strict. The legacy
+`identityCustomAttrsAbsent` input migrates dense, deduplicated full-resource paths
+to this map; bare IDs are refused. This metadata is not a judged channel and
+retains existing AIC eligibility/identity-write observation-gap behavior.
+
+Identity wrappers refresh the current record after IDM update. Create/delete
+clears old metadata locally; fresh recreated records derive their own bag.
+That lifecycle is unmeasured, and a retained wrapper after delete/recreate
+refuses with a remedy to get a fresh wrapper.
 
 ### Script name binding
 
