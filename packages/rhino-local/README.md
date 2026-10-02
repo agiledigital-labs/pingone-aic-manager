@@ -399,8 +399,11 @@ Entries must identify existing records and use dense arrays; every currently
 present owned property must project from the current bag. Both current object
 bag keys and historical keys reject `_`-prefixed metadata and known ordinary/OOTB
 AM fields at given/effect validation. Validation and Rhino use one shared layout
-inventory and checker. IDM patch/update also preflight bag synchronization before
-changing the record or metadata, so supplied history cannot promote `givenName`
+inventory and checker from the packaged `identity-policy.cjs` asset. Node requires
+it; Rhino reads canonical file text, so host coverage instrumentation cannot
+introduce missing helpers into the sandbox. IDM patch/update also preflight bag
+synchronization before changing the record or metadata, so supplied history
+cannot promote `givenName`
 or `_rev` into the bag. Only properties actually present in a valid proven bag
 bypass profile checking; ordinary properties and their enum values remain strict.
 Older metadata without an ownership map infers ownership from current bag values,

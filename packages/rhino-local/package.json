@@ -54,7 +54,8 @@
     "java/*.java",
     "LICENSE-APACHE",
     "LICENSE-MIT",
-    "src/bindings/rhino/runtime.cjs"
+    "src/bindings/rhino/runtime.cjs",
+    "src/bindings/rhino/identity-policy.cjs"
   ],
   "engines": {
     "node": ">=24"

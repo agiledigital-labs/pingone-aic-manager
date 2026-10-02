@@ -18,7 +18,9 @@
 #      prebuilt classes are the only way the runner can start;
 #   3. checks nothing was compiled, and that state landed in the consumer's
 #      own self-ignoring `.aic-script-tester/`, not in node_modules;
-#   4. runs the fetch-jar bin.
+#   4. runs the fetch-jar bin;
+#   5. exercises the canonical identity-policy asset from the installed build,
+#      including Node validation and Rhino collision preflight.
 #
 # Needs a JDK 25 to build (nix-shell provides one) and npm registry access, or
 # a warm npm cache, for the consumer's vitest/zod/typescript.
@@ -83,6 +85,8 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineSuite, useLease } from "$name";
 import { validateCase } from "$name/case";
+import { RhinoRunner } from "$name/runner";
+import { mockPreamble, withHarvest, parseHarvest } from "$name/bindings";
 import { tokenCallbackProvider } from "$name/aic";
 import { readFailures, runShowLog } from "$name/diagnostics";
 import { profilePath } from "$name/profile";
@@ -114,6 +118,37 @@ describe("installed rhino-local", () => {
     expect(run.verdict.pass).toBe(false);
   });
 
+  // The policy asset must load from the installed package in both engines.
+  it("shares collision policy between compiled Node and Rhino", async () => {
+    const resource = "managed/alpha_user/example";
+    const managed = { "managed/alpha_user": [{ _id: "example" }] };
+    const seed = { managed, identityCustomAttrs: { [resource]: [] } };
+    expect(() => validateCase({
+      name: "collision", script: 'action.goTo("true");', outcomes: ["true"],
+      given: { ...seed, identityCustomAttrsOwnedKeys: { [resource]: ["givenName"] } },
+      expect: { outcome: "true" },
+    })).toThrow(/collides with/);
+    const runner = await RhinoRunner.spawn();
+    try {
+      const response = await runner.eval({
+        preamble: mockPreamble({ ...seed, identityCustomAttrsOwnedKeys: { [resource]: ["plain"] } }),
+        source: withHarvest([
+          '__rhinoLocal.identityCustomAttrsOwnedKeys["managed/alpha_user/example"].push("givenName");',
+          'try { openidm.patch("managed/alpha_user/example", null, [{operation:"add",field:"plain",value:"partial"},{operation:"add",field:"givenName",value:"invalid"}]); }',
+          'catch(e) { nodeState.putShared("error", String(e)); }',
+          '__rhinoLocal.identityCustomAttrsOwnedKeys["managed/alpha_user/example"] = ["plain"];',
+        ].join("\\n")),
+      });
+      expect(response.outcome, JSON.stringify(response)).toBe("ok");
+      if (typeof response.value !== "string") throw new Error("missing harvest");
+      const effects = parseHarvest(response.value);
+      expect(effects.sharedState.final.error).toMatch(/openidm.patch:.*collides with/);
+      expect(effects.managedStore).toEqual(managed);
+      expect(effects.identityCustomAttrs).toEqual(seed.identityCustomAttrs);
+      expect(effects.identityCustomAttrsOwnedKeys).toEqual({ [resource]: ["plain"] });
+    } finally { await runner.close(); }
+  });
+
   // Positive control for step 1: were the declarations to resolve to \`any\`,
   // this directive would be unused and tsc would fail.
   it("types the inputs from the suite's schema", () => {
@@ -141,6 +176,7 @@ TS
 )
 installed="$consumer/node_modules/$name"
 [[ -d "$installed/dist/classes" ]] || fail "the tarball ships no prebuilt classes"
+[[ -f "$installed/src/bindings/rhino/identity-policy.cjs" ]] || fail "the tarball ships no canonical identity policy"
 [[ ! -e "$installed/test" ]] || fail "the tarball ships the test suite"
 
 (cd "$consumer" && npx tsc -p .) || fail "the consumer does not type-check against the shipped declarations"

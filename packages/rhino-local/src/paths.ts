@@ -74,6 +74,15 @@ export const bindingsRuntimePath = join(
   "runtime.cjs"
 );
 
+/** Canonical AM-safe identity policy, shared as text by Rhino and as CommonJS by Node. */
+export const bindingsIdentityPolicyPath = join(
+  packageRoot,
+  "src",
+  "bindings",
+  "rhino",
+  "identity-policy.cjs"
+);
+
 /** Scripted-decision case files (author scripts + defineCase wrappers). */
 export const casesDir = join(packageRoot, "cases");
 
