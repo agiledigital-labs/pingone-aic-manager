@@ -329,45 +329,56 @@ function parseStateDiff(raw: unknown, path: string): StateDiff {
   return diff;
 }
 
-function parseHttpStub(raw: unknown, path: string): HttpStub {
+/** All reply/failure channels report malformed stub fields in the same shape. */
+function parseStub(raw: unknown, path: string): { match: Record<string, unknown>; reply: Record<string, unknown> } {
   if (!isPlainObject(raw)) {
     throw new Error(`rhino-local: ${path} is not an object`);
   }
   rejectUnknownKeys(path, raw, ["match", "reply"]);
-  if (raw.match === undefined) {
-    throw new Error(`rhino-local: ${path}.match is required`);
+  const fields: Record<string, Record<string, unknown>> = {};
+  for (const key of ["match", "reply"]) {
+    if (raw[key] === undefined) {
+      throw new Error(`rhino-local: ${path}.${key} is required`);
+    }
+    if (!isPlainObject(raw[key])) {
+      throw new Error(`rhino-local: ${path}.${key} is not an object`);
+    }
+    fields[key] = raw[key];
   }
-  if (raw.reply === undefined) {
-    throw new Error(`rhino-local: ${path}.reply is required`);
+  return { match: fields.match as Record<string, unknown>, reply: fields.reply as Record<string, unknown> };
+}
+
+function parseRequiredPattern(raw: unknown, path: string): Pattern {
+  if (raw === undefined) {
+    throw new Error(`rhino-local: ${path} is required`);
   }
+  return parsePattern(raw, path);
+}
+
+function parseHttpStub(raw: unknown, path: string): HttpStub {
+  const stub = parseStub(raw, path);
   return {
-    match: parseHttpMatch(raw.match, `${path}.match`),
-    reply: parseHttpReply(raw.reply, `${path}.reply`),
+    match: parseHttpMatch(stub.match, `${path}.match`),
+    reply: parseHttpReply(stub.reply, `${path}.reply`),
   };
 }
 
 function parseOpenidmActionStub(raw: unknown, path: string): OpenidmActionStub {
-  if (!isPlainObject(raw)) {
-    throw new Error(`rhino-local: ${path} is not an object`);
-  }
-  rejectUnknownKeys(path, raw, ["match", "reply"]);
-  if (!isPlainObject(raw.match) || !isPlainObject(raw.reply)) {
-    throw new Error(`rhino-local: ${path} needs match and reply objects`);
-  }
-  rejectUnknownKeys(`${path}.match`, raw.match, ["resource", "action"]);
-  rejectUnknownKeys(`${path}.reply`, raw.reply, ["body"]);
-  if (typeof raw.match.action !== "string") {
+  const stub = parseStub(raw, path);
+  rejectUnknownKeys(`${path}.match`, stub.match, ["resource", "action"]);
+  rejectUnknownKeys(`${path}.reply`, stub.reply, ["body"]);
+  if (typeof stub.match.action !== "string") {
     throw new Error(`rhino-local: ${path}.match.action must be a string`);
   }
-  if (raw.reply.body === undefined) {
+  if (stub.reply.body === undefined) {
     throw new Error(`rhino-local: ${path}.reply.body is required`);
   }
   return {
     match: {
-      resource: parsePattern(raw.match.resource, `${path}.match.resource`),
-      action: raw.match.action,
+      resource: parseRequiredPattern(stub.match.resource, `${path}.match.resource`),
+      action: stub.match.action,
     },
-    reply: { body: parseJsonValue(raw.reply.body, `${path}.reply.body`) },
+    reply: { body: parseJsonValue(stub.reply.body, `${path}.reply.body`) },
   };
 }
 
@@ -386,28 +397,22 @@ function parseCallCounts(raw: unknown, path: string): Record<string, number> {
 }
 
 function parseOpenidmFailureStub(raw: unknown, path: string): OpenidmFailureStub {
-  if (!isPlainObject(raw)) {
-    throw new Error(`rhino-local: ${path} is not an object`);
-  }
-  rejectUnknownKeys(path, raw, ["match", "reply"]);
-  if (!isPlainObject(raw.match) || !isPlainObject(raw.reply)) {
-    throw new Error(`rhino-local: ${path} needs match and reply objects`);
-  }
-  rejectUnknownKeys(`${path}.match`, raw.match, ["method", "resource", "ordinal"]);
-  rejectUnknownKeys(`${path}.reply`, raw.reply, ["code"]);
-  if (!Number.isInteger(raw.match.ordinal) || (raw.match.ordinal as number) < 1) {
+  const stub = parseStub(raw, path);
+  rejectUnknownKeys(`${path}.match`, stub.match, ["method", "resource", "ordinal"]);
+  rejectUnknownKeys(`${path}.reply`, stub.reply, ["code"]);
+  if (!Number.isInteger(stub.match.ordinal) || (stub.match.ordinal as number) < 1) {
     throw new Error(`rhino-local: ${path}.match.ordinal must be a positive integer`);
   }
-  if (!Number.isInteger(raw.reply.code) || (raw.reply.code as number) < 400 || (raw.reply.code as number) > 599) {
+  if (!Number.isInteger(stub.reply.code) || (stub.reply.code as number) < 400 || (stub.reply.code as number) > 599) {
     throw new Error(`rhino-local: ${path}.reply.code must be an HTTP error code (400–599)`);
   }
   return {
     match: {
-      method: parseOpenidmMethod(raw.match.method, `${path}.match.method`),
-      resource: parsePattern(raw.match.resource, `${path}.match.resource`),
-      ordinal: raw.match.ordinal as number,
+      method: parseOpenidmMethod(stub.match.method, `${path}.match.method`),
+      resource: parseRequiredPattern(stub.match.resource, `${path}.match.resource`),
+      ordinal: stub.match.ordinal as number,
     },
-    reply: { code: raw.reply.code as number },
+    reply: { code: stub.reply.code as number },
   };
 }
 
@@ -416,10 +421,7 @@ function parseHttpMatch(raw: unknown, path: string): HttpMatch {
     throw new Error(`rhino-local: ${path} is not an object`);
   }
   rejectUnknownKeys(path, raw, ["url", "method"]);
-  if (raw.url === undefined) {
-    throw new Error(`rhino-local: ${path}.url is required`);
-  }
-  const match: HttpMatch = { url: parsePattern(raw.url, `${path}.url`) };
+  const match: HttpMatch = { url: parseRequiredPattern(raw.url, `${path}.url`) };
   assignOptionalString(match, "method", raw.method, `${path}.method`);
   return match;
 }
