@@ -173,7 +173,7 @@ the element is JSON text, so use `JSON.parse(String(v.toArray()[0]))`, never
 2026-09-10 both ways: through the next-gen `getAttributeValues` (count 1,
 `String(v)` is `[{}]`, `charAt`/`substring` throw) and through the classic
 `AMIdentity.getAttribute` (a `HashSet`, count 0 on an agent identity that has
-no such attribute). Nothing about this attribute's object-ness changes the
+no such attribute). The attribute's JSON content does not change the
 container — the shape is a property of the method, and the populated control
 (`com.forgerock.openam.oauth2provider.clientType`, count 1) reports the same
 members as the empty case.
@@ -219,8 +219,8 @@ properties:
   leaving the bag unchanged. Malformed text wins in either position; 65 applies
   to multiple elements only when every element is valid JSON.
 - Every single-element write below succeeded, and a fresh AM wrapper returned
-  exactly the text written. The bag is AM's source of truth; IDM exposes every
-  key of an object bag, including unprefixed keys, as a record property.
+  exactly the text written. The bag is AM's source of truth; object-bag keys
+  appear as IDM record properties, including unprefixed keys.
 
 | Bag element text | Fresh AM read-back | IDM observation |
 | --- | --- | --- |
@@ -240,6 +240,37 @@ After a `[]` clear (AM bag size 0), an IDM patch of the ordinary `givenName`
 property restored `["{}"]` (size 1). Updating the whole record read back from
 IDM did the same. Create and delete/recreate were not measured.
 
+**Boolean read and string delete — measured 2026-10-02 by the maintainer**
+with `scripts/rhino-script-tester/fixtures/identity-custom-attrs-nonobject.script.js`
+at `f7d684b`, a throwaway managed user with no custom schema properties:
+
+- `["true"]` persisted, and AM read back the text `true`. A full `openidm.read`
+  threw the same `ResourceExceptionScriptAdapter: Response is not application/json`.
+  Boolean bags therefore join strings, numbers and arrays in the full-read
+  failure category; JSON `null` still permits a full read.
+- `openidm.delete` of a user with the string bag `["\"x\""]` threw that same
+  adapter error. An `_id`-only filtered query confirmed the user still existed.
+  An external REST DELETE returned HTTP 500. Writing `["{}"]` through AM
+  restored deletability; the subsequent REST DELETE returned HTTP 200.
+- Delete with number, array, boolean or null bags was **not measured**. Neither
+  was a boolean-bag query. Full-read failure alone establishes no delete or
+  query outcome for those categories.
+
+The local script binding uses the following measured categories and refusals:
+
+| Persisted JSON category | Full `openidm.read` | `_queryFilter` with `["_id"]` | `openidm.delete` |
+| --- | --- | --- | --- |
+| object, or zero-element bag | existing object behavior | existing object behavior | existing object behavior |
+| string | measured adapter error | row returned | measured adapter error; record retained |
+| number, array | measured adapter error | row returned | unmeasured refusal |
+| boolean | measured adapter error | unmeasured refusal | unmeasured refusal |
+| null | full read works | row returned | unmeasured refusal |
+
+Projected reads, other query shapes, patch/update and create against an existing
+non-object-bag resource refuse as unmeasured before changing that record.
+A local refusal names the JSON category and directs the script to restore an
+object bag through AM.
+
 The local harness derives an initial bag from seeded IDM `custom_*` properties
 only; ordinary seeded properties cannot be distinguished from bag keys. After
 `store()`, optional resource-keyed `identityCustomAttrs` metadata preserves the
@@ -255,13 +286,29 @@ the canonical seed. Conflicts fail with a remedy pointing at `custom_*`.
 A declared layout overrides the measured default **and exempts its seeds from
 this normalization**, just as other declared layouts override measurements.
 
-For a non-object persisted bag, the local lane models only the full read and
-`_queryFilter` query projected to `["_id"]` above; other projected reads, query
-shapes, patch and update refuse with an unmeasured error. It clears bag metadata
-on create/delete and derives the bag of a fresh recreated record from its seed;
-this lifecycle choice is not a tenant measurement. Retained identity wrappers
-refresh after update; using one after delete/recreate refuses as unmeasured and
-requires a fresh wrapper.
+**Local collision policy, not a tenant measurement:** before persisting, the
+harness refuses bag keys beginning with `_` (including `_id` and `_rev`), known
+ordinary/OOTB identity fields such as `givenName`, and any field targeted by a
+suite's `identityAttributes` declaration. It also refuses an ordinary or
+declared-layout identity write to a currently bag-owned property. Checks cover
+both pending-attribute orders and recheck ownership at `store()`; an unmeasured
+collision cannot partially apply another pending write or first surface at
+harvest. Use non-overlapping bag keys and declared fields. Reserved metadata
+collisions are intentionally not probed on a tenant.
+
+Public harness `check(idm)`/cleanup handles receive the same bag metadata in
+step and final checks. External materialized read/query behavior for non-object
+bags is not established by the AM adapter measurements, so these handles refuse
+as unmeasured, including JSON null. String-bag delete reports the measured REST
+500 failure; the other non-object deletes refuse as unmeasured. Object-bag
+checks retain their ordinary behavior. Final check store/metadata clones keep
+housekeeping out of recorded effects.
+
+Successful local create/delete clears old bag metadata, and fresh recreated
+records derive their own bag. That recreation policy remains unmeasured;
+retained wrappers after delete/recreate refuse and require a fresh wrapper.
+Update refreshes wrappers from the current record. The measured failed
+string-bag delete leaves both record and metadata unchanged.
 
 ### Relationship attributes are NOT exposed via scripted-decision `getAttributeValues` (verified)
 Probed with two purpose-built users — A (`probe-rpt-a`) with `manager` → B
@@ -354,7 +401,7 @@ side was read with `openidm.read(path, null, [field])` in the same pass.
 | `fr-attr-date1`, `fr-attr-idate1` | ISO string (`"20261001120000Z"` → `"2026-10-01T12:00:00Z"`) | **throws** 65 | removed | LDAP GeneralizedTime `YYYYMMDDHHMMSSZ`; an ISO timestamp, a bare `2026-10-03` and free text **throw** 21 |
 | `givenName`, `telephoneNumber`, `mail` | string | **array** | removed | any string |
 | `sn` | string | array | **throws** 65 (required) | any string |
-| `fr-idm-custom-attrs` (2026-10-02) | whole-bag replace; object keys exposed in IDM, including unprefixed keys | **throws** 65 if all JSON is valid, otherwise 21 | all bag-owned properties removed; AM bag size 0 | one valid JSON string; malformed text **throws** 21; `["{}"]` reads one `{}`; scalar/array JSON can break full IDM reads (see above) |
+| `fr-idm-custom-attrs` (2026-10-02) | whole-bag replace; object keys exposed in IDM, including unprefixed keys | **throws** 65 if all JSON is valid, otherwise 21 | all bag-owned properties removed; AM bag size 0 | one valid JSON string; malformed text **throws** 21; `["{}"]` reads one `{}`; string/number/array/boolean JSON breaks full IDM reads; string bags also block delete (see above) |
 | `displayName` | string | unmeasured | unmeasured | any string |
 | `cn` | not in IDM at all | unmeasured | **throws** 65 (required) | any string |
 

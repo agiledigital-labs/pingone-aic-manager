@@ -90,12 +90,17 @@ one empty bag; `[]` leaves no element. Multiple valid JSON elements throw AM's
 errorcode 65 shape; malformed text anywhere wins with 21. Failures are atomic.
 Ordinary IDM patch/update restores a `[]` clear to `["{}"]`.
 
-AM accepts scalar/array bags, but strings, numbers and arrays then break full
-IDM reads with “Response is not application/json”; `null` permits full reads.
-`_queryFilter` queries with `["_id"]` still work. Other IDM access to non-object
-bags refuses locally as unmeasured. See the maintainer's 2026-10-02 measurements
+AM accepts non-object JSON bags, but strings, numbers, arrays and booleans then
+break full IDM reads with “Response is not application/json”; `null` permits
+full reads. `_queryFilter` queries with `["_id"]` work for string/number/array/null
+bags; boolean queries are unmeasured and refused. String-bag delete throws the
+same adapter error without deleting the user, and REST DELETE returns 500.
+An AM `["{}"]` reset makes the user deletable again. Number/array/boolean/null
+deletes are unmeasured and refused. Other non-object IDM access refuses locally
+as unmeasured before mutation. See the maintainer's 2026-10-02 measurements
 from `identity-custom-attrs.script.js` at `42a34b8` and
-`identity-custom-attrs-edges.script.js` at `8f4ff66` in
+`identity-custom-attrs-edges.script.js` at `8f4ff66`, plus
+`identity-custom-attrs-nonobject.script.js` at `f7d684b`, in
 [`api/14-am-identity-attributes.md`](api/14-am-identity-attributes.md#fr-idm-custom-attrs).
 
 Expect one `identityWrites` effect named `fr-idm-custom-attrs`, with the original
@@ -111,8 +116,29 @@ only proven bag-owned keys; ordinary seeded fields remain strict. This metadata
 is not a judged channel and retains existing AIC eligibility/identity-write
 observation-gap behavior.
 
-Identity wrappers refresh the current record after IDM update. Create/delete
-clears old metadata locally; fresh recreated records derive their own bag.
+Collision behavior is unmeasured. The local lane refuses bag keys colliding
+with `_`-prefixed metadata, known ordinary/OOTB identity fields or declared
+layout targets, and ordinary/declared identity writes to currently bag-owned
+properties. Staging and store checks prevent partial persistence and recheck
+ownership when another write occurred after staging. Distinct keys remain
+allowed in either pending-attribute order.
+
+Both step and final public `check(idm)`/cleanup handles receive bag metadata.
+Non-object external materialized reads/queries are unmeasured and refuse,
+including null; string deletes report the measured REST 500 failure, while
+other non-object deletes refuse as unmeasured. Object/empty-bag handles retain
+normal behavior. Final checks clone metadata with the store so successful
+cleanup cannot rewrite recorded evidence.
+
+Parent/child field projection retains exactly the reference envelope documented
+in [`api/10-managed-objects.md`](api/10-managed-objects.md): `_id`, `_rev`, `_ref`,
+`_refResourceCollection`, `_refResourceId`, `_refResourceRev`, `_refProperties`.
+Other underscore siblings require an explicit selector. Traversed scalar/null/
+array parents, unresolved references and reference expansion refuse as
+unmeasured; seed requested children on a pre-expanded object parent.
+
+Identity wrappers refresh the current record after IDM update. Successful local
+create/delete clears old metadata; fresh recreated records derive their own bag.
 That lifecycle is unmeasured, and a retained wrapper after delete/recreate
 refuses with a remedy to get a fresh wrapper.
 

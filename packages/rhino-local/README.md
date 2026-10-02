@@ -218,19 +218,36 @@ contract. Reads show persisted values until `store()`.
 
 A bag write preserves its exact JSON text. Object bags expose every key as an
 IDM property, including unknown `custom_*` keys, nested values and unprefixed
-keys such as `plain`, with no type coercion. Whole-bag replacement deletes
-omitted bag-owned keys. `["{}"]` leaves one empty-object element; `[]` leaves
+keys such as `plain`, with no type coercion. Collisions are unmeasured and
+refused before persistence: `_`-prefixed record metadata, known ordinary/OOTB
+identity fields and declared `identityAttributes` target fields cannot be bag
+keys. Ordinary or declared-layout identity writes cannot target a currently
+bag-owned property either, even if another pending bag write would remove it.
+Ownership is rechecked at `store()` so a change after staging is caught before
+persistence. Use non-overlapping bag keys and declared fields. Whole-bag
+replacement deletes omitted bag-owned keys. `["{}"]` leaves one empty-object element; `[]` leaves
 size 0. An ordinary IDM patch or update restores a cleared bag to `["{}"]`.
 Multiple valid JSON elements throw errorcode 65; malformed text throws 21 in
 any position, even with multiple elements. These failures are atomic.
 
-A single JSON string, number, array or `null` also persists and reads back
-through AM. **Tenant hazard:** string, number and array bags make a full IDM
-read throw “Response is not application/json”; JSON `null` permits that read.
-An `_id`-only filtered query still works. Other IDM access to a non-object bag
-(projected reads, other query shapes, patch and update) refuses locally as
-unmeasured. See the maintainer's 2026-10-02
-[edge measurements](../../docs/api/14-am-identity-attributes.md#fr-idm-custom-attrs).
+A single JSON string, number, array, boolean or `null` also persists and reads
+back through AM. **Tenant hazard:** string, number, array and boolean bags make
+a full IDM read throw “Response is not application/json”; JSON `null` permits
+that read. A string bag also makes `openidm.delete` fail without deleting the
+record (REST DELETE returns 500); restoring `["{}"]` through AM permits deletion.
+Other non-object deletes are unmeasured and refused locally. `_id`-only filtered
+queries work for string/number/array/null bags; boolean queries are unmeasured.
+Other projected reads, query shapes and IDM mutations refuse locally before
+changing the record. See the maintainer's 2026-10-02
+[edge measurements](../../docs/api/14-am-identity-attributes.md#fr-idm-custom-attrs),
+including `identity-custom-attrs-nonobject.script.js` at `f7d684b`.
+
+Both public `check(idm)` handles receive bag metadata. Non-object materialized
+read/query behavior through the external handle is unmeasured, so checks refuse
+it (including null); string deletes report the measured REST failure and other
+non-object deletes refuse as unmeasured. Final checks clone metadata alongside
+the store, keeping housekeeping out of recorded effects.
+
 Declare one effect for the bag using the original string array, not one per IDM key:
 
 ```ts
@@ -249,8 +266,8 @@ still wins and exempts that attribute's seeds from this normalization,
 consistently with other measured overrides, and stays AIC-eligible.
 
 Identity wrappers resolve the current persisted record after IDM update. Create
-and delete/recreate bag lifecycle is unmeasured: locally those operations clear
-old bag metadata, and fresh wrappers derive the new seed's bag. A retained
+and delete/recreate bag lifecycle is unmeasured: successful local operations
+clear old bag metadata, and fresh wrappers derive the new seed's bag. A retained
 wrapper after delete/recreate refuses and requires a fresh wrapper.
 
 Any other attribute — a tenant's own, say — throws until you declare how the
