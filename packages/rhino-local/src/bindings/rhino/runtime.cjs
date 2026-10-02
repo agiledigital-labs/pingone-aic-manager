@@ -2571,6 +2571,17 @@ var __rhinoLocalIdentityStandard = {
   mail: { field: "mail", none: "remove", one: "scalar", many: "array", syntax: null },
   telephoneNumber: { field: "telephoneNumber", none: "remove", one: "scalar", many: "array", syntax: null },
 };
+// Documented ordinary IDM targets whose AM write layout is not measured here.
+// Guard-only inventory: these names do not enable getters or writes.
+var __rhinoLocalIdentityDocumentedFields = [
+  "userName", "cn", "accountStatus", "displayName", "description", "password",
+  "postalAddress", "city", "stateProvince", "postalCode", "country", "aliasList",
+  "applications", "ownerOfApp", "assignedDashboard", "assignments", "consentedMappings",
+  "reports", "manager", "passwordLastChangedTime", "passwordExpirationTime", "groups",
+  "roles", "kbaInfo", "preferences", "profileImage", "adminOfOrg", "ownerOfOrg",
+  "memberOfOrg", "memberOfOrgIDs", "taskPrincipals", "deviceProfiles", "devicePrintProfiles",
+  "webauthnDeviceProfiles", "oathDeviceProfiles", "pushDeviceProfiles", "fr-idm-custom-attrs"
+];
 var __rhinoLocalIdentityMeasuredNames =
   "fr-attr-str1..5, fr-attr-istr1..20, fr-attr-multi1..5, fr-attr-imulti1..5, fr-attr-int1..5, " +
   "fr-attr-iint1..5, fr-attr-date1..5, fr-attr-idate1..5, givenName, sn, mail, telephoneNumber, fr-idm-custom-attrs";
@@ -2691,42 +2702,108 @@ function __rhinoLocalIdentityLayout(name) {
   return null;
 }
 
-// Collision behavior is unmeasured. Refuse known OOTB/declared targets rather
-// than let a bag corrupt metadata or give one property two identity owners.
-var __rhinoLocalIdentityOtherFields = [
-  "userName", "cn", "givenName", "sn", "mail", "telephoneNumber", "accountStatus",
-  "displayName", "description", "password", "postalAddress", "city", "stateProvince",
-  "postalCode", "country", "aliasList", "applications", "ownerOfApp", "assignedDashboard",
-  "assignments", "consentedMappings", "reports", "manager", "passwordLastChangedTime",
-  "passwordExpirationTime", "groups", "roles", "kbaInfo", "preferences", "profileImage",
-  "adminOfOrg", "ownerOfOrg", "memberOfOrg", "memberOfOrgIDs", "taskPrincipals",
-  "deviceProfiles", "devicePrintProfiles", "webauthnDeviceProfiles", "oathDeviceProfiles",
-  "pushDeviceProfiles", "fr-idm-custom-attrs"
-];
+// Collision behavior is unmeasured. Known ordinary AM targets come from the
+// same layout inventory as reads/writes; declarations may override bag keys.
+function __rhinoLocalIdentityOrdinaryField(property) {
+  if (__rhinoLocalIdentityDocumentedFields.indexOf(property) !== -1) { return true; }
+  if (Object.keys(__rhinoLocalIdentityStandard).some(function (name) {
+    return __rhinoLocalIdentityStandard[name].field === property;
+  })) { return true; }
+  return __rhinoLocalIdentityFamilies.some(function (family) {
+    // Keep the measured family's numeric bounds, replacing only its AM prefix.
+    var pattern = family[0].source.replace(/^\^fr-attr-[^(]+/, "^" + family[1]);
+    return new RegExp(pattern).test(property);
+  });
+}
 function __rhinoLocalBagCollision(method, property, reason) {
   throw new Error("rhino-local: idRepository.getIdentity()." + method + ": fr-idm-custom-attrs key " +
     JSON.stringify(property) + " collides with " + reason + "; this identity mapping is unmeasured; use non-overlapping bag keys and identityAttributes fields");
 }
 function __rhinoLocalCheckBagKeys(bag) {
   if (!__rhinoLocalIsPlainObject(bag)) { return; }
-  var declared = __rhinoLocal.identityAttributes || {};
   Object.keys(bag).forEach(function (property) {
     if (property.charAt(0) === "_") {
       __rhinoLocalBagCollision("store", property, "reserved record metadata");
     }
-    if (__rhinoLocalIdentityOtherFields.indexOf(property) !== -1 ||
-        /^fr(Unindexed|Indexed)(String|Multivalued|Integer|Date)[0-9]+$/.test(property) ||
-        Object.keys(declared).some(function (name) { return declared[name].field === property; })) {
+    if (__rhinoLocalIdentityOrdinaryField(property)) {
       __rhinoLocalBagCollision("store", property, "another AM attribute's IDM field");
     }
   });
 }
-function __rhinoLocalCheckBagTarget(method, resource, record, layout) {
-  if (layout.syntax === "bag") { return; }
-  var bag = __rhinoLocalBagObject(__rhinoLocalCustomBag(resource, record));
-  if (__rhinoLocalIsPlainObject(bag) && __rhinoLocalHas(bag, layout.field)) {
-    __rhinoLocalBagCollision(method, layout.field, "a write targeting a currently bag-owned property");
+
+// Preflight the whole store on copies. A declared key write changes the object
+// bag alongside the record, including when [] previously made the bag absent.
+// Nothing is applied or recorded until every transition is representable.
+function __rhinoLocalPlanIdentityStore(resource, record, plan) {
+  var next = __rhinoLocalClone(record);
+  var values = __rhinoLocalCustomBag(resource, record);
+  var previous = __rhinoLocalBagObject(values);
+  var changed = false;
+  var replacement = plan.filter(function (step) { return step.rule === "bag"; })[0];
+  if (replacement) {
+    plan.forEach(function (step) {
+      if (step === replacement) { return; }
+      var property = step.layout.field;
+      var incoming = replacement.converted[0];
+      if (property.indexOf("custom_") === 0 ||
+          (__rhinoLocalIsPlainObject(previous) && __rhinoLocalHas(previous, property)) ||
+          (__rhinoLocalIsPlainObject(incoming) && __rhinoLocalHas(incoming, property))) {
+        __rhinoLocalBagCollision("store", property, "a bag replacement and another attribute write in the same store");
+      }
+    });
   }
+  plan.forEach(function (step) {
+    if (step.rule === "bag") {
+      Object.keys(next).forEach(function (property) {
+        if (property.indexOf("custom_") === 0 ||
+            (__rhinoLocalIsPlainObject(previous) && __rhinoLocalHas(previous, property))) {
+          delete next[property];
+        }
+      });
+      var bag = step.converted[0];
+      if (__rhinoLocalIsPlainObject(bag)) {
+        Object.keys(bag).forEach(function (property) { next[property] = bag[property]; });
+      }
+      values = step.given.slice();
+      previous = __rhinoLocalBagObject(values);
+      changed = true;
+      return;
+    }
+    var property = step.layout.field;
+    var bagKey = property.indexOf("custom_") === 0 ||
+      (__rhinoLocalIsPlainObject(previous) && __rhinoLocalHas(previous, property));
+    if (bagKey && !__rhinoLocalIsPlainObject(previous)) {
+      throw new Error("rhino-local: idRepository.getIdentity().store: replacing " +
+        JSON.stringify(property) + " within a non-object fr-idm-custom-attrs bag (" +
+        __rhinoLocalBagCategory(previous) + ") is unmeasured; restore an object bag through AM in a separate store before this write");
+    }
+    if (step.rule === "remove") {
+      delete next[property];
+    } else if (step.rule === "empty") {
+      next[property] = [];
+    } else if (step.rule === "scalar") {
+      next[property] = step.converted[0];
+    } else {
+      next[property] = step.converted.slice();
+    }
+    if (bagKey) {
+      __rhinoLocalCheckBagKeys(previous);
+      if (__rhinoLocalIdentityOrdinaryField(property)) {
+        __rhinoLocalBagCollision("store", property, "another AM attribute's IDM field");
+      }
+      if (__rhinoLocalHas(next, property)) {
+        previous[property] = next[property];
+      } else {
+        delete previous[property];
+      }
+      values = [JSON.stringify(previous)];
+      changed = true;
+    }
+  });
+  if (next._id !== record._id) {
+    throw new Error("rhino-local: idRepository.getIdentity().store: changing the identity resource through an _id layout is unmeasured; keep the existing _id");
+  }
+  return { record: next, bag: values, changed: changed };
 }
 
 // The exception AM's store() throws when DS refuses the modify (measured text).
@@ -2921,7 +2998,6 @@ idRepository.getIdentity = function (userName) {
     if (layout === null) {
       throw unmeasured(method, name, "how AM stores " + JSON.stringify(String(name)) + " in IDM is unmeasured, so the local lane refuses the write");
     }
-    __rhinoLocalCheckBagTarget(method, resource, found, layout);
     return layout;
   }
   function values(name) {
@@ -3027,7 +3103,6 @@ idRepository.getIdentity = function (userName) {
       // bad attribute in a single store()).
       for (i = 0; i < names.length; i += 1) {
         var layout = __rhinoLocalIdentityLayout(names[i]);
-        __rhinoLocalCheckBagTarget("store", resource, found, layout);
         var given = pending[names[i]];
         var rule = given.length === 0 ? layout.none : given.length === 1 ? layout.one : layout.many;
         if (rule === "unmeasured") {
@@ -3083,29 +3158,14 @@ idRepository.getIdentity = function (userName) {
       if (codes.length === 1) {
         throw __rhinoLocalIdentityUpdateError(codes[0]);
       }
+      var prepared = __rhinoLocalPlanIdentityStore(resource, found, plan);
+      Object.keys(found).forEach(function (property) { delete found[property]; });
+      Object.keys(prepared.record).forEach(function (property) { found[property] = prepared.record[property]; });
+      if (prepared.changed) {
+        __rhinoLocal.identityCustomAttrs[resource] = prepared.bag;
+      }
       for (i = 0; i < plan.length; i += 1) {
         var step = plan[i];
-        if (step.rule === "bag") {
-          var previous = __rhinoLocalBagObject(__rhinoLocalCustomBag(resource, found));
-          Object.keys(found).forEach(function (property) {
-            if (property.indexOf("custom_") === 0 || (__rhinoLocalIsPlainObject(previous) && __rhinoLocalHas(previous, property))) {
-              delete found[property];
-            }
-          });
-          var bag = step.converted[0];
-          if (__rhinoLocalIsPlainObject(bag)) {
-            Object.keys(bag).forEach(function (property) { found[property] = bag[property]; });
-          }
-          __rhinoLocal.identityCustomAttrs[resource] = step.given.slice();
-        } else if (step.rule === "remove") {
-          delete found[step.layout.field];
-        } else if (step.rule === "empty") {
-          found[step.layout.field] = [];
-        } else if (step.rule === "scalar") {
-          found[step.layout.field] = step.converted[0];
-        } else {
-          found[step.layout.field] = step.converted.slice();
-        }
         __rhinoLocal.identityWrites.push({
           identity: String(found._id),
           attribute: step.name,

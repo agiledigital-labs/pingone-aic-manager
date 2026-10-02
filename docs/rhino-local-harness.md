@@ -117,11 +117,22 @@ is not a judged channel and retains existing AIC eligibility/identity-write
 observation-gap behavior.
 
 Collision behavior is unmeasured. The local lane refuses bag keys colliding
-with `_`-prefixed metadata, known ordinary/OOTB identity fields or declared
-layout targets, and ordinary/declared identity writes to currently bag-owned
-properties. Staging and store checks prevent partial persistence and recheck
-ownership when another write occurred after staging. Distinct keys remain
-allowed in either pending-attribute order.
+with `_`-prefixed metadata or known ordinary/OOTB identity fields. It also
+refuses a whole-bag replacement and another AM attribute write targeting the
+same property in one store, in either pending order; replacements touch the
+whole `custom_*` set, including removed keys. Distinct targets remain allowed.
+
+Declared layouts retain precedence over inferred and persisted bag contents.
+A declared `custom_*` write replaces only its key in the object bag while
+updating the record, preserving other keys. A prior absent `[]` bag becomes
+one object element; single-value clears remove the key and multi-value clears
+retain `[]`. Unused declarations do not prevent whole-bag clearing, and a
+declaration for `fr-idm-custom-attrs` itself still overrides the default and
+seed normalization. Declared writes to persisted unprefixed bag keys follow
+the same key-replacement rule. A key replacement within a non-object bag
+(including JSON null), or changing the identity resource via an `_id` layout,
+refuses as unmeasured. Preflight uses the current record and bag, including IDM
+writes after staging, before applying or recording any part of the store.
 
 Both step and final public `check(idm)`/cleanup handles receive bag metadata.
 Non-object external materialized reads/queries are unmeasured and refuse,

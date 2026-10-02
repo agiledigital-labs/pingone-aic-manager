@@ -219,13 +219,23 @@ contract. Reads show persisted values until `store()`.
 A bag write preserves its exact JSON text. Object bags expose every key as an
 IDM property, including unknown `custom_*` keys, nested values and unprefixed
 keys such as `plain`, with no type coercion. Collisions are unmeasured and
-refused before persistence: `_`-prefixed record metadata, known ordinary/OOTB
-identity fields and declared `identityAttributes` target fields cannot be bag
-keys. Ordinary or declared-layout identity writes cannot target a currently
-bag-owned property either, even if another pending bag write would remove it.
-Ownership is rechecked at `store()` so a change after staging is caught before
-persistence. Use non-overlapping bag keys and declared fields. Whole-bag
-replacement deletes omitted bag-owned keys. `["{}"]` leaves one empty-object element; `[]` leaves
+refused before persistence: `_`-prefixed record metadata and known ordinary/OOTB
+identity fields cannot be bag keys. A whole-bag replacement and another AM
+attribute write cannot target the same property in one `store()`, in either
+pending order; use separate stores for those writes. A replacement touches the
+whole `custom_*` set, including keys it removes. Distinct targets can share a store.
+
+Declared `identityAttributes` layouts retain precedence: an alias mapped to a
+`custom_*` property can write it whether seeded or bag-written. Each accepted
+key write updates the persisted object bag and record together, preserves other
+keys, and restores an absent `[]` bag to one object element. Single-valued clears
+remove that key; multi-valued clears leave its value as `[]`. An unused
+declaration permits clearing the whole bag. A declaration of
+`fr-idm-custom-attrs` itself still overrides the default and its seed contract.
+Key writes into non-object bags (including JSON null) refuse as unmeasured;
+restore an object bag in a separate store first. An `_id` declaration cannot
+change the identity resource. Every transition is preflighted before applying
+or recording any pending write. Whole-bag replacement deletes omitted bag-owned keys. `["{}"]` leaves one empty-object element; `[]` leaves
 size 0. An ordinary IDM patch or update restores a cleared bag to `["{}"]`.
 Multiple valid JSON elements throw errorcode 65; malformed text throws 21 in
 any position, even with multiple elements. These failures are atomic.

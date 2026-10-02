@@ -21,6 +21,35 @@ const adapterError =
 
 describe("pre-mutation bag guards (round 3 #1/#3)", () => {
   for (const first of ["bag", "ordinary"]) {
+    it.each(["declaredField", "custom_mapped"])(
+      `${first} first: an unused declaration permits bag key %s`,
+      (key) => {
+        const text = JSON.stringify({ [key]: "value" });
+        const bag = stageBag(text);
+        const ordinary = 'identity.setAttribute("givenName", ["Changed"]);';
+        const effects = runScript(
+          identity +
+            (first === "bag" ? bag + ordinary : ordinary + bag) +
+            "identity.store();" +
+            readBag,
+          {
+            ...seed,
+            identityAttributes: {
+              alias: { field: "declaredField", cardinality: "single" },
+              customAlias: { field: "custom_mapped", cardinality: "single" },
+            },
+          },
+        );
+        expect(effects.managedStore).toEqual({
+          "managed/alpha_user": [
+            { _id: "example", _rev: "1", givenName: "Changed", [key]: "value" },
+          ],
+        });
+        expect(effects.identityWrites).toHaveLength(2);
+        expect(effects.sharedState.final.bag).toBe(text);
+      },
+    );
+
     // A contradiction must never reach harvest, regardless of store ordering.
     it.each([
       "_id",
@@ -34,8 +63,6 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
       "userName",
       "accountStatus",
       "frIndexedString1",
-      "declaredField",
-      "custom_mapped",
       "fr-idm-custom-attrs",
     ])(`${first} first: refuses collision %s and applies nothing`, (key) => {
       const bag = stageBag(
@@ -99,53 +126,67 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
 
   for (const method of ["setAttribute", "addAttribute"]) {
     for (const first of ["target", "clear"]) {
-      it.each(["givenName", "alias"])(
-        `${method}, ${first} first: refuses %s targeting current bag ownership`,
-        (name) => {
-          const row = {
-            _id: "example",
-            _rev: "1",
-            givenName: "Original",
-            custom_owned: "old",
-          };
-          const bagText = '{"givenName":"Original","custom_owned":"old"}';
-          const target = `identity.${method}(${JSON.stringify(name)}, ${method === "setAttribute" ? '["Changed"]' : '"Changed"'});`;
-          const clear = 'identity.setAttribute("fr-idm-custom-attrs", []);';
-          const effects = runScript(
-            identity +
-              catchCall(
-                (first === "target" ? target + clear : clear + target) +
-                  "identity.store();",
-              ) +
-              readBag,
-            {
-              managed: { "managed/alpha_user": [row] },
-              identityCustomAttrs: { [resource]: [bagText] },
-              identityAttributes: {
-                alias: { field: "custom_owned", cardinality: "single" },
-              },
+      it(`${method}, ${first} first: refuses ordinary bag-owned givenName before any mutation`, () => {
+        const row = { _id: "example", _rev: "1", givenName: "Original" };
+        const text = '{"givenName":"Original"}';
+        const target = `identity.${method}("givenName", ${method === "setAttribute" ? '["Changed"]' : '"Changed"'});`;
+        const clear = 'identity.setAttribute("fr-idm-custom-attrs", []);';
+        const effects = runScript(
+          identity +
+            catchCall(
+              (first === "target" ? target + clear : clear + target) +
+                "identity.store();",
+            ),
+          {
+            managed: { "managed/alpha_user": [row] },
+            identityCustomAttrs: { [resource]: [text] },
+          },
+        );
+        expect(effects.sharedState.final.error).toMatch(
+          /another AM attribute's IDM field.*unmeasured/,
+        );
+        expect(effects.identityWrites).toEqual([]);
+        expect(effects.managedStore).toEqual({ "managed/alpha_user": [row] });
+        expect(effects.identityCustomAttrs).toEqual({ [resource]: [text] });
+      });
+
+      it(`${method}, ${first} first: refuses a bag replacement and a declared key write in one store`, () => {
+        const row = { _id: "example", _rev: "1", custom_owned: "old" };
+        const bagText = '{"custom_owned":"old"}';
+        const target = `identity.${method}("alias", ${method === "setAttribute" ? '["Changed"]' : '"Changed"'});`;
+        const clear = 'identity.setAttribute("fr-idm-custom-attrs", []);';
+        const effects = runScript(
+          identity +
+            catchCall(
+              (first === "target" ? target + clear : clear + target) +
+                "identity.store();",
+            ) +
+            readBag,
+          {
+            managed: { "managed/alpha_user": [row] },
+            identityCustomAttrs: { [resource]: [bagText] },
+            identityAttributes: {
+              alias: { field: "custom_owned", cardinality: "multi" },
             },
-          );
-          expect(effects.sharedState.final.error).toMatch(
-            /currently bag-owned property.*unmeasured/,
-          );
-          expect(effects.managedStore).toEqual({ "managed/alpha_user": [row] });
-          expect(effects.identityCustomAttrs).toEqual({
-            [resource]: [bagText],
-          });
-          expect(effects.identityWrites).toEqual([]);
-        },
-      );
+          },
+        );
+        expect(effects.sharedState.final.error).toMatch(
+          /bag replacement and another attribute write in the same store.*unmeasured/,
+        );
+        expect(effects.managedStore).toEqual({ "managed/alpha_user": [row] });
+        expect(effects.identityCustomAttrs).toEqual({ [resource]: [bagText] });
+        expect(effects.identityWrites).toEqual([]);
+      });
     }
   }
 
-  it("rechecks ownership at store when it changed after staging", () => {
+  it("resolves the current bag at store after an intervening IDM patch", () => {
     const row = { _id: "example", _rev: "1", givenName: "Original" };
     const effects = runScript(
       identity +
         'identity.setAttribute("givenName", ["Changed"]); identity.setAttribute("alias", ["Staged"]);' +
         `openidm.patch("${resource}", null, [{operation:"add", field:"custom_later", value:"patched"}]);` +
-        catchCall("identity.store();") +
+        "identity.store();" +
         readBag,
       {
         managed: { "managed/alpha_user": [row] },
@@ -154,14 +195,16 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
         },
       },
     );
-    expect(effects.sharedState.final.error).toMatch(
-      /store:.*currently bag-owned property.*unmeasured/,
-    );
     expect(effects.managedStore).toEqual({
-      "managed/alpha_user": [{ ...row, custom_later: "patched" }],
+      "managed/alpha_user": [
+        { ...row, givenName: "Changed", custom_later: "Staged" },
+      ],
     });
-    expect(effects.identityWrites).toEqual([]);
-    expect(effects.sharedState.final.bag).toBe('{"custom_later":"patched"}');
+    expect(effects.identityWrites).toHaveLength(2);
+    expect(effects.sharedState.final.bag).toBe('{"custom_later":"Staged"}');
+    expect(effects.identityCustomAttrs).toEqual({
+      [resource]: ['{"custom_later":"Staged"}'],
+    });
   });
 
   it.each(["true", "false"])(
