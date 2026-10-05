@@ -1,6 +1,6 @@
 {
   "name": "@agiledigital/pingone-aic-script-tester",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Local Rhino harness: mock-surface generator and typed client for the long-lived JVM runner.",
   "license": "MIT OR Apache-2.0",
