@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 95;
+pub const TEMPLATES_VERSION: u32 = 96;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -353,10 +353,6 @@ const USER: &[(&str, &str)] = &[
     ("package.json", include_str!("templates/package.json")),
     (".prettierrc", include_str!("templates/.prettierrc")),
     ("README.md", include_str!("templates/README.md")),
-    (
-        "tests/example.test.ts",
-        include_str!("templates/tests/example.test.ts"),
-    ),
 ];
 
 /// User files inside the TypeScript project. Seeded when the project tree is
@@ -669,7 +665,6 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     std::fs::create_dir_all(tree.join("idm").join("managed"))?;
     std::fs::create_dir_all(tree.join("idm").join("schedule"))?;
     std::fs::create_dir_all(tree.join("idm").join("sync"))?;
-    std::fs::create_dir_all(tree.join("tests"))?;
     for sub in ["src/endpoints", "src/shared", "src/generated", "tests"] {
         std::fs::create_dir_all(tree.join(PROJECT_DIR).join(sub))?;
     }
@@ -962,8 +957,8 @@ mod tests {
     #[test]
     fn every_template_edit_is_covered_by_a_version_bump() {
         const TEMPLATE_RELEASE: (u32, &str) = (
-            95,
-            "969aa98f986c0fe597db224d1abb18ff9d0e3b8079e5282d9eb2924ae971b31b",
+            96,
+            "08da51ca62333d68c62fbd6eca2769fa765a03badc857fe4071dc4b4ba5dd725",
         );
         const LOCAL_ARTIFACTS: &[&str] = &[
             "node_modules",
