@@ -40,7 +40,6 @@ idm/
   endpoint/ tsconfig.json  <name>.cjs  # IDM custom endpoints (/openidm/config/endpoint/*)
   schedule/ tsconfig.json  <name>.cjs  # IDM scheduled jobs (/openidm/config/schedule/*)
 tools/check-types.mjs  # managed: per-folder type-check runner (npm run type-check)
-tests/                 # your Jest tests
 package.json  .prettierrc
 .aic-sync/             # tool-managed: last-synced snapshots (per realm + idm)
                        # + templates version (gitignored; never edit by hand)
@@ -120,14 +119,12 @@ Notes:
 
 ## Local development
 
-These run in this directory and use the bundled TypeScript / ESLint / Jest
-config:
+These run in this directory and use the bundled TypeScript / ESLint config:
 
 ```bash
 npm install
 npm run type-check   # tsc --noEmit per script folder (tools/check-types.mjs)
 npm run lint         # ESLint per product (lint:fix to autofix)
-npm test             # Jest
 ```
 
 `type-check` runs `tsc` once per script folder rather than as one big program:
@@ -140,14 +137,12 @@ etc.) per script type.
 
 ## Testing
 
-```typescript
-import { describe, test, expect, beforeEach, jest } from "@jest/globals";
+To test a script, run it in the real Rhino engine against measured AM/IDM
+bindings with
+[`@agiledigital/pingone-aic-script-tester`](https://www.npmjs.com/package/@agiledigital/pingone-aic-script-tester):
 
-const mockSharedState = new Map();
-
-describe("My Script", () => {
-  test("does the thing", () => {
-    // arrange mocks, run your script's logic, assert
-  });
-});
+```bash
+npm install --save-dev @agiledigital/pingone-aic-script-tester vitest zod
 ```
+
+It needs Node 24 and a Java 25 runtime. Its README covers writing cases.

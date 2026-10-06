@@ -8,7 +8,6 @@
     "lint:fix": "(cd am && eslint . --fix) && (cd idm && eslint . --fix)",
     "format": "prettier --write --no-error-on-unmatched-pattern am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
     "format:check": "prettier --check --no-error-on-unmatched-pattern am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
-    "test": "jest",
     "type-check": "node tools/check-types.mjs",
     "build": "node tools/check-types.mjs"
   },
@@ -23,7 +22,6 @@
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.0",
     "handlebars": "4.7.9",
-    "jest": "^30.5.0",
     "prettier": "^3.0.0",
     "typescript": "^5.0.0"
   }
