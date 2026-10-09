@@ -64,8 +64,9 @@ interface JavaMap<Key = JavaString, Value = JavaString> {
   isEmpty(): boolean;
 }
 
-// Request header/parameter/cookie bindings are Java multimaps surfaced without
+// Request header/parameter bindings are Java multimaps surfaced without
 // enumerated methods in the editor metadata; this is the shape scripts use.
+// Cookies are NOT a multimap — see `RequestCookieMap` below.
 interface RequestMap {
   /**
    * The list really is a list: a caller that sends the same header or query
@@ -84,6 +85,17 @@ interface RequestMap {
    * contains a comma stays ONE element (it is not split).
    */
   get(key: StringLike): JavaArray<JavaString> | null;
+  containsKey(key: StringLike): boolean;
+}
+
+// `requestCookies` (next-gen only) maps a cookie name to ONE value, not a list:
+// `get` returns a JavaScript string, `=== "one"` holds, and a cookie the
+// request did not send is `null` (measured on a next-gen scripted decision,
+// packages/rhino-local/test/harness/live-request-cookies.e2e.test.ts and
+// live-session-cookie.e2e.test.ts). Typed as `RequestMap` it invited
+// `.get(name).get(0)`, which throws: a string has no `get`.
+interface RequestCookieMap {
+  get(key: StringLike): string | null;
   containsKey(key: StringLike): boolean;
 }
 

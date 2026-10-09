@@ -50,6 +50,7 @@ type OAuthApplication = OauthApplication;
 
 type RequestHeaders = RequestMap;
 type RequestParameters = RequestMap;
+type RequestCookies = RequestCookieMap;
 
 declare const module: { exports: any };
 declare const exports: any;

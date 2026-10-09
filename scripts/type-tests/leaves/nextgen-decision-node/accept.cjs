@@ -195,3 +195,15 @@ var bcryptOk = utils.crypto.checkBcrypt("$2b$05$x", "pw");
 policy.evaluateTree({ claims: { sub: "u" } }, "oauth2Scopes", "profile", {});
 idRepository.createUser("u", "p", { mail: ["u@example.com"] });
 logger.info("{}", bcryptOk);
+
+// --- requestCookies: one string per name, not a list ------------------------
+// Measured: `get` is a JavaScript string (`=== "one"`), a missing cookie null.
+var theme = requestCookies.get("theme");
+if (theme !== null && theme === "dark" && requestCookies.containsKey("theme")) {
+  logger.info("{} {}", theme.length, theme.toUpperCase());
+}
+/** @param {RequestCookieMap} cookies */
+function hasConsent(cookies) {
+  return cookies.get("consent") === "yes";
+}
+logger.info("{}", hasConsent(requestCookies));

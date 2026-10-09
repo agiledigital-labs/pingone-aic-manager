@@ -3,9 +3,9 @@
 //
 // Emits `declare const` + interfaces for every binding EXCEPT the shared
 // next-gen-common set (passed as args), which is provided by common.d.ts +
-// nextgen-common.d.ts. Map-like bindings with no enumerated methods
-// (requestHeaders/Parameters/Cookies) reference the shared `RequestMap` type
-// from rhino-1.7.14.d.ts.
+// nextgen-common.d.ts. Map-like bindings with no enumerated methods reference
+// the shared types in rhino-1.7.14.d.ts: requestHeaders/Parameters are the
+// multimap `RequestMap`, requestCookies the single-valued `RequestCookieMap`.
 //
 // Usage: node scripts/gen-binding-types.mjs <artifact.json> <exclude...> > out.d.ts
 //
@@ -19,7 +19,11 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 
-const REQUEST_MAPS = new Set(["requestHeaders", "requestParameters", "requestCookies"]);
+const REQUEST_MAPS = new Map([
+  ["requestHeaders", "RequestMap"],
+  ["requestParameters", "RequestMap"],
+  ["requestCookies", "RequestCookieMap"],
+]);
 
 // Bindings the metadata reports as an `object` with no enumerated members, but
 // whose shape is documented and named in nextgen-common.d.ts. Generated
@@ -230,7 +234,7 @@ function perContext(jsonPath, skip) {
       continue;
     }
     if (REQUEST_MAPS.has(b.name)) {
-      out.push(`declare const ${b.name}: RequestMap;`);
+      out.push(`declare const ${b.name}: ${REQUEST_MAPS.get(b.name)};`);
       continue;
     }
     if (NAMED_OPAQUE[b.name]) {

@@ -1513,10 +1513,12 @@ mod tests {
         assert!(library.contains("interface NodeState"));
         assert!(library.contains("type RequestHeaders = RequestMap;"));
         assert!(library.contains("type RequestParameters = RequestMap;"));
+        assert!(library.contains("type RequestCookies = RequestCookieMap;"));
         assert!(!library.contains("_nodeStateGet"));
         assert!(!library.contains("declare const nodeState"));
         assert!(!library.contains("declare const requestHeaders"));
         assert!(!library.contains("declare const requestParameters"));
+        assert!(!library.contains("declare const requestCookies"));
 
         // Everything else a caller can pass is generated into library-args.d.ts,
         // which carries the types WITHOUT their bindings.
@@ -1791,7 +1793,7 @@ mod tests {
             for binding in ctx["bindings"].as_array().unwrap() {
                 let name = binding["name"].as_str().unwrap();
                 // Only object bindings with enumerated members get an interface;
-                // the rest are scalars, or `RequestMap` (aliased in library.d.ts).
+                // the rest are scalars, or a request map (aliased in library.d.ts).
                 if binding["javaScriptType"] != "object"
                     || binding["elements"]
                         .as_array()
