@@ -194,6 +194,9 @@ case individually try/caught so one failure cannot mask the rest. **V**
 | ------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------- |
 | `typeof globalThis`                               | `"object"`                     | present — the only global the endpoint `lib` admits that the table above did not cover          |
 | `typeof Object.entries`                           | `"function"`                   | **present, although `typescript/tsconfig.json` rejects it** — ES2017 is not in the pinned `lib` |
+| `Object.values({a: 1, b: "x", c: [2, 3]})`        | `[1, "x", [2, 3]]` (an array)  | **present** (probed 2026-10-08, see below); `{}` → `[]`, `"hi"` → `["h", "i"]`                  |
+| `Object.entries` behaviour (2026-10-08)           | `[["1","one"], …, ["b",1]]`    | **spec-conformant**, both methods: see the edge cases below the table                           |
+| `typeof Object.getOwnPropertyDescriptors` (10-08) | `"undefined"`                  | **absent** — the third `ES2017.Object` member; calling it throws `Cannot find function`         |
 | `[1, 2].includes(2)`                              | `true`                         | ES2016 method works, matching the `ES2016.Array.Include` lib entry                              |
 | `for (const n of [1, 2, 3])` sum                  | `6`                            | works — but this is Babel's `for (var …)` output, NOT engine `for...of`                         |
 | generator, `function* () { yield 7 }` → `.next()` | `7`                            | Babel 8 inlines the regenerator helpers (`_regeneratorDefine`) and they RUN on IDM              |
@@ -205,13 +208,38 @@ synchronous.** An `async` handler returns a pending Promise, and a scripted
 endpoint's return value is serialised as-is, so the caller receives the Promise
 instead of the value it will eventually hold — with no error anywhere.
 
-`Object.entries` is the one row that reads the other way: it is present on the
-engine, and Babel's `preset-env` does not polyfill it, so using it would work.
+`Object.entries` and `Object.values` are the rows that read the other way: both
+are present on the engine, and Babel's `preset-env` polyfills neither, so using
+them would work.
 The pinned `lib` is NARROWER than the runtime here. That is the safe direction —
 it cannot admit runtime-impossible code — but it does mean the `tsconfig.json`
 comment claiming the lib is pinned "to what the IDM script engine actually
 provides" overstates the match. Widening to ES2017+ is a judgement call, not a
 correction, and would need `TEMPLATES_VERSION` bumped either way.
+
+The two 2026-10-08 rows come from two separate plain-JS (not Babel-built)
+endpoints, `endpoint/aic-object-values-probe` and
+`endpoint/aic-object-entries-probe`. Each was called once with `GET` (HTTP 200),
+then deleted (`no script named` confirmed after) and its local `.cjs` removed.
+Both methods behave as ES2017 specifies:
+
+- `Object.entries` returns a real array of real two-element arrays, so
+  `.forEach(function (kv) { … kv[0] … kv[1] })` works and values keep their
+  type (a number stays `"number"`).
+- Key order matches `Object.keys`, the control: integer keys ascending first,
+  then string keys in insertion order (`{b, a, 2, 1, c}` → `1, 2, b, a, c`).
+- Own enumerable properties only: a prototype property and a
+  `defineProperty(…, { enumerable: false })` property are both omitted.
+- `{}` → `[]`; `5` → `[]`; `"hi"` → `[["0","h"],["1","i"]]`; an array
+  gives string-index keys.
+- `null` throws `TypeError: Cannot convert null to an object.`, for both
+  methods.
+
+A third endpoint, `endpoint/aic-object-gopds-probe`, checked the other member of
+TypeScript's `ES2017.Object` lib: `Object.getOwnPropertyDescriptors` is
+**absent** (`typeof` is `"undefined"`; a call throws `TypeError: Cannot find
+function getOwnPropertyDescriptors in object function Object()`). So adding
+`ES2017.Object` to `lib` as a whole would admit a runtime-absent method.
 
 Method: created with `aic script create endpoint/aic-ts-runtime-probe --from …`,
 invoked with one `GET /openidm/endpoint/aic-ts-runtime-probe` (HTTP 200), removed
