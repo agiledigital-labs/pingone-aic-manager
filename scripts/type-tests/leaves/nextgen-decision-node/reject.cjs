@@ -131,3 +131,13 @@ logger.info("{}", sessionMustExist.Principal);
 systemEnv.getProperty("esv.x", "42", "int"); // expect: TS2769 — no overload for an unsupported name
 // Attribute values must be arrays: a string is a ClassCastException on AIC.
 idRepository.createUser("u", "p", { mail: "u@example.com" }); // expect: TS2322 — string is not string[]
+
+// --- requestCookies: one string per name, not a list ------------------------
+// The RequestMap typing it used to have accepted this; on AIC it throws.
+var cookieValue = requestCookies.get("theme");
+if (cookieValue !== null) {
+  cookieValue.get(0); // expect: TS2339 — a cookie value is a string, not a list
+}
+/** @type {string} */
+var cookieMustExist = requestCookies.get("theme"); // expect: TS2322 — a missing cookie is null
+logger.info("{}", cookieMustExist);

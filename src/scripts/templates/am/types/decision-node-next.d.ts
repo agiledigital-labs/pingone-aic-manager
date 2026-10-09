@@ -342,7 +342,7 @@ interface CallbacksBuilder {
 }
 declare const callbacksBuilder: CallbacksBuilder;
 
-declare const requestCookies: RequestMap;
+declare const requestCookies: RequestCookieMap;
 
 // ---- other next-gen-only bindings ---------------------------------------
 

@@ -705,6 +705,15 @@ Consequences (applied to the type layering):
 - **2026-07-22:** `library.d.ts` redeclares `NodeState`, `RequestHeaders`, and
   `RequestParameters` as types for library `.load(...)` factory parameters;
   their scripted-decision globals remain outside library scope.
+- **2026-10-09:** `requestCookies` is typed `RequestCookieMap` (`get` returns
+  `string | null`), no longer the header/parameter multimap `RequestMap`, in
+  both next-gen contexts that have it (scripted decision, device match);
+  `library.d.ts` aliases it as `RequestCookies` beside the other two. Evidence:
+  on a next-gen scripted decision `requestCookies.get("suite") === "one"` holds
+  and a cookie not sent is `null` (`live-request-cookies.e2e.test.ts`), and the
+  session cookie's `get` has `typeof` `"string"` (`live-session-cookie`).
+  Device match is typed the same by the binding's shared shape, not measured.
+  A repeated cookie name is unmeasured.
 - **2026-08-26:** the **legacy** token-modification leaf
   (`OAUTH2_ACCESS_TOKEN_MODIFICATION`, no `_NEXT_GEN`) declares its binding
   names. It had fallen into `am::leaf_tsconfig`'s catch-all — rhino + common +
