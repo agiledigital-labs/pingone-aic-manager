@@ -553,6 +553,42 @@ payloads share the serializer — do not assume they do.
 > on editor hover at the call site. That is the only place an author is looking
 > when they build a request body.
 
+## Handing a decision node's bindings to a library (verified 2026-10-19)
+
+A `LIBRARY` script gets only the common next-gen bindings — no `nodeState`,
+`requestHeaders`, `requestParameters`, `requestCookies`, `existingSession` or
+`action` — so a shared "read my inputs, route my outcome" library has to be
+handed them. Measured with `fixtures/lib-common-scope-probe.lib.js` (uploaded as
+`rhino-lib-common-scope-probe`) and `lib-common-scope-consumer.script.js` on the
+next-gen decision node: 27 journeys, 8 sequential and 16 concurrent, plus 3 for
+the type rows, all agreeing.
+
+| Question                                                             | Result                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| What is top-level `this` in a decision node?                         | The binding scope: `this.nodeState === nodeState` and `this.action === action` are both `true`. Not `globalThis` (`false`). An arrow function at top level sees the same `this`                                                                                                                                                              |
+| Can a library read the node's bindings through `require(…).fn(this)` | ✅ `nodeState`, `requestHeaders`, `requestParameters`, `requestCookies`, `action`, `logger` all reachable. `existingSession` is `undefined` on an anonymous journey                                                                                                                                                                           |
+| `"name" in this`                                                     | ✅ works — `true` for `nodeState`/`realm`/`logger`, `false` for an unset name. Usable as a "would shadow a binding" guard                                                                                                                                                                                                                     |
+| Library writes `scope[k] = v`; caller reads bare `k`                 | ✅ resolves — in an arrow defined **before** the write, in one defined after, and in a named function                                                                                                                                                                                                                                         |
+| Does a write onto the scope survive into a later journey?            | ❌ never — 27/27 runs started with the injected names `undefined` and a scope counter unset, concurrent runs included. Each evaluation gets a fresh top-level scope                                                                                                                                                                           |
+| Is a library's module state cached between journeys?                 | ❌ no — a module-level counter read `1` on every run. The library is re-evaluated per evaluation, so a module-level cache buys nothing                                                                                                                                                                                                        |
+| Types after a write onto the scope                                   | Literal strings, numbers, `false`, `0`, `null`, arrays and objects keep their JS type and truthiness. A **concatenated** string (`"c-" + x`, and a template literal) reads back as `[object JavaObject]`: `typeof` `"object"`, `===` `false`, `==` `true`. `String(x)`, `x.toString()` and `x.slice(0)` before the write keep it a JS string |
+| `Object.defineProperty` on the scope                                 | ❌ `TypeError: Expected argument of type object, but instead had type object`                                                                                                                                                                                                                                                                 |
+| `getClass()` inside a library                                        | ❌ `Access to Java class "java.lang.Class" is prohibited`                                                                                                                                                                                                                                                                                     |
+| `nodeState.get` of a stored JS object                                | A JS object: `.region` works, `.get("region")` is `Cannot find function get`. A missing key is `null`                                                                                                                                                                                                                                        |
+| `requestHeaders.get(h)` / `requestParameters.get(p)`                 | `[object JavaList]`, `Array.isArray` `false`, `.length` and `JSON.stringify` work; `[0]` is a JS string                                                                                                                                                                                                                                      |
+| `requestCookies.get(c)` / `requestCookies.c`                         | A JS string either way                                                                                                                                                                                                                                                                                                                       |
+
+So injecting values as bare identifiers works at runtime and does not leak
+between users. It is **not** the shape the project uses, for a type-system
+reason rather than a runtime one: TypeScript cannot introduce identifiers into a
+callback's scope, so a bare name can only be typed by a global ambient
+declaration, which every script would then type-check against whether or not it
+asked for that value, and which cannot express a rename. The values are passed
+as the callback's argument instead (`(_) => _.config`), which generics type from
+the spec, renames included. `body.call(values)` with a typed `this` parameter
+would also type, but needs a `function` rather than an arrow and gives `this`
+two meanings in one file; it is unprobed on AM.
+
 ## AM binding matrix
 
 `evaluatorVersion`: `2.0` = next-gen, `1.0` = legacy. "Folder slug" is the

@@ -492,6 +492,18 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   script named after the file (e.g. `rhino-lib-const-probe`,
   `rhino-lib-const-loop-probe`, ids `…7402`/`…7403`) — `run-probes.sh` only
   handles the `.script.js` consumer.
+- Handing bindings to a LIBRARY (2026-10-19): a decision node's top-level
+  `this` is its binding scope, a library reads every binding through it, and a
+  value the library writes onto it resolves as a bare identifier — with no leak
+  into later or concurrent journeys. A concatenated string written that way
+  reads back as a `JavaObject`. Full table in
+  `docs/api/12-script-bindings-matrix.md`.
+  (`fixtures/lib-common-scope-probe.lib.js` +
+  `lib-common-scope-consumer.script.js`, uploaded as
+  `rhino-lib-common-scope-probe`, id `06b7ecca-fbe1-432b-9274-3d9358928454` —
+  minted by `aic script create`, outside the `…74xx` family. The consumer needs
+  header `x-aic-probe`, query `probeq` and `run`, and cookie `aicprobe`, which
+  `run-journey.sh` does not send; invoke it with `curl`.)
 - Bindings present: `require`, `openidm`, `httpClient`, `utils`, `logger`,
   `idRepository`, `nodeState`, `action`, `callbacks`, `callbacksBuilder`,
   `requestHeaders`, `requestParameters`, `requestCookies`, `realm`, `systemEnv`,
