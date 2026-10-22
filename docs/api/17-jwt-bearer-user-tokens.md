@@ -385,7 +385,10 @@ production tenant should therefore include a deliberate `setup --id <uuid>` and
 a `subjects list` before anyone needs either under time pressure.
 
 - `aic jwt-bearer key export` emits the stored private JWK as one standard JWK
-  object, retaining `kid` and any `aic_*` attribution members. With `--out` it
+  object, retaining `kid` and any `aic_*` attribution members. It always
+  includes the RFC 7518 CRT members (`p`, `q`, `dp`, `dq`, `qi`), deriving any
+  the vault record lacks — keys generated before 2026-10-22 were stored with
+  only `p`/`q`, which Node's `crypto.createPrivateKey` rejects. With `--out` it
   creates a new mode-600 file and refuses to overwrite an existing path; without
   it, JSON goes to stdout. `aic jwt-bearer key import` accepts only an RSA
   private JWK with a non-empty `kid`, stores it in the same vault record, and

@@ -337,7 +337,9 @@ pub fn merge_jwk_set(existing: Option<&str>, incoming: Value) -> Result<String> 
 
 /// Convert the vault record to the portable private JWK shape used by export.
 /// The record wrapper is deliberately not part of the file format: JOSE
-/// consumers expect the key members at the top level.
+/// consumers expect the key members at the top level. Keys generated before
+/// 2026-10-22 were stored without the CRT members, so export derives any that
+/// are missing rather than handing out a JWK other tools refuse to load.
 pub fn export_private_jwk(record: &crate::jwtbearer::KeyRecord) -> Result<Value> {
     if record.kid.is_empty() {
         return Err(Error::Config(
@@ -356,6 +358,12 @@ pub fn export_private_jwk(record: &crate::jwtbearer::KeyRecord) -> Result<Value>
     jwk.as_object_mut()
         .ok_or_else(|| Error::Config("private JWK must be a JSON object".into()))?
         .insert("kid".into(), Value::String(record.kid.clone()));
+    let key = crate::aic::auth::jwk_to_private_key(&jwk)?;
+    for (member, value) in crate::aic::auth::rsa_crt_members(&key)? {
+        if jwk.get(member).is_none() {
+            jwk[member] = Value::String(value);
+        }
+    }
     Ok(jwk)
 }
 
@@ -714,7 +722,76 @@ mod tests {
 
         let file_contents = serde_json::to_string(&exported).unwrap();
         let imported = import_private_jwk(serde_json::from_str(&file_contents).unwrap()).unwrap();
-        assert_eq!(imported, record);
+        // Export adds the CRT members the stub lacks, so the import is the
+        // original record plus those; a second export must change nothing.
+        assert_eq!(imported.kid, record.kid);
+        assert_eq!(imported.private_jwk, exported);
+        assert_eq!(export_private_jwk(&imported).unwrap(), exported);
+    }
+
+    /// Computed independently (Python big-int arithmetic) from the stub key:
+    /// `dp = d mod (p-1)`, `dq = d mod (q-1)`, `qi = q^-1 mod p`.
+    const STUB_CRT: [(&str, &str); 3] = [
+        (
+            "dp",
+            "x2jGv0JloPksw7ymuNZElyIh_1cNt5FLhC4RXCAyEoccnCzIaGA5WSnFn9U54G0csijglAhiUWHES9OMQoN1KQ",
+        ),
+        (
+            "dq",
+            "I9d_kFfFgxWVHSlk6wMhkfLZGNj7J4pXwY31f4BDYYRd1HO275fUp4ztyRbenFLWcfKzrQMFC8eAcPpbwkPJZQ",
+        ),
+        (
+            "qi",
+            "XkiDpMqRsScyNrnBdk0TYUYzOdLthjlGStoz_UJAdrMzSL6hT8lLuMUiLNicb8PQDSEESWKjiVvcoMsxVTXTrA",
+        ),
+    ];
+
+    fn stub_record(jwk: Value) -> KeyRecord {
+        KeyRecord {
+            kid: "portable-kid".into(),
+            private_jwk: jwk,
+        }
+    }
+
+    #[test]
+    fn private_jwk_export_derives_missing_crt_members() {
+        let exported = export_private_jwk(&stub_record(stub_private_jwk())).unwrap();
+        for (member, expected) in STUB_CRT {
+            assert_eq!(exported[member], expected, "{member}");
+        }
+        // The stored primes keep their original (sign-padded) encoding.
+        assert_eq!(exported["p"], stub_private_jwk()["p"]);
+        assert_eq!(exported["q"], stub_private_jwk()["q"]);
+    }
+
+    #[test]
+    fn private_jwk_export_recovers_primes_when_the_record_has_only_d() {
+        let mut jwk = stub_private_jwk();
+        let object = jwk.as_object_mut().unwrap();
+        object.remove("p");
+        object.remove("q");
+        let exported = export_private_jwk(&stub_record(jwk)).unwrap();
+
+        let p = "2lIjTuIivaNxl3NcNfm6XXcD7HgB13QDTtEZr7VW09pcoQwdK_MTJfBKfSn4Qf4spSL14HWm6p38iL_VZXU64w";
+        let q = "x9f_0oJe72JRhCvHd-u2wZaQnILwuNAGiB4fZQ2cHOsImV0S2KOHPTxb9G1qT77lJAx-URRjHZbDxHitHpzOqw";
+        // Recovery may return the primes in either order; the CRT values follow
+        // the order, so accept exactly the two consistent assignments.
+        let swapped_qi = "cYo5ypG0Kp5HRa9pnGuN02QLs_Fmrw4jv0cEuxcfFwGmlH6PfTgXBuYxDau2ZPjGGBvi5VqP6E5_ap2mjm7Tqg";
+        let [(_, dp), (_, dq), (_, qi)] = STUB_CRT;
+        let actual = ["p", "q", "dp", "dq", "qi"].map(|m| exported[m].as_str().unwrap().to_owned());
+        assert!(
+            actual == [p, q, dp, dq, qi] || actual == [q, p, dq, dp, swapped_qi],
+            "unexpected CRT members: {actual:?}"
+        );
+    }
+
+    #[test]
+    fn private_jwk_export_keeps_crt_members_already_present() {
+        let mut jwk = stub_private_jwk();
+        jwk["dp"] = json!("stored-dp");
+        let exported = export_private_jwk(&stub_record(jwk)).unwrap();
+        assert_eq!(exported["dp"], "stored-dp");
+        assert_eq!(exported["qi"], STUB_CRT[2].1);
     }
 
     #[test]
