@@ -118,7 +118,7 @@ Claims:
   "iss": "aic-agent", // must equal the issuer config's `issuer`
   "sub": "<alpha_user _id (UUID)>", // NOT the username — see Quirks
   "aud": "https://<tenant>:443/am/oauth2/realms/root/realms/alpha",
-  "exp": 1786000000, // now + ≤180s
+  "exp": 1786000000, // now + ≤180s by choice; AM allows ≤86400 — see below
   "iat": 1785999820,
   "jti": "<uuid>"
 }
@@ -203,6 +203,39 @@ Two of these rows are traps:
 Enforcement is **immediate**: a mint issued straight after the write was
 refused, with no settle time. Whatever caches `jwkSet` (see Open questions) does
 not cache this field, so narrowing a list takes effect at once.
+
+## Assertion validation — lifetime and replay
+
+Measured 2026-10-22 on the sandbox (alpha). The issuer, provider and client
+schemas have no setting for any of this, so every bound below is AM's own.
+
+| Check                         | Bound measured                                                                                      |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| `exp` required                | Yes. No `exp` → `invalid_grant`.                                                                    |
+| `exp` in the future           | At most **now + 86400s (one day)**. `+86370` mints, `+86405` is refused. No skew on this side.      |
+| `exp` in the past             | Tolerated by **about 300s** of clock skew: `exp = now−295` mints, `now−299` is refused.             |
+| `iat` required                | No. An assertion without `iat` mints.                                                               |
+| `iat` in the past             | At most **one day** old: `now−86370` mints, `now−86405` is refused.                                 |
+| `iat` in the future           | Not checked on its own. `iat = now+86395` mints. Only the `exp` cap limits it.                      |
+| `nbf` in the future           | Tolerated by about 300s: `now+300` mints, `now+400` is refused.                                     |
+| `jti` required                | No. An assertion without `jti` mints, and can be presented again.                                   |
+| **`jti` replay**              | **Not enforced, and not configurable.** See below.                                                  |
+
+The one-day cap is on `exp − now`, not on `exp − iat`: `iat = now−1800` with
+`exp = now+86400` (a 24.5-hour span) mints. Every refusal in the table is the
+same `invalid_grant` "JWT assertion is expired or invalid", so the response does
+not say which check failed.
+
+**Replay:** the identical signed assertion minted a token three times — twice
+back to back, and again 75s later. A new assertion reusing an earlier `jti` also
+minted. So an assertion is a bearer credential for its whole `exp` window, up to
+a day plus the ~300s skew. No setting turns replay checking on. The
+`TrustedJwtIssuer` template, the realm's `oauth-oidc` `_action=schema` and the
+`OAuth2Client` `_action=schema` have no field mentioning `jti`, replay or
+assertion lifetime; the only "replay" field is `refreshTokenGracePeriod`, which
+is unrelated. The defences are on the signer's side: keep `exp` short (`aic`
+uses 180s) and keep `allowedSubjects` narrow, because the private key is what
+limits who can mint, not the assertion.
 
 ## Quirks
 
@@ -517,6 +550,35 @@ the body it builds — unit tests cannot catch a body the tenant rejects.
   `consentedScopesClaim: scope`, `resourceOwnerIdentityClaim: sub`, and the one
   published `kid` unchanged — the property that a subject edit must not disturb
   the shared key set, checked on the wire and not only in a unit test.
+
+### 2026-10-22 — assertion lifetime and `jti` replay probe
+
+- Tenant/realm: sandbox `alpha`. A throwaway issuer `test_lifetime_probe`
+  (`iss` `aic-lifetime-probe`, one RSA key, `allowedSubjects` = the pre-existing
+  `user.0`) created with `aic --no-prompt jwt-bearer issuer create`, and a client
+  `test_jwtbearer_lifetime` with the JWT-bearer grant created with
+  `aic --no-prompt oauth create … --generate-secret`. The shared `aic-agent`
+  issuer was not touched.
+- Assertions were signed locally (RS256, header `kid`) and posted to
+  `/am/oauth2/realms/root/realms/alpha/access_token` with `client_secret_post`.
+  Each case changed one claim against a baseline of `iat = now`,
+  `exp = now+170`, a fresh `jti` and `scope=openid`.
+- Controls: the baseline minted. `exp = now−30` also minted, which is what made
+  the skew window a question at all, and the bisection found it.
+- About 80 mint calls in four rounds, bisecting each bound to within ~35s:
+  past `exp` (−60 … −1800), future `exp` (+300 … +365 days), past `iat`
+  (−3600 … −86590), future `iat` (+120 … +86395), future `nbf` (+60 … +600),
+  each of `iat`/`exp`/`jti` left out, and `iat` 1800s old with `exp` at +1 day,
+  which separates an `exp − now` cap from an `exp − iat` cap.
+- Replay: one assertion presented three times (immediately, then after 75s), one
+  `jti` reused in a newly signed assertion, and one assertion without a `jti`
+  presented twice. Every one minted.
+- Bounds are measured against the local clock, so the ~300s skew figure carries
+  any offset between this machine and the tenant (295 mints, 299 is refused).
+- Schemas read: `POST realm-config/services/oauth-oidc?_action=schema` and
+  `POST realm-config/agents/OAuth2Client?_action=schema` (200 each).
+- Cleanup: issuer and client `DELETE`d (200), each confirmed 404. The exported
+  private key and client secret were shredded. No user was created or modified.
 
 ## Source citations
 

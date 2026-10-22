@@ -134,8 +134,11 @@ curl -sS "$TENANT_BASE_URL/am/oauth2/access_token" \
 ## Quirks
 
 - **`aud` must match the actual POST URL.** Mismatch → 400.
-- **`exp` is enforced strictly.** Use ≤180s; longer is rejected by some
-  deployments.
+- **Use `exp` ≤180s.** That is our convention, not a measured limit, for this
+  root-realm service-account flow. The realm-level user flow was measured
+  2026-10-22 and accepts `exp` up to one day ahead, with ~300s of skew and no
+  `jti` replay check ([17](17-jwt-bearer-user-tokens.md#assertion-validation--lifetime-and-replay)).
+  The service-account endpoint was not probed and may differ.
 - **Realm-prefixed token paths (`/am/oauth2/realms/root/access_token`)** also
   exist, but the root form `/am/oauth2/access_token` is the documented and
   observed-working one. Don't use the realm-prefixed form.
