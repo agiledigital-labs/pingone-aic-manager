@@ -245,9 +245,8 @@ pub fn generate_rsa_jwk(kid: &str) -> Result<serde_json::Value> {
         "e": e,
         "d": d,
     });
-    if let Some(primes) = key.primes().get(0..2) {
-        jwk["p"] = serde_json::Value::String(B64URL.encode(primes[0].to_bytes_be()));
-        jwk["q"] = serde_json::Value::String(B64URL.encode(primes[1].to_bytes_be()));
+    for (member, value) in crate::aic::auth::rsa_crt_members(&key)? {
+        jwk[member] = serde_json::Value::String(value);
     }
     Ok(jwk)
 }

@@ -4,6 +4,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use rsa::pkcs1::EncodeRsaPrivateKey;
+use rsa::traits::PrivateKeyParts;
 use rsa::{BigUint, RsaPrivateKey};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -86,7 +87,9 @@ struct JwtClaims {
     jti: String,
 }
 
-pub(crate) fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey> {
+/// Rebuild the RSA key a private JWK describes. `p`/`q` are used when present
+/// and recovered from `n`/`e`/`d` when not.
+pub(crate) fn jwk_to_private_key(jwk: &serde_json::Value) -> Result<RsaPrivateKey> {
     let n_b64 = jwk["n"]
         .as_str()
         .ok_or_else(|| Error::Auth("JWK missing 'n'".into()))?;
@@ -109,6 +112,30 @@ pub(crate) fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey
     } else {
         RsaPrivateKey::from_components(n, e, d, vec![]).map_err(|e| Error::Rsa(e.to_string()))?
     };
+    Ok(private_key)
+}
+
+/// The RFC 7518 §6.3.2 private members after `d`: both primes and the three
+/// CRT values. JOSE consumers may refuse a private JWK without them — Node's
+/// `crypto.createPrivateKey` rejects one outright as "Invalid JWK RSA key" — so
+/// every private JWK `aic` hands out carries all five.
+pub(crate) fn rsa_crt_members(key: &RsaPrivateKey) -> Result<[(&'static str, String); 5]> {
+    let missing = || Error::Rsa("RSA key has no CRT parameters".into());
+    let [p, q] = key.primes() else {
+        return Err(Error::Rsa("RSA key is not a two-prime key".into()));
+    };
+    let encode = |value: &BigUint| B64URL.encode(value.to_bytes_be());
+    Ok([
+        ("p", encode(p)),
+        ("q", encode(q)),
+        ("dp", encode(key.dp().ok_or_else(missing)?)),
+        ("dq", encode(key.dq().ok_or_else(missing)?)),
+        ("qi", encode(&key.crt_coefficient().ok_or_else(missing)?)),
+    ])
+}
+
+pub(crate) fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey> {
+    let private_key = jwk_to_private_key(jwk)?;
 
     // jsonwebtoken's `rust_crypto` feature expects PKCS#1 DER, not PKCS#8.
     // PKCS#8 starts with `SEQUENCE { INTEGER version, SEQUENCE AlgorithmId, ... }`,
