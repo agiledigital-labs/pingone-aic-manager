@@ -269,9 +269,17 @@ staged_lines() {
   # scan, and an empty stream reads as clean. `--text` likewise, because a
   # caller's core.bigFileThreshold makes a large text file "Binary files
   # differ".
+  #
+  # A `+++` line is a file header only before the first hunk: inside one it
+  # is an added line whose content starts `++` (`++counter;`), and dropping
+  # it by prefix hid whatever else that line held. So headers are told apart
+  # by position. Every hunk line carries a one-character prefix, so a bare
+  # `@@` or `diff ` cannot be content. A type change emits two `diff`
+  # blocks for one path; each resets to header state.
   git diff --cached --text --no-color --no-ext-diff --no-textconv -U0 -- ":(literal)$1" \
-    | awk '/^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); next }
-           /^\+/ && !/^\+\+\+/ { print n":"substr($0,2); n++ }'
+    | awk '/^diff / { hunk = 0; next }
+           /^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); hunk = 1; next }
+           hunk && /^\+/ { print n":"substr($0,2); n++ }'
 }
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
@@ -759,6 +767,17 @@ case "$MODE" in
       run "a relative GIT_WORK_TREE still scans staged lines" 1 \
         bash -c 'cd sub && GIT_DIR=../.git GIT_WORK_TREE=.. bash "$1" --staged' _ "$script"
       rm -rf sub .git/alt-index
+      # Content that looks like patch syntax is still content.
+      git rm -q --cached staged.md >/dev/null
+      printf '++counter; %s\n' "$leak" >staged.md && git add staged.md >/dev/null
+      run "an added line starting ++ is still scanned" 1 bash "$script" --staged
+      git rm -q --cached staged.md >/dev/null && rm -f staged.md
+      # A tracked file replaced by a symlink is a type change (T); its target
+      # is staged content.
+      printf 'clean\n' >typed.md && git add typed.md && git commit -qm typed >/dev/null
+      rm typed.md && ln -s "$leak" typed.md && git add typed.md >/dev/null
+      run "a file turned into a symlink is still scanned" 1 bash "$script" --staged
+      git reset -q --hard >/dev/null
       git rm -q --cached staged.md >/dev/null && rm -f staged.md
       mkdir locked && printf '%s\n' "$leak" >locked/f.md && git add locked >/dev/null
       git commit -qm locked >/dev/null && chmod a-w locked
@@ -851,7 +870,7 @@ case "$MODE" in
     while IFS= read -r -d '' file; do
       [ "$file" = "$SELF" ] && continue
       scan_text "$file" < <(filtered staged_lines "$file")
-    done < <(listing git diff --cached --name-only -z --diff-filter=ACMR)
+    done < <(listing git diff --cached --name-only -z --diff-filter=ACMRT)
     ;;
   tracked)
     check_ignores
