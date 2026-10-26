@@ -71,8 +71,11 @@ a JWK at account creation).
 | `fr:idc:esv:restart`     | Trigger startup/restart only.                                    |
 
 `SA_SCOPES` in `src/onboard/bootstrap.rs` is what onboarding actually grants:
-`fr:idm:*`, `fr:am:*`, `fr:idc:esv:*`, `fr:idc:cookie-domain:*`. Everything the
-tool does today fits inside those four.
+`fr:idm:*`, `fr:am:*`, `fr:idc:esv:*`, `fr:idc:cookie-domain:*`, and — from
+2026-10-26, for `aic promotion` — `fr:idc:promotion:*`. A tenant onboarded
+before that keeps its stored four-scope list (`.aic/config.toml`) and cannot
+promote until re-onboarded. What `fr:idc:promotion:*` authorises is not yet
+verified.
 
 ### Other `fr:idc:*` scopes a service account can hold
 

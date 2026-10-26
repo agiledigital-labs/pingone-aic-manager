@@ -26,6 +26,9 @@ pub const SA_SCOPES: &[&str] = &[
     "fr:am:*",
     "fr:idc:esv:*",
     "fr:idc:cookie-domain:*",
+    // `aic promotion` (dev → UAT and up). Granted from 2026-10-26; tenants
+    // onboarded earlier keep their stored scopes and need re-onboarding.
+    "fr:idc:promotion:*",
 ];
 
 pub fn credential_name(username: Option<&str>, tenant_name: &str) -> String {
