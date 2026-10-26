@@ -46,6 +46,11 @@ struct AgentState {
     /// unlock and cached here for their token-cache + HTTP-connection-pool
     /// benefit. Cleared on `Lock` (and whenever the vault changes).
     clients: HashMap<String, Arc<AicClient>>,
+    /// `config.toml`'s mtime when `clients` were built. A client holds its
+    /// tenant's config — base URL and the scopes its tokens request — so an
+    /// edit such as `aic ctx scopes --add` must rebuild it, not wait for a
+    /// restart.
+    config_stamp: Option<SystemTime>,
     last_request: Instant,
     idle_timeout: Duration,
 }
@@ -56,6 +61,7 @@ impl AgentState {
             paths,
             vault: Vault::Locked,
             clients: HashMap::new(),
+            config_stamp: None,
             last_request: Instant::now(),
             idle_timeout,
         }
@@ -688,6 +694,7 @@ async fn do_api_call(
 /// failures); without a cache we reload so the existing file-read error remains
 /// the caller-visible result.
 async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
+    refresh_config_stamp(state.clone()).await;
     let (paths, path, cached_mtime, dek) = {
         let s = state.read().await;
         match &s.vault {
@@ -738,6 +745,19 @@ async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
     }
     s.clients.clear();
     Ok(())
+}
+
+/// Drop every cached client when `config.toml` changed since they were built.
+async fn refresh_config_stamp(state: Arc<RwLock<AgentState>>) {
+    let path = state.read().await.paths.config_path();
+    let modified = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let mut s = state.write().await;
+    if s.config_stamp != modified {
+        s.config_stamp = modified;
+        s.clients.clear();
+    }
 }
 
 /// Refresh from disk before building a client. Direct callers use this entry
@@ -920,6 +940,41 @@ mod tests {
         assert!(state_guard.clients.contains_key("reonboarded"));
 
         drop(state_guard);
+    }
+
+    /// A config edit — here a scope added — rebuilds the client, so the next
+    /// token requests the new scope. The control is the test below: nothing
+    /// changed, and the same client is reused.
+    #[tokio::test]
+    async fn a_config_edit_rebuilds_clients() {
+        let project = test_project();
+        save_config(&project, &["sandbox"]);
+        let config = project.paths.config_path();
+        set_mtime(&config, SystemTime::UNIX_EPOCH + Duration::from_secs(10));
+        project
+            .paths
+            .save_keys_plain(br#"{"sandbox":{"cached":"jwk"}}"#)
+            .unwrap();
+        let state = state(&project);
+        set_vault(state.clone(), Vault::Plain { cache: None }).await;
+        build_client("sandbox", state.clone()).await.unwrap();
+
+        let mut cfg = project.paths.load_config().unwrap().unwrap();
+        cfg.tenants[0].scopes.push("fr:idc:promotion:*".into());
+        project.paths.save_config(&cfg).unwrap();
+        set_mtime(&config, SystemTime::UNIX_EPOCH + Duration::from_secs(20));
+
+        // What every request handler runs before its client fast path.
+        refresh_jwk_cache(state.clone()).await.unwrap();
+        assert!(!state.read().await.clients.contains_key("sandbox"));
+        let rebuilt = build_client("sandbox", state.clone()).await.unwrap();
+        assert!(
+            rebuilt
+                .tenant
+                .scopes
+                .iter()
+                .any(|s| s == "fr:idc:promotion:*")
+        );
     }
 
     #[tokio::test]

@@ -77,6 +77,27 @@ before that keeps its stored four-scope list (`.aic/config.toml`) and cannot
 promote until re-onboarded. What `fr:idc:promotion:*` authorises is not yet
 verified.
 
+### Service-account scopes — two lists, and the SA owns neither
+
+Verified against two production-pipeline tenants and the sandbox,
+2026-10-26:
+
+| Call                                                         | Result                                                            |
+| ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `GET /openidm/managed/svcacct/{own sa_id}?_fields=scopes`     | 200 — the SA can read its own granted scopes                      |
+| `PATCH /openidm/managed/svcacct/{own sa_id}` (add `/scopes/-`) | **403 `Access denied`** — it cannot grant itself one; nothing written |
+| `/environment/promotion/*` with the scope neither granted nor requested | 403 `The access token does not have sufficient scope`    |
+| the same on the sandbox, scope granted **and** requested      | 503 `No server is available` — the sandbox has no promotion service |
+
+A scope works only when it is on **both** lists: the tenant's SA record (what
+tokens may carry, an admin's to change — console or re-onboarding) and
+`scopes` in `.aic/config.toml` (what the agent's token request asks for,
+`src/aic/auth.rs`). The sandbox SA was granted all eleven `fr:idc:*` families
+while its config requested four. `aic ctx scopes` shows both, and
+`--add` edits only the local list, refusing a scope the tenant has not granted.
+The agent rebuilds its cached clients when `config.toml` changes, so the next
+token carries the scope without a restart.
+
 ### Other `fr:idc:*` scopes a service account can hold
 
 A service account can be granted considerably more than we ask for. These were

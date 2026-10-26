@@ -193,6 +193,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic ctx list [--json]`        | List tenants in `.aic/config.toml`, marking the effective tenant and the stored context. See below.            |
 | `aic ctx current [--tenant]`   | Print the effective tenant (stdout) and why it won (stderr). Alias: `aic ctx show`. See below.                 |
 | `aic ctx use <tenant>`         | Switch the active context.                                                                                     |
+| `aic ctx scopes [--tenant] [--add S]` | Show the scopes the tenant grants this install's SA beside the ones its tokens request; `--add` requests an already-granted scope. The SA cannot grant itself one. |
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
