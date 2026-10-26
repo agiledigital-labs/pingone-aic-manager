@@ -131,7 +131,12 @@ last point where a leak is free to fix, because the remote keeps force-pushed
 objects. Both use `scripts/gitleaks.sh`, the version CI pins. pre-commit warns
 and carries on when gitleaks cannot be fetched offline; pre-push fails closed.
 CI runs the same checks over the whole history, so `--no-verify` only moves the
-failure to the pull request.
+failure to the pull request — with one difference in coverage. `--staged` reads
+every added byte: it decodes UTF-16 that carries a byte-order mark, and reads
+past NULs and bytes the locale cannot decode. `--tracked` and `--history` skip
+binary content, so a leak a hook bypass committed inside a binary or UTF-16
+file is **not** caught later in CI. The staged scan also judges the `.gitignore`
+the commit carries — the required rules as exact lines, and no `!` line at all.
 
 Use these reserved placeholders — the scanner accepts them and rejects
 everything else of the same shape:
