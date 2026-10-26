@@ -462,8 +462,13 @@ async fn finalize_factor_addition(
             .dek_clone()
             .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
         let mode = app.settings.as_ref().map(|s| s.encrypt_keys);
-        let wraps = &app.wraps;
-        crate::config::enable_encryption(&dek, mode, || wraps.save_for_transition())?;
+        // The new vault's wraps are the factor just enrolled for this key
+        // and nothing else: anything in the session copy came from before
+        // encryption was on and wraps some other key.
+        let mut fresh = WrapsFile::default();
+        fresh.add_factor(added, app.wraps.security_key_hmac_salt.as_deref())?;
+        crate::config::enable_encryption(&dek, mode, || fresh.save_for_transition())?;
+        app.wraps = fresh;
         let mut s = app.settings.take().unwrap_or_default();
         s.encrypt_keys = true;
         app.settings = Some(s);

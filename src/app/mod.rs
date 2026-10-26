@@ -193,7 +193,17 @@ impl App {
     pub fn new() -> Result<Self> {
         let config = ProjectConfig::load()?;
         let settings = Settings::load()?;
-        let wraps = WrapsFile::load()?.unwrap_or_default();
+        // A plain vault's wraps.toml is a leftover of an encryption attempt
+        // that never committed; its factors wrap a key no file uses, and a
+        // later first factor must not carry them into the new vault.
+        let wraps = match settings.as_ref() {
+            Some(Settings {
+                encrypt_keys: false,
+                ..
+            }) => WrapsFile::default(),
+            None if !config::interrupted_first_run() => WrapsFile::default(),
+            _ => WrapsFile::load()?.unwrap_or_default(),
+        };
         let tenants = config
             .as_ref()
             .map(|c| c.tenants.clone())
@@ -333,6 +343,16 @@ impl App {
             }) => {
                 self.load_plain_keys();
                 self.input_mode = InputMode::Normal;
+            }
+            None if config::interrupted_first_run() => {
+                // Unlocking proves the key; `unlock::handle_result` then
+                // finishes the setup.
+                self.input_mode = InputMode::Vault(crate::vault::screen::Mode::Unlock);
+                self.unlock.focus = if self.wraps.has_security_key() {
+                    crate::vault::unlock::Focus::SecurityKeyPin
+                } else {
+                    crate::vault::unlock::Focus::Password
+                };
             }
             None => {
                 self.input_mode = InputMode::Vault(crate::vault::screen::Mode::Setup);

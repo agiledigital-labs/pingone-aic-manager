@@ -399,14 +399,14 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
         .as_slice()
         .try_into()
         .map_err(|_| Error::Crypto("put_dek: DEK must be 32 bytes".into()))?;
-    set_vault(
-        state,
-        Vault::Encrypted {
-            dek: Dek::from_bytes(arr),
-            cache: None,
-        },
-    )
-    .await;
+    let dek = Dek::from_bytes(arr);
+    // A key the vault does not open is refused rather than installed: an
+    // unlock that raced a key change would otherwise leave the daemon
+    // "unlocked" under the old key, and `aic login` would see that and
+    // return without repairing it.
+    let paths = state.read().await.paths.clone();
+    paths.check_vault_key(&dek)?;
+    set_vault(state, Vault::Encrypted { dek, cache: None }).await;
     Ok(())
 }
 

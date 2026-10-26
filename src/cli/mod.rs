@@ -1109,6 +1109,12 @@ async fn login(timeout: Option<String>, password_stdin: bool) -> Result<()> {
     print_status_block().await
 }
 
+fn warn_unsettled() {
+    if let Some(warning) = auth::settle_after_unlock() {
+        eprintln!("warning: {warning}");
+    }
+}
+
 pub(crate) async fn ensure_agent_unlocked(password_stdin: bool) -> Result<()> {
     ensure_agent_unlocked_internal(password_stdin, true).await
 }
@@ -1116,7 +1122,10 @@ pub(crate) async fn ensure_agent_unlocked(password_stdin: bool) -> Result<()> {
 async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) -> Result<()> {
     let client = AgentClient::connect_or_spawn().await?;
     match client.send(&Request::Status).await? {
-        Response::Status(info) if info.unlocked => return Ok(()),
+        Response::Status(info) if info.unlocked => {
+            warn_unsettled();
+            return Ok(());
+        }
         Response::Status(_) => {}
         Response::Error { message } => return Err(Error::Config(message)),
         other => return Err(Error::Config(format!("unexpected reply: {other:?}"))),
@@ -1176,7 +1185,7 @@ async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) ->
 
     auth::put_dek_to_agent(&dek).await?;
     drop(dek);
-    auth::settle_after_unlock();
+    warn_unsettled();
     if announce {
         println!("unlocked");
     }
