@@ -192,8 +192,8 @@ pub fn field_capability_for_property(
     caps
 }
 
-pub const RELATIONSHIP_RENAME_REFUSAL: &str = "Relationship keys cannot be renamed: existing \
-     links stay filed under the old name. Delete and recreate the relationship";
+pub const RELATIONSHIP_RENAME_REFUSAL: &str = "Relationship keys cannot be renamed: a rename \
+     strands the links filed under the old key, and aic cannot migrate them";
 
 /// Why a property whose capabilities forbid a key rename cannot be renamed.
 ///

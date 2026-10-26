@@ -635,46 +635,8 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let doc = api::get_managed(&tenant).await?;
-            let source = api::object_named(&doc, &source_object)?;
-            let parsed = state::properties(source)
-                .and_then(|p| p.get(&key))
-                .and_then(ops::parse_relationship)
-                .ok_or_else(|| {
-                    crate::Error::Config(format!("field '{field}' is not a relationship"))
-                })?;
-            let spec = state::RelationshipSpec {
-                source_object: source_object.clone(),
-                key: "__deleted_relationship__".into(),
-                title: String::new(),
-                description: String::new(),
-                target_object: parsed.target.clone(),
-                forward: parsed.forward,
-                reverse: state::ReverseCardinality::None,
-                reverse_key: String::new(),
-                searchable: false,
-                viewable: false,
-                user_editable: false,
-                required: false,
-                validate: false,
-                ref_properties: Vec::new(),
-            };
-            let previous = state::PreviousRelationship {
-                old_key: key.clone(),
-                old_target: parsed.target,
-                old_reverse_key: parsed.reverse_key,
-            };
-            let updated = ops::apply_relationship_spec(&doc, &spec, Some(&previous))
+            let updated = ops::apply_delete_relationship(&doc, &source_object, &key)
                 .map_err(crate::Error::Config)?;
-            // The transform intentionally requires a new key. Remove the sentinel it inserted.
-            let mut updated = updated;
-            let object = api::object_named(&updated, &source_object)?.clone();
-            let clean = ops::apply_delete_field(
-                &object,
-                "__deleted_relationship__",
-                &spec::DeleteFieldSpec,
-            )
-            .map_err(crate::Error::Config)?;
-            api::replace_object(&mut updated, &source_object, clean)?;
             record_config_undo(
                 &tenant,
                 &doc,

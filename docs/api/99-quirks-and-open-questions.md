@@ -11,18 +11,18 @@ new things are learned.
 `10-managed-objects.md` said generic custom objects need no `repo.ds`
 mappings. True for scalar indexing; false for relationships, which may be
 **mapped** (a `reference`/`reverseReference` pair under `genericMapping`) or
-**generic** (no mapping, links in the relationships table). `config/managed`
-writes never touch `repo.ds`, so renaming a mapped relationship through it
-leaves the pair mixed: old links disappear from the renamed side, new links are
+**generic** (no mapping). `config/managed` writes did not touch `repo.ds` in
+the two operations tried, so renaming a mapped relationship through it left the
+pair mixed: old links disappear from the renamed side, new links are
 invisible from the reverse, and reverse-side writes 400. Measured, with the
 full table, in `10-managed-objects.md` ("Relationship storage"). The
 `/openidm/schema` API, which an operator report named as the console's write
-path, refuses every write on this tenant.
+path, refused all five write forms tried.
 
 The probe also re-learned the positive-control lesson from the other side: a
-record delete appeared to cascade to a related record, and the cause was a
-sync mapping on the probe types, found only because a second pair without one
-behaved differently.
+record delete appeared to cascade to a related record. A sync mapping on the
+probe types with `SOURCE_MISSING: DELETE` is the likely cause: a second pair
+without one did not cascade, though that pair differed in other ways too.
 
 ## 2026-09-30 — library deletion after source replacement
 
