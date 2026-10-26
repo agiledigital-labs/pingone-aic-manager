@@ -24,14 +24,18 @@ aic <command> <subcommand> --help
   tenant comes from, in order: a `workspace/<tenant>/` directory you are inside
   (only if that tenant is configured), the stored context (`aic ctx use`), then
   `default_tenant` in `.aic/config.toml`. `aic ctx current` prints the tenant
-  that wins here and which rule chose it. Script commands that read or write a
-  tenant (`create`, `copy`, `delete`, `pull`, `push`, `status`, `diff`, `sync`,
-  `watch`) print the same on stderr before anything else, so a no-op names its
-  tenant too:
+  that wins here and which rule chose it. Every command with a `--tenant` flag
+  (all but `ctx`) prints the same on stderr before anything else — before the
+  unlock prompt, so you see which tenant you are unlocking for, and before a
+  no-op, so "nothing to do" names its tenant too:
 
   ```text
   target tenant: dev (current directory is in workspace/dev/)
   ```
+
+  The tenant is resolved once, when the command line is parsed, and everything
+  in that invocation uses that answer. `aic whoami --token` and `aic auth --token`
+  print no banner, so their stdout and stderr stay clean for `$(…)`.
 - **`--realm <alpha|bravo>`** selects the AM realm for realm-scoped commands
   (`journey`, `jwt-bearer`, `oauth`, `secretmap`, and AM `script` namespaces).
   Defaults to **`alpha`**. ESVs and IDM endpoints are tenant-global and take no
@@ -180,7 +184,7 @@ binary deliberately does not read passwords from environment variables.
 
 | Command                        | What it does                                                                                                   |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `aic ctx list [--json]`        | List tenants defined in `.aic/config.toml`.                                                                    |
+| `aic ctx list [--json]`        | List tenants in `.aic/config.toml`, marking the effective tenant and the stored context. See below.            |
 | `aic ctx current [--tenant]`   | Print the effective tenant (stdout) and why it won (stderr). Alias: `aic ctx show`. See below.                 |
 | `aic ctx use <tenant>`         | Switch the active context.                                                                                     |
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
@@ -203,6 +207,11 @@ stored context: sandbox (not in effect here)
 With nothing configured at all it prints `<none>`. It used to print the stored
 context regardless of where it was run, and `<default_tenant> (default)` when
 there was none.
+
+`aic ctx list` marks both: `EFFECTIVE` is the tenant a command run here would
+hit, `STORED` the one `aic ctx use` last chose. The column used to be `CURRENT`
+and meant the stored context. In `--json`, `effective` is new and `current`
+keeps its old meaning (the stored context) for existing consumers.
 
 The normal `whoami` output includes `operator: <name> on <host>`. When the name
 has not been saved yet, the line says it is unset and points to
