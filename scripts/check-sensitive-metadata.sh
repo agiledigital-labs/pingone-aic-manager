@@ -208,20 +208,27 @@ scan_failed() {
   kill -TERM "$MAIN_PID"
   exit 2
 }
+# Binary handling differs by mode. Tracked and history scans skip binary
+# content (`-I`): they audit text, and a full read of images and archives
+# would only add noise. Staged mode reads everything (`-a`), because a
+# commit's added lines are what the hook exists to stop, and one stray byte
+# that is not valid in the caller's locale — no NUL needed — made `-I` drop
+# the whole stream, a denylisted name with it.
+GREP_BINARY=-I
 candidates() {
   local number="${1:-}" tmp status
   if [ -z "$DENY_RE" ]; then
-    grep "-I${number#-}iE" "$CANDIDATE_RE"
+    grep "$GREP_BINARY" "-${number#-}iE" "$CANDIDATE_RE"
     status=$?
     [ "$status" -le 1 ] || scan_failed "grep exited $status"
     return 0
   fi
   tmp=$(mktemp -d) || scan_failed "mktemp failed"
   cat >"$tmp/in" || scan_failed "could not buffer the input"
-  grep -IniE "$CANDIDATE_RE" -- "$tmp/in" >"$tmp/shape"
+  grep "$GREP_BINARY" -niE "$CANDIDATE_RE" -- "$tmp/in" >"$tmp/shape"
   status=$?
   [ "$status" -le 1 ] || { rm -rf "$tmp"; scan_failed "grep exited $status"; }
-  in_caller_locale grep -IniE "$DENY_RE" -- "$tmp/in" >"$tmp/deny"
+  in_caller_locale grep "$GREP_BINARY" -niE "$DENY_RE" -- "$tmp/in" >"$tmp/deny"
   status=$?
   [ "$status" -le 1 ] || { rm -rf "$tmp"; scan_failed "denylist grep exited $status"; }
   sort -t: -k1,1n -u "$tmp/shape" "$tmp/deny" \
@@ -283,7 +290,21 @@ staged_lines() {
   # pre-filter's `grep -I` treats a stream holding one as binary and matches
   # nothing in it, so one NUL anywhere in the added lines hid the rest, and
   # UTF-16 text (ASCII plus NULs) was never read at all.
-  git diff --cached --text --no-color --no-ext-diff --no-textconv -U0 -- ":(literal)$1" \
+  #
+  # A staged blob that opens with a UTF-16 byte-order mark is decoded and
+  # scanned whole: dropping NULs recovers ASCII from UTF-16 but turns `É`
+  # into a lone 0xC9, which neither the shape rules nor a denylist entry
+  # match. BOM-less UTF-16 is not detected; its ASCII survives the NUL drop
+  # and nothing else is promised. A BOM that does not decode stops the scan.
+  local bom
+  bom=$(git cat-file blob ":$1" 2>/dev/null | head -c2 | od -An -tx1 | tr -d ' \n')
+  if [ "$bom" = fffe ] || [ "$bom" = feff ]; then
+    git cat-file blob ":$1" | iconv -f UTF-16 -t UTF-8 | awk '{ print NR":"$0 }' \
+      || scan_failed "$1 has a UTF-16 byte-order mark but does not decode"
+    return 0
+  fi
+  git -c diff.suppressBlankEmpty=false diff --cached --text --no-color --no-ext-diff \
+    --no-textconv -U0 -- ":(literal)$1" \
     | awk '/^diff / { hunk = 0; next }
            /^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); hunk = 1; next }
            hunk && /^\+/ { print n":"substr($0,2); n++ }
@@ -535,55 +556,53 @@ scan_text() {
 }
 
 # Rule 6 — the ignore rules that keep live tenant data out of the repo.
-# The ignore rules that keep live tenant data untracked, as a probe path each
-# must ignore. `$1` says which .gitignore to judge: `index` for the one a
-# commit would carry (a partially staged edit can delete the rules while the
-# working copy keeps them), `worktree` for the file on disk. Judged by git's
-# own matcher, not by the line being present: `.envrc` followed by
-# `!.envrc` holds the line and ignores nothing. The judging repository is a
-# throwaway with only that file, so the caller's excludes, info/exclude and
-# Git location variables cannot lend it a rule it does not have. Nested
-# .gitignore files are out of scope.
-IGNORE_PROBES=(.envrc .aic/probe workspace/probe probe.har .ai/local.md)
+# The ignore rules that keep live tenant data untracked. `$1` says which
+# root .gitignore to judge: `index` for the one a commit would carry (a
+# partially staged edit can delete the rules while the working copy keeps
+# them), `worktree` for the file on disk. A symlink or gitlink in either
+# place is judged empty, because git does not follow a .gitignore symlink.
+#
+# The policy is textual, and deliberately strict: every rule below present
+# as an exact line, and **no negation (`!`) line anywhere in the file**. A
+# matcher run on sample paths cannot establish a whole class — `/*.har`
+# ignores probe.har and exposes evidence/capture.har, and `!capture.har`
+# exempts one name while every probe still passes — and a throwaway repo to
+# run it in inherits rules from the caller's git template. With no `!` in
+# the file, no later line can unignore what these rules ignore. An
+# exception, if one is ever needed, is a change to this function, argued in
+# review. Nested .gitignore files are out of scope.
+REQUIRED_IGNORES=(.envrc '.aic/' '/workspace/' '*.har' '/.ai/local.md')
 check_ignores() {
-  local from="$1" probe tmp missing=0 mode
-  tmp=$(mktemp -d) || scan_failed "mktemp failed"
+  local from="$1" want text mode missing=0
   if [ "$from" = index ]; then
-    mode=$(git ls-files -s -- ":(literal).gitignore" | cut -d' ' -f1) \
-      || { rm -rf "$tmp"; scan_failed "reading the staged .gitignore failed"; }
-    case $mode in
-      '') : >"$tmp/.gitignore" ;;
+    mode=$(git ls-files -s -- ":(literal).gitignore") \
+      || scan_failed "reading the staged .gitignore failed"
+    case ${mode%% *} in
       100644 | 100755)
-        git cat-file blob ":.gitignore" >"$tmp/.gitignore" \
-          || { rm -rf "$tmp"; scan_failed "reading the staged .gitignore failed"; }
+        text=$(git cat-file blob ":.gitignore") \
+          || scan_failed "reading the staged .gitignore failed"
         ;;
-      *) : >"$tmp/.gitignore" ;; # a symlink or gitlink ignores nothing here
+      *) text= ;; # absent, a symlink or a gitlink ignores nothing
     esac
+  elif [ -L .gitignore ] || [ ! -e .gitignore ]; then
+    text=
   else
-    [ -r .gitignore ] || { rm -rf "$tmp"; scan_failed ".gitignore cannot be read"; }
-    cat .gitignore >"$tmp/.gitignore" || { rm -rf "$tmp"; scan_failed "reading .gitignore failed"; }
+    [ -f .gitignore ] && [ -r .gitignore ] || scan_failed ".gitignore cannot be read"
+    text=$(cat .gitignore) || scan_failed "reading .gitignore failed"
   fi
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-    -u GIT_COMMON_DIR git init -q "$tmp/repo" \
-    && mv "$tmp/.gitignore" "$tmp/repo/.gitignore" \
-    || { rm -rf "$tmp"; scan_failed "could not build the ignore probe"; }
-  for probe in "${IGNORE_PROBES[@]}"; do
-    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-      -u GIT_COMMON_DIR git -C "$tmp/repo" -c core.excludesFile=/dev/null \
-      check-ignore -q --no-index -- "$probe"
-    case $? in
-      0) ;;
-      1)
-        echo "  NOT IGNORED by the $from .gitignore: $probe"
-        missing=1
-        ;;
-      *) rm -rf "$tmp"; scan_failed "git check-ignore failed" ;;
-    esac
+  for want in "${REQUIRED_IGNORES[@]}"; do
+    if ! grep -qxF -- "$want" <<<"$text"; then
+      echo "  MISSING from the $from .gitignore: $want"
+      missing=1
+    fi
   done
-  rm -rf "$tmp"
+  if grep -q '^!' <<<"$text"; then
+    echo "  NEGATION in the $from .gitignore: $(grep -m1 '^!' <<<"$text")"
+    missing=1
+  fi
   if [ "$missing" = 1 ]; then
     findings=$((findings + 1))
-    printf '\n.gitignore\n  rule:   ignore-rules-intact\n  fix:    restore .envrc, .aic/, /workspace/, *.har and /.ai/local.md; they keep live tenant data untracked\n'
+    printf '\n.gitignore\n  rule:   ignore-rules-intact\n  fix:    keep .envrc, .aic/, /workspace/, *.har and /.ai/local.md as lines, with no ! exceptions; they keep live tenant data untracked\n'
   fi
 }
 
@@ -837,11 +856,41 @@ case "$MODE" in
       { cat .gitignore.keep; printf '!.envrc\n'; } >.gitignore && git add .gitignore
       run "a negated rule is caught although its line is present" 1 \
         bash "$script" --staged
+      { cat .gitignore.keep; printf '!capture.har\n'; } >.gitignore && git add .gitignore
+      run "an exception carved out of a class is caught" 1 bash "$script" --staged
+      sed 's|^\*\.har$|/*.har|' .gitignore.keep >.gitignore && git add .gitignore
+      run "a class narrowed to the root is caught" 1 bash "$script" --staged
+      # A hostile git template once lent the throwaway matcher its rules;
+      # the policy is textual now, so an empty staged file stays a finding.
+      mkdir -p .git/tpl/info && printf '*\n' >.git/tpl/info/exclude
+      : >.gitignore && git add .gitignore
+      run "a git template cannot lend the staged .gitignore its rules" 1 \
+        GIT_TEMPLATE_DIR="$repo/.git/tpl" bash "$script" --staged
+      rm -rf .git/tpl
       mv .gitignore.keep .gitignore && git add .gitignore
+      # git does not follow a .gitignore symlink, so neither may the check.
+      mv .gitignore .git/real-ignore && ln -s .git/real-ignore .gitignore
+      run "a symlinked working .gitignore protects nothing" 1 bash "$script" --tracked
+      rm .gitignore && mv .git/real-ignore .gitignore
+      # Non-ASCII text the NUL drop alone would mangle, and a stray byte
+      # that is not valid UTF-8: neither may hide a denylisted name.
+      printf 'ÉcoleReview\n' >"$repo/.git/deny-utf8"
+      printf '\xef\xbb\xbfok\nÉcoleReview\n' | iconv -f UTF-8 -t UTF-16 >bom16.md
+      git add bom16.md >/dev/null
+      run "UTF-16 with a byte-order mark is decoded before the denylist" 1 \
+        SENSITIVE_DENYLIST="$repo/.git/deny-utf8" bash "$script" --staged
+      run "control: without the denylist the decoded file is clean" 0 bash "$script" --staged
+      git rm -q --cached bom16.md >/dev/null && rm -f bom16.md
+      printf 'pad \xff then ÉcoleReview\n' >badbyte.md && git add badbyte.md >/dev/null
+      run "a byte invalid in the locale does not hide a denylisted name" 1 \
+        LC_ALL=C.UTF-8 SENSITIVE_DENYLIST="$repo/.git/deny-utf8" bash "$script" --staged
+      git rm -q --cached badbyte.md >/dev/null && rm -f badbyte.md
       # Caller-added context must not shift the reported line.
-      printf 'a\nb\nc\nd\ne\n' >ctx.md && git add ctx.md && git commit -qm ctx >/dev/null
-      printf 'a\nb\nX\nd\n%s\n' "$leak" >ctx.md && git add ctx.md >/dev/null
-      out=$(GIT_DIFF_OPTS=--unified=3 bash "$script" --staged 2>&1)
+      printf 'a\n\nc\nd\ne\n' >ctx.md && git add ctx.md && git commit -qm ctx >/dev/null
+      printf 'a\n\nX\nd\n%s\n' "$leak" >ctx.md && git add ctx.md >/dev/null
+      out=$(GIT_DIFF_OPTS=--unified=3 GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0=diff.suppressBlankEmpty GIT_CONFIG_VALUE_0=true \
+        bash "$script" --staged 2>&1)
       if grep -q 'ctx.md:5' <<<"$out"; then
         echo "ok    caller-added context keeps line numbers"
       else
@@ -932,6 +981,7 @@ case "$MODE" in
     exit 0
     ;;
   staged)
+    GREP_BINARY=-a
     check_ignores index
     # Added lines only. A commit that REMOVES a leaked value must not be
     # rejected for containing it on the '-' side.
