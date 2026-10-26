@@ -671,6 +671,34 @@ fn identity(problem: &Problem) -> Problem {
     }
 }
 
+/// Whether `problem` is one a baseline already had: the same contradiction,
+/// or — for a mapping target mismatch — the same end and mapping with the
+/// declared targets only narrowed. Removing a target introduces nothing, so
+/// an object delete must not have to repair an unrelated mismatch first;
+/// adding or replacing one still counts as new (Sol round 9).
+fn already_there(problem: &Problem, baseline: &[Problem]) -> bool {
+    let problem = identity(problem);
+    baseline.iter().any(|seen| match (&problem, seen) {
+        (
+            Problem::MappingTarget {
+                end,
+                mapped,
+                declared,
+            },
+            Problem::MappingTarget {
+                end: seen_end,
+                mapped: seen_mapped,
+                declared: seen_declared,
+            },
+        ) => {
+            end == seen_end
+                && mapped == seen_mapped
+                && declared.iter().all(|target| seen_declared.contains(target))
+        }
+        _ => *seen == problem,
+    })
+}
+
 fn mapping_problems_in(doc: &Value, repo_ds: &Value) -> Vec<Problem> {
     let mut out: Vec<Problem> = Vec::new();
     for ((object, key), shape) in shapes(doc) {
@@ -765,7 +793,7 @@ pub fn transition_refusal(
                 existing.is_empty()
                     || !existing
                         .iter()
-                        .all(|problems| problems.contains(&identity(problem)))
+                        .all(|problems| already_there(problem, problems))
             })
             .map(Problem::message),
     );
@@ -1340,6 +1368,47 @@ mod tests {
         let error = transition_refusal(&[&before], &after, &mapped).unwrap_err();
         assert!(error.contains("points at managed/d"), "{error}");
         assert_eq!(transition_refusal(&[&before], &after, &json!({})), Ok(()));
+    }
+
+    /// The narrowing excuse is per end: a new end whose targets are a subset
+    /// of another end's, mismatched against the same mapped path, is still
+    /// new. The control writes the same document with no mapping on it.
+    #[test]
+    fn narrowing_is_excused_only_at_the_same_end() {
+        let rel = |targets: &[&str]| {
+            let collection: Vec<Value> = targets
+                .iter()
+                .map(|target| json!({"path": format!("managed/{target}")}))
+                .collect();
+            json!({"type": "relationship", "resourceCollection": collection})
+        };
+        let before = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {"owner": rel(&["c", "e"])}}}
+        ]});
+        let after = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {
+                "owner": rel(&["c", "e"]), "other": rel(&["c"])
+            }}}
+        ]});
+        let mapping = |keys: &[&str]| {
+            let properties: serde_json::Map<String, Value> = keys
+                .iter()
+                .map(|key| {
+                    (
+                        key.to_string(),
+                        json!({"type": "reference", "resourcePath": "managed/d"}),
+                    )
+                })
+                .collect();
+            json!({"resourceMapping": {"genericMapping": {"managed/a": {"properties": properties}}}})
+        };
+        let error =
+            transition_refusal(&[&before], &after, &mapping(&["owner", "other"])).unwrap_err();
+        assert!(error.contains("other"), "{error}");
+        assert_eq!(
+            transition_refusal(&[&before], &after, &mapping(&["owner"])),
+            Ok(())
+        );
     }
 
     /// The control for the rename rule: restoring a name repo.ds maps, from

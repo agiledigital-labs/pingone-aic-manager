@@ -620,6 +620,56 @@ mod tests {
         }
     }
 
+    /// Sol/Astra round 9, finding 2: an object delete that only narrows a
+    /// relationship already mismatched against its mapping is sent — the
+    /// real `delete_object_in_doc` output, through the real boundary. The
+    /// control adds a target instead, and nothing is sent.
+    #[tokio::test]
+    async fn narrowing_an_existing_mismatch_is_sent_and_widening_is_not() {
+        let doc = |targets: &[&str]| {
+            let collection: Vec<Value> = targets
+                .iter()
+                .map(|target| json!({"path": format!("managed/{target}")}))
+                .collect();
+            json!({"_id": "managed", "objects": [
+                {"name": "a", "schema": {"properties": {
+                    "owner": {"type": "relationship", "resourceCollection": collection}
+                }}},
+                {"name": "c", "schema": {"properties": {}}},
+                {"name": "e", "schema": {"properties": {}}},
+                {"name": "f", "schema": {"properties": {}}}
+            ]})
+        };
+        let before = doc(&["c", "e"]);
+        let (deleted, _) = crate::managed::ops::delete_object_in_doc(&before, "e").unwrap();
+        assert_eq!(
+            deleted["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"],
+            json!([{"path": "managed/c"}])
+        );
+        let mapping = json!({"resourceMapping": {"genericMapping": {"managed/a": {"properties": {
+            "owner": {"type": "reference", "resourcePath": "managed/d"}}}}}});
+        for (after, refused) in [(deleted, false), (doc(&["c", "e", "f"]), true)] {
+            let puts = std::cell::Cell::new(0);
+            let stored = std::cell::RefCell::new(before.clone());
+            let result = replace_managed_confirmed_with(
+                &before,
+                after.clone(),
+                &[ConfigConfirm::DocumentEquals(after.clone())],
+                || std::future::ready(Ok(stored.borrow().clone())),
+                || std::future::ready(Ok(mapping.clone())),
+                |doc| {
+                    puts.set(puts.get() + 1);
+                    *stored.borrow_mut() = doc;
+                    std::future::ready(Ok(()))
+                },
+                "t",
+            )
+            .await;
+            assert_eq!(result.is_err(), refused, "{result:?}");
+            assert_eq!(puts.get(), usize::from(!refused));
+        }
+    }
+
     #[tokio::test]
     async fn confirmed_replace_rejects_empty_expectations_before_network_io() {
         let error = replace_managed_confirmed("unused", &json!({}), json!({}), &[], false)
