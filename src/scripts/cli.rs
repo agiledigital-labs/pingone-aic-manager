@@ -743,7 +743,7 @@ pub(crate) async fn run_with_runtime(
             tenant,
             force,
         } => {
-            let t = tenant_for(tenant)?;
+            let t = announced_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             // Be friendly: scaffold the workspace on first use so the pulled
             // sources land next to their type definitions.
@@ -849,7 +849,7 @@ pub(crate) async fn run_with_runtime(
             Ok(())
         }
         ScriptCommand::Status { reference, tenant } => {
-            let t = tenant_for(tenant)?;
+            let t = announced_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             // `reference` is a free-text filter: a group (`am`/`idm`), a
             // namespace (`alpha`/`endpoint`/…), a full-name (`alpha/Email OTP`),
@@ -1225,7 +1225,7 @@ pub(crate) async fn run_with_runtime(
             snapshot_vs_remote,
             tenant,
         } => {
-            let t = tenant_for(tenant)?;
+            let t = announced_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             // No ref → pick from synced scripts (diff needs a snapshot).
             let (ns, name) = match reference {
@@ -1860,7 +1860,7 @@ fn scripts_are_writable(theme: TenantTheme) -> bool {
 /// `pull`, `status`, `diff`) are deliberately unrestricted: comparing a higher
 /// environment against your workspace is exactly how you check a promotion.
 fn writable_tenant_for(tenant: Option<String>) -> Result<String> {
-    let tenant = crate::cli::tenant_config_for(tenant)?;
+    let (tenant, resolution) = crate::cli::target_config_for(tenant)?;
     if !scripts_are_writable(tenant.theme) {
         return Err(Error::Config(format!(
             "scripts are immutable on '{}' tenants like '{}' — they are static content promoted up from sandbox/development, so change the script there and promote it",
@@ -1868,7 +1868,16 @@ fn writable_tenant_for(tenant: Option<String>) -> Result<String> {
             tenant.name
         )));
     }
+    resolution.announce();
     Ok(tenant.name)
+}
+
+/// [`tenant_for`] for a command whose result depends on which tenant it read
+/// — pull, status, diff — so the operator sees the target before the answer.
+fn announced_tenant_for(tenant: Option<String>) -> Result<String> {
+    let resolution = crate::cli::target_for(tenant)?;
+    resolution.announce();
+    Ok(resolution.tenant)
 }
 
 /// Lifecycle commands must be able to update a real workspace + snapshot,

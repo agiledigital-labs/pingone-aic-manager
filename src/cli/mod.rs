@@ -232,8 +232,18 @@ pub enum CtxCommand {
         #[arg(long, help = "Print tenants as JSON")]
         json: bool,
     },
-    /// Print the current context.
-    Current,
+    /// Print the tenant commands here would target, and why.
+    ///
+    /// The effective tenant goes to stdout alone, so `$(aic ctx current)`
+    /// still captures a bare name; where it came from — `--tenant`, the
+    /// `workspace/<tenant>/` directory, the stored context or
+    /// `default_tenant` — goes to stderr, with the stored context named
+    /// separately when it is not the one in effect.
+    #[command(visible_alias = "show")]
+    Current {
+        #[arg(long, help = "Explain this tenant instead")]
+        tenant: Option<String>,
+    },
     /// Switch to a different tenant.
     Use { tenant: String },
     /// Remove a tenant entry and the local artifacts the planner offers.
@@ -718,12 +728,50 @@ pub fn bootstrap_project_root() -> Result<()> {
         config::set_project_root(cwd)?;
         return Ok(());
     };
-    config::set_workspace_context(config::detect_workspace_context(&root, &start));
+    let explicit = explicit
+        .filter(|value| !value.is_empty())
+        .map(|_| source.trim_end_matches([' ', '=']));
+    config::set_workspace_context(choose_workspace_context(&root, &start, &cwd, explicit));
     config::set_project_root(root.clone())?;
     // Still load-bearing for relative user arguments and `workspace/` paths.
     std::env::set_current_dir(&root)
         .map_err(|e| Error::Config(format!("could not enter project {}: {e}", root.display())))?;
     Ok(())
+}
+
+/// Read the workspace context for this invocation, and record where from.
+///
+/// An explicit start (`--project` / `AIC_PROJECT`) inside `workspace/<T>/`
+/// names its own tenant, and that wins. One that names only the project root
+/// carries no tenant, so when the real cwd is inside the SAME project and in a
+/// workspace, the cwd's context is used: the operator is standing in that
+/// workspace and nothing on the command line says otherwise. Before this, the
+/// cwd was discarded and the stored context silently took over. A cwd in a
+/// different project is never consulted — context does not cross roots.
+fn choose_workspace_context(
+    root: &Path,
+    start: &Path,
+    cwd: &Path,
+    explicit: Option<&'static str>,
+) -> config::WorkspaceContext {
+    let with_origin = |context: config::WorkspaceContext, origin| config::WorkspaceContext {
+        origin: context.tenant.is_some().then_some(origin),
+        ..context
+    };
+    let Some(label) = explicit else {
+        return with_origin(
+            config::detect_workspace_context(root, cwd),
+            config::WorkspaceOrigin::Cwd,
+        );
+    };
+    let from_start = config::detect_workspace_context(root, start);
+    if from_start.tenant.is_none() && config::find_project_root(cwd).as_deref() == Some(root) {
+        let from_cwd = config::detect_workspace_context(root, cwd);
+        if from_cwd.tenant.is_some() {
+            return with_origin(from_cwd, config::WorkspaceOrigin::Cwd);
+        }
+    }
+    with_origin(from_start, config::WorkspaceOrigin::Explicit(label))
 }
 
 /// Parse argv, but first bake the resolved tenant in as the `default_value` of
@@ -733,7 +781,9 @@ pub fn bootstrap_project_root() -> Result<()> {
 /// are addressed by `<namespace>/<name>`.)
 pub fn parse_with_defaults() -> Cli {
     let cmd = inject_tenant_default(Cli::command(), resolved_tenant().as_deref());
-    match Cli::from_arg_matches(&cmd.get_matches()) {
+    let matches = cmd.get_matches();
+    let _ = TENANT_TYPED.set(tenant_typed(&matches));
+    match Cli::from_arg_matches(&matches) {
         Ok(mut cli) => {
             apply_no_prompt_env(&mut cli, std::env::var_os("AIC_NO_PROMPT").as_deref());
             cli
@@ -750,23 +800,125 @@ fn apply_no_prompt_env(cli: &mut Cli, value: Option<&std::ffi::OsStr>) {
     cli.no_prompt |= no_prompt_from_env(value);
 }
 
-/// The tenant to surface as the `--tenant` default: a workspace-dir tenant
-/// (only if configured), else the current `aic ctx`, else `default_tenant`,
-/// else `None`. Mirrors [`resolve_tenant`].
+/// Whether the operator typed `--tenant` on the deepest subcommand that has
+/// one. Set once, after parsing; unset (tests that build a [`Cli`] directly)
+/// means any tenant value reached the command as typed.
+static TENANT_TYPED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// `--tenant` carries an injected default everywhere, so a value reaching a
+/// command proves nothing about who chose it. clap's `ValueSource` does.
+fn tenant_typed(matches: &clap::ArgMatches) -> bool {
+    let mut level = matches;
+    loop {
+        if level.ids().any(|id| id == "tenant")
+            && level.value_source("tenant") == Some(clap::parser::ValueSource::CommandLine)
+        {
+            return true;
+        }
+        match level.subcommand() {
+            Some((_, sub)) => level = sub,
+            None => return false,
+        }
+    }
+}
+
+/// Where the tenant a command targets came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TenantSource {
+    Flag,
+    Workspace(config::WorkspaceOrigin),
+    StoredContext,
+    DefaultTenant,
+}
+
+impl TenantSource {
+    fn describe(&self, tenant: &str) -> String {
+        match self {
+            Self::Flag => "--tenant".to_string(),
+            Self::Workspace(config::WorkspaceOrigin::Cwd) => {
+                format!("current directory is in workspace/{tenant}/")
+            }
+            Self::Workspace(config::WorkspaceOrigin::Explicit(label)) => {
+                format!("{label} is in workspace/{tenant}/")
+            }
+            Self::StoredContext => "stored context, set by `aic ctx use`".to_string(),
+            Self::DefaultTenant => "default_tenant in .aic/config.toml".to_string(),
+        }
+    }
+}
+
+/// The tenant a command targets, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TenantResolution {
+    pub(crate) tenant: String,
+    pub(crate) source: TenantSource,
+    /// A `workspace/<name>/` directory that was NOT used because no tenant of
+    /// that name is configured. Silence here is how a stale directory sent an
+    /// operator to the stored context without a word.
+    pub(crate) ignored_workspace: Option<String>,
+}
+
+impl TenantResolution {
+    /// One stderr line naming the target, for commands that read or write a
+    /// tenant. Printed before any outcome, no-ops included: a push that says
+    /// "nothing to do" has still compared against some tenant.
+    pub(crate) fn announce(&self) {
+        eprintln!(
+            "target tenant: {} ({})",
+            self.tenant,
+            self.source.describe(&self.tenant)
+        );
+        if let Some(name) = &self.ignored_workspace {
+            eprintln!("  workspace/{name}/ ignored: no tenant named '{name}' in .aic/config.toml");
+        }
+    }
+}
+
+/// The tenant implied when `--tenant` is absent: a configured workspace-dir
+/// tenant, else the stored context, else `default_tenant`. The one
+/// implementation of that order — both the clap default and
+/// [`resolve_tenant`] call it. `stored` is read only if it is reached.
+fn implicit_tenant(
+    cfg: Option<&ProjectConfig>,
+    workspace: &config::WorkspaceContext,
+    stored: impl FnOnce() -> Result<Option<String>>,
+) -> Result<Option<TenantResolution>> {
+    let configured = |name: &str| cfg.is_some_and(|cfg| cfg.tenants.iter().any(|t| t.name == name));
+    let mut ignored_workspace = None;
+    if let Some(name) = &workspace.tenant {
+        if configured(name) {
+            return Ok(Some(TenantResolution {
+                tenant: name.clone(),
+                source: TenantSource::Workspace(
+                    workspace.origin.unwrap_or(config::WorkspaceOrigin::Cwd),
+                ),
+                ignored_workspace: None,
+            }));
+        }
+        ignored_workspace = Some(name.clone());
+    }
+    let found = if let Some(stored) = stored()? {
+        Some((stored, TenantSource::StoredContext))
+    } else {
+        cfg.filter(|cfg| !cfg.default_tenant.is_empty())
+            .map(|cfg| (cfg.default_tenant.clone(), TenantSource::DefaultTenant))
+    };
+    Ok(found.map(|(tenant, source)| TenantResolution {
+        tenant,
+        source,
+        ignored_workspace,
+    }))
+}
+
+/// The tenant to surface as the `--tenant` default, or `None`.
 fn resolved_tenant() -> Option<String> {
-    let ctx = config::workspace_context();
     let cfg = ProjectConfig::load().ok().flatten();
-    if let (Some(t), Some(cfg)) = (&ctx.tenant, &cfg)
-        && cfg.tenants.iter().any(|x| &x.name == t)
-    {
-        return Some(t.clone());
-    }
-    if let Ok(Some(c)) = config::read_current_context() {
-        return Some(c);
-    }
-    cfg.as_ref()
-        .filter(|c| !c.default_tenant.is_empty())
-        .map(|c| c.default_tenant.clone())
+    implicit_tenant(cfg.as_ref(), &config::workspace_context(), || {
+        Ok(config::read_current_context().ok().flatten())
+    })
+    .ok()
+    .flatten()
+    .map(|resolution| resolution.tenant)
 }
 
 /// Recursively set `default_value` on every `--tenant` arg in the command tree.
@@ -1233,16 +1385,26 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
                 print_table(&["CURRENT", "NAME", "THEME", "BASE_URL"], &rows);
             }
         }
-        CtxCommand::Current => match current {
-            Some(c) => println!("{c}"),
-            None => {
-                if !cfg.default_tenant.is_empty() {
-                    println!("{} (default)", cfg.default_tenant);
-                } else {
-                    println!("<none>");
-                }
+        CtxCommand::Current { tenant } => {
+            let Some(resolution) = resolve_tenant_from(tenant, &cfg, || Ok(current.clone()))?
+            else {
+                println!("<none>");
+                return Ok(());
+            };
+            println!("{}", resolution.tenant);
+            eprintln!("source: {}", resolution.source.describe(&resolution.tenant));
+            if let Some(name) = &resolution.ignored_workspace {
+                eprintln!(
+                    "workspace/{name}/ ignored: no tenant named '{name}' in .aic/config.toml"
+                );
             }
-        },
+            if let Some(stored) = current
+                .as_ref()
+                .filter(|stored| **stored != resolution.tenant)
+            {
+                eprintln!("stored context: {stored} (not in effect here)");
+            }
+        }
         CtxCommand::Use { tenant } => {
             if !cfg.tenants.iter().any(|t| t.name == tenant) {
                 return Err(Error::Config(format!(
@@ -1511,29 +1673,79 @@ struct CtxTenantOutput {
     base_url: String,
 }
 
-/// Resolve a tenant name from a CLI flag, falling back to the on-disk
-/// current context, then the config's default tenant. Errors if none is set.
+/// Resolve a tenant name from a CLI flag, falling back to a configured
+/// workspace directory, the on-disk current context, then the config's
+/// default tenant. Errors if none is set.
 fn resolve_tenant(arg: Option<String>, cfg: &ProjectConfig) -> Result<String> {
-    if let Some(t) = arg {
-        return Ok(t);
+    resolve_tenant_with_source(arg, cfg).map(|resolution| resolution.tenant)
+}
+
+fn resolve_tenant_with_source(
+    arg: Option<String>,
+    cfg: &ProjectConfig,
+) -> Result<TenantResolution> {
+    resolve_tenant_from(arg, cfg, config::read_current_context)?.ok_or_else(|| {
+        Error::Config("no current context — run `aic ctx use <tenant>` first".into())
+    })
+}
+
+fn resolve_tenant_from(
+    arg: Option<String>,
+    cfg: &ProjectConfig,
+    stored: impl FnOnce() -> Result<Option<String>>,
+) -> Result<Option<TenantResolution>> {
+    let typed = TENANT_TYPED.get().copied().unwrap_or(true);
+    resolve_tenant_given(arg, typed, cfg, &config::workspace_context(), stored)
+}
+
+/// The pure half of [`resolve_tenant_from`]. A value clap filled in from the
+/// injected default is attributed to the rule that produced it; anything else
+/// is the operator's `--tenant`.
+fn resolve_tenant_given(
+    arg: Option<String>,
+    typed: bool,
+    cfg: &ProjectConfig,
+    workspace: &config::WorkspaceContext,
+    stored: impl FnOnce() -> Result<Option<String>>,
+) -> Result<Option<TenantResolution>> {
+    let flag = |tenant| {
+        Some(TenantResolution {
+            tenant,
+            source: TenantSource::Flag,
+            ignored_workspace: None,
+        })
+    };
+    match arg {
+        Some(tenant) if typed => Ok(flag(tenant)),
+        Some(tenant) => Ok(implicit_tenant(Some(cfg), workspace, stored)?
+            .filter(|implicit| implicit.tenant == tenant)
+            .or_else(|| flag(tenant))),
+        None => implicit_tenant(Some(cfg), workspace, stored),
     }
-    // A `workspace/<tenant>/<realm>` working directory implies the tenant —
-    // but only honour it if it's a tenant we actually know, so a stale
-    // directory can't silently retarget writes.
-    if let Some(t) = config::workspace_context().tenant
-        && cfg.tenants.iter().any(|x| x.name == t)
-    {
-        return Ok(t);
-    }
-    if let Some(c) = config::read_current_context()? {
-        return Ok(c);
-    }
-    if !cfg.default_tenant.is_empty() {
-        return Ok(cfg.default_tenant.clone());
-    }
-    Err(Error::Config(
-        "no current context — run `aic ctx use <tenant>` first".into(),
-    ))
+}
+
+/// [`tenant_for`], plus where the tenant came from.
+pub(crate) fn target_for(tenant_arg: Option<String>) -> Result<TenantResolution> {
+    let cfg =
+        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
+    resolve_tenant_with_source(tenant_arg, &cfg)
+}
+
+/// [`tenant_config_for`], plus where the tenant came from.
+pub(crate) fn target_config_for(
+    tenant_arg: Option<String>,
+) -> Result<(crate::config::Tenant, TenantResolution)> {
+    let cfg =
+        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
+    let resolution = resolve_tenant_with_source(tenant_arg, &cfg)?;
+    let tenant = cfg
+        .tenants
+        .into_iter()
+        .find(|tenant| tenant.name == resolution.tenant)
+        .ok_or_else(|| {
+            Error::Config(format!("no tenant named '{}' in config", resolution.tenant))
+        })?;
+    Ok((tenant, resolution))
 }
 
 pub(crate) fn redact(token: &str) -> String {
@@ -1573,6 +1785,160 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aic-bare-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
+    }
+
+    fn workspace_dir(root: &Path, rel: &str) -> PathBuf {
+        let dir = root.join(rel);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn workspace_context_from_cwd_when_explicit_project_names_only_the_root() {
+        let root = project_tree();
+        let cwd = workspace_dir(&root, "workspace/dev/am/alpha");
+        // The reported case: `--project <root>` from inside workspace/dev/.
+        // The explicit start carries no tenant, so the cwd's is used.
+        let context = choose_workspace_context(&root, &root, &cwd, Some("--project"));
+        assert_eq!(context.tenant.as_deref(), Some("dev"));
+        assert_eq!(context.namespace.as_deref(), Some("alpha"));
+        assert_eq!(context.origin, Some(config::WorkspaceOrigin::Cwd));
+
+        // No explicit start: the cwd, as before.
+        let context = choose_workspace_context(&root, &cwd, &cwd, None);
+        assert_eq!(context.tenant.as_deref(), Some("dev"));
+        assert_eq!(context.origin, Some(config::WorkspaceOrigin::Cwd));
+    }
+
+    #[test]
+    fn workspace_context_prefers_a_tenant_bearing_explicit_start_over_the_cwd() {
+        let root = project_tree();
+        let cwd = workspace_dir(&root, "workspace/dev");
+        let start = workspace_dir(&root, "workspace/prod/idm/endpoint");
+        let context = choose_workspace_context(&root, &start, &cwd, Some("AIC_PROJECT"));
+        assert_eq!(context.tenant.as_deref(), Some("prod"));
+        assert_eq!(context.namespace.as_deref(), Some("endpoint"));
+        assert_eq!(
+            context.origin,
+            Some(config::WorkspaceOrigin::Explicit("AIC_PROJECT"))
+        );
+    }
+
+    #[test]
+    fn workspace_context_never_crosses_project_roots() {
+        let root = project_tree();
+        let other = project_tree();
+        let cwd = workspace_dir(&other, "workspace/dev");
+        let context = choose_workspace_context(&root, &root, &cwd, Some("--project"));
+        assert_eq!(context.tenant, None);
+        assert_eq!(context.origin, None);
+
+        // Same root but the cwd is not in a workspace: nothing to infer.
+        let context = choose_workspace_context(&root, &root, &root, Some("--project"));
+        assert_eq!(context.tenant, None);
+        assert_eq!(context.origin, None);
+    }
+
+    fn two_tenant_config() -> ProjectConfig {
+        toml::from_str(
+            r#"
+project = "p"
+default_tenant = "sandbox"
+[[tenant]]
+name = "sandbox"
+base_url = "https://tenant.example.com"
+theme = "sandbox"
+scopes = []
+[[tenant]]
+name = "dev"
+base_url = "https://tenant.example.com"
+theme = "development"
+scopes = []
+"#,
+        )
+        .unwrap()
+    }
+
+    fn in_workspace(tenant: &str) -> config::WorkspaceContext {
+        config::WorkspaceContext {
+            tenant: Some(tenant.to_string()),
+            namespace: None,
+            origin: Some(config::WorkspaceOrigin::Cwd),
+        }
+    }
+
+    fn no_stored_read() -> Result<Option<String>> {
+        panic!("the stored context must not be read when an earlier rule decides")
+    }
+
+    #[test]
+    fn tenant_source_distinguishes_a_typed_flag_from_the_injected_default() {
+        let cfg = two_tenant_config();
+        let workspace = in_workspace("dev");
+        // Same value both times; only who supplied it differs. A resolver that
+        // looked at the value alone would attribute both to one source.
+        let typed =
+            resolve_tenant_given(Some("dev".into()), true, &cfg, &workspace, no_stored_read)
+                .unwrap()
+                .unwrap();
+        assert_eq!(typed.source, TenantSource::Flag);
+        let defaulted =
+            resolve_tenant_given(Some("dev".into()), false, &cfg, &workspace, no_stored_read)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            defaulted.source,
+            TenantSource::Workspace(config::WorkspaceOrigin::Cwd)
+        );
+    }
+
+    #[test]
+    fn tenant_source_falls_through_workspace_stored_and_default_in_order() {
+        let cfg = two_tenant_config();
+        let none = config::WorkspaceContext::default();
+
+        let stored = resolve_tenant_given(None, false, &cfg, &none, || Ok(Some("dev".into())))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (stored.tenant.as_str(), stored.source),
+            ("dev", TenantSource::StoredContext)
+        );
+
+        let default = resolve_tenant_given(None, false, &cfg, &none, || Ok(None))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (default.tenant.as_str(), default.source),
+            ("sandbox", TenantSource::DefaultTenant)
+        );
+
+        // An unconfigured workspace directory is skipped — and said to be.
+        let stale = in_workspace("gone");
+        let resolution = resolve_tenant_given(None, false, &cfg, &stale, || Ok(Some("dev".into())))
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolution.source, TenantSource::StoredContext);
+        assert_eq!(resolution.ignored_workspace.as_deref(), Some("gone"));
+    }
+
+    #[test]
+    fn tenant_typed_reads_the_value_source_of_the_leaf_subcommand() {
+        let parse = |args: &[&str]| {
+            let cmd = inject_tenant_default(Cli::command(), Some("sandbox"));
+            tenant_typed(&cmd.try_get_matches_from(args).unwrap())
+        };
+        assert!(!parse(&["aic", "script", "push", "endpoint/x"]));
+        assert!(parse(&[
+            "aic",
+            "script",
+            "push",
+            "endpoint/x",
+            "--tenant",
+            "sandbox"
+        ]));
+        assert!(!parse(&["aic", "ctx", "show"]));
+        assert!(parse(&["aic", "ctx", "current", "--tenant", "dev"]));
     }
 
     fn resolved(explicit: Option<&Path>, cwd: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
