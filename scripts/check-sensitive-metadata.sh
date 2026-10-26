@@ -80,6 +80,19 @@ case "${1:-}" in
     ;;
 esac
 
+# The caller's Git location variables are relative to the caller's cwd. The
+# `cd` below would silently re-anchor them: a relative GIT_INDEX_FILE named
+# an index that did not exist and a relative GIT_WORK_TREE a different tree,
+# so the staged listing came back empty and the scan passed. Anchor each to
+# where it was given. Not unset: an alternate index is legitimate in a hook.
+for var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR; do
+  val=${!var-}
+  case $val in
+    '' | /*) ;;
+    *) export "$var=$PWD/$val" ;;
+  esac
+done
+unset var val
 cd "$(git rev-parse --show-toplevel)" || exit 2
 
 # This script necessarily contains the very patterns it hunts for, so a
@@ -253,8 +266,10 @@ staged_lines() {
   # The parser reads raw `@@`/`+` markers, so caller configuration that
   # changes the patch's form (color.ui=always, an external diff, a textconv
   # filter) must not apply: each turned every staged line into nothing to
-  # scan, and an empty stream reads as clean.
-  git diff --cached --no-color --no-ext-diff --no-textconv -U0 -- ":(literal)$1" \
+  # scan, and an empty stream reads as clean. `--text` likewise, because a
+  # caller's core.bigFileThreshold makes a large text file "Binary files
+  # differ".
+  git diff --cached --text --no-color --no-ext-diff --no-textconv -U0 -- ":(literal)$1" \
     | awk '/^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); next }
            /^\+/ && !/^\+\+\+/ { print n":"substr($0,2); n++ }'
 }
@@ -728,6 +743,22 @@ case "$MODE" in
         GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.blank.textconv GIT_CONFIG_VALUE_0=true \
         bash "$script" --staged
       rm -f "$repo/.git/info/attributes"
+      run "core.bigFileThreshold still scans staged lines" 1 \
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.bigFileThreshold GIT_CONFIG_VALUE_0=1 \
+        bash "$script" --staged
+      # Relative location variables, given from a subdirectory: they must
+      # keep naming what they named there after the scanner moves to the root.
+      mkdir -p sub
+      git rm -q --cached staged.md >/dev/null
+      GIT_INDEX_FILE=.git/alt-index git read-tree HEAD
+      GIT_INDEX_FILE=.git/alt-index git add staged.md
+      run "control: the default index holds nothing staged" 0 bash "$script" --staged
+      run "a relative GIT_INDEX_FILE still scans its staged lines" 1 \
+        bash -c 'cd sub && GIT_INDEX_FILE=../.git/alt-index bash "$1" --staged' _ "$script"
+      git add staged.md >/dev/null
+      run "a relative GIT_WORK_TREE still scans staged lines" 1 \
+        bash -c 'cd sub && GIT_DIR=../.git GIT_WORK_TREE=.. bash "$1" --staged' _ "$script"
+      rm -rf sub .git/alt-index
       git rm -q --cached staged.md >/dev/null && rm -f staged.md
       mkdir locked && printf '%s\n' "$leak" >locked/f.md && git add locked >/dev/null
       git commit -qm locked >/dev/null && chmod a-w locked
