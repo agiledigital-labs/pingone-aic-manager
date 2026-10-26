@@ -140,29 +140,32 @@ pub async fn run(tenant_arg: Option<String>, add: Vec<String>) -> Result<()> {
     }
     // Fail early on an ungranted scope, before touching the file.
     plan(&tenant.name, &remote, &tenant.scopes, &add)?;
-    // Reload and rebase with no await between this read and the save, so the
-    // window for a concurrent writer is the synchronous load→save alone.
-    let mut cfg = crate::config::ProjectConfig::load()?
-        .ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
-    let entry = cfg
-        .tenants
-        .iter_mut()
-        .find(|t| t.name == tenant.name)
-        .ok_or_else(|| Error::Config(format!("tenant {} vanished from config", tenant.name)))?;
-    let after = rebase(
-        &tenant.name,
-        &sa_id,
-        entry.sa_id.as_deref(),
-        &remote,
-        &entry.scopes,
-        &add,
-    )?;
-    if after == entry.scopes {
+    // Rebase inside the config transaction: the entry is re-read under the
+    // lock, so a concurrent `--add` cannot be overwritten and an account
+    // replaced since the grant read is refused rather than restored.
+    let name = tenant.name.clone();
+    let saved = crate::config::project_paths().update_config(|cfg| {
+        let entry = cfg
+            .tenants
+            .iter_mut()
+            .find(|t| t.name == name)
+            .ok_or_else(|| Error::Config(format!("tenant {name} vanished from config")))?;
+        let after = rebase(
+            &name,
+            &sa_id,
+            entry.sa_id.as_deref(),
+            &remote,
+            &entry.scopes,
+            &add,
+        )?;
+        let changed = after != entry.scopes;
+        entry.scopes = after.clone();
+        Ok(changed.then_some(after))
+    })?;
+    let Some(after) = saved else {
         println!("nothing to do: {} already requested", add.join(", "));
         return Ok(());
-    }
-    entry.scopes = after.clone();
-    cfg.save()?;
+    };
     println!("{}'s tokens now request: {}", tenant.name, after.join(" "));
     Ok(())
 }
