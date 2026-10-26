@@ -39,6 +39,7 @@ pub mod common;
 pub mod cookie;
 pub mod log_only;
 pub mod paste;
+pub mod scopes;
 pub mod screen;
 pub mod userpass;
 pub mod view;

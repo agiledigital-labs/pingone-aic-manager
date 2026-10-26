@@ -248,6 +248,24 @@ pub enum CtxCommand {
     },
     /// Switch to a different tenant.
     Use { tenant: String },
+    /// Show the scopes this install's service account holds on a tenant, and
+    /// the ones its tokens request; `--add` makes its tokens request a scope
+    /// the tenant already grants.
+    ///
+    /// A tenant onboarded before a scope joined the onboarding set lacks it on
+    /// both sides. The SA cannot grant itself one — that is an admin's job in
+    /// the console — so `--add` edits only `.aic/config.toml`, and refuses a
+    /// scope the tenant has not granted.
+    Scopes {
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(
+            long = "add",
+            value_name = "SCOPE",
+            help = "Request this already-granted scope (repeatable)"
+        )]
+        add: Vec<String>,
+    },
     /// Remove a tenant entry and the local artifacts the planner offers.
     Rm {
         tenant: String,
@@ -317,7 +335,9 @@ impl Command {
             // from the tenant, so it needs the same preflight as any write.
             // Without this it skips the unlock and fails deeper in, on
             // whatever error a locked daemon happens to return.
-            Self::Ctx { command } => matches!(command, CtxCommand::Rm { .. }),
+            Self::Ctx { command } => {
+                matches!(command, CtxCommand::Rm { .. } | CtxCommand::Scopes { .. })
+            }
             // `saml metadata` is a local file rewrite. Classifying the group
             // as `true` would force an unlock for a transform that never
             // talks to a tenant. The inner match is what later import/export
@@ -1506,6 +1526,9 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
         }
         CtxCommand::Rm { tenant, options } => {
             return crate::offboard::cli::run(tenant, options).await;
+        }
+        CtxCommand::Scopes { tenant, add } => {
+            return crate::onboard::scopes::run(tenant, add).await;
         }
     }
     Ok(())
