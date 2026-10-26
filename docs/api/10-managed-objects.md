@@ -555,10 +555,11 @@ on the forward side. So the failure is a **mixed** pair: one side's mapping no
 longer names the property the other side declares, and reads and writes go to
 different stores. Mode alone is not a health check: both modes can work, and
 this pair broke while one side was still mapped. This is why `aic` refuses
-every relationship key rename, forward or reverse. Renames on a generic pair,
-reverse-only renames, target repoints and object renames of a mapped pair were
-**not** measured; the refusal is conservative for those, not evidence about
-them.
+every relationship key rename, forward or reverse. Renames on a generic pair
+and reverse-only renames were **not** measured; refusing them is a precaution,
+not evidence about them. Target repoints and object renames of a mapped pair
+were not measured either, and `aic` still **allows** both — they change the
+`resourcePath` a mapping names, and guarding them is deferred, not done.
 
 A mapping can also outlive its property: the sandbox's `managed/test_from`
 mapping still lists `hasOneHasOne`, which `config/managed` no longer declares.
