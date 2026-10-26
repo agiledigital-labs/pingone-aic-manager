@@ -515,6 +515,12 @@ is_placeholder_host() {
 }
 
 # scan_text FILE  — reads candidate text on stdin as "LINENO:CONTENT"
+#
+# Its input must hold no NUL: bash's `read` deletes one, joining its
+# neighbours (`exam<NUL>ple.forgeblocks.com` reads as a sanctioned
+# placeholder). The staged passes map NUL to a space before this; the
+# tracked and history pre-filter drops binary content with `grep -I`; the
+# redactor's loop below likewise expects text.
 scan_text() {
   local file="$1" line content host uuid cand decoded
   while IFS= read -r rec; do
