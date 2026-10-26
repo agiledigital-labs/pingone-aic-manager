@@ -176,6 +176,36 @@ pub struct AddFieldSpec {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn managed_get_projects_one_property_or_the_schema_verbatim() {
+        let object = serde_json::json!({
+            "name": "alpha_user",
+            "onCreate": {"type": "text/javascript", "source": "x"},
+            "schema": {"order": ["mail"], "properties": {
+                "mail": {"type": "string", "title": "Email"},
+            }},
+        });
+        let property = super::project_managed_get(
+            object.clone(),
+            "alpha_user",
+            &super::GetProjection::Property("mail".into()),
+        )
+        .unwrap();
+        assert_eq!(property, object["schema"]["properties"]["mail"]);
+        let schema =
+            super::project_managed_get(object.clone(), "alpha_user", &super::GetProjection::Schema)
+                .unwrap();
+        assert_eq!(schema, object["schema"]);
+
+        let error = super::project_managed_get(
+            object,
+            "alpha_user",
+            &super::GetProjection::Property("Mail".into()),
+        )
+        .unwrap_err();
+        assert!(error.contains("did you mean mail?"), "{error}");
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -601,6 +631,53 @@ fn elide_inline_hook_sources(object: &mut Value, object_name: &str) -> usize {
         }
     }
     count
+}
+
+/// Which part of a managed object `managed get` prints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetProjection {
+    Object,
+    /// `--schema-only`: the `schema` member, as stored.
+    Schema,
+    /// `--property <name>`: one property's definition, exactly as stored, so
+    /// it diffs against a repository copy without any JSON plumbing.
+    Property(String),
+}
+
+/// Narrow a (possibly `--fields`-filtered) object to `projection`.
+pub fn project_managed_get(
+    object: Value,
+    object_name: &str,
+    projection: &GetProjection,
+) -> Result<Value, String> {
+    match projection {
+        GetProjection::Object => Ok(object),
+        GetProjection::Schema => object
+            .get("schema")
+            .cloned()
+            .ok_or_else(|| format!("{object_name} has no schema")),
+        GetProjection::Property(name) => {
+            let properties = object
+                .pointer("/schema/properties")
+                .and_then(Value::as_object);
+            if let Some(property) = properties.and_then(|properties| properties.get(name)) {
+                return Ok(property.clone());
+            }
+            // Property names are case-sensitive on the tenant; a near miss is
+            // the likeliest typo, so name it rather than leave a bare refusal.
+            let near: Vec<&str> = properties
+                .into_iter()
+                .flat_map(|properties| properties.keys())
+                .filter(|key| key.eq_ignore_ascii_case(name))
+                .map(String::as_str)
+                .collect();
+            let hint = match near.as_slice() {
+                [] => String::new(),
+                names => format!(" (did you mean {}?)", names.join(", ")),
+            };
+            Err(format!("{object_name} has no property {name:?}{hint}"))
+        }
+    }
 }
 
 fn no_fields_match_message(object_name: &str, total: usize, patterns: &[String]) -> String {
