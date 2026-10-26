@@ -45,6 +45,22 @@ pub enum IdmCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
+    /// GET any `/openidm/` path and print the JSON. Read-only in method, not
+    /// necessarily in effect: a GET on `endpoint/<name>` runs its script.
+    Get {
+        /// `/openidm/<path>`, `openidm/<path>` or `<path>`, with any query
+        /// string, e.g. `managed/alpha_user?_queryFilter=true`.
+        path: String,
+        /// Shorthand for `_fields=<FIELDS>`.
+        #[arg(long, value_name = "FIELDS")]
+        fields: Option<String>,
+        /// Follow `pagedResultsCookie` to the end and print one merged
+        /// `result` array. Adds `_pageSize=1000` unless the path sets one.
+        #[arg(long)]
+        all_pages: bool,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+    },
 }
 
 // ── clap parsing + dispatch ──────────────────────────────────────────────
@@ -89,6 +105,51 @@ pub async fn run(cmd: IdmCommand) -> Result<()> {
             let conn = open_existing_store(&tenant)?;
             println!("{}", render_tables(&introspect_tables(&conn)?));
             Ok(())
+        }
+        IdmCommand::Get {
+            path,
+            fields,
+            all_pages,
+            tenant,
+        } => {
+            let get = crate::idmstore::raw::RawGet::parse(&path, fields.as_deref(), all_pages)?;
+            let tenant = tenant_for(tenant)?;
+            if !all_pages {
+                let body = crate::aic::api::get(&tenant, &get.page_path(None)).await?;
+                print_json(&body)?;
+                if body
+                    .get("pagedResultsCookie")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|cookie| !cookie.is_empty())
+                {
+                    eprintln!("more results follow: re-run with --all-pages to fetch them");
+                }
+                return Ok(());
+            }
+            let results = crate::idmstore::api::collect_cursor_pages(|cookie| {
+                let (tenant, path) = (tenant.clone(), get.page_path(cookie.as_deref()));
+                async move {
+                    let not_a_query = || {
+                        Error::Config(
+                            "--all-pages needs a query (a response with a `result` array); this path is a single resource — drop --all-pages".into(),
+                        )
+                    };
+                    // A single-resource read refuses `_pageSize` outright
+                    // (400 "Unrecognized request parameter", 2026-10-26).
+                    let body = match crate::aic::api::get(&tenant, &path).await {
+                        Err(Error::Api { status: 400, body }) if body.contains("'_pageSize'") => {
+                            return Err(not_a_query());
+                        }
+                        other => other?,
+                    };
+                    crate::idmstore::api::parse_page(&body).map_err(|_| not_a_query())
+                }
+            })
+            .await?;
+            print_json(&serde_json::json!({
+                "result": results,
+                "resultCount": results.len(),
+            }))
         }
         IdmCommand::Status { tenant } => {
             let tenant = tenant_for(tenant)?;

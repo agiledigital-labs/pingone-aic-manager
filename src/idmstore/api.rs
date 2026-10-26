@@ -137,12 +137,24 @@ where
 {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
+    let mut cookies = HashSet::new();
     let mut cookie = None;
 
     loop {
         let page = source(cookie.take()).await?;
         push_dedup(&mut out, &mut seen, page.results);
         match page.cookie {
+            // A cookie handed back twice would page forever; the dedup above
+            // would hide it as a walk that simply never ends.
+            Some(next) if !cookies.insert(next.clone()) => {
+                return Err(Error::Api {
+                    status: 0,
+                    body: format!(
+                        "paging returned cookie {next:?} a second time; stopped after {} records",
+                        out.len()
+                    ),
+                });
+            }
             Some(next) if !next.is_empty() => cookie = Some(next),
             _ => break,
         }
@@ -175,7 +187,7 @@ fn list_meta_cursor_page(
     }
 }
 
-fn parse_page(body: &Value) -> Result<Page> {
+pub(crate) fn parse_page(body: &Value) -> Result<Page> {
     let results = body
         .get("result")
         .and_then(Value::as_array)
@@ -242,6 +254,27 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_repeated_cookie_stops_the_walk() {
+        let mut calls = 0;
+        let error = collect_cursor_pages(|_| {
+            calls += 1;
+            // Without the guard this walk never ends; fail instead of hanging.
+            assert!(calls <= 3, "the walk did not stop at the repeated cookie");
+            let id = calls.to_string();
+            async move {
+                Ok(Page {
+                    results: vec![json!({ "_id": id })],
+                    cookie: Some("same".into()),
+                })
+            }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.to_string().contains("a second time"), "{error}");
+    }
 
     #[tokio::test]
     async fn cursor_pages_walk_to_completion_and_dedupe() {
