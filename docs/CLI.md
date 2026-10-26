@@ -571,13 +571,16 @@ relationship, or an object renamed away — by `object rename` or by undoing one
 while a mapping names it. A disagreement already present between the same ends
 in every earlier read of the document does not block an unrelated write;
 `relationship verify` reports it. The check reads `repo.ds` only when the write
-adds a property, changes one's relationship shape, or renames an object. Two refusals come
+adds a property, changes one's relationship shape, or renames an object,
+compared with both the document the change was built from and a fresh read; if
+a stale read (Q14) makes those two disagree, even a hook push reads `repo.ds`
+and fails when it cannot. Two refusals come
 earlier, with their own wording: `relationship set` retargeting an end when
 either old end is mapped (measured to break a mapped end with no reverse;
 refusing it for a mapped reverse is a precaution), and `object rename` of an
 object a mapping names (inferred). `relationship delete` proceeds and notes on
-stderr which mappings it leaves behind; when `repo.ds` cannot be read it says
-so and deletes anyway, because a removal never needs it. `object delete` prints
+stderr which mappings it leaves behind; when `repo.ds` cannot be read for that
+note it says so and deletes anyway. `object delete` prints
 each inbound relationship it removed or narrowed.
 
 `relationship delete` removes the property and, when it declares one, the
@@ -2557,11 +2560,16 @@ Skipped entries are listed and make the command exit non-zero.
   (`aic script diff bravo/Foo | delta`). Default compares local vs tenant;
   `--local-vs-snapshot` shows your edits since the last pull,
   `--snapshot-vs-remote` shows tenant drift since you pulled.
-  `--find-in-git REPO` answers "which branch is this from?" instead of
-  diffing: it hashes the tenant's bytes as a git blob and lists every local
-  and remote-tracking branch head in `REPO` whose tree holds that blob, with
-  the path. Exact bytes only — a rebuild that differs by a newline is not a
-  match — and nothing is fetched, so fetch first for the latest heads.
+  `--find-in-git REPO` answers "which branch heads hold these exact bytes?"
+  instead of diffing: it hashes the tenant's bytes as a git blob and lists
+  every local and remote-tracking branch head in `REPO` whose whole tree holds
+  that blob, with the path. Identical bytes are not provenance — several
+  branches can hold the same file. Exact bytes only — a rebuild that differs
+  by a newline is not a match — and nothing is fetched: fetch first for the
+  latest heads. A partial clone missing a tree fails rather than fetching it,
+  `git replace` objects are ignored, and an inherited `GIT_DIR` does not
+  redirect the search. A script you have not pulled is looked up on the
+  tenant by exact name.
 
 - **`who`** answers "who last touched this, and when?" — the recurring question
   when a script changed and nobody remembers doing it. It resolves AM's

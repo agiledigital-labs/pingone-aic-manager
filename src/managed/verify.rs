@@ -621,8 +621,10 @@ fn renamed_away(before: &Value, after: &Value) -> Vec<String> {
 /// Whether writing `after` needs `config/repo.ds` consulted: against some
 /// baseline, a property was added or changed its relationship shape, or an
 /// object was renamed away. A write that only removes, or edits nothing a
-/// mapping depends on (a hook body, a title), does not — so those writes
-/// never depend on repo.ds being readable.
+/// mapping depends on (a hook body, a title), does not — provided both
+/// observations agree. When a stale read disagrees with the document the
+/// change was built from, even a hook push reads repo.ds, and fails if it
+/// cannot: a deliberate availability cost of not trusting either read.
 ///
 /// `baselines` are every observation of the document before this write: the
 /// one the caller built `after` from, and the boundary's own read. Under Q14
@@ -645,15 +647,26 @@ fn mapping_problem(problem: &Problem) -> bool {
 
 /// What makes two findings the same contradiction, for deciding whether a
 /// write introduced one. Every variant names its ends; a mapping target
-/// mismatch is identified by the end and the mapped path alone, so reordering
-/// or extending an already-mismatched target set is not a new problem.
+/// mismatch also keeps its declared targets, as a set — reordering them is
+/// not a new problem, but replacing them is: an undo that moves an end from
+/// one unmapped target to another must not be excused by the old mismatch
+/// (Astra round 6).
 fn identity(problem: &Problem) -> Problem {
     match problem {
-        Problem::MappingTarget { end, mapped, .. } => Problem::MappingTarget {
-            end: end.clone(),
-            mapped: mapped.clone(),
-            declared: Vec::new(),
-        },
+        Problem::MappingTarget {
+            end,
+            mapped,
+            declared,
+        } => {
+            let mut declared = declared.clone();
+            declared.sort();
+            declared.dedup();
+            Problem::MappingTarget {
+                end: end.clone(),
+                mapped: mapped.clone(),
+                declared,
+            }
+        }
         other => other.clone(),
     }
 }
@@ -1306,6 +1319,44 @@ mod tests {
         let repo_ds = repo(Some(elsewhere), Some(reverse_reference()));
         assert!(needs_repo_ds(&[&before], &after));
         assert_eq!(transition_refusal(&[&before], &after, &repo_ds), Ok(()));
+    }
+
+    /// Astra round 6: the mismatch against a mapped target is identified by
+    /// the declared set too. An undo moving `a.owner` from managed/c to
+    /// managed/e, while repo.ds maps it to managed/d, is refused; the
+    /// pre-existing c-versus-d mismatch does not excuse e-versus-d.
+    #[test]
+    fn replacing_a_mismatched_target_set_is_new() {
+        let one_way = |target: &str| {
+            json!({"_id": "managed", "objects": [
+                {"name": "a", "schema": {"properties": {
+                    "owner": {"type": "relationship", "resourceCollection": [{"path": target}]}
+                }}}
+            ]})
+        };
+        let mapped = json!({"resourceMapping": {"genericMapping": {"managed/a": {"properties": {
+            "owner": {"type": "reference", "resourcePath": "managed/d"}}}}}});
+        let (before, after) = (one_way("managed/c"), one_way("managed/e"));
+        let error = transition_refusal(&[&before], &after, &mapped).unwrap_err();
+        assert!(error.contains("points at managed/d"), "{error}");
+        assert_eq!(transition_refusal(&[&before], &after, &json!({})), Ok(()));
+    }
+
+    /// The control for the rename rule: restoring a name repo.ds maps, from
+    /// one it does not, is the known-good undo and writes.
+    #[test]
+    fn undoing_a_rename_onto_the_mapped_name_writes() {
+        let doc = |name: &str| {
+            json!({"_id": "managed", "objects": [
+                {"name": name, "schema": {"properties": {
+                    "owner": {"type": "relationship", "resourceCollection": [{"path": "managed/c"}]}
+                }}},
+                {"name": "c", "schema": {"properties": {}}}
+            ]})
+        };
+        let mapped = json!({"resourceMapping": {"genericMapping": {"managed/b": {"properties": {
+            "owner": {"type": "reference", "resourcePath": "managed/c"}}}}}});
+        assert_eq!(transition_refusal(&[&doc("a")], &doc("b"), &mapped), Ok(()));
     }
 
     /// Sol/Astra round 7, finding 2: an undo replays a rename backwards as a

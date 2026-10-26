@@ -1383,7 +1383,7 @@ fn print_git_search(full: &str, repo: &std::path::Path, found: &script::gitfind:
     if found.hits.is_empty() {
         println!(
             "{full}: no branch head in {} holds the tenant's bytes (blob {}; {} heads searched, \
-             local refs only — fetch first for the latest)",
+             whole tree of each, local refs only — fetch first for the latest)",
             repo.display(),
             found.blob,
             found.searched
@@ -1404,7 +1404,12 @@ fn print_git_search(full: &str, repo: &std::path::Path, found: &script::gitfind:
     );
     for hit in &found.hits {
         let short = hit.commit.get(..12).unwrap_or(&hit.commit);
-        println!("  {}  {short}  {}", hit.reference, hit.path);
+        let link = if hit.symlink {
+            "  (symlink target text)"
+        } else {
+            ""
+        };
+        println!("  {}  {short}  {}{link}", hit.reference, hit.path);
     }
 }
 
