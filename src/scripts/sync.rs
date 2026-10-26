@@ -393,7 +393,14 @@ pub enum ScriptState {
     LocallyModified,
     RemotelyModified,
     BothModified,
+    /// Local and remote both differ from the snapshot but match each other:
+    /// the same change landed on both sides. Not a conflict — `sync` adopts
+    /// it — only a stale snapshot.
+    Converged,
     LocalMissing,
+    /// The manifest tracks this script but its snapshot file is gone, so there
+    /// is no baseline to classify against. Re-pull to track it again.
+    SnapshotMissing,
     /// The tenant no longer has this script, and the local source still
     /// matches the last-synced snapshot.
     RemoteMissing,
@@ -407,6 +414,48 @@ pub struct StatusEntry {
     pub kind: Kind,
     pub realm: Option<String>,
     pub state: ScriptState,
+    /// SHA-256 of the local workspace file, when it was read.
+    pub local_sha256: Option<String>,
+    /// SHA-256 of the tenant's decoded source, when it was fetched.
+    pub remote_sha256: Option<String>,
+}
+
+/// Which synced scripts `status` reports on.
+#[derive(Debug, Clone, Copy)]
+pub enum StatusFilter<'a> {
+    All,
+    /// Free text; see [`super::matches_term`].
+    Term(&'a str),
+    /// One script by exact, case-sensitive identity. When nothing tracked has
+    /// it, the tenant is asked instead (see [`Untracked`]).
+    Exact {
+        kind: Kind,
+        realm: Option<&'a str>,
+        name: &'a str,
+    },
+}
+
+/// An exactly-named script with no tracked baseline. Reported, never adopted:
+/// no snapshot is written, so a later push still has to start from a pull.
+#[derive(Debug, Clone)]
+pub struct Untracked {
+    pub name: String,
+    pub kind: Kind,
+    pub realm: Option<String>,
+    /// `None` when the tenant has no script of that name.
+    pub remote_sha256: Option<String>,
+    /// The canonical workspace file for the remote script, if it exists.
+    pub local_sha256: Option<String>,
+}
+
+/// Hex SHA-256 — the digest `sha256sum` prints, so an operator can compare a
+/// build artefact by hand.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Filtered status entries plus the number of manifest entries in the selected
@@ -415,6 +464,8 @@ pub struct StatusEntry {
 pub struct StatusResult {
     pub total: usize,
     pub entries: Vec<StatusEntry>,
+    /// Set only for [`StatusFilter::Exact`] when no tracked entry matched.
+    pub untracked: Option<Untracked>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1564,10 +1615,14 @@ async fn push_with(
 
 /// Compute the state of selected synced scripts. Both filters are applied to
 /// manifest identities before reading snapshots or making tenant requests.
-pub async fn status(tenant: &str, only: Option<Kind>, term: Option<&str>) -> Result<StatusResult> {
+pub async fn status(
+    tenant: &str,
+    only: Option<Kind>,
+    filter: StatusFilter<'_>,
+) -> Result<StatusResult> {
     let store = SnapshotStore::open(tenant);
     let workspace_tree = ProjectConfig::workspace_tree(tenant);
-    status_with(&store, &workspace_tree, &LiveSyncIo, tenant, only, term).await
+    status_with(&store, &workspace_tree, &LiveSyncIo, tenant, only, filter).await
 }
 
 async fn status_with(
@@ -1576,7 +1631,7 @@ async fn status_with(
     io: &impl SyncIo,
     tenant: &str,
     only: Option<Kind>,
-    term: Option<&str>,
+    filter: StatusFilter<'_>,
 ) -> Result<StatusResult> {
     let manifest = store.load_manifest()?;
     let selected_kind =
@@ -1585,45 +1640,110 @@ async fn status_with(
     let mut out = Vec::new();
     for entry in manifest {
         let r = &entry.reference;
-        if only.is_some_and(|kind| r.kind != kind)
-            || term.is_some_and(|term| {
-                !super::matches_term(term, r.kind, entry.realm.as_deref(), &r.name)
-            })
-        {
+        let selected = match filter {
+            StatusFilter::All => true,
+            StatusFilter::Term(term) => {
+                super::matches_term(term, r.kind, entry.realm.as_deref(), &r.name)
+            }
+            StatusFilter::Exact { kind, realm, name } => {
+                r.kind == kind && entry.realm.as_deref() == realm && r.name == name
+            }
+        };
+        if only.is_some_and(|kind| r.kind != kind) || !selected {
             continue;
         }
         let realm = entry.realm.as_deref().unwrap_or_default();
-        let snapshot_cfg = match store.load_config(r, realm)? {
-            Some(c) => c,
-            None => continue,
+        let row = |state, local: Option<&[u8]>, remote: Option<&[u8]>| StatusEntry {
+            name: r.name.clone(),
+            kind: r.kind,
+            realm: entry.realm.clone(),
+            state,
+            local_sha256: local.map(sha256_hex),
+            remote_sha256: remote.map(sha256_hex),
+        };
+        // An exact ref is a question about one script, often "is my build
+        // deployed?", so its remote digest is worth one GET even when there is
+        // nothing local to classify against. A broad listing skips it.
+        let remote_digest_only = || async {
+            match filter {
+                StatusFilter::Exact { .. } => io
+                    .fetch(r.kind, tenant, realm, &r.id)
+                    .await
+                    .and_then(|remote| r.kind.decode_source(&remote.raw_config))
+                    .ok(),
+                _ => None,
+            }
+        };
+        let Some(snapshot_cfg) = store.load_config(r, realm)? else {
+            let local = read_local(&workspace_file_in(workspace_tree, realm, r))?;
+            let remote = remote_digest_only().await;
+            out.push(row(
+                ScriptState::SnapshotMissing,
+                local.as_deref(),
+                remote.as_deref(),
+            ));
+            continue;
         };
         let snapshot_src = r.kind.decode_source(&snapshot_cfg)?;
 
         let dest = workspace_file_in(workspace_tree, realm, r);
         let Some(local_src) = read_local(&dest)? else {
-            out.push(StatusEntry {
-                name: r.name.clone(),
-                kind: r.kind,
-                realm: entry.realm.clone(),
-                state: ScriptState::LocalMissing,
-            });
+            let remote = remote_digest_only().await;
+            out.push(row(ScriptState::LocalMissing, None, remote.as_deref()));
             continue;
         };
         let remote_src = io
             .fetch(r.kind, tenant, realm, &r.id)
             .await
             .and_then(|remote| r.kind.decode_source(&remote.raw_config));
+        let remote_bytes = remote_src.as_ref().ok().cloned();
         let state = classify_status(&snapshot_src, &local_src, remote_src)?;
-        out.push(StatusEntry {
-            name: r.name.clone(),
-            kind: r.kind,
-            realm: entry.realm.clone(),
-            state,
-        });
+        out.push(row(state, Some(&local_src), remote_bytes.as_deref()));
     }
+    let untracked = match filter {
+        StatusFilter::Exact { kind, realm, name } if out.is_empty() => {
+            Some(untracked_status(workspace_tree, io, tenant, kind, realm, name).await?)
+        }
+        _ => None,
+    };
     Ok(StatusResult {
         total,
         entries: out,
+        untracked,
+    })
+}
+
+/// Look an untracked script up on the tenant by exact name and hash both
+/// sides. Read-only: nothing is installed and no snapshot is recorded.
+async fn untracked_status(
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    kind: Kind,
+    realm: Option<&str>,
+    name: &str,
+) -> Result<Untracked> {
+    let realm_arg = realm.unwrap_or_default();
+    let found = io
+        .list(kind, tenant, realm_arg)
+        .await?
+        .into_iter()
+        .find(|r| r.name == name);
+    let (remote_sha256, local_sha256) = match found {
+        Some(r) => {
+            let remote = io.fetch(kind, tenant, realm_arg, &r.id).await?;
+            let source = kind.decode_source(&remote.raw_config)?;
+            let local = read_local(&workspace_file_in(workspace_tree, realm_arg, &r))?;
+            (Some(sha256_hex(&source)), local.as_deref().map(sha256_hex))
+        }
+        None => (None, None),
+    };
+    Ok(Untracked {
+        name: name.to_string(),
+        kind,
+        realm: realm.map(str::to_string),
+        remote_sha256,
+        local_sha256,
     })
 }
 
@@ -1647,6 +1767,7 @@ fn classify_status(snapshot: &[u8], local: &[u8], remote: Result<Vec<u8>>) -> Re
         (false, false) => ScriptState::InSync,
         (true, false) => ScriptState::LocallyModified,
         (false, true) => ScriptState::RemotelyModified,
+        (true, true) if local == remote => ScriptState::Converged,
         (true, true) => ScriptState::BothModified,
     })
 }
@@ -2139,13 +2260,139 @@ mod tests {
             }),
         ]);
 
-        let status = status_with(&store, &workspace, &io, "tenant", None, Some("OIDC"))
-            .await
-            .unwrap();
+        let status = status_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            None,
+            StatusFilter::Term("OIDC"),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(status.total, 2);
         assert_eq!(status.entries.len(), 1);
         assert_eq!(status.entries[0].name, matching.name);
+        assert_eq!(io.pending_fetch_count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn status_calls_local_equal_to_remote_converged_not_a_conflict() {
+        assert_eq!(
+            classify_status(b"snapshot", b"same edit", Ok(b"same edit".to_vec())).unwrap(),
+            ScriptState::Converged
+        );
+        assert_eq!(
+            classify_status(b"snapshot", b"mine", Ok(b"theirs".to_vec())).unwrap(),
+            ScriptState::BothModified
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_status_selects_one_name_where_a_fragment_selects_both() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let exact = endpoint_ref("foo");
+        let longer = endpoint_ref("foo-bar");
+        for reference in [&exact, &longer] {
+            store
+                .record(&endpoint_script(reference, "source", "snapshot"), "")
+                .unwrap();
+            let path = workspace_file_in(&workspace, "", reference);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"source").unwrap();
+        }
+        let io = FakeSyncIo::new(vec![Ok(endpoint_script(&exact, "source", "remote"))]);
+        let filter = StatusFilter::Exact {
+            kind: Kind::IdmEndpoint,
+            realm: None,
+            name: "foo",
+        };
+        let status = status_with(&store, &workspace, &io, "tenant", None, filter)
+            .await
+            .unwrap();
+        assert_eq!(status.entries.len(), 1);
+        assert_eq!(status.entries[0].name, "foo");
+        assert_eq!(status.entries[0].state, ScriptState::InSync);
+        assert_eq!(
+            status.entries[0].remote_sha256.as_deref(),
+            Some(sha256_hex(b"source").as_str())
+        );
+        assert!(status.untracked.is_none());
+
+        // Control: the same text as a fragment still matches both.
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&exact, "source", "remote")),
+            Ok(endpoint_script(&longer, "source", "remote")),
+        ]);
+        let status = status_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            None,
+            StatusFilter::Term("endpoint/foo"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.entries.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn exact_status_of_an_untracked_script_reports_hashes_and_records_nothing() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let reference = endpoint_ref("built");
+        let path = workspace_file_in(&workspace, "", &reference);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"bundle").unwrap();
+        let io = FakeSyncIo::for_pull(
+            reference.clone(),
+            Ok(endpoint_script(&reference, "bundle", "remote")),
+        );
+        let filter = StatusFilter::Exact {
+            kind: Kind::IdmEndpoint,
+            realm: None,
+            name: "built",
+        };
+
+        let status = status_with(&store, &workspace, &io, "tenant", None, filter)
+            .await
+            .unwrap();
+
+        assert!(status.entries.is_empty());
+        let untracked = status.untracked.unwrap();
+        assert_eq!(
+            untracked.remote_sha256.as_deref(),
+            Some(sha256_hex(b"bundle").as_str())
+        );
+        assert_eq!(untracked.local_sha256, untracked.remote_sha256);
+        assert!(store.load_manifest().unwrap().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"bundle");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn exact_status_of_a_name_the_tenant_lacks_says_so_without_fetching() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let other = endpoint_ref("other");
+        let io = FakeSyncIo::for_pull(other.clone(), Ok(endpoint_script(&other, "x", "remote")));
+        let filter = StatusFilter::Exact {
+            kind: Kind::IdmEndpoint,
+            realm: None,
+            name: "absent",
+        };
+        let status = status_with(&store, &dir.join("workspace"), &io, "tenant", None, filter)
+            .await
+            .unwrap();
+        let untracked = status.untracked.unwrap();
+        assert_eq!(untracked.remote_sha256, None);
         assert_eq!(io.pending_fetch_count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
