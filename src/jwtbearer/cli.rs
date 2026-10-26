@@ -366,6 +366,15 @@ async fn run_key(command: KeyCommand) -> Result<()> {
                 ));
             }
 
+            // The issuer is one document written whole; offboarding rewrites
+            // it too (to unpublish this install's kid), so the read-modify-
+            // write runs under the tenant hold that excludes it.
+            // The document shown above was read before the hold, so the
+            // write is built from a fresh read under it.
+            let _hold = crate::config::hold_tenant(&tenant)?;
+            let issuer =
+                crate::jwtbearer::api::read_issuer(&tenant.name, &realm, ops::DEFAULT_ISSUER_ID)
+                    .await?;
             let remaining =
                 ops::remove_key_from_issuer(&tenant.name, &realm, &kid, issuer, ok.confirmed_prod)
                     .await?;
@@ -664,6 +673,8 @@ async fn edit_subjects(
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
     let issuer_id = issuer.as_deref().unwrap_or(ops::DEFAULT_ISSUER_ID);
     let incoming = resolve_subjects(&tenant.name, &realm, ids, usernames).await?;
+    // A whole-document write, like offboarding's unpublish; see key remove.
+    let _hold = crate::config::hold_tenant(&tenant)?;
     let (before, after) = ops::edit_issuer_subjects(
         &tenant,
         &realm,
@@ -743,6 +754,7 @@ async fn run_issuer(command: IssuerCommand) -> Result<()> {
             let tenant = tenant_config_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant.name, yes)?;
             let incoming = resolve_subject_selectors(&tenant.name, &realm, &subjects).await?;
+            let _hold = crate::config::hold_tenant(&tenant)?;
             ops::create_issuer(
                 &tenant,
                 &realm,

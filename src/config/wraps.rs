@@ -31,7 +31,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 use crate::config::{ProjectPaths, project_paths};
 use crate::{Error, Result};
@@ -114,8 +113,26 @@ impl WrapsFile {
         project_paths().load_wraps()
     }
 
-    pub fn save(&self) -> Result<()> {
+    /// Write this file as-is. Only for `enable_encryption`'s `save_wrap`,
+    /// which runs under the exclusive vault lock before any file is
+    /// encrypted under the wrap's key; every later edit goes through
+    /// [`WrapsFile::update`].
+    pub fn save_for_transition(&self) -> Result<()> {
         project_paths().save_wraps(self)
+    }
+
+    /// Edit the encrypted vault's `wraps.toml` as a transaction: under the
+    /// exclusive vault lock, only while the vault is encrypted under `dek`,
+    /// and with `change` applied to the file **as it is on disk** — not to
+    /// this session's copy, which may predate another session's edit or a
+    /// whole disable-and-re-enable. Saving a stale copy whole would drop a
+    /// factor added elsewhere, or replace a newer key's wraps with ones for
+    /// a key no file is encrypted under. Returns the file as written.
+    pub fn update(
+        dek: &crate::config::crypto::Dek,
+        change: impl FnOnce(&mut WrapsFile) -> Result<()>,
+    ) -> Result<WrapsFile> {
+        project_paths().update_wraps(dek, change)
     }
 
     pub fn password_wrap(&self) -> Option<&Wrap> {
@@ -175,12 +192,86 @@ impl WrapsFile {
         salt
     }
 
+    /// Add `wrap`, enrolled by a session whose file held hmac salt `salt`.
+    /// A password replaces the password wrap. A security key derived its
+    /// wrapping key from `salt`, so it is refused if the file now holds a
+    /// different one — it would never unlock.
+    pub fn add_factor(&mut self, wrap: Wrap, salt: Option<&str>) -> Result<()> {
+        match wrap {
+            Wrap::Password { .. } => self.upsert_password(wrap),
+            Wrap::SecurityKey { .. } => {
+                let salt = salt.ok_or_else(|| {
+                    Error::Crypto("security key enrolled without an hmac salt".into())
+                })?;
+                match self.security_key_hmac_salt.as_deref() {
+                    Some(current) if current != salt => {
+                        return Err(Error::Crypto(
+                            "another aic changed the security-key salt; enrol again".into(),
+                        ));
+                    }
+                    Some(_) => {}
+                    None => self.security_key_hmac_salt = Some(salt.to_string()),
+                }
+                self.push_security_key(wrap);
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove the factor `wrap` names (the password, or a security key by
+    /// credential id), refused if it would leave no factor — the guard the
+    /// screen applied was to its own copy, which another session may have
+    /// already shrunk. Gone already is not an error.
+    pub fn remove_factor(&mut self, wrap: &Wrap) -> Result<()> {
+        let remaining = self.wraps.iter().filter(|w| !same_factor(w, wrap)).count();
+        if remaining == 0 {
+            return Err(Error::Crypto(
+                "that is the vault's last factor now; disable encryption instead".into(),
+            ));
+        }
+        self.wraps.retain(|w| !same_factor(w, wrap));
+        self.clear_security_key_salt_if_unused();
+        Ok(())
+    }
+
+    /// Relabel the security key with `credential_id`.
+    pub fn rename_factor(&mut self, credential_id: &str, new_label: &str) -> Result<()> {
+        match self.wraps.iter_mut().find(
+            |w| matches!(w, Wrap::SecurityKey { credential_id: id, .. } if id == credential_id),
+        ) {
+            Some(Wrap::SecurityKey { label, .. }) => {
+                *label = Some(new_label.to_string());
+                Ok(())
+            }
+            _ => Err(Error::Crypto(
+                "that security key is no longer enrolled".into(),
+            )),
+        }
+    }
+
     /// If no security-key wraps remain, also drop the shared salt — the
     /// next enrolment generates a fresh one. Call after removing a wrap.
     pub fn clear_security_key_salt_if_unused(&mut self) {
         if !self.has_security_key() {
             self.security_key_hmac_salt = None;
         }
+    }
+}
+
+/// The same enrolled factor: there is one password, and a security key is
+/// its credential.
+fn same_factor(a: &Wrap, b: &Wrap) -> bool {
+    match (a, b) {
+        (Wrap::Password { .. }, Wrap::Password { .. }) => true,
+        (
+            Wrap::SecurityKey {
+                credential_id: x, ..
+            },
+            Wrap::SecurityKey {
+                credential_id: y, ..
+            },
+        ) => x == y,
+        _ => false,
     }
 }
 
@@ -195,17 +286,30 @@ impl ProjectPaths {
         Ok(Some(parsed))
     }
 
+    /// Replaced, never truncated in place, at mode 600: wraps.toml contains
+    /// password-Argon2 salts + security-key credential ids — material an
+    /// attacker with read access can use to brute-force or impersonate.
+    /// Match the keys.enc / keys.plain protections.
     pub fn save_wraps(&self, wraps: &WrapsFile) -> Result<()> {
-        fs::create_dir_all(self.aic_dir())?;
-        let path = self.wraps_path();
         let body = toml::to_string_pretty(wraps)?;
-        fs::write(&path, body)?;
-        // wraps.toml contains password-Argon2 salts + security-key credential
-        // ids — material an attacker with read access can use to brute-force
-        // or impersonate. Match the keys.enc / keys.plain protections.
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        super::save_private_file(&self.wraps_path(), body.as_bytes())?;
         self.write_gitignore()?;
         Ok(())
+    }
+
+    pub(crate) fn update_wraps(
+        &self,
+        dek: &crate::config::crypto::Dek,
+        change: impl FnOnce(&mut WrapsFile) -> Result<()>,
+    ) -> Result<WrapsFile> {
+        let _vault = self.lock_vault(super::Hold::Exclusive)?;
+        self.vault_mode_is(Some(dek))?;
+        let mut wraps = self.load_wraps()?.ok_or_else(|| {
+            Error::Crypto("the vault is encrypted but wraps.toml is missing".into())
+        })?;
+        change(&mut wraps)?;
+        self.save_wraps(&wraps)?;
+        Ok(wraps)
     }
 }
 

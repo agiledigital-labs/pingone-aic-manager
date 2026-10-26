@@ -28,6 +28,16 @@ pub(crate) fn decrypt_log_keys(dek: &Dek) -> Result<LogKeyMap> {
     }
 }
 
+/// After an unlock, remove what an interrupted vault transition left in the
+/// form the vault no longer reads — a plaintext copy above all — rather than
+/// leave it until the next write of that artifact. A failure here does not
+/// fail the unlock: the vault works, and the next write retries.
+pub(crate) fn settle_after_unlock() {
+    if let Err(e) = config::settle_vault() {
+        tracing::warn!(error = %e, "could not remove a vault transition's leftovers");
+    }
+}
+
 /// Successful unlock payload. The TUI also passes this through an event
 /// channel, hence `pub` and `Clone`-free fields (the contents move).
 #[derive(Debug)]

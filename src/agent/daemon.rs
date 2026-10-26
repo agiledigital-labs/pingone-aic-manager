@@ -592,7 +592,9 @@ fn load_secret_map(
         Vault::Encrypted { dek, .. } => Some(dek),
         Vault::Plain { .. } => None,
     };
-    let map = match paths.load_artifact_bytes(artifact, dek)? {
+    // Under the vault lock and checked against its mode and key: a read in
+    // the wrong mode would find no file and report every credential missing.
+    let map = match paths.read_artifact_bytes(artifact, dek)? {
         Some(bytes) if !bytes.is_empty() => serde_json::from_slice(&bytes)?,
         _ => HashMap::new(),
     };

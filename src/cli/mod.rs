@@ -1176,6 +1176,7 @@ async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) ->
 
     auth::put_dek_to_agent(&dek).await?;
     drop(dek);
+    auth::settle_after_unlock();
     if announce {
         println!("unlocked");
     }
