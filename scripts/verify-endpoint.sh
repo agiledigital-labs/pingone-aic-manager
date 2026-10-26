@@ -54,7 +54,9 @@ if [ -z "${TENANT_BASE_URL:-}" ] && [ -f "$ROOT/.aic/config.toml" ]; then
   # `name` and a `base_url` in no guaranteed order. So buffer both per block and
   # emit only when the block ends and the name matched.
   TENANT_BASE_URL=$(awk -v want="$ctx" '
-    function flush() { if (inblock && name == want && url != "") { print url; exit } }
+    # `exit` still runs END, which flushes again: `done` stops the second
+    # print (a `[tenant.provenance]` subtable after the match doubled the URL).
+    function flush() { if (!done && inblock && name == want && url != "") { print url; done = 1; exit } }
     /^\[\[tenant\]\]/ { flush(); name = ""; url = ""; inblock = 1; next }
     /^\[/             { flush(); inblock = 0; next }
     inblock && /^[[:space:]]*name[[:space:]]*=/     { name = value($0) }

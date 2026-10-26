@@ -139,6 +139,7 @@ everything else of the same shape:
 | Instead of                | Write                                                            |
 | ------------------------- | ---------------------------------------------------------------- |
 | a real AIC tenant host    | `<your-tenant>.forgeblocks.com`, `tenant.example.com`            |
+| an `id.forgerock.io` host | `<your-tenant>.id.forgerock.io`                                   |
 | a client SP entity ID     | `https://sp-a.example.com`, `https://sp-b.example.com`           |
 | a CoT / config name       | `client-a`, `client-b`                                           |
 | an Azure AD tenant GUID   | `<tenant-guid>` or `00000000-0000-0000-0000-000000000000`        |
