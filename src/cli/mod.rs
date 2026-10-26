@@ -336,17 +336,27 @@ impl Command {
 
 pub async fn run(cli: Cli) -> Result<()> {
     NO_PROMPT.store(cli.no_prompt, Ordering::Relaxed);
-    if cli.command.as_ref().is_some_and(Command::needs_tenant_auth) {
-        let quiet = matches!(
-            cli.command.as_ref(),
-            Some(Command::Auth {
-                options: crate::jwtbearer::cli::AuthOptions { token: true, .. }
-            })
-        ) || matches!(
+    let quiet = matches!(
+        cli.command.as_ref(),
+        Some(Command::Auth {
+            options: crate::jwtbearer::cli::AuthOptions { token: true, .. }
+        })
+    ) || matches!(
             cli.command.as_ref(),
             Some(Command::JwtBearer { command })
                 if crate::jwtbearer::cli::quiet_preflight(command)
-        );
+    );
+    // Before the unlock prompt, so an operator sees which tenant they are
+    // unlocking for before they type a password.
+    // A bare token for `$(…)` stays bare on both streams.
+    let token_only = matches!(cli.command, Some(Command::Whoami { token: true, .. }));
+    if let Some(resolution) = cli.command.as_ref().and_then(invocation_banner)
+        && !quiet
+        && !token_only
+    {
+        resolution.announce();
+    }
+    if cli.command.as_ref().is_some_and(Command::needs_tenant_auth) {
         ensure_agent_unlocked_internal(false, !quiet).await?;
         prepare_operator().await?;
     }
@@ -782,9 +792,11 @@ fn choose_workspace_context(
 /// workspace context + cwd are set. (Realm/kind are no longer flags — scripts
 /// are addressed by `<namespace>/<name>`.)
 pub fn parse_with_defaults() -> Cli {
-    let cmd = inject_tenant_default(Cli::command(), resolved_tenant().as_deref());
-    let matches = cmd.get_matches();
-    let _ = TENANT_TYPED.set(tenant_typed(&matches));
+    let implicit = implicit_at_parse();
+    let default = implicit.as_ref().ok().cloned().flatten().map(|r| r.tenant);
+    let mut cmd = inject_tenant_default(Cli::command(), default.as_deref());
+    let matches = cmd.get_matches_mut();
+    let _ = INVOCATION_TENANT.set(capture_invocation(&cmd, &matches, implicit));
     match Cli::from_arg_matches(&matches) {
         Ok(mut cli) => {
             apply_no_prompt_env(&mut cli, std::env::var_os("AIC_NO_PROMPT").as_deref());
@@ -802,25 +814,85 @@ fn apply_no_prompt_env(cli: &mut Cli, value: Option<&std::ffi::OsStr>) {
     cli.no_prompt |= no_prompt_from_env(value);
 }
 
-/// Whether the operator typed `--tenant` on the deepest subcommand that has
-/// one. Set once, after parsing; unset (tests that build a [`Cli`] directly)
-/// means any tenant value reached the command as typed.
-static TENANT_TYPED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// The tenant this invocation targets, settled once at parse time. Every
+/// later resolution returns it, so the banner, the operator pre-flight and the
+/// command itself cannot disagree — two resolutions could, if the stored
+/// context or the config changed between them. Unset (tests and library
+/// callers that build a [`Cli`] directly) means "resolve when asked".
+static INVOCATION_TENANT: std::sync::OnceLock<InvocationTenant> = std::sync::OnceLock::new();
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InvocationTenant {
+    /// `Err(())` when the implicit resolution could not read its inputs. The
+    /// resolver then resolves afresh, so the read error surfaces from the
+    /// command that needed a tenant rather than vanishing into a missing
+    /// default.
+    resolution: std::result::Result<Option<TenantResolution>, ()>,
+    /// Whether the invoked command has a `--tenant` flag: the commands that
+    /// announce their target.
+    takes_tenant: bool,
+}
+
+/// The implicit resolution the `--tenant` default is injected from.
+fn implicit_at_parse() -> std::result::Result<Option<TenantResolution>, ()> {
+    let cfg = ProjectConfig::load().map_err(|_| ())?;
+    implicit_tenant(
+        cfg.as_ref(),
+        &config::workspace_context(),
+        config::read_current_context,
+    )
+    .map_err(|_| ())
+}
+
+/// Whether `arg` is a `--tenant` flag. A positional named `tenant` (`ctx use`,
+/// `ctx rm`) names the tenant to act ON, not the one to act through, and must
+/// get no default. clap still required the positional, but `ctx rm --help`
+/// advertised `[default: <effective tenant>]`.
+fn is_tenant_flag(arg: &clap::Arg) -> bool {
+    arg.get_id() == "tenant" && arg.get_long() == Some("tenant")
+}
 
 /// `--tenant` carries an injected default everywhere, so a value reaching a
-/// command proves nothing about who chose it. clap's `ValueSource` does.
-fn tenant_typed(matches: &clap::ArgMatches) -> bool {
-    let mut level = matches;
+/// command proves nothing about who chose it. clap's `ValueSource` does: a
+/// typed value becomes a [`TenantSource::Flag`] resolution, anything else is
+/// the implicit one the default came from.
+fn capture_invocation(
+    cmd: &clap::Command,
+    matches: &clap::ArgMatches,
+    implicit: std::result::Result<Option<TenantResolution>, ()>,
+) -> InvocationTenant {
+    let (mut cmd, mut level) = (cmd, matches);
+    let (mut takes_tenant, mut typed) = (false, None);
     loop {
-        if level.ids().any(|id| id == "tenant")
-            && level.value_source("tenant") == Some(clap::parser::ValueSource::CommandLine)
-        {
-            return true;
+        if cmd.get_arguments().any(is_tenant_flag) {
+            takes_tenant = true;
+            if level.value_source("tenant") == Some(clap::parser::ValueSource::CommandLine) {
+                typed = level
+                    .try_get_one::<String>("tenant")
+                    .ok()
+                    .flatten()
+                    .cloned();
+            }
         }
-        match level.subcommand() {
-            Some((_, sub)) => level = sub,
-            None => return false,
-        }
+        let Some((name, sub)) = level.subcommand() else {
+            break;
+        };
+        let Some(next) = cmd.find_subcommand(name) else {
+            break;
+        };
+        (cmd, level) = (next, sub);
+    }
+    let resolution = match typed {
+        Some(tenant) => Ok(Some(TenantResolution {
+            tenant,
+            source: TenantSource::Flag,
+            ignored_workspace: None,
+        })),
+        None => implicit,
+    };
+    InvocationTenant {
+        resolution,
+        takes_tenant,
     }
 }
 
@@ -828,6 +900,8 @@ fn tenant_typed(matches: &clap::ArgMatches) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TenantSource {
     Flag,
+    /// A tenant a command chose for itself, differing from the invocation's.
+    Given,
     Workspace(config::WorkspaceOrigin),
     StoredContext,
     DefaultTenant,
@@ -837,6 +911,7 @@ impl TenantSource {
     fn describe(&self, tenant: &str) -> String {
         match self {
             Self::Flag => "--tenant".to_string(),
+            Self::Given => "chosen by this command".to_string(),
             Self::Workspace(config::WorkspaceOrigin::Cwd) => {
                 format!("current directory is in workspace/{tenant}/")
             }
@@ -912,23 +987,12 @@ fn implicit_tenant(
     }))
 }
 
-/// The tenant to surface as the `--tenant` default, or `None`.
-fn resolved_tenant() -> Option<String> {
-    let cfg = ProjectConfig::load().ok().flatten();
-    implicit_tenant(cfg.as_ref(), &config::workspace_context(), || {
-        Ok(config::read_current_context().ok().flatten())
-    })
-    .ok()
-    .flatten()
-    .map(|resolution| resolution.tenant)
-}
-
 /// Recursively set `default_value` on every `--tenant` arg in the command tree.
 fn inject_tenant_default(mut cmd: clap::Command, tenant: Option<&str>) -> clap::Command {
     // clap stores `default_value` as a `'static` borrow, so leak this
     // program-lifetime string (resolved once at startup) to satisfy it.
     if let Some(t) = tenant
-        && cmd.get_arguments().any(|a| a.get_id() == "tenant")
+        && cmd.get_arguments().any(is_tenant_flag)
     {
         let v: &'static str = Box::leak(t.to_string().into_boxed_str());
         cmd = cmd.mut_arg("tenant", |a| a.default_value(v));
@@ -1355,12 +1419,15 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
     let current = config::read_current_context()?;
     match cmd {
         CtxCommand::List { json } => {
+            let effective = resolve_tenant_from(None, &cfg, || Ok(current.clone()))?
+                .map(|resolution| resolution.tenant);
             if json {
                 let rows = cfg
                     .tenants
                     .iter()
                     .map(|tenant| CtxTenantOutput {
                         current: Some(&tenant.name) == current.as_ref(),
+                        effective: Some(&tenant.name) == effective.as_ref(),
                         name: tenant.name.clone(),
                         theme: tenant.theme.label().to_string(),
                         base_url: tenant.base_url.clone(),
@@ -1372,19 +1439,17 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
                     .tenants
                     .iter()
                     .map(|tenant| {
+                        let mark = |on: bool| if on { "*" } else { "" }.to_string();
                         vec![
-                            if Some(&tenant.name) == current.as_ref() {
-                                "*".to_string()
-                            } else {
-                                "".to_string()
-                            },
+                            mark(Some(&tenant.name) == effective.as_ref()),
+                            mark(Some(&tenant.name) == current.as_ref()),
                             tenant.name.clone(),
                             tenant.theme.label().to_string(),
                             tenant.base_url.clone(),
                         ]
                     })
                     .collect::<Vec<_>>();
-                print_table(&["CURRENT", "NAME", "THEME", "BASE_URL"], &rows);
+                print_table(&["EFFECTIVE", "STORED", "NAME", "THEME", "BASE_URL"], &rows);
             }
         }
         CtxCommand::Current { tenant } => {
@@ -1669,7 +1734,11 @@ pub(crate) fn clip(value: &str, max: usize) -> String {
 
 #[derive(Serialize)]
 struct CtxTenantOutput {
+    /// The stored context (`aic ctx use`). Kept under its old name for
+    /// existing consumers; it is not necessarily the tenant commands target.
     current: bool,
+    /// The tenant a command run here without `--tenant` targets.
+    effective: bool,
     name: String,
     theme: String,
     base_url: String,
@@ -1696,58 +1765,51 @@ fn resolve_tenant_from(
     cfg: &ProjectConfig,
     stored: impl FnOnce() -> Result<Option<String>>,
 ) -> Result<Option<TenantResolution>> {
-    let typed = TENANT_TYPED.get().copied().unwrap_or(true);
-    resolve_tenant_given(arg, typed, cfg, &config::workspace_context(), stored)
+    resolve_against(INVOCATION_TENANT.get(), arg, || {
+        implicit_tenant(Some(cfg), &config::workspace_context(), stored)
+    })
 }
 
-/// The pure half of [`resolve_tenant_from`]. A value clap filled in from the
-/// injected default is attributed to the rule that produced it; anything else
-/// is the operator's `--tenant`.
-fn resolve_tenant_given(
+/// The pure half of [`resolve_tenant_from`]: the invocation's resolution
+/// wherever the caller agrees with it, so a source is never re-derived from a
+/// value alone.
+fn resolve_against(
+    captured: Option<&InvocationTenant>,
     arg: Option<String>,
-    typed: bool,
-    cfg: &ProjectConfig,
-    workspace: &config::WorkspaceContext,
-    stored: impl FnOnce() -> Result<Option<String>>,
+    now: impl FnOnce() -> Result<Option<TenantResolution>>,
 ) -> Result<Option<TenantResolution>> {
-    let flag = |tenant| {
+    let named = |tenant, source| {
         Some(TenantResolution {
             tenant,
-            source: TenantSource::Flag,
+            source,
             ignored_workspace: None,
         })
     };
-    match arg {
-        Some(tenant) if typed => Ok(flag(tenant)),
-        Some(tenant) => Ok(implicit_tenant(Some(cfg), workspace, stored)?
+    match (captured.map(|c| c.resolution.as_ref()), arg) {
+        // Nothing captured: a caller that built its own `Cli` passed the
+        // operator's flag, if anything.
+        (None, Some(tenant)) => Ok(named(tenant, TenantSource::Flag)),
+        (None | Some(Err(())), None) => now(),
+        (Some(Err(())), Some(tenant)) => Ok(now()?
             .filter(|implicit| implicit.tenant == tenant)
-            .or_else(|| flag(tenant))),
-        None => implicit_tenant(Some(cfg), workspace, stored),
+            .or_else(|| named(tenant, TenantSource::Given))),
+        (Some(Ok(resolution)), None) => Ok(resolution.clone()),
+        (Some(Ok(Some(resolution))), Some(tenant)) if resolution.tenant == tenant => {
+            Ok(Some(resolution.clone()))
+        }
+        (Some(Ok(_)), Some(tenant)) => Ok(named(tenant, TenantSource::Given)),
     }
 }
 
-/// [`tenant_for`], plus where the tenant came from.
-pub(crate) fn target_for(tenant_arg: Option<String>) -> Result<TenantResolution> {
-    let cfg =
-        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
-    resolve_tenant_with_source(tenant_arg, &cfg)
-}
-
-/// [`tenant_config_for`], plus where the tenant came from.
-pub(crate) fn target_config_for(
-    tenant_arg: Option<String>,
-) -> Result<(crate::config::Tenant, TenantResolution)> {
-    let cfg =
-        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
-    let resolution = resolve_tenant_with_source(tenant_arg, &cfg)?;
-    let tenant = cfg
-        .tenants
-        .into_iter()
-        .find(|tenant| tenant.name == resolution.tenant)
-        .ok_or_else(|| {
-            Error::Config(format!("no tenant named '{}' in config", resolution.tenant))
-        })?;
-    Ok((tenant, resolution))
+/// The banner [`run`] prints before any tenant work: the invocation's target,
+/// for commands with a `--tenant` flag. `ctx` reports tenants as its output,
+/// so it gets none.
+fn invocation_banner(command: &Command) -> Option<&'static TenantResolution> {
+    let captured = INVOCATION_TENANT.get()?;
+    if !captured.takes_tenant || matches!(command, Command::Ctx { .. }) {
+        return None;
+    }
+    captured.resolution.as_ref().ok()?.as_ref()
 }
 
 pub(crate) fn redact(token: &str) -> String {
@@ -1869,29 +1931,64 @@ scopes = []
         }
     }
 
-    fn no_stored_read() -> Result<Option<String>> {
-        panic!("the stored context must not be read when an earlier rule decides")
+    fn captured(resolution: Option<TenantResolution>) -> InvocationTenant {
+        InvocationTenant {
+            resolution: Ok(resolution),
+            takes_tenant: true,
+        }
+    }
+
+    fn workspace_dev() -> TenantResolution {
+        TenantResolution {
+            tenant: "dev".into(),
+            source: TenantSource::Workspace(config::WorkspaceOrigin::Cwd),
+            ignored_workspace: None,
+        }
+    }
+
+    fn no_fresh_resolution() -> Result<Option<TenantResolution>> {
+        panic!("a captured invocation must not be resolved again")
     }
 
     #[test]
-    fn tenant_source_distinguishes_a_typed_flag_from_the_injected_default() {
-        let cfg = two_tenant_config();
-        let workspace = in_workspace("dev");
-        // Same value both times; only who supplied it differs. A resolver that
-        // looked at the value alone would attribute both to one source.
-        let typed =
-            resolve_tenant_given(Some("dev".into()), true, &cfg, &workspace, no_stored_read)
+    fn a_caller_agreeing_with_the_invocation_keeps_its_source() {
+        let inv = captured(Some(workspace_dev()));
+        // The injected default reaches the command as `Some("dev")`; a
+        // resolver that looked at the value alone would call it `--tenant`.
+        for arg in [None, Some("dev".to_string())] {
+            let resolution = resolve_against(Some(&inv), arg, no_fresh_resolution)
                 .unwrap()
                 .unwrap();
-        assert_eq!(typed.source, TenantSource::Flag);
-        let defaulted =
-            resolve_tenant_given(Some("dev".into()), false, &cfg, &workspace, no_stored_read)
-                .unwrap()
-                .unwrap();
+            assert_eq!(resolution, workspace_dev());
+        }
+        // A command choosing a different tenant is not the operator's flag.
+        let other = resolve_against(Some(&inv), Some("sandbox".into()), no_fresh_resolution)
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            defaulted.source,
-            TenantSource::Workspace(config::WorkspaceOrigin::Cwd)
+            (other.tenant.as_str(), other.source),
+            ("sandbox", TenantSource::Given)
         );
+        // Nothing captured: resolve now, and a passed value is the flag.
+        let fresh = resolve_against(None, None, || Ok(Some(workspace_dev())))
+            .unwrap()
+            .unwrap();
+        assert_eq!(fresh, workspace_dev());
+        let flag = resolve_against(None, Some("dev".into()), no_fresh_resolution)
+            .unwrap()
+            .unwrap();
+        assert_eq!(flag.source, TenantSource::Flag);
+        // A capture that failed to read its inputs defers to a fresh read,
+        // so the error reaches the command that needed a tenant.
+        let failed = InvocationTenant {
+            resolution: Err(()),
+            takes_tenant: true,
+        };
+        let err = resolve_against(Some(&failed), None, || {
+            Err(Error::Config("unreadable context".into()))
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("unreadable context"));
     }
 
     #[test]
@@ -1899,7 +1996,7 @@ scopes = []
         let cfg = two_tenant_config();
         let none = config::WorkspaceContext::default();
 
-        let stored = resolve_tenant_given(None, false, &cfg, &none, || Ok(Some("dev".into())))
+        let stored = implicit_tenant(Some(&cfg), &none, || Ok(Some("dev".into())))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1907,7 +2004,7 @@ scopes = []
             ("dev", TenantSource::StoredContext)
         );
 
-        let default = resolve_tenant_given(None, false, &cfg, &none, || Ok(None))
+        let default = implicit_tenant(Some(&cfg), &none, || Ok(None))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1915,9 +2012,17 @@ scopes = []
             ("sandbox", TenantSource::DefaultTenant)
         );
 
+        // A configured workspace directory decides without the stored read.
+        let workspace = implicit_tenant(Some(&cfg), &in_workspace("dev"), || {
+            panic!("the stored context must not be read when the workspace decides")
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(workspace, workspace_dev());
+
         // An unconfigured workspace directory is skipped — and said to be.
         let stale = in_workspace("gone");
-        let resolution = resolve_tenant_given(None, false, &cfg, &stale, || Ok(Some("dev".into())))
+        let resolution = implicit_tenant(Some(&cfg), &stale, || Ok(Some("dev".into())))
             .unwrap()
             .unwrap();
         assert_eq!(resolution.source, TenantSource::StoredContext);
@@ -1925,22 +2030,54 @@ scopes = []
     }
 
     #[test]
-    fn tenant_typed_reads_the_value_source_of_the_leaf_subcommand() {
+    fn capture_reads_the_typed_flag_from_real_matches() {
         let parse = |args: &[&str]| {
-            let cmd = inject_tenant_default(Cli::command(), Some("sandbox"));
-            tenant_typed(&cmd.try_get_matches_from(args).unwrap())
+            let mut cmd = inject_tenant_default(Cli::command(), Some("dev"));
+            let matches = cmd.try_get_matches_from_mut(args).unwrap();
+            capture_invocation(&cmd, &matches, Ok(Some(workspace_dev())))
         };
-        assert!(!parse(&["aic", "script", "push", "endpoint/x"]));
-        assert!(parse(&[
-            "aic",
-            "script",
-            "push",
-            "endpoint/x",
-            "--tenant",
-            "sandbox"
-        ]));
-        assert!(!parse(&["aic", "ctx", "show"]));
-        assert!(parse(&["aic", "ctx", "current", "--tenant", "dev"]));
+        let defaulted = parse(&["aic", "script", "push", "endpoint/x"]);
+        assert_eq!(defaulted, captured(Some(workspace_dev())));
+
+        // Same value as the default: only the value source tells them apart.
+        let typed = parse(&["aic", "script", "push", "endpoint/x", "--tenant", "dev"]);
+        let resolution = typed.resolution.unwrap().unwrap();
+        assert_eq!(
+            (resolution.tenant.as_str(), resolution.source),
+            ("dev", TenantSource::Flag)
+        );
+
+        let ctx_current = parse(&["aic", "ctx", "current", "--tenant", "sandbox"]);
+        assert_eq!(
+            ctx_current.resolution.unwrap().unwrap().source,
+            TenantSource::Flag
+        );
+
+        // A positional `tenant` names what to act on: no flag, no capture.
+        let rm = parse(&["aic", "ctx", "rm", "sandbox"]);
+        assert!(!rm.takes_tenant);
+        assert_eq!(rm.resolution, Ok(Some(workspace_dev())));
+    }
+
+    #[test]
+    fn a_positional_tenant_gets_no_injected_default() {
+        let cmd = inject_tenant_default(Cli::command(), Some("dev"));
+        let ctx = cmd.find_subcommand("ctx").unwrap();
+        for verb in ["rm", "use"] {
+            let tenant = ctx
+                .find_subcommand(verb)
+                .unwrap()
+                .get_arguments()
+                .find(|arg| arg.get_id() == "tenant")
+                .unwrap();
+            assert!(tenant.get_default_values().is_empty(), "ctx {verb}");
+        }
+        let current = ctx.find_subcommand("current").unwrap();
+        assert!(
+            current
+                .get_arguments()
+                .any(|arg| { is_tenant_flag(arg) && !arg.get_default_values().is_empty() })
+        );
     }
 
     fn resolved(explicit: Option<&Path>, cwd: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
