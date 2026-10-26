@@ -346,6 +346,138 @@ pub fn report(
     Ok(Report { pairs, stale })
 }
 
+/// `object.key`'s `repo.ds` mapping, if it has one.
+pub fn mapped(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
+    mapping_for(repo_ds, object, key)
+}
+
+/// Refuses moving a mapped relationship end to another target.
+///
+/// Measured 2026-10-26: after repointing a mapped end through
+/// `config/managed`, a link to a record of the new target was `400 … does not
+/// exist` — it resolved against the mapping's old `resourcePath` — and that
+/// failed write still removed the end's existing link. `repo.ds` is not
+/// something `aic` writes, so there is no way to move the mapping with it.
+pub fn repoint_refusal(
+    repo_ds: &Value,
+    source_object: &str,
+    key: &str,
+    old_target: &str,
+    old_reverse_key: Option<&str>,
+    new_target: &str,
+) -> Result<(), String> {
+    if old_target == new_target {
+        return Ok(());
+    }
+    let mut ends = Vec::new();
+    if mapped(repo_ds, source_object, key).is_some() {
+        ends.push(format!("{source_object}.{key}"));
+    }
+    if let Some(reverse_key) = old_reverse_key
+        && mapped(repo_ds, old_target, reverse_key).is_some()
+    {
+        ends.push(format!("{old_target}.{reverse_key}"));
+    }
+    if ends.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to retarget {source_object}.{key} from {old_target} to {new_target}: {} \
+         mapped in config/repo.ds, which still names managed/{old_target}. A mapped end that \
+         was retargeted rejected links to the new target and lost its existing link \
+         (docs/api/10-managed-objects.md, \"Relationship storage\"). Create a new relationship \
+         instead",
+        describe_ends(&ends)
+    ))
+}
+
+/// Refuses writing a relationship end over a `repo.ds` mapping that names a
+/// different target — a mapping a delete left behind. Recreating with the
+/// same target reused it (measured); a different target is the state a
+/// retarget was measured to break.
+pub fn leftover_refusal(repo_ds: &Value, ends: &[(&str, &str, &str)]) -> Result<(), String> {
+    let conflicts: Vec<String> = ends
+        .iter()
+        .filter_map(|(object, key, target)| {
+            let path = mapped(repo_ds, object, key)?.resource_path?;
+            (path != format!("managed/{target}"))
+                .then(|| format!("{object}.{key} (mapped to {path}, now to managed/{target})"))
+        })
+        .collect();
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing: config/repo.ds already maps {} to another target, and aic cannot change \
+         it. Use another key, or repair the mapping in the console",
+        conflicts.join(", ")
+    ))
+}
+
+/// Refuses renaming an object that a `repo.ds` relationship mapping names,
+/// as its own `managed/<object>` entry or as another mapping's
+/// `resourcePath`. Inferred, not measured: the mapping would go on naming the
+/// old path, which is the state a retarget was measured to break.
+pub fn rename_refusal(repo_ds: &Value, object: &str) -> Result<(), String> {
+    let path = format!("managed/{object}");
+    let mut ends: Vec<String> = mappings_of(repo_ds, object)
+        .into_iter()
+        .flat_map(|mappings| mappings.keys())
+        .filter(|key| mapped(repo_ds, object, key).is_some())
+        .map(|key| format!("{object}.{key}"))
+        .collect();
+    if let Some(generic) = repo_ds
+        .pointer("/resourceMapping/genericMapping")
+        .and_then(Value::as_object)
+    {
+        for (resource, entry) in generic {
+            let Some(other) = resource.strip_prefix("managed/") else {
+                continue;
+            };
+            if other == object {
+                continue;
+            }
+            for (key, _) in entry
+                .get("properties")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                if mapped(repo_ds, other, key)
+                    .is_some_and(|mapping| mapping.resource_path.as_deref() == Some(&path))
+                {
+                    ends.push(format!("{other}.{key}"));
+                }
+            }
+        }
+    }
+    if ends.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to rename {object}: config/repo.ds maps relationships by its name ({}), and \
+         aic cannot move those mappings. Renaming would leave them naming managed/{object}",
+        ends.join(", ")
+    ))
+}
+
+/// What a relationship delete leaves behind in `repo.ds`: measured
+/// 2026-10-26, the mapping of a deleted mapped end stays, and recreating the
+/// same key with the same target picked it up again.
+pub fn delete_leftovers(repo_ds: &Value, ends: &[(&str, &str)]) -> Vec<String> {
+    ends.iter()
+        .filter(|(object, key)| mapped(repo_ds, object, key).is_some())
+        .map(|(object, key)| format!("{object}.{key}"))
+        .collect()
+}
+
+fn describe_ends(ends: &[String]) -> String {
+    match ends {
+        [one] => format!("{one} is"),
+        many => format!("{} are", many.join(" and ")),
+    }
+}
+
 /// One link read from a record's relationship property.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Link {
@@ -598,6 +730,83 @@ mod tests {
         }}}]});
         let report = report(&doc, &json!({}), "u", None).unwrap();
         assert_eq!(report.pairs.len(), 1);
+    }
+
+    #[test]
+    fn a_retarget_is_refused_when_either_old_end_is_mapped() {
+        let both = repo(Some(reference()), Some(reverse_reference()));
+        let forward = repo(Some(reference()), None);
+        let reverse = repo(None, Some(reverse_reference()));
+        for repo_ds in [&both, &forward, &reverse] {
+            let error =
+                repoint_refusal(repo_ds, "a", "owner", "b", Some("owned"), "c").unwrap_err();
+            assert!(error.contains("from b to c"), "{error}");
+        }
+        assert!(error_names(&reverse).contains("b.owned is mapped"));
+        // Not a retarget, or nothing mapped: allowed.
+        assert_eq!(
+            repoint_refusal(&both, "a", "owner", "b", Some("owned"), "b"),
+            Ok(())
+        );
+        assert_eq!(
+            repoint_refusal(&repo(None, None), "a", "owner", "b", Some("owned"), "c"),
+            Ok(())
+        );
+        // A reverse that was never declared is not consulted.
+        assert_eq!(
+            repoint_refusal(&reverse, "a", "owner", "b", None, "c"),
+            Ok(())
+        );
+    }
+
+    fn error_names(repo_ds: &Value) -> String {
+        repoint_refusal(repo_ds, "a", "owner", "b", Some("owned"), "c").unwrap_err()
+    }
+
+    #[test]
+    fn a_rename_is_refused_for_an_object_a_mapping_names_either_way() {
+        let both = repo(Some(reference()), Some(reverse_reference()));
+        // `a` holds a mapping, and `b.owned` points back at managed/a.
+        let error = rename_refusal(&both, "a").unwrap_err();
+        assert!(
+            error.contains("a.owner") && error.contains("b.owned"),
+            "{error}"
+        );
+        // Only an inbound mapping: `a` holds none of its own.
+        let error = rename_refusal(&repo(None, Some(reverse_reference())), "a").unwrap_err();
+        assert!(error.contains("b.owned"), "{error}");
+        assert_eq!(rename_refusal(&repo(None, None), "a"), Ok(()));
+        // A mapping elsewhere that names another object does not block.
+        assert_eq!(
+            rename_refusal(&repo(None, Some(reverse_reference())), "c"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_new_end_over_a_mapping_to_another_target_is_refused() {
+        let forward = repo(Some(reference()), None);
+        // Same target as the leftover mapping: reused, allowed.
+        assert_eq!(leftover_refusal(&forward, &[("a", "owner", "b")]), Ok(()));
+        let error = leftover_refusal(&forward, &[("a", "owner", "c")]).unwrap_err();
+        assert!(
+            error.contains("a.owner (mapped to managed/b, now to managed/c)"),
+            "{error}"
+        );
+        assert_eq!(
+            leftover_refusal(&repo(None, None), &[("a", "owner", "c")]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_delete_names_the_mappings_it_leaves() {
+        let forward = repo(Some(reference()), None);
+        assert_eq!(
+            delete_leftovers(&forward, &[("a", "owner"), ("b", "owned")]),
+            vec!["a.owner".to_string()]
+        );
+        assert!(delete_leftovers(&repo(None, None), &[("a", "owner")]).is_empty());
     }
 
     #[test]

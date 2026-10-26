@@ -559,6 +559,14 @@ existing links and leave the pair unable to read or write links from one side
 unmeasured and refused to be safe. `aic` has no way to migrate links to a new
 key, and delete-and-recreate is not a measured repair.
 
+Writes that `config/repo.ds` would contradict are refused, because `aic`
+does not edit `repo.ds` (`docs/api/10-managed-objects.md`, "Relationship
+storage"): `relationship set` retargeting an end when either old end is mapped
+(measured to break the pair), `relationship set` writing an end over a leftover
+mapping that names another target, and `object rename` of an object a mapping
+names. `relationship delete` proceeds and notes on stderr which mappings it
+leaves behind. Each of these reads `repo.ds` once.
+
 `relationship delete` removes the property and, when it declares one, the
 reverse property on the target, in one write. It refuses when the declared
 reverse is not a relationship back to the source (use `field delete` for the

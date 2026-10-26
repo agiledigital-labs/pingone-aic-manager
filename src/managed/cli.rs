@@ -379,6 +379,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             refuse_shipped(old_object, "renamed")?;
             state::validate_object_name(&new, &object_names(&doc), &old)
                 .map_err(crate::Error::Config)?;
+            ops::refuse_mapped_rename(&tenant, &old).await?;
             let (updated, _) =
                 ops::rename_object_in_doc(&doc, &old, &new).map_err(crate::Error::Config)?;
             let mut undo = DiskLog::load_default()?;
@@ -651,6 +652,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                         .collect::<Result<Vec<_>>>()?
                 },
             };
+            ops::refuse_mapped_retarget(&tenant, &spec, previous.as_ref()).await?;
             let updated = ops::apply_relationship_spec(&doc, &spec, previous.as_ref())
                 .map_err(crate::Error::Config)?;
             record_config_undo(
@@ -676,6 +678,22 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let doc = api::get_managed(&tenant).await?;
             let updated = ops::apply_delete_relationship(&doc, &source_object, &key)
                 .map_err(crate::Error::Config)?;
+            let reverse = api::object_named(&doc, &source_object)
+                .ok()
+                .and_then(state::properties)
+                .and_then(|properties| properties.get(&key))
+                .and_then(|property| {
+                    let target = ops::relationship_targets(property)
+                        .first()?
+                        .strip_prefix("managed/")?
+                        .to_string();
+                    Some((target, ops::declared_reverse_key(property)?.to_string()))
+                });
+            let mut ends = vec![(source_object.as_str(), key.as_str())];
+            if let Some((target, reverse_key)) = &reverse {
+                ends.push((target.as_str(), reverse_key.as_str()));
+            }
+            let leftovers = verify::delete_leftovers(&api::get_repo_ds(&tenant).await?, &ends);
             record_config_undo(
                 &tenant,
                 &doc,
@@ -685,6 +703,15 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let expect = relationship_expectations(&doc, &updated)?;
             put_managed(&ok, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} deleted"));
+            if !leftovers.is_empty() {
+                eprintln!(
+                    "note: config/repo.ds still maps {}; aic does not edit it. Recreating the \
+                     same key with the same target reused the mapping when measured; aic \
+                     refuses one with another target (docs/api/10-managed-objects.md, \
+                     \"Relationship storage\")",
+                    leftovers.join(", ")
+                );
+            }
             output(json, &updated)
         }
         RelationshipCommand::Verify {
