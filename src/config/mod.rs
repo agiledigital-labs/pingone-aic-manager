@@ -1181,11 +1181,18 @@ impl ProjectPaths {
     /// transition and saved after it would otherwise put the flag back, and
     /// the vault would then name a form whose files are gone. So the flag on
     /// disk wins whenever there is one.
+    ///
+    /// With no file, this save *creates* the flag, so it is held to the
+    /// setup writers' rule: it must not name a form opposite to vault files
+    /// already present. A default (plain) save over a lost-settings
+    /// `keys.enc` would otherwise commit plain mode, and the next settle
+    /// would delete the encrypted map as stale.
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
         let _vault = self.lock_vault(Hold::Exclusive)?;
         let mut settings = settings.clone();
-        if let Some(on_disk) = self.load_settings()? {
-            settings.encrypt_keys = on_disk.encrypt_keys;
+        match self.load_settings()? {
+            Some(on_disk) => settings.encrypt_keys = on_disk.encrypt_keys,
+            None => self.no_files_in_form(!settings.encrypt_keys)?,
         }
         self.write_settings(&settings)
     }
@@ -2545,6 +2552,35 @@ mod tests {
         empty
             .enable_encryption(&crypto::Dek::random(), None, || Ok(()))
             .unwrap();
+    }
+
+    /// A settings edit with no `settings.toml` creates the vault flag; over
+    /// a lost-settings `keys.enc` a default save would commit plain mode and
+    /// the next settle would delete the encrypted map. Refused, the files
+    /// survive; on an empty vault the same save still works.
+    #[test]
+    fn a_settings_edit_does_not_choose_the_vault_mode_over_existing_files() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let dek = crypto::Dek::random();
+        paths
+            .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1}"#, Some(&dek))
+            .unwrap();
+        paths
+            .save_artifact_bytes(VaultArtifact::Jwks, b"{}", None)
+            .unwrap();
+        let plain = Settings::default();
+        assert!(!plain.encrypt_keys);
+        assert!(paths.save_settings(&plain).is_err());
+        assert!(paths.load_settings().unwrap().is_none());
+        assert_eq!(jwk_map(&paths, Some(&dek)).len(), 1);
+
+        let empty = ProjectPaths::new(dir.path("q")).unwrap();
+        empty.save_settings(&plain).unwrap();
+        assert_eq!(
+            empty.load_settings().unwrap().map(|s| s.encrypt_keys),
+            Some(false)
+        );
     }
 
     /// The daemon installs a key while holding the lock it checked it
