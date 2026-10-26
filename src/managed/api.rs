@@ -90,6 +90,90 @@ pub async fn get_managed(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, "/openidm/config/managed").await
 }
 
+/// `GET /openidm/config/repo.ds` — the record-store mapping document. Read
+/// only: `aic` never writes it (`docs/api/10-managed-objects.md`,
+/// "Relationship storage").
+pub async fn get_repo_ds(tenant: &str) -> Result<Value> {
+    crate::aic::api::get(tenant, "/openidm/config/repo.ds").await
+}
+
+/// One page of `object`'s records carrying only `_id` and the relationship
+/// `key`. Paging records, not a `pr` filter: `<key> pr` matched a linked
+/// record on a mapped property and nothing on a generic one (2026-10-26).
+pub async fn records_with(
+    tenant: &str,
+    object: &str,
+    key: &str,
+    scan: usize,
+) -> Result<Vec<Value>> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("_queryFilter", "true")
+        .append_pair("_pageSize", &scan.to_string())
+        .append_pair("_fields", &format!("_id,{key}"));
+    let path = format!(
+        "/openidm/managed/{}?{}",
+        crate::idmstore::api::path_segment(object),
+        query.finish()
+    );
+    let body = crate::aic::api::get(tenant, &path).await?;
+    Ok(body
+        .get("result")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// What the far record's `key` says about `near_id`, as a record carrying
+/// `key`; `None` when the far record does not exist. An array end is asked
+/// through its relationship collection with `_refResourceId eq`, so a large
+/// has-many is not read whole; a singular end has no collection endpoint
+/// (501), so the record is read with `_fields`. Both measured 2026-10-26, in
+/// both storage modes.
+pub async fn far_end(
+    tenant: &str,
+    object: &str,
+    id: &str,
+    key: &str,
+    array: bool,
+    near_id: &str,
+) -> Result<Option<Value>> {
+    let record = format!(
+        "/openidm/managed/{}/{}",
+        crate::idmstore::api::path_segment(object),
+        crate::idmstore::api::path_segment(id)
+    );
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    let path = if array {
+        query
+            .append_pair(
+                "_queryFilter",
+                &format!("_refResourceId eq \"{}\"", near_id.replace('"', "\\\"")),
+            )
+            .append_pair(
+                "_fields",
+                "_refResourceId,_refResourceCollection,_refProperties",
+            );
+        format!(
+            "{record}/{}?{}",
+            crate::idmstore::api::path_segment(key),
+            query.finish()
+        )
+    } else {
+        query.append_pair("_fields", key);
+        format!("{record}?{}", query.finish())
+    };
+    match crate::aic::api::get(tenant, &path).await {
+        Ok(body) if array => Ok(Some(serde_json::json!({
+            "_id": id,
+            key: body.get("result").cloned().unwrap_or(Value::Array(Vec::new())),
+        }))),
+        Ok(body) => Ok(Some(body)),
+        Err(Error::Api { status: 404, .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Unconfirmed `PUT /openidm/config/managed` with the complete managed config
 /// document.
 ///

@@ -237,7 +237,7 @@ fn list_path(object: &str, params: &[(&str, &str)]) -> String {
     )
 }
 
-fn path_segment(value: &str) -> String {
+pub(crate) fn path_segment(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {

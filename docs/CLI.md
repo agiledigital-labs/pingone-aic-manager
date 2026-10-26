@@ -516,6 +516,7 @@ aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--yes] [--json]
+aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--json]
 ```
 
 `managed get` prints one object's definition as JSON. Inline hook `source`
@@ -565,6 +566,22 @@ one property), when either end is a standard field, as `field delete` does,
 and when either end targets more than one object type, because removing the
 property would remove it for every target. `relationship set` holds a reverse
 it drops or moves to the same rules.
+
+`relationship verify` is read-only. For `<object>` it checks every
+relationship on that object (each pair once); for `<object>.<key>`, one. It
+reads `config/managed` and `config/repo.ds` and reports a pair whose two ends
+disagree — one end mapped in `repo.ds` and the other not, a mapping that reads
+through a key or points at a target the schema does not declare — plus any
+`repo.ds` entry for a property the object no longer declares. Being mapped or
+generic is not itself a finding; both were measured to work. It then reads up
+to `--scan` records from each end (one request per end) and checks up to
+`--sample` of their links from the far end, which must list the near record
+under the same edge id. An end with no links in the records read is reported
+as untested, not healthy. `--sample 0` checks configuration only. It exits
+non-zero on any finding or any link that does not resolve. What to do about a
+finding is not measured: `aic` does not write `repo.ds`, and neither the
+console's repair nor delete-and-recreate has been tested
+(`docs/api/10-managed-objects.md`, "Checking a pair").
 
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the
