@@ -66,8 +66,10 @@ pub struct Cli {
     /// For callers that cannot choose their working directory: a script in a
     /// sibling repo, an editor task, a CI step. It stands in for the cwd, so
     /// the walk up to the project root and the `workspace/<tenant>/` tenant
-    /// inference both start there. Pointing it outside a project is an error,
-    /// not a fallback to the cwd — a typo must not silently act on a different
+    /// inference both start there — except that a <DIR> with no tenant of its
+    /// own, in the same project as a cwd inside `workspace/<tenant>/`, keeps
+    /// the cwd's tenant. Pointing it outside a project is an error, not a
+    /// fallback to the cwd — a typo must not silently act on a different
     /// tenant.
     ///
     /// Also settable as AIC_PROJECT; this flag wins.
