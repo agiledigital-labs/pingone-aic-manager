@@ -62,7 +62,7 @@ pub enum SyntaxCheck {
 /// untouched, so the next push retries.
 ///
 /// The arms exist to word the remedy, not to decide the outcome — the outcome
-/// is the same for all three.
+/// is the same for all of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// The tenant parsed the source and rejected it. Always at least one
@@ -74,6 +74,11 @@ pub enum Refusal {
     /// Nothing can check this resource, decided before the request was made.
     /// Retrying can never help; the explicit opt-out is the only way past it.
     Unsupported(String),
+    /// The source is a generated endpoint bundle whose banner says it was
+    /// built for a different endpoint. Decided locally, before any request,
+    /// and not something `--force=syntax-check` gets past: the source may
+    /// parse perfectly, it is just not this endpoint's.
+    WrongTarget { endpoint: String, built_for: String },
 }
 
 impl Refusal {
@@ -88,6 +93,12 @@ impl Refusal {
             }
             Refusal::Unsupported(reason) => {
                 format!("the source cannot be syntax-checked — {reason}")
+            }
+            Refusal::WrongTarget {
+                endpoint,
+                built_for,
+            } => {
+                format!("this is the generated bundle for endpoint `{built_for}`, not `{endpoint}`")
             }
         }
     }
@@ -109,6 +120,9 @@ impl Refusal {
                 }
                 lines
             }
+            Refusal::WrongTarget { built_for, .. } => vec![format!(
+                "its `// Source:` banner names typescript/…/{built_for}.ts"
+            )],
             Refusal::NoVerdict(_) | Refusal::Unsupported(_) => Vec::new(),
         }
     }
