@@ -809,6 +809,28 @@ pub fn apply_relationship_spec(
     Ok(updated)
 }
 
+/// Deletes a relationship property and, when it names one, its reverse on the
+/// target object. Both ends go in one document so the write never leaves a
+/// reverse pointing at a property that no longer exists.
+pub fn apply_delete_relationship(
+    doc: &Value,
+    source_object: &str,
+    key: &str,
+) -> Result<Value, String> {
+    let source =
+        crate::managed::api::object_named(doc, source_object).map_err(|error| error.to_string())?;
+    let parsed = crate::managed::state::properties(source)
+        .and_then(|properties| properties.get(key))
+        .and_then(parse_relationship)
+        .ok_or_else(|| format!("field '{source_object}.{key}' is not a relationship"))?;
+    let mut updated = doc.clone();
+    remove_relationship_property(&mut updated, source_object, key, true)?;
+    if let Some(reverse_key) = &parsed.reverse_key {
+        remove_relationship_property(&mut updated, &parsed.target, reverse_key, false)?;
+    }
+    Ok(updated)
+}
+
 fn remove_relationship_property(
     doc: &mut Value,
     object_name: &str,
@@ -4795,6 +4817,39 @@ mod tests {
         // Control: the same edit with both keys unchanged is accepted.
         let unchanged = relationship_spec(Cardinality::Many, ReverseCardinality::One);
         assert!(apply_relationship_spec(&original, &unchanged, Some(&previous)).is_ok());
+    }
+
+    #[test]
+    fn relationship_delete_removes_both_ends_and_nothing_else() {
+        let mut spec = relationship_spec(Cardinality::Many, ReverseCardinality::One);
+        spec.required = true;
+        let mut doc = apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+        for object in ["a", "b"] {
+            let object = crate::managed::api::object_named_mut(&mut doc, object).unwrap();
+            object["schema"]["properties"]["keep"] = json!({"type": "string"});
+            object["schema"]["order"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("keep"));
+        }
+
+        let updated = apply_delete_relationship(&doc, "a", "owner").unwrap();
+        let a = crate::managed::api::object_named(&updated, "a").unwrap();
+        let b = crate::managed::api::object_named(&updated, "b").unwrap();
+        assert_eq!(
+            a["schema"]["properties"],
+            json!({"keep": {"type": "string"}})
+        );
+        assert_eq!(a["schema"]["order"], json!(["keep"]));
+        assert_eq!(a["schema"]["required"], json!([]));
+        assert_eq!(
+            b["schema"]["properties"],
+            json!({"keep": {"type": "string"}})
+        );
+        assert_eq!(b["schema"]["order"], json!(["keep"]));
+
+        let error = apply_delete_relationship(&updated, "a", "keep").unwrap_err();
+        assert_eq!(error, "field 'a.keep' is not a relationship");
     }
 
     #[test]

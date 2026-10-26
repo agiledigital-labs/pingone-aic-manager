@@ -503,7 +503,7 @@ possible future safety check, not done here.
 
 ### Relationship storage and `repo.ds` mappings (verified 2026-10-26)
 
-A relationship property is stored in one of two ways, and both work:
+A relationship property was observed in one of two modes, and both can work:
 
 - **Mapped.** `config/repo.ds` has an entry under
   `resourceMapping.genericMapping."managed/<obj>".properties.<prop>`. The side
@@ -512,32 +512,36 @@ A relationship property is stored in one of two ways, and both work:
   the reverse has
   `{"type": "reverseReference", "propertyName": "<forward>", "resourcePath": "managed/<source>", "isMultiValued": …}`.
   A link's `_refProperties._id` has the shape `<uuid>-<counter>`.
-- **Generic.** No mapping. Links live in IDM's generic relationships table
-  (`/openidm/repo/relationships` is 403 to the service account), and
-  `_refProperties._id` is a plain UUID.
+- **Generic.** No mapping, and `_refProperties._id` is a plain UUID. Where
+  those links are stored is inference — presumably IDM's generic relationships
+  table, but `/openidm/repo/relationships` is 403 to the service account.
 
 Either way, the forward and reverse sides report the **same**
-`_refProperties._id` for a link, so that id shape is a read-only way to tell
-which storage a link is in.
+`_refProperties._id` for a link. The id shape matched the mapping mode on every
+link probed, but that is an observed association over a handful of links, not a
+documented allocation rule; treat it as a hint, never as a classifier.
 
-**`PUT config/managed` never writes `repo.ds`.** A has-many ↔ has-one pair
-created with `aic managed relationship set` between two fresh types got no
+**`PUT config/managed` did not write `repo.ds` in either operation tried** —
+creating a pair, and renaming a mapped property (below). A has-many ↔ has-one
+pair created with `aic managed relationship set` between two fresh types got no
 mapping, re-checked over two minutes, and worked fully in generic mode: link
 from the forward side, read from both sides, one shared edge id. The mapped
 pairs on the sandbox (`test_from` ↔ `test_to`) date from those types being
 opened in the console (99-quirks, 2026-08-04), so the console writing mappings
 is an inference, not an observation.
 
-**`/openidm/schema/managed/<obj>` is read-only on this tenant.** It serves the
-object's schema on `GET`, but `PUT …/properties/<p>` is 400 "Create not
-supported", the same `PUT` with `If-Match: *` is 501, and `PUT`/`PATCH` on the
-object and `POST ?_action=…` are 501. There is no schema-API route for a client
-to create or rename a relationship.
+**`/openidm/schema/managed/<obj>` refused every write form tried**, with the
+service-account bearer. It serves the object's schema on `GET`, but
+`PUT …/properties/<p>` is 400 "Create not supported", the same `PUT` with
+`If-Match: *` is 501, and `PUT`/`PATCH` on the object and `POST ?_action=…` are
+501. Those five forms are all that was tried; a write route needing another
+shape, version or credential is not ruled out.
 
 **Renaming a mapped relationship through `config/managed` breaks it.** Measured
 by renaming `test_from.hasOnehOne` (mapped, reverse `test_to.hasOneHasOne`) to
 `hasOneRen` and repointing the reverse's `reversePropertyName`; the `PUT` was a
-200 and `repo.ds` did not change. Afterwards:
+200 and `repo.ds` did not change. Probed within about a minute of the rename;
+whether the state below persists, or settles, was not checked:
 
 | Read or write                                   | Result                                                         |
 | ----------------------------------------------- | -------------------------------------------------------------- |
@@ -549,19 +553,22 @@ by renaming `test_from.hasOnehOne` (mapped, reverse `test_to.hasOneHasOne`) to
 Restoring the original document (byte-identical) brought the existing link back
 on the forward side. So the failure is a **mixed** pair: one side's mapping no
 longer names the property the other side declares, and reads and writes go to
-different stores. A pair that is fully mapped or fully generic is healthy. This
-is why `aic` refuses every relationship key rename, forward or reverse — the
-link data is filed under the name.
+different stores. Mode alone is not a health check: both modes can work, and
+this pair broke while one side was still mapped. This is why `aic` refuses
+every relationship key rename, forward or reverse. Renames on a generic pair,
+reverse-only renames, target repoints and object renames of a mapped pair were
+**not** measured; the refusal is conservative for those, not evidence about
+them.
 
 A mapping can also outlive its property: the sandbox's `managed/test_from`
 mapping still lists `hasOneHasOne`, which `config/managed` no longer declares.
 
-Not established: what exactly the console writes, whether deleting a mapped
-relationship leaves its mapping behind (likely, since `config/managed` writes
-never touch `repo.ds`), and an operator-reported `400 Invalid relationship
-schema` when re-creating a relationship whose reverse has a stale mapping. A
-`config/managed` `PUT` of exactly that state was a 200 here, so if that error is
-real it comes from the console's own validation.
+Not established: what exactly the console writes; whether deleting a mapped
+relationship leaves its mapping behind; whether delete-and-recreate is a repair
+for a mixed pair; and an operator-reported `400 Invalid relationship schema`
+when re-creating a relationship whose reverse has a stale mapping. A
+`config/managed` `PUT` of that state was a 200 here, which says only that
+config validation accepts it — not where the operator's 400 came from.
 
 ### Object-type rename orphans records (verified 2026-07-27)
 
@@ -582,10 +589,15 @@ keyed by the object name, and records are NOT migrated**. Observed on
    simply detach from the API surface while no configured type owns their
    backend name.
 
-`config/repo.ds` contains **no** references to custom object names (checked
-2026-07-27), so a custom-object rename does not require a `repo.ds` edit — but
-the new name serves an empty collection and any searchable-property indexing
-would need the usual `repo.ds` work.
+`config/repo.ds` contained **no** references to custom object names when
+checked on 2026-07-27. That no longer holds in general: a custom object with a
+**mapped** relationship has a `genericMapping."managed/<obj>"` entry keyed on
+its name, and its partners' entries carry `resourcePath: "managed/<obj>"`
+([Relationship storage](#relationship-storage-and-repods-mappings-verified-2026-10-26),
+2026-10-26). What a rename does to those entries is unmeasured; expect the
+mixed-pair failure above. For an object with no mapped relationships the
+2026-07-27 reading stands — the new name serves an empty collection and any
+searchable-property indexing would need the usual `repo.ds` work.
 
 Practical consequence for tooling: an object rename must repoint every inbound
 relationship (`resourceCollection[].path == "managed/X"` → `"managed/Y"`, across
@@ -1227,7 +1239,7 @@ on create, or when actually rotating it.
   data must use a predefined indexed extension property. The old blanket rule
   here ("every searchable property requires both `managed` and `repo.ds`") was
   wrong for generic custom objects. That concerns scalar indexing; relationship
-  properties on generic objects **do** get `repo.ds` mappings — see
+  properties on generic objects **may** have `repo.ds` mappings — see
   [Relationship storage](#relationship-storage-and-repods-mappings-verified-2026-10-26).
 - **Config read-back is immediate; hook runtime activation can lag.** A fresh
   `GET /openidm/config/managed` reflected a 200'd PUT on the first poll (~164
@@ -1264,8 +1276,10 @@ on create, or when actually rotating it.
   taken first, three probes after it, and a byte-identical restore confirmed by
   comparison. A record-delete control found that deleting a `test_from` record
   also deletes its `test_to` partner; that is the sandbox's sync mapping
-  `managedTest_from_managedTest_to` (`SOURCE_MISSING: DELETE`), not relationship
-  behaviour. All probe records, the relationship and both `test_rp_*` types
+  `managedTest_from_managedTest_to` (`SOURCE_MISSING: DELETE`) — inferred from
+  the mapping's configuration and from the `test_rp_*` pair, which has no sync
+  mapping, not deleting its partner; no log or same-fixture intervention
+  isolated it. All probe records, the relationship and both `test_rp_*` types
   were deleted.
 
 - Date: 2026-09-14 — `IdmHandle` semantics for the rhino-local harness, realm
