@@ -342,7 +342,9 @@ staged_is_utf16() {
   [ "$out" = fffe ] || [ "$out" = feff ]
 }
 staged_utf16_lines() {
-  git cat-file blob ":0:$1" | iconv -f UTF-16 -t UTF-8 | awk '{ print NR":"$0 }'
+  # A decoded NUL is a boundary too, for the same reason as in `staged_lines`.
+  git cat-file blob ":0:$1" | iconv -f UTF-16 -t UTF-8 | tr '\000' ' ' \
+    | awk '{ print NR":"$0 }'
 }
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
@@ -974,6 +976,11 @@ case "$MODE" in
       printf 'exam\0ple.forgeblocks.com\n' >joined.md && git add joined.md >/dev/null
       run "a NUL cannot join a host into a placeholder" 1 bash "$script" --staged
       git rm -q --cached joined.md >/dev/null && rm -f joined.md
+      printf 'exam\0ple.forgeblocks.com\n' | iconv -f UTF-8 -t UTF-16 >joined16.md
+      git add joined16.md >/dev/null
+      run "a decoded UTF-16 NUL cannot join a host into a placeholder" 1 \
+        bash "$script" --staged
+      git rm -q --cached joined16.md >/dev/null && rm -f joined16.md
       run "control: nothing staged" 0 bash "$script" --staged
       # A gitlink is a commit id; staging one must scan, not abort.
       git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),module"
