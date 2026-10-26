@@ -5,6 +5,7 @@
 //! - [`cli`] = `aic idm` read-only inspection and SQL runner.
 //! - [`db`] = local SQLite store, schema derivation, and record helpers.
 //! - [`ops`] = background refresh and cache orchestration.
+//! - [`raw`] = `aic idm get`: validated read-only GET of any `/openidm/` path.
 //! - [`screen`] / [`view`] / [`state`] = the TUI tab surface.
 //!
 //! The TUI tab is a registered placeholder: `view`/`ops`/`screen` are stubs
@@ -20,6 +21,7 @@ pub mod api;
 pub mod cli;
 pub mod db;
 pub mod ops;
+pub mod raw;
 pub mod screen;
 pub mod state;
 pub mod view;

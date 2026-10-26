@@ -638,6 +638,32 @@ aic idm query "
 `query` is **read-only** (writes are rejected). Run `aic idm tables` to discover
 table and column names.
 
+### `aic idm get` — raw read of any `/openidm/` path
+
+```bash
+aic idm get config/managed --fields objects/name
+aic idm get "managed/alpha_user?_queryFilter=true" --fields _id,userName --all-pages
+aic idm get /openidm/internal/role/openidm-admin
+```
+
+The path may be written `/openidm/<path>`, `openidm/<path>` or `<path>`, with
+any query string. It is refused if it could leave `/openidm/` once the server
+normalises it: a URL, a dot segment (encoded or not), an encoded slash or
+backslash, an empty segment.
+
+- `--fields` is shorthand for `_fields=`; giving both is refused.
+- Without `--all-pages` the response is printed as the tenant returned it, and
+  a non-empty `pagedResultsCookie` adds a stderr note that more results follow.
+- `--all-pages` follows `pagedResultsCookie` to the end and prints
+  `{"result": [...], "resultCount": N}`. It adds `_pageSize=1000` unless the
+  path sets one, and refuses a path that already carries
+  `_pagedResultsCookie` or `_pagedResultsOffset`. A cookie returned twice stops
+  the walk with an error rather than paging forever. On a single resource it
+  is refused, because the tenant rejects `_pageSize` there.
+
+It only ever sends `GET`, but **GET is not a promise of no side effects**: a GET
+on `endpoint/<name>` runs that endpoint's script.
+
 ---
 
 ## `aic journey` — authentication trees

@@ -987,7 +987,12 @@ costly on DJ. Do **not** use `totalPagedResults` as a completeness bound: empty
 objects may return `totalPagedResults: -1` with policy `NONE` even when
 `_totalPagedResultsPolicy=EXACT` is requested, and populated objects may return
 policy `ESTIMATE`. Treat counts as optional progress hints only. Cursor walks
-end on an absent/empty cookie, including an empty first page.
+end on an absent/empty cookie, including an empty first page. Re-verified
+2026-10-26 through `aic idm get --all-pages`: `alpha_user` walked at
+`_pageSize=2` returned the same 27 distinct ids as one page at 1000. A
+single-resource read rejects the paging parameters:
+`GET /openidm/config/ui/configuration?_pageSize=1000` is
+`400 Unrecognized request parameter '_pageSize'`.
 
 **Query-filter negation (verified 2026-07-03).** AIC accepts symbolic CREST
 negation with `!`, for example `_queryFilter=!(/description eq "lkj")`. It
@@ -1264,6 +1269,11 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-26 — cursor paging re-check, sandbox, through
+  `aic idm get`: `managed/alpha_user?_queryFilter=true&_fields=_id` at
+  `_pageSize=2` (cookie walk to completion) and at `_pageSize=1000` both
+  returned 27 distinct ids; `config/ui/configuration?_pageSize=1000` returned
+  `400 Unrecognized request parameter '_pageSize'`.
 - Date: 2026-10-26 — relationship storage, sandbox. Read `config/repo.ds`
   (200) before and after each step. Created `test_rp_a`/`test_rp_b` and
   `test_rp_a.toB` (has-many, reverse `fromA` has-one) with `aic managed`, polled
