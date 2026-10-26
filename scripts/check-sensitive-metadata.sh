@@ -98,11 +98,30 @@ UUID_RE='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 # Literal deny patterns, compiled once. The file lives OUTSIDE the repo (or in
 # the gitignored .ai/denylist.txt): committing a list of client names would
 # commit the client names. One pattern per line, '#' comments ignored.
+#
+# A denylist that is configured but cannot be read stops the scan: an empty
+# DENY_RE is indistinguishable from "no denylist" downstream, so a read error
+# here would otherwise pass every literal it was meant to catch. Only a list
+# that holds nothing but comments and blank lines is legitimately empty.
+deny_lines() {
+  local lines status
+  lines=$(grep -vE '^\s*(#|$)' "$@")
+  status=$?
+  [ "$status" -le 1 ] || return 1
+  [ -n "$lines" ] || return 0
+  printf '%s\n' "$lines" | paste -sd '|' -
+}
+deny_unreadable() {
+  echo "error: the sensitive metadata denylist ($1) could not be read" >&2
+  exit 2
+}
 DENY_RE=""
 if [ -n "${SENSITIVE_DENYLIST_CONTENT:-}" ]; then
-  DENY_RE=$(printf '%s\n' "$SENSITIVE_DENYLIST_CONTENT" | grep -vE '^\s*(#|$)' | paste -sd '|' -)
-elif [ -n "${SENSITIVE_DENYLIST:-}" ] && [ -f "${SENSITIVE_DENYLIST}" ]; then
-  DENY_RE=$(grep -vE '^\s*(#|$)' "${SENSITIVE_DENYLIST}" | paste -sd '|' -)
+  DENY_RE=$(printf '%s\n' "$SENSITIVE_DENYLIST_CONTENT" | deny_lines) \
+    || deny_unreadable SENSITIVE_DENYLIST_CONTENT
+elif [ -n "${SENSITIVE_DENYLIST:-}" ]; then
+  [ -f "$SENSITIVE_DENYLIST" ] || deny_unreadable "$SENSITIVE_DENYLIST is not a file"
+  DENY_RE=$(deny_lines -- "$SENSITIVE_DENYLIST") || deny_unreadable "$SENSITIVE_DENYLIST"
 fi
 EXPECTED="${SENSITIVE_HISTORY_EXPECTED:-}"
 if [ -n "$EXPECTED" ] && ! [[ "$EXPECTED" =~ ^[0-9]+$ ]]; then
@@ -225,7 +244,8 @@ history_blobs() {
 
 # The added lines of one staged file, numbered as `N:line`.
 staged_lines() {
-  git diff --cached -U0 -- "$1" \
+  # `:(literal)` so a name holding `*` or `?` is that one file, not a glob.
+  git diff --cached -U0 -- ":(literal)$1" \
     | awk '/^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); next }
            /^\+/ && !/^\+\+\+/ { print n":"substr($0,2); n++ }'
 }
@@ -474,11 +494,17 @@ scan_text() {
 # Rule 6 — the ignore rules that keep live tenant data out of the repo.
 check_ignores() {
   local want missing=0
+  [ -r .gitignore ] || scan_failed ".gitignore cannot be read"
   for want in .envrc '.aic/' '/workspace/' '*.har' '/.ai/local.md'; do
-    grep -qxF "$want" .gitignore || {
-      echo "  MISSING from .gitignore: $want"
-      missing=1
-    }
+    grep -qxF -- "$want" .gitignore
+    case $? in
+      0) ;;
+      1)
+        echo "  MISSING from .gitignore: $want"
+        missing=1
+        ;;
+      *) scan_failed "reading .gitignore failed" ;;
+    esac
   done
   if [ "$missing" = 1 ]; then
     findings=$((findings + 1))
@@ -613,6 +639,61 @@ case "$MODE" in
       prefilter_fails "a pre-filter whose grep fails stops the scan" '' "${TMPDIR:-/tmp}"
       exit "$fails"
     ) || fails=$((fails + 1))
+    # End to end, in a scratch repository: the listings and the denylist are
+    # read before any rule runs, so their failures only show as a whole run.
+    (
+      script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+      repo=$(mktemp -d) || exit 1
+      trap 'chmod -R u+w "$repo"; rm -rf "$repo"' EXIT
+      cd "$repo" || exit 1
+      git init -q . && git config user.email t@example.com && git config user.name t
+      printf '%s\n' .envrc '.aic/' '/workspace/' '*.har' '/.ai/local.md' >.gitignore
+      leak='https://openam-acme-sndbx.forgeblocks.com/am'
+      fails=0
+      run() {
+        local name="$1" want="$2" got
+        shift 2
+        env -u SENSITIVE_DENYLIST -u SENSITIVE_DENYLIST_CONTENT \
+          -u REQUIRE_SENSITIVE_DENYLIST "$@" >/dev/null 2>&1
+        got=$?
+        if [ "$got" = "$want" ]; then
+          echo "ok    $name"
+        else
+          echo "FAIL  $name — exit $got, wanted $want"
+          fails=$((fails + 1))
+        fi
+      }
+      # A name git C-quotes in a newline listing: a tab, and a non-ASCII byte.
+      printf '%s\n' "$leak" >"$(printf 'tab\there.md')"
+      printf '%s\n' "$leak" >"$(printf 'caf\303\251.md')"
+      git add -A >/dev/null
+      run "a quoted file name is staged-scanned" 1 bash "$script" --staged
+      git commit -qm t >/dev/null
+      run "a quoted file name is tracked-scanned" 1 bash "$script" --tracked
+      rm -f -- *.md && git commit -qam clean >/dev/null
+      run "control: the clean tree passes" 0 bash "$script" --tracked
+      run "a denylist that is not a file stops the scan" 2 \
+        SENSITIVE_DENYLIST=/nonexistent/denylist bash "$script" --tracked
+      printf 'acme\n' >"$repo/.git/deny" && chmod 000 "$repo/.git/deny"
+      if [ -r "$repo/.git/deny" ]; then
+        echo "skip  an unreadable denylist stops the scan (running as root)"
+      else
+        run "an unreadable denylist stops the scan" 2 \
+          SENSITIVE_DENYLIST="$repo/.git/deny" bash "$script" --tracked
+      fi
+      printf '# only comments\n\n' >"$repo/.git/empty"
+      run "control: a denylist of comments only is empty, not an error" 0 \
+        SENSITIVE_DENYLIST="$repo/.git/empty" bash "$script" --tracked
+      # An awk that fails, ahead of the real one on PATH.
+      mkdir "$repo/.git/shim" && printf '#!/bin/sh\nexit 3\n' >"$repo/.git/shim/awk"
+      chmod +x "$repo/.git/shim/awk"
+      run "a failing --redact exits non-zero" 2 \
+        PATH="$repo/.git/shim:$PATH" bash "$script" --redact <<<"$leak"
+      mkdir locked && printf '%s\n' "$leak" >locked/f.md && git add locked >/dev/null
+      git commit -qm locked >/dev/null && chmod a-w locked
+      run "a --fix that cannot write exits non-zero" 2 bash "$script" --fix
+      exit "$fails"
+    ) || fails=$((fails + 1))
     # --fix must never touch a file the checker calls clean. Every negative
     # fixture must survive redaction byte-identical; a redactor stricter than
     # the checker silently rewrites good files.
@@ -693,43 +774,64 @@ case "$MODE" in
     check_ignores
     # Added lines only. A commit that REMOVES a leaked value must not be
     # rejected for containing it on the '-' side.
-    while IFS= read -r file; do
+    # NUL-delimited: a newline-delimited listing C-quotes any name with a
+    # space-adjacent oddity, tab, quote or non-ASCII byte, and a quoted name
+    # is not the file — it would be skipped, or scanned as the wrong path.
+    while IFS= read -r -d '' file; do
       [ "$file" = "$SELF" ] && continue
       scan_text "$file" < <(filtered staged_lines "$file")
-    done < <(listing git diff --cached --name-only --diff-filter=ACMR)
+    done < <(listing git diff --cached --name-only -z --diff-filter=ACMR)
     ;;
   tracked)
     check_ignores
-    while IFS= read -r file; do
+    while IFS= read -r -d '' file; do
       [ "$file" = "$SELF" ] && continue
       # A tracked file deleted from the work tree has nothing to scan;
       # anything else that cannot be read fails the scan.
       [ -e "$file" ] || [ -L "$file" ] || continue
       scan_text "$file" < <(filtered -n cat -- "$file")
-    done < <(listing git ls-files)
+    done < <(listing git ls-files -z)
     ;;
   redact)
-    redact_stream
+    # Output already written cannot be recalled, so a failure part way is
+    # said loudly: what was printed is incomplete, not sanitised.
+    redact_stream || {
+      echo "check-sensitive-metadata: --redact failed; its output is incomplete" >&2
+      exit 2
+    }
     exit 0
     ;;
   fix)
     changed=0
-    while IFS= read -r file; do
+    failed=0
+    while IFS= read -r -d '' file; do
       [ "$file" = "$SELF" ] && continue
       # Not `| grep -q .`: it closes the pipe at the first line, and the
       # pre-filter's grep would die of SIGPIPE and read as a failure.
       [ -e "$file" ] || [ -L "$file" ] || continue
       [ -n "$(filtered cat -- "$file")" ] || continue
-      redact_stream <"$file" >"$file.redacted" || { rm -f "$file.redacted"; continue; }
+      if ! redact_stream <"$file" >"$file.redacted"; then
+        rm -f "$file.redacted"
+        echo "FAILED to redact $file; left as it was" >&2
+        failed=$((failed + 1))
+        continue
+      fi
       if cmp -s "$file" "$file.redacted"; then
         rm -f "$file.redacted"
-      else
-        mv "$file.redacted" "$file"
+      elif mv "$file.redacted" "$file"; then
         echo "redacted $file"
         changed=$((changed + 1))
+      else
+        rm -f "$file.redacted"
+        echo "FAILED to replace $file; left as it was" >&2
+        failed=$((failed + 1))
       fi
-    done < <(listing git ls-files)
+    done < <(listing git ls-files -z)
     echo "--fix rewrote $changed file(s). Re-run --tracked and read the diff."
+    if [ "$failed" -gt 0 ]; then
+      echo "--fix could not redact $failed file(s); they still hold what it found" >&2
+      exit 2
+    fi
     exit 0
     ;;
   history)

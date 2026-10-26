@@ -102,6 +102,18 @@ pub struct Tenant {
 }
 
 impl Tenant {
+    /// Whether `other` is the same tenant, not merely one with the same
+    /// name: the base URL (ignoring a trailing slash and case) and the
+    /// service account. A name is reused when a tenant is removed and
+    /// another onboarded under it, so a name match alone would hand one
+    /// tenant's credentials to its replacement.
+    pub fn same_identity(&self, other: &Tenant) -> bool {
+        self.base_url
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case(other.base_url.trim_end_matches('/'))
+            && self.sa_id == other.sa_id
+    }
+
     pub fn is_prod(&self) -> bool {
         self.theme == TenantTheme::Production
     }

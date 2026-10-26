@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::agent::AgentClient;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_table, tenant_for};
-use crate::config::{CredentialSource, ProjectConfig};
+use crate::config::CredentialSource;
 #[cfg(feature = "logs-store")]
 use crate::logs::db::store_path;
 use crate::logs::{api, ops};
@@ -525,7 +525,8 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
 async fn run_key(cmd: KeyCommand) -> Result<()> {
     match cmd {
         KeyCommand::Set { tenant, id } => {
-            let tenant = tenant_for(tenant)?;
+            let configured = crate::cli::tenant_config_for(tenant)?;
+            let tenant = configured.name.clone();
             let api_key_id = match id {
                 Some(id) => id,
                 None => {
@@ -555,8 +556,10 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
                 api_key_id: api_key_id.clone(),
                 api_key_secret,
             };
-            crate::logs::put_log_key(agent, &tenant, &pair).await?;
+            let hold = crate::config::hold_tenant(&configured)?;
+            crate::logs::put_log_key(agent, &hold, &pair).await?;
             persist_log_key_provenance(&tenant, CredentialSource::External)?;
+            drop(hold);
             println!("stored log API key {api_key_id} for tenant {tenant}");
             verify_stored_key(&tenant).await;
             Ok(())
@@ -566,7 +569,8 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             cookie_name,
             yes,
         } => {
-            let (tenant, base_url) = configured_tenant_base_url(tenant)?;
+            let configured = crate::cli::tenant_config_for(tenant)?;
+            let (tenant, base_url) = (configured.name.clone(), configured.base_url.clone());
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let cookie_name = match cookie_name {
                 Some(cookie_name) => cookie_name,
@@ -599,6 +603,10 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
                 ));
             }
 
+            // Held from before the mint: the secret is shown once, so a key
+            // minted for a tenant that is then removed or replaced could
+            // only be refused at store time and lost.
+            let hold = crate::config::hold_tenant(&configured)?;
             let client = no_redirect_client()?;
             let minted = after_prod_confirmation(
                 ok,
@@ -618,8 +626,9 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             let api_key_id = pair.api_key_id.clone();
 
             let agent = AgentClient::connect_or_spawn().await?;
-            crate::logs::put_log_key(agent, &tenant, &pair).await?;
+            crate::logs::put_log_key(agent, &hold, &pair).await?;
             persist_log_key_provenance(&tenant, CredentialSource::Created)?;
+            drop(hold);
             println!("created log key {name} ({api_key_id}) for tenant {tenant}");
             verify_stored_key(&tenant).await;
             Ok(())
@@ -634,9 +643,12 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             Ok(())
         }
         KeyCommand::Rm { tenant } => {
-            let tenant = tenant_for(tenant)?;
+            let configured = crate::cli::tenant_config_for(tenant)?;
+            let tenant = configured.name.clone();
+            let hold = crate::config::hold_tenant(&configured)?;
             let agent = AgentClient::connect_or_spawn().await?;
-            crate::logs::remove_log_key(agent, &tenant).await?;
+            crate::logs::remove_log_key(agent, &hold).await?;
+            drop(hold);
             println!("removed log API key for tenant {tenant}");
             Ok(())
         }
@@ -671,23 +683,6 @@ fn persist_log_key_provenance(tenant: &str, source: CredentialSource) -> Result<
         entry.provenance.log_key = Some(source);
         Ok(())
     })
-}
-
-fn configured_tenant_base_url(tenant_arg: Option<String>) -> Result<(String, String)> {
-    let tenant = tenant_for(tenant_arg)?;
-    let cfg =
-        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
-    let base_url = cfg
-        .tenants
-        .iter()
-        .find(|configured| configured.name == tenant)
-        .map(|configured| configured.base_url.clone())
-        .ok_or_else(|| {
-            Error::Config(format!(
-                "no tenant named '{tenant}' in config; onboard it first"
-            ))
-        })?;
-    Ok((tenant, base_url))
 }
 
 async fn verify_stored_key(tenant: &str) {

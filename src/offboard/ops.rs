@@ -183,6 +183,15 @@ pub trait ExecuteIo {
     /// before anything is removed. `None` when there is no file.
     fn current_config(&mut self) -> Result<Option<ProjectConfig>>;
     fn write_context(&mut self, name: Option<&str>) -> Result<()>;
+    /// The vault and path probes the plan was built from, taken again —
+    /// under the lifecycle lock, so the purge can be rechecked
+    /// ([`spec::still_safe`]) against what is there now.
+    fn probe(
+        &mut self,
+        names: &[String],
+        tenant: &str,
+        layout: &Layout,
+    ) -> impl std::future::Future<Output = Result<(VaultView, PathPresence)>> + Send;
     /// Take the tenant-lifecycle lock for the rest of the run
     /// (`ProjectPaths::try_lock_lifecycle`). An error means another `aic` is
     /// onboarding or offboarding; nothing is removed.
@@ -276,6 +285,15 @@ impl ExecuteIo for LiveIo {
         crate::config::project_paths().load_config()
     }
 
+    async fn probe(
+        &mut self,
+        names: &[String],
+        tenant: &str,
+        layout: &Layout,
+    ) -> Result<(VaultView, PathPresence)> {
+        Ok((probe_vault(names).await?, probe_paths(tenant, layout)))
+    }
+
     fn begin(&mut self) -> Result<()> {
         if self.lifecycle.is_none() {
             self.lifecycle = Some(crate::config::project_paths().try_lock_lifecycle()?);
@@ -313,6 +331,30 @@ pub fn inventory_from(tenant: &str, vault: &VaultView, paths: &PathPresence) -> 
         sync_state: paths.sync_state,
         undo_entries: paths.undo_entries,
     }
+}
+
+/// The vault and path probes that [`inventory_from`] turns into `inventory`
+/// — its inverse, for fakes that must answer a re-probe.
+#[cfg(test)]
+pub(crate) fn view_of(tenant: &str, inventory: &Inventory) -> (VaultView, PathPresence) {
+    let mut vault = VaultView::default();
+    if inventory.service_account_jwk {
+        vault.jwks.insert(tenant.to_string());
+    }
+    if let Some(id) = &inventory.log_api_key_id {
+        vault.log_keys.insert(tenant.to_string(), id.clone());
+    }
+    if let Some(kid) = &inventory.issuer_kid {
+        vault.issuer_kids.insert(tenant.to_string(), kid.clone());
+    }
+    let paths = PathPresence {
+        logs_database: inventory.logs_database,
+        idm_store: inventory.idm_store,
+        workspace: inventory.workspace,
+        sync_state: inventory.sync_state,
+        undo_entries: inventory.undo_entries,
+    };
+    (vault, paths)
 }
 
 pub fn survivors_from(departing: &str, tenants: &[Tenant], vault: &VaultView) -> Vec<Survivor> {
@@ -398,6 +440,30 @@ async fn optional_secret(
     }
 }
 
+/// Under the lifecycle lock: the identity check, then the purge against a
+/// plan rebuilt from what is there now.
+async fn recheck<I: ExecuteIo>(
+    tenant: &Tenant,
+    planned: &Inventory,
+    purge: &ResolvedPurge,
+    layout: &Layout,
+    io: &mut I,
+) -> Result<()> {
+    io.begin()?;
+    let current = io.current_config()?;
+    if let Some(current) = &current {
+        still_planned(current, tenant)?;
+    }
+    let tenants = current.map(|c| c.tenants).unwrap_or_default();
+    let mut names: Vec<String> = tenants.iter().map(|t| t.name.clone()).collect();
+    if !names.contains(&tenant.name) {
+        names.push(tenant.name.clone());
+    }
+    let (vault, paths) = io.probe(&names, &tenant.name, layout).await?;
+    let (now, _, now_plan) = plan_for(tenant, &tenants, &vault, &paths);
+    spec::still_safe(purge, planned, &now, &now_plan).map_err(Error::Config)
+}
+
 /// Whether the entry named like `planned` is still the tenant this removal
 /// was planned for. Everything offboarding removes is keyed by **name** —
 /// vault entries, paths, the config row — so a tenant re-onboarded under the
@@ -408,11 +474,7 @@ pub fn still_planned(config: &ProjectConfig, planned: &Tenant) -> Result<()> {
     let Some(current) = config.tenants.iter().find(|t| t.name == planned.name) else {
         return Ok(());
     };
-    let same_url = current
-        .base_url
-        .trim_end_matches('/')
-        .eq_ignore_ascii_case(planned.base_url.trim_end_matches('/'));
-    if same_url && current.sa_id == planned.sa_id {
+    if current.same_identity(planned) {
         return Ok(());
     }
     Err(Error::Config(format!(
@@ -502,11 +564,11 @@ pub async fn execute<I: ExecuteIo>(
     // credential write to its config row — so a replacement is either fully
     // visible here or cannot start until this run ends. `remove_config_entry`
     // repeats the check under the config lock for writers outside onboarding.
-    if let Err(error) = io
-        .begin()
-        .and_then(|()| io.current_config())
-        .and_then(|current| current.map_or(Ok(()), |c| still_planned(&c, tenant)))
-    {
+    //
+    // Then the plan itself is rebuilt from a fresh probe and the purge
+    // rechecked against it: identity alone says the row is the same tenant,
+    // not that what the operator confirmed removing is still safe to remove.
+    if let Err(error) = recheck(tenant, inventory, purge, layout, io).await {
         steps.push(outcome(
             Step::ConfigEntry,
             StepStatus::Failed(error.to_string()),
@@ -819,6 +881,9 @@ mod tests {
         backup: Option<Vec<u8>>,
         fail_remote: bool,
         busy: bool,
+        /// What a re-probe under the lock finds; unset is an error, so a
+        /// test cannot reach the purge without saying what is there.
+        view: Option<(VaultView, PathPresence)>,
     }
 
     impl RecordingIo {
@@ -841,7 +906,13 @@ mod tests {
                 backup: None,
                 fail_remote: false,
                 busy: false,
+                view: None,
             }
+        }
+
+        /// The re-probe finds exactly `inventory` for `tenant`.
+        fn sees(&mut self, tenant: &str, inventory: &Inventory) {
+            self.view = Some(view_of(tenant, inventory));
         }
     }
 
@@ -894,6 +965,18 @@ mod tests {
 
         fn current_config(&mut self) -> Result<Option<ProjectConfig>> {
             Ok(self.disk.clone())
+        }
+
+        async fn probe(
+            &mut self,
+            _names: &[String],
+            _tenant: &str,
+            _layout: &Layout,
+        ) -> Result<(VaultView, PathPresence)> {
+            self.events.push("probe".into());
+            self.view
+                .clone()
+                .ok_or_else(|| Error::Config("fake: no probe result configured".into()))
         }
 
         fn begin(&mut self) -> Result<()> {
@@ -950,6 +1033,7 @@ mod tests {
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone(), tenant("uat", Some(UAT_SA))], "uat");
         let mut io = RecordingIo::with_disk(cfg.clone());
+        io.sees(&departing.name, &inventory);
         let report = execute(
             &departing,
             &cfg,
@@ -982,6 +1066,7 @@ mod tests {
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone(), tenant("uat", Some(UAT_SA))], "uat");
         let mut io = RecordingIo::with_disk(cfg.clone());
+        io.sees(&departing.name, &inventory);
         io.fail_vault = Some(VaultArtifact::Jwks);
 
         let report = execute(
@@ -1025,6 +1110,7 @@ mod tests {
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone()], "UAT");
         let mut io = RecordingIo::with_disk(cfg.clone());
+        io.sees(&departing.name, &inventory);
         io.fail_remote = true;
 
         let report = execute(
@@ -1090,6 +1176,7 @@ mod tests {
         let stale = config(vec![departing.clone()], "UAT");
         let now = config(vec![departing.clone(), tenant("late", Some(UAT_SA))], "UAT");
         let mut io = RecordingIo::with_disk(now);
+        io.sees(&departing.name, &inventory);
 
         let report = execute(
             &departing,
@@ -1127,6 +1214,7 @@ mod tests {
         let stale = config(vec![departing.clone()], "UAT");
         let replaced = config(vec![tenant("UAT", Some(UAT_SA))], "UAT");
         let mut io = RecordingIo::with_disk(replaced.clone());
+        io.sees(&departing.name, &inventory);
 
         let report = execute(
             &departing,
@@ -1152,6 +1240,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// The discriminating case for rechecking the purge, not only the row:
+    /// planned when no survivor shared the log key, confirmed, and by the
+    /// time the lock is held a surviving tenant holds the same key. The
+    /// identity check passes — the departing row is unchanged — and only the
+    /// rebuilt plan sees that the key is now shared.
+    #[tokio::test]
+    async fn execute_refuses_a_purge_a_survivor_came_to_share() {
+        let departing = tenant("UAT", Some(DUP_SA));
+        let keep = tenant("uat", Some(UAT_SA));
+        let inventory = Inventory {
+            log_api_key_id: Some(SHARED_LOG_KEY.into()),
+            ..Inventory::default()
+        };
+        let plan = spec::plan(&departing, &inventory, &[]);
+        let purge = plan.resolve_purge([TargetKind::LogApiKey]);
+        assert!(purge.contains(&TargetKind::LogApiKey));
+        let (layout, root) = temp_layout();
+        let cfg = config(vec![departing.clone(), keep], "uat");
+        let mut io = RecordingIo::with_disk(cfg.clone());
+        let (mut vault, paths) = view_of(&departing.name, &inventory);
+        vault.log_keys.insert("uat".into(), SHARED_LOG_KEY.into());
+        io.view = Some((vault, paths));
+
+        let report = execute(
+            &departing,
+            &cfg,
+            Some("uat"),
+            &inventory,
+            &purge,
+            &layout,
+            &mut io,
+        )
+        .await;
+
+        assert!(!report.config_removed);
+        assert!(io.vault_removed.is_empty(), "{:?}", io.events);
+        assert!(
+            report.steps.iter().any(
+                |s| matches!(&s.status, StepStatus::Failed(m) if m.contains("no longer safe"))
+            )
+        );
+        // Control: the same run against the probe it was planned from
+        // removes the key.
+        let mut io = RecordingIo::with_disk(cfg.clone());
+        io.sees(&departing.name, &inventory);
+        let report = execute(
+            &departing,
+            &cfg,
+            Some("uat"),
+            &inventory,
+            &purge,
+            &layout,
+            &mut io,
+        )
+        .await;
+        assert!(report.config_removed);
+        assert_eq!(io.vault_removed.len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The departing tenant's own credential replaced since planning: the
+    /// operator confirmed one key id and the vault now holds another.
+    #[tokio::test]
+    async fn execute_refuses_when_the_inventory_changed() {
+        let departing = tenant("UAT", Some(DUP_SA));
+        let inventory = Inventory {
+            log_api_key_id: Some("old-key".into()),
+            ..Inventory::default()
+        };
+        let plan = spec::plan(&departing, &inventory, &[]);
+        let purge = plan.resolve_purge([TargetKind::LogApiKey]);
+        let (layout, root) = temp_layout();
+        let cfg = config(vec![departing.clone()], "UAT");
+        let mut io = RecordingIo::with_disk(cfg.clone());
+        io.sees(
+            &departing.name,
+            &Inventory {
+                log_api_key_id: Some("new-key".into()),
+                ..Inventory::default()
+            },
+        );
+        let report = execute(
+            &departing,
+            &cfg,
+            Some("UAT"),
+            &inventory,
+            &purge,
+            &layout,
+            &mut io,
+        )
+        .await;
+        assert!(!report.config_removed);
+        assert!(io.vault_removed.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// An onboarding in progress holds the lifecycle lock: offboarding
     /// removes nothing — no remote step, no vault entry, no row — rather
     /// than deleting a key whose row has not been written yet.
@@ -1169,6 +1353,7 @@ mod tests {
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone()], "UAT");
         let mut io = RecordingIo::with_disk(cfg.clone());
+        io.sees(&departing.name, &inventory);
         io.busy = true;
 
         let report = execute(
@@ -1226,6 +1411,7 @@ mod tests {
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone()], "UAT");
         let mut io = RecordingIo::with_disk(cfg.clone());
+        io.sees(&departing.name, &inventory);
 
         let report = execute(
             &departing,
@@ -1316,6 +1502,7 @@ mod tests {
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone()], "UAT");
         let mut io = RecordingIo::with_disk(cfg.clone());
+        io.sees(&departing.name, &inventory);
         let report = execute(&departing, &cfg, None, &inventory, &purge, &layout, &mut io).await;
 
         let sync = report

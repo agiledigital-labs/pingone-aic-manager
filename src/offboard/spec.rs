@@ -252,6 +252,54 @@ impl ResolvedPurge {
     }
 }
 
+/// Whether a purge the operator confirmed against `planned` is still safe
+/// against what is there now, re-probed under the lifecycle lock. The plan
+/// is a read taken before the prompt; between them a survivor can come to
+/// share a credential (a log key stored for it, a store whose sanitised name
+/// now collides), or the departing tenant's own credentials can be replaced
+/// — and a purge resolved against the old read would delete what the guard
+/// exists to protect.
+///
+/// Any change to the departing tenant's inventory refuses: the operator
+/// confirmed specific identifiers. Every target in the purge must still be
+/// offered by the plan built from the fresh read.
+pub fn still_safe(
+    purge: &ResolvedPurge,
+    planned: &Inventory,
+    now: &Inventory,
+    now_plan: &DeletePlan,
+) -> Result<(), String> {
+    if planned != now {
+        return Err(
+            "what is stored for this tenant changed since the removal was planned; nothing was \
+             removed — re-run to plan against the current state"
+                .into(),
+        );
+    }
+    let mut kinds: Vec<_> = purge.0.iter().copied().collect();
+    kinds.sort_by_key(|kind| kind.label());
+    for kind in kinds {
+        match now_plan.decision(kind) {
+            TargetDecision::Offered { .. } => {}
+            TargetDecision::Refused { reason } => {
+                return Err(format!(
+                    "{} is no longer safe to remove ({reason}); nothing was removed — re-run \
+                     to plan against the current state",
+                    kind.label()
+                ));
+            }
+            TargetDecision::Absent => {
+                return Err(format!(
+                    "{} is no longer there; nothing was removed — re-run to plan against the \
+                     current state",
+                    kind.label()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Discriminating identifier for a credential target, if the inventory has
 /// one. Path targets have none — the tenant name is the address. Prefer
 /// [`row_id`] when a surface needs to show the path as well.

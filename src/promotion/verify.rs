@@ -413,10 +413,23 @@ pub fn rows<'a>(list: &'a Value, field: &str) -> Result<Vec<(&'a str, &'a Value)
         .collect()
 }
 
-/// What a fetched document must be before it is compared: an object, and
-/// where the read named a resource, the resource it named. Two `null`s, or
-/// two error envelopes answered with 200, would otherwise compare `Same`.
+/// What a fetched document must be before it is compared: an object, not a
+/// CREST error envelope, and where the read named a resource, the resource
+/// it named, carrying the field the comparison is about. Two `null`s, two
+/// error envelopes answered with 200, or two scripts with no source would
+/// otherwise compare `Same`.
+///
+/// For the object-only targets (secret mappings, realm services,
+/// authentication settings) this is the whole check: their shapes are not
+/// measured beyond being objects, and no field is required that was not.
+/// The envelope test is a CREST error's own shape — an HTTP-error `code`
+/// with a string `reason` or `message` — not a guess at the resource's.
 pub fn check_document(target: &Target, doc: &Value) -> Result<(), String> {
+    if let Some(code) = crest_error(doc) {
+        return Err(format!(
+            "read returned a CREST error envelope (code {code}): {doc}"
+        ));
+    }
     fn identified(doc: &Value, key: &str, want: &str, what: &str) -> Result<(), String> {
         match doc.get(key).and_then(Value::as_str) {
             Some(got) if got == want => Ok(()),
@@ -437,10 +450,19 @@ pub fn check_document(target: &Target, doc: &Value) -> Result<(), String> {
             }
             Ok(())
         }
-        Target::Script { id, .. } => identified(doc, "_id", id, "script"),
-        Target::ScriptByName { name, .. } => identified(doc, "name", name, "script"),
+        Target::Script { id, .. } => {
+            identified(doc, "_id", id, "script")?;
+            has_source(doc)
+        }
+        Target::ScriptByName { name, .. } => {
+            identified(doc, "name", name, "script")?;
+            has_source(doc)
+        }
         Target::Themes { .. } => match doc {
-            Value::Array(_) => Ok(()),
+            Value::Array(list) => match list.iter().find(|theme| !theme.is_object()) {
+                None => Ok(()),
+                Some(other) => Err(format!("theme list entry is not an object: {other}")),
+            },
             other => Err(format!("theme list is not an array: {other}")),
         },
         Target::Cors { name } => match doc.get("_id").and_then(Value::as_str) {
@@ -455,6 +477,30 @@ pub fn check_document(target: &Target, doc: &Value) -> Result<(), String> {
         },
         Target::Unchecked(why) => Err(why.clone()),
     }
+}
+
+/// A script's source, the thing a script comparison is about: the
+/// base64 `script` string (`docs/api/04-scripts.md`). A script read without
+/// it compares its metadata alone.
+fn has_source(doc: &Value) -> Result<(), String> {
+    match doc.get("script") {
+        Some(Value::String(_)) => Ok(()),
+        Some(other) => Err(format!("script source is not a string: {other}")),
+        None => Err("script document has no `script` source".into()),
+    }
+}
+
+/// The HTTP status of a CREST error envelope — `{"code": 4xx/5xx, "reason":
+/// …, "message": …}` — answered in place of the document.
+fn crest_error(doc: &Value) -> Option<i64> {
+    let code = doc
+        .get("code")?
+        .as_i64()
+        .filter(|c| (400..600).contains(c))?;
+    let worded = ["reason", "message"]
+        .iter()
+        .any(|key| doc.get(key).is_some_and(Value::is_string));
+    worded.then_some(code)
 }
 
 /// A realm's theme list out of `ui/themerealm`. The document must carry a
@@ -900,9 +946,18 @@ mod tests {
             realm: "alpha".into(),
             id: "a".into(),
         };
-        assert!(check_document(&script, &json!({"_id": "a"})).is_ok());
+        assert!(check_document(&script, &json!({"_id": "a", "script": "eA=="})).is_ok());
         assert!(check_document(&script, &Value::Null).is_err());
-        assert!(check_document(&script, &json!({"_id": "b"})).is_err());
+        assert!(check_document(&script, &json!({"_id": "b", "script": "eA=="})).is_err());
+        // The right script without its source compares metadata alone.
+        assert!(check_document(&script, &json!({"_id": "a"})).is_err());
+        assert!(check_document(&script, &json!({"_id": "a", "script": null})).is_err());
+        let by_name = Target::ScriptByName {
+            realm: "alpha".into(),
+            name: "S".into(),
+        };
+        assert!(check_document(&by_name, &json!({"name": "S", "script": "eA=="})).is_ok());
+        assert!(check_document(&by_name, &json!({"name": "S"})).is_err());
         let journey = Target::Journey {
             realm: "alpha".into(),
             name: "J".into(),
@@ -917,6 +972,21 @@ mod tests {
         };
         assert!(check_document(&service, &json!({})).is_ok());
         assert!(check_document(&service, &Value::Null).is_err());
+        // An error answered with 200 is an object too; its CREST shape is
+        // what gives it away. Control: a `code` that is not an HTTP error,
+        // or one with no wording beside it, is resource data.
+        let envelope = json!({"code": 403, "reason": "Forbidden", "message": "denied"});
+        assert!(check_document(&service, &envelope).is_err());
+        assert!(check_document(&service, &json!({"code": 403, "message": "x"})).is_err());
+        assert!(check_document(&service, &json!({"code": 200, "reason": "OK"})).is_ok());
+        assert!(check_document(&service, &json!({"code": 403})).is_ok());
+        assert!(check_document(&service, &json!({"code": "403", "reason": "x"})).is_ok());
+        let themes = Target::Themes {
+            realm: "alpha".into(),
+        };
+        assert!(check_document(&themes, &json!([{"name": "T"}])).is_ok());
+        assert!(check_document(&themes, &json!([{"name": "T"}, null])).is_err());
+        assert!(check_document(&themes, &json!(["T"])).is_err());
         let cors = Target::Cors {
             name: "client-a".into(),
         };

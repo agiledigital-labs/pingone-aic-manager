@@ -50,9 +50,13 @@ impl fmt::Debug for KeyRecord {
 }
 
 /// Store the one local Trusted JWT key record for a tenant.
-pub async fn put_key(agent: AgentClient, tenant: &str, record: &KeyRecord) -> Result<()> {
+pub async fn put_key(
+    agent: AgentClient,
+    hold: &crate::config::TenantHold,
+    record: &KeyRecord,
+) -> Result<()> {
     agent
-        .put_secret(kind(), tenant, serde_json::to_value(record)?)
+        .put_secret(kind(), hold.tenant(), serde_json::to_value(record)?)
         .await
 }
 
