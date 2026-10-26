@@ -559,13 +559,22 @@ existing links and leave the pair unable to read or write links from one side
 unmeasured and refused to be safe. `aic` has no way to migrate links to a new
 key, and delete-and-recreate is not a measured repair.
 
-Writes that `config/repo.ds` would contradict are refused, because `aic`
-does not edit `repo.ds` (`docs/api/10-managed-objects.md`, "Relationship
-storage"): `relationship set` retargeting an end when either old end is mapped
-(measured to break the pair), `relationship set` writing an end over a leftover
-mapping that names another target, and `object rename` of an object a mapping
-names. `relationship delete` proceeds and notes on stderr which mappings it
-leaves behind. Each of these reads `repo.ds` once.
+Every `config/managed` write — every verb here, the Managed tab, hook pushes
+and TUI undo — is checked against `config/repo.ds` before it is sent, because
+`aic` does not edit `repo.ds` (`docs/api/10-managed-objects.md`, "Relationship
+storage"). A write is refused when the resulting document would disagree with a
+mapping where the current one does not: a pair with one end mapped and the
+other not, a mapping naming a target its end no longer declares, a
+`reverseReference` reading through a key that is not its partner's, both ends
+holding the reference, or a non-relationship property at a key mapped as a
+relationship. Disagreements already present do not block an unrelated write;
+`relationship verify` reports them. The check reads `repo.ds` only when the
+write adds a property or changes one's relationship shape. Two refusals come
+earlier, with their own wording: `relationship set` retargeting an end when
+either old end is mapped (measured to break a mapped end with no reverse;
+refusing it for a mapped reverse is a precaution), and `object rename` of an
+object a mapping names (inferred). `relationship delete` proceeds and notes on
+stderr which mappings it leaves behind.
 
 `relationship delete` removes the property and, when it declares one, the
 reverse property on the target, in one write. It refuses when the declared
@@ -576,16 +585,21 @@ property would remove it for every target. `relationship set` holds a reverse
 it drops or moves to the same rules.
 
 `relationship verify` is read-only. For `<object>` it checks every
-relationship on that object (each pair once); for `<object>.<key>`, one. It
-reads `config/managed` and `config/repo.ds` and reports a pair whose two ends
-disagree — one end mapped in `repo.ds` and the other not, a mapping that reads
-through a key or points at a target the schema does not declare — plus any
-`repo.ds` entry for a property the object no longer declares. Being mapped or
+relationship on that object (each pair once); for `<object>.<key>`, one. A
+relationship with several `managed/` targets is checked as one pair per target;
+a target outside `config/managed` (`internal/role`, say) is listed as
+unchecked, neither passed nor failed. It reads `config/managed` and
+`config/repo.ds` and reports a pair whose two ends disagree — one end mapped in
+`repo.ds` and the other not, a mapping that reads through a key or points at a
+target the schema does not declare — plus any `repo.ds` relationship mapping
+for a property the object no longer declares, or declares as something other
+than a relationship. Being mapped or
 generic is not itself a finding; both were measured to work. It then reads up
 to `--scan` records from each end (one request per end) and checks up to
 `--sample` of their links from the far end, which must list the near record
-under the same edge id. An end with no links in the records read is reported
-as untested, not healthy. `--sample 0` checks configuration only. It exits
+under the same collection, record id and edge id. An end with no links in the
+records read is reported as untested, not healthy; a response that does not
+decode is an error, never an empty sample. `--sample 0` checks configuration only. It exits
 non-zero on any finding or any link that does not resolve. What to do about a
 finding is not measured: `aic` does not write `repo.ds`, and neither the
 console's repair nor delete-and-recreate has been tested

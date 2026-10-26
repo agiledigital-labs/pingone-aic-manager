@@ -757,10 +757,13 @@ async fn sample_direction(
 ) -> Result<DirectionOutput> {
     let records = api::records_with(tenant, &near.object, &near.key, scan).await?;
     let far_collection = format!("managed/{}", far.object);
+    let mut found = Vec::new();
+    for record in &records {
+        found.extend(verify::links_of(record, &near.key).map_err(crate::Error::Config)?);
+    }
     let mut links = Vec::new();
-    for link in records
-        .iter()
-        .flat_map(|record| verify::links_of(record, &near.key))
+    for link in found
+        .into_iter()
         .filter(|link| link.to_collection == far_collection)
         .take(sample)
     {
@@ -773,8 +776,12 @@ async fn sample_direction(
             &link.from_id,
         )
         .await?;
-        let far_links = far_record.map(|record| verify::links_of(&record, &far.key));
-        let outcome = verify::judge(&link, far_links.as_deref());
+        let far_links = far_record
+            .map(|record| verify::links_of(&record, &far.key))
+            .transpose()
+            .map_err(crate::Error::Config)?;
+        let near_collection = format!("managed/{}", near.object);
+        let outcome = verify::judge(&link, &near_collection, far_links.as_deref());
         links.push(SampledLink { link, outcome });
     }
     Ok(DirectionOutput {
@@ -872,6 +879,12 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
         }
         for problem in &pair.pair.problems {
             println!("  problem: {}", problem.message());
+        }
+        if !pair.pair.unchecked.is_empty() {
+            println!(
+                "  unchecked: {} (not in config/managed; its schema is not read)",
+                pair.pair.unchecked.join(", ")
+            );
         }
         for direction in &pair.directions {
             let resolved = direction

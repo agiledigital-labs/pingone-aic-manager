@@ -539,14 +539,14 @@ fn delete_object_warning(state: &DeleteObjectState) -> Vec<String> {
         records,
     ];
     if state.inbound.is_empty() {
-        lines.push("No inbound relationships will be removed".to_string());
+        lines.push("No inbound relationships will be changed".to_string());
     } else {
-        lines.push("Inbound relationships to remove:".to_string());
+        lines.push("Inbound relationships:".to_string());
         lines.extend(
             state
                 .inbound
                 .iter()
-                .map(|(object, property)| format!("{object}.{property}")),
+                .map(|inbound| inbound.describe(&state.object_name)),
         );
     }
     lines.push("This can be undone from the undo log.".to_string());

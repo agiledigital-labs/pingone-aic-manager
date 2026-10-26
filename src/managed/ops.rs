@@ -229,21 +229,84 @@ fn relationship_targets_path(property: &Value, target_path: &str) -> bool {
     .any(|entry| entry.get("path").and_then(Value::as_str) == Some(target_path))
 }
 
-/// Reports relationship properties that would be removed when `name` is deleted.
-pub fn inbound_relationships(doc: &Value, name: &str) -> Vec<(String, String)> {
-    crate::managed::api::objects(doc)
-        .map(|objects| relationship_properties_targeting(objects, name))
-        .unwrap_or_default()
+/// A relationship property on another object that targets one being deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inbound {
+    pub object: String,
+    pub key: String,
+    /// The deleted object is its only target, so the property goes. Otherwise
+    /// only that target is dropped and the property keeps the rest — removing
+    /// the whole property took its links to every other target with it
+    /// (Astra round 4).
+    pub removed: bool,
 }
 
-/// Removes an object and every relationship property that targets it.
+impl Inbound {
+    pub fn describe(&self, deleted: &str) -> String {
+        if self.removed {
+            format!("{}.{} (removed)", self.object, self.key)
+        } else {
+            format!(
+                "{}.{} (drops managed/{deleted}; keeps its other targets)",
+                self.object, self.key
+            )
+        }
+    }
+}
+
+/// Reports what deleting `name` does to relationship properties targeting it.
+pub fn inbound_relationships(doc: &Value, name: &str) -> Vec<Inbound> {
+    let Ok(objects) = crate::managed::api::objects(doc) else {
+        return Vec::new();
+    };
+    let target_path = format!("managed/{name}");
+    relationship_properties_targeting(objects, name)
+        .into_iter()
+        .map(|(object, key)| {
+            let removed = objects
+                .iter()
+                .find(|o| o.get("name").and_then(Value::as_str) == Some(object.as_str()))
+                .and_then(|o| o.pointer("/schema/properties")?.get(&key))
+                .is_none_or(|property| {
+                    relationship_targets(property)
+                        .iter()
+                        .all(|path| *path == target_path)
+                });
+            Inbound {
+                object,
+                key,
+                removed,
+            }
+        })
+        .collect()
+}
+
+/// Removes an object, drops it from every relationship that targets it, and
+/// removes those relationships it was the only target of.
 ///
 /// The managed-config API does not reconcile `schema.order` or `schema.required`,
 /// so this transform prunes both lists whenever it removes a property.
-pub fn delete_object_in_doc(
-    doc: &Value,
-    name: &str,
-) -> Result<(Value, Vec<(String, String)>), String> {
+pub fn delete_object_in_doc(doc: &Value, name: &str) -> Result<(Value, Vec<Inbound>), String> {
+    let inbound = inbound_relationships(doc, name);
+    // A property the delete removes outright goes through the same capability
+    // check `relationship delete` applies; a standard field is not this verb's
+    // to drop either (Sol round 6).
+    for effect in inbound.iter().filter(|effect| effect.removed) {
+        let Ok(object_def) = crate::managed::api::object_named(doc, &effect.object) else {
+            continue;
+        };
+        if let Some(property) = object_def
+            .pointer("/schema/properties")
+            .and_then(|properties| properties.get(&effect.key))
+        {
+            ensure_deletable(object_def, &effect.object, &effect.key, property).map_err(
+                |error| {
+                    format!("refusing to delete '{name}': {error}, and it targets only '{name}'")
+                },
+            )?;
+        }
+    }
+    let target_path = format!("managed/{name}");
     let mut deleted = doc.clone();
     let objects =
         crate::managed::api::objects_mut(&mut deleted).map_err(|error| error.to_string())?;
@@ -254,23 +317,43 @@ pub fn delete_object_in_doc(
         return Err(format!("No managed object named '{name}'"));
     };
     objects.remove(index);
-    let inbound = relationship_properties_targeting(objects, name);
-    for (object_name, property_key) in &inbound {
+    for effect in &inbound {
         let Some(object) = objects
             .iter_mut()
-            .find(|object| object.get("name").and_then(Value::as_str) == Some(object_name))
+            .find(|object| object.get("name").and_then(Value::as_str) == Some(&effect.object))
         else {
             continue;
         };
+        if !effect.removed {
+            if let Some(property) = object
+                .pointer_mut("/schema/properties")
+                .and_then(|properties| properties.get_mut(&effect.key))
+            {
+                let node = if property.get("items").is_some() {
+                    &mut property["items"]
+                } else {
+                    property
+                };
+                if let Some(entries) = node
+                    .get_mut("resourceCollection")
+                    .and_then(Value::as_array_mut)
+                {
+                    entries.retain(|entry| {
+                        entry.get("path").and_then(Value::as_str) != Some(&target_path)
+                    });
+                }
+            }
+            continue;
+        }
         if let Some(properties) = object
             .pointer_mut("/schema/properties")
             .and_then(Value::as_object_mut)
         {
-            properties.remove(property_key);
+            properties.remove(&effect.key);
         }
         for list_path in ["/schema/order", "/schema/required"] {
             if let Some(entries) = object.pointer_mut(list_path).and_then(Value::as_array_mut) {
-                entries.retain(|entry| entry.as_str() != Some(property_key));
+                entries.retain(|entry| entry.as_str() != Some(effect.key.as_str()));
             }
         }
     }
@@ -1506,39 +1589,30 @@ pub fn execute_relationship_write(
     });
 }
 
-/// The `repo.ds` half of a relationship write: a retarget of a mapped end is
-/// refused, and so is writing an end over a mapping that names another
-/// target. One extra read per write.
+/// The `repo.ds` half of a relationship write that only this verb can word:
+/// a retarget of a mapped end, refused with the measured result. Everything
+/// else a mapping would contradict — a new end over a leftover mapping, a
+/// partner key a `reverseReference` does not read through — is refused at the
+/// write boundary (`verify::transition_refusal`), which sees the whole
+/// resulting document, including the targets a multi-target edit preserves.
 pub async fn refuse_mapped_retarget(
     tenant: &str,
     spec: &RelationshipSpec,
     previous: Option<&PreviousRelationship>,
 ) -> crate::Result<()> {
+    let Some(previous) = previous else {
+        return Ok(());
+    };
     let repo_ds = crate::managed::api::get_repo_ds(tenant).await?;
-    if let Some(previous) = previous {
-        crate::managed::verify::repoint_refusal(
-            &repo_ds,
-            &spec.source_object,
-            &previous.old_key,
-            &previous.old_target,
-            previous.old_reverse_key.as_deref(),
-            &spec.target_object,
-        )
-        .map_err(crate::Error::Config)?;
-    }
-    let mut ends = vec![(
-        spec.source_object.as_str(),
-        spec.key.as_str(),
-        spec.target_object.as_str(),
-    )];
-    if spec.reverse.writes_target_property() {
-        ends.push((
-            spec.target_object.as_str(),
-            spec.reverse_key.as_str(),
-            spec.source_object.as_str(),
-        ));
-    }
-    crate::managed::verify::leftover_refusal(&repo_ds, &ends).map_err(crate::Error::Config)
+    crate::managed::verify::repoint_refusal(
+        &repo_ds,
+        &spec.source_object,
+        &previous.old_key,
+        &previous.old_target,
+        previous.old_reverse_key.as_deref(),
+        &spec.target_object,
+    )
+    .map_err(crate::Error::Config)
 }
 
 /// The `repo.ds` half of an object rename.
@@ -1804,7 +1878,7 @@ pub fn apply_delete_object_result(
             let suffix = if inbound_count == 0 {
                 String::new()
             } else {
-                format!(" Also removed {inbound_count} inbound relationship(s).")
+                format!(" Also changed {inbound_count} inbound relationship(s).")
             };
             app.push_toast(
                 ToastKind::Success,
@@ -4421,10 +4495,12 @@ mod tests {
             }}
         ]});
         let (deleted, inbound) = delete_object_in_doc(&doc, "A").unwrap();
-        assert_eq!(
-            inbound,
-            vec![("B".into(), "a".into()), ("C".into(), "as".into())]
-        );
+        let removed = |object: &str, key: &str| Inbound {
+            object: object.into(),
+            key: key.into(),
+            removed: true,
+        };
+        assert_eq!(inbound, vec![removed("B", "a"), removed("C", "as")]);
         assert_eq!(deleted["objects"].as_array().unwrap().len(), 2);
         assert!(
             deleted["objects"][0]["schema"]["properties"]
@@ -4440,6 +4516,57 @@ mod tests {
         );
         assert_eq!(deleted["objects"][1]["schema"]["order"], json!([]));
         assert_eq!(deleted["objects"][1]["schema"]["required"], json!([]));
+    }
+
+    /// Astra round 4: a property targeting the deleted object *and* another
+    /// keeps the other target, its reverse key and its required entry.
+    #[test]
+    fn delete_object_only_narrows_a_relationship_with_other_targets() {
+        let doc = json!({"objects": [
+            {"name": "A", "schema": {"properties": {}}},
+            {"name": "B", "schema": {
+                "properties": {
+                    "to": {"type": "array", "items": {"type": "relationship",
+                        "reverseRelationship": true, "reversePropertyName": "from",
+                        "resourceCollection": [{"path": "managed/A"}, {"path": "managed/C"}]}}
+                },
+                "required": ["to"]
+            }},
+            {"name": "C", "schema": {"properties": {}}}
+        ]});
+        let (deleted, inbound) = delete_object_in_doc(&doc, "A").unwrap();
+        assert_eq!(
+            inbound,
+            vec![Inbound {
+                object: "B".into(),
+                key: "to".into(),
+                removed: false
+            }]
+        );
+        let to = &deleted["objects"][0]["schema"]["properties"]["to"];
+        assert_eq!(
+            to["items"]["resourceCollection"],
+            json!([{"path": "managed/C"}])
+        );
+        assert_eq!(to["items"]["reversePropertyName"], json!("from"));
+        assert_eq!(deleted["objects"][0]["schema"]["required"], json!(["to"]));
+    }
+
+    /// Sol round 6: a standard field the delete would remove outright is
+    /// refused, as `relationship delete` refuses it; a custom one is removed.
+    #[test]
+    fn delete_object_refuses_to_remove_a_standard_field() {
+        let doc = |key: &str| {
+            json!({"objects": [
+                {"name": "A", "schema": {"properties": {}}},
+                {"name": "S", "meta": {}, "schema": {"properties": {
+                    key: {"type": "relationship", "resourceCollection": [{"path": "managed/A"}]}
+                }}}
+            ]})
+        };
+        let error = delete_object_in_doc(&doc("owner"), "A").unwrap_err();
+        assert!(error.contains("'S.owner' is a standard field"), "{error}");
+        assert!(delete_object_in_doc(&doc("custom_owner"), "A").is_ok());
     }
 
     #[test]

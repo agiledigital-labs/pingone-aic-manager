@@ -1244,9 +1244,9 @@ pub struct DeleteObjectState {
     pub tenant_name: String,
     pub object_name: String,
     pub original_doc: Value,
-    /// (object, property key) pairs whose relationship targets this object and
-    /// will be stripped by the delete.
-    pub inbound: Vec<(String, String)>,
+    /// Relationship properties targeting this object, and whether the delete
+    /// removes each or only drops this target from it.
+    pub inbound: Vec<crate::managed::ops::Inbound>,
     /// Background record count: None = still counting.
     pub record_count: Option<Result<crate::managed::api::RecordCount, String>>,
 }
