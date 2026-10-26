@@ -586,7 +586,15 @@ left with one end mapped, and a scalar reusing a mapped key. Only the first is
 the measured state; the others are the disagreements `verify` reports, refused
 because nothing has shown them to be harmless. An object rename that a mapping
 names — its own `managed/<obj>` entry, or another mapping's `resourcePath` — is
-refused on the same reasoning; that one is inferred, not measured. The config document was
+refused on the same reasoning; that one is inferred, not measured. The boundary
+refuses it too, as any write that removes one object while adding another,
+because an undo replays a rename as a whole document. A disagreement counts as
+already present, and so does not block a write, only when every read of the
+document before it — the one the change was built from, and the boundary's own
+— holds the same disagreement between the same ends. Under Q14 either read can
+be stale, so the guarantee is relative to what was read, not an atomic tenant
+state. Mapping `isMultiValued` is not compared against the schema's array
+shape; whether a mismatch there matters is unmeasured. The config document was
 restored from a backup afterwards and re-read for five minutes.
 
 A mapping can also outlive its property: the sandbox's `managed/test_from`
@@ -697,10 +705,13 @@ Practical consequence for tooling: a delete must sweep inbound relationships
 itself (remove the property, and prune its key from `schema.order` and
 `schema.required` — neither is auto-reconciled), because nothing server-side
 will refuse or clean up the dangling path. `aic`'s `D` (delete object) and
-`aic managed object delete` do this and list the properties before confirming.
-A property that also targets other objects is not removed — only the deleted
-object's `resourceCollection` entry goes, so its links to the other targets
-survive — and a standard field the delete would remove outright is refused.
+`aic managed object delete` do this; `D` lists the properties before
+confirming, and the CLI verb, which has no confirmation step, prints them after
+the write. A property that also targets other objects is not removed — only the
+deleted object's `resourceCollection` entry goes — and a standard field the
+delete would remove outright is refused. That records' links to the other
+targets survive the narrowing is inferred from the schema edit; it has not been
+measured.
 
 ## Hook scripts (verified 2026-06-13)
 

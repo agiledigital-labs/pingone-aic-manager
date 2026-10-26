@@ -51,7 +51,7 @@ pub enum Problem {
     Mixed { mapped: String, unmapped: String },
     /// Both ends mapped with the same kind; one must hold the reference and
     /// the other read it back.
-    MappingKinds { kind: String },
+    MappingKinds { ends: String, kind: String },
     /// A mapping's `resourcePath` is not among the end's declared targets.
     MappingTarget {
         end: String,
@@ -84,8 +84,8 @@ impl Problem {
                 "{mapped} is mapped in repo.ds but {unmapped} is not; reads and writes on the \
                  two ends can go to different stores"
             ),
-            Self::MappingKinds { kind } => {
-                format!("both ends are mapped as `{kind}`; one should hold the reference")
+            Self::MappingKinds { ends, kind } => {
+                format!("{ends} are both mapped as `{kind}`; one should hold the reference")
             }
             Self::MappingTarget {
                 end,
@@ -272,7 +272,10 @@ pub fn pairs(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<P
                             unmapped: label(&forward),
                         }),
                         (Some(a), Some(b)) if a.kind == b.kind => {
+                            let mut ends = [label(&forward), label(reverse)];
+                            ends.sort();
                             problems.push(Problem::MappingKinds {
+                                ends: ends.join(" and "),
                                 kind: a.kind.clone(),
                             })
                         }
@@ -334,6 +337,13 @@ fn reverse_end(
     }
 }
 
+/// IDM's own relationships, mapped on every user object and never declared
+/// in `config/managed` (sandbox, 2026-10-26): absent from the schema is their
+/// normal state, not a leftover. Only these two, and only when absent — the
+/// observation covers nothing else underscore-prefixed, and a schema that
+/// declares one as a scalar is still a contradiction (Sol/Astra round 7).
+const SYSTEM_RELATIONSHIPS: [&str; 2] = ["_meta", "_notifications"];
+
 /// Every relationship on `object` (or just `key`), each pair once, plus
 /// `repo.ds` entries on `object` that name no declared property.
 pub fn report(
@@ -347,17 +357,13 @@ pub fn report(
     let mut stale = Vec::new();
     if let Some(mapped) = mappings_of(repo_ds, object) {
         for mapped_key in mapped.keys() {
-            // `_meta` and `_notifications` are IDM's own relationships, mapped
-            // on every user object and never declared in `config/managed`
-            // (sandbox, 2026-10-26): absent from the schema is their normal
-            // state, not a leftover.
             if key.is_some_and(|key| key != mapped_key)
-                || mapped_key.starts_with('_')
                 || mapping_for(repo_ds, object, mapped_key).is_none()
             {
                 continue;
             }
             match props.get(mapped_key) {
+                None if SYSTEM_RELATIONSHIPS.contains(&mapped_key.as_str()) => {}
                 None => stale.push(Problem::StaleMapping {
                     object: object.to_string(),
                     key: mapped_key.clone(),
@@ -405,8 +411,17 @@ pub fn report(
     for key in keys {
         for pair in self::pairs(managed, repo_ds, object, key) {
             let mut identity = vec![label(&pair.forward)];
-            if let Some(reverse) = &pair.reverse {
-                identity.push(label(reverse));
+            match &pair.reverse {
+                Some(reverse) => identity.push(label(reverse)),
+                // An unresolved reverse still names its target: two targets
+                // both missing the reverse are two findings (round 7).
+                None => identity.extend(pair.problems.iter().filter_map(|problem| match problem {
+                    Problem::ReverseMissing { object, key }
+                    | Problem::ReverseNotReciprocal { object, key } => {
+                        Some(format!("unresolved {object}.{key}"))
+                    }
+                    _ => None,
+                })),
             }
             identity.sort();
             if seen.insert(identity) {
@@ -581,12 +596,41 @@ fn changed(before: &Value, after: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Whether writing `after` over `before` needs `config/repo.ds` consulted:
-/// some property was added, or changed its relationship shape. A write that
-/// only removes, or edits nothing a mapping depends on (a hook body, a title),
-/// does not — so those writes never depend on repo.ds being readable.
-pub fn needs_repo_ds(before: &Value, after: &Value) -> bool {
-    !changed(before, after).is_empty()
+fn object_names(doc: &Value) -> BTreeSet<String> {
+    crate::managed::api::objects(doc)
+        .into_iter()
+        .flatten()
+        .filter_map(|object| object.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The objects a write renames away: present before and gone after, in a
+/// write that also adds an object. That is the shape of `object rename` and
+/// of its undo; a delete only removes, and its undo only adds. Checked at the
+/// boundary because an undo replays a whole document and never passes through
+/// the verb's own `rename_refusal` (Sol/Astra round 7).
+fn renamed_away(before: &Value, after: &Value) -> Vec<String> {
+    let (before, after) = (object_names(before), object_names(after));
+    if after.is_subset(&before) {
+        return Vec::new();
+    }
+    before.difference(&after).cloned().collect()
+}
+
+/// Whether writing `after` needs `config/repo.ds` consulted: against some
+/// baseline, a property was added or changed its relationship shape, or an
+/// object was renamed away. A write that only removes, or edits nothing a
+/// mapping depends on (a hook body, a title), does not — so those writes
+/// never depend on repo.ds being readable.
+///
+/// `baselines` are every observation of the document before this write: the
+/// one the caller built `after` from, and the boundary's own read. Under Q14
+/// either can be stale, so a difference from **any** of them counts.
+pub fn needs_repo_ds(baselines: &[&Value], after: &Value) -> bool {
+    baselines
+        .iter()
+        .any(|before| !changed(before, after).is_empty() || !renamed_away(before, after).is_empty())
 }
 
 fn mapping_problem(problem: &Problem) -> bool {
@@ -597,6 +641,21 @@ fn mapping_problem(problem: &Problem) -> bool {
             | Problem::MappingTarget { .. }
             | Problem::MappingPartner { .. }
     )
+}
+
+/// What makes two findings the same contradiction, for deciding whether a
+/// write introduced one. Every variant names its ends; a mapping target
+/// mismatch is identified by the end and the mapped path alone, so reordering
+/// or extending an already-mismatched target set is not a new problem.
+fn identity(problem: &Problem) -> Problem {
+    match problem {
+        Problem::MappingTarget { end, mapped, .. } => Problem::MappingTarget {
+            end: end.clone(),
+            mapped: mapped.clone(),
+            declared: Vec::new(),
+        },
+        other => other.clone(),
+    }
 }
 
 fn mapping_problems_in(doc: &Value, repo_ds: &Value) -> Vec<Problem> {
@@ -610,7 +669,7 @@ fn mapping_problems_in(doc: &Value, repo_ds: &Value) -> Vec<Problem> {
             .flat_map(|pair| pair.problems)
             .filter(mapping_problem)
         {
-            if !out.contains(&problem) {
+            if !out.iter().any(|seen| identity(seen) == identity(&problem)) {
                 out.push(problem);
             }
         }
@@ -625,15 +684,39 @@ fn mapping_problems_in(doc: &Value, repo_ds: &Value) -> Vec<Problem> {
 /// round 4). Contradictions already present are not this write's doing and
 /// do not block it; `relationship verify` reports them.
 ///
-/// Two classes: a relationship whose pair would disagree with its mappings
+/// Three classes: a relationship whose pair would disagree with its mappings
 /// (one end mapped and the other not — the measured broken state —, a mapping
 /// naming a target the end no longer declares, a `reverseReference` reading
-/// through a key that is not its partner's, both ends holding the reference),
-/// and a non-relationship property written at a key `repo.ds` maps as one.
-pub fn transition_refusal(before: &Value, after: &Value, repo_ds: &Value) -> Result<(), String> {
+/// through a key that is not its partner's, both ends holding the reference);
+/// a non-relationship property written at a key `repo.ds` maps as one; and an
+/// object renamed away while `repo.ds` maps relationships by its name.
+///
+/// "Already present" means present in **every** baseline (see
+/// [`needs_repo_ds`]): a contradiction one observation lacks may be this
+/// write's own, and a stale read must not be what excuses it. The guarantee
+/// is still relative to what was observed, not an atomic tenant state (Q14).
+pub fn transition_refusal(
+    baselines: &[&Value],
+    after: &Value,
+    repo_ds: &Value,
+) -> Result<(), String> {
     let mut reasons: Vec<String> = Vec::new();
     let after_shapes = shapes(after);
-    for (object, key) in changed(before, after) {
+    let mut changed_keys: Vec<(String, String)> = Vec::new();
+    let mut gone: Vec<String> = Vec::new();
+    for before in baselines {
+        for id in changed(before, after) {
+            if !changed_keys.contains(&id) {
+                changed_keys.push(id);
+            }
+        }
+        for object in renamed_away(before, after) {
+            if !gone.contains(&object) {
+                gone.push(object);
+            }
+        }
+    }
+    for (object, key) in changed_keys {
         let relationship = after_shapes
             .iter()
             .any(|((o, k), shape)| *o == object && *k == key && shape.relationship);
@@ -648,11 +731,29 @@ pub fn transition_refusal(before: &Value, after: &Value, repo_ds: &Value) -> Res
             ));
         }
     }
-    let existing = mapping_problems_in(before, repo_ds);
+    for object in gone {
+        if let Err(reason) = rename_refusal(repo_ds, &object) {
+            reasons.push(reason);
+        }
+    }
+    let existing: Vec<Vec<Problem>> = baselines
+        .iter()
+        .map(|before| {
+            mapping_problems_in(before, repo_ds)
+                .iter()
+                .map(identity)
+                .collect()
+        })
+        .collect();
     reasons.extend(
         mapping_problems_in(after, repo_ds)
             .iter()
-            .filter(|problem| !existing.contains(problem))
+            .filter(|problem| {
+                existing.is_empty()
+                    || !existing
+                        .iter()
+                        .all(|problems| problems.contains(&identity(problem)))
+            })
             .map(Problem::message),
     );
     if reasons.is_empty() {
@@ -871,6 +972,7 @@ mod tests {
         assert_eq!(
             problems(&repo(Some(reference()), Some(both))),
             vec![Problem::MappingKinds {
+                ends: "a.owner and b.owned".into(),
                 kind: "reference".into()
             }]
         );
@@ -1037,15 +1139,19 @@ mod tests {
         ]});
         let mut stale = reverse_reference();
         stale["propertyName"] = json!("old");
-        let error = transition_refusal(&before, &managed(), &repo(Some(reference()), Some(stale)))
-            .unwrap_err();
+        let error = transition_refusal(
+            &[&before],
+            &managed(),
+            &repo(Some(reference()), Some(stale)),
+        )
+        .unwrap_err();
         assert!(
             error.contains("reads through old, expected owner"),
             "{error}"
         );
         assert_eq!(
             transition_refusal(
-                &before,
+                &[&before],
                 &managed(),
                 &repo(Some(reference()), Some(reverse_reference()))
             ),
@@ -1062,9 +1168,12 @@ mod tests {
             {"name": "b", "schema": {"properties": {}}}
         ]});
         let error =
-            transition_refusal(&before, &managed(), &repo(Some(reference()), None)).unwrap_err();
+            transition_refusal(&[&before], &managed(), &repo(Some(reference()), None)).unwrap_err();
         assert!(error.contains("a.owner is mapped"), "{error}");
-        assert_eq!(transition_refusal(&before, &managed(), &json!({})), Ok(()));
+        assert_eq!(
+            transition_refusal(&[&before], &managed(), &json!({})),
+            Ok(())
+        );
     }
 
     /// Astra round 4, finding 2: an undo (or any whole-document write) that
@@ -1076,18 +1185,21 @@ mod tests {
         let mut retargeted = managed();
         retargeted["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"] =
             json!([{"path": "managed/c"}]);
-        let error = transition_refusal(&managed(), &retargeted, &mapped).unwrap_err();
+        let error = transition_refusal(&[&managed()], &retargeted, &mapped).unwrap_err();
         assert!(error.contains("points at managed/b"), "{error}");
 
         let mut scalar = managed();
         scalar["objects"][0]["schema"]["properties"]["owner"] = json!({"type": "string"});
-        let error = transition_refusal(&managed(), &scalar, &mapped).unwrap_err();
+        let error = transition_refusal(&[&managed()], &scalar, &mapped).unwrap_err();
         assert!(
             error.contains("a.owner would not be a relationship"),
             "{error}"
         );
         // Unmapped, the same scalar is fine.
-        assert_eq!(transition_refusal(&managed(), &scalar, &json!({})), Ok(()));
+        assert_eq!(
+            transition_refusal(&[&managed()], &scalar, &json!({})),
+            Ok(())
+        );
     }
 
     /// Sol round 6: renaming `c` to `a` moves `c.owner -> managed/d` onto
@@ -1104,9 +1216,9 @@ mod tests {
         let mut after = before.clone();
         after["objects"][0]["name"] = json!("a");
         let error =
-            transition_refusal(&before, &after, &repo(Some(reference()), None)).unwrap_err();
+            transition_refusal(&[&before], &after, &repo(Some(reference()), None)).unwrap_err();
         assert!(error.contains("points at managed/b"), "{error}");
-        assert_eq!(transition_refusal(&before, &after, &json!({})), Ok(()));
+        assert_eq!(transition_refusal(&[&before], &after, &json!({})), Ok(()));
     }
 
     /// What already disagrees is not this write's doing: an unrelated edit to
@@ -1118,12 +1230,191 @@ mod tests {
         let mut titled = managed();
         titled["objects"][0]["schema"]["properties"]["owner"]["title"] = json!("Owner");
         titled["objects"][0]["onCreate"] = json!({"type": "text/javascript", "source": "x"});
-        assert!(!needs_repo_ds(&managed(), &titled));
-        assert_eq!(transition_refusal(&managed(), &titled, &mixed), Ok(()));
+        assert!(!needs_repo_ds(&[&managed()], &titled));
+        assert_eq!(transition_refusal(&[&managed()], &titled, &mixed), Ok(()));
         let mut added = managed();
         added["objects"][0]["schema"]["properties"]["note"] = json!({"type": "string"});
-        assert!(needs_repo_ds(&managed(), &added));
-        assert_eq!(transition_refusal(&managed(), &added, &mixed), Ok(()));
+        assert!(needs_repo_ds(&[&managed()], &added));
+        assert_eq!(transition_refusal(&[&managed()], &added, &mixed), Ok(()));
+    }
+
+    /// A pair `x.owner <-> y.owned`, both mapped as `reference` — the same
+    /// diagnostic kind a new bad pair over `a`/`b` would produce.
+    fn with_broken_xy(doc: &Value, repo_ds: &Value) -> (Value, Value) {
+        let mut doc = doc.clone();
+        let objects = doc["objects"].as_array_mut().unwrap();
+        objects.push(json!({"name": "x", "schema": {"properties": {
+            "owner": {"type": "relationship", "reverseRelationship": true,
+                "reversePropertyName": "owned", "resourceCollection": [{"path": "managed/y"}]}}}}));
+        objects.push(json!({"name": "y", "schema": {"properties": {
+            "owned": {"type": "relationship", "reverseRelationship": true,
+                "reversePropertyName": "owner", "resourceCollection": [{"path": "managed/x"}]}}}}));
+        let mut repo_ds = repo_ds.clone();
+        let generic = repo_ds["resourceMapping"]["genericMapping"]
+            .as_object_mut()
+            .unwrap();
+        generic.insert(
+            "managed/x".into(),
+            json!({"properties": {"owner":
+            {"type": "reference", "resourcePath": "managed/y"}}}),
+        );
+        generic.insert(
+            "managed/y".into(),
+            json!({"properties": {"owned":
+            {"type": "reference", "resourcePath": "managed/x"}}}),
+        );
+        (doc, repo_ds)
+    }
+
+    /// Sol/Astra round 7, finding 1: an existing broken pair must not excuse
+    /// a new one of the same kind. The control: the existing pair alone, with
+    /// `a`/`b` already present, is not this write's doing.
+    #[test]
+    fn an_existing_broken_pair_does_not_excuse_a_new_one() {
+        let mut both = reference();
+        both["resourcePath"] = json!("managed/a");
+        let repo_ds = repo(Some(reference()), Some(both));
+        let empty = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {}}},
+            {"name": "b", "schema": {"properties": {}}}
+        ]});
+        let (before, repo_ds) = with_broken_xy(&empty, &repo_ds);
+        let (after, _) = with_broken_xy(
+            &managed(),
+            &json!({"resourceMapping": {"genericMapping": {}}}),
+        );
+        let error = transition_refusal(&[&before], &after, &repo_ds).unwrap_err();
+        assert!(error.contains("a.owner and b.owned"), "{error}");
+        assert!(!error.contains("x.owner"), "{error}");
+        let mut titled = after.clone();
+        titled["objects"][0]["schema"]["properties"]["plain"]["title"] = json!("Plain");
+        titled["objects"][0]["schema"]["properties"]["note"] = json!({"type": "string"});
+        assert_eq!(transition_refusal(&[&after], &titled, &repo_ds), Ok(()));
+    }
+
+    /// Reordering an already-mismatched target set is not a new problem.
+    #[test]
+    fn reordering_a_mismatched_target_set_is_not_new() {
+        let mut before = managed();
+        before["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"] =
+            json!([{"path": "managed/b"}, {"path": "managed/c"}]);
+        let mut after = before.clone();
+        after["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"] =
+            json!([{"path": "managed/c"}, {"path": "managed/b"}]);
+        let mut elsewhere = reference();
+        elsewhere["resourcePath"] = json!("managed/d");
+        let repo_ds = repo(Some(elsewhere), Some(reverse_reference()));
+        assert!(needs_repo_ds(&[&before], &after));
+        assert_eq!(transition_refusal(&[&before], &after, &repo_ds), Ok(()));
+    }
+
+    /// Sol/Astra round 7, finding 2: an undo replays a rename backwards as a
+    /// whole document, never through `rename_refusal`. The boundary sees an
+    /// object renamed away and refuses while repo.ds maps it. Controls: the
+    /// same rename unmapped, and a plain delete of the mapped object, write.
+    #[test]
+    fn renaming_a_mapped_object_away_is_refused_at_the_boundary() {
+        let before = json!({"_id": "managed", "objects": [
+            {"name": "b", "schema": {"properties": {
+                "owner": {"type": "relationship", "resourceCollection": [{"path": "managed/c"}]}
+            }}},
+            {"name": "c", "schema": {"properties": {}}}
+        ]});
+        let mut renamed = before.clone();
+        renamed["objects"][0]["name"] = json!("a");
+        let mapped = json!({"resourceMapping": {"genericMapping": {"managed/b": {"properties": {
+            "owner": {"type": "reference", "resourcePath": "managed/c"}}}}}});
+        assert!(needs_repo_ds(&[&before], &renamed));
+        let error = transition_refusal(&[&before], &renamed, &mapped).unwrap_err();
+        assert!(error.contains("refusing to rename b"), "{error}");
+        assert_eq!(transition_refusal(&[&before], &renamed, &json!({})), Ok(()));
+        let mut deleted = before.clone();
+        deleted["objects"].as_array_mut().unwrap().remove(0);
+        assert!(!needs_repo_ds(&[&before], &deleted));
+        assert_eq!(transition_refusal(&[&before], &deleted, &mapped), Ok(()));
+        // A property-less object renamed still needs the read.
+        let bare = json!({"_id": "managed", "objects": [{"name": "b"}]});
+        let bare_renamed = json!({"_id": "managed", "objects": [{"name": "a"}]});
+        assert!(needs_repo_ds(&[&bare], &bare_renamed));
+    }
+
+    /// Astra round 7, finding 3: under Q14 the boundary's own read can be
+    /// stale and already hold the proposed pair. The caller's baseline is a
+    /// second observation, and a contradiction absent from either is new.
+    #[test]
+    fn a_stale_baseline_holding_the_proposal_does_not_excuse_it() {
+        let before = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {}}},
+            {"name": "b", "schema": {"properties": {}}}
+        ]});
+        let repo_ds = repo(Some(reference()), None);
+        let stale = managed();
+        assert!(!needs_repo_ds(&[&stale], &managed()));
+        assert!(needs_repo_ds(&[&before, &stale], &managed()));
+        assert!(needs_repo_ds(&[&stale, &before], &managed()));
+        assert!(transition_refusal(&[&stale, &before], &managed(), &repo_ds).is_err());
+        assert!(transition_refusal(&[&before, &stale], &managed(), &repo_ds).is_err());
+        assert_eq!(
+            transition_refusal(&[&stale], &managed(), &repo_ds),
+            Ok(()),
+            "the control: the stale read alone excuses it"
+        );
+    }
+
+    /// Two targets both missing the named reverse are two findings.
+    #[test]
+    fn each_unresolved_target_is_its_own_finding() {
+        let mut doc = managed();
+        doc["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"] =
+            json!([{"path": "managed/c"}, {"path": "managed/d"}]);
+        doc["objects"].as_array_mut().unwrap().extend([
+            json!({"name": "c", "schema": {"properties": {}}}),
+            json!({"name": "d", "schema": {"properties": {}}}),
+        ]);
+        let found = report(&doc, &json!({}), "a", None).unwrap();
+        let missing: Vec<&Problem> = found
+            .pairs
+            .iter()
+            .flat_map(|pair| &pair.problems)
+            .filter(|problem| matches!(problem, Problem::ReverseMissing { .. }))
+            .collect();
+        assert_eq!(missing.len(), 2, "{found:?}");
+    }
+
+    /// Only `_meta`/`_notifications`, and only absent, are exempt: an
+    /// underscored custom key or a system key declared as a scalar is not.
+    #[test]
+    fn only_absent_system_relationships_are_exempt() {
+        let mut doc = managed();
+        let props = &mut doc["objects"][0]["schema"]["properties"];
+        props["_owner"] = json!({"type": "string"});
+        let mapping = json!({"type": "reference", "resourcePath": "managed/b"});
+        let mut repo_ds = repo(None, None);
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"] = json!({"properties": {
+            "_meta": mapping, "_notifications": mapping, "_owner": mapping, "_gone": mapping}});
+        let stale = report(&doc, &repo_ds, "a", None).unwrap().stale;
+        assert_eq!(
+            stale,
+            vec![
+                Problem::StaleMapping {
+                    object: "a".into(),
+                    key: "_gone".into()
+                },
+                Problem::MappingOnScalar {
+                    object: "a".into(),
+                    key: "_owner".into()
+                },
+            ]
+        );
+        doc["objects"][0]["schema"]["properties"]["_meta"] = json!({"type": "string"});
+        let stale = report(&doc, &repo_ds, "a", None).unwrap().stale;
+        assert!(
+            stale.contains(&Problem::MappingOnScalar {
+                object: "a".into(),
+                key: "_meta".into()
+            }),
+            "{stale:?}"
+        );
     }
 
     #[test]

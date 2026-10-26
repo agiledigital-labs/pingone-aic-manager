@@ -361,7 +361,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             let mut undo = DiskLog::load_default()?;
             ops::record_create_object_undo(&mut undo, &tenant, &name, &title, &description, &doc)?;
             let expect = [api::ConfigConfirm::ObjectPresent { name: name.clone() }];
-            put_managed(&ok, updated.clone(), &expect).await?;
+            put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {name} created"));
             output(json, &updated)
         }
@@ -388,7 +388,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
                 api::ConfigConfirm::ObjectAbsent { name: old.clone() },
                 api::ConfigConfirm::ObjectPresent { name: new.clone() },
             ];
-            put_managed(&ok, updated.clone(), &expect).await?;
+            put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {old} renamed to {new}"));
             output(json, &updated)
         }
@@ -402,13 +402,16 @@ async fn object(command: ObjectCommand) -> Result<()> {
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let doc = api::get_managed(&tenant).await?;
             refuse_shipped(api::object_named(&doc, &name)?, "deleted")?;
-            let (updated, _) =
+            let (updated, inbound) =
                 ops::delete_object_in_doc(&doc, &name).map_err(crate::Error::Config)?;
             let mut undo = DiskLog::load_default()?;
             ops::record_delete_object_undo(&mut undo, &tenant, &name, &doc)?;
             let expect = [api::ConfigConfirm::ObjectAbsent { name: name.clone() }];
-            put_managed(&ok, updated.clone(), &expect).await?;
+            put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {name} deleted"));
+            for change in &inbound {
+                eprintln!("also changed: {}", change.describe(&name));
+            }
             output(json, &updated)
         }
     }
@@ -662,7 +665,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 format!("Revert relationship {source_object}.{key}"),
             )?;
             let expect = relationship_expectations(&doc, &updated)?;
-            put_managed(&ok, updated.clone(), &expect).await?;
+            put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
             output(json, &updated)
         }
@@ -693,7 +696,18 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             if let Some((target, reverse_key)) = &reverse {
                 ends.push((target.as_str(), reverse_key.as_str()));
             }
-            let leftovers = verify::delete_leftovers(&api::get_repo_ds(&tenant).await?, &ends);
+            // Informational only: the write itself never needs repo.ds for a
+            // removal, so failing to read it must not block one (round 7).
+            let leftovers = match api::get_repo_ds(&tenant).await {
+                Ok(repo_ds) => verify::delete_leftovers(&repo_ds, &ends),
+                Err(error) => {
+                    eprintln!(
+                        "note: could not read config/repo.ds ({error}); not checking for \
+                         mappings this delete leaves behind"
+                    );
+                    Vec::new()
+                }
+            };
             record_config_undo(
                 &tenant,
                 &doc,
@@ -701,7 +715,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 format!("Restore relationship {source_object}.{key}"),
             )?;
             let expect = relationship_expectations(&doc, &updated)?;
-            put_managed(&ok, updated.clone(), &expect).await?;
+            put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} deleted"));
             if !leftovers.is_empty() {
                 eprintln!(
@@ -961,12 +975,13 @@ async fn replace_object_write(
 ) -> Result<()> {
     let mut undo = DiskLog::load_default()?;
     ops::record_replace_undo(&mut undo, ok.tenant, object, previous, &updated)?;
+    let base = doc.clone();
     api::replace_object(doc, object, updated.clone())?;
     let expect = [api::ConfigConfirm::ObjectContent {
         name: object.to_string(),
         content: updated,
     }];
-    put_managed(ok, doc.clone(), &expect).await
+    put_managed(ok, &base, doc.clone(), &expect).await
 }
 
 fn record_config_undo(
@@ -1156,8 +1171,13 @@ fn confirmation(message: &str) {
     eprintln!("{message}; undo it from the TUI history overlay");
 }
 /// The only path from a mutated document to the tenant.
-async fn put_managed(ok: &WriteOk<'_>, doc: Value, expect: &[api::ConfigConfirm]) -> Result<()> {
-    api::replace_managed_confirmed(ok.tenant, doc, expect, ok.confirmed_prod).await
+async fn put_managed(
+    ok: &WriteOk<'_>,
+    base: &Value,
+    doc: Value,
+    expect: &[api::ConfigConfirm],
+) -> Result<()> {
+    api::replace_managed_confirmed(ok.tenant, base, doc, expect, ok.confirmed_prod).await
 }
 
 fn relationship_expectations(previous: &Value, updated: &Value) -> Result<Vec<api::ConfigConfirm>> {

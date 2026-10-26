@@ -123,6 +123,9 @@ pub fn decode_source(raw: &Value) -> Result<Vec<u8>> {
 /// `None` when the source makes no such claim — hand-written source, or a
 /// bundle whose banner was removed on purpose. Only a claim can be wrong.
 pub fn built_for(source: &str) -> Option<&str> {
+    // A byte-order mark is an encoding detail, not a withdrawn claim: an
+    // editor that adds one must not switch the check off (round 7).
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let mut lines = source.lines();
     if !lines
         .next()?
