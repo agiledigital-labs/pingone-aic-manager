@@ -777,7 +777,25 @@ pub fn apply_relationship_spec(
     if let Some(previous) = previous {
         remove_relationship_property(&mut updated, &spec.source_object, &previous.old_key, true)?;
         if let Some(reverse_key) = &previous.old_reverse_key {
-            remove_relationship_property(&mut updated, &previous.old_target, reverse_key, false)?;
+            // Gone for good unless this edit rewrites it in place; only then
+            // does it keep its required entry and escape the delete rules.
+            let removed =
+                !spec.reverse.writes_target_property() || previous.old_target != spec.target_object;
+            if checked_reverse(
+                doc,
+                &spec.source_object,
+                &previous.old_key,
+                &previous.old_target,
+                reverse_key,
+                removed,
+            )? {
+                remove_relationship_property(
+                    &mut updated,
+                    &previous.old_target,
+                    reverse_key,
+                    removed,
+                )?;
+            }
         }
     }
 
@@ -818,11 +836,10 @@ pub fn apply_relationship_spec(
 /// reverse pointing at a property that no longer exists.
 ///
 /// Each end is held to the same rules as `field delete` — a standard field is
-/// not deletable — and the reverse is deleted only if it really is this
-/// relationship's other end: a relationship back to the source that names this
-/// key or names nothing. A declaration pointing at a scalar, or at some other
-/// relationship, is refused rather than followed, because following it deletes
-/// a property nobody asked about. A reverse that does not exist is fine.
+/// not deletable — and the reverse is deleted only if [`checked_reverse`]
+/// says it really is this relationship's other end. A multi-target end is
+/// refused: one relationship among several would take the whole property with
+/// it. A reverse that does not exist is fine.
 pub fn apply_delete_relationship(
     doc: &Value,
     source_object: &str,
@@ -835,34 +852,16 @@ pub fn apply_delete_relationship(
         .ok_or_else(|| format!("field '{source_object}.{key}' no longer exists"))?;
     let parsed = parse_relationship(property)
         .ok_or_else(|| format!("field '{source_object}.{key}' is not a relationship"))?;
+    ensure_single_target(source_object, key, property)?;
     ensure_deletable(source, source_object, key, property)?;
 
     let reverse = match &parsed.reverse_key {
-        Some(reverse_key) => {
-            let target = crate::managed::api::object_named(doc, &parsed.target)
-                .map_err(|error| error.to_string())?;
-            match crate::managed::state::properties(target).and_then(|p| p.get(reverse_key)) {
-                None => None,
-                Some(reverse) => {
-                    let reciprocal = parse_relationship(reverse).is_some_and(|back| {
-                        back.target == source_object
-                            && back.reverse_key.as_deref().is_none_or(|named| named == key)
-                    });
-                    if !reciprocal {
-                        return Err(format!(
-                            "'{source_object}.{key}' declares '{}.{reverse_key}' as its reverse, \
-                             but that property is not a relationship back to it; refusing to \
-                             delete it. Use `field delete {source_object}.{key}` to remove only \
-                             this end",
-                            parsed.target
-                        ));
-                    }
-                    ensure_deletable(target, &parsed.target, reverse_key, reverse)?;
-                    Some(reverse_key.clone())
-                }
-            }
+        Some(reverse_key)
+            if checked_reverse(doc, source_object, key, &parsed.target, reverse_key, true)? =>
+        {
+            Some(reverse_key.clone())
         }
-        None => None,
+        _ => None,
     };
 
     let mut updated = doc.clone();
@@ -871,6 +870,76 @@ pub fn apply_delete_relationship(
         remove_relationship_property(&mut updated, &parsed.target, &reverse_key, true)?;
     }
     Ok(updated)
+}
+
+/// Whether `source_object.key`'s declared reverse `target.reverse_key` exists
+/// and may be removed along with it. The one rule for every verb that drops a
+/// reverse — `relationship delete`, and `relationship set` dropping or
+/// moving one — because the invariant belongs to the property being removed,
+/// not to the verb that removes it.
+///
+/// It must be a relationship that names the source among its targets and
+/// names this key, or no key, as its own reverse: anything else (a scalar,
+/// another relationship) is somebody else's property. When `removed` — gone
+/// for good, not rewritten in place — it must also be single-target and
+/// deletable under `field delete`'s rules.
+fn checked_reverse(
+    doc: &Value,
+    source_object: &str,
+    key: &str,
+    target: &str,
+    reverse_key: &str,
+    removed: bool,
+) -> Result<bool, String> {
+    let target_def =
+        crate::managed::api::object_named(doc, target).map_err(|error| error.to_string())?;
+    let Some(reverse) =
+        crate::managed::state::properties(target_def).and_then(|p| p.get(reverse_key))
+    else {
+        return Ok(false);
+    };
+    let source_path = format!("managed/{source_object}");
+    let reciprocal = parse_relationship(reverse)
+        .is_some_and(|back| back.reverse_key.as_deref().is_none_or(|named| named == key))
+        && relationship_targets(reverse).contains(&source_path.as_str());
+    if !reciprocal {
+        return Err(format!(
+            "'{source_object}.{key}' declares '{target}.{reverse_key}' as its reverse, but that \
+             property is not a relationship back to it; refusing to remove it. Use `field \
+             delete {source_object}.{key}` to remove only this end"
+        ));
+    }
+    if removed {
+        ensure_single_target(target, reverse_key, reverse)?;
+        ensure_deletable(target_def, target, reverse_key, reverse)?;
+    }
+    Ok(true)
+}
+
+/// The `resourceCollection` paths of a relationship, through `items` for an
+/// array.
+fn relationship_targets(property: &Value) -> Vec<&str> {
+    let node = property.get("items").unwrap_or(property);
+    node.get("resourceCollection")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("path").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn ensure_single_target(object_name: &str, key: &str, property: &Value) -> Result<(), String> {
+    match relationship_targets(property).len() {
+        0 | 1 => Ok(()),
+        n => Err(format!(
+            "'{object_name}.{key}' is a relationship to {n} object types; removing it would \
+             remove every one of them, and aic cannot remove one. Edit it with `field` \
+             commands or the console"
+        )),
+    }
 }
 
 fn ensure_deletable(
@@ -4953,6 +5022,124 @@ mod tests {
             let b = crate::managed::api::object_named(&updated, "b").unwrap();
             assert_eq!(b["schema"]["properties"], json!({}));
         }
+    }
+
+    fn two_target_relationship(first: &str, second: &str, reverse_key: &str) -> Value {
+        let mut node = one_relationship(first, Some(reverse_key));
+        node["resourceCollection"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"path": second}));
+        node
+    }
+
+    #[test]
+    fn relationship_delete_refuses_a_multi_target_end_in_either_order() {
+        let doc = |owned: Value| {
+            json!({"objects": [
+                {"name": "a", "schema": {"properties": {
+                    "owner": one_relationship("managed/b", Some("owned")),
+                }, "order": ["owner"], "required": []}},
+                {"name": "b", "schema": {"properties": {"owned": owned},
+                    "order": ["owned"], "required": []}},
+                {"name": "c", "schema": {"properties": {
+                    "owner": one_relationship("managed/b", Some("owned")),
+                }, "order": ["owner"], "required": []}},
+            ]})
+        };
+        // `b.owned` also serves `c.owner`: deleting it with `a.owner` would
+        // break c. Order must not matter — the first path is not the claim.
+        for owned in [
+            two_target_relationship("managed/a", "managed/c", "owner"),
+            two_target_relationship("managed/c", "managed/a", "owner"),
+        ] {
+            let error = apply_delete_relationship(&doc(owned), "a", "owner").unwrap_err();
+            assert!(error.contains("relationship to 2 object types"), "{error}");
+        }
+        // The source end is held to the same rule.
+        let source_multi = json!({"objects": [
+            {"name": "a", "schema": {"properties": {
+                "owner": two_target_relationship("managed/b", "managed/c", "owned"),
+            }, "order": ["owner"], "required": []}},
+            {"name": "b", "schema": {"properties": {}, "order": [], "required": []}},
+            {"name": "c", "schema": {"properties": {}, "order": [], "required": []}},
+        ]});
+        let error = apply_delete_relationship(&source_multi, "a", "owner").unwrap_err();
+        assert!(error.contains("relationship to 2 object types"), "{error}");
+    }
+
+    #[test]
+    fn relationship_set_dropping_a_reverse_obeys_the_delete_rules() {
+        let previous = PreviousRelationship {
+            old_key: "owner".into(),
+            old_target: "b".into(),
+            old_reverse_key: Some("owned".into()),
+        };
+        let doc = |b: Value| {
+            json!({"objects": [
+                {"name": "a", "schema": {"properties": {
+                    "owner": one_relationship("managed/b", Some("owned")),
+                }, "order": ["owner"], "required": []}},
+                b,
+            ]})
+        };
+        let b = |owned: Value, meta: bool| {
+            let mut b = json!({"name": "b", "schema": {"properties": {"owned": owned},
+                "order": ["owned"], "required": ["owned"]}});
+            if meta {
+                b["meta"] = json!({});
+            }
+            b
+        };
+        let drop = relationship_spec(Cardinality::One, ReverseCardinality::None);
+
+        // A scalar the source merely claims is not its reverse to remove.
+        let error = apply_relationship_spec(
+            &doc(b(json!({"type": "string"}), false)),
+            &drop,
+            Some(&previous),
+        )
+        .unwrap_err();
+        assert!(error.contains("not a relationship back to it"), "{error}");
+
+        // A standard field is not deletable by any verb.
+        let error = apply_relationship_spec(
+            &doc(b(one_relationship("managed/a", Some("owner")), true)),
+            &drop,
+            Some(&previous),
+        )
+        .unwrap_err();
+        assert!(error.contains("standard field"), "{error}");
+
+        // The real reverse goes, and takes its required entry with it.
+        let updated = apply_relationship_spec(
+            &doc(b(one_relationship("managed/a", Some("owner")), false)),
+            &drop,
+            Some(&previous),
+        )
+        .unwrap();
+        let b = crate::managed::api::object_named(&updated, "b").unwrap();
+        assert_eq!(b["schema"]["properties"], json!({}));
+        assert_eq!(b["schema"]["required"], json!([]));
+    }
+
+    #[test]
+    fn relationship_set_keeping_a_reverse_still_refuses_to_overwrite_an_impostor() {
+        let previous = PreviousRelationship {
+            old_key: "owner".into(),
+            old_target: "b".into(),
+            old_reverse_key: Some("owned".into()),
+        };
+        let doc = json!({"objects": [
+            {"name": "a", "schema": {"properties": {
+                "owner": one_relationship("managed/b", Some("owned")),
+            }, "order": ["owner"], "required": []}},
+            {"name": "b", "schema": {"properties": {"owned": {"type": "string"}},
+                "order": ["owned"], "required": []}},
+        ]});
+        let keep = relationship_spec(Cardinality::One, ReverseCardinality::One);
+        let error = apply_relationship_spec(&doc, &keep, Some(&previous)).unwrap_err();
+        assert!(error.contains("not a relationship back to it"), "{error}");
     }
 
     #[test]
