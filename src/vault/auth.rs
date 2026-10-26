@@ -28,14 +28,17 @@ pub(crate) fn decrypt_log_keys(dek: &Dek) -> Result<LogKeyMap> {
     }
 }
 
-/// After an unlock, remove what an interrupted vault transition left in the
-/// form the vault no longer reads — a plaintext copy above all — rather than
-/// leave it until the next write of that artifact. A failure here does not
-/// fail the unlock: the vault works, and the next write retries.
-pub(crate) fn settle_after_unlock() {
-    if let Err(e) = config::settle_vault() {
+/// After an unlock — or on finding the agent already unlocked — remove what
+/// an interrupted vault transition left in the form the vault no longer
+/// reads, a plaintext copy above all, rather than leave it until the next
+/// write of that artifact. A failure does not fail the unlock: the vault
+/// works and the next write retries. It is returned as a warning for the
+/// operator, though, not only logged — the leftover may be cleartext.
+pub(crate) fn settle_after_unlock() -> Option<String> {
+    config::settle_vault().err().map(|e| {
         tracing::warn!(error = %e, "could not remove a vault transition's leftovers");
-    }
+        format!("could not remove an interrupted vault change's leftover files: {e}")
+    })
 }
 
 /// Successful unlock payload. The TUI also passes this through an event

@@ -156,6 +156,9 @@ pub async fn try_agent_unlock(app: &mut App) {
     app.set_dek(Some(dek));
     app.set_jwks(jwks);
     app.set_log_keys(log_keys);
+    if let Some(warning) = auth::settle_after_unlock() {
+        app.push_toast(ToastKind::Error, warning);
+    }
 }
 
 /// Hand the just-derived DEK to the agent so subsequent ApiCalls (this
@@ -496,10 +499,27 @@ pub async fn handle_result(app: &mut App, result: std::result::Result<UnlockOk, 
             jwks,
             log_keys,
         }) => {
+            if app.settings.is_none() {
+                // An interrupted first run (see `config::interrupted_first_run`):
+                // the wrap just opened this key, so finish the setup with it.
+                if let Err(e) = crate::config::finish_first_run(&dek) {
+                    app.unlock.error = Some(format!("Could not finish setup: {e}"));
+                    return;
+                }
+                match Settings::load() {
+                    Ok(settings) => app.settings = settings,
+                    Err(e) => {
+                        app.unlock.error = Some(format!("Could not read settings: {e}"));
+                        return;
+                    }
+                }
+            }
             app.set_dek(Some(dek));
             app.set_jwks(jwks);
             app.set_log_keys(log_keys);
-            auth::settle_after_unlock();
+            if let Some(warning) = auth::settle_after_unlock() {
+                app.push_toast(ToastKind::Error, warning);
+            }
             app.unlock.error = None;
             app.unlock.pin_input.clear();
             // Tell the security-key poll task to stop (if it was running).
