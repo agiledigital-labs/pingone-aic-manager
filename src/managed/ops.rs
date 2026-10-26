@@ -1506,10 +1506,57 @@ pub fn execute_relationship_write(
     });
 }
 
+/// The `repo.ds` half of a relationship write: a retarget of a mapped end is
+/// refused, and so is writing an end over a mapping that names another
+/// target. One extra read per write.
+pub async fn refuse_mapped_retarget(
+    tenant: &str,
+    spec: &RelationshipSpec,
+    previous: Option<&PreviousRelationship>,
+) -> crate::Result<()> {
+    let repo_ds = crate::managed::api::get_repo_ds(tenant).await?;
+    if let Some(previous) = previous {
+        crate::managed::verify::repoint_refusal(
+            &repo_ds,
+            &spec.source_object,
+            &previous.old_key,
+            &previous.old_target,
+            previous.old_reverse_key.as_deref(),
+            &spec.target_object,
+        )
+        .map_err(crate::Error::Config)?;
+    }
+    let mut ends = vec![(
+        spec.source_object.as_str(),
+        spec.key.as_str(),
+        spec.target_object.as_str(),
+    )];
+    if spec.reverse.writes_target_property() {
+        ends.push((
+            spec.target_object.as_str(),
+            spec.reverse_key.as_str(),
+            spec.source_object.as_str(),
+        ));
+    }
+    crate::managed::verify::leftover_refusal(&repo_ds, &ends).map_err(crate::Error::Config)
+}
+
+/// The `repo.ds` half of an object rename.
+pub async fn refuse_mapped_rename(tenant: &str, object: &str) -> crate::Result<()> {
+    let repo_ds = crate::managed::api::get_repo_ds(tenant).await?;
+    crate::managed::verify::rename_refusal(&repo_ds, object).map_err(crate::Error::Config)
+}
+
 async fn relationship_write_request(
     request: &RelationshipWriteRequest,
     confirmed_prod: bool,
 ) -> crate::Result<Value> {
+    refuse_mapped_retarget(
+        &request.tenant_name,
+        &request.spec,
+        request.previous.as_ref(),
+    )
+    .await?;
     let live = crate::managed::api::get_managed(&request.tenant_name).await?;
     let updated = apply_relationship_spec(&live, &request.spec, request.previous.as_ref())
         .map_err(crate::Error::Config)?;
@@ -1652,6 +1699,7 @@ async fn rename_object_request(
     request: &RenameObjectRequest,
     confirmed_prod: bool,
 ) -> crate::Result<Value> {
+    refuse_mapped_rename(&request.tenant_name, &request.old_name).await?;
     let live = crate::managed::api::get_managed(&request.tenant_name).await?;
     let live_old = crate::managed::api::object_named(&live, &request.old_name)?;
     let snapshot_old = crate::managed::api::object_named(&request.previous_doc, &request.old_name)?;

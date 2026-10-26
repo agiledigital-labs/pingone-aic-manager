@@ -557,16 +557,36 @@ different stores. Mode alone is not a health check: both modes can work, and
 this pair broke while one side was still mapped. This is why `aic` refuses
 every relationship key rename, forward or reverse. Renames on a generic pair
 and reverse-only renames were **not** measured; refusing them is a precaution,
-not evidence about them. Target repoints and object renames of a mapped pair
-were not measured either, and `aic` still **allows** both — they change the
-`resourcePath` a mapping names, and guarding them is deferred, not done.
+not evidence about them.
+
+**Retargeting a mapped end breaks it** (measured 2026-10-26 on
+`test_from.hasOneHasNone`, mapped `reference`, no reverse). After `aic managed
+relationship set … --target test_from` (was `test_to`) the `PUT` was a 200 and
+`repo.ds` still named `managed/test_to`. A link write to an existing
+`test_from` record was `400 "the resource … referenced in field
+'/hasOneHasNone' does not exist"` — it resolved against the mapping's old
+`resourcePath` — and that failed `PATCH` **still removed the end's existing
+link** (the record's `_rev` moved and the property read `null`). So `aic`
+refuses a retarget when either old end is mapped.
+
+**Deleting a mapped end leaves its mapping** (same probe): after `aic managed
+relationship delete`, `repo.ds` still held the `fr-idm-reference-7` entry on
+three reads over a minute. Recreating the **same key with the same target**
+through `config/managed` picked that mapping up again: a new link had the
+mapped `<uuid>-<counter>` edge id and was found by `<key> pr`. So delete is
+allowed, with a note naming what stays mapped; writing an end over a leftover
+mapping that names a **different** target is refused, because that is the
+retarget state above. An object rename that a mapping names — its own
+`managed/<obj>` entry, or another mapping's `resourcePath` — is refused on the
+same reasoning; that one is inferred, not measured. The config document was
+restored from a backup afterwards and re-read for five minutes.
 
 A mapping can also outlive its property: the sandbox's `managed/test_from`
 mapping still lists `hasOneHasOne`, which `config/managed` no longer declares.
 
-Not established: what exactly the console writes; whether deleting a mapped
-relationship leaves its mapping behind; whether delete-and-recreate is a repair
-for a mixed pair; and an operator-reported `400 Invalid relationship schema`
+Not established: what exactly the console writes; whether delete-and-recreate
+is a repair for a mixed pair (it reused the mapping for an end with no
+reverse, which is not the same question); and an operator-reported `400 Invalid relationship schema`
 when re-creating a relationship whose reverse has a stale mapping. A
 `config/managed` `PUT` of that state was a 200 here, which says only that
 config validation accepts it — not where the operator's 400 came from.
@@ -1304,6 +1324,15 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-26 — mapped-end delete and retarget, sandbox, on
+  `test_from.hasOneHasNone` (mapped, no reverse). Backed up `config/managed`
+  and `repo.ds`; `aic managed relationship delete`, then three `repo.ds` reads
+  over a minute; `relationship set` to recreate it with the same target, a
+  link `PATCH`, a read and a `pr` query; `relationship set --target test_from`,
+  a read of the existing link, a link `PATCH` to an existing `test_from`
+  record (400) and a re-read (link gone); a `repo.ds` read. Restored the
+  backup with one `PUT` and compared it on three reads every 15 s for five
+  minutes.
 - Date: 2026-10-26 — `relationship verify` shapes, sandbox, on
   `test_from`/`test_to`. Linked one `test_from` record to one `test_to` record
   through `aicRel` (generic), `hasManyHasMany` and `hasOnehOne` (mapped); read
