@@ -341,6 +341,19 @@ pub struct WorkspaceContext {
     /// The script namespace implied by the cwd, if inside one: `alpha`/`bravo`
     /// (AM realm) or `endpoint`/`schedule` (IDM kind).
     pub namespace: Option<String>,
+    /// Which directory the context was read from. [`detect_workspace_context`]
+    /// leaves it `None`; the CLI bootstrap records it, so a command can say
+    /// why it chose the tenant it did.
+    pub origin: Option<WorkspaceOrigin>,
+}
+
+/// The directory a [`WorkspaceContext`] was inferred from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceOrigin {
+    /// The process's working directory.
+    Cwd,
+    /// An explicit search start: `--project` or `AIC_PROJECT`, named here.
+    Explicit(&'static str),
 }
 
 static WORKSPACE_CONTEXT: OnceLock<WorkspaceContext> = OnceLock::new();

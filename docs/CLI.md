@@ -20,10 +20,18 @@ aic <command> <subcommand> --help
 - **Project-rooted.** `aic` walks up from your current directory to find the
   project root (the directory containing `.aic/`), so any command works from any
   subdirectory.
-- **`--tenant <name>`** overrides the active context for a single call. With no
-  flag, commands use the current context (`aic ctx current`); the default
-  context name is `sandbox`. For `script` commands the tenant is also inferred
-  from a `workspace/<tenant>/` path you're inside.
+- **`--tenant <name>`** overrides everything for a single call. Without it the
+  tenant comes from, in order: a `workspace/<tenant>/` directory you are inside
+  (only if that tenant is configured), the stored context (`aic ctx use`), then
+  `default_tenant` in `.aic/config.toml`. `aic ctx current` prints the tenant
+  that wins here and which rule chose it. Script commands that read or write a
+  tenant (`create`, `copy`, `delete`, `pull`, `push`, `status`, `diff`, `sync`,
+  `watch`) print the same on stderr before anything else, so a no-op names its
+  tenant too:
+
+  ```text
+  target tenant: dev (current directory is in workspace/dev/)
+  ```
 - **`--realm <alpha|bravo>`** selects the AM realm for realm-scoped commands
   (`journey`, `jwt-bearer`, `oauth`, `secretmap`, and AM `script` namespaces).
   Defaults to **`alpha`**. ESVs and IDM endpoints are tenant-global and take no
@@ -56,6 +64,16 @@ aic <command> <subcommand> --help
   and the `workspace/<tenant>/` tenant inference both start there. Pointing one
   at something that is not inside a project is an error rather than a fallback
   to the cwd, so a typo cannot silently act on a different tenant.
+
+  One exception to "stands in for the cwd": when `--project` names a directory
+  with no tenant of its own (typically the project root) and your real cwd is
+  inside `workspace/<tenant>/` **of the same project**, the cwd's tenant is
+  used. Before this, an editor task passing `--project <root>` from inside
+  `workspace/dev/` silently targeted the stored context instead. A `--project`
+  inside `workspace/<tenant>/` still wins over the cwd, and a cwd in a different
+  project is never consulted. A task that relied on the old behaviour to reach
+  the stored context from inside another tenant's workspace should pass
+  `--tenant`.
 
   `--project` is `global = true`, so it is accepted before or after the
   subcommand (`aic --project ~/w/x esv list` and `aic esv list --project ~/w/x`
@@ -163,11 +181,28 @@ binary deliberately does not read passwords from environment variables.
 | Command                        | What it does                                                                                                   |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
 | `aic ctx list [--json]`        | List tenants defined in `.aic/config.toml`.                                                                    |
-| `aic ctx current`              | Print the active context.                                                                                      |
+| `aic ctx current [--tenant]`   | Print the effective tenant (stdout) and why it won (stderr). Alias: `aic ctx show`. See below.                 |
 | `aic ctx use <tenant>`         | Switch the active context.                                                                                     |
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
+
+`aic ctx current` (or `aic ctx show`) answers "which tenant would a command
+run here hit?", not "what did I last `ctx use`?". stdout is the bare tenant
+name, so `$(aic ctx current)` keeps working; stderr says where it came from,
+and names the stored context separately when it is not the one in effect, or a
+`workspace/<name>/` directory skipped because no tenant has that name:
+
+```text
+$ cd workspace/dev && aic ctx current
+dev
+source: current directory is in workspace/dev/
+stored context: sandbox (not in effect here)
+```
+
+With nothing configured at all it prints `<none>`. It used to print the stored
+context regardless of where it was run, and `<default_tenant> (default)` when
+there was none.
 
 The normal `whoami` output includes `operator: <name> on <host>`. When the name
 has not been saved yet, the line says it is unset and points to
