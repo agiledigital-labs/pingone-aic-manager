@@ -24,7 +24,9 @@ pub enum PromotionCommand {
         json: bool,
     },
     /// Show a promotion report: the latest, one by id, or the provisional
-    /// one — what a promotion would change now, generated without a lock.
+    /// one, generated without a lock. Its items are the promotion service's
+    /// claim, not a live diff — measured listing items identical on both
+    /// tenants (docs/api/23-promotion.md).
     Report {
         /// Report id from `aic promotion reports`; omit for the latest.
         #[arg(conflicts_with = "provisional")]
