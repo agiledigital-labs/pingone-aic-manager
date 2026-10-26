@@ -7,6 +7,8 @@
 //! - [`cli`] implements `aic managed` read-only inspection; write-capable TUI
 //!   flows live in [`ops`], [`screen`], and [`view`].
 //! - [`ops`] owns managed-object schema writes and undo.
+//! - [`verify`] judges relationship pairs against `config/repo.ds` and
+//!   sampled links, for `aic managed relationship verify`; tenant-free.
 //! - [`state`], [`screen`], and [`view`] implement the TUI browser and field
 //!   attribute editor.
 //!
@@ -33,4 +35,5 @@ pub mod ops;
 pub mod screen;
 pub mod spec;
 pub mod state;
+pub mod verify;
 pub mod view;

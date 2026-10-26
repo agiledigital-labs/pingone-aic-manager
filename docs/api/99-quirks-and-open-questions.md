@@ -313,6 +313,15 @@ was supplied to this change; it was not re-run by the implementing agent.
   no disagreement at all, so the simple divergence story does not obviously fit
   either.
 
+- **Seen again 2026-10-26, on a single whole-document restore.** Two `PUT`s
+  about a minute apart — a probe rename, then a restore of the backed-up
+  document. The restore returned 200 and an immediate direct read equalled the
+  backup; by the next check, about two minutes later, every read (twelve rounds of four direct reads over
+  two minutes) showed the **renamed** document again, with no write in between.
+  A second identical restore `PUT` then held. So a confirmed restore is not
+  proof either: after restoring a backup, re-read it some minutes later, as
+  `docs/api/10-managed-objects.md` ("Checking a pair") now records.
+
 ### Q6. PUT on resources without `_rev`
 
 - For ESV variables and scripts (both lack `_rev`), what is the server's

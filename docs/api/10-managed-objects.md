@@ -571,6 +571,41 @@ when re-creating a relationship whose reverse has a stale mapping. A
 `config/managed` `PUT` of that state was a 200 here, which says only that
 config validation accepts it — not where the operator's 400 came from.
 
+#### Checking a pair (`aic managed relationship verify`, measured 2026-10-26)
+
+`verify` reads `config/managed` and `config/repo.ds` and reports a pair whose
+ends **disagree**: exactly one end mapped (the measured broken state), a
+`reverseReference` whose `propertyName` is not its partner's key, a mapping
+whose `resourcePath` is not a declared target, both ends mapped with the same
+`type`, and a `repo.ds` entry naming a property `config/managed` does not
+declare. Mode alone is never a finding. It then samples links from both ends
+and requires the far end to list the near record under the **same**
+`_refProperties._id`. A pair whose ends have no links in the records read is
+reported **untested**, not healthy. Measured shapes it relies on:
+
+| Read                                                                       | Mapped end                     | Generic end        |
+| -------------------------------------------------------------------------- | ------------------------------ | ------------------ |
+| `managed/<obj>?_queryFilter=<key> pr`                                      | finds the linked record        | **finds nothing**  |
+| `managed/<obj>/<id>/<key>?_queryFilter=_refResourceId eq "<near>"` (array) | the edge, same `_id` as forward | same               |
+| `managed/<obj>/<id>/<key>` on a singular end                               | not tried                      | `501 Not Implemented` |
+
+So links are found by paging records with `_fields=_id,<key>`, never by `pr`,
+and a singular far end is read with `_fields` on the record.
+
+Positive and negative control, sandbox: with one link on each of the mapped
+pairs `hasOnehOne` ↔ `hasOneHasOne` and `hasManyHasMany` ↔ `hasManyhasMany`,
+every sampled link resolved in both directions. After the rename above was
+reproduced (`hasOnehOne` → `hasOneRen` through `config/managed`), `verify` on
+the pair reported the partner mismatch, the mixed mapping, and the existing
+link as not listed by the renamed forward end, and exited non-zero.
+
+Two side effects observed while restoring, both worth knowing before running
+such a probe: record reads (`managed/test_from/<id>`) returned **404 for a few
+seconds** after the restoring `config/managed` `PUT` and then recovered with
+data intact; and the restore itself was **lost** — a `200`, a read equal to the
+backup, then the renamed document on every read for over two minutes until a
+second `PUT` — Q14 again (`99-quirks-and-open-questions.md`).
+
 ### Object-type rename orphans records (verified 2026-07-27)
 
 Renaming a custom object type by changing its `objects[].name` (X → Y) and
@@ -1268,6 +1303,16 @@ on create, or when actually rotating it.
   script calls as well as REST ones.
 
 ## Verified against
+
+- Date: 2026-10-26 — `relationship verify` shapes, sandbox, on
+  `test_from`/`test_to`. Linked one `test_from` record to one `test_to` record
+  through `aicRel` (generic), `hasManyHasMany` and `hasOnehOne` (mapped); read
+  `<key> pr` filters on both modes, the reverse relationship collection with
+  `_refResourceId eq` (match and non-match) on both modes, and the singular
+  end's collection endpoint (501). Took a `config/managed` backup, renamed
+  `hasOnehOne` → `hasOneRen` (and the reverse's `reversePropertyName`), ran
+  `verify` (three findings), restored — the restore was lost once and re-sent,
+  then confirmed equal on repeated reads — and removed every probe link.
 
 - Date: 2026-10-26 — cursor paging re-check, sandbox, through
   `aic idm get`: `managed/alpha_user?_queryFilter=true&_fields=_id` at

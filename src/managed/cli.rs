@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::Result;
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, print_table, tenant_for};
-use crate::managed::{api, ops, spec, state};
+use crate::managed::{api, ops, spec, state, verify};
 use crate::undo::{DiskLog, UndoLog};
 
 #[derive(Subcommand, Debug)]
@@ -230,6 +230,23 @@ pub enum RelationshipCommand {
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read-only: check each relationship pair's two ends agree, in
+    /// config/managed and config/repo.ds, and sample links from both ends.
+    /// Exits non-zero on any disagreement or unresolved link.
+    Verify {
+        /// `<object>` for every relationship on it, or `<object>.<key>`.
+        target: String,
+        /// Links to sample in each direction; 0 checks configuration only.
+        #[arg(long, default_value_t = 5)]
+        sample: usize,
+        /// Records read per end when looking for links (one request).
+        #[arg(long, default_value_t = 200)]
+        scan: usize,
+        #[arg(long)]
+        tenant: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -670,6 +687,207 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             confirmation(&format!("relationship {source_object}.{key} deleted"));
             output(json, &updated)
         }
+        RelationshipCommand::Verify {
+            target,
+            sample,
+            scan,
+            tenant,
+            json,
+        } => relationship_verify(target, sample, scan, tenant, json).await,
+    }
+}
+
+#[derive(Serialize)]
+struct DirectionOutput {
+    from: String,
+    to: String,
+    /// Records read looking for links.
+    scanned: usize,
+    links: Vec<SampledLink>,
+}
+
+#[derive(Serialize)]
+struct SampledLink {
+    #[serde(flatten)]
+    link: verify::Link,
+    #[serde(flatten)]
+    outcome: verify::LinkOutcome,
+}
+
+#[derive(Serialize)]
+struct PairOutput {
+    #[serde(flatten)]
+    pair: verify::PairReport,
+    directions: Vec<DirectionOutput>,
+}
+
+async fn sample_direction(
+    tenant: &str,
+    near: &verify::End,
+    far: &verify::End,
+    sample: usize,
+    scan: usize,
+) -> Result<DirectionOutput> {
+    let records = api::records_with(tenant, &near.object, &near.key, scan).await?;
+    let far_collection = format!("managed/{}", far.object);
+    let mut links = Vec::new();
+    for link in records
+        .iter()
+        .flat_map(|record| verify::links_of(record, &near.key))
+        .filter(|link| link.to_collection == far_collection)
+        .take(sample)
+    {
+        let far_record = api::far_end(
+            tenant,
+            &far.object,
+            &link.to_id,
+            &far.key,
+            far.array,
+            &link.from_id,
+        )
+        .await?;
+        let far_links = far_record.map(|record| verify::links_of(&record, &far.key));
+        let outcome = verify::judge(&link, far_links.as_deref());
+        links.push(SampledLink { link, outcome });
+    }
+    Ok(DirectionOutput {
+        from: format!("{}.{}", near.object, near.key),
+        to: format!("{}.{}", far.object, far.key),
+        scanned: records.len(),
+        links,
+    })
+}
+
+async fn relationship_verify(
+    target: String,
+    sample: usize,
+    scan: usize,
+    tenant: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let (object, key) = match target.split_once('.') {
+        Some(_) => {
+            let (object, key) = parse_object_key(&target)?;
+            (object, Some(key))
+        }
+        None => (target, None),
+    };
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let repo_ds = api::get_repo_ds(&tenant).await?;
+    let report = verify::report(&managed, &repo_ds, &object, key.as_deref())
+        .map_err(crate::Error::Config)?;
+    let mut pairs = Vec::new();
+    for pair in report.pairs {
+        let mut directions = Vec::new();
+        if sample > 0
+            && pair.sampleable()
+            && let Some(reverse) = &pair.reverse
+        {
+            directions.push(sample_direction(&tenant, &pair.forward, reverse, sample, scan).await?);
+            directions.push(sample_direction(&tenant, reverse, &pair.forward, sample, scan).await?);
+        }
+        pairs.push(PairOutput { pair, directions });
+    }
+    let failures = report.stale.len()
+        + pairs
+            .iter()
+            .map(|pair| {
+                pair.pair.problems.len()
+                    + pair
+                        .directions
+                        .iter()
+                        .flat_map(|direction| &direction.links)
+                        .filter(|link| link.outcome != verify::LinkOutcome::Resolved)
+                        .count()
+            })
+            .sum::<usize>();
+    if json {
+        print_json(&serde_json::json!({
+            "pairs": pairs,
+            "stale": report.stale,
+            "failures": failures,
+        }))?;
+    } else {
+        print_verify(&pairs, &report.stale, sample);
+    }
+    if failures > 0 {
+        return Err(crate::Error::Config(format!(
+            "relationship verify found {failures} problem(s)"
+        )));
+    }
+    Ok(())
+}
+
+fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) {
+    for pair in pairs {
+        let forward = &pair.pair.forward;
+        let mode = |end: &verify::End| match &end.mapping {
+            Some(mapping) => format!("mapped {}", mapping.kind),
+            None => "generic".into(),
+        };
+        match &pair.pair.reverse {
+            Some(reverse) => println!(
+                "{}.{} ({}) <-> {}.{} ({})",
+                forward.object,
+                forward.key,
+                mode(forward),
+                reverse.object,
+                reverse.key,
+                mode(reverse)
+            ),
+            None => println!(
+                "{}.{} ({}), no reverse",
+                forward.object,
+                forward.key,
+                mode(forward)
+            ),
+        }
+        for problem in &pair.pair.problems {
+            println!("  problem: {}", problem.message());
+        }
+        for direction in &pair.directions {
+            let resolved = direction
+                .links
+                .iter()
+                .filter(|link| link.outcome == verify::LinkOutcome::Resolved)
+                .count();
+            if direction.links.is_empty() {
+                println!(
+                    "  {} -> {}: untested, no links in {} records read",
+                    direction.from, direction.to, direction.scanned
+                );
+                continue;
+            }
+            println!(
+                "  {} -> {}: {resolved} of {} sampled links resolve from the far end",
+                direction.from,
+                direction.to,
+                direction.links.len()
+            );
+            for link in &direction.links {
+                let detail = match &link.outcome {
+                    verify::LinkOutcome::Resolved => continue,
+                    verify::LinkOutcome::Missing => "the far end does not list it".to_string(),
+                    verify::LinkOutcome::FarRecordMissing => "the far record does not exist".into(),
+                    verify::LinkOutcome::EdgeDiffers { far_edges } => {
+                        format!("the far end lists it under edge {}", far_edges.join(", "))
+                    }
+                };
+                println!(
+                    "    {} -> {} (edge {}): {detail}",
+                    link.link.from_id,
+                    link.link.to_id,
+                    link.link.edge_id.as_deref().unwrap_or("none")
+                );
+            }
+        }
+        if sample > 0 && pair.directions.is_empty() && pair.pair.reverse.is_some() {
+            println!("  links: not sampled, the ends do not point at each other");
+        }
+    }
+    for problem in stale {
+        println!("stale: {}", problem.message());
     }
 }
 
