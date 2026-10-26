@@ -55,6 +55,11 @@ struct AgentState {
     /// the old file cannot publish itself after another request has already
     /// seen the edit and cleared the cache.
     config_stamp: Option<Vec<u8>>,
+    /// Bumped every time `clients` is invalidated — vault replaced, JWK map
+    /// reloaded, config changed, lock. A build captures it with its inputs
+    /// and publishes only if it is unchanged, so a client built from a key
+    /// the daemon has since replaced is served once and never cached.
+    generation: u64,
     last_request: Instant,
     idle_timeout: Duration,
 }
@@ -66,6 +71,7 @@ impl AgentState {
             vault: Vault::Locked,
             clients: HashMap::new(),
             config_stamp: None,
+            generation: 0,
             last_request: Instant::now(),
             idle_timeout,
         }
@@ -77,7 +83,12 @@ impl AgentState {
 
     fn lock(&mut self) {
         self.vault = Vault::Locked;
+        self.invalidate_clients();
+    }
+
+    fn invalidate_clients(&mut self) {
         self.clients.clear();
+        self.generation += 1;
     }
 
     fn is_unlocked(&self) -> bool {
@@ -423,7 +434,7 @@ async fn do_unlock_plain(state: Arc<RwLock<AgentState>>) -> Result<()> {
 async fn set_vault(state: Arc<RwLock<AgentState>>, vault: Vault) {
     let mut s = state.write().await;
     s.vault = vault;
-    s.clients.clear();
+    s.invalidate_clients();
     s.touch();
 }
 
@@ -747,7 +758,7 @@ async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
             *cache = Some((map, modified));
         }
     }
-    s.clients.clear();
+    s.invalidate_clients();
     Ok(())
 }
 
@@ -759,7 +770,7 @@ async fn refresh_config_stamp(state: Arc<RwLock<AgentState>>) {
     let mut s = state.write().await;
     if content.is_none() || s.config_stamp != content {
         s.config_stamp = content;
-        s.clients.clear();
+        s.invalidate_clients();
     }
 }
 
@@ -775,7 +786,7 @@ async fn build_client_from_cache(
     tenant: &str,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Arc<AicClient>> {
-    let (jwk, paths) = {
+    let (jwk, paths, generation) = {
         let s = state.read().await;
         let jwk = match &s.vault {
             Vault::Locked => return Err(Error::Auth("agent is locked".into())),
@@ -785,7 +796,7 @@ async fn build_client_from_cache(
                 .cloned()
                 .ok_or_else(|| Error::Config(format!("no JWK on file for tenant: {tenant}")))?,
         };
-        (jwk, s.paths.clone())
+        (jwk, s.paths.clone(), s.generation)
     };
     let bytes = match std::fs::read(paths.config_path()) {
         Ok(bytes) => bytes,
@@ -805,13 +816,29 @@ async fn build_client_from_cache(
         .cloned()
         .ok_or_else(|| Error::Config(format!("unknown tenant: {tenant}")))?;
     let client = Arc::new(AicClient::new(tcfg, jwk));
-    let mut s = state.write().await;
-    // Serve the client either way, but cache it only when it was built from
-    // the config the cache is currently stamped with.
-    if s.config_stamp.as_deref() == Some(bytes.as_slice()) {
+    publish(
+        &mut *state.write().await,
+        tenant,
+        &client,
+        generation,
+        &bytes,
+    );
+    Ok(client)
+}
+
+/// Cache `client` only if nothing it was built from has been invalidated
+/// since: the generation it captured with its JWK, and the config bytes it
+/// parsed. Otherwise it serves the one request that built it and is dropped.
+fn publish(
+    s: &mut AgentState,
+    tenant: &str,
+    client: &Arc<AicClient>,
+    generation: u64,
+    config: &[u8],
+) {
+    if s.generation == generation && s.config_stamp.as_deref() == Some(config) {
         s.clients.insert(tenant.to_string(), client.clone());
     }
-    Ok(client)
 }
 
 /// Used by the foreground subcommand to print where the agent is running.
@@ -1053,6 +1080,33 @@ mod tests {
             .await
             .unwrap();
         assert!(state.read().await.clients.contains_key("sandbox"));
+    }
+
+    /// The JWK race: a build captured generation N with its key; the vault
+    /// was then reloaded (generation N+1) while config stayed the same. The
+    /// matching config bytes must not let the old-key client be cached.
+    #[tokio::test]
+    async fn a_client_built_before_an_invalidation_is_not_cached() {
+        let project = test_project();
+        save_config(&project, &["sandbox"]);
+        let bytes = std::fs::read(project.paths.config_path()).unwrap();
+        let state = state(&project);
+        refresh_config_stamp(state.clone()).await;
+        let client = Arc::new(AicClient::new(
+            tenant("sandbox"),
+            serde_json::json!({"old": "jwk"}),
+        ));
+
+        let mut s = state.write().await;
+        let captured = s.generation;
+        s.invalidate_clients();
+        publish(&mut s, "sandbox", &client, captured, &bytes);
+        assert!(!s.clients.contains_key("sandbox"));
+
+        // Control: the current generation and stamp do cache.
+        let current = s.generation;
+        publish(&mut s, "sandbox", &client, current, &bytes);
+        assert!(s.clients.contains_key("sandbox"));
     }
 
     #[tokio::test]

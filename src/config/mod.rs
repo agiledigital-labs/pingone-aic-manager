@@ -866,7 +866,10 @@ impl ProjectConfig {
              # into place (`saml::rotate::journal`).\n\
              saml-rotations.json\n\
              saml-rotations.json.lock\n\
-             saml-rotations.json.new\n",
+             saml-rotations.json.new\n\
+             # config.toml's update lock and its rename-into-place sidecar.\n\
+             config.toml.lock\n\
+             config.toml.new\n",
         );
         content
     }
@@ -903,10 +906,57 @@ impl ProjectPaths {
     }
 
     pub fn save_config(&self, config: &ProjectConfig) -> Result<()> {
+        let _guard = self.lock_config()?;
+        self.install_config(config)
+    }
+
+    /// Read-modify-write `config.toml` as one transaction: an exclusive lock
+    /// on `config.toml.lock` is held across the read, `change` and the
+    /// rename, so two writers cannot both read the same file and the later
+    /// silently drop the earlier's edit. `change` sees the file as it is
+    /// *under the lock* — validate against that, not an earlier read. Only
+    /// writers that come through here are serialised; a `load` → `save` pair
+    /// is still a lost-update window (its `save` is merely atomic).
+    pub fn update_config<T>(
+        &self,
+        change: impl FnOnce(&mut ProjectConfig) -> Result<T>,
+    ) -> Result<T> {
+        let _guard = self.lock_config()?;
+        let mut config = self
+            .load_config()?
+            .ok_or_else(|| crate::Error::Config("no .aic/config.toml here".into()))?;
+        let out = change(&mut config)?;
+        self.install_config(&config)?;
+        Ok(out)
+    }
+
+    /// The lock lives on a sidecar whose inode nothing replaces (the config
+    /// itself is renamed over). `flock` underneath, released by the kernel
+    /// when the descriptor closes, so a killed `aic` leaves no stale lock.
+    fn lock_config(&self) -> Result<fs::File> {
         let dir = self.aic_dir();
         fs::create_dir_all(&dir)?;
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("config.toml.lock"))?;
+        handle.lock()?;
+        Ok(handle)
+    }
+
+    /// Callers hold `lock_config`. Written to a sidecar, synced, then renamed,
+    /// so a reader — the daemon stamps the file by content — never sees half
+    /// a file.
+    fn install_config(&self, config: &ProjectConfig) -> Result<()> {
+        use std::io::Write;
         let contents = toml::to_string_pretty(config)?;
-        fs::write(self.config_path(), contents)?;
+        let temp = self.aic_dir().join("config.toml.new");
+        let mut handle = fs::File::create(&temp)?;
+        handle.write_all(contents.as_bytes())?;
+        handle.sync_all()?;
+        fs::rename(&temp, self.config_path())?;
         self.write_gitignore()?;
         Ok(())
     }
@@ -1107,6 +1157,63 @@ mod tests {
             fs::read_to_string(aic.join(".gitignore")).unwrap(),
             ProjectConfig::gitignore_content()
         );
+    }
+
+    /// Two `update_config` writers: the second blocks while the first holds
+    /// the transaction, then sees its edit. Without the lock it would read
+    /// the pre-edit file and its save would drop the first edit.
+    #[test]
+    fn update_config_serialises_writers_and_loses_no_edit() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        paths
+            .save_config(&ProjectConfig {
+                project: "x".into(),
+                default_tenant: "t".into(),
+                tenants: Vec::new(),
+            })
+            .unwrap();
+
+        let (inside_tx, inside_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let first = {
+            let paths = paths.clone();
+            std::thread::spawn(move || {
+                paths
+                    .update_config(|cfg| {
+                        inside_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        cfg.project.push('a');
+                        Ok(())
+                    })
+                    .unwrap();
+            })
+        };
+        inside_rx.recv().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let second = {
+            let paths = paths.clone();
+            std::thread::spawn(move || {
+                paths
+                    .update_config(|cfg| {
+                        cfg.project.push('b');
+                        Ok(())
+                    })
+                    .unwrap();
+                done_tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the second writer finished while the first held the transaction"
+        );
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(paths.load_config().unwrap().unwrap().project, "xab");
+        assert!(!paths.aic_dir().join("config.toml.new").exists());
     }
 
     #[test]
