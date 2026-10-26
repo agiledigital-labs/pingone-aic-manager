@@ -2326,7 +2326,7 @@ aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent c
 aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes] # prompts on remote deletion
 aic script watch [--tenant TENANT] [--yes] [--force=syntax-check] # auto-push each .cjs you save (Ctrl-C to stop)
 aic script status [<ref>] [--against FILE] [--check] [--json] # in sync / modified / remote / conflict / converged / deleted on remote
-aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
+aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote | --find-in-git REPO]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
 
@@ -2553,6 +2553,11 @@ Skipped entries are listed and make the command exit non-zero.
   (`aic script diff bravo/Foo | delta`). Default compares local vs tenant;
   `--local-vs-snapshot` shows your edits since the last pull,
   `--snapshot-vs-remote` shows tenant drift since you pulled.
+  `--find-in-git REPO` answers "which branch is this from?" instead of
+  diffing: it hashes the tenant's bytes as a git blob and lists every local
+  and remote-tracking branch head in `REPO` whose tree holds that blob, with
+  the path. Exact bytes only — a rebuild that differs by a newline is not a
+  match — and nothing is fetched, so fetch first for the latest heads.
 
 - **`who`** answers "who last touched this, and when?" — the recurring question
   when a script changed and nobody remembers doing it. It resolves AM's
