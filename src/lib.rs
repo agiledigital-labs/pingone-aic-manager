@@ -19,6 +19,7 @@ pub mod oauth;
 pub mod offboard;
 pub mod onboard;
 pub mod policy;
+pub mod promotion;
 pub(crate) mod pullguard;
 pub mod roles;
 pub mod saml;
