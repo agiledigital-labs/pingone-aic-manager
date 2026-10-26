@@ -257,8 +257,9 @@ pub enum CtxCommand {
     /// the ones its tokens request; `--add` makes its tokens request a scope
     /// the tenant already grants.
     ///
-    /// A tenant onboarded before a scope joined the onboarding set lacks it on
-    /// both sides. The SA cannot grant itself one — that is an admin's job in
+    /// A tenant onboarded before a scope joined the onboarding set may lack it
+    /// on either side — onboarding age cannot say which, so this shows both
+    /// lists. The SA cannot grant itself one — that is an admin's job in
     /// the console — so `--add` edits only `.aic/config.toml`, and refuses a
     /// scope the tenant has not granted.
     Scopes {

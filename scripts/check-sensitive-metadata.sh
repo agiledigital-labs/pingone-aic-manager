@@ -153,6 +153,30 @@ redact_stream() {
     # clean, which is exactly how this went wrong the first time: the tenant
     # predicate is the looser of the two (any host containing "example"), and
     # a single shared predicate silently redacted example.forgeblocks.com.
+    # Every tenant host on the line, in any case, rewritten to the
+    # placeholder; an allowed host is stepped over, never a reason to stop
+    # (a `break` here once left every host after `apidocs` on the line raw).
+    # Matching runs on a lowercased copy, whose offsets are the same.
+    function redact_tenants(line, domain,   out, low, host) {
+      out = ""
+      while (1) {
+        low = tolower(line)
+        if (!match(low, "[a-z0-9._-]+\\." dom_re(domain))) break
+        host = substr(line, RSTART, RLENGTH)
+        if (is_placeholder_tenant(host)) {
+          out = out substr(line, 1, RSTART + RLENGTH - 1)
+        } else {
+          out = out substr(line, 1, RSTART - 1) "<your-tenant>." domain
+        }
+        line = substr(line, RSTART + RLENGTH)
+      }
+      return out line
+    }
+    function dom_re(d,   r) {
+      r = d
+      gsub(/\./, "\\.", r)
+      return r
+    }
     function is_placeholder_tenant(h,   l) {
       l = tolower(h)
       return l ~ /^<[^>]+>\.(forgeblocks\.com|id\.forgerock\.io)$/ ||
@@ -183,18 +207,8 @@ redact_stream() {
       for (i = 1; i <= NR; i++) {
         line = buf[i]
 
-        while (match(line, /[A-Za-z0-9._-]+\.forgeblocks\.com/)) {
-          host = substr(line, RSTART, RLENGTH)
-          if (is_placeholder_tenant(host)) break
-          line = substr(line, 1, RSTART - 1) "<your-tenant>.forgeblocks.com" \
-                 substr(line, RSTART + RLENGTH)
-        }
-        while (match(line, /[A-Za-z0-9._-]+\.id\.forgerock\.io/)) {
-          host = substr(line, RSTART, RLENGTH)
-          if (is_placeholder_tenant(host)) break
-          line = substr(line, 1, RSTART - 1) "<your-tenant>.id.forgerock.io" \
-                 substr(line, RSTART + RLENGTH)
-        }
+        line = redact_tenants(line, "forgeblocks.com")
+        line = redact_tenants(line, "id.forgerock.io")
 
         # Capture-time only (REDACT_VALUES=1). An ESV value is not
         # client-identifying metadata, so it is no check rule and --fix must
@@ -470,6 +484,9 @@ case "$MODE" in
     roundtrip=$(printf '%s\n' \
       'GET https://openam-acme-sndbx.forgeblocks.com/am' \
       'GET https://openam-acme-dev.id.forgerock.io/environment' \
+      '{"docs":"https://apidocs.id.forgerock.io","tenant":"https://acme-dev.id.forgerock.io"}' \
+      'x example.forgeblocks.com then https://openam-acme-uat.forgeblocks.com' \
+      'GET https://OPENAM-ACME.FORGEBLOCKS.COM/am and https://Acme-Dev.ID.FORGEROCK.IO' \
       '  "entityId": "https://sso.acme.com.au",' \
       '  "trustedProviders": [' \
       '    "https://peer.acme.com.au|saml2"' \

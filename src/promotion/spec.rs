@@ -56,13 +56,31 @@ fn text(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+/// An optional string field: absent or `null` is `None`, a present value of
+/// another type is an error — never quietly read as absent.
+fn opt_text(value: &Value, key: &str) -> Result<Option<String>, String> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(other) => Err(format!("`{key}` is not a string: {other}")),
+    }
+}
+
+fn opt_bool(value: &Value, key: &str) -> Result<Option<bool>, String> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(other) => Err(format!("`{key}` is not a boolean: {other}")),
+    }
+}
+
 fn env(value: &Value, key: &str) -> Result<Option<EnvLock>, String> {
     match value.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(side) => Ok(Some(EnvLock {
             state: text(side, "state")
                 .ok_or_else(|| format!("`{key}` has no string `state`: {side}"))?,
-            proxy_state: text(side, "proxyState"),
+            proxy_state: opt_text(side, "proxyState")?,
         })),
     }
 }
@@ -73,7 +91,7 @@ pub fn lock_state(value: &Value) -> Result<LockState, String> {
     Ok(LockState {
         result: text(value, "result")
             .ok_or_else(|| format!("lock state has no string `result`: {value}"))?,
-        description: text(value, "description"),
+        description: opt_text(value, "description")?,
         lower: env(value, "lowerEnv")?,
         upper: env(value, "upperEnv")?,
     })
@@ -83,21 +101,27 @@ pub fn status(value: &Value) -> Result<Status, String> {
     Ok(Status {
         status: text(value, "status")
             .ok_or_else(|| format!("promotion status has no string `status`: {value}"))?,
-        message: text(value, "message"),
-        global_lock: text(value, "globalLock"),
-        blocking_error: value.get("blockingError").and_then(Value::as_bool),
-        timestamp: text(value, "timeStamp"),
+        message: opt_text(value, "message")?,
+        global_lock: opt_text(value, "globalLock")?,
+        blocking_error: opt_bool(value, "blockingError")?,
+        timestamp: opt_text(value, "timeStamp")?,
     })
 }
 
-/// Where the two endpoints that each describe the lock disagree. Measured on
-/// an upper environment: `lock/state` said `unlocked` (both sides) while the
-/// promotion status said `UNLOCKING` — so neither is reported as the answer.
+fn same(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// Where the two endpoints that each describe the lock describe it
+/// differently. Measured on an upper environment: `lock/state` said
+/// `unlocked` (both sides) while the promotion status said `UNLOCKING`. What
+/// is measured is that they *can* differ, not which fields must always be
+/// equal — `UNLOCKING` may be a transition, and the two reads are sequential —
+/// so a difference is reported as an indeterminate observation, never as the
+/// answer. Case is never a difference.
 pub fn disagreements(lock: &LockState, status: &Status) -> Vec<String> {
     let mut out = Vec::new();
-    let lock_word = lock.result.to_ascii_lowercase();
-    let status_word = status.status.to_ascii_lowercase();
-    if lock_word != status_word {
+    if !same(&lock.result, &status.status) {
         out.push(format!(
             "lock/state says `{}` but the promotion status says `{}`{}",
             lock.result,
@@ -110,7 +134,7 @@ pub fn disagreements(lock: &LockState, status: &Status) -> Vec<String> {
         ));
     }
     if let Some(global) = &status.global_lock
-        && global.to_ascii_lowercase() != lock_word
+        && !same(global, &lock.result)
     {
         out.push(format!(
             "the promotion status's globalLock is `{global}`, lock/state's result is `{}`",
@@ -119,11 +143,11 @@ pub fn disagreements(lock: &LockState, status: &Status) -> Vec<String> {
     }
     for (name, side) in [("lower", &lock.lower), ("upper", &lock.upper)] {
         if let Some(side) = side {
-            if side.state != lock.result {
+            if !same(&side.state, &lock.result) {
                 out.push(format!("the {name} environment is `{}`", side.state));
             }
             if let Some(proxy) = &side.proxy_state
-                && *proxy != side.state
+                && !same(proxy, &side.state)
             {
                 out.push(format!(
                     "the {name} environment's proxy is `{proxy}` while its state is `{}`",
@@ -133,6 +157,40 @@ pub fn disagreements(lock: &LockState, status: &Status) -> Vec<String> {
         }
     }
     out
+}
+
+/// One `status` run's conclusion, decided before anything is rendered so
+/// that `--json` and the table exit the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assessment {
+    pub lock: LockState,
+    pub status: Status,
+    pub disagreements: Vec<String>,
+}
+
+impl Assessment {
+    /// Reported separately from the disagreements: both endpoints can agree
+    /// and the status still carry a blocking error.
+    pub fn blocking(&self) -> bool {
+        self.status.blocking_error == Some(true)
+    }
+
+    /// Non-zero exit: the sources differ, or a blocking error is reported.
+    /// Agreeing `LOCKED` values pass — this is not a readiness check.
+    pub fn ok(&self) -> bool {
+        self.disagreements.is_empty() && !self.blocking()
+    }
+}
+
+pub fn assess(lock_raw: &Value, status_raw: &Value) -> Result<Assessment, String> {
+    let lock = lock_state(lock_raw)?;
+    let status = status(status_raw)?;
+    let disagreements = disagreements(&lock, &status);
+    Ok(Assessment {
+        lock,
+        status,
+        disagreements,
+    })
 }
 
 /// What a failed promotion call means, from its status and body. `None` is
@@ -270,6 +328,42 @@ mod tests {
             found.contains("upper environment's proxy is `locked`"),
             "{found}"
         );
+    }
+
+    #[test]
+    fn case_alone_is_not_a_disagreement() {
+        let lock = lock_state(&json!({
+            "result": "unlocked",
+            "lowerEnv": {"state": "UNLOCKED", "proxyState": "Unlocked"},
+            "upperEnv": {"state": "unlocked", "proxyState": "UNLOCKED"}
+        }))
+        .unwrap();
+        let status = status(&json!({"status": "Unlocked", "globalLock": "UNLOCKED"})).unwrap();
+        assert_eq!(disagreements(&lock, &status), Vec::<String>::new());
+    }
+
+    /// The discriminating case: everything agrees, and a blocking error is
+    /// reported anyway. It must fail the run on its own.
+    #[test]
+    fn a_blocking_error_fails_the_assessment_when_the_sources_agree() {
+        let lock = json!({"result": "unlocked"});
+        let clean = assess(
+            &lock,
+            &json!({"status": "UNLOCKED", "blockingError": false}),
+        )
+        .unwrap();
+        assert!(clean.ok());
+        let blocked = assess(&lock, &json!({"status": "UNLOCKED", "blockingError": true})).unwrap();
+        assert!(blocked.disagreements.is_empty());
+        assert!(!blocked.ok());
+    }
+
+    #[test]
+    fn a_present_optional_field_of_the_wrong_type_is_an_error_not_absent() {
+        assert!(status(&json!({"status": "UNLOCKED", "blockingError": "true"})).is_err());
+        assert!(status(&json!({"status": "UNLOCKED", "globalLock": 1})).is_err());
+        assert!(lock_state(&json!({"result": "unlocked", "lowerEnv": {"state": "unlocked", "proxyState": false}})).is_err());
+        assert!(status(&json!({"status": "UNLOCKED", "globalLock": null})).is_ok());
     }
 
     #[test]

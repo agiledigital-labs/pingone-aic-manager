@@ -46,11 +46,15 @@ struct AgentState {
     /// unlock and cached here for their token-cache + HTTP-connection-pool
     /// benefit. Cleared on `Lock` (and whenever the vault changes).
     clients: HashMap<String, Arc<AicClient>>,
-    /// `config.toml`'s mtime when `clients` were built. A client holds its
-    /// tenant's config — base URL and the scopes its tokens request — so an
-    /// edit such as `aic ctx scopes --add` must rebuild it, not wait for a
-    /// restart.
-    config_stamp: Option<SystemTime>,
+    /// `config.toml`'s **bytes** when `clients` were built (`None`: absent or
+    /// unreadable). A client holds its tenant's config — base URL and the
+    /// scopes its tokens request — so an edit such as `aic ctx scopes --add`
+    /// must rebuild it, not wait for a restart. Content, not mtime: an edit
+    /// that keeps the mtime must still invalidate. And a client is only
+    /// cached if it was built from these exact bytes, so a build that read
+    /// the old file cannot publish itself after another request has already
+    /// seen the edit and cleared the cache.
+    config_stamp: Option<Vec<u8>>,
     last_request: Instant,
     idle_timeout: Duration,
 }
@@ -747,15 +751,14 @@ async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
     Ok(())
 }
 
-/// Drop every cached client when `config.toml` changed since they were built.
+/// Drop every cached client when `config.toml`'s content changed since they
+/// were built. An unreadable file clears them every time.
 async fn refresh_config_stamp(state: Arc<RwLock<AgentState>>) {
     let path = state.read().await.paths.config_path();
-    let modified = std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok();
+    let content = std::fs::read(path).ok();
     let mut s = state.write().await;
-    if s.config_stamp != modified {
-        s.config_stamp = modified;
+    if content.is_none() || s.config_stamp != content {
+        s.config_stamp = content;
         s.clients.clear();
     }
 }
@@ -784,9 +787,17 @@ async fn build_client_from_cache(
         };
         (jwk, s.paths.clone())
     };
-    let cfg = paths
-        .load_config()?
-        .ok_or_else(|| Error::Config("no .aic/config.toml in current dir".into()))?;
+    let bytes = match std::fs::read(paths.config_path()) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::Config("no .aic/config.toml in current dir".into()));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let cfg: crate::config::ProjectConfig = toml::from_str(
+        std::str::from_utf8(&bytes)
+            .map_err(|e| Error::Config(format!(".aic/config.toml is not UTF-8: {e}")))?,
+    )?;
     let tcfg = cfg
         .tenants
         .iter()
@@ -794,11 +805,12 @@ async fn build_client_from_cache(
         .cloned()
         .ok_or_else(|| Error::Config(format!("unknown tenant: {tenant}")))?;
     let client = Arc::new(AicClient::new(tcfg, jwk));
-    state
-        .write()
-        .await
-        .clients
-        .insert(tenant.to_string(), client.clone());
+    let mut s = state.write().await;
+    // Serve the client either way, but cache it only when it was built from
+    // the config the cache is currently stamped with.
+    if s.config_stamp.as_deref() == Some(bytes.as_slice()) {
+        s.clients.insert(tenant.to_string(), client.clone());
+    }
     Ok(client)
 }
 
@@ -975,6 +987,72 @@ mod tests {
                 .iter()
                 .any(|s| s == "fr:idc:promotion:*")
         );
+    }
+
+    /// An edit that keeps the mtime still rebuilds: the stamp is content.
+    #[tokio::test]
+    async fn a_config_edit_that_keeps_its_mtime_still_rebuilds_clients() {
+        let project = test_project();
+        save_config(&project, &["sandbox"]);
+        let config = project.paths.config_path();
+        let fixed = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        set_mtime(&config, fixed);
+        project
+            .paths
+            .save_keys_plain(br#"{"sandbox":{"cached":"jwk"}}"#)
+            .unwrap();
+        let state = state(&project);
+        set_vault(state.clone(), Vault::Plain { cache: None }).await;
+        build_client("sandbox", state.clone()).await.unwrap();
+        assert!(state.read().await.clients.contains_key("sandbox"));
+
+        let mut cfg = project.paths.load_config().unwrap().unwrap();
+        cfg.tenants[0].scopes.push("fr:idc:promotion:*".into());
+        project.paths.save_config(&cfg).unwrap();
+        set_mtime(&config, fixed);
+
+        refresh_jwk_cache(state.clone()).await.unwrap();
+        assert!(!state.read().await.clients.contains_key("sandbox"));
+    }
+
+    /// The publication race: a build that read a config the cache is not
+    /// stamped with serves its client but does not cache it, so it cannot
+    /// outlive the edit under the new stamp.
+    #[tokio::test]
+    async fn a_client_built_from_an_unstamped_config_is_not_cached() {
+        let project = test_project();
+        save_config(&project, &["sandbox"]);
+        project
+            .paths
+            .save_keys_plain(br#"{"sandbox":{"cached":"jwk"}}"#)
+            .unwrap();
+        let state = state(&project);
+        set_vault(state.clone(), Vault::Plain { cache: None }).await;
+        refresh_jwk_cache(state.clone()).await.unwrap();
+
+        // The file changes after the stamp was taken and before the build.
+        let mut cfg = project.paths.load_config().unwrap().unwrap();
+        cfg.tenants[0].scopes.push("fr:idc:promotion:*".into());
+        project.paths.save_config(&cfg).unwrap();
+
+        let served = build_client_from_cache("sandbox", state.clone())
+            .await
+            .unwrap();
+        assert!(
+            served
+                .tenant
+                .scopes
+                .iter()
+                .any(|s| s == "fr:idc:promotion:*")
+        );
+        assert!(!state.read().await.clients.contains_key("sandbox"));
+
+        // Once a refresh has stamped the new content, the same build caches.
+        refresh_jwk_cache(state.clone()).await.unwrap();
+        build_client_from_cache("sandbox", state.clone())
+            .await
+            .unwrap();
+        assert!(state.read().await.clients.contains_key("sandbox"));
     }
 
     #[tokio::test]

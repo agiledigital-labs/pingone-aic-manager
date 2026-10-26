@@ -75,8 +75,11 @@ a JWK at account creation).
 2026-10-26, for `aic promotion` — `fr:idc:promotion:*`. That is for an SA aic
 **creates**; a pasted SA requests only the first four
 (`EXTERNAL_SA_SCOPES`), because requesting a scope the SA lacks fails the whole
-token (below). A stored scope list is never updated automatically. Which
-promotion calls `fr:idc:promotion:*` authorises is not yet verified.
+token (below). A stored scope list is never updated automatically. The
+promotion **reads** need it (measured 2026-10-26: without it every
+`/environment/promotion/*` GET is 403 "does not have sufficient scope" — see
+`23-promotion.md`); whether it also authorises lock and promote writes is not
+yet verified.
 
 ### Service-account scopes — two lists, and the SA owns neither
 

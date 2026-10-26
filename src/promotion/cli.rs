@@ -51,60 +51,75 @@ fn decoded<T>(result: std::result::Result<T, String>) -> Result<T> {
     result.map_err(Error::Config)
 }
 
+fn render_status(tenant: &str, a: &spec::Assessment) {
+    let none = || "-".to_string();
+    let (lock, status) = (&a.lock, &a.status);
+    let mut rows = vec![
+        vec![
+            "lock/state".into(),
+            lock.result.clone(),
+            lock.description.clone().unwrap_or_else(none),
+        ],
+        vec![
+            "promotion".into(),
+            status.status.clone(),
+            status.message.clone().unwrap_or_else(none),
+        ],
+    ];
+    for (name, side) in [("lower env", &lock.lower), ("upper env", &lock.upper)] {
+        if let Some(side) = side {
+            rows.push(vec![
+                name.into(),
+                side.state.clone(),
+                format!("proxy {}", side.proxy_state.clone().unwrap_or_else(none)),
+            ]);
+        }
+    }
+    print_table(&["SOURCE", "STATE", "DETAIL"], &rows);
+    if lock.upper.is_none() && lock.lower.is_none() {
+        println!(
+            "\n{tenant} returned no environment-pair details (measured: only the upper environment of a pair does)"
+        );
+    }
+    if a.blocking() {
+        println!("\nthe promotion status reports a blocking error");
+    }
+    if !a.disagreements.is_empty() {
+        println!("\nthe sources describe the lock differently, so neither is the answer:");
+        for line in &a.disagreements {
+            println!("  - {line}");
+        }
+    }
+}
+
 pub async fn run(command: PromotionCommand) -> Result<()> {
     match command {
         PromotionCommand::Status { tenant, json } => {
             let tenant = tenant_for(tenant)?;
             let lock_raw = explained(api::lock_state(&tenant).await, &tenant)?;
             let status_raw = explained(api::status(&tenant).await, &tenant)?;
+            // Decided before rendering, so --json exits exactly as the table does.
+            let assessment = decoded(spec::assess(&lock_raw, &status_raw))?;
             if json {
-                return print_json(&serde_json::json!({
+                print_json(&serde_json::json!({
                     "lockState": lock_raw,
                     "status": status_raw,
-                }));
+                    "disagreements": assessment.disagreements,
+                    "blockingError": assessment.blocking(),
+                    "ok": assessment.ok(),
+                }))?;
+            } else {
+                render_status(&tenant, &assessment);
             }
-            let lock = decoded(spec::lock_state(&lock_raw))?;
-            let status = decoded(spec::status(&status_raw))?;
-            let none = || "-".to_string();
-            let mut rows = vec![
-                vec![
-                    "lock/state".into(),
-                    lock.result.clone(),
-                    lock.description.clone().unwrap_or_else(none),
-                ],
-                vec![
-                    "promotion".into(),
-                    status.status.clone(),
-                    status.message.clone().unwrap_or_else(none),
-                ],
-            ];
-            for (name, side) in [("lower env", &lock.lower), ("upper env", &lock.upper)] {
-                if let Some(side) = side {
-                    rows.push(vec![
-                        name.into(),
-                        side.state.clone(),
-                        format!("proxy {}", side.proxy_state.clone().unwrap_or_else(none)),
-                    ]);
-                }
+            if assessment.ok() {
+                Ok(())
+            } else {
+                Err(Error::Config(if assessment.disagreements.is_empty() {
+                    "the promotion status reports a blocking error".into()
+                } else {
+                    "the promotion sources describe the lock differently".into()
+                }))
             }
-            print_table(&["SOURCE", "STATE", "DETAIL"], &rows);
-            if lock.upper.is_none() {
-                println!(
-                    "\n{tenant} reports no environment pair — on a pair, only the upper environment does"
-                );
-            }
-            let disagree = spec::disagreements(&lock, &status);
-            if !disagree.is_empty() {
-                println!("\nthe sources disagree, so neither is the answer:");
-                for line in &disagree {
-                    println!("  - {line}");
-                }
-                if status.blocking_error == Some(true) {
-                    println!("  - the promotion status reports a blocking error");
-                }
-                return Err(Error::Config("promotion state is inconsistent".into()));
-            }
-            Ok(())
         }
         PromotionCommand::Reports { tenant, json } => {
             let tenant = tenant_for(tenant)?;
@@ -173,7 +188,7 @@ pub async fn run(command: PromotionCommand) -> Result<()> {
             }
             let total: usize = groups.iter().map(|g| g.names.len()).sum();
             if total == 0 {
-                println!("\nno differences");
+                println!("\nno changes listed");
                 return Ok(());
             }
             println!("\n{total} change(s):");
