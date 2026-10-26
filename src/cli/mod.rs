@@ -175,6 +175,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::journey::cli::JourneyCommand,
     },
+    /// Promotion lock state, status and reports (read-only).
+    Promotion {
+        #[command(subcommand)]
+        command: crate::promotion::cli::PromotionCommand,
+    },
     /// IDM internal roles with caller-chosen ids.
     Role {
         #[command(subcommand)]
@@ -320,6 +325,7 @@ impl Command {
             | Self::Logs { .. }
             | Self::Journey { .. }
             | Self::Role { .. }
+            | Self::Promotion { .. }
             | Self::Access { .. }
             | Self::Policy { .. }
             | Self::JwtBearer { .. }
@@ -417,6 +423,7 @@ pub(crate) async fn dispatch(
         Some(Command::Logs { command }) => crate::logs::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Role { command }) => crate::roles::cli::run(command).await,
+        Some(Command::Promotion { command }) => crate::promotion::cli::run(command).await,
         Some(Command::Access { command }) => crate::access::cli::run(command).await,
         Some(Command::Policy { command }) => crate::policy::cli::run(command).await,
         Some(Command::JwtBearer { command }) => crate::jwtbearer::cli::run(command).await,
@@ -2689,6 +2696,7 @@ scopes = []
             (vec!["aic", "saml", "list"], true),
             (vec!["aic", "saml", "show", "https://sp.example.com"], true),
             (vec!["aic", "secretmap", "list"], true),
+            (vec!["aic", "promotion", "status"], true),
             (vec!["aic", "workspace", "init"], true),
             (vec!["aic", "script", "list"], true),
         ];
@@ -2715,6 +2723,7 @@ scopes = []
                 | Command::Logs { .. }
                 | Command::Journey { .. }
                 | Command::Role { .. }
+                | Command::Promotion { .. }
                 | Command::Access { .. }
                 | Command::Policy { .. }
                 | Command::JwtBearer { .. }
