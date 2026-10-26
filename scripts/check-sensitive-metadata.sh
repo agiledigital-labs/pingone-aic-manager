@@ -250,7 +250,11 @@ history_blobs() {
 # The added lines of one staged file, numbered as `N:line`.
 staged_lines() {
   # `:(literal)` so a name holding `*` or `?` is that one file, not a glob.
-  git diff --cached -U0 -- ":(literal)$1" \
+  # The parser reads raw `@@`/`+` markers, so caller configuration that
+  # changes the patch's form (color.ui=always, an external diff, a textconv
+  # filter) must not apply: each turned every staged line into nothing to
+  # scan, and an empty stream reads as clean.
+  git diff --cached --no-color --no-ext-diff --no-textconv -U0 -- ":(literal)$1" \
     | awk '/^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); next }
            /^\+/ && !/^\+\+\+/ { print n":"substr($0,2); n++ }'
 }
@@ -714,6 +718,16 @@ case "$MODE" in
         GIT_LITERAL_PATHSPECS=1 bash "$script" --staged
       run "an inherited GIT_ICASE_PATHSPECS still scans staged lines" 1 \
         GIT_ICASE_PATHSPECS=1 bash "$script" --staged
+      run "color.ui=always still scans staged lines" 1 \
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=always \
+        bash "$script" --staged
+      run "an external diff still scans staged lines" 1 \
+        GIT_EXTERNAL_DIFF=true bash "$script" --staged
+      printf 'staged.md diff=blank\n' >"$repo/.git/info/attributes"
+      run "a textconv filter still scans staged lines" 1 \
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.blank.textconv GIT_CONFIG_VALUE_0=true \
+        bash "$script" --staged
+      rm -f "$repo/.git/info/attributes"
       git rm -q --cached staged.md >/dev/null && rm -f staged.md
       mkdir locked && printf '%s\n' "$leak" >locked/f.md && git add locked >/dev/null
       git commit -qm locked >/dev/null && chmod a-w locked
