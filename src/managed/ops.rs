@@ -731,7 +731,11 @@ pub fn apply_relationship_spec(
     }
 
     if let Some(previous) = previous {
+        // A reverse is identified by object AND key: moving it to a new
+        // target is a retarget, not a rename, and is not this guard's to
+        // refuse (whether retargeting a mapped pair is safe is unmeasured).
         let reverse_renamed = spec.reverse != ReverseCardinality::None
+            && previous.old_target == spec.target_object
             && previous
                 .old_reverse_key
                 .as_deref()
@@ -812,6 +816,13 @@ pub fn apply_relationship_spec(
 /// Deletes a relationship property and, when it names one, its reverse on the
 /// target object. Both ends go in one document so the write never leaves a
 /// reverse pointing at a property that no longer exists.
+///
+/// Each end is held to the same rules as `field delete` — a standard field is
+/// not deletable — and the reverse is deleted only if it really is this
+/// relationship's other end: a relationship back to the source that names this
+/// key or names nothing. A declaration pointing at a scalar, or at some other
+/// relationship, is refused rather than followed, because following it deletes
+/// a property nobody asked about. A reverse that does not exist is fine.
 pub fn apply_delete_relationship(
     doc: &Value,
     source_object: &str,
@@ -819,16 +830,62 @@ pub fn apply_delete_relationship(
 ) -> Result<Value, String> {
     let source =
         crate::managed::api::object_named(doc, source_object).map_err(|error| error.to_string())?;
-    let parsed = crate::managed::state::properties(source)
+    let property = crate::managed::state::properties(source)
         .and_then(|properties| properties.get(key))
-        .and_then(parse_relationship)
+        .ok_or_else(|| format!("field '{source_object}.{key}' no longer exists"))?;
+    let parsed = parse_relationship(property)
         .ok_or_else(|| format!("field '{source_object}.{key}' is not a relationship"))?;
+    ensure_deletable(source, source_object, key, property)?;
+
+    let reverse = match &parsed.reverse_key {
+        Some(reverse_key) => {
+            let target = crate::managed::api::object_named(doc, &parsed.target)
+                .map_err(|error| error.to_string())?;
+            match crate::managed::state::properties(target).and_then(|p| p.get(reverse_key)) {
+                None => None,
+                Some(reverse) => {
+                    let reciprocal = parse_relationship(reverse).is_some_and(|back| {
+                        back.target == source_object
+                            && back.reverse_key.as_deref().is_none_or(|named| named == key)
+                    });
+                    if !reciprocal {
+                        return Err(format!(
+                            "'{source_object}.{key}' declares '{}.{reverse_key}' as its reverse, \
+                             but that property is not a relationship back to it; refusing to \
+                             delete it. Use `field delete {source_object}.{key}` to remove only \
+                             this end",
+                            parsed.target
+                        ));
+                    }
+                    ensure_deletable(target, &parsed.target, reverse_key, reverse)?;
+                    Some(reverse_key.clone())
+                }
+            }
+        }
+        None => None,
+    };
+
     let mut updated = doc.clone();
     remove_relationship_property(&mut updated, source_object, key, true)?;
-    if let Some(reverse_key) = &parsed.reverse_key {
-        remove_relationship_property(&mut updated, &parsed.target, reverse_key, false)?;
+    if let Some(reverse_key) = reverse {
+        remove_relationship_property(&mut updated, &parsed.target, &reverse_key, true)?;
     }
     Ok(updated)
+}
+
+fn ensure_deletable(
+    object_def: &Value,
+    object_name: &str,
+    key: &str,
+    property: &Value,
+) -> Result<(), String> {
+    if crate::managed::state::field_capability_for_property(object_def, key, property).delete {
+        Ok(())
+    } else {
+        Err(format!(
+            "'{object_name}.{key}' is a standard field and cannot be deleted"
+        ))
+    }
 }
 
 fn remove_relationship_property(
@@ -4850,6 +4907,87 @@ mod tests {
 
         let error = apply_delete_relationship(&updated, "a", "keep").unwrap_err();
         assert_eq!(error, "field 'a.keep' is not a relationship");
+    }
+
+    #[test]
+    fn relationship_delete_from_the_reverse_end_prunes_the_other_required_list() {
+        let mut spec = relationship_spec(Cardinality::One, ReverseCardinality::One);
+        spec.required = true;
+        let doc = apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+        assert_eq!(
+            crate::managed::api::object_named(&doc, "a").unwrap()["schema"]["required"],
+            json!(["owner"])
+        );
+        let updated = apply_delete_relationship(&doc, "b", "owned").unwrap();
+        let a = crate::managed::api::object_named(&updated, "a").unwrap();
+        assert_eq!(a["schema"]["properties"], json!({}));
+        assert_eq!(a["schema"]["required"], json!([]));
+    }
+
+    #[test]
+    fn relationship_delete_refuses_a_reverse_that_is_not_its_other_end() {
+        let doc = |reverse: Value| {
+            json!({"objects": [
+                {"name": "a", "schema": {"properties": {
+                    "owner": one_relationship("managed/b", Some("owned")),
+                }, "order": ["owner"], "required": []}},
+                {"name": "b", "schema": {"properties": {"owned": reverse},
+                    "order": ["owned"], "required": []}},
+                {"name": "c", "schema": {"properties": {}, "order": [], "required": []}},
+            ]})
+        };
+        for impostor in [
+            json!({"type": "string"}),
+            one_relationship("managed/c", None),
+            one_relationship("managed/a", Some("somethingElse")),
+        ] {
+            let error = apply_delete_relationship(&doc(impostor), "a", "owner").unwrap_err();
+            assert!(error.contains("not a relationship back to it"), "{error}");
+        }
+        // Controls: the real reverse, with or without naming us back, goes.
+        for reverse in [
+            one_relationship("managed/a", Some("owner")),
+            one_relationship("managed/a", None),
+        ] {
+            let updated = apply_delete_relationship(&doc(reverse), "a", "owner").unwrap();
+            let b = crate::managed::api::object_named(&updated, "b").unwrap();
+            assert_eq!(b["schema"]["properties"], json!({}));
+        }
+    }
+
+    #[test]
+    fn relationship_delete_refuses_standard_fields_like_field_delete_does() {
+        let doc = json!({"objects": [
+            {"name": "alpha_user", "meta": {}, "schema": {"properties": {
+                "roles": many_relationship("managed/b", None),
+            }, "order": ["roles"], "required": []}},
+            {"name": "b", "schema": {"properties": {}, "order": [], "required": []}},
+        ]});
+        let object = crate::managed::api::object_named(&doc, "alpha_user").unwrap();
+        assert!(apply_delete_field(object, "roles", &DeleteFieldSpec).is_err());
+        let error = apply_delete_relationship(&doc, "alpha_user", "roles").unwrap_err();
+        assert!(error.contains("standard field"), "{error}");
+    }
+
+    #[test]
+    fn retargeting_a_reverse_to_another_object_is_not_a_rename() {
+        let original = apply_relationship_spec(
+            &relationship_doc(&["a", "b", "c"]),
+            &relationship_spec(Cardinality::One, ReverseCardinality::One),
+            None,
+        )
+        .unwrap();
+        let previous = PreviousRelationship {
+            old_key: "owner".into(),
+            old_target: "b".into(),
+            old_reverse_key: Some("owned".into()),
+        };
+        let mut retarget = relationship_spec(Cardinality::One, ReverseCardinality::One);
+        retarget.target_object = "c".into();
+        retarget.reverse_key = "owners".into();
+        let updated = apply_relationship_spec(&original, &retarget, Some(&previous)).unwrap();
+        let c = crate::managed::api::object_named(&updated, "c").unwrap();
+        assert!(c["schema"]["properties"].get("owners").is_some());
     }
 
     #[test]

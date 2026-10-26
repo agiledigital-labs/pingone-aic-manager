@@ -537,7 +537,10 @@ unmeasured and refused to be safe. `aic` has no way to migrate links to a new
 key, and delete-and-recreate is not a measured repair.
 
 `relationship delete` removes the property and, when it declares one, the
-reverse property on the target, in one write.
+reverse property on the target, in one write. It refuses when the declared
+reverse is not a relationship back to the source (use `field delete` for the
+one property), and when either end is a standard field, as `field delete`
+does.
 
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the
