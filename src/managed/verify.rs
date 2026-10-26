@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::managed::ops::parse_relationship;
+use crate::managed::ops::declared_reverse_key;
 
 /// One end of a relationship as `config/managed` and `repo.ds` describe it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -224,17 +224,16 @@ fn mapping_problems(end: &End, partner: Option<&End>, out: &mut Vec<Problem>) {
 pub fn pair(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Option<PairReport> {
     let forward = end(managed, repo_ds, object, key)?;
     let property = properties(managed, object)?.get(key)?;
-    let reverse_key = parse_relationship(property).and_then(|parsed| parsed.reverse_key);
+    let reverse_key = declared_reverse_key(property).map(str::to_string);
     let mut problems = Vec::new();
     let mut reverse = None;
     if let Some(reverse_key) = reverse_key {
-        // A reverse is only defined for a single target; a multi-target
-        // forward names one key that every target is expected to hold, and
-        // this checks the first, as the editor does.
+        // A multi-target forward names one key that every target would have
+        // to hold; this checks the first managed one, whatever its position.
         let target_object = forward
             .targets
-            .first()
-            .and_then(|path| path.strip_prefix("managed/"))
+            .iter()
+            .find_map(|path| path.strip_prefix("managed/"))
             .map(str::to_string);
         match target_object
             .as_deref()
@@ -247,8 +246,7 @@ pub fn pair(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Option
             }),
             Some((target, prop)) => {
                 let back = format!("managed/{object}");
-                let reciprocal = parse_relationship(prop)
-                    .is_some_and(|parsed| parsed.reverse_key.as_deref().is_none_or(|k| k == key))
+                let reciprocal = declared_reverse_key(prop).is_none_or(|k| k == key)
                     && end(managed, repo_ds, target, &reverse_key)
                         .is_some_and(|end| end.targets.contains(&back));
                 if reciprocal {
@@ -577,6 +575,16 @@ mod tests {
                 key: "owned".into()
             }]
         );
+    }
+
+    #[test]
+    fn a_forward_listing_internal_role_first_still_finds_its_reverse() {
+        let mut doc = managed();
+        doc["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"] =
+            json!([{"path": "internal/role"}, {"path": "managed/b"}]);
+        let report = report(&doc, &json!({}), "a", Some("owner")).unwrap();
+        assert_eq!(report.pairs[0].reverse.as_ref().unwrap().key, "owned");
+        assert_eq!(report.pairs[0].problems, vec![]);
     }
 
     #[test]

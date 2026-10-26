@@ -839,7 +839,8 @@ pub(crate) async fn run_with_runtime(
             }
             if untracked > 0 {
                 println!(
-                    "  {untracked} untracked script(s) skipped (pull one by name to adopt it)"
+                    "  {untracked} script(s) skipped with no synced baseline — untracked, \
+                     missing locally, or an unreadable snapshot (pull one by name to adopt it)"
                 );
             }
             if outcomes.is_empty() {
