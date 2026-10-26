@@ -567,18 +567,26 @@ relationship set … --target test_from` (was `test_to`) the `PUT` was a 200 and
 '/hasOneHasNone' does not exist"` — it resolved against the mapping's old
 `resourcePath` — and that failed `PATCH` **still removed the end's existing
 link** (the record's `_rev` moved and the property read `null`). So `aic`
-refuses a retarget when either old end is mapped.
+refuses a retarget when either old end is mapped. Only a mapped `reference`
+with no reverse was measured; refusing the same move when the mapped end is a
+`reverseReference` is a precaution.
 
 **Deleting a mapped end leaves its mapping** (same probe): after `aic managed
 relationship delete`, `repo.ds` still held the `fr-idm-reference-7` entry on
 three reads over a minute. Recreating the **same key with the same target**
 through `config/managed` picked that mapping up again: a new link had the
 mapped `<uuid>-<counter>` edge id and was found by `<key> pr`. So delete is
-allowed, with a note naming what stays mapped; writing an end over a leftover
-mapping that names a **different** target is refused, because that is the
-retarget state above. An object rename that a mapping names — its own
-`managed/<obj>` entry, or another mapping's `resourcePath` — is refused on the
-same reasoning; that one is inferred, not measured. The config document was
+allowed, with a note naming what stays mapped. What a leftover mapping can
+then contradict is checked on the whole resulting document, at the one function
+every `config/managed` write goes through (`managed::api::replace_managed_confirmed`,
+`managed::verify::transition_refusal`): an end recreated over a mapping naming a
+**different** target (the retarget state above), a pair recreated with a new
+key whose partner's `reverseReference` still reads through the old one, a pair
+left with one end mapped, and a scalar reusing a mapped key. Only the first is
+the measured state; the others are the disagreements `verify` reports, refused
+because nothing has shown them to be harmless. An object rename that a mapping
+names — its own `managed/<obj>` entry, or another mapping's `resourcePath` — is
+refused on the same reasoning; that one is inferred, not measured. The config document was
 restored from a backup afterwards and re-read for five minutes.
 
 A mapping can also outlive its property: the sandbox's `managed/test_from`
@@ -597,8 +605,11 @@ config validation accepts it — not where the operator's 400 came from.
 ends **disagree**: exactly one end mapped (the measured broken state), a
 `reverseReference` whose `propertyName` is not its partner's key, a mapping
 whose `resourcePath` is not a declared target, both ends mapped with the same
-`type`, and a `repo.ds` entry naming a property `config/managed` does not
-declare. Mode alone is never a finding. It then samples links from both ends
+`type`, a relationship mapping on a property declared as a scalar, and a
+`repo.ds` entry naming a property `config/managed` does not
+declare. Mode alone is never a finding. A relationship with several
+`managed/` targets is one pair per target; a non-`managed/` target is listed as
+unchecked. It then samples links from both ends
 and requires the far end to list the near record under the **same**
 `_refProperties._id`. A pair whose ends have no links in the records read is
 reported **untested**, not healthy. Measured shapes it relies on:
@@ -685,8 +696,11 @@ re-listed to confirm nothing was left behind.
 Practical consequence for tooling: a delete must sweep inbound relationships
 itself (remove the property, and prune its key from `schema.order` and
 `schema.required` — neither is auto-reconciled), because nothing server-side
-will refuse or clean up the dangling path. `aic`'s `D` (delete object) does this
-and lists the properties it will remove before confirming.
+will refuse or clean up the dangling path. `aic`'s `D` (delete object) and
+`aic managed object delete` do this and list the properties before confirming.
+A property that also targets other objects is not removed — only the deleted
+object's `resourceCollection` entry goes, so its links to the other targets
+survive — and a standard field the delete would remove outright is refused.
 
 ## Hook scripts (verified 2026-06-13)
 
@@ -1324,6 +1338,18 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-26 — `config/managed` write-boundary check and `verify`
+  coverage, sandbox. `aic managed field add test_from.hasOneHasOne --type
+  string` (a key `config/managed` no longer declares but `repo.ds` still maps as
+  a `reference` to `managed/test_to`) was refused before any `PUT`; `verify
+  test_from.hasOneHasOne` afterwards still reported the key undeclared. Control:
+  `field add`/`field delete` of the unmapped `test_from.zzBoundaryProbe` both
+  wrote, and `config/managed` then read equal to a backup taken first on three
+  reads over 40 s. `repo.ds` maps `_meta` (to `managed/<realm>_usermeta`) and
+  `_notifications` (to `internal/notification`) on `alpha_user` and
+  `bravo_user` as `reference`s that `config/managed` never declares; `verify
+  alpha_user` now skips them and exits 0, with `authzRoles` → `internal/role`
+  listed as unchecked and three sampled links resolving.
 - Date: 2026-10-26 — mapped-end delete and retarget, sandbox, on
   `test_from.hasOneHasNone` (mapped, no reverse). Backed up `config/managed`
   and `repo.ds`; `aic managed relationship delete`, then three `repo.ds` reads

@@ -66,6 +66,9 @@ pub enum Problem {
     },
     /// A `repo.ds` entry for a property `config/managed` does not declare.
     StaleMapping { object: String, key: String },
+    /// A `repo.ds` relationship mapping on a property declared as something
+    /// other than a relationship — a key reused after a delete.
+    MappingOnScalar { object: String, key: String },
 }
 
 impl Problem {
@@ -100,6 +103,10 @@ impl Problem {
             Self::StaleMapping { object, key } => {
                 format!("repo.ds maps {object}.{key}, which config/managed does not declare")
             }
+            Self::MappingOnScalar { object, key } => format!(
+                "repo.ds maps {object}.{key} as a relationship, but config/managed declares it \
+                 as something else"
+            ),
         }
     }
 }
@@ -110,6 +117,10 @@ pub struct PairReport {
     pub forward: End,
     pub reverse: Option<End>,
     pub problems: Vec<Problem>,
+    /// Targets outside `config/managed` (`internal/role`, say), whose schema
+    /// this check does not read: neither passed nor failed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unchecked: Vec<String>,
 }
 
 impl PairReport {
@@ -194,7 +205,7 @@ fn label(end: &End) -> String {
     format!("{}.{}", end.object, end.key)
 }
 
-fn mapping_problems(end: &End, partner: Option<&End>, out: &mut Vec<Problem>) {
+fn mapping_problems(end: &End, partner_key: Option<&str>, out: &mut Vec<Problem>) {
     let Some(mapping) = &end.mapping else {
         return;
     };
@@ -209,80 +220,118 @@ fn mapping_problems(end: &End, partner: Option<&End>, out: &mut Vec<Problem>) {
     }
     if mapping.kind == "reverseReference" {
         let names = mapping.property_name.clone().unwrap_or_default();
-        let expected = partner.map(|partner| partner.key.clone());
-        if expected.as_deref() != Some(names.as_str()) {
+        if partner_key != Some(names.as_str()) {
             out.push(Problem::MappingPartner {
                 end: label(end),
                 names,
-                expected: expected.unwrap_or_else(|| "a declared reverse".into()),
+                expected: partner_key.unwrap_or("a declared reverse").to_string(),
             });
         }
     }
 }
 
-/// Builds the report for one relationship end and its declared reverse.
-pub fn pair(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Option<PairReport> {
-    let forward = end(managed, repo_ds, object, key)?;
-    let property = properties(managed, object)?.get(key)?;
+/// The reports for one relationship end: one per `managed/` target, each
+/// with that target's reverse. A multi-target forward names one reverse key
+/// that every managed target must hold, so each is checked — checking only
+/// one let a second target missing its reverse pass (Astra round 4).
+///
+/// Problems that belong to the forward end alone — its own mapping — are
+/// carried on the first report only, so they count once.
+pub fn pairs(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<PairReport> {
+    let Some(forward) = end(managed, repo_ds, object, key) else {
+        return Vec::new();
+    };
+    let Some(property) = properties(managed, object).and_then(|props| props.get(key)) else {
+        return Vec::new();
+    };
     let reverse_key = declared_reverse_key(property).map(str::to_string);
-    let mut problems = Vec::new();
-    let mut reverse = None;
-    if let Some(reverse_key) = reverse_key {
-        // A multi-target forward names one key that every target would have
-        // to hold; this checks the first managed one, whatever its position.
-        let target_object = forward
-            .targets
-            .iter()
-            .find_map(|path| path.strip_prefix("managed/"))
-            .map(str::to_string);
-        match target_object
-            .as_deref()
-            .and_then(|target| properties(managed, target).map(|props| (target, props)))
-            .and_then(|(target, props)| props.get(&reverse_key).map(|prop| (target, prop)))
-        {
-            None => problems.push(Problem::ReverseMissing {
-                object: target_object.unwrap_or_default(),
-                key: reverse_key,
-            }),
-            Some((target, prop)) => {
-                let back = format!("managed/{object}");
-                let reciprocal = declared_reverse_key(prop).is_none_or(|k| k == key)
-                    && end(managed, repo_ds, target, &reverse_key)
-                        .is_some_and(|end| end.targets.contains(&back));
-                if reciprocal {
-                    reverse = end(managed, repo_ds, target, &reverse_key);
-                } else {
-                    problems.push(Problem::ReverseNotReciprocal {
-                        object: target.to_string(),
-                        key: reverse_key,
-                    });
+    let mut forward_problems = Vec::new();
+    mapping_problems(&forward, reverse_key.as_deref(), &mut forward_problems);
+    let (managed_targets, unchecked): (Vec<&String>, Vec<&String>) = forward
+        .targets
+        .iter()
+        .partition(|path| path.starts_with("managed/"));
+    let unchecked: Vec<String> = unchecked.into_iter().cloned().collect();
+    let mut reports = Vec::new();
+    if let Some(reverse_key) = &reverse_key {
+        for path in &managed_targets {
+            let target = &path["managed/".len()..];
+            let mut problems = Vec::new();
+            let reverse = reverse_end(managed, repo_ds, object, key, target, reverse_key);
+            match &reverse {
+                Err(problem) => problems.push(problem.clone()),
+                Ok(reverse) => {
+                    mapping_problems(reverse, Some(key), &mut problems);
+                    match (&forward.mapping, &reverse.mapping) {
+                        (Some(_), None) => problems.push(Problem::Mixed {
+                            mapped: label(&forward),
+                            unmapped: label(reverse),
+                        }),
+                        (None, Some(_)) => problems.push(Problem::Mixed {
+                            mapped: label(reverse),
+                            unmapped: label(&forward),
+                        }),
+                        (Some(a), Some(b)) if a.kind == b.kind => {
+                            problems.push(Problem::MappingKinds {
+                                kind: a.kind.clone(),
+                            })
+                        }
+                        _ => {}
+                    }
                 }
             }
+            reports.push(PairReport {
+                forward: forward.clone(),
+                reverse: reverse.ok(),
+                problems,
+                unchecked: Vec::new(),
+            });
         }
     }
-    mapping_problems(&forward, reverse.as_ref(), &mut problems);
-    if let Some(reverse) = &reverse {
-        mapping_problems(reverse, Some(&forward), &mut problems);
-        match (&forward.mapping, &reverse.mapping) {
-            (Some(_), None) => problems.push(Problem::Mixed {
-                mapped: label(&forward),
-                unmapped: label(reverse),
-            }),
-            (None, Some(_)) => problems.push(Problem::Mixed {
-                mapped: label(reverse),
-                unmapped: label(&forward),
-            }),
-            (Some(a), Some(b)) if a.kind == b.kind => problems.push(Problem::MappingKinds {
-                kind: a.kind.clone(),
-            }),
-            _ => {}
-        }
+    if reports.is_empty() {
+        reports.push(PairReport {
+            forward,
+            reverse: None,
+            problems: Vec::new(),
+            unchecked: Vec::new(),
+        });
     }
-    Some(PairReport {
-        forward,
-        reverse,
-        problems,
-    })
+    let first = &mut reports[0];
+    forward_problems.append(&mut first.problems);
+    first.problems = forward_problems;
+    first.unchecked = unchecked;
+    reports
+}
+
+/// `target.reverse_key` as the reverse of `object.key`, or why it is not one.
+fn reverse_end(
+    managed: &Value,
+    repo_ds: &Value,
+    object: &str,
+    key: &str,
+    target: &str,
+    reverse_key: &str,
+) -> Result<End, Problem> {
+    let missing = || Problem::ReverseMissing {
+        object: target.to_string(),
+        key: reverse_key.to_string(),
+    };
+    let property = properties(managed, target)
+        .and_then(|props| props.get(reverse_key))
+        .ok_or_else(missing)?;
+    let back = format!("managed/{object}");
+    match end(managed, repo_ds, target, reverse_key) {
+        Some(reverse)
+            if declared_reverse_key(property).is_none_or(|k| k == key)
+                && reverse.targets.contains(&back) =>
+        {
+            Ok(reverse)
+        }
+        _ => Err(Problem::ReverseNotReciprocal {
+            object: target.to_string(),
+            key: reverse_key.to_string(),
+        }),
+    }
 }
 
 /// Every relationship on `object` (or just `key`), each pair once, plus
@@ -298,11 +347,28 @@ pub fn report(
     let mut stale = Vec::new();
     if let Some(mapped) = mappings_of(repo_ds, object) {
         for mapped_key in mapped.keys() {
-            if key.is_none_or(|key| key == mapped_key) && !props.contains_key(mapped_key) {
-                stale.push(Problem::StaleMapping {
+            // `_meta` and `_notifications` are IDM's own relationships, mapped
+            // on every user object and never declared in `config/managed`
+            // (sandbox, 2026-10-26): absent from the schema is their normal
+            // state, not a leftover.
+            if key.is_some_and(|key| key != mapped_key)
+                || mapped_key.starts_with('_')
+                || mapping_for(repo_ds, object, mapped_key).is_none()
+            {
+                continue;
+            }
+            match props.get(mapped_key) {
+                None => stale.push(Problem::StaleMapping {
                     object: object.to_string(),
                     key: mapped_key.clone(),
-                });
+                }),
+                Some(property) if !crate::managed::state::is_relationship_property(property) => {
+                    stale.push(Problem::MappingOnScalar {
+                        object: object.to_string(),
+                        key: mapped_key.clone(),
+                    })
+                }
+                Some(_) => {}
             }
         }
     }
@@ -318,7 +384,13 @@ pub fn report(
                 });
             };
             if !crate::managed::state::is_relationship_property(property) {
-                return Err(format!("'{object}.{key}' is not a relationship"));
+                if stale.is_empty() {
+                    return Err(format!("'{object}.{key}' is not a relationship"));
+                }
+                return Ok(Report {
+                    pairs: Vec::new(),
+                    stale,
+                });
             }
             vec![key]
         }
@@ -331,16 +403,15 @@ pub fn report(
     let mut seen = BTreeSet::new();
     let mut pairs = Vec::new();
     for key in keys {
-        let Some(pair) = pair(managed, repo_ds, object, key) else {
-            continue;
-        };
-        let mut identity = vec![label(&pair.forward)];
-        if let Some(reverse) = &pair.reverse {
-            identity.push(label(reverse));
-        }
-        identity.sort();
-        if seen.insert(identity) {
-            pairs.push(pair);
+        for pair in self::pairs(managed, repo_ds, object, key) {
+            let mut identity = vec![label(&pair.forward)];
+            if let Some(reverse) = &pair.reverse {
+                identity.push(label(reverse));
+            }
+            identity.sort();
+            if seen.insert(identity) {
+                pairs.push(pair);
+            }
         }
     }
     Ok(Report { pairs, stale })
@@ -388,29 +459,6 @@ pub fn repoint_refusal(
          (docs/api/10-managed-objects.md, \"Relationship storage\"). Create a new relationship \
          instead",
         describe_ends(&ends)
-    ))
-}
-
-/// Refuses writing a relationship end over a `repo.ds` mapping that names a
-/// different target — a mapping a delete left behind. Recreating with the
-/// same target reused it (measured); a different target is the state a
-/// retarget was measured to break.
-pub fn leftover_refusal(repo_ds: &Value, ends: &[(&str, &str, &str)]) -> Result<(), String> {
-    let conflicts: Vec<String> = ends
-        .iter()
-        .filter_map(|(object, key, target)| {
-            let path = mapped(repo_ds, object, key)?.resource_path?;
-            (path != format!("managed/{target}"))
-                .then(|| format!("{object}.{key} (mapped to {path}, now to managed/{target})"))
-        })
-        .collect();
-    if conflicts.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "refusing: config/repo.ds already maps {} to another target, and aic cannot change \
-         it. Use another key, or repair the mapping in the console",
-        conflicts.join(", ")
     ))
 }
 
@@ -478,6 +526,146 @@ fn describe_ends(ends: &[String]) -> String {
     }
 }
 
+/// The facts about a property that its `repo.ds` mapping depends on.
+#[derive(Debug, PartialEq, Eq)]
+struct Shape {
+    relationship: bool,
+    targets: Vec<String>,
+    reverse: Option<String>,
+    array: bool,
+}
+
+fn shapes(doc: &Value) -> Vec<((String, String), Shape)> {
+    let mut out = Vec::new();
+    let Ok(objects) = crate::managed::api::objects(doc) else {
+        return out;
+    };
+    for object in objects {
+        let Some(name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        for (key, property) in crate::managed::state::properties(object)
+            .into_iter()
+            .flatten()
+        {
+            let relationship = crate::managed::state::is_relationship_property(property);
+            let node = property.get("items").unwrap_or(property);
+            out.push((
+                (name.to_string(), key.clone()),
+                Shape {
+                    relationship,
+                    targets: node
+                        .get("resourceCollection")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|entry| entry.get("path").and_then(Value::as_str))
+                        .map(str::to_string)
+                        .collect(),
+                    reverse: declared_reverse_key(property).map(str::to_string),
+                    array: property.get("type").and_then(Value::as_str) == Some("array"),
+                },
+            ));
+        }
+    }
+    out
+}
+
+/// The properties `after` adds, or changes in a way a mapping depends on.
+fn changed(before: &Value, after: &Value) -> Vec<(String, String)> {
+    let before = shapes(before);
+    shapes(after)
+        .into_iter()
+        .filter(|(id, shape)| !before.iter().any(|(b, old)| b == id && old == shape))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Whether writing `after` over `before` needs `config/repo.ds` consulted:
+/// some property was added, or changed its relationship shape. A write that
+/// only removes, or edits nothing a mapping depends on (a hook body, a title),
+/// does not — so those writes never depend on repo.ds being readable.
+pub fn needs_repo_ds(before: &Value, after: &Value) -> bool {
+    !changed(before, after).is_empty()
+}
+
+fn mapping_problem(problem: &Problem) -> bool {
+    matches!(
+        problem,
+        Problem::Mixed { .. }
+            | Problem::MappingKinds { .. }
+            | Problem::MappingTarget { .. }
+            | Problem::MappingPartner { .. }
+    )
+}
+
+fn mapping_problems_in(doc: &Value, repo_ds: &Value) -> Vec<Problem> {
+    let mut out: Vec<Problem> = Vec::new();
+    for ((object, key), shape) in shapes(doc) {
+        if !shape.relationship {
+            continue;
+        }
+        for problem in pairs(doc, repo_ds, &object, &key)
+            .into_iter()
+            .flat_map(|pair| pair.problems)
+            .filter(mapping_problem)
+        {
+            if !out.contains(&problem) {
+                out.push(problem);
+            }
+        }
+    }
+    out
+}
+
+/// Refuses a `config/managed` write that would make the document contradict
+/// `config/repo.ds` where it did not before. Run at the write boundary
+/// (`api::replace_managed_confirmed`), so it covers every verb — undo, field
+/// add, object rename — and not only the ones that remembered to ask (Astra
+/// round 4). Contradictions already present are not this write's doing and
+/// do not block it; `relationship verify` reports them.
+///
+/// Two classes: a relationship whose pair would disagree with its mappings
+/// (one end mapped and the other not — the measured broken state —, a mapping
+/// naming a target the end no longer declares, a `reverseReference` reading
+/// through a key that is not its partner's, both ends holding the reference),
+/// and a non-relationship property written at a key `repo.ds` maps as one.
+pub fn transition_refusal(before: &Value, after: &Value, repo_ds: &Value) -> Result<(), String> {
+    let mut reasons: Vec<String> = Vec::new();
+    let after_shapes = shapes(after);
+    for (object, key) in changed(before, after) {
+        let relationship = after_shapes
+            .iter()
+            .any(|((o, k), shape)| *o == object && *k == key && shape.relationship);
+        if !relationship && let Some(mapping) = mapped(repo_ds, &object, &key) {
+            reasons.push(format!(
+                "{object}.{key} would not be a relationship, but repo.ds maps it as a `{}`{}",
+                mapping.kind,
+                mapping
+                    .resource_path
+                    .map(|path| format!(" to {path}"))
+                    .unwrap_or_default()
+            ));
+        }
+    }
+    let existing = mapping_problems_in(before, repo_ds);
+    reasons.extend(
+        mapping_problems_in(after, repo_ds)
+            .iter()
+            .filter(|problem| !existing.contains(problem))
+            .map(Problem::message),
+    );
+    if reasons.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to write config/managed: it would contradict config/repo.ds, which aic does \
+         not edit — {}. Use another key, or repair the mapping in the console \
+         (docs/api/10-managed-objects.md, \"Relationship storage\")",
+        reasons.join("; ")
+    ))
+}
+
 /// One link read from a record's relationship property.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Link {
@@ -488,23 +676,38 @@ pub struct Link {
 }
 
 /// The links a record's `_fields=<key>` read returned, whether the property
-/// came back as one object or an array.
-pub fn links_of(record: &Value, key: &str) -> Vec<Link> {
-    let Some(from_id) = record.get("_id").and_then(Value::as_str) else {
-        return Vec::new();
-    };
+/// came back as one object or an array. Absent or `null` is no links; any
+/// other shape is an error, not an empty list — dropping what did not decode
+/// would turn a response nothing understood into "untested" (Sol round 6).
+pub fn links_of(record: &Value, key: &str) -> Result<Vec<Link>, String> {
+    let from_id = record
+        .get("_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("a record read for {key} has no string _id: {record}"))?;
     let entries: Vec<&Value> = match record.get(key) {
+        None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => items.iter().collect(),
         Some(item @ Value::Object(_)) => vec![item],
-        _ => Vec::new(),
+        Some(other) => {
+            return Err(format!(
+                "{from_id}.{key} is not a relationship value: {other}"
+            ));
+        }
     };
     entries
         .into_iter()
-        .filter_map(|entry| {
-            Some(Link {
+        .map(|entry| {
+            let field = |name: &str| {
+                entry
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("{from_id}.{key} has a link without {name}: {entry}"))
+            };
+            Ok(Link {
                 from_id: from_id.to_string(),
-                to_collection: entry.get("_refResourceCollection")?.as_str()?.to_string(),
-                to_id: entry.get("_refResourceId")?.as_str()?.to_string(),
+                to_collection: field("_refResourceCollection")?,
+                to_id: field("_refResourceId")?,
                 edge_id: entry
                     .pointer("/_refProperties/_id")
                     .and_then(Value::as_str)
@@ -519,8 +722,9 @@ pub fn links_of(record: &Value, key: &str) -> Vec<Link> {
 pub enum LinkOutcome {
     /// The far end lists the near record with the same edge id.
     Resolved,
-    /// The far end lists the near record, but under another edge id: two
-    /// stores each hold a link.
+    /// The far end lists the near record, but under another edge id. Two
+    /// stores each holding a link is one cause; a link removed and re-added
+    /// between the two reads is another, so a re-run is worth one look.
     EdgeDiffers { far_edges: Vec<String> },
     /// The far end does not list the near record.
     Missing,
@@ -528,15 +732,18 @@ pub enum LinkOutcome {
     FarRecordMissing,
 }
 
-/// Judges one sampled link against what the far end's reverse property
-/// returned (`None` when the far record is gone).
-pub fn judge(link: &Link, far_entries: Option<&[Link]>) -> LinkOutcome {
+/// Judges one sampled link, read from a record of `near_collection`, against
+/// what the far end's reverse property returned (`None` when the far record
+/// is gone). A link back is one naming the near record by collection **and**
+/// id: an edge id agreeing is corroboration, not identity, since nothing
+/// measured makes edge ids unique across collections.
+pub fn judge(link: &Link, near_collection: &str, far_entries: Option<&[Link]>) -> LinkOutcome {
     let Some(far_entries) = far_entries else {
         return LinkOutcome::FarRecordMissing;
     };
     let back: Vec<&Link> = far_entries
         .iter()
-        .filter(|far| far.to_id == link.from_id)
+        .filter(|far| far.to_id == link.from_id && far.to_collection == near_collection)
         .collect();
     if back.is_empty() {
         return LinkOutcome::Missing;
@@ -676,6 +883,9 @@ mod tests {
         let mut repo_ds = repo(Some(reference()), None);
         repo_ds["resourceMapping"]["genericMapping"]["managed/a"]["properties"]["gone"] =
             reference();
+        // IDM's system relationships are mapped and never declared.
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"]["properties"]["_meta"] =
+            reference();
         let report = report(&doc, &repo_ds, "a", None).unwrap();
         assert_eq!(
             report.stale,
@@ -732,6 +942,28 @@ mod tests {
         assert_eq!(report.pairs.len(), 1);
     }
 
+    /// Sol round 6: a scalar reusing a mapped key is reported, by object and
+    /// by key; and only relationship mappings count — a plain attribute
+    /// mapping on a scalar is ordinary.
+    #[test]
+    fn a_relationship_mapping_on_a_scalar_is_reported() {
+        let mut doc = managed();
+        doc["objects"][0]["schema"]["properties"]["owner"] = json!({"type": "string"});
+        let mut repo_ds = repo(Some(reference()), None);
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"]["properties"]["plain"] =
+            json!({"type": "string", "ldapAttribute": "fr-attr-istr1"});
+        let expected = vec![Problem::MappingOnScalar {
+            object: "a".into(),
+            key: "owner".into(),
+        }];
+        assert_eq!(report(&doc, &repo_ds, "a", None).unwrap().stale, expected);
+        assert_eq!(
+            report(&doc, &repo_ds, "a", Some("owner")).unwrap().stale,
+            expected
+        );
+        assert!(report(&doc, &repo_ds, "a", Some("plain")).is_err());
+    }
+
     #[test]
     fn a_retarget_is_refused_when_either_old_end_is_mapped() {
         let both = repo(Some(reference()), Some(reverse_reference()));
@@ -784,22 +1016,6 @@ mod tests {
     }
 
     #[test]
-    fn a_new_end_over_a_mapping_to_another_target_is_refused() {
-        let forward = repo(Some(reference()), None);
-        // Same target as the leftover mapping: reused, allowed.
-        assert_eq!(leftover_refusal(&forward, &[("a", "owner", "b")]), Ok(()));
-        let error = leftover_refusal(&forward, &[("a", "owner", "c")]).unwrap_err();
-        assert!(
-            error.contains("a.owner (mapped to managed/b, now to managed/c)"),
-            "{error}"
-        );
-        assert_eq!(
-            leftover_refusal(&repo(None, None), &[("a", "owner", "c")]),
-            Ok(())
-        );
-    }
-
-    #[test]
     fn a_delete_names_the_mappings_it_leaves() {
         let forward = repo(Some(reference()), None);
         assert_eq!(
@@ -809,15 +1025,137 @@ mod tests {
         assert!(delete_leftovers(&repo(None, None), &[("a", "owner")]).is_empty());
     }
 
+    /// Astra round 4, finding 1: leftovers describe `a.old <-> b.owned`, and
+    /// the pair is recreated as `a.owner <-> b.owned`. Every resourcePath still
+    /// matches, so a target-only check passes; `b.owned` still reads through
+    /// `old`. The control is the same recreation over leftovers that agree.
+    #[test]
+    fn recreating_a_pair_over_a_mapping_naming_the_old_partner_is_refused() {
+        let before = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {}}},
+            {"name": "b", "schema": {"properties": {}}}
+        ]});
+        let mut stale = reverse_reference();
+        stale["propertyName"] = json!("old");
+        let error = transition_refusal(&before, &managed(), &repo(Some(reference()), Some(stale)))
+            .unwrap_err();
+        assert!(
+            error.contains("reads through old, expected owner"),
+            "{error}"
+        );
+        assert_eq!(
+            transition_refusal(
+                &before,
+                &managed(),
+                &repo(Some(reference()), Some(reverse_reference()))
+            ),
+            Ok(())
+        );
+    }
+
+    /// The measured broken state, reached through any verb: a recreated pair
+    /// where only one end picks up a leftover mapping.
+    #[test]
+    fn a_write_that_leaves_one_end_mapped_is_refused() {
+        let before = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {}}},
+            {"name": "b", "schema": {"properties": {}}}
+        ]});
+        let error =
+            transition_refusal(&before, &managed(), &repo(Some(reference()), None)).unwrap_err();
+        assert!(error.contains("a.owner is mapped"), "{error}");
+        assert_eq!(transition_refusal(&before, &managed(), &json!({})), Ok(()));
+    }
+
+    /// Astra round 4, finding 2: an undo (or any whole-document write) that
+    /// retargets a mapped end back is caught at the boundary, and a scalar
+    /// written over a leftover relationship mapping is too.
+    #[test]
+    fn a_retarget_or_a_scalar_over_a_mapping_is_refused_whatever_the_verb() {
+        let mapped = repo(Some(reference()), Some(reverse_reference()));
+        let mut retargeted = managed();
+        retargeted["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"] =
+            json!([{"path": "managed/c"}]);
+        let error = transition_refusal(&managed(), &retargeted, &mapped).unwrap_err();
+        assert!(error.contains("points at managed/b"), "{error}");
+
+        let mut scalar = managed();
+        scalar["objects"][0]["schema"]["properties"]["owner"] = json!({"type": "string"});
+        let error = transition_refusal(&managed(), &scalar, &mapped).unwrap_err();
+        assert!(
+            error.contains("a.owner would not be a relationship"),
+            "{error}"
+        );
+        // Unmapped, the same scalar is fine.
+        assert_eq!(transition_refusal(&managed(), &scalar, &json!({})), Ok(()));
+    }
+
+    /// Sol round 6: renaming `c` to `a` moves `c.owner -> managed/d` onto
+    /// `a.owner`'s surviving mapping to managed/b. No mapping names `c`, so
+    /// only a check of the resulting document sees it.
+    #[test]
+    fn a_rename_onto_a_name_with_contradicting_mappings_is_refused() {
+        let before = json!({"_id": "managed", "objects": [
+            {"name": "c", "schema": {"properties": {
+                "owner": {"type": "relationship", "resourceCollection": [{"path": "managed/d"}]}
+            }}},
+            {"name": "d", "schema": {"properties": {}}}
+        ]});
+        let mut after = before.clone();
+        after["objects"][0]["name"] = json!("a");
+        let error =
+            transition_refusal(&before, &after, &repo(Some(reference()), None)).unwrap_err();
+        assert!(error.contains("points at managed/b"), "{error}");
+        assert_eq!(transition_refusal(&before, &after, &json!({})), Ok(()));
+    }
+
+    /// What already disagrees is not this write's doing: an unrelated edit to
+    /// a document with a pre-existing mixed pair still writes, and needs no
+    /// repo.ds at all.
+    #[test]
+    fn existing_contradictions_and_unrelated_edits_do_not_block() {
+        let mixed = repo(Some(reference()), None);
+        let mut titled = managed();
+        titled["objects"][0]["schema"]["properties"]["owner"]["title"] = json!("Owner");
+        titled["objects"][0]["onCreate"] = json!({"type": "text/javascript", "source": "x"});
+        assert!(!needs_repo_ds(&managed(), &titled));
+        assert_eq!(transition_refusal(&managed(), &titled, &mixed), Ok(()));
+        let mut added = managed();
+        added["objects"][0]["schema"]["properties"]["note"] = json!({"type": "string"});
+        assert!(needs_repo_ds(&managed(), &added));
+        assert_eq!(transition_refusal(&managed(), &added, &mixed), Ok(()));
+    }
+
     #[test]
     fn links_read_from_one_object_or_an_array() {
         let one = json!({"_id": "a1", "owner": {"_refResourceCollection": "managed/b",
             "_refResourceId": "b1", "_refProperties": {"_id": "e1"}}});
         let many = json!({"_id": "b1", "owned": [{"_refResourceCollection": "managed/a",
             "_refResourceId": "a1", "_refProperties": {"_id": "e1"}}]});
-        assert_eq!(links_of(&one, "owner")[0].to_id, "b1");
-        assert_eq!(links_of(&many, "owned")[0].edge_id.as_deref(), Some("e1"));
-        assert!(links_of(&json!({"_id": "a2", "owner": null}), "owner").is_empty());
+        assert_eq!(links_of(&one, "owner").unwrap()[0].to_id, "b1");
+        assert_eq!(
+            links_of(&many, "owned").unwrap()[0].edge_id.as_deref(),
+            Some("e1")
+        );
+        assert!(
+            links_of(&json!({"_id": "a2", "owner": null}), "owner")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(links_of(&json!({"_id": "a3"}), "owner").unwrap().is_empty());
+    }
+
+    /// Sol round 6: what does not decode is an error, never an empty sample.
+    #[test]
+    fn a_link_that_does_not_decode_is_an_error() {
+        let partial = json!({"_id": "a1", "owner": [{"_refResourceId": "b1"}]});
+        assert!(
+            links_of(&partial, "owner")
+                .unwrap_err()
+                .contains("without _refResourceCollection")
+        );
+        assert!(links_of(&json!({"_id": "a1", "owner": "b1"}), "owner").is_err());
+        assert!(links_of(&json!({"owner": []}), "owner").is_err());
     }
 
     #[test]
@@ -830,19 +1168,89 @@ mod tests {
         };
         let near = link("a1", "b1", "e1");
         assert_eq!(
-            judge(&near, Some(&[link("b1", "a1", "e1")])),
+            judge(&near, "managed/x", Some(&[link("b1", "a1", "e1")])),
             LinkOutcome::Resolved
         );
         assert_eq!(
-            judge(&near, Some(&[link("b1", "a1", "e2")])),
+            judge(&near, "managed/x", Some(&[link("b1", "a1", "e2")])),
             LinkOutcome::EdgeDiffers {
                 far_edges: vec!["e2".into()]
             }
         );
         assert_eq!(
-            judge(&near, Some(&[link("b1", "a9", "e1")])),
+            judge(&near, "managed/x", Some(&[link("b1", "a9", "e1")])),
             LinkOutcome::Missing
         );
-        assert_eq!(judge(&near, None), LinkOutcome::FarRecordMissing);
+        assert_eq!(
+            judge(&near, "managed/x", None),
+            LinkOutcome::FarRecordMissing
+        );
+    }
+
+    /// Astra round 4: same record id, same edge id, but the far link names
+    /// another collection — it does not point back at this record.
+    #[test]
+    fn a_link_back_to_another_collection_does_not_resolve() {
+        let near = Link {
+            from_id: "123".into(),
+            to_collection: "managed/b".into(),
+            to_id: "456".into(),
+            edge_id: Some("e".into()),
+        };
+        let far = Link {
+            from_id: "456".into(),
+            to_collection: "managed/c".into(),
+            to_id: "123".into(),
+            edge_id: Some("e".into()),
+        };
+        assert_eq!(
+            judge(&near, "managed/a", Some(std::slice::from_ref(&far))),
+            LinkOutcome::Missing
+        );
+        let far = Link {
+            to_collection: "managed/a".into(),
+            ..far
+        };
+        assert_eq!(
+            judge(&near, "managed/a", Some(&[far])),
+            LinkOutcome::Resolved
+        );
+    }
+
+    /// Astra round 4: every managed target is checked, and a target outside
+    /// `config/managed` is neither a pass nor a failure.
+    #[test]
+    fn every_managed_target_is_checked_and_external_ones_are_unchecked() {
+        let mut doc = managed();
+        doc["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"] =
+            json!([{"path": "managed/b"}, {"path": "managed/c"}, {"path": "internal/role"}]);
+        doc["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "c", "schema": {"properties": {}}}));
+        let checked = super::report(&doc, &json!({}), "a", Some("owner")).unwrap();
+        assert_eq!(checked.pairs.len(), 2);
+        assert_eq!(checked.pairs[0].problems, vec![]);
+        assert_eq!(
+            checked.pairs[0].unchecked,
+            vec!["internal/role".to_string()]
+        );
+        assert_eq!(
+            checked.pairs[1].problems,
+            vec![Problem::ReverseMissing {
+                object: "c".into(),
+                key: "owned".into()
+            }]
+        );
+        // A forward whose only target is external has nothing to fail.
+        doc["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"] =
+            json!([{"path": "internal/role"}]);
+        let checked = super::report(&doc, &json!({}), "a", Some("owner")).unwrap();
+        assert_eq!(checked.pairs.len(), 1);
+        assert_eq!(checked.pairs[0].problems, vec![]);
+        assert_eq!(
+            checked.pairs[0].unchecked,
+            vec!["internal/role".to_string()]
+        );
     }
 }

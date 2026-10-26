@@ -117,19 +117,25 @@ pub async fn records_with(
         query.finish()
     );
     let body = crate::aic::api::get(tenant, &path).await?;
-    Ok(body
-        .get("result")
+    // A page without a `result` array is not a page of zero records: reading
+    // it as one would report the pair "untested" on a response nothing
+    // decoded (Sol round 6).
+    body.get("result")
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default())
+        .ok_or_else(|| Error::Api {
+            status: 0,
+            body: format!("managed/{object} query returned no `result` array: {body}"),
+        })
 }
 
 /// What the far record's `key` says about `near_id`, as a record carrying
 /// `key`; `None` when the far record does not exist. An array end is asked
 /// through its relationship collection with `_refResourceId eq`, so a large
-/// has-many is not read whole; a singular end has no collection endpoint
-/// (501), so the record is read with `_fields`. Both measured 2026-10-26, in
-/// both storage modes.
+/// has-many is not read whole; a singular end's collection endpoint answered
+/// 501, so the record is read with `_fields`. Measured 2026-10-26: the array
+/// query in both storage modes, the singular 501 on a generic end only — the
+/// mapped singular collection read was not tried.
 pub async fn far_end(
     tenant: &str,
     object: &str,
@@ -164,10 +170,17 @@ pub async fn far_end(
         format!("{record}?{}", query.finish())
     };
     match crate::aic::api::get(tenant, &path).await {
-        Ok(body) if array => Ok(Some(serde_json::json!({
-            "_id": id,
-            key: body.get("result").cloned().unwrap_or(Value::Array(Vec::new())),
-        }))),
+        Ok(body) if array => {
+            let result = body
+                .get("result")
+                .filter(|result| result.is_array())
+                .cloned()
+                .ok_or_else(|| Error::Api {
+                    status: 0,
+                    body: format!("{record}/{key} query returned no `result` array: {body}"),
+                })?;
+            Ok(Some(serde_json::json!({ "_id": id, key: result })))
+        }
         Ok(body) => Ok(Some(body)),
         Err(Error::Api { status: 404, .. }) => Ok(None),
         Err(error) => Err(error),
@@ -180,7 +193,7 @@ pub async fn far_end(
 /// The API has no object-level patch endpoint: callers must read, mutate the
 /// intended `objects[]` entry, and send the whole `{ "_id": "managed", ... }`
 /// envelope back. External callers should use [`replace_managed_confirmed`].
-pub async fn replace_managed(tenant: &str, doc: Value, confirmed_prod: bool) -> Result<Value> {
+async fn replace_managed(tenant: &str, doc: Value, confirmed_prod: bool) -> Result<Value> {
     crate::aic::api::put(tenant, "/openidm/config/managed", doc, confirmed_prod).await
 }
 
@@ -191,23 +204,62 @@ pub async fn replace_managed(tenant: &str, doc: Value, confirmed_prod: bool) -> 
 /// relationship may span two objects, and a partial rebase could corrupt its
 /// other end. This endpoint has no `If-Match` and is already last-writer-wins,
 /// so resending the body is no more dangerous than the original PUT.
+///
+/// Before the first write, the document is checked against `config/repo.ds`
+/// ([`verify::transition_refusal`](crate::managed::verify::transition_refusal)):
+/// this is the one function every `config/managed` write goes through, so the
+/// check here covers undo and every verb, not just those that ask first.
 pub async fn replace_managed_confirmed(
     tenant: &str,
     doc: Value,
     expect: &[ConfigConfirm],
     confirmed_prod: bool,
 ) -> Result<()> {
+    replace_managed_confirmed_with(
+        doc,
+        expect,
+        || get_managed(tenant),
+        || get_repo_ds(tenant),
+        |doc| async move { replace_managed(tenant, doc, confirmed_prod).await.map(drop) },
+        tenant,
+    )
+    .await
+}
+
+/// [`replace_managed_confirmed`] with its I/O injected, so a test can pin
+/// that the repo.ds check runs, and refuses, before anything is sent. Plain
+/// closures returning futures rather than `AsyncFn`: the TUI spawns these
+/// writes, and an async closure's future cannot be proven `Send` there.
+async fn replace_managed_confirmed_with<G, R, P>(
+    doc: Value,
+    expect: &[ConfigConfirm],
+    mut get: impl FnMut() -> G,
+    get_repo_ds: impl FnOnce() -> R,
+    mut put: impl FnMut(Value) -> P,
+    tenant: &str,
+) -> Result<()>
+where
+    G: std::future::Future<Output = Result<Value>>,
+    R: std::future::Future<Output = Result<Value>>,
+    P: std::future::Future<Output = Result<()>>,
+{
     if expect.is_empty() {
         return Err(Error::Config(
             "managed config write requires at least one confirmation condition".into(),
         ));
     }
+    let current = get().await?;
+    if crate::managed::verify::needs_repo_ds(&current, &doc) {
+        let repo_ds = get_repo_ds().await?;
+        crate::managed::verify::transition_refusal(&current, &doc, &repo_ds)
+            .map_err(Error::Config)?;
+    }
 
     const ATTEMPTS: u32 = 6;
     let mut failed = None;
     for attempt in 0..ATTEMPTS {
-        replace_managed(tenant, doc.clone(), confirmed_prod).await?;
-        let fetched = get_managed(tenant).await?;
+        put(doc.clone()).await?;
+        let fetched = get().await?;
         failed = expect.iter().find(|condition| !condition.holds(&fetched));
         if failed.is_none() {
             return Ok(());
@@ -490,6 +542,40 @@ mod tests {
         let doc = json!({"objects": []});
         assert!(ConfigConfirm::DocumentEquals(json!({"objects": []})).holds(&doc));
         assert!(!ConfigConfirm::DocumentEquals(json!({"objects": [{}]})).holds(&doc));
+    }
+
+    /// The boundary check is wired, and runs before the first `PUT`: a write
+    /// contradicting repo.ds sends nothing, and the control — the same write
+    /// with no mapping — is sent.
+    #[tokio::test]
+    async fn the_repo_ds_check_refuses_before_anything_is_sent() {
+        let before = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {}}}
+        ]});
+        let after = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {"owner": {"type": "string"}}}}
+        ]});
+        let mapping = json!({"resourceMapping": {"genericMapping": {"managed/a": {"properties": {
+            "owner": {"type": "reference", "resourcePath": "managed/b"}}}}}});
+        for (repo_ds, refused) in [(mapping, true), (json!({}), false)] {
+            let puts = std::cell::Cell::new(0);
+            let stored = std::cell::RefCell::new(before.clone());
+            let result = replace_managed_confirmed_with(
+                after.clone(),
+                &[ConfigConfirm::DocumentEquals(after.clone())],
+                || std::future::ready(Ok(stored.borrow().clone())),
+                || std::future::ready(Ok(repo_ds.clone())),
+                |doc| {
+                    puts.set(puts.get() + 1);
+                    *stored.borrow_mut() = doc;
+                    std::future::ready(Ok(()))
+                },
+                "t",
+            )
+            .await;
+            assert_eq!(result.is_err(), refused, "{result:?}");
+            assert_eq!(puts.get(), usize::from(!refused));
+        }
     }
 
     #[tokio::test]
