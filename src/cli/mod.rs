@@ -336,11 +336,13 @@ impl Command {
 
 pub async fn run(cli: Cli) -> Result<()> {
     NO_PROMPT.store(cli.no_prompt, Ordering::Relaxed);
+    // Machine output — a bare token for `$(…)`, key material — stays bare on
+    // both streams: no banner, no unlock chatter.
     let quiet = matches!(
         cli.command.as_ref(),
         Some(Command::Auth {
             options: crate::jwtbearer::cli::AuthOptions { token: true, .. }
-        })
+        }) | Some(Command::Whoami { token: true, .. })
     ) || matches!(
             cli.command.as_ref(),
             Some(Command::JwtBearer { command })
@@ -348,17 +350,22 @@ pub async fn run(cli: Cli) -> Result<()> {
     );
     // Before the unlock prompt, so an operator sees which tenant they are
     // unlocking for before they type a password.
-    // A bare token for `$(…)` stays bare on both streams.
-    let token_only = matches!(cli.command, Some(Command::Whoami { token: true, .. }));
     if let Some(resolution) = cli.command.as_ref().and_then(invocation_banner)
         && !quiet
-        && !token_only
     {
         resolution.announce();
     }
     if cli.command.as_ref().is_some_and(Command::needs_tenant_auth) {
         ensure_agent_unlocked_internal(false, !quiet).await?;
-        prepare_operator().await?;
+        // `ctx rm <tenant>` acts on its positional, not on the invocation's
+        // tenant: the operator lookup must not contact a different one.
+        let acted_on = match &cli.command {
+            Some(Command::Ctx {
+                command: CtxCommand::Rm { tenant, .. },
+            }) => Some(tenant.clone()),
+            _ => None,
+        };
+        prepare_operator(acted_on).await?;
     }
     dispatch(cli.command, &crate::scripts::cli::LivePushSyncRuntime).await
 }
@@ -405,7 +412,7 @@ pub(crate) async fn dispatch(
     }
 }
 
-async fn prepare_operator() -> Result<()> {
+async fn prepare_operator(tenant_arg: Option<String>) -> Result<()> {
     let settings = config::Settings::load()?.unwrap_or_default();
     // Either the name is already established, or there is no terminal to
     // establish it on. Bail before doing any work: commands that need a name
@@ -421,7 +428,7 @@ async fn prepare_operator() -> Result<()> {
     // it is what pre-fills the default the user can accept with Enter.
     let project = ProjectConfig::load().ok().flatten();
     let tenant = project.as_ref().and_then(|project| {
-        let name = resolve_tenant(None, project).ok()?;
+        let name = resolve_tenant(tenant_arg, project).ok()?;
         project.tenants.iter().find(|tenant| tenant.name == name)
     });
     let resolved = operator::resolve(&settings, tenant, NetworkAccess::Allow).await;
@@ -823,25 +830,25 @@ static INVOCATION_TENANT: std::sync::OnceLock<InvocationTenant> = std::sync::Onc
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InvocationTenant {
-    /// `Err(())` when the implicit resolution could not read its inputs. The
-    /// resolver then resolves afresh, so the read error surfaces from the
-    /// command that needed a tenant rather than vanishing into a missing
-    /// default.
-    resolution: std::result::Result<Option<TenantResolution>, ()>,
+    /// `Err` when the implicit resolution could not read its inputs: kept,
+    /// and returned to every command that needs the implicit tenant, rather
+    /// than retried — a retry that succeeded later in the invocation would be
+    /// a second, unannounced answer.
+    resolution: std::result::Result<Option<TenantResolution>, String>,
     /// Whether the invoked command has a `--tenant` flag: the commands that
     /// announce their target.
     takes_tenant: bool,
 }
 
 /// The implicit resolution the `--tenant` default is injected from.
-fn implicit_at_parse() -> std::result::Result<Option<TenantResolution>, ()> {
-    let cfg = ProjectConfig::load().map_err(|_| ())?;
+fn implicit_at_parse() -> std::result::Result<Option<TenantResolution>, String> {
+    let cfg = ProjectConfig::load().map_err(|error| error.to_string())?;
     implicit_tenant(
         cfg.as_ref(),
         &config::workspace_context(),
         config::read_current_context,
     )
-    .map_err(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 /// Whether `arg` is a `--tenant` flag. A positional named `tenant` (`ctx use`,
@@ -859,7 +866,7 @@ fn is_tenant_flag(arg: &clap::Arg) -> bool {
 fn capture_invocation(
     cmd: &clap::Command,
     matches: &clap::ArgMatches,
-    implicit: std::result::Result<Option<TenantResolution>, ()>,
+    implicit: std::result::Result<Option<TenantResolution>, String>,
 ) -> InvocationTenant {
     let (mut cmd, mut level) = (cmd, matches);
     let (mut takes_tenant, mut typed) = (false, None);
@@ -900,7 +907,8 @@ fn capture_invocation(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TenantSource {
     Flag,
-    /// A tenant a command chose for itself, differing from the invocation's.
+    /// A tenant a command names for itself (`ctx rm <tenant>`), differing from
+    /// the invocation's.
     Given,
     Workspace(config::WorkspaceOrigin),
     StoredContext,
@@ -911,7 +919,7 @@ impl TenantSource {
     fn describe(&self, tenant: &str) -> String {
         match self {
             Self::Flag => "--tenant".to_string(),
-            Self::Given => "chosen by this command".to_string(),
+            Self::Given => "named by this command".to_string(),
             Self::Workspace(config::WorkspaceOrigin::Cwd) => {
                 format!("current directory is in workspace/{tenant}/")
             }
@@ -1789,10 +1797,11 @@ fn resolve_against(
         // Nothing captured: a caller that built its own `Cli` passed the
         // operator's flag, if anything.
         (None, Some(tenant)) => Ok(named(tenant, TenantSource::Flag)),
-        (None | Some(Err(())), None) => now(),
-        (Some(Err(())), Some(tenant)) => Ok(now()?
-            .filter(|implicit| implicit.tenant == tenant)
-            .or_else(|| named(tenant, TenantSource::Given))),
+        (None, None) => now(),
+        (Some(Err(error)), None) => Err(Error::Config(format!(
+            "could not work out the target tenant: {error}"
+        ))),
+        (Some(Err(_)), Some(tenant)) => Ok(named(tenant, TenantSource::Given)),
         (Some(Ok(resolution)), None) => Ok(resolution.clone()),
         (Some(Ok(Some(resolution))), Some(tenant)) if resolution.tenant == tenant => {
             Ok(Some(resolution.clone()))
@@ -1978,17 +1987,18 @@ scopes = []
             .unwrap()
             .unwrap();
         assert_eq!(flag.source, TenantSource::Flag);
-        // A capture that failed to read its inputs defers to a fresh read,
-        // so the error reaches the command that needed a tenant.
+        // A capture that failed keeps its error: no second read, which
+        // could succeed with an answer nobody announced.
         let failed = InvocationTenant {
-            resolution: Err(()),
+            resolution: Err("unreadable context".into()),
             takes_tenant: true,
         };
-        let err = resolve_against(Some(&failed), None, || {
-            Err(Error::Config("unreadable context".into()))
-        })
-        .unwrap_err();
-        assert!(err.to_string().contains("unreadable context"));
+        let err = resolve_against(Some(&failed), None, no_fresh_resolution).unwrap_err();
+        assert!(err.to_string().contains("unreadable context"), "{err}");
+        let named = resolve_against(Some(&failed), Some("dev".into()), no_fresh_resolution)
+            .unwrap()
+            .unwrap();
+        assert_eq!(named.source, TenantSource::Given);
     }
 
     #[test]
