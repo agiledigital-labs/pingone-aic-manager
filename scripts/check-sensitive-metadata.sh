@@ -32,6 +32,12 @@
 # repository variable in CI — never in a committed file. Range scans ignore it:
 # a range is new commits, and any finding there is new.
 set -uo pipefail
+# Every rule here matches ASCII hostnames case-insensitively, and both
+# halves fold case through the locale: `grep -i` in the checker, `tolower` in
+# the redactor. Under a Turkish locale ASCII `I` folds to dotless `ı`, so an
+# uppercase `.ID.FORGEROCK.IO` host passed --redact unchanged and the checker
+# reported nothing (measured 2026-10-26). Pin the byte locale for the whole run.
+export LC_ALL=C
 
 MODE=tracked
 HISTORY_RANGE=--all
