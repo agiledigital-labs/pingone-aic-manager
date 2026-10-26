@@ -268,7 +268,7 @@ history_blobs() {
 }
 
 # The added lines of one staged file, numbered as `N:line`.
-staged_lines() {
+staged_patch_lines() {
   # `:(literal)` so a name holding `*` or `?` is that one file, not a glob.
   # The parser reads raw `@@`/`+` markers, so caller configuration that
   # changes the patch's form (color.ui=always, an external diff, a textconv
@@ -286,18 +286,35 @@ staged_lines() {
   #
   # Context lines advance the line number: -U0 asks for none, but a
   # caller's GIT_DIFF_OPTS or diff.interHunkContext can add some, and every
-  # later finding then pointed at the wrong line. NULs are dropped last: the
-  # pre-filter's `grep -I` treats a stream holding one as binary and matches
-  # nothing in it, so one NUL anywhere in the added lines hid the rest, and
-  # UTF-16 text (ASCII plus NULs) was never read at all.
+  # later finding then pointed at the wrong line. NULs are left in: the
+  # two readers below decide what a NUL becomes.
   #
   git -c diff.suppressBlankEmpty=false diff --cached --text --no-color --no-ext-diff \
     --no-textconv -U0 -- ":(literal)$1" \
     | awk '/^diff / { hunk = 0; next }
            /^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); hunk = 1; next }
            hunk && /^\+/ { print n":"substr($0,2); n++ }
-           hunk && /^ / { n++ }' \
-    | tr -d '\000'
+           hunk && /^ / { n++ }'
+}
+
+# The added lines as the scan reads them. A NUL becomes a space, never
+# nothing: neither bash's `read` nor the pre-filter's grep keep one (`-I`
+# took the whole stream as binary, so one NUL hid every added line), and
+# deleting it joins its neighbours — `exam<NUL>ple.forgeblocks.com` became
+# the sanctioned `example.forgeblocks.com`. A space keeps the boundary.
+staged_lines() {
+  staged_patch_lines "$1" | tr '\000' ' '
+}
+
+# The same lines with NULs deleted: a second pass, run only when there are
+# NULs, that recovers the ASCII of BOM-less UTF-16 (`h<NUL>t<NUL>t<NUL>p`),
+# which the space pass leaves as unmatchable `h t t p`. Additive, so the
+# join it can make never hides what the space pass found.
+staged_nul_count() {
+  staged_patch_lines "$1" | tr -dc '\000' | wc -c
+}
+staged_lines_without_nuls() {
+  staged_patch_lines "$1" | tr -d '\000'
 }
 
 # A staged blob that opens with a UTF-16 byte-order mark gets a second pass,
@@ -952,6 +969,16 @@ case "$MODE" in
       run "a failing byte-order-mark read stops the scan" 2 \
         PATH="$repo/.git/odshim:$PATH" bash "$script" --staged
       git rm -q --cached 1:notes.md >/dev/null && rm -f 1:notes.md
+      # A NUL is a boundary: deleting it joined a real host onto a
+      # sanctioned prefix.
+      printf 'exam\0ple.forgeblocks.com\n' >joined.md && git add joined.md >/dev/null
+      run "a NUL cannot join a host into a placeholder" 1 bash "$script" --staged
+      git rm -q --cached joined.md >/dev/null && rm -f joined.md
+      run "control: nothing staged" 0 bash "$script" --staged
+      # A gitlink is a commit id; staging one must scan, not abort.
+      git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),module"
+      run "a staged gitlink scans clean" 0 bash "$script" --staged
+      git rm -q --cached module >/dev/null
       # Caller-added context must not shift the reported line.
       printf 'a\n\nc\nd\ne\n' >ctx.md && git add ctx.md && git commit -qm ctx >/dev/null
       printf 'a\n\nX\nd\n%s\n' "$leak" >ctx.md && git add ctx.md >/dev/null
@@ -1058,7 +1085,15 @@ case "$MODE" in
     while IFS= read -r -d '' file; do
       [ "$file" = "$SELF" ] && continue
       scan_text "$file" < <(filtered staged_lines "$file")
-      if staged_is_utf16 "$file"; then
+      nuls=$(staged_nul_count "$file") || scan_failed "reading the staged $file failed"
+      if [ "$nuls" -gt 0 ]; then
+        scan_text "$file (NULs removed)" < <(filtered staged_lines_without_nuls "$file")
+      fi
+      # A gitlink is a commit id, not a blob; the raw pass above has read
+      # what the parent repository stores for it.
+      mode=$(git ls-files -s -- ":(literal)$file") \
+        || scan_failed "reading the staged mode of $file failed"
+      if [ "${mode%% *}" != 160000 ] && staged_is_utf16 "$file"; then
         scan_text "$file (decoded from UTF-16)" < <(filtered staged_utf16_lines "$file")
       fi
     done < <(listing git diff --cached --name-only -z --diff-filter=ACMRT)
