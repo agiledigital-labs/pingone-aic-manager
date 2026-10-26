@@ -68,7 +68,11 @@ SELF="scripts/check-sensitive-metadata.sh"
 PLACEHOLDER_HOST='(^|[./@])(example\.(com|org|net)|localhost|tenant\.example\.com)$|<[^>]+>|\{[^}]+\}|your-tenant|placeholder'
 PLACEHOLDER_UUID='^0{8}-0{4}-0{4}-0{4}-0{12}$'
 # Reserved tenant labels — the sanctioned stand-ins for a real AIC tenant.
-PLACEHOLDER_TENANT='^(<[^>]+>|\{[^}]+\}|example|tenant|your-tenant|my-?tenant|placeholder|openam-mytenant-(sndbx|dev|uat|prod))\.forgeblocks\.com$'
+# A tenant lives under either domain: forgeblocks.com, or id.forgerock.io —
+# missed until 2026-10-26, when a capture printed an id.forgerock.io tenant
+# host unredacted. `apidocs` is Ping's public API reference, not a tenant.
+PLACEHOLDER_TENANT='^(<[^>]+>|\{[^}]+\}|example|tenant|your-tenant|my-?tenant|placeholder|apidocs|openam-mytenant-(sndbx|dev|uat|prod))\.(forgeblocks\.com|id\.forgerock\.io)$'
+TENANT_DOMAIN_RE='\.(forgeblocks\.com|id\.forgerock\.io)'
 UUID_RE='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 
 # Literal deny patterns, compiled once. The file lives OUTSIDE the repo (or in
@@ -127,7 +131,7 @@ decode_base64url() {
 # Cite the evidence in a committed doc; let `.ai/local.md` say where it lives.
 CLIENT_CHECKOUT_RE='~/w/(<[^/>]*>|\{[^/}]*\}|client-[a-z])'
 
-CANDIDATE_RE='~/w/|forgeblocks|sts\.windows\.net|entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2|aHR0c'
+CANDIDATE_RE='~/w/|forgeblocks|forgerock\.io|sts\.windows\.net|entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2|aHR0c'
 if [ -n "$DENY_RE" ]; then
   CANDIDATE_RE="$CANDIDATE_RE|$DENY_RE"
 fi
@@ -151,10 +155,10 @@ redact_stream() {
     # a single shared predicate silently redacted example.forgeblocks.com.
     function is_placeholder_tenant(h,   l) {
       l = tolower(h)
-      return l ~ /^<[^>]+>\.forgeblocks\.com$/ ||
-             l ~ /^\{[^}]+\}\.forgeblocks\.com$/ ||
-             l ~ /^(example|tenant|your-tenant|my-?tenant|placeholder)\.forgeblocks\.com$/ ||
-             l ~ /^openam-mytenant-(sndbx|dev|uat|prod)\.forgeblocks\.com$/
+      return l ~ /^<[^>]+>\.(forgeblocks\.com|id\.forgerock\.io)$/ ||
+             l ~ /^\{[^}]+\}\.(forgeblocks\.com|id\.forgerock\.io)$/ ||
+             l ~ /^(example|tenant|your-tenant|my-?tenant|placeholder|apidocs)\.(forgeblocks\.com|id\.forgerock\.io)$/ ||
+             l ~ /^openam-mytenant-(sndbx|dev|uat|prod)\.(forgeblocks\.com|id\.forgerock\.io)$/
     }
     function is_placeholder_host(h,   l) {
       l = tolower(h)
@@ -183,6 +187,12 @@ redact_stream() {
           host = substr(line, RSTART, RLENGTH)
           if (is_placeholder_tenant(host)) break
           line = substr(line, 1, RSTART - 1) "<your-tenant>.forgeblocks.com" \
+                 substr(line, RSTART + RLENGTH)
+        }
+        while (match(line, /[A-Za-z0-9._-]+\.id\.forgerock\.io/)) {
+          host = substr(line, RSTART, RLENGTH)
+          if (is_placeholder_tenant(host)) break
+          line = substr(line, 1, RSTART - 1) "<your-tenant>.id.forgerock.io" \
                  substr(line, RSTART + RLENGTH)
         }
 
@@ -220,7 +230,7 @@ redact_stream() {
             rest = substr(rest, RSTART + RLENGTH)
             scheme = url; sub(/:\/\/.*/, "://", scheme)
             host = url; sub(/^https?:\/\//, "", host)
-            if (!is_placeholder_host(host) && host !~ /forgeblocks\.com$/ && host != "sts.windows.net") {
+            if (!is_placeholder_host(host) && host !~ /(forgeblocks\.com|id\.forgerock\.io)$/ && host != "sts.windows.net") {
               if (!(host in seen)) seen[host] = next_placeholder()
               url = scheme seen[host]
             }
@@ -290,8 +300,8 @@ scan_text() {
       [ -n "$host" ] || continue
       grep -qiE "$PLACEHOLDER_TENANT" <<<"$host" && continue
       report "$file" "$line" "aic-tenant-hostname" "$host" \
-        "use <your-tenant>.forgeblocks.com"
-    done < <(grep -oiE '[a-z0-9<>{}._-]*\.forgeblocks\.com' <<<"$content")
+        "use <your-tenant>.forgeblocks.com or <your-tenant>.id.forgerock.io"
+    done < <(grep -oiE "[a-z0-9<>{}._-]*$TENANT_DOMAIN_RE" <<<"$content")
 
     # Rule 2 — Azure AD tenant GUID in an STS issuer.
     while read -r uuid; do
@@ -312,7 +322,7 @@ scan_text() {
         # rather than the hostname: the tenant label (rule 1) and the Azure
         # tenant GUID (rule 2). sts.windows.net itself identifies nobody.
         case "$host" in
-          *forgeblocks.com | sts.windows.net) continue ;;
+          *forgeblocks.com | *id.forgerock.io | sts.windows.net) continue ;;
         esac
         report "$file" "$line" "saml-entity-hostname" "$host" \
           "use sp-a.example.com / sp-b.example.com / tenant.example.com"
@@ -400,6 +410,7 @@ case "$MODE" in
       fi
     }
     probe "aic tenant hostname"  'https://openam-acme-sndbx.forgeblocks.com/am'
+    probe "id.forgerock.io tenant" 'GET https://openam-acme-dev.id.forgerock.io/environment'
     probe "example substring is real" 'https://openam-realexampleclient-prod.forgeblocks.com/am'
     probe "azure tenant guid"    'check https://sts.windows.net/7f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b/|saml2'
     probe "saml entity hostname" '"entityId": "https://sso.acme.com.au"'
@@ -417,6 +428,9 @@ case "$MODE" in
     probe "client checkout, reserved name" 'cited against `~/w/client-a/logs/prod-logs.json`'
     negative "our own sibling checkout" 'patterns borrowed from `~/w/tally` and `~/w/aic/who-changed`'
     negative "placeholder host"   'https://<your-tenant>.forgeblocks.com/am'
+    negative "placeholder id.forgerock.io" 'https://<your-tenant>.id.forgerock.io/am'
+    negative "public api docs"    '- Ping docs: <https://apidocs.id.forgerock.io/> (SAML2 section).'
+    negative "bare domain prose"  'same host as AM, NOT `id.forgerock.io`'
     negative "placeholder guid"   'https://sts.windows.net/00000000-0000-0000-0000-000000000000/|saml2'
     negative "placeholder entity" '"entityId": "https://sp-b.example.com"'
     negative "generic azure host" 'COTUtils.setToPrototolMap: check https://sts.windows.net/<tenant-guid>/|saml2'
@@ -429,6 +443,8 @@ case "$MODE" in
       'base_url: "https://example.forgeblocks.com"'
       'https://tenant.forgeblocks.com/am'
       'openam-mytenant-prod.forgeblocks.com'
+      'https://<your-tenant>.id.forgerock.io/am'
+      '- Ping docs: <https://apidocs.id.forgerock.io/> (SAML2 section).'
       'COTUtils.setToPrototolMap: check https://sts.windows.net/<tenant-guid>/|saml2'
       '    "https://sts.windows.net/00000000-0000-0000-0000-000000000000/|saml2",'
       '"entityId": "https://sp-b.example.com"'
@@ -453,6 +469,7 @@ case "$MODE" in
     # --fix quietly leaves findings behind.
     roundtrip=$(printf '%s\n' \
       'GET https://openam-acme-sndbx.forgeblocks.com/am' \
+      'GET https://openam-acme-dev.id.forgerock.io/environment' \
       '  "entityId": "https://sso.acme.com.au",' \
       '  "trustedProviders": [' \
       '    "https://peer.acme.com.au|saml2"' \
