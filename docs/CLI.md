@@ -2338,11 +2338,13 @@ Skipped entries are listed and make the command exit non-zero.
   - `--against FILE` compares the tenant's copy of an exact ref with any file,
     such as a build artefact, by digest.
   - `--check` makes it a deployment gate: exit non-zero unless at least one
-    script was selected, every one matches the tenant, and any `--against`
-    file matches. "Matches" is content: `in sync`, `converged` (local and
-    remote carry the same change; only the snapshot is stale — `sync` records
-    it, and it used to be reported as a conflict), or an untracked script
-    whose local file has the remote digest.
+    script was selected and every one matches the tenant. "Matches" is
+    content: `in sync`, `converged` (local and remote carry the same change;
+    only the snapshot is stale — `sync` records it, and it used to be reported
+    as a conflict), or an untracked script whose local file has the remote
+    digest. With `--against`, the file alone decides: the workspace row is
+    still printed but not judged, so a CI checkout that never pulled the
+    workspace can gate on the artefact it built.
   - `--json` prints the same rows with `state`, `tracked`, both digests and
     `matches_tenant`, plus an overall `ok`.
   - A tracked script whose snapshot file has gone is reported as `no snapshot`
