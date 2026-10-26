@@ -276,10 +276,19 @@ staged_lines() {
   # by position. Every hunk line carries a one-character prefix, so a bare
   # `@@` or `diff ` cannot be content. A type change emits two `diff`
   # blocks for one path; each resets to header state.
+  #
+  # Context lines advance the line number: -U0 asks for none, but a
+  # caller's GIT_DIFF_OPTS or diff.interHunkContext can add some, and every
+  # later finding then pointed at the wrong line. NULs are dropped last: the
+  # pre-filter's `grep -I` treats a stream holding one as binary and matches
+  # nothing in it, so one NUL anywhere in the added lines hid the rest, and
+  # UTF-16 text (ASCII plus NULs) was never read at all.
   git diff --cached --text --no-color --no-ext-diff --no-textconv -U0 -- ":(literal)$1" \
     | awk '/^diff / { hunk = 0; next }
            /^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); hunk = 1; next }
-           hunk && /^\+/ { print n":"substr($0,2); n++ }'
+           hunk && /^\+/ { print n":"substr($0,2); n++ }
+           hunk && /^ / { n++ }' \
+    | tr -d '\000'
 }
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
@@ -526,23 +535,55 @@ scan_text() {
 }
 
 # Rule 6 — the ignore rules that keep live tenant data out of the repo.
+# The ignore rules that keep live tenant data untracked, as a probe path each
+# must ignore. `$1` says which .gitignore to judge: `index` for the one a
+# commit would carry (a partially staged edit can delete the rules while the
+# working copy keeps them), `worktree` for the file on disk. Judged by git's
+# own matcher, not by the line being present: `.envrc` followed by
+# `!.envrc` holds the line and ignores nothing. The judging repository is a
+# throwaway with only that file, so the caller's excludes, info/exclude and
+# Git location variables cannot lend it a rule it does not have. Nested
+# .gitignore files are out of scope.
+IGNORE_PROBES=(.envrc .aic/probe workspace/probe probe.har .ai/local.md)
 check_ignores() {
-  local want missing=0
-  [ -r .gitignore ] || scan_failed ".gitignore cannot be read"
-  for want in .envrc '.aic/' '/workspace/' '*.har' '/.ai/local.md'; do
-    grep -qxF -- "$want" .gitignore
+  local from="$1" probe tmp missing=0 mode
+  tmp=$(mktemp -d) || scan_failed "mktemp failed"
+  if [ "$from" = index ]; then
+    mode=$(git ls-files -s -- ":(literal).gitignore" | cut -d' ' -f1) \
+      || { rm -rf "$tmp"; scan_failed "reading the staged .gitignore failed"; }
+    case $mode in
+      '') : >"$tmp/.gitignore" ;;
+      100644 | 100755)
+        git cat-file blob ":.gitignore" >"$tmp/.gitignore" \
+          || { rm -rf "$tmp"; scan_failed "reading the staged .gitignore failed"; }
+        ;;
+      *) : >"$tmp/.gitignore" ;; # a symlink or gitlink ignores nothing here
+    esac
+  else
+    [ -r .gitignore ] || { rm -rf "$tmp"; scan_failed ".gitignore cannot be read"; }
+    cat .gitignore >"$tmp/.gitignore" || { rm -rf "$tmp"; scan_failed "reading .gitignore failed"; }
+  fi
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    -u GIT_COMMON_DIR git init -q "$tmp/repo" \
+    && mv "$tmp/.gitignore" "$tmp/repo/.gitignore" \
+    || { rm -rf "$tmp"; scan_failed "could not build the ignore probe"; }
+  for probe in "${IGNORE_PROBES[@]}"; do
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+      -u GIT_COMMON_DIR git -C "$tmp/repo" -c core.excludesFile=/dev/null \
+      check-ignore -q --no-index -- "$probe"
     case $? in
       0) ;;
       1)
-        echo "  MISSING from .gitignore: $want"
+        echo "  NOT IGNORED by the $from .gitignore: $probe"
         missing=1
         ;;
-      *) scan_failed "reading .gitignore failed" ;;
+      *) rm -rf "$tmp"; scan_failed "git check-ignore failed" ;;
     esac
   done
+  rm -rf "$tmp"
   if [ "$missing" = 1 ]; then
     findings=$((findings + 1))
-    printf '\n.gitignore\n  rule:   ignore-rules-intact\n  fix:    restore the rules above; they keep live tenant data untracked\n'
+    printf '\n.gitignore\n  rule:   ignore-rules-intact\n  fix:    restore .envrc, .aic/, /workspace/, *.har and /.ai/local.md; they keep live tenant data untracked\n'
   fi
 }
 
@@ -778,6 +819,36 @@ case "$MODE" in
       rm typed.md && ln -s "$leak" typed.md && git add typed.md >/dev/null
       run "a file turned into a symlink is still scanned" 1 bash "$script" --staged
       git reset -q --hard >/dev/null
+      # A NUL anywhere in the added lines, or UTF-16 text, must not hide them.
+      printf 'note\0pad\n%s\n' "$leak" >nul.md && git add nul.md >/dev/null
+      run "a NUL in the added lines still scans them" 1 bash "$script" --staged
+      git rm -q --cached nul.md >/dev/null && rm -f nul.md
+      printf '%s\n' "$leak" | iconv -f UTF-8 -t UTF-16LE >utf16.md && git add utf16.md >/dev/null
+      run "UTF-16 text is still scanned" 1 bash "$script" --staged
+      git rm -q --cached utf16.md >/dev/null && rm -f utf16.md
+      # The staged .gitignore is what a commit carries, judged by effect.
+      run "control: the committed .gitignore protects" 0 bash "$script" --staged
+      cp .gitignore .gitignore.keep
+      : >.gitignore && git add .gitignore 2>/dev/null && cp .gitignore.keep .gitignore
+      run "an emptied .gitignore staged under an intact working copy is caught" 1 \
+        bash "$script" --staged
+      git rm -q --cached .gitignore >/dev/null 2>&1
+      run "a .gitignore deleted from the index is caught" 1 bash "$script" --staged
+      { cat .gitignore.keep; printf '!.envrc\n'; } >.gitignore && git add .gitignore
+      run "a negated rule is caught although its line is present" 1 \
+        bash "$script" --staged
+      mv .gitignore.keep .gitignore && git add .gitignore
+      # Caller-added context must not shift the reported line.
+      printf 'a\nb\nc\nd\ne\n' >ctx.md && git add ctx.md && git commit -qm ctx >/dev/null
+      printf 'a\nb\nX\nd\n%s\n' "$leak" >ctx.md && git add ctx.md >/dev/null
+      out=$(GIT_DIFF_OPTS=--unified=3 bash "$script" --staged 2>&1)
+      if grep -q 'ctx.md:5' <<<"$out"; then
+        echo "ok    caller-added context keeps line numbers"
+      else
+        echo "FAIL  caller-added context keeps line numbers — $(grep -m1 'ctx.md' <<<"$out")"
+        fails=$((fails + 1))
+      fi
+      git reset -q --hard >/dev/null
       git rm -q --cached staged.md >/dev/null && rm -f staged.md
       mkdir locked && printf '%s\n' "$leak" >locked/f.md && git add locked >/dev/null
       git commit -qm locked >/dev/null && chmod a-w locked
@@ -861,7 +932,7 @@ case "$MODE" in
     exit 0
     ;;
   staged)
-    check_ignores
+    check_ignores index
     # Added lines only. A commit that REMOVES a leaked value must not be
     # rejected for containing it on the '-' side.
     # NUL-delimited: a newline-delimited listing C-quotes any name with a
@@ -873,7 +944,7 @@ case "$MODE" in
     done < <(listing git diff --cached --name-only -z --diff-filter=ACMRT)
     ;;
   tracked)
-    check_ignores
+    check_ignores worktree
     while IFS= read -r -d '' file; do
       [ "$file" = "$SELF" ] && continue
       # A tracked file deleted from the work tree has nothing to scan;
