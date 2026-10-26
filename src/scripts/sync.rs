@@ -1862,11 +1862,21 @@ pub struct DiffPair {
 /// The tenant's current source for a synced script, as raw bytes — what
 /// `script diff --find-in-git` hashes, so nothing lossy may touch it.
 pub async fn remote_source(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<Vec<u8>> {
-    let store = SnapshotStore::open(tenant);
-    let entry = store
-        .lookup(kind, name, realm)?
-        .ok_or_else(|| Error::Config(format!("{name:?} not synced yet")))?;
-    let remote = kind.fetch(tenant, realm, &entry.reference.id).await?;
+    // A synced script is fetched by its recorded id; one never pulled is
+    // looked up by exact name, as `status` does — the question needs the
+    // tenant's bytes, not a snapshot (Sol round 8).
+    let id = match SnapshotStore::open(tenant).lookup(kind, name, realm)? {
+        Some(entry) => entry.reference.id,
+        None => {
+            kind.list(tenant, realm)
+                .await?
+                .into_iter()
+                .find(|remote| remote.name == name)
+                .ok_or_else(|| Error::Config(format!("{name:?} is not on the tenant")))?
+                .id
+        }
+    };
+    let remote = kind.fetch(tenant, realm, &id).await?;
     kind.decode_source(&remote.raw_config)
 }
 
