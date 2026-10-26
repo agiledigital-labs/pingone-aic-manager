@@ -654,7 +654,11 @@ mod tests {
             Ok(0)
         }
 
-        fn remove_config_entry(&mut self, _tenant: &str) -> Result<ProjectConfig> {
+        fn current_config(&mut self) -> Result<Option<ProjectConfig>> {
+            Ok(None)
+        }
+
+        fn remove_config_entry(&mut self, _planned: &Tenant) -> Result<ProjectConfig> {
             Ok(ProjectConfig {
                 project: "test".into(),
                 default_tenant: String::new(),

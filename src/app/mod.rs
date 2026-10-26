@@ -357,9 +357,39 @@ impl App {
         }
     }
 
+    /// Add one tenant's JWK to the map **on disk**, under the vault map's
+    /// lock, then adopt what was written. Not `insert` + `persist_keys`: that
+    /// writes this session's copy whole, dropping a credential another `aic`
+    /// or the daemon stored since it was loaded.
     pub fn save_jwk(&mut self, tenant_name: &str, jwk: serde_json::Value) -> Result<()> {
-        self.jwks.insert(tenant_name.to_string(), jwk);
-        self.persist_keys()
+        let dek = self.vault_dek()?;
+        let (map, ()) = config::project_paths().update_artifact_map(
+            VaultArtifact::Jwks,
+            dek,
+            |map: &mut HashMap<String, serde_json::Value>| {
+                map.insert(tenant_name.to_string(), jwk);
+                Ok(())
+            },
+        )?;
+        self.jwks = map;
+        Ok(())
+    }
+
+    /// The DEK the vault mode calls for: `Some` when encrypting (an error if
+    /// not unlocked), `None` for the plain vault.
+    fn vault_dek(&self) -> Result<Option<&crypto::Dek>> {
+        let encrypt = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.encrypt_keys)
+            .unwrap_or(true);
+        if !encrypt {
+            return Ok(None);
+        }
+        self.dek
+            .as_ref()
+            .map(Some)
+            .ok_or_else(|| Error::Crypto("not unlocked — no DEK in memory".into()))
     }
 
     /// Write the current JWK map to disk — encrypted with the in-memory DEK,
@@ -384,9 +414,20 @@ impl App {
         Ok(())
     }
 
+    /// `save_jwk` for the log API key map: merged into the file on disk
+    /// under its lock, never written from this session's copy.
     pub fn save_log_key(&mut self, tenant_name: &str, pair: LogKeyPair) -> Result<()> {
-        self.log_keys.insert(tenant_name.to_string(), pair);
-        self.persist_log_keys()
+        let dek = self.vault_dek()?;
+        let (map, ()) = config::project_paths().update_artifact_map(
+            VaultArtifact::LogKeys,
+            dek,
+            |map: &mut LogKeyMap| {
+                map.insert(tenant_name.to_string(), pair);
+                Ok(())
+            },
+        )?;
+        self.log_keys = map;
+        Ok(())
     }
 
     /// Write the current log API key map using the same vault mode and DEK

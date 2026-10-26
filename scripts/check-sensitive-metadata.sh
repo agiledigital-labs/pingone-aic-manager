@@ -157,18 +157,37 @@ CANDIDATE_RE='~/w/|forgeblocks|forgerock\.io|sts\.windows\.net|entityid|trustedp
 # order, as `N:line` with -n. The ASCII rules match under C; the denylist
 # under the caller's locale (see `in_caller_locale`), and the two are merged
 # by line number. Without a denylist it is one grep, as before.
+#
+# It runs inside process substitutions and pipelines, whose exit status the
+# scan never sees: a pre-filter that fails there feeds the scan nothing, and
+# nothing scans clean. So a failure — mktemp, or grep exiting above 1 — is
+# reported and kills the main shell (`prefilter_failed`), which exits 2.
+MAIN_PID=$$
+trap 'exit 2' TERM
+prefilter_failed() {
+  echo "check-sensitive-metadata: pre-filter failed: $1" >&2
+  kill -TERM "$MAIN_PID"
+  exit 2
+}
 candidates() {
-  local number="${1:-}" tmp
+  local number="${1:-}" tmp status
   if [ -z "$DENY_RE" ]; then
     grep "-I${number#-}iE" "$CANDIDATE_RE"
+    status=$?
+    [ "$status" -le 1 ] || prefilter_failed "grep exited $status"
     return 0
   fi
-  tmp=$(mktemp) || return 1
-  cat >"$tmp"
-  { grep -IniE "$CANDIDATE_RE" -- "$tmp"; in_caller_locale grep -IniE "$DENY_RE" -- "$tmp"; } \
-    | sort -t: -k1,1n -u \
+  tmp=$(mktemp -d) || prefilter_failed "mktemp failed"
+  cat >"$tmp/in" || prefilter_failed "could not buffer the input"
+  grep -IniE "$CANDIDATE_RE" -- "$tmp/in" >"$tmp/shape"
+  status=$?
+  [ "$status" -le 1 ] || { rm -rf "$tmp"; prefilter_failed "grep exited $status"; }
+  in_caller_locale grep -IniE "$DENY_RE" -- "$tmp/in" >"$tmp/deny"
+  status=$?
+  [ "$status" -le 1 ] || { rm -rf "$tmp"; prefilter_failed "denylist grep exited $status"; }
+  sort -t: -k1,1n -u "$tmp/shape" "$tmp/deny" \
     | if [ -n "$number" ]; then cat; else cut -d: -f2-; fi
-  rm -f "$tmp"
+  rm -rf "$tmp"
 }
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
@@ -502,6 +521,36 @@ case "$MODE" in
       echo "FAIL  denylist folds non-ASCII case in the caller's locale"
       fails=$((fails + 1))
     fi
+    # A pre-filter that cannot run must fail the scan, not empty it: in a
+    # process substitution its status is invisible, so it kills the main
+    # shell. Driven in a subshell standing in for main, with mktemp made to
+    # fail (with a denylist) and grep made to fail (without one).
+    prefilter_fails() {
+      local name="$1" deny="$2" tmpdir="$3" status
+      (
+        MAIN_PID=$BASHPID
+        trap 'exit 2' TERM
+        DENY_RE=$deny
+        export TMPDIR=$tmpdir
+        scan_text "selftest" < <(printf 'https://x.forgeblocks.com\n' | candidates -n 2>/dev/null)
+        echo "reached the end of the scan"
+        exit 0
+      ) >/dev/null
+      status=$?
+      if [ "$status" = 2 ]; then
+        echo "ok    $name"
+      else
+        echo "FAIL  $name — the scan finished (exit $status)"
+        fails=$((fails + 1))
+      fi
+    }
+    prefilter_fails "a pre-filter whose mktemp fails stops the scan" 'synthetic' /nonexistent/dir
+    (
+      CANDIDATE_RE='('
+      fails=0
+      prefilter_fails "a pre-filter whose grep fails stops the scan" '' "${TMPDIR:-/tmp}"
+      exit "$fails"
+    ) || fails=$((fails + 1))
     # --fix must never touch a file the checker calls clean. Every negative
     # fixture must survive redaction byte-identical; a redactor stricter than
     # the checker silently rewrites good files.
@@ -605,7 +654,9 @@ case "$MODE" in
     changed=0
     while IFS= read -r file; do
       [ "$file" = "$SELF" ] && continue
-      candidates <"$file" 2>/dev/null | grep -q . || continue
+      # Not `| grep -q .`: it closes the pipe at the first line, and the
+      # pre-filter's grep would die of SIGPIPE and read as a failure.
+      [ -n "$(candidates <"$file")" ] || continue
       redact_stream <"$file" >"$file.redacted" || { rm -f "$file.redacted"; continue; }
       if cmp -s "$file" "$file.redacted"; then
         rm -f "$file.redacted"

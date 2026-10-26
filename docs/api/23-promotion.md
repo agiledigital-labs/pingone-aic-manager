@@ -108,29 +108,34 @@ shape, UAT with the upper):
 AM services, CORS, the global script and the IDM theme were not sampled.
 
 Nine of the 48 mapping "adds" were also in the last real promotion's report
-(four days earlier), so the service does not learn from a promotion for that
-item type at least. The other 141 items were not in that report.
+(four days earlier). One possibility is that the service does not learn from
+a promotion for that item type; this was not tested further. The other 141
+items were not in that report.
 
 So the provisional report's items are the promotion service's claim, computed
 against something other than the live upper environment — which one is not
-known. Never read it as "dev and UAT differ". Unexplained as of this date: what
-baseline it uses; whether the upper env's `UNLOCKING` status (unchanged since
+known. Never read it as "dev and UAT differ". Unexplained as of this date:
+what it compares against — a stored baseline is one possibility, not an
+observation; whether the upper env's `UNLOCKING` status (unchanged since
 that promotion) is related.
 
 ## Verifying a report
 
 `aic promotion verify --lower <env> --upper <env> [--report <id>]` reads the
 report from the upper environment (provisional by default), fetches every item
-from **both** tenants and compares the content with `_rev`, `createdBy`,
-`creationDate`, `lastModifiedBy` and `lastModifiedDate` removed. The report's
-change kind is not trusted: an item is judged on what each tenant returns.
+from **both** tenants and compares the content with copy metadata removed **at
+the resource root only**: `_rev` from every AM document (for a journey, from
+the tree and from each node), plus `createdBy`, `creationDate`,
+`lastModifiedBy` and `lastModifiedDate` from a script. A field spelt the same
+deeper inside a configuration is compared. The report's change kind is not
+trusted: an item is judged on what each tenant returns.
 
 Each report item maps to one live read, all measured 2026-10-26 on the dev →
 UAT pair (200 on both unless stated):
 
 | Report item                           | Read                                                                                                   |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `Journeys`                            | `…/realms/{realm}/realm-config/authentication/authenticationtrees/trees/{name}` and every node it reaches, page-node children included |
+| `Journeys`                            | `…/realms/{realm}/realm-config/authentication/authenticationtrees/trees/{name}` and every node the tree lists, page-node children included; an inner-tree node's target journey is not followed (it is its own item) |
 | `Scripts` with a `uid`                | `…/realms/{realm}/scripts/{id}` (`resource=1.1`); the id is the first `ou=` of `uid`                    |
 | `Scripts` without a `uid`             | `…/realms/{realm}/scripts?_queryFilter=name eq "<name>"` — the report gave one entry no `uid`           |
 | `ESV Secrets Store Mappings`          | the secret mapping for the entry's name, which is the AM secret label (404 = unmapped)                 |
@@ -160,7 +165,11 @@ found them on neither tenant, and called four items in sync. So **absent from
 both counts as in sync only for an item reported `deleted`**; for one reported
 added or modified it is unchecked, because it means the lookup did not find
 what the report meant. A read error on either side, including one journey node,
-is likewise unchecked, never a match. `verify` exits non-zero when anything
+is likewise unchecked, never a match — and so is a response that is not the
+shape measured: a tree or `PageNode` without its `nodes`, a theme document
+without a `realm` object, a list whose `pagedResultsCookie` is set or which
+reports remaining results. An empty theme list is absence, so it too is
+unchecked unless the item was reported deleted. `verify` exits non-zero when anything
 differs or is unchecked.
 
 Measured on the pair the console called in sync: **149 of 150 same, 0 differ,

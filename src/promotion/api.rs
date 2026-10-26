@@ -3,7 +3,6 @@
 use serde_json::Value;
 
 use crate::aic::api::{get, get_versioned};
-use crate::journey::api as journey;
 use crate::promotion::verify;
 use crate::{Error, Result};
 
@@ -112,26 +111,50 @@ pub async fn fetch(tenant: &str, target: &verify::Target) -> Result<Option<Value
     }
 }
 
-/// The tree and every node it reaches, page-node children included, keyed
-/// by node id. A node that cannot be read fails the whole journey: the
-/// journey reader in `journey::api` warns and carries on, which would let an
-/// unread node compare equal.
+/// The tree and every node it lists, page-node children included, keyed by
+/// node id. An inner-tree node's *target* journey is not followed — it is a
+/// separate report item. A node that cannot be read fails the whole journey:
+/// the journey reader in `journey::api` warns and carries on, which would let
+/// an unread node compare equal. Its paths also interpolate names raw, so
+/// these are built here with every segment encoded.
 async fn journey(tenant: &str, realm: &str, name: &str) -> Result<Option<Value>> {
-    let Some(tree) = absent_on_404(journey::read_tree(tenant, realm, name).await)? else {
+    let trees = format!(
+        "{}/realm-config/authentication/authenticationtrees",
+        realm_path(realm)
+    );
+    let Some(tree) = absent_on_404(
+        get_versioned(
+            tenant,
+            &format!("{trees}/trees/{}", segment(name)),
+            JOURNEY_VERSION,
+        )
+        .await,
+    )?
+    else {
         return Ok(None);
     };
     let mut nodes = serde_json::Map::new();
-    let mut pending = verify::node_refs(&tree).map_err(Error::Config)?;
+    let mut pending = verify::node_refs(verify::Holder::Tree, "", &tree).map_err(Error::Config)?;
     while let Some((node_type, id)) = pending.pop() {
         if nodes.contains_key(&id) {
             continue;
         }
-        let node = journey::read_node(tenant, realm, &node_type, &id).await?;
-        pending.extend(verify::node_refs(&node).map_err(Error::Config)?);
+        let node = get_versioned(
+            tenant,
+            &format!("{trees}/nodes/{}/{}", segment(&node_type), segment(&id)),
+            JOURNEY_VERSION,
+        )
+        .await?;
+        pending.extend(
+            verify::node_refs(verify::Holder::Node, &node_type, &node).map_err(Error::Config)?,
+        );
         nodes.insert(id, node);
     }
     Ok(Some(serde_json::json!({ "tree": tree, "nodes": nodes })))
 }
+
+/// The journey family's version (`docs/api/09-journeys.md`).
+const JOURNEY_VERSION: &str = "protocol=2.0,resource=1.0";
 
 /// Measured for the session, validation, OAuth2 provider, authentication and
 /// CORS documents on 2026-10-26.
@@ -160,10 +183,7 @@ fn absent_on_404(result: Result<Value>) -> Result<Option<Value>> {
 /// script name, so `one_by`'s case-folding is not used, and a query that
 /// matched several is an error rather than a pick.
 fn exact_name(list: &Value, name: &str) -> Result<Option<Value>> {
-    let result = list
-        .get("result")
-        .and_then(Value::as_array)
-        .ok_or_else(|| Error::Config(format!("script query has no `result` array: {list}")))?;
+    let result = verify::complete(list).map_err(Error::Config)?;
     let hits: Vec<&Value> = result
         .iter()
         .filter(|v| v.get("name").and_then(Value::as_str) == Some(name))
