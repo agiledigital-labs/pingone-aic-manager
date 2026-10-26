@@ -231,15 +231,28 @@ pub enum ScriptCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Show the sync state of synced scripts. Optional <ref> filters by
-    /// namespace (`bravo`, `endpoint`).
+    /// Show the sync state of synced scripts. A full `<namespace>/<name>`
+    /// selects exactly that script (case-sensitive) and, if it is not tracked,
+    /// asks the tenant whether it exists; anything else filters by group,
+    /// namespace or fragment.
     Status {
         #[arg(
-            help = "Filter: group (am/idm), namespace (alpha/endpoint/…), full-name (alpha/Email OTP), or any fragment (default: all)"
+            help = "Exact ref (endpoint/foo), or a filter: group (am/idm), namespace (alpha/endpoint/…), or any fragment (default: all)"
         )]
         reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Compare the tenant's copy of an exact ref against this file — a
+        /// build artefact, say — by SHA-256. Records nothing.
+        #[arg(long, value_name = "FILE")]
+        against: Option<std::path::PathBuf>,
+        /// Exit non-zero unless every selected script matches the tenant (in
+        /// sync, or converged), at least one was selected, and any --against
+        /// file matches. For deployment gates.
+        #[arg(long)]
+        check: bool,
+        #[arg(long, help = "Print the status rows as JSON")]
+        json: bool,
     },
     /// Show who created and last modified a script, and when.
     ///
@@ -848,44 +861,103 @@ pub(crate) async fn run_with_runtime(
             runtime.workspace_update_hint(&t)?;
             Ok(())
         }
-        ScriptCommand::Status { reference, tenant } => {
+        ScriptCommand::Status {
+            reference,
+            tenant,
+            against,
+            check,
+            json,
+        } => {
             let t = announced_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            // `reference` is a free-text filter: a group (`am`/`idm`), a
-            // namespace (`alpha`/`endpoint`/…), a full-name (`alpha/Email OTP`),
-            // or any fragment. See `script::matches_term`.
-            let filter = reference.filter(|s| !s.trim().is_empty());
-            let mut shown = 0;
-            let status = sync::status(&t, None, filter.as_deref()).await?;
-            for e in status.entries {
-                let label = match e.state {
-                    sync::ScriptState::InSync => "in sync",
-                    sync::ScriptState::LocallyModified => "modified locally",
-                    sync::ScriptState::RemotelyModified => "modified on remote",
-                    sync::ScriptState::BothModified => "CONFLICT (both changed)",
-                    sync::ScriptState::LocalMissing => "local file missing",
-                    sync::ScriptState::RemoteMissing => "deleted on remote",
-                    sync::ScriptState::RemoteMissingLocallyModified => {
-                        "deleted on remote (local edits)"
-                    }
-                };
-                let full = script::full_name(e.kind, e.realm.as_deref(), &e.name);
-                println!("  {full:<48} {label}");
-                shown += 1;
+            let reference = reference.filter(|s| !s.trim().is_empty());
+            let exact = reference.as_deref().and_then(exact_status_ref);
+            if against.is_some() && exact.is_none() {
+                return Err(Error::Config(
+                    "--against compares one script: name it as <namespace>/<name>".into(),
+                ));
             }
-            if shown == 0 {
-                match &filter {
-                    Some(term) if status.total > 0 => {
-                        println!(
+            let filter = match (&exact, reference.as_deref()) {
+                (Some((ns, name)), _) => sync::StatusFilter::Exact {
+                    kind: ns.kind,
+                    realm: ns.realm.as_deref(),
+                    name,
+                },
+                (None, Some(term)) => sync::StatusFilter::Term(term),
+                (None, None) => sync::StatusFilter::All,
+            };
+            let status = sync::status(&t, None, filter).await?;
+            let mut rows: Vec<StatusRow> = status.entries.iter().map(StatusRow::tracked).collect();
+            rows.extend(status.untracked.as_ref().map(StatusRow::untracked));
+            let against = match &against {
+                Some(path) => Some(AgainstRow::compare(path, &rows)?),
+                None => None,
+            };
+            let ok = !rows.is_empty()
+                && rows.iter().all(|row| row.matches_tenant)
+                && against.as_ref().is_none_or(|against| against.matches);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "tenant": t,
+                        "scripts": rows,
+                        "against": against,
+                        "ok": ok,
+                    }))?
+                );
+            } else {
+                for row in &rows {
+                    println!("  {:<48} {}", row.reference, row.label);
+                    if exact.is_some() {
+                        for (side, digest) in [
+                            ("local ", &row.local_sha256),
+                            ("remote", &row.remote_sha256),
+                        ] {
+                            if let Some(digest) = digest {
+                                println!("    {side} sha256 {digest}");
+                            }
+                        }
+                    }
+                }
+                if let (Some((_, name)), Some(row)) = (&exact, rows.first())
+                    && row.state == "not_on_tenant"
+                {
+                    println!(
+                        "  (a ref with a namespace matches exactly; to search, give a fragment such as {name:?})"
+                    );
+                }
+                if let Some(against) = &against {
+                    println!(
+                        "  {} {} the tenant's copy (sha256 {})",
+                        against.file,
+                        if against.matches {
+                            "matches"
+                        } else {
+                            "DIFFERS from"
+                        },
+                        against.sha256
+                    );
+                }
+                if rows.is_empty() {
+                    match &reference {
+                        Some(term) if status.total > 0 => println!(
                             "no synced script matches {term:?} ({} synced)",
                             status.total
-                        );
+                        ),
+                        _ => println!("nothing synced yet — `aic script pull …` first"),
                     }
-                    _ => println!("nothing synced yet — `aic script pull …` first"),
                 }
             }
-            workspace_update_hint(&t)?;
+            if !json {
+                workspace_update_hint(&t)?;
+            }
             check_managed_types_stale(&t).await;
+            if check && !ok {
+                return Err(Error::Config(
+                    "status check failed: not every selected script matches the tenant".into(),
+                ));
+            }
             Ok(())
         }
         ScriptCommand::Who {
@@ -1859,6 +1931,117 @@ fn scripts_are_writable(theme: TenantTheme) -> bool {
 /// even spent — beats surfacing whatever the tenant returns. Reads (`list`,
 /// `pull`, `status`, `diff`) are deliberately unrestricted: comparing a higher
 /// environment against your workspace is exactly how you check a promotion.
+/// A `status` argument naming exactly one script: `<namespace>/<name>` with a
+/// known namespace and a non-empty name. Anything else stays a free-text
+/// filter, which keeps `endpoint/` (a namespace) and fragments working.
+fn exact_status_ref(reference: &str) -> Option<(Namespace, &str)> {
+    let (prefix, name) = reference.split_once('/')?;
+    if name.is_empty() {
+        return None;
+    }
+    Some((Namespace::parse(prefix)?, name))
+}
+
+/// One line of `script status`, tracked or not, in the shape `--json` prints.
+#[derive(Debug, serde::Serialize)]
+struct StatusRow {
+    reference: String,
+    state: &'static str,
+    #[serde(skip)]
+    label: &'static str,
+    tracked: bool,
+    local_sha256: Option<String>,
+    remote_sha256: Option<String>,
+    /// Whether the local copy and the tenant's agree, which is what a
+    /// deployment gate asks. A stale snapshot does not count against it.
+    matches_tenant: bool,
+}
+
+impl StatusRow {
+    fn tracked(entry: &script::sync::StatusEntry) -> Self {
+        use script::sync::ScriptState as S;
+        let (state, label) = match entry.state {
+            S::InSync => ("in_sync", "in sync"),
+            S::LocallyModified => ("modified_locally", "modified locally"),
+            S::RemotelyModified => ("modified_on_remote", "modified on remote"),
+            S::BothModified => ("conflict", "CONFLICT (both changed)"),
+            S::Converged => (
+                "converged",
+                "matches remote; snapshot stale (`aic script sync` records it)",
+            ),
+            S::LocalMissing => ("local_missing", "local file missing"),
+            S::SnapshotMissing => ("snapshot_missing", "no snapshot — re-pull to track"),
+            S::RemoteMissing => ("deleted_on_remote", "deleted on remote"),
+            S::RemoteMissingLocallyModified => (
+                "deleted_on_remote_local_edits",
+                "deleted on remote (local edits)",
+            ),
+        };
+        Self {
+            reference: script::full_name(entry.kind, entry.realm.as_deref(), &entry.name),
+            state,
+            label,
+            tracked: true,
+            local_sha256: entry.local_sha256.clone(),
+            remote_sha256: entry.remote_sha256.clone(),
+            matches_tenant: matches!(entry.state, S::InSync | S::Converged),
+        }
+    }
+
+    fn untracked(entry: &script::sync::Untracked) -> Self {
+        let (state, label) = match (&entry.remote_sha256, &entry.local_sha256) {
+            (None, _) => ("not_on_tenant", "not on the tenant, and not tracked"),
+            (Some(_), None) => (
+                "untracked",
+                "exists remotely; no tracked baseline, no local file",
+            ),
+            (Some(remote), Some(local)) if remote == local => (
+                "untracked",
+                "exists remotely; no tracked baseline; local file matches",
+            ),
+            (Some(_), Some(_)) => (
+                "untracked",
+                "exists remotely; no tracked baseline; local file DIFFERS",
+            ),
+        };
+        Self {
+            reference: script::full_name(entry.kind, entry.realm.as_deref(), &entry.name),
+            state,
+            label,
+            tracked: false,
+            matches_tenant: entry.remote_sha256.is_some()
+                && entry.remote_sha256 == entry.local_sha256,
+            local_sha256: entry.local_sha256.clone(),
+            remote_sha256: entry.remote_sha256.clone(),
+        }
+    }
+}
+
+/// `status --against FILE`: the file's digest against the tenant's copy.
+#[derive(Debug, serde::Serialize)]
+struct AgainstRow {
+    file: String,
+    sha256: String,
+    remote_sha256: Option<String>,
+    matches: bool,
+}
+
+impl AgainstRow {
+    fn compare(path: &std::path::Path, rows: &[StatusRow]) -> Result<Self> {
+        let bytes = std::fs::read(path).map_err(|error| {
+            Error::Config(format!("could not read {}: {error}", path.display()))
+        })?;
+        let sha256 = script::sync::sha256_hex(&bytes);
+        let remote_sha256 = rows.first().and_then(|row| row.remote_sha256.clone());
+        Ok(Self {
+            file: path.display().to_string(),
+            matches: remote_sha256.as_deref() == Some(sha256.as_str()),
+            sha256,
+            remote_sha256,
+        })
+    }
+}
+
 fn writable_tenant_for(tenant: Option<String>) -> Result<String> {
     let (tenant, resolution) = crate::cli::target_config_for(tenant)?;
     if !scripts_are_writable(tenant.theme) {
@@ -2989,6 +3172,62 @@ fn print_conflict(name: &str, tw: &crate::scripts::sync::ThreeWay) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_ref_is_exact_only_for_a_known_namespace_and_a_name() {
+        let exact =
+            |r: &str| exact_status_ref(r).map(|(ns, name)| (ns.kind, ns.realm, name.to_string()));
+        assert_eq!(
+            exact("endpoint/foo"),
+            Some((script::Kind::IdmEndpoint, None, "foo".into()))
+        );
+        assert_eq!(
+            exact("alpha/Email OTP"),
+            Some((script::Kind::Am, Some("alpha".into()), "Email OTP".into()))
+        );
+        assert_eq!(exact("endpoint/"), None);
+        assert_eq!(exact("Email"), None);
+        assert_eq!(exact("bogus/foo"), None);
+    }
+
+    #[test]
+    fn status_gate_passes_converged_and_matching_untracked_only() {
+        use script::sync::{ScriptState, StatusEntry, Untracked};
+        let entry = |state| StatusEntry {
+            name: "x".into(),
+            kind: script::Kind::IdmEndpoint,
+            realm: None,
+            state,
+            local_sha256: None,
+            remote_sha256: None,
+        };
+        assert!(StatusRow::tracked(&entry(ScriptState::InSync)).matches_tenant);
+        assert!(StatusRow::tracked(&entry(ScriptState::Converged)).matches_tenant);
+        for failing in [
+            ScriptState::LocallyModified,
+            ScriptState::RemotelyModified,
+            ScriptState::BothModified,
+            ScriptState::LocalMissing,
+            ScriptState::SnapshotMissing,
+            ScriptState::RemoteMissing,
+        ] {
+            assert!(!StatusRow::tracked(&entry(failing)).matches_tenant);
+        }
+        let untracked = |remote: Option<&str>, local: Option<&str>| {
+            StatusRow::untracked(&Untracked {
+                name: "x".into(),
+                kind: script::Kind::IdmEndpoint,
+                realm: None,
+                remote_sha256: remote.map(str::to_string),
+                local_sha256: local.map(str::to_string),
+            })
+            .matches_tenant
+        };
+        assert!(untracked(Some("a"), Some("a")));
+        assert!(!untracked(Some("a"), Some("b")));
+        assert!(!untracked(Some("a"), None));
+        assert!(!untracked(None, None));
+    }
+
     use super::*;
     use clap::Parser;
 

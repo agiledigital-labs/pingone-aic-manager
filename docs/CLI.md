@@ -2229,7 +2229,7 @@ aic script pull [<ref>] [--force] [--force=backup] # protected pull; no ref → 
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
 aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes] # prompts on remote deletion
 aic script watch [--tenant TENANT] [--yes] [--force=syntax-check] # auto-push each .cjs you save (Ctrl-C to stop)
-aic script status [<ref>]                       # in sync / modified / remote / conflict / deleted on remote; template/type drift notes
+aic script status [<ref>] [--against FILE] [--check] [--json] # in sync / modified / remote / conflict / converged / deleted on remote
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
@@ -2242,6 +2242,29 @@ managed-hook and sync-mapping scripts cannot be re-created by this prompt; the
 prompt names the owning config or missing local file when re-create is unavailable.
 Skipped entries are listed and make the command exit non-zero.
 
+- `status` with a full `<namespace>/<name>` selects exactly that script,
+  case-sensitively, and prints the SHA-256 of the local file and of the
+  tenant's copy (the digest `sha256sum` prints). Anything else — `am`/`idm`, a
+  namespace such as `endpoint` or `endpoint/`, or a fragment without a
+  namespace — is a case-insensitive filter, as before. **Behaviour change:**
+  `endpoint/foo` used to match `endpoint/foo-bar` too; search for the fragment
+  `foo` to get that.
+  - An exact ref that nothing tracked matches is looked up on the tenant
+    (read-only): `exists remotely; no tracked baseline`, with the remote digest
+    and whether the canonical local file matches it, or `not on the tenant`.
+    Nothing is recorded; a push still has to start from a pull.
+  - `--against FILE` compares the tenant's copy of an exact ref with any file,
+    such as a build artefact, by digest.
+  - `--check` makes it a deployment gate: exit non-zero unless at least one
+    script was selected, every one matches the tenant, and any `--against`
+    file matches. "Matches" is content: `in sync`, `converged` (local and
+    remote carry the same change; only the snapshot is stale — `sync` records
+    it, and it used to be reported as a conflict), or an untracked script
+    whose local file has the remote digest.
+  - `--json` prints the same rows with `state`, `tracked`, both digests and
+    `matches_tenant`, plus an overall `ok`.
+  - A tracked script whose snapshot file has gone is reported as `no snapshot`
+    rather than silently skipped.
 - `list` tags each row with its `ref` and narrows three ways. `--context TEXT`
   keeps AM scripts whose context **or** workspace folder slug contains `TEXT`,
   case-insensitively — so `--context OAUTH2_VALIDATE_SCOPE` returns both the
