@@ -417,12 +417,10 @@ pub fn start_rename_field(app: &mut App) {
     }
     let caps = crate::managed::state::field_capability_for_property(&object, &field_key, &property);
     if !caps.rename_key {
-        let message = if crate::managed::state::is_relationship_property(&property) {
-            "Relationship keys cannot be renamed; delete and recreate the relationship"
-        } else {
-            "Standard field keys cannot be renamed"
-        };
-        app.push_toast(ToastKind::Info, message);
+        app.push_toast(
+            ToastKind::Info,
+            crate::managed::state::rename_refusal(&property),
+        );
         return;
     }
     app.managed.renaming = Some(RenameFieldState::new(

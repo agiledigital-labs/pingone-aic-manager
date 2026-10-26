@@ -730,6 +730,17 @@ pub fn apply_relationship_spec(
         }
     }
 
+    if let Some(previous) = previous {
+        let reverse_renamed = spec.reverse != ReverseCardinality::None
+            && previous
+                .old_reverse_key
+                .as_deref()
+                .is_some_and(|old| old != spec.reverse_key);
+        if previous.old_key != spec.key || reverse_renamed {
+            return Err(crate::managed::state::RELATIONSHIP_RENAME_REFUSAL.into());
+        }
+    }
+
     // Read the pair this edit started from before it is removed: everything the
     // form does not model is carried across from it, and each property goes
     // back to the `schema.order` slot it came from.
@@ -2921,6 +2932,16 @@ pub fn apply_rename_field(
     if spec.new_key == old_key {
         return Ok(object);
     }
+    // The capability gate lives here, not only in the TUI, so `managed field
+    // rename` cannot reach a rename the tab refuses.
+    let property = object
+        .pointer("/schema/properties")
+        .and_then(|properties| properties.get(old_key))
+        .ok_or_else(|| format!("field '{old_key}' no longer exists"))?;
+    let caps = crate::managed::state::field_capability_for_property(object_def, old_key, property);
+    if !caps.rename_key {
+        return Err(crate::managed::state::rename_refusal(property).into());
+    }
 
     let properties = properties_mut(&mut object)?;
     let previous = std::mem::take(properties);
@@ -4714,7 +4735,7 @@ mod tests {
     }
 
     #[test]
-    fn relationship_edit_reconciles_renames_reverse_drops_and_target_repoints() {
+    fn relationship_edit_reconciles_reverse_drops_and_target_repoints() {
         let original = apply_relationship_spec(
             &relationship_doc(&["a", "b", "c"]),
             &relationship_spec(Cardinality::One, ReverseCardinality::One),
@@ -4726,13 +4747,16 @@ mod tests {
             old_target: "b".into(),
             old_reverse_key: Some("owned".into()),
         };
-        let mut renamed = relationship_spec(Cardinality::Many, ReverseCardinality::None);
-        renamed.key = "owners".into();
-        let dropped = apply_relationship_spec(&original, &renamed, Some(&previous)).unwrap();
-        assert!(dropped["objects"][0]["schema"]["properties"]["owner"].is_null());
+        let dropped = apply_relationship_spec(
+            &original,
+            &relationship_spec(Cardinality::Many, ReverseCardinality::None),
+            Some(&previous),
+        )
+        .unwrap();
+        assert!(dropped["objects"][0]["schema"]["properties"]["owner"]["items"].is_object());
         assert_eq!(
             dropped["objects"][0]["schema"]["required"],
-            json!(["owners"])
+            json!(["owner"])
         );
         assert!(dropped["objects"][1]["schema"]["properties"]["owned"].is_null());
 
@@ -4745,6 +4769,73 @@ mod tests {
             repointed["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"][0]["path"],
             json!("managed/c")
         );
+    }
+
+    #[test]
+    fn relationship_edit_refuses_forward_and_reverse_key_renames() {
+        let original = apply_relationship_spec(
+            &relationship_doc(&["a", "b"]),
+            &relationship_spec(Cardinality::One, ReverseCardinality::One),
+            None,
+        )
+        .unwrap();
+        let previous = PreviousRelationship {
+            old_key: "owner".into(),
+            old_target: "b".into(),
+            old_reverse_key: Some("owned".into()),
+        };
+        let mut forward = relationship_spec(Cardinality::One, ReverseCardinality::One);
+        forward.key = "owners".into();
+        let mut reverse = relationship_spec(Cardinality::One, ReverseCardinality::One);
+        reverse.reverse_key = "ownedBy".into();
+        for renamed in [forward, reverse] {
+            let error = apply_relationship_spec(&original, &renamed, Some(&previous)).unwrap_err();
+            assert_eq!(error, crate::managed::state::RELATIONSHIP_RENAME_REFUSAL);
+        }
+        // Control: the same edit with both keys unchanged is accepted.
+        let unchanged = relationship_spec(Cardinality::Many, ReverseCardinality::One);
+        assert!(apply_relationship_spec(&original, &unchanged, Some(&previous)).is_ok());
+    }
+
+    #[test]
+    fn field_rename_refuses_relationship_properties_of_both_shapes() {
+        let object = json!({
+            "name": "a",
+            "schema": {
+                "properties": {
+                    "one": one_relationship("managed/b", Some("back")),
+                    "many": many_relationship("managed/b", None),
+                    "plain": {"type": "string"}
+                },
+                "order": ["one", "many", "plain"],
+                "required": []
+            }
+        });
+        for key in ["one", "many"] {
+            let error = apply_rename_field(
+                &object,
+                key,
+                &RenameFieldSpec {
+                    new_key: "renamed".into(),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                error,
+                crate::managed::state::RELATIONSHIP_RENAME_REFUSAL,
+                "{key}"
+            );
+        }
+        // Control: a scalar on the same object still renames.
+        let renamed = apply_rename_field(
+            &object,
+            "plain",
+            &RenameFieldSpec {
+                new_key: "renamed".into(),
+            },
+        )
+        .unwrap();
+        assert!(renamed["schema"]["properties"]["renamed"].is_object());
     }
 
     /// The spec a form would submit for a relationship it did not touch, plus

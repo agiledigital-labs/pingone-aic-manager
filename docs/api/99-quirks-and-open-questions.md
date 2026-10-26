@@ -6,6 +6,24 @@ new things are learned.
 
 ---
 
+## 2026-10-26 — relationships carry `repo.ds` mappings after all
+
+`10-managed-objects.md` said generic custom objects need no `repo.ds`
+mappings. True for scalar indexing; false for relationships, which may be
+**mapped** (a `reference`/`reverseReference` pair under `genericMapping`) or
+**generic** (no mapping, links in the relationships table). `config/managed`
+writes never touch `repo.ds`, so renaming a mapped relationship through it
+leaves the pair mixed: old links disappear from the renamed side, new links are
+invisible from the reverse, and reverse-side writes 400. Measured, with the
+full table, in `10-managed-objects.md` ("Relationship storage"). The
+`/openidm/schema` API, which an operator report named as the console's write
+path, refuses every write on this tenant.
+
+The probe also re-learned the positive-control lesson from the other side: a
+record delete appeared to cascade to a related record, and the cause was a
+sync mapping on the probe types, found only because a second pair without one
+behaved differently.
+
 ## 2026-09-30 — library deletion after source replacement
 
 The orchestrator ran `libraries.e2e` on a sandbox tenant against
