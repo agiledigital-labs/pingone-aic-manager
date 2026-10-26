@@ -840,6 +840,19 @@ struct InvocationTenant {
     takes_tenant: bool,
 }
 
+/// The tenant this invocation settled on at parse time, if it settled on one.
+/// The TUI starts here, so bare `aic` opens the tenant `aic ctx current`
+/// names from the same directory.
+pub fn invocation_tenant() -> Option<String> {
+    INVOCATION_TENANT
+        .get()?
+        .resolution
+        .as_ref()
+        .ok()?
+        .as_ref()
+        .map(|resolution| resolution.tenant.clone())
+}
+
 /// The implicit resolution the `--tenant` default is injected from.
 fn implicit_at_parse() -> std::result::Result<Option<TenantResolution>, String> {
     let cfg = ProjectConfig::load().map_err(|error| error.to_string())?;

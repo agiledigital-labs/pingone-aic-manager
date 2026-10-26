@@ -199,10 +199,15 @@ impl App {
             .map(|c| c.tenants.clone())
             .unwrap_or_default();
 
-        // Match whatever the CLI's `aic ctx use` last persisted, falling back
-        // to the project's default_tenant. Falling back further to 0 keeps
-        // first-run (where the file doesn't exist) sane.
-        let active_tenant_idx = pick_initial_tenant_idx(&tenants, config.as_ref());
+        // Start where a CLI command run from here would point — workspace
+        // directory, stored context, default_tenant — so bare `aic` and
+        // `aic ctx current` agree. Falling back further to 0 keeps first-run
+        // (where nothing resolves) sane.
+        let active_tenant_idx = pick_initial_tenant_idx(
+            &tenants,
+            crate::cli::invocation_tenant().as_deref(),
+            config.as_ref(),
+        );
 
         // Sandbox import path is offered when the three required vars are
         // already exported in our environment (typically via direnv loading
@@ -722,14 +727,23 @@ pub fn refresh_view(app: &mut App, view: View, force: bool) {
 }
 
 /// Pick which tenant should be active on startup. Order:
+///   0. `effective`, the CLI's answer for this invocation (which already
+///      applies the workspace directory, then 1 and 2)
 ///   1. `.aic/current-context` (set by `aic ctx use ...` or by the env
 ///      picker on the previous TUI session)
 ///   2. `config.default_tenant`
 ///   3. index 0 (first-run, or stale current-context pointing at a removed
 ///      tenant)
-fn pick_initial_tenant_idx(tenants: &[Tenant], config: Option<&ProjectConfig>) -> usize {
+fn pick_initial_tenant_idx(
+    tenants: &[Tenant],
+    effective: Option<&str>,
+    config: Option<&ProjectConfig>,
+) -> usize {
     if tenants.is_empty() {
         return 0;
+    }
+    if let Some(i) = effective.and_then(|name| tenants.iter().position(|t| t.name == name)) {
+        return i;
     }
     if let Ok(Some(name)) = config::read_current_context()
         && let Some(i) = tenants.iter().position(|t| t.name == name)
@@ -743,4 +757,30 @@ fn pick_initial_tenant_idx(tenants: &[Tenant], config: Option<&ProjectConfig>) -
         return i;
     }
     0
+}
+
+#[cfg(test)]
+mod startup_tenant_tests {
+    use super::pick_initial_tenant_idx;
+    use crate::config::tenant::{Tenant, TenantTheme};
+
+    fn tenant(name: &str) -> Tenant {
+        Tenant {
+            name: name.into(),
+            base_url: "https://test.invalid".into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: None,
+            scopes: Vec::new(),
+            provenance: crate::config::Provenance::default(),
+        }
+    }
+
+    #[test]
+    fn the_tui_starts_on_the_invocation_tenant() {
+        let tenants = [tenant("sandbox"), tenant("dev")];
+        // The CLI's answer (here, from a workspace directory) wins outright:
+        // the stored context is never consulted when it names a tenant.
+        assert_eq!(pick_initial_tenant_idx(&tenants, Some("dev"), None), 1);
+        assert_eq!(pick_initial_tenant_idx(&[], Some("dev"), None), 0);
+    }
 }

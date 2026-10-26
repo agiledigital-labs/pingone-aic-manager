@@ -40,7 +40,8 @@ aic <command> <subcommand> --help
   banner, so their stdout and stderr stay clean for `$(…)`: `aic whoami
   --token`, `aic auth --token`, `aic jwt-bearer key list --json`,
   `aic jwt-bearer key export` without `--out`, and
-  `aic jwt-bearer subjects list --json`.
+  `aic jwt-bearer subjects list --json`. Bare `aic` (the TUI) opens on the
+  same tenant.
 - **`--realm <alpha|bravo>`** selects the AM realm for realm-scoped commands
   (`journey`, `jwt-bearer`, `oauth`, `secretmap`, and AM `script` namespaces).
   Defaults to **`alpha`**. ESVs and IDM endpoints are tenant-global and take no
