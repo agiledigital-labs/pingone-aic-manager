@@ -368,12 +368,15 @@ impl ProjectPaths {
         self.load_artifact_bytes(artifact, dek)
     }
 
-    /// Whether `dek` is this vault's key, under a shared hold of the vault
-    /// lock — what the daemon checks before it accepts one, so an unlock
-    /// result that arrives after a key change cannot install the old key.
-    pub(crate) fn check_vault_key(&self, dek: &crypto::Dek) -> Result<()> {
-        let _vault = self.lock_vault(Hold::Shared)?;
-        self.vault_mode_is(Some(dek))
+    /// Whether `dek` is this vault's key, checked under a shared hold of the
+    /// vault lock that is **returned**: the daemon installs the key while
+    /// holding it, so no transition can replace the key between the check
+    /// and the install — an unlock result that arrives after a key change
+    /// cannot install the old key.
+    pub(crate) fn hold_vault_key(&self, dek: &crypto::Dek) -> Result<fs::File> {
+        let vault = self.lock_vault(Hold::Shared)?;
+        self.vault_mode_is(Some(dek))?;
+        Ok(vault)
     }
 
     /// No file in the form the vault reads, but one in the other: the only
@@ -409,11 +412,11 @@ impl ProjectPaths {
         };
         Err(crate::Error::Crypto(format!(
             "{} is the only copy of this map but the vault is {}: an encryption change \
-             was interrupted by an older aic. Nothing was changed; restore `encrypt_keys = {}` \
-             in .aic/settings.toml to read it",
+             was interrupted by an older aic. Nothing was changed. Recovering needs every \
+             vault file in one form — the other files in .aic/ may be split the same way — \
+             so check which form each map is in before changing anything; back up .aic/ first",
             name(&other),
             if dek.is_some() { "encrypted" } else { "plain" },
-            dek.is_none()
         )))
     }
 }
@@ -844,18 +847,47 @@ pub fn interrupted_first_run() -> bool {
 }
 
 impl ProjectPaths {
+    /// Encrypted files and a wrap, no settings, and **no plaintext form of
+    /// anything**: a first run never writes one, so a plaintext copy means
+    /// this is something else (a lost settings file over an older leftover)
+    /// and which copy is current cannot be told from here.
     pub(crate) fn interrupted_first_run(&self) -> bool {
         !self.settings_path().exists()
             && self.wraps_path().exists()
             && self.artifact_enc_path(VaultArtifact::Jwks).exists()
+            && VaultArtifact::ALL
+                .iter()
+                .all(|&a| !self.artifact_plain_path(a).exists())
+    }
+
+    /// Record `encrypt_keys = true` over the encrypted files as they are —
+    /// nothing is copied, so nothing can be overwritten — once `dek` is
+    /// shown to open every one of them, under the exclusive vault lock.
+    pub(crate) fn finish_first_run(&self, dek: &crypto::Dek) -> Result<()> {
+        let _vault = self.lock_vault(Hold::Exclusive)?;
+        self.expect_vault_mode(None)?;
+        if !self.interrupted_first_run() {
+            return Err(crate::Error::Crypto(
+                "this is not an interrupted first-run setup (a plaintext copy or the \
+                 wrap is present or missing); nothing was changed"
+                    .into(),
+            ));
+        }
+        for &artifact in VaultArtifact::ALL {
+            if self.artifact_enc_path(artifact).exists() {
+                decode_json_map::<serde_json::Value>(
+                    self.load_artifact_bytes(artifact, Some(dek))?,
+                )?;
+            }
+        }
+        self.set_vault_mode(true)
     }
 }
 
 /// Finish an [`interrupted_first_run`] under the key the operator just
-/// unlocked with. `enable_encryption` with no wrap to save: its preflight
-/// refuses unless `dek` opens what is there.
+/// unlocked with: see [`ProjectPaths::finish_first_run`].
 pub fn finish_first_run(dek: &crypto::Dek) -> Result<()> {
-    project_paths().enable_encryption(dek, None, || Ok(()))
+    project_paths().finish_first_run(dek)
 }
 
 /// Unlock via any enrolled security key in `wraps_file`. Builds an allowList
@@ -1187,8 +1219,10 @@ impl ProjectConfig {
         }
         content.push_str(
             "wraps.toml\n\
+             wraps.toml.new*\n\
              # Machine-local, per-person settings — not project content.\n\
              settings.toml\n\
+             settings.toml.new*\n\
              local-config/\n\
              backups/\n\
              *.log\n\
@@ -2334,7 +2368,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(jwk_map(&paths, Some(&dek)).len(), 0);
-        paths.check_vault_key(&dek).unwrap();
+        paths.hold_vault_key(&dek).unwrap();
     }
 
     /// The daemon's gate on a `PutDek`: the vault's key, and only while the
@@ -2345,17 +2379,20 @@ mod tests {
         let paths = ProjectPaths::new(dir.path("p")).unwrap();
         let dek = crypto::Dek::random();
         paths.set_up_plain(None).unwrap();
-        assert!(paths.check_vault_key(&dek).is_err());
+        assert!(paths.hold_vault_key(&dek).is_err());
         paths
             .enable_encryption(&dek, Some(false), || Ok(()))
             .unwrap();
-        paths.check_vault_key(&dek).unwrap();
-        assert!(paths.check_vault_key(&crypto::Dek::random()).is_err());
+        paths.hold_vault_key(&dek).unwrap();
+        assert!(paths.hold_vault_key(&crypto::Dek::random()).is_err());
     }
 
     /// A first run that died after `keys.enc` and its wrap but before
-    /// `settings.toml` is recognised, and finishing it with the key the
-    /// wrap opens keeps the map; any other key is refused.
+    /// `settings.toml` is recognised and finished in place with the key the
+    /// wrap opens; any other key is refused. A plaintext copy beside it is
+    /// not a first run — which copy is current cannot be told — so it is
+    /// neither recognised nor finished, and nothing is copied over the
+    /// encrypted map.
     #[test]
     fn an_interrupted_first_run_is_finished_with_its_own_key() {
         let dir = TestDir::new();
@@ -2364,18 +2401,56 @@ mod tests {
         assert!(!paths.interrupted_first_run());
         paths.save_wraps(&wraps::WrapsFile::default()).unwrap();
         paths
-            .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1}"#, Some(&dek))
+            .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1,"b":2}"#, Some(&dek))
             .unwrap();
         assert!(paths.interrupted_first_run());
-        assert!(
-            paths
-                .enable_encryption(&crypto::Dek::random(), None, || Ok(()))
-                .is_err()
-        );
-        paths.enable_encryption(&dek, None, || Ok(())).unwrap();
+
+        paths
+            .save_artifact_bytes(VaultArtifact::LogKeys, b"{}", None)
+            .unwrap();
         assert!(!paths.interrupted_first_run());
-        assert_eq!(jwk_map(&paths, Some(&dek)).len(), 1);
-        assert!(paths.load_wraps().unwrap().is_some());
+        assert!(paths.finish_first_run(&dek).is_err());
+        fs::remove_file(paths.artifact_plain_path(VaultArtifact::LogKeys)).unwrap();
+
+        assert!(paths.finish_first_run(&crypto::Dek::random()).is_err());
+        assert_eq!(paths.load_settings().unwrap().map(|s| s.encrypt_keys), None);
+        paths.finish_first_run(&dek).unwrap();
+        assert!(!paths.interrupted_first_run());
+        assert_eq!(
+            paths.load_settings().unwrap().map(|s| s.encrypt_keys),
+            Some(true)
+        );
+        assert_eq!(jwk_map(&paths, Some(&dek)).len(), 2);
+    }
+
+    /// The daemon installs a key while holding the lock it checked it
+    /// under, so a transition cannot replace the key in between: one that
+    /// starts during the hold waits for it.
+    #[test]
+    fn a_held_vault_key_holds_off_a_transition() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let dek = crypto::Dek::random();
+        paths.set_up_plain(None).unwrap();
+        paths
+            .enable_encryption(&dek, Some(false), || Ok(()))
+            .unwrap();
+        let guard = paths.hold_vault_key(&dek).unwrap();
+        let disable = {
+            let (paths, dek) = (paths.clone(), dek.clone());
+            std::thread::spawn(move || paths.disable_encryption(&dek))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            paths.load_settings().unwrap().map(|s| s.encrypt_keys),
+            Some(true)
+        );
+        drop(guard);
+        disable.join().unwrap().unwrap();
+        assert_eq!(
+            paths.load_settings().unwrap().map(|s| s.encrypt_keys),
+            Some(false)
+        );
     }
 
     /// A destination this key cannot read is some other setup's, and is

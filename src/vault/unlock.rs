@@ -499,6 +499,13 @@ pub async fn handle_result(app: &mut App, result: std::result::Result<UnlockOk, 
             jwks,
             log_keys,
         }) => {
+            // The worker that produced this has finished, whatever happens
+            // next: a recovery step below that fails must leave Enter able
+            // to start another.
+            app.unlock
+                .security_key_cancel
+                .store(true, Ordering::Relaxed);
+            app.unlock.security_key_armed = false;
             if app.settings.is_none() {
                 // An interrupted first run (see `config::interrupted_first_run`):
                 // the wrap just opened this key, so finish the setup with it.
@@ -522,11 +529,6 @@ pub async fn handle_result(app: &mut App, result: std::result::Result<UnlockOk, 
             }
             app.unlock.error = None;
             app.unlock.pin_input.clear();
-            // Tell the security-key poll task to stop (if it was running).
-            app.unlock
-                .security_key_cancel
-                .store(true, Ordering::Relaxed);
-            app.unlock.security_key_armed = false;
             // Order matters: the agent must hold the DEK *before* we fire
             // off the ESV refresh, otherwise the ApiCall lands on a
             // still-locked daemon and we surface a spurious "agent locked".
