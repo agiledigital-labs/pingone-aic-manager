@@ -356,6 +356,14 @@ impl App {
             }
             None => {
                 self.input_mode = InputMode::Vault(crate::vault::screen::Mode::Setup);
+                if config::ambiguous_without_settings() {
+                    self.auth_setup.form.error = Some(
+                        "settings.toml is missing and .aic/ holds both encrypted and plaintext \
+                         vault files; setup will refuse. Restore settings.toml, or back up .aic/ \
+                         and remove the vault files to start afresh"
+                            .into(),
+                    );
+                }
             }
         }
 

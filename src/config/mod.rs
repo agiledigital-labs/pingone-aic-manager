@@ -653,6 +653,9 @@ impl ProjectPaths {
     ) -> Result<()> {
         let _vault = self.lock_vault(Hold::Exclusive)?;
         self.expect_vault_mode(expected)?;
+        if expected.is_none() {
+            self.no_files_in_form(false)?;
+        }
         self.settle()?;
         // Refuse before the wrap is replaced, not after: a destination this
         // DEK cannot read means the files belong to some other setup.
@@ -704,6 +707,9 @@ impl ProjectPaths {
         }
         let _vault = self.lock_vault(Hold::Exclusive)?;
         self.expect_vault_mode(expected)?;
+        if expected.is_none() {
+            self.no_files_in_form(true)?;
+        }
         self.migration_preflight(VaultArtifact::Jwks, None, None)?;
         if load_optional_file(&self.artifact_plain_path(VaultArtifact::Jwks))?.is_none() {
             self.save_artifact_bytes(VaultArtifact::Jwks, b"{}", None)?;
@@ -811,6 +817,61 @@ impl ProjectPaths {
         Ok(())
     }
 
+    /// Setup with no `settings.toml` is only safe over files it cannot
+    /// destroy. Encrypting over a plaintext map copies it onto whatever
+    /// `keys.enc` holds (and a lost settings file can leave both, the
+    /// encrypted one newer); setting up plain beside encrypted files lets
+    /// settling delete them. So setup refuses any vault file in the form
+    /// `encrypted` names — `true` for `.enc`, `false` for `.plain`. An
+    /// encrypted file under an encrypted setup is still checked against the
+    /// new key by the preflight, which is what lets an interrupted first run
+    /// resume. Callers hold the vault lock exclusively.
+    fn no_files_in_form(&self, encrypted: bool) -> Result<()> {
+        let found: Vec<String> = VaultArtifact::ALL
+            .iter()
+            .map(|&a| {
+                if encrypted {
+                    self.artifact_enc_path(a)
+                } else {
+                    self.artifact_plain_path(a)
+                }
+            })
+            .filter(|path| path.exists())
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        if found.is_empty() {
+            return Ok(());
+        }
+        Err(crate::Error::Crypto(format!(
+            "settings.toml is missing but .aic/ already holds {}; setting the vault up \
+             again could overwrite or orphan it, so nothing was changed. Restore \
+             settings.toml, or back up .aic/ and remove the vault files to start afresh",
+            found.join(", ")
+        )))
+    }
+
+    /// No `settings.toml`, and vault files in **both** forms: neither a
+    /// fresh install nor an interrupted first run, and which copy is current
+    /// cannot be told. The setup screen says so up front; both setup writers
+    /// refuse it under the lock regardless.
+    pub(crate) fn ambiguous_without_settings(&self) -> bool {
+        let any = |encrypted: bool| {
+            VaultArtifact::ALL.iter().any(|&a| {
+                if encrypted {
+                    self.artifact_enc_path(a).exists()
+                } else {
+                    self.artifact_plain_path(a).exists()
+                }
+            })
+        };
+        !self.settings_path().exists() && any(true) && any(false)
+    }
+
     /// Callers hold the vault lock exclusively.
     fn set_vault_mode(&self, encrypt: bool) -> Result<()> {
         let mut settings = self.load_settings()?.unwrap_or_default();
@@ -844,6 +905,11 @@ pub fn settle_vault() -> Result<()> {
 /// unlocking with the wrap, which proves the key, then finishing the setup.
 pub fn interrupted_first_run() -> bool {
     project_paths().interrupted_first_run()
+}
+
+/// See [`ProjectPaths::ambiguous_without_settings`].
+pub fn ambiguous_without_settings() -> bool {
+    project_paths().ambiguous_without_settings()
 }
 
 impl ProjectPaths {
@@ -2421,6 +2487,64 @@ mod tests {
             Some(true)
         );
         assert_eq!(jwk_map(&paths, Some(&dek)).len(), 2);
+    }
+
+    /// Lost settings over a newer `keys.enc` and a stale `keys.plain`:
+    /// fresh setup must not choose for the operator. Encrypting would copy
+    /// the plaintext over the newer map; going plain would let settling
+    /// delete it. Both setup writers refuse and leave every file as it was,
+    /// while an empty vault — and an encrypted-only interrupted first run,
+    /// under its own key — still set up.
+    #[test]
+    fn setup_refuses_to_overwrite_files_it_did_not_write() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let dek = crypto::Dek::random();
+        paths.save_wraps(&wraps::WrapsFile::default()).unwrap();
+        paths
+            .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1,"b":2}"#, Some(&dek))
+            .unwrap();
+        paths
+            .save_artifact_bytes(VaultArtifact::Jwks, b"{}", None)
+            .unwrap();
+        let enc = paths.artifact_enc_path(VaultArtifact::Jwks);
+        let plain = paths.artifact_plain_path(VaultArtifact::Jwks);
+        let before = (fs::read(&enc).unwrap(), fs::read(&plain).unwrap());
+        assert!(paths.ambiguous_without_settings());
+
+        for fresh in [crypto::Dek::random(), dek.clone()] {
+            assert!(paths.enable_encryption(&fresh, None, || Ok(())).is_err());
+        }
+        assert!(paths.set_up_plain(None).is_err());
+        assert_eq!((fs::read(&enc).unwrap(), fs::read(&plain).unwrap()), before);
+        assert_eq!(paths.load_settings().unwrap().map(|s| s.encrypt_keys), None);
+
+        // Each form alone is refused by the writer that would destroy it.
+        fs::remove_file(&plain).unwrap();
+        assert!(!paths.ambiguous_without_settings());
+        assert!(paths.set_up_plain(None).is_err());
+        assert_eq!(fs::read(&enc).unwrap(), before.0);
+        paths.enable_encryption(&dek, None, || Ok(())).unwrap();
+        assert_eq!(jwk_map(&paths, Some(&dek)).len(), 2);
+
+        let other = ProjectPaths::new(dir.path("q")).unwrap();
+        other
+            .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1}"#, None)
+            .unwrap();
+        assert!(
+            other
+                .enable_encryption(&crypto::Dek::random(), None, || Ok(()))
+                .is_err()
+        );
+        assert!(!other.artifact_enc_path(VaultArtifact::Jwks).exists());
+
+        // Control: nothing on disk, so both writers proceed.
+        let empty = ProjectPaths::new(dir.path("r")).unwrap();
+        empty.set_up_plain(None).unwrap();
+        let empty = ProjectPaths::new(dir.path("s")).unwrap();
+        empty
+            .enable_encryption(&crypto::Dek::random(), None, || Ok(()))
+            .unwrap();
     }
 
     /// The daemon installs a key while holding the lock it checked it
