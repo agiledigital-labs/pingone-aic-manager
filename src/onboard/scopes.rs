@@ -84,6 +84,29 @@ pub fn plan(
     Ok(after)
 }
 
+/// The scope list to save, computed against the entry as it is **now** on
+/// disk rather than the one read before the tenant call: the grant check was
+/// made against `checked_sa`, so an entry whose account changed meanwhile is
+/// refused (the check says nothing about the new account), and scopes another
+/// process added in the gap are kept rather than overwritten.
+pub fn rebase(
+    tenant: &str,
+    checked_sa: &str,
+    current_sa: Option<&str>,
+    remote: &[String],
+    current: &[String],
+    add: &[String],
+) -> Result<Vec<String>> {
+    if current_sa != Some(checked_sa) {
+        return Err(Error::Config(format!(
+            "{tenant}'s service account changed while its grants were being read \
+             ({checked_sa} -> {}); nothing saved — run this again",
+            current_sa.unwrap_or("none")
+        )));
+    }
+    plan(tenant, remote, current, add)
+}
+
 fn record_path(sa_id: &str) -> String {
     format!("/openidm/managed/svcacct/{sa_id}?_fields=scopes")
 }
@@ -115,11 +138,10 @@ pub async fn run(tenant_arg: Option<String>, add: Vec<String>) -> Result<()> {
         crate::cli::print_table(&["SCOPE", "GRANTED", "REQUESTED"], &rows);
         return Ok(());
     }
-    let after = plan(&tenant.name, &remote, &tenant.scopes, &add)?;
-    if after == tenant.scopes {
-        println!("nothing to do: {} already requested", add.join(", "));
-        return Ok(());
-    }
+    // Fail early on an ungranted scope, before touching the file.
+    plan(&tenant.name, &remote, &tenant.scopes, &add)?;
+    // Reload and rebase with no await between this read and the save, so the
+    // window for a concurrent writer is the synchronous load→save alone.
     let mut cfg = crate::config::ProjectConfig::load()?
         .ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let entry = cfg
@@ -127,6 +149,18 @@ pub async fn run(tenant_arg: Option<String>, add: Vec<String>) -> Result<()> {
         .iter_mut()
         .find(|t| t.name == tenant.name)
         .ok_or_else(|| Error::Config(format!("tenant {} vanished from config", tenant.name)))?;
+    let after = rebase(
+        &tenant.name,
+        &sa_id,
+        entry.sa_id.as_deref(),
+        &remote,
+        &entry.scopes,
+        &add,
+    )?;
+    if after == entry.scopes {
+        println!("nothing to do: {} already requested", add.join(", "));
+        return Ok(());
+    }
     entry.scopes = after.clone();
     cfg.save()?;
     println!("{}'s tokens now request: {}", tenant.name, after.join(" "));
@@ -170,6 +204,24 @@ mod tests {
             "{error}"
         );
         assert!(!error.contains("fr:idm:*,"), "{error}");
+    }
+
+    /// The grant check was made against `sa-1`; an entry now naming `sa-2`
+    /// is refused, and a scope added concurrently to the current list is kept.
+    #[test]
+    fn rebase_refuses_a_changed_account_and_keeps_concurrent_additions() {
+        let remote = v(&["fr:idm:*", "fr:idc:promotion:*"]);
+        let add = v(&["fr:idc:promotion:*"]);
+        let error = rebase("dev", "sa-1", Some("sa-2"), &remote, &[], &add)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("sa-1 -> sa-2"), "{error}");
+        assert!(rebase("dev", "sa-1", None, &remote, &[], &add).is_err());
+        let current = v(&["fr:idm:*", "fr:added:meanwhile"]);
+        assert_eq!(
+            rebase("dev", "sa-1", Some("sa-1"), &remote, &current, &add).unwrap(),
+            v(&["fr:idm:*", "fr:added:meanwhile", "fr:idc:promotion:*"])
+        );
     }
 
     #[test]
