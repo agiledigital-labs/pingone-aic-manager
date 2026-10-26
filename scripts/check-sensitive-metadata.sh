@@ -32,6 +32,11 @@
 # repository variable in CI — never in a committed file. Range scans ignore it:
 # a range is new commits, and any finding there is new.
 set -uo pipefail
+# Pathspec magic is how `staged_lines` names exactly one file. An inherited
+# GIT_LITERAL_PATHSPECS=1 turns `:(literal)name` into a file literally called
+# that, so the staged diff came back empty and every staged leak passed; the
+# glob/icase variants change what a name matches. None is ours to inherit.
+unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
 # Every rule here matches ASCII hostnames case-insensitively, and both
 # halves fold case through the locale: `grep -i` in the checker, `tolower` in
 # the redactor. Under a Turkish locale ASCII `I` folds to dotless `ı`, so an
@@ -382,7 +387,9 @@ redact_stream() {
       done
       # Rule 7's counterpart. Dropping the `~/w/` prefix is the whole point:
       # there is no shape worth preserving here, because the shape IS the leak.
-      line=$(sed -E "s#$CLIENT_CHECKOUT_RE#<client-checkout>#g" <<<"$line")
+      # A failure here would print an empty line and carry on: exit, so
+      # pipefail reports it instead of a redaction that dropped the text.
+      line=$(sed -E "s#$CLIENT_CHECKOUT_RE#<client-checkout>#g" <<<"$line") || exit 1
       printf '%s\n' "$line"
     done
   }
@@ -689,6 +696,25 @@ case "$MODE" in
       chmod +x "$repo/.git/shim/awk"
       run "a failing --redact exits non-zero" 2 \
         PATH="$repo/.git/shim:$PATH" bash "$script" --redact <<<"$leak"
+      # A sed that fails only on the redactor's last substitution, so every
+      # earlier step still runs: the one failure that printed an empty line.
+      real_sed=$(command -v sed)
+      mkdir "$repo/.git/sedshim"
+      printf '#!/bin/sh\ncase "$*" in *client-checkout*) exit 3 ;; esac\nexec %s "$@"\n' \
+        "$real_sed" >"$repo/.git/sedshim/sed"
+      chmod +x "$repo/.git/sedshim/sed"
+      run "a failing redactor sed exits non-zero" 2 \
+        PATH="$repo/.git/sedshim:$PATH" bash "$script" --redact <<<"$leak"
+      run "control: --redact with the real sed exits zero" 0 \
+        bash "$script" --redact <<<"$leak"
+      # Pathspec settings a caller may have exported must not empty the
+      # staged diff.
+      printf '%s\n' "$leak" >staged.md && git add staged.md >/dev/null
+      run "an inherited GIT_LITERAL_PATHSPECS still scans staged lines" 1 \
+        GIT_LITERAL_PATHSPECS=1 bash "$script" --staged
+      run "an inherited GIT_ICASE_PATHSPECS still scans staged lines" 1 \
+        GIT_ICASE_PATHSPECS=1 bash "$script" --staged
+      git rm -q --cached staged.md >/dev/null && rm -f staged.md
       mkdir locked && printf '%s\n' "$leak" >locked/f.md && git add locked >/dev/null
       git commit -qm locked >/dev/null && chmod a-w locked
       run "a --fix that cannot write exits non-zero" 2 bash "$script" --fix

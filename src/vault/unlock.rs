@@ -499,6 +499,7 @@ pub async fn handle_result(app: &mut App, result: std::result::Result<UnlockOk, 
             app.set_dek(Some(dek));
             app.set_jwks(jwks);
             app.set_log_keys(log_keys);
+            auth::settle_after_unlock();
             app.unlock.error = None;
             app.unlock.pin_input.clear();
             // Tell the security-key poll task to stop (if it was running).

@@ -11,7 +11,7 @@ use crate::app::event::{AppEvent, ToastKind};
 use crate::app::{App, InputMode};
 use crate::config::Settings;
 use crate::config::crypto::{self, Dek};
-use crate::config::wraps::{self, Wrap};
+use crate::config::wraps::{self, Wrap, WrapsFile};
 use crate::tui::is_save_chord;
 
 use super::screen::{Event, Mode};
@@ -165,6 +165,11 @@ impl AuthSetupForm {
 pub struct State {
     pub form: AuthSetupForm,
     pub context: SetupContext,
+    /// The key a failed first-factor attempt minted, offered to the next
+    /// attempt. Before `settings.toml` exists nothing marks an encrypted
+    /// file as a partial copy, so a retry under a fresh key would be refused
+    /// by the very `keys.enc` the failed attempt wrote.
+    pub retry_dek: Option<Dek>,
 }
 
 impl Default for State {
@@ -172,6 +177,7 @@ impl Default for State {
         Self {
             form: AuthSetupForm::default(),
             context: SetupContext::FirstRun,
+            retry_dek: None,
         }
     }
 }
@@ -358,21 +364,22 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
             // Mint a DEK iff there isn't one yet. Re-using an existing DEK
             // is what makes "change password" work without touching keys.enc.
             let freshly_minted = app.dek_clone().is_none();
-            let dek = app.dek_clone().unwrap_or_else(Dek::random);
+            let dek = session_or_retry_dek(app);
             let (salt, nonce, ct) =
                 crypto::wrap_dek_with_password(&dek, &app.auth_setup.form.password)?;
             let wraps_before = app.wraps.clone();
-            app.wraps.upsert_password(Wrap::Password {
+            let wrap = Wrap::Password {
                 salt: wraps::b64_encode(&salt),
                 nonce: wraps::b64_encode(&nonce),
                 ciphertext: wraps::b64_encode(&ct),
-            });
+            };
+            app.wraps.upsert_password(wrap.clone());
             app.set_dek(Some(dek));
             if let Err(e) =
-                finalize_factor_addition(app, freshly_minted, context, "Password set").await
+                finalize_factor_addition(app, freshly_minted, wrap, context, "Password set").await
             {
                 if freshly_minted {
-                    app.set_dek(None);
+                    keep_for_retry(app);
                 }
                 app.wraps = wraps_before;
                 app.auth_setup.form.error = Some(format!("Save failed: {e}"));
@@ -389,7 +396,7 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
                 app.auth_setup.form.focused = AuthSetupField::Label;
                 return Ok(());
             }
-            let dek = app.dek_clone().unwrap_or_else(Dek::random);
+            let dek = session_or_retry_dek(app);
             app.set_dek(Some(dek.clone()));
             app.auth_setup.form.busy = true;
             app.auth_setup.form.error = None;
@@ -414,9 +421,25 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
 /// back to whichever screen launched SetupAuth, and hands the freshly-
 /// derived DEK to the agent so subsequent `ApiCall`s — both in this TUI
 /// session and in any concurrent CLI — find it unlocked.
+/// This session's key, else the one a failed first attempt minted, else a
+/// new one.
+fn session_or_retry_dek(app: &mut App) -> Dek {
+    app.dek_clone()
+        .or_else(|| app.auth_setup.retry_dek.take())
+        .unwrap_or_else(Dek::random)
+}
+
+/// A first factor failed: the session goes back to holding no key, and the
+/// key moves to `retry_dek` for the next attempt.
+fn keep_for_retry(app: &mut App) {
+    app.auth_setup.retry_dek = app.dek_clone();
+    app.set_dek(None);
+}
+
 async fn finalize_factor_addition(
     app: &mut App,
     freshly_minted_dek: bool,
+    added: Wrap,
     context: SetupContext,
     success_toast: &str,
 ) -> crate::Result<()> {
@@ -440,7 +463,7 @@ async fn finalize_factor_addition(
             .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
         let mode = app.settings.as_ref().map(|s| s.encrypt_keys);
         let wraps = &app.wraps;
-        crate::config::enable_encryption(&dek, mode, || wraps.save())?;
+        crate::config::enable_encryption(&dek, mode, || wraps.save_for_transition())?;
         let mut s = app.settings.take().unwrap_or_default();
         s.encrypt_keys = true;
         app.settings = Some(s);
@@ -452,8 +475,15 @@ async fn finalize_factor_addition(
             "the vault is encrypted under a key this session does not hold; restart aic".into(),
         ));
     } else {
-        app.wraps.save()?;
+        // Applied to the file on disk, under the lock, and only while this
+        // session's key is still the vault's.
+        let dek = app
+            .dek_clone()
+            .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
+        let salt = app.wraps.security_key_hmac_salt.clone();
+        app.wraps = WrapsFile::update(&dek, |disk| disk.add_factor(added, salt.as_deref()))?;
     }
+    app.auth_setup.retry_dek = None;
 
     app.auth_setup.form = AuthSetupForm::default();
     let next_mode = match context {
@@ -487,11 +517,12 @@ pub async fn handle_enroll_result(app: &mut App, result: std::result::Result<Wra
 
     match result {
         Ok(wrap) => {
-            app.wraps.push_security_key(wrap);
+            app.wraps.push_security_key(wrap.clone());
             app.auth_setup.form.busy = false;
             if let Err(e) = finalize_factor_addition(
                 app,
                 was_dek_minted_for_this_op,
+                wrap,
                 context,
                 "Security key enrolled",
             )
@@ -501,7 +532,7 @@ pub async fn handle_enroll_result(app: &mut App, result: std::result::Result<Wra
                 app.push_toast(ToastKind::Error, format!("wraps.toml: {e}"));
                 app.wraps.wraps.pop();
                 if was_dek_minted_for_this_op {
-                    app.set_dek(None);
+                    keep_for_retry(app);
                 }
                 app.auth_setup.form.error = Some(format!("Save failed: {e}"));
             }
@@ -509,7 +540,7 @@ pub async fn handle_enroll_result(app: &mut App, result: std::result::Result<Wra
         Err(msg) => {
             tracing::error!(error = %msg, "security key enrolment failed");
             if was_dek_minted_for_this_op {
-                app.set_dek(None);
+                keep_for_retry(app);
             }
             app.auth_setup.form.busy = false;
             app.auth_setup.form.error = Some(format!("Enrol failed: {msg}"));

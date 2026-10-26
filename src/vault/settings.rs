@@ -141,11 +141,15 @@ pub fn handle_rename_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                 // Silently refuse — Esc cancels, Enter requires a label.
                 return Ok(());
             }
-            if let Some(Wrap::SecurityKey { label, .. }) =
-                app.wraps.wraps.get_mut(app.auth_settings.idx)
+            if let Some(Wrap::SecurityKey { credential_id, .. }) =
+                app.wraps.wraps.get(app.auth_settings.idx)
             {
-                *label = Some(new_label);
-                app.wraps.save()?;
+                let credential_id = credential_id.clone();
+                let dek = app
+                    .dek_clone()
+                    .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
+                app.wraps =
+                    WrapsFile::update(&dek, |disk| disk.rename_factor(&credential_id, &new_label))?;
                 app.push_toast(ToastKind::Success, "Renamed");
             }
             app.auth_settings.rename_input.clear();
@@ -168,12 +172,14 @@ pub async fn handle_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<(
             let action = app.auth_settings.pending.take();
             match action {
                 Some(PendingAuthAction::RemoveWrap(idx)) if idx < app.wraps.wraps.len() => {
-                    app.wraps.wraps.remove(idx);
-                    // If that was the last security key, drop the
-                    // shared salt — the next enrolment generates a
-                    // fresh one.
-                    app.wraps.clear_security_key_salt_if_unused();
-                    app.wraps.save()?;
+                    let removed = app.wraps.wraps[idx].clone();
+                    let dek = app
+                        .dek_clone()
+                        .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
+                    // If that was the last security key, `remove_factor`
+                    // drops the shared salt — the next enrolment generates
+                    // a fresh one.
+                    app.wraps = WrapsFile::update(&dek, |disk| disk.remove_factor(&removed))?;
                     if app.auth_settings.idx >= app.wraps.wraps.len() && !app.wraps.wraps.is_empty()
                     {
                         app.auth_settings.idx = app.wraps.wraps.len() - 1;
