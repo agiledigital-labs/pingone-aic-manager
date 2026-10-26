@@ -28,6 +28,12 @@ pub enum ManagedCommand {
         /// Include inline hook source bodies instead of script-pull references.
         #[arg(long)]
         hook_sources: bool,
+        /// Print only this property's definition, exactly as stored.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["fields", "schema_only"])]
+        property: Option<String>,
+        /// Print only the `schema` member (still narrowed by --fields).
+        #[arg(long)]
+        schema_only: bool,
         #[arg(long)]
         tenant: Option<String>,
     },
@@ -236,8 +242,17 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
             name,
             fields,
             hook_sources,
+            property,
+            schema_only,
             tenant,
-        } => get(name, fields, hook_sources, tenant).await,
+        } => {
+            let projection = match (property, schema_only) {
+                (Some(property), _) => spec::GetProjection::Property(property),
+                (None, true) => spec::GetProjection::Schema,
+                (None, false) => spec::GetProjection::Object,
+            };
+            get(name, fields, hook_sources, projection, tenant).await
+        }
         ManagedCommand::Object { command } => object(command).await,
         ManagedCommand::Field { command } => field(command).await,
         ManagedCommand::Hook { command } => hook(command).await,
@@ -249,19 +264,26 @@ async fn get(
     name: String,
     fields: Vec<String>,
     hook_sources: bool,
+    projection: spec::GetProjection,
     tenant: Option<String>,
 ) -> Result<()> {
     let object = api::object_named(&api::get_managed(&tenant_for(tenant)?).await?, &name)?.clone();
     let view = spec::prepare_managed_get(object, &name, &fields, hook_sources)
         .map_err(crate::Error::Config)?;
-    print_json(&view.object)?;
+    let whole = projection == spec::GetProjection::Object;
+    print_json(
+        &spec::project_managed_get(view.object, &name, &projection)
+            .map_err(crate::Error::Config)?,
+    )?;
     if let Some((shown, total)) = view.fields_shown {
         eprintln!("showing {shown} of {total} properties");
     }
     for pattern in &view.unmatched_patterns {
         eprintln!("--fields {pattern:?} matched no properties");
     }
-    if view.elided_hooks > 0 {
+    // Object-level hooks sit outside `schema`, so a projection never shows
+    // them and has nothing to report about eliding them.
+    if whole && view.elided_hooks > 0 {
         let noun = if view.elided_hooks == 1 {
             "source"
         } else {

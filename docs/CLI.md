@@ -505,7 +505,7 @@ as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 
 ```bash
 aic managed list [--json]                        # object types with property + hook counts
-aic managed get alpha_user [--fields GLOB] [--hook-sources]
+aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME]
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
 aic managed object rename custom_widget custom_gadget [--yes] [--json]
 aic managed object delete custom_gadget [--yes] [--json]
@@ -528,6 +528,13 @@ source. `--fields` is a repeatable, both-ends-anchored glob over
 pattern matches, the command fails rather than printing an empty properties map.
 A filtered document also notes on stderr how many properties are shown, and
 names any pattern that matched nothing.
+
+`--schema-only` prints just the `schema` member, still narrowed by `--fields`.
+`--property NAME` prints one property's definition exactly as stored — the
+shape to diff against a repository copy
+(`diff <(aic managed get alpha_user --property mail) repo/mail.json`). The name
+is exact and case-sensitive; a near miss names the property you probably
+meant. It cannot be combined with `--fields` or `--schema-only`.
 
 Every write accepts `--tenant <name>` and requires `--yes` for a
 production-themed tenant. Field and relationship booleans take explicit values
