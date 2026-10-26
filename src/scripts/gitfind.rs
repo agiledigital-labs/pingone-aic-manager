@@ -12,7 +12,9 @@
 //! Local git only: `hash-object`, `for-each-ref`, `ls-tree`, in an
 //! environment that pins the repository to the one named and forbids the two
 //! ways git can answer from somewhere else — a partial clone's lazy fetch, and
-//! replacement objects (round 8, both reviewers).
+//! replacement objects (round 8, both reviewers). The lazy-fetch ban is the
+//! `--no-lazy-fetch` option, which a git older than 2.44 rejects, so such a
+//! git fails closed rather than fetching (round 9).
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -63,10 +65,14 @@ fn git(repo: &Path) -> Command {
     }
     command
         .arg("--no-replace-objects")
+        // A partial clone would otherwise fetch a missing tree from its
+        // remote: answer from what is here, or fail saying so. The option
+        // rather than only `GIT_NO_LAZY_FETCH`, because a git that predates
+        // the variable ignores it and fetches, while it rejects the option
+        // (round 9).
+        .arg("--no-lazy-fetch")
         .arg("-C")
         .arg(repo)
-        // A partial clone would otherwise fetch a missing tree from its
-        // remote: answer from what is here, or fail saying so.
         .env("GIT_NO_LAZY_FETCH", "1")
         // A hang is the one failure no error handling catches, so make sure
         // nothing can stop to ask for credentials.
@@ -95,9 +101,16 @@ fn run(mut command: Command, input: Option<&[u8]>, what: &str) -> Result<Vec<u8>
     }
     let output = child.wait_with_output()?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("--no-lazy-fetch") {
+            return Err(Error::Config(format!(
+                "this git cannot promise not to fetch (`--no-lazy-fetch` needs git 2.44 or later): {}",
+                stderr.trim()
+            )));
+        }
         return Err(Error::Config(format!(
             "`git {what}` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            stderr.trim()
         )));
     }
     Ok(output.stdout)
@@ -327,8 +340,8 @@ mod tests {
     }
 
     /// An inherited `GIT_DIR` redirects git away from `-C` — the control,
-    /// run through `env` so the variable is really inherited — and `git()`
-    /// removes it and every other routing variable from what it runs.
+    /// run through `env` so the variable is really inherited — and `find`,
+    /// run with each routing variable inherited, still searches `-C`.
     #[test]
     fn an_inherited_git_dir_is_removed() {
         let base = std::env::temp_dir().join(format!("aic-gitdir-{}", uuid::Uuid::new_v4()));
@@ -351,14 +364,60 @@ mod tests {
             String::from_utf8_lossy(&control.stdout).contains("refs/heads/main"),
             "the control: inherited GIT_DIR wins over -C"
         );
-        let removed: Vec<String> = git(&empty)
-            .get_envs()
-            .filter(|(_, value)| value.is_none())
-            .map(|(name, _)| name.to_string_lossy().into_owned())
-            .collect();
-        for name in ROUTING {
-            assert!(removed.iter().any(|r| r == name), "{name} not removed");
-        }
+        // `empty` gets a commit of different content, so it has one branch
+        // to search and no hit; `holder` has the hit.
+        std::fs::write(empty.join("y.cjs"), "other\n").unwrap();
+        git_in(&empty, &["add", "y.cjs"]);
+        git_in(&empty, &["commit", "-q", "-m", "other"]);
+        let holder_git = holder.join(".git");
+        let objects = holder_git.join("objects");
+        // Production `find`, in a child process that really inherits each
+        // variable. The list is spelled out here rather than read from
+        // `ROUTING`, so dropping a name from that constant fails this test.
+        let child = |repo: &Path, expect: usize, env: &[(&str, &Path)]| {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "scripts::gitfind::tests::find_in_a_child",
+                    "--nocapture",
+                ])
+                .env("AIC_GITFIND_CHILD", repo)
+                .env("AIC_GITFIND_EXPECT", expect.to_string());
+            for (name, value) in env {
+                command.env(name, value);
+            }
+            let output = command.output().unwrap();
+            let all = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.status.success() && all.contains("1 passed"),
+                "{env:?}: {all}"
+            );
+        };
+        child(&holder, 1, &[]);
+        child(&empty, 0, &[]);
+        child(&empty, 0, &[("GIT_DIR", &holder_git)]);
+        child(&empty, 0, &[("GIT_COMMON_DIR", &holder_git)]);
+        child(&empty, 0, &[("GIT_OBJECT_DIRECTORY", &objects)]);
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The far side of `an_inherited_git_dir_is_removed`: does nothing unless
+    /// that test launched it.
+    #[test]
+    fn find_in_a_child() {
+        let Ok(repo) = std::env::var("AIC_GITFIND_CHILD") else {
+            return;
+        };
+        let expect: usize = std::env::var("AIC_GITFIND_EXPECT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let search = find(Path::new(&repo), b"two\n").unwrap();
+        assert_eq!((search.searched, search.hits.len()), (1, expect));
     }
 }
