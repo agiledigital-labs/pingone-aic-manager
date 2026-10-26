@@ -869,7 +869,7 @@ impl ProjectConfig {
              saml-rotations.json.new\n\
              # config.toml's update lock and its rename-into-place sidecar.\n\
              config.toml.lock\n\
-             config.toml.new\n",
+             config.toml.new*\n",
         );
         content
     }
@@ -917,14 +917,37 @@ impl ProjectPaths {
     /// *under the lock* — validate against that, not an earlier read. Only
     /// writers that come through here are serialised; a `load` → `save` pair
     /// is still a lost-update window (its `save` is merely atomic).
+    ///
+    /// **`change` must not call `save_config` or `update_config`**: the lock
+    /// is not re-entrant, so a nested save blocks on the lock this call holds
+    /// and the process deadlocks against itself. Mutate the `&mut` it is
+    /// given; that is what gets written.
+    ///
+    /// A `change` that leaves the document as it was writes nothing.
     pub fn update_config<T>(
         &self,
         change: impl FnOnce(&mut ProjectConfig) -> Result<T>,
     ) -> Result<T> {
+        self.update_or_create_config(
+            || Err(crate::Error::Config("no .aic/config.toml here".into())),
+            change,
+        )
+    }
+
+    /// `update_config` for a writer that may be the first: with no
+    /// `config.toml`, `create` supplies the document `change` then edits —
+    /// decided under the same lock, so two first onboardings cannot both see
+    /// "absent" and the later overwrite the earlier.
+    pub fn update_or_create_config<T>(
+        &self,
+        create: impl FnOnce() -> Result<ProjectConfig>,
+        change: impl FnOnce(&mut ProjectConfig) -> Result<T>,
+    ) -> Result<T> {
         let _guard = self.lock_config()?;
-        let mut config = self
-            .load_config()?
-            .ok_or_else(|| crate::Error::Config("no .aic/config.toml here".into()))?;
+        let mut config = match self.load_config()? {
+            Some(config) => config,
+            None => create()?,
+        };
         let out = change(&mut config)?;
         self.install_config(&config)?;
         Ok(out)
@@ -948,15 +971,50 @@ impl ProjectPaths {
 
     /// Callers hold `lock_config`. Written to a sidecar, synced, then renamed,
     /// so a reader — the daemon stamps the file by content — never sees half
-    /// a file.
+    /// a file. The sidecar is created fresh (`create_new`, a unique name), so
+    /// a symlink or hard link planted at a predictable path cannot redirect
+    /// the write, and it carries the existing file's mode — a `0600` config
+    /// stays `0600` across the rename; a new one is `0600`. Content identical
+    /// to what is on disk is not rewritten, so a no-op does not wake the
+    /// daemon's content stamp or touch the mtime.
     fn install_config(&self, config: &ProjectConfig) -> Result<()> {
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         let contents = toml::to_string_pretty(config)?;
-        let temp = self.aic_dir().join("config.toml.new");
-        let mut handle = fs::File::create(&temp)?;
-        handle.write_all(contents.as_bytes())?;
-        handle.sync_all()?;
-        fs::rename(&temp, self.config_path())?;
+        let target = self.config_path();
+        let existing = match fs::read(&target) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        if existing.as_deref() == Some(contents.as_bytes()) {
+            return Ok(());
+        }
+        let mode = match fs::metadata(&target) {
+            Ok(metadata) => metadata.permissions().mode() & 0o7777,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0o600,
+            Err(e) => return Err(e.into()),
+        };
+        let temp = self
+            .aic_dir()
+            .join(format!("config.toml.new.{}", uuid::Uuid::new_v4()));
+        let written = (|| -> Result<()> {
+            let mut handle = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(&temp)?;
+            // `mode` at open is filtered by the umask; set it exactly.
+            handle.set_permissions(fs::Permissions::from_mode(mode))?;
+            handle.write_all(contents.as_bytes())?;
+            handle.sync_all()?;
+            fs::rename(&temp, &target)?;
+            Ok(())
+        })();
+        if written.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        written?;
         self.write_gitignore()?;
         Ok(())
     }
@@ -1213,7 +1271,85 @@ mod tests {
         first.join().unwrap();
         second.join().unwrap();
         assert_eq!(paths.load_config().unwrap().unwrap().project, "xab");
-        assert!(!paths.aic_dir().join("config.toml.new").exists());
+        let litter: Vec<_> = fs::read_dir(paths.aic_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("config.toml.new")
+            })
+            .collect();
+        assert!(litter.is_empty(), "sidecars left behind: {litter:?}");
+    }
+
+    /// The rename must not widen a private config: the replacement carries
+    /// the existing file's mode.
+    #[test]
+    fn a_save_keeps_the_config_files_mode() {
+        let tmp = TestDir::new();
+        let paths = ProjectPaths::new(tmp.path("p")).unwrap();
+        let mut config = ProjectConfig {
+            project: "x".into(),
+            default_tenant: "t".into(),
+            tenants: Vec::new(),
+        };
+        paths.save_config(&config).unwrap();
+        fs::set_permissions(paths.config_path(), fs::Permissions::from_mode(0o640)).unwrap();
+        config.project = "changed".into();
+        paths.save_config(&config).unwrap();
+        let mode = fs::metadata(paths.config_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o640);
+    }
+
+    /// A no-op update writes nothing: the inode is the same afterwards.
+    #[test]
+    fn an_unchanged_update_does_not_rewrite_the_config() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = TestDir::new();
+        let paths = ProjectPaths::new(tmp.path("p")).unwrap();
+        paths
+            .save_config(&ProjectConfig {
+                project: "x".into(),
+                default_tenant: "t".into(),
+                tenants: Vec::new(),
+            })
+            .unwrap();
+        let before = fs::metadata(paths.config_path()).unwrap().ino();
+        paths.update_config(|_| Ok(())).unwrap();
+        assert_eq!(fs::metadata(paths.config_path()).unwrap().ino(), before);
+        // Control: a real change replaces the file.
+        paths
+            .update_config(|c| {
+                c.project = "y".into();
+                Ok(())
+            })
+            .unwrap();
+        assert_ne!(fs::metadata(paths.config_path()).unwrap().ino(), before);
+    }
+
+    /// A link planted at a sidecar path is not followed: the sidecar name is
+    /// unique and created fresh, so the planted target stays untouched.
+    #[test]
+    fn a_planted_sidecar_link_is_not_written_through() {
+        let tmp = TestDir::new();
+        let paths = ProjectPaths::new(tmp.path("p")).unwrap();
+        fs::create_dir_all(paths.aic_dir()).unwrap();
+        let victim = tmp.path("victim");
+        fs::write(&victim, "untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, paths.aic_dir().join("config.toml.new")).unwrap();
+        paths
+            .save_config(&ProjectConfig {
+                project: "x".into(),
+                default_tenant: "t".into(),
+                tenants: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "untouched");
     }
 
     #[test]

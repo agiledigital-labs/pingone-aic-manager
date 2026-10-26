@@ -199,37 +199,19 @@ pub(crate) fn persist_tenant_overwriting(
         app.save_jwk(&tenant.name, jwk)?;
     }
 
-    // Replace any existing entry with the same name, or append.
+    // Recorded against the file under its lock, not from `app.tenants`: that
+    // list is this session's copy, and saving it whole would drop a tenant
+    // another `aic` onboarded since it was loaded.
+    let config = record_tenant(crate::config::project_paths(), &tenant, || {
+        std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "aic-project".into())
+    })?;
+    app.tenants = config.tenants.clone();
     if let Some(idx) = app.tenants.iter().position(|t| t.name == tenant.name) {
-        app.tenants[idx] = tenant.clone();
         app.set_active_tenant(idx);
-    } else {
-        app.tenants.push(tenant.clone());
-        app.set_active_tenant(app.tenants.len() - 1);
     }
-
-    let project = app
-        .config
-        .as_ref()
-        .map(|c| c.project.clone())
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "aic-project".into())
-        });
-
-    let default_tenant = app
-        .tenants
-        .first()
-        .map(|t| t.name.clone())
-        .unwrap_or_default();
-    let config = ProjectConfig {
-        project,
-        default_tenant,
-        tenants: app.tenants.clone(),
-    };
-    config.save()?;
     app.config = Some(config);
 
     if let Some(log_key) = log_key {
@@ -242,6 +224,38 @@ pub(crate) fn persist_tenant_overwriting(
     // it isn't.
     crate::esv::ops::refresh(app, false);
     Ok(())
+}
+
+/// Replace the entry named like `tenant`, or append it, in `config.toml` as
+/// one locked transaction, creating the file on a first onboarding. The
+/// default tenant stays the first entry, as it always has. Returns the
+/// document written.
+pub(crate) fn record_tenant(
+    paths: &crate::config::ProjectPaths,
+    tenant: &Tenant,
+    project_name: impl FnOnce() -> String,
+) -> crate::Result<ProjectConfig> {
+    paths.update_or_create_config(
+        || {
+            Ok(ProjectConfig {
+                project: project_name(),
+                default_tenant: String::new(),
+                tenants: Vec::new(),
+            })
+        },
+        |config| {
+            match config.tenants.iter().position(|t| t.name == tenant.name) {
+                Some(idx) => config.tenants[idx] = tenant.clone(),
+                None => config.tenants.push(tenant.clone()),
+            }
+            config.default_tenant = config
+                .tenants
+                .first()
+                .map(|t| t.name.clone())
+                .unwrap_or_default();
+            Ok(config.clone())
+        },
+    )
 }
 
 #[cfg(test)]
@@ -273,5 +287,68 @@ mod tests {
         assert!(tenant_name_exists(&tenants, "sandbox"));
         assert!(!tenant_name_exists(&tenants, "Sandbox"));
         assert!(!tenant_name_exists(&tenants, "development"));
+    }
+
+    fn entry(name: &str, base_url: &str) -> Tenant {
+        Tenant {
+            name: name.into(),
+            base_url: base_url.into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: None,
+            scopes: Vec::new(),
+            provenance: Provenance::default(),
+        }
+    }
+
+    /// The first onboarding creates the file; a later one edits the file as
+    /// it is now — a tenant only another process knew about survives, and a
+    /// same-name entry is replaced, not duplicated.
+    #[test]
+    fn record_tenant_creates_then_merges_into_the_file_on_disk() {
+        let dir = crate::config::TestDir::new();
+        let paths = crate::config::ProjectPaths::new(dir.path("p")).unwrap();
+        let first = record_tenant(&paths, &entry("a", "https://a.example.com"), || {
+            "proj".into()
+        })
+        .unwrap();
+        assert_eq!(first.project, "proj");
+        assert_eq!(first.default_tenant, "a");
+
+        // Another process onboarded `b` since this session loaded its copy.
+        paths
+            .update_config(|c| {
+                c.tenants.push(entry("b", "https://b.example.com"));
+                Ok(())
+            })
+            .unwrap();
+        record_tenant(
+            &paths,
+            &entry("a", "https://a2.example.com"),
+            || unreachable!(),
+        )
+        .unwrap();
+        record_tenant(
+            &paths,
+            &entry("c", "https://c.example.com"),
+            || unreachable!(),
+        )
+        .unwrap();
+
+        let on_disk = paths.load_config().unwrap().unwrap();
+        let got: Vec<_> = on_disk
+            .tenants
+            .iter()
+            .map(|t| (t.name.as_str(), t.base_url.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a", "https://a2.example.com"),
+                ("b", "https://b.example.com"),
+                ("c", "https://c.example.com")
+            ]
+        );
+        assert_eq!(on_disk.project, "proj");
+        assert_eq!(on_disk.default_tenant, "a");
     }
 }

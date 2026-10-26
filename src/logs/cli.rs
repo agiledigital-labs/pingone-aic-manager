@@ -662,15 +662,15 @@ where
 }
 
 fn persist_log_key_provenance(tenant: &str, source: CredentialSource) -> Result<()> {
-    let mut cfg =
-        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
-    let Some(entry) = cfg.tenants.iter_mut().find(|entry| entry.name == tenant) else {
-        return Err(Error::Config(format!(
-            "no tenant named '{tenant}' in config"
-        )));
-    };
-    entry.provenance.log_key = Some(source);
-    cfg.save()
+    crate::config::project_paths().update_config(|cfg| {
+        let Some(entry) = cfg.tenants.iter_mut().find(|entry| entry.name == tenant) else {
+            return Err(Error::Config(format!(
+                "no tenant named '{tenant}' in config"
+            )));
+        };
+        entry.provenance.log_key = Some(source);
+        Ok(())
+    })
 }
 
 fn configured_tenant_base_url(tenant_arg: Option<String>) -> Result<(String, String)> {

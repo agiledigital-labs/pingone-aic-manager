@@ -654,8 +654,12 @@ mod tests {
             Ok(0)
         }
 
-        fn save_config(&mut self, _config: &ProjectConfig) -> Result<()> {
-            Ok(())
+        fn remove_config_entry(&mut self, _tenant: &str) -> Result<ProjectConfig> {
+            Ok(ProjectConfig {
+                project: "test".into(),
+                default_tenant: String::new(),
+                tenants: Vec::new(),
+            })
         }
 
         fn write_context(&mut self, _name: Option<&str>) -> Result<()> {
