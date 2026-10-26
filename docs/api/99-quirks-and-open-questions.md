@@ -1653,3 +1653,13 @@ existing `cotlist` back unchanged. The only other value found is `CREATE`, the
 default; an invalid one is a 400 naming the Java enum
 `SAML2MetaUtils.MetadataUpdateType` without listing its values. Full
 measurement in `docs/api/06-saml.md`.
+
+## 2026-10-26 — the promotion provisional report is not a diff of the pair
+
+I read `GET /environment/promotion/report/provisional` as "what a promotion
+would change now" and told the operator dev and UAT differed by 150 items.
+The console said they were in sync, and it was right about every item
+sampled: journeys, scripts and ESV secret mappings listed as added or
+modified were byte-identical on both tenants. The report is the service's
+claim against some baseline that is not the live upper env. Measurement and
+the sampled table: `docs/api/23-promotion.md`.

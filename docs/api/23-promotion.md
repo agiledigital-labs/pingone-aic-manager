@@ -86,5 +86,33 @@ request consults is unmeasured.
 
 ## Not yet exercised
 
-Locking, unlocking, dry runs and promotion (`POST` on `lock`, `promote`). The
-provisional report means a diff does not need a lock.
+Locking, unlocking, dry runs and promotion (`POST` on `lock`, `promote`).
+
+## The provisional report is not a live diff
+
+Measured 2026-10-26 on a dev → UAT pair the console called in sync. The
+provisional report (regenerated twice, 04:56 and 05:52 UTC) listed **150**
+items. Each sampled item was fetched from both tenants with
+`scripts/verify-endpoint.sh --raw`, after a control proving the two calls
+reached two different hosts (dev answered `lock/state` with the lower-env
+shape, UAT with the upper):
+
+| Reported as                         | Sampled                                   | Live result                                             |
+| ----------------------------------- | ----------------------------------------- | ------------------------------------------------------- |
+| Journeys / added (7)                | one bravo journey                         | present on UAT, byte-identical, same `_rev`             |
+| Journeys / modified (63)            | one alpha journey                         | byte-identical, same `_rev`                             |
+| Scripts / added (3)                 | one bravo script                          | present on UAT, byte-identical                          |
+| Scripts / modified (15)             | one alpha script                          | byte-identical; `lastModifiedDate` seven months earlier, before the last promotion |
+| ESV Secrets Store Mappings / added (48) | the 42 alpha entries                  | all 42 already mapped on UAT; the alpha mapping list is byte-identical |
+
+AM services, CORS, the global script and the IDM theme were not sampled.
+
+Nine of the 48 mapping "adds" were also in the last real promotion's report
+(four days earlier), so the service does not learn from a promotion for that
+item type at least. The other 141 items were not in that report.
+
+So the provisional report's items are the promotion service's claim, computed
+against something other than the live upper environment — which one is not
+known. Never read it as "dev and UAT differ". Unexplained as of this date: what
+baseline it uses; whether the upper env's `UNLOCKING` status (unchanged since
+that promotion) is related.
