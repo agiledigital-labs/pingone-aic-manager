@@ -34,8 +34,13 @@ aic <command> <subcommand> --help
   ```
 
   The tenant is resolved once, when the command line is parsed, and everything
-  in that invocation uses that answer. `aic whoami --token` and `aic auth --token`
-  print no banner, so their stdout and stderr stay clean for `$(…)`.
+  in that invocation uses that answer; if the stored context cannot be read
+  at that point, every command needing the implicit tenant fails with that
+  error rather than retrying. Commands whose output is machine-read print no
+  banner, so their stdout and stderr stay clean for `$(…)`: `aic whoami
+  --token`, `aic auth --token`, `aic jwt-bearer key list --json`,
+  `aic jwt-bearer key export` without `--out`, and
+  `aic jwt-bearer subjects list --json`.
 - **`--realm <alpha|bravo>`** selects the AM realm for realm-scoped commands
   (`journey`, `jwt-bearer`, `oauth`, `secretmap`, and AM `script` namespaces).
   Defaults to **`alpha`**. ESVs and IDM endpoints are tenant-global and take no
@@ -548,8 +553,10 @@ key, and delete-and-recreate is not a measured repair.
 `relationship delete` removes the property and, when it declares one, the
 reverse property on the target, in one write. It refuses when the declared
 reverse is not a relationship back to the source (use `field delete` for the
-one property), and when either end is a standard field, as `field delete`
-does.
+one property), when either end is a standard field, as `field delete` does,
+and when either end targets more than one object type, because removing the
+property would remove it for every target. `relationship set` holds a reverse
+it drops or moves to the same rules.
 
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the
