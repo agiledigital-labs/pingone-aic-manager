@@ -112,9 +112,11 @@ Nine of the 48 mapping "adds" were also in the last real promotion's report
 a promotion for that item type; this was not tested further. The other 141
 items were not in that report.
 
-So the provisional report's items are the promotion service's claim, computed
-against something other than the live upper environment — which one is not
-known. Never read it as "dev and UAT differ". Unexplained as of this date:
+So the provisional report's items are the promotion service's claim, and they
+do not reflect a comparison of the live content: why is not known — it could
+compare against something other than the live upper environment, or list items
+by enumeration or a stale classification; these observations do not separate
+those. Never read it as "dev and UAT differ". Unexplained as of this date:
 what it compares against — a stored baseline is one possibility, not an
 observation; whether the upper env's `UNLOCKING` status (unchanged since
 that promotion) is related.

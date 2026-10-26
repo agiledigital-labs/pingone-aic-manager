@@ -223,14 +223,6 @@ impl VaultArtifact {
             .copied()
             .find(|artifact| artifact.kind() == kind)
     }
-
-    fn enc_path(self) -> PathBuf {
-        project_paths().artifact_enc_path(self)
-    }
-
-    fn plain_path(self) -> PathBuf {
-        project_paths().artifact_plain_path(self)
-    }
 }
 
 /// Load an artifact's cleartext map bytes from whichever on-disk form matches
@@ -302,6 +294,11 @@ impl ProjectPaths {
     ///
     /// Only writers that come through here are serialised. Same non-re-entrant
     /// rule as `update_config`: `change` must not take this lock again.
+    ///
+    /// The caller chose plain or encrypted before it got here, possibly long
+    /// before (a TUI open for hours); a mode switch since (`migrate_artifact`,
+    /// under this same lock) is refused rather than written into the form
+    /// the vault no longer reads.
     pub(crate) fn update_artifact_map<V, T>(
         &self,
         artifact: VaultArtifact,
@@ -311,7 +308,8 @@ impl ProjectPaths {
     where
         V: serde::de::DeserializeOwned + serde::Serialize,
     {
-        let _guard = self.lock_sidecar(&format!("{}.lock", artifact.file_stem()))?;
+        let _guard = self.lock_artifact(artifact)?;
+        self.mode_still(artifact, dek)?;
         let mut map = decode_json_map(self.load_artifact_bytes(artifact, dek)?)?;
         let out = change(&mut map)?;
         self.save_artifact_bytes(artifact, &serde_json::to_vec(&map)?, dek)?;
@@ -515,33 +513,14 @@ fn decode_json_map<V: serde::de::DeserializeOwned>(
 /// wrap that protects this DEK before calling this function, otherwise
 /// `keys.enc` would be unreadable on next launch.
 pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
+    let paths = project_paths();
     for &artifact in VaultArtifact::ALL {
-        match artifact {
-            // The JWK map must always exist encrypted after this: first-run
-            // installs never wrote keys.plain (no factors added yet), so
-            // substitute an empty JSON map. Decrypting empty bytes would fail
-            // the round-trip in `decrypt_keys_file`.
-            VaultArtifact::Jwks => {
-                let plain = match load_optional_file(&artifact.plain_path())? {
-                    Some(bytes) if !bytes.is_empty() => bytes,
-                    _ => b"{}".to_vec(),
-                };
-                save_artifact_bytes(artifact, &plain, Some(dek))?;
-            }
-            // Other artifacts are optional — only migrate a plaintext file if
-            // one is present, leaving nothing behind if the feature was unused.
-            _ => {
-                if let Some(bytes) = load_optional_file(&artifact.plain_path())? {
-                    let bytes = if bytes.is_empty() {
-                        b"{}".to_vec()
-                    } else {
-                        bytes
-                    };
-                    save_artifact_bytes(artifact, &bytes, Some(dek))?;
-                }
-            }
-        }
-        let _ = fs::remove_file(artifact.plain_path());
+        // The JWK map must always exist encrypted after this: first-run
+        // installs never wrote keys.plain (no factors added yet), so an empty
+        // map stands in — decrypting empty bytes would fail the round-trip in
+        // `decrypt_keys_file`. Other artifacts are optional: only a present
+        // plaintext file is migrated, leaving nothing behind if unused.
+        paths.migrate_artifact(artifact, None, Some(dek), artifact == VaultArtifact::Jwks)?;
     }
     let mut settings = Settings::load()?.unwrap_or_default();
     settings.encrypt_keys = true;
@@ -555,23 +534,12 @@ pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
 /// `settings.toml` to `encrypt_keys = false`. Called by the last-factor
 /// guard in the Settings screen.
 pub fn disable_encryption(dek: &crypto::Dek) -> Result<()> {
+    let paths = project_paths();
     for &artifact in VaultArtifact::ALL {
-        match artifact {
-            // The JWK map always lands as plaintext (even if empty) — the app
-            // expects keys.plain to exist in no-encryption mode.
-            VaultArtifact::Jwks => {
-                let bytes =
-                    load_artifact_bytes(artifact, Some(dek))?.unwrap_or_else(|| b"{}".to_vec());
-                save_artifact_bytes(artifact, &bytes, None)?;
-            }
-            // Other artifacts round-trip only when they had an encrypted file.
-            _ => {
-                if let Some(bytes) = load_artifact_bytes(artifact, Some(dek))? {
-                    save_artifact_bytes(artifact, &bytes, None)?;
-                }
-            }
-        }
-        let _ = fs::remove_file(artifact.enc_path());
+        // The JWK map always lands as plaintext (even if empty) — the app
+        // expects keys.plain to exist in no-encryption mode. Other artifacts
+        // round-trip only when they had an encrypted file.
+        paths.migrate_artifact(artifact, Some(dek), None, artifact == VaultArtifact::Jwks)?;
     }
     let _ = fs::remove_file(ProjectConfig::wraps_path());
     let mut settings = Settings::load()?.unwrap_or_default();
@@ -873,7 +841,7 @@ impl ProjectConfig {
         let mut content = String::new();
         for &artifact in VaultArtifact::ALL {
             content.push_str(&format!(
-                "{stem}.enc\n{stem}.plain\n{stem}.lock\n",
+                "{stem}.enc\n{stem}.plain\n{stem}.lock\n{stem}.enc.new*\n{stem}.plain.new*\n",
                 stem = artifact.file_stem()
             ));
         }
@@ -894,6 +862,8 @@ impl ProjectConfig {
              saml-rotations.json.new\n\
              # config.toml's update lock and its rename-into-place sidecar.\n\
              config.toml.lock\n\
+             # Onboarding/offboarding's tenant-lifecycle lock.\n\
+             tenants.lock\n\
              config.toml.new*\n",
         );
         content
@@ -992,6 +962,89 @@ impl ProjectPaths {
         self.lock_sidecar("config.toml.lock")
     }
 
+    fn lock_artifact(&self, artifact: VaultArtifact) -> Result<fs::File> {
+        self.lock_sidecar(&format!("{}.lock", artifact.file_stem()))
+    }
+
+    /// Whether the vault is still in the mode `dek` assumes. The other form
+    /// existing means a migration ran since the mode was chosen (or one died
+    /// half way); writing would put a credential where nothing reads it.
+    fn mode_still(&self, artifact: VaultArtifact, dek: Option<&crypto::Dek>) -> Result<()> {
+        let (other, mode) = match dek {
+            Some(_) => (self.artifact_plain_path(artifact), "encrypted"),
+            None => (self.artifact_enc_path(artifact), "plain"),
+        };
+        if other.exists() {
+            return Err(crate::Error::Crypto(format!(
+                "the vault is no longer {mode} ({} exists); re-run `aic login` and retry",
+                other.file_name().unwrap_or_default().to_string_lossy()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Move one artifact between forms — `from` and `to` are the DEK of each
+    /// side, `None` for plain — under the artifact's lock, so a concurrent
+    /// `update_artifact_map` either lands before the read (and is carried
+    /// over) or after the old form is gone (and is refused by `mode_still`).
+    /// Unlocked, a migration could read map A, a writer store A+B, and the
+    /// migration then publish A and delete A+B. `required` writes an empty
+    /// map when nothing is stored (the JWK map must always exist).
+    pub(crate) fn migrate_artifact(
+        &self,
+        artifact: VaultArtifact,
+        from: Option<&crypto::Dek>,
+        to: Option<&crypto::Dek>,
+        required: bool,
+    ) -> Result<()> {
+        let _guard = self.lock_artifact(artifact)?;
+        let old = match from {
+            Some(_) => self.artifact_enc_path(artifact),
+            None => self.artifact_plain_path(artifact),
+        };
+        let bytes = match self.load_artifact_bytes(artifact, from)? {
+            Some(bytes) if !bytes.is_empty() => Some(bytes),
+            Some(_) => Some(b"{}".to_vec()),
+            None if required => Some(b"{}".to_vec()),
+            None => None,
+        };
+        if let Some(bytes) = bytes {
+            self.save_artifact_bytes(artifact, &bytes, to)?;
+        }
+        match fs::remove_file(&old) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The tenant-lifecycle lock: held by onboarding from its first credential
+    /// write until the config row is recorded, and by offboarding from its
+    /// identity check until the row is removed. Both key everything by tenant
+    /// **name**, so without it an onboarding that has stored a replacement's
+    /// key but not yet its row passes offboarding's identity check, and the
+    /// replacement's key is deleted. Taken with `try_lock` — neither side
+    /// waits on the other (offboarding holds it across a network call); the
+    /// loser is told to retry.
+    pub(crate) fn try_lock_lifecycle(&self) -> Result<fs::File> {
+        let dir = self.aic_dir();
+        fs::create_dir_all(&dir)?;
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("tenants.lock"))?;
+        match handle.try_lock() {
+            Ok(()) => Ok(handle),
+            Err(fs::TryLockError::WouldBlock) => Err(crate::Error::Config(
+                "another aic is adding or removing a tenant in this project; retry when it finishes"
+                    .into(),
+            )),
+            Err(fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
+
     /// An exclusive `flock` on `.aic/<name>`, held until the handle drops.
     fn lock_sidecar(&self, name: &str) -> Result<fs::File> {
         let dir = self.aic_dir();
@@ -1073,13 +1126,32 @@ impl ProjectPaths {
     }
 }
 
+/// Written to a fresh `0600` sidecar (`create_new`, unique name), synced and
+/// renamed into place, so a concurrent reader sees the old file or the new
+/// one — never a truncated one, which the daemon would read as an empty map
+/// and an offboarding probe as "no credential".
 fn save_private_file(path: &Path, data: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp = parent.join(format!("{name}.new.{}", uuid::Uuid::new_v4()));
+    let written = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
     }
-    fs::write(path, data)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
+    written
 }
 
 fn load_optional_file(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -1290,6 +1362,139 @@ mod tests {
             })
             .unwrap();
         assert_eq!(plain.len(), 1);
+    }
+
+    /// One lifecycle step at a time, and the loser is refused rather than
+    /// made to wait; the lock is free again once the holder drops it.
+    #[test]
+    fn the_lifecycle_lock_refuses_a_second_holder() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let held = paths.try_lock_lifecycle().unwrap();
+        assert!(paths.try_lock_lifecycle().is_err());
+        drop(held);
+        assert!(paths.try_lock_lifecycle().is_ok());
+    }
+
+    /// A writer that chose its mode before a migration is refused, not
+    /// written into the form nothing reads — both directions.
+    #[test]
+    fn a_writer_in_the_old_vault_mode_is_refused() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let dek = crypto::Dek::random();
+        paths
+            .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1}"#, None)
+            .unwrap();
+        paths
+            .migrate_artifact(VaultArtifact::Jwks, None, Some(&dek), true)
+            .unwrap();
+        assert!(!paths.artifact_plain_path(VaultArtifact::Jwks).exists());
+        let stale = paths.update_artifact_map(VaultArtifact::Jwks, None, |m| {
+            m.insert("b".to_string(), serde_json::json!(2));
+            Ok(())
+        });
+        assert!(stale.is_err());
+        assert!(!paths.artifact_plain_path(VaultArtifact::Jwks).exists());
+        // Control: the current mode writes, and the migrated entry is there.
+        let (map, ()) = paths
+            .update_artifact_map(VaultArtifact::Jwks, Some(&dek), |m| {
+                m.insert("b".to_string(), serde_json::json!(2));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(map.len(), 2);
+        // And back: an encrypted writer after a disable is refused.
+        paths
+            .migrate_artifact(VaultArtifact::Jwks, Some(&dek), None, true)
+            .unwrap();
+        assert!(
+            paths
+                .update_artifact_map(
+                    VaultArtifact::Jwks,
+                    Some(&dek),
+                    |_: &mut HashMap<String, serde_json::Value>| Ok(())
+                )
+                .is_err()
+        );
+    }
+
+    /// The migration waits for a writer holding the map, and carries its
+    /// entry over instead of publishing the map it read before it.
+    #[test]
+    fn a_migration_carries_over_a_concurrent_write() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let dek = crypto::Dek::random();
+        paths
+            .save_artifact_bytes(VaultArtifact::LogKeys, br#"{"a":1}"#, None)
+            .unwrap();
+        let (inside_tx, inside_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let writer = {
+            let paths = paths.clone();
+            std::thread::spawn(move || {
+                paths
+                    .update_artifact_map(VaultArtifact::LogKeys, None, |m| {
+                        inside_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        m.insert("b".to_string(), serde_json::json!(2));
+                        Ok(())
+                    })
+                    .unwrap();
+            })
+        };
+        inside_rx.recv().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let migration = {
+            let paths = paths.clone();
+            let dek = dek.clone();
+            std::thread::spawn(move || {
+                paths
+                    .migrate_artifact(VaultArtifact::LogKeys, None, Some(&dek), false)
+                    .unwrap();
+                done_tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the migration ran while a writer held the map"
+        );
+        release_tx.send(()).unwrap();
+        writer.join().unwrap();
+        migration.join().unwrap();
+        let map: HashMap<String, serde_json::Value> = decode_json_map(
+            paths
+                .load_artifact_bytes(VaultArtifact::LogKeys, Some(&dek))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(map.len(), 2, "{map:?}");
+    }
+
+    /// A private file is replaced by rename: the old inode is never
+    /// truncated in place, and no sidecar is left behind.
+    #[test]
+    fn a_private_file_is_replaced_not_truncated() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = TestDir::new();
+        let path = dir.path("secret");
+        save_private_file(&path, b"old").unwrap();
+        let before = fs::metadata(&path).unwrap().ino();
+        let reader = fs::File::open(&path).unwrap();
+        save_private_file(&path, b"new").unwrap();
+        assert_ne!(fs::metadata(&path).unwrap().ino(), before);
+        assert_eq!(reader.metadata().unwrap().len(), 3);
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        let litter: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".new."))
+            .collect();
+        assert!(litter.is_empty());
     }
 
     /// Two writers of one map, the first holding the transaction open: the

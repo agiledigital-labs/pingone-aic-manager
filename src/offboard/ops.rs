@@ -183,6 +183,10 @@ pub trait ExecuteIo {
     /// before anything is removed. `None` when there is no file.
     fn current_config(&mut self) -> Result<Option<ProjectConfig>>;
     fn write_context(&mut self, name: Option<&str>) -> Result<()>;
+    /// Take the tenant-lifecycle lock for the rest of the run
+    /// (`ProjectPaths::try_lock_lifecycle`). An error means another `aic` is
+    /// onboarding or offboarding; nothing is removed.
+    fn begin(&mut self) -> Result<()>;
 }
 
 /// Production I/O: agent vault verbs, local files, and `ProjectConfig::save`.
@@ -192,6 +196,8 @@ pub trait ExecuteIo {
 pub struct LiveIo {
     pub realm: String,
     pub confirmed_prod: bool,
+    /// The lifecycle lock `begin` took; released when the `LiveIo` drops.
+    lifecycle: Option<std::fs::File>,
 }
 
 impl Default for LiveIo {
@@ -199,6 +205,7 @@ impl Default for LiveIo {
         Self {
             realm: "alpha".into(),
             confirmed_prod: false,
+            lifecycle: None,
         }
     }
 }
@@ -208,6 +215,7 @@ impl LiveIo {
         Self {
             realm: "alpha".into(),
             confirmed_prod,
+            lifecycle: None,
         }
     }
 }
@@ -266,6 +274,13 @@ impl ExecuteIo for LiveIo {
 
     fn current_config(&mut self) -> Result<Option<ProjectConfig>> {
         crate::config::project_paths().load_config()
+    }
+
+    fn begin(&mut self) -> Result<()> {
+        if self.lifecycle.is_none() {
+            self.lifecycle = Some(crate::config::project_paths().try_lock_lifecycle()?);
+        }
+        Ok(())
     }
 
     fn write_context(&mut self, name: Option<&str>) -> Result<()> {
@@ -482,12 +497,14 @@ pub async fn execute<I: ExecuteIo>(
         return aborted(steps, current_context, config);
     };
 
-    // Before the first removal, which uses the tenant's credentials by name.
-    // `remove_config_entry` repeats the check under the config lock; between
-    // the two a replacement can still land, which narrows the window rather
-    // than closing it — the vault has no lock shared with the config.
+    // Before the first removal, which uses the tenant's credentials by name,
+    // and under the lifecycle lock, which onboarding holds from its first
+    // credential write to its config row — so a replacement is either fully
+    // visible here or cannot start until this run ends. `remove_config_entry`
+    // repeats the check under the config lock for writers outside onboarding.
     if let Err(error) = io
-        .current_config()
+        .begin()
+        .and_then(|()| io.current_config())
         .and_then(|current| current.map_or(Ok(()), |c| still_planned(&c, tenant)))
     {
         steps.push(outcome(
@@ -801,6 +818,7 @@ mod tests {
         context: Option<Option<String>>,
         backup: Option<Vec<u8>>,
         fail_remote: bool,
+        busy: bool,
     }
 
     impl RecordingIo {
@@ -822,6 +840,7 @@ mod tests {
                 context: None,
                 backup: None,
                 fail_remote: false,
+                busy: false,
             }
         }
     }
@@ -875,6 +894,16 @@ mod tests {
 
         fn current_config(&mut self) -> Result<Option<ProjectConfig>> {
             Ok(self.disk.clone())
+        }
+
+        fn begin(&mut self) -> Result<()> {
+            self.events.push("begin".into());
+            if self.busy {
+                return Err(Error::Config(
+                    "another aic is adding or removing a tenant".into(),
+                ));
+            }
+            Ok(())
         }
 
         fn write_context(&mut self, name: Option<&str>) -> Result<()> {
@@ -1119,6 +1148,48 @@ mod tests {
                 .steps
                 .iter()
                 .any(|s| matches!(&s.status, StepStatus::Failed(m) if m.contains("replaced")))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An onboarding in progress holds the lifecycle lock: offboarding
+    /// removes nothing — no remote step, no vault entry, no row — rather
+    /// than deleting a key whose row has not been written yet.
+    #[tokio::test]
+    async fn execute_removes_nothing_while_a_lifecycle_step_is_running() {
+        let departing = tenant("UAT", Some(DUP_SA));
+        let inventory = Inventory {
+            service_account_jwk: true,
+            issuer_kid: Some("kid".into()),
+            ..Inventory::default()
+        };
+        let plan = spec::plan(&departing, &inventory, &[]);
+        let purge =
+            plan.resolve_purge([TargetKind::ServiceAccountJwk, TargetKind::IssuerSigningKey]);
+        let (layout, root) = temp_layout();
+        let cfg = config(vec![departing.clone()], "UAT");
+        let mut io = RecordingIo::with_disk(cfg.clone());
+        io.busy = true;
+
+        let report = execute(
+            &departing,
+            &cfg,
+            Some("UAT"),
+            &inventory,
+            &purge,
+            &layout,
+            &mut io,
+        )
+        .await;
+
+        assert!(!report.config_removed);
+        assert!(io.vault_removed.is_empty());
+        assert!(
+            !io.events
+                .iter()
+                .any(|e| e.starts_with("remote") || e == "config"),
+            "{:?}",
+            io.events
         );
         let _ = std::fs::remove_dir_all(root);
     }
