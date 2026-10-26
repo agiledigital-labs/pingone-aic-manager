@@ -209,6 +209,12 @@ pub enum ScriptCommand {
         reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Refresh only tracked scripts whose local file is untouched since
+        /// the last sync (or already matches the tenant). Skips local edits
+        /// and untracked scripts, so it never needs --force. Clears stale
+        /// "modified on remote" status rows.
+        #[arg(long)]
+        unmodified_only: bool,
         #[command(flatten)]
         force: OperationAndBackupForce,
     },
@@ -754,6 +760,7 @@ pub(crate) async fn run_with_runtime(
         ScriptCommand::Pull {
             reference,
             tenant,
+            unmodified_only,
             force,
         } => {
             let t = tenant_for(tenant)?;
@@ -795,7 +802,12 @@ pub(crate) async fn run_with_runtime(
                     selector: job.selector,
                 })
                 .collect();
-            let plan = sync::prepare_pull(&t, targets).await?;
+            let mut plan = sync::prepare_pull(&t, targets).await?;
+            let skipped = if unmodified_only {
+                plan.retain_unmodified()
+            } else {
+                Vec::new()
+            };
             let protected = plan.protected_refs();
             if !protected.is_empty() && !force.operation() {
                 if !single {
@@ -814,6 +826,22 @@ pub(crate) async fn run_with_runtime(
             let outcomes = plan
                 .install(force.backup())
                 .map_err(|error| Error::Config(error.to_string()))?;
+            // Local edits by name: those are the operator's to resolve.
+            // Untracked scripts by count: a namespace can hold hundreds.
+            let mut untracked = 0;
+            for (name, reason) in &skipped {
+                match reason {
+                    sync::UnmodifiedSkip::Untracked => untracked += 1,
+                    sync::UnmodifiedSkip::LocallyModified => {
+                        println!("  {name}: {}", reason.label());
+                    }
+                }
+            }
+            if untracked > 0 {
+                println!(
+                    "  {untracked} untracked script(s) skipped (pull one by name to adopt it)"
+                );
+            }
             if outcomes.is_empty() {
                 println!("nothing to pull");
             } else {

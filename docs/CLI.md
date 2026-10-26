@@ -2237,7 +2237,7 @@ aic script list [<ref>] [--context TEXT] [--default | --no-default] [--json]
 aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes] [--force=syntax-check]
 aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--force=syntax-check]
 aic script delete <ref> --force [--tenant TENANT] [--yes]
-aic script pull [<ref>] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
+aic script pull [<ref>] [--unmodified-only] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
 aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes] # prompts on remote deletion
 aic script watch [--tenant TENANT] [--yes] [--force=syntax-check] # auto-push each .cjs you save (Ctrl-C to stop)
@@ -2277,6 +2277,13 @@ Skipped entries are listed and make the command exit non-zero.
     `matches_tenant`, plus an overall `ok`.
   - A tracked script whose snapshot file has gone is reported as `no snapshot`
     rather than silently skipped.
+- `pull --unmodified-only` refreshes only tracked scripts whose local file is
+  untouched since the last sync, or already equals the tenant's copy. It is
+  the way to clear a screen of stale `modified on remote` rows so real drift
+  stands out: `aic script pull endpoint --unmodified-only`. Local edits are
+  skipped and named; untracked scripts are skipped and counted, never adopted.
+  Nothing it installs is protected, so it never asks for `--force`; backups
+  follow plain `pull`'s rule. It writes only the workspace, never the tenant.
 - `list` tags each row with its `ref` and narrows three ways. `--context TEXT`
   keeps AM scripts whose context **or** workspace folder slug contains `TEXT`,
   case-insensitively — so `--context OAUTH2_VALIDATE_SCOPE` returns both the
