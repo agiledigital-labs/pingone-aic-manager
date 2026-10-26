@@ -72,10 +72,11 @@ a JWK at account creation).
 
 `SA_SCOPES` in `src/onboard/bootstrap.rs` is what onboarding actually grants:
 `fr:idm:*`, `fr:am:*`, `fr:idc:esv:*`, `fr:idc:cookie-domain:*`, and — from
-2026-10-26, for `aic promotion` — `fr:idc:promotion:*`. A tenant onboarded
-before that keeps its stored four-scope list (`.aic/config.toml`) and cannot
-promote until re-onboarded. What `fr:idc:promotion:*` authorises is not yet
-verified.
+2026-10-26, for `aic promotion` — `fr:idc:promotion:*`. That is for an SA aic
+**creates**; a pasted SA requests only the first four
+(`EXTERNAL_SA_SCOPES`), because requesting a scope the SA lacks fails the whole
+token (below). A stored scope list is never updated automatically. Which
+promotion calls `fr:idc:promotion:*` authorises is not yet verified.
 
 ### Service-account scopes — two lists, and the SA owns neither
 
@@ -88,6 +89,7 @@ Verified against two production-pipeline tenants and the sandbox,
 | `PATCH /openidm/managed/svcacct/{own sa_id}` (add `/scopes/-`) | **403 `Access denied`** — it cannot grant itself one; nothing written |
 | `/environment/promotion/*` with the scope neither granted nor requested | 403 `The access token does not have sufficient scope`    |
 | the same on the sandbox, scope granted **and** requested      | 503 `No server is available` — the sandbox has no promotion service |
+| token request naming a scope the SA is not granted           | **400 `invalid_scope`** `Unsupported scope for service account` — no token at all, for any call |
 
 A scope works only when it is on **both** lists: the tenant's SA record (what
 tokens may carry, an admin's to change — console or re-onboarding) and

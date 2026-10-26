@@ -126,10 +126,9 @@ impl PasteForm {
     }
 
     pub fn into_tenant(&self) -> Tenant {
-        // Derive from SA_SCOPES like every other onboarding path. A hand-copied
-        // list here would silently keep paste-onboarded tenants on the old set
-        // when SA_SCOPES widens, surfacing much later as a 403.
-        let scopes: Vec<String> = super::bootstrap::SA_SCOPES
+        // A pasted SA was made by someone else: request only what every SA
+        // aic supports is assumed to hold. A scope it lacks fails every token.
+        let scopes: Vec<String> = super::bootstrap::EXTERNAL_SA_SCOPES
             .iter()
             .map(|scope| (*scope).to_string())
             .collect();
@@ -226,4 +225,20 @@ pub(crate) fn persist(app: &mut App, tenant: Tenant, jwk: serde_json::Value) {
         Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
     }
     app.input_mode = InputMode::Normal;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sol round 10: a pasted SA was made elsewhere, so its tokens must not
+    /// request a scope added to the set aic grants the SAs it creates — one
+    /// it lacks fails every token with `400 invalid_scope`.
+    #[test]
+    fn a_pasted_sa_requests_only_the_external_set() {
+        let scopes = PasteForm::default().into_tenant().scopes;
+        assert_eq!(scopes, super::super::bootstrap::EXTERNAL_SA_SCOPES);
+        assert!(!scopes.iter().any(|s| s == "fr:idc:promotion:*"));
+        assert!(super::super::bootstrap::SA_SCOPES.contains(&"fr:idc:promotion:*"));
+    }
 }

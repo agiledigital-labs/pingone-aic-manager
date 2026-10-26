@@ -13,7 +13,7 @@
 //! environment that pins the repository to the one named and forbids the two
 //! ways git can answer from somewhere else — a partial clone's lazy fetch, and
 //! replacement objects (round 8, both reviewers). The lazy-fetch ban is the
-//! `--no-lazy-fetch` option, which a git older than 2.44 rejects, so such a
+//! `--no-lazy-fetch` option, which a git older than 2.45 rejects, so such a
 //! git fails closed rather than fetching (round 9).
 
 use std::collections::HashMap;
@@ -101,16 +101,9 @@ fn run(mut command: Command, input: Option<&[u8]>, what: &str) -> Result<Vec<u8>
     }
     let output = child.wait_with_output()?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("--no-lazy-fetch") {
-            return Err(Error::Config(format!(
-                "this git cannot promise not to fetch (`--no-lazy-fetch` needs git 2.44 or later): {}",
-                stderr.trim()
-            )));
-        }
         return Err(Error::Config(format!(
             "`git {what}` failed: {}",
-            stderr.trim()
+            String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
     Ok(output.stdout)
@@ -157,7 +150,31 @@ fn paths_holding(output: &[u8], blob: &str) -> Vec<(String, bool)> {
 /// Every branch head in `repo` — local and remote-tracking — whose whole tree
 /// holds exactly `bytes`. Each distinct commit is listed once, however many
 /// heads point at it.
+/// Whether this git accepts `--no-lazy-fetch`, asked on its own — no
+/// repository, no stdin — so the answer cannot be confused with a bad path or
+/// lost to a broken pipe while a large bundle is written (round 10).
+fn ensure_no_lazy_fetch() -> Result<()> {
+    let output = Command::new("git")
+        .args(["--no-lazy-fetch", "version"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| {
+            Error::Config(format!(
+                "couldn't run `git` ({error}) — is git on your PATH?"
+            ))
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "this git cannot promise not to fetch, so the search is refused \
+         (`--no-lazy-fetch` needs git 2.45 or later): {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
 pub fn find(repo: &Path, bytes: &[u8]) -> Result<Search> {
+    ensure_no_lazy_fetch()?;
     let mut hash = git(repo);
     hash.args(["hash-object", "--stdin"]);
     let blob = String::from_utf8_lossy(&run(hash, Some(bytes), "hash-object")?)
@@ -374,7 +391,7 @@ mod tests {
         // Production `find`, in a child process that really inherits each
         // variable. The list is spelled out here rather than read from
         // `ROUTING`, so dropping a name from that constant fails this test.
-        let child = |repo: &Path, expect: usize, env: &[(&str, &Path)]| {
+        let child = |repo: &Path, expect: &str, env: &[(&str, &Path)]| {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command
                 .args([
@@ -383,7 +400,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("AIC_GITFIND_CHILD", repo)
-                .env("AIC_GITFIND_EXPECT", expect.to_string());
+                .env("AIC_GITFIND_EXPECT", expect);
             for (name, value) in env {
                 command.env(name, value);
             }
@@ -394,15 +411,47 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(
-                output.status.success() && all.contains("1 passed"),
+                output.status.success() && all.contains("1 passed") && all.contains("FIND-RAN"),
                 "{env:?}: {all}"
             );
         };
-        child(&holder, 1, &[]);
-        child(&empty, 0, &[]);
-        child(&empty, 0, &[("GIT_DIR", &holder_git)]);
-        child(&empty, 0, &[("GIT_COMMON_DIR", &holder_git)]);
-        child(&empty, 0, &[("GIT_OBJECT_DIRECTORY", &objects)]);
+        child(&holder, "1", &[]);
+        child(&empty, "0", &[]);
+        child(&empty, "0", &[("GIT_DIR", &holder_git)]);
+        child(&empty, "0", &[("GIT_COMMON_DIR", &holder_git)]);
+        child(&empty, "0", &[("GIT_OBJECT_DIRECTORY", &objects)]);
+        // A git that predates `--no-lazy-fetch`, as git 2.44 answers it: the
+        // search is refused with the version it needs, before any repository
+        // is read — even the one holding the bytes.
+        let old = base.join("old-git");
+        std::fs::create_dir_all(&old).unwrap();
+        let fake = old.join("git");
+        // Any use of the option is rejected; everything else reaches the real
+        // git by its absolute path (a bare `git` would find this script again).
+        let real = String::from_utf8(
+            Command::new("sh")
+                .args(["-c", "command -v git"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --no-lazy-fetch ] && {{ echo \"unknown option: --no-lazy-fetch\" >&2; exit 129; }}; done\nexec {} \"$@\"\n",
+                real.trim()
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&fake, perms).unwrap();
+        let path = std::env::join_paths(std::iter::once(old.clone()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+        child(&holder, "refused", &[("PATH", Path::new(&path))]);
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -410,14 +459,23 @@ mod tests {
     /// that test launched it.
     #[test]
     fn find_in_a_child() {
-        let Ok(repo) = std::env::var("AIC_GITFIND_CHILD") else {
+        // `var_os`: the path may not be UTF-8, and a `var` that failed on it
+        // would return here and still count as a pass (Astra round 8).
+        let Some(repo) = std::env::var_os("AIC_GITFIND_CHILD") else {
             return;
         };
-        let expect: usize = std::env::var("AIC_GITFIND_EXPECT")
-            .unwrap()
-            .parse()
-            .unwrap();
+        let expect = std::env::var("AIC_GITFIND_EXPECT").unwrap();
+        if expect == "refused" {
+            let error = find(Path::new(&repo), b"two\n").unwrap_err().to_string();
+            assert!(error.contains("git 2.45 or later"), "{error}");
+            println!("FIND-RAN");
+            return;
+        }
+        let expect: usize = expect.parse().unwrap();
         let search = find(Path::new(&repo), b"two\n").unwrap();
         assert_eq!((search.searched, search.hits.len()), (1, expect));
+        // After the assertions: the parent requires this, so a child that
+        // returned early cannot pass for one that searched.
+        println!("FIND-RAN");
     }
 }
