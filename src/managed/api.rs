@@ -209,13 +209,18 @@ async fn replace_managed(tenant: &str, doc: Value, confirmed_prod: bool) -> Resu
 /// ([`verify::transition_refusal`](crate::managed::verify::transition_refusal)):
 /// this is the one function every `config/managed` write goes through, so the
 /// check here covers undo and every verb, not just those that ask first.
+/// `base` is the document the caller built `doc` from; it and this
+/// function's own read are both baselines, because under Q14 either can be
+/// stale and a stale baseline must not excuse the write.
 pub async fn replace_managed_confirmed(
     tenant: &str,
+    base: &Value,
     doc: Value,
     expect: &[ConfigConfirm],
     confirmed_prod: bool,
 ) -> Result<()> {
     replace_managed_confirmed_with(
+        base,
         doc,
         expect,
         || get_managed(tenant),
@@ -231,6 +236,7 @@ pub async fn replace_managed_confirmed(
 /// closures returning futures rather than `AsyncFn`: the TUI spawns these
 /// writes, and an async closure's future cannot be proven `Send` there.
 async fn replace_managed_confirmed_with<G, R, P>(
+    base: &Value,
     doc: Value,
     expect: &[ConfigConfirm],
     mut get: impl FnMut() -> G,
@@ -249,9 +255,10 @@ where
         ));
     }
     let current = get().await?;
-    if crate::managed::verify::needs_repo_ds(&current, &doc) {
+    let baselines = [base, &current];
+    if crate::managed::verify::needs_repo_ds(&baselines, &doc) {
         let repo_ds = get_repo_ds().await?;
-        crate::managed::verify::transition_refusal(&current, &doc, &repo_ds)
+        crate::managed::verify::transition_refusal(&baselines, &doc, &repo_ds)
             .map_err(Error::Config)?;
     }
 
@@ -561,6 +568,7 @@ mod tests {
             let puts = std::cell::Cell::new(0);
             let stored = std::cell::RefCell::new(before.clone());
             let result = replace_managed_confirmed_with(
+                &before,
                 after.clone(),
                 &[ConfigConfirm::DocumentEquals(after.clone())],
                 || std::future::ready(Ok(stored.borrow().clone())),
@@ -578,9 +586,43 @@ mod tests {
         }
     }
 
+    /// Astra round 7, finding 3, through the real boundary: the boundary's
+    /// own read is stale and already holds the proposed contradiction; the
+    /// caller's baseline does not. Nothing is sent. The control passes the
+    /// stale read as the caller's baseline too, and the write goes out.
+    #[tokio::test]
+    async fn a_stale_read_holding_the_proposal_does_not_excuse_it() {
+        let before = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {}}}
+        ]});
+        let after = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {"owner": {"type": "string"}}}}
+        ]});
+        let mapping = json!({"resourceMapping": {"genericMapping": {"managed/a": {"properties": {
+            "owner": {"type": "reference", "resourcePath": "managed/b"}}}}}});
+        for (base, refused) in [(&before, true), (&after, false)] {
+            let puts = std::cell::Cell::new(0);
+            let result = replace_managed_confirmed_with(
+                base,
+                after.clone(),
+                &[ConfigConfirm::DocumentEquals(after.clone())],
+                || std::future::ready(Ok(after.clone())),
+                || std::future::ready(Ok(mapping.clone())),
+                |_| {
+                    puts.set(puts.get() + 1);
+                    std::future::ready(Ok(()))
+                },
+                "t",
+            )
+            .await;
+            assert_eq!(result.is_err(), refused, "{result:?}");
+            assert_eq!(puts.get(), usize::from(!refused));
+        }
+    }
+
     #[tokio::test]
     async fn confirmed_replace_rejects_empty_expectations_before_network_io() {
-        let error = replace_managed_confirmed("unused", json!({}), &[], false)
+        let error = replace_managed_confirmed("unused", &json!({}), json!({}), &[], false)
             .await
             .unwrap_err();
         assert!(

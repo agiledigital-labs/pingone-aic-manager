@@ -179,6 +179,32 @@ mod tests {
         assert_eq!(wrong_target(&endpoint("users", &bundle_for("users"))), None);
     }
 
+    /// Through the real gate, with the syntax check skipped: the refusal is
+    /// returned before any I/O (tenant `unused` would fail any request), so
+    /// removing the `wrong_target` call from `write_checked` fails this test.
+    /// A leading byte-order mark does not switch the check off.
+    #[tokio::test]
+    async fn the_gate_refuses_a_wrong_target_before_writing() {
+        for source in [
+            bundle_for("users"),
+            format!("\u{feff}{}", bundle_for("users")),
+        ] {
+            let outcome = write_checked(
+                Kind::IdmEndpoint,
+                "unused",
+                "alpha",
+                &endpoint("orders", &source),
+                false,
+                SyntaxGate::Skip,
+            )
+            .await;
+            assert!(
+                matches!(outcome, Ok(Gated::Refused(Refusal::WrongTarget { .. }))),
+                "{outcome:?}"
+            );
+        }
+    }
+
     /// Only a claim can be wrong: hand-written source, and a `// Source:` line
     /// that is not under the generated header, make none.
     #[test]

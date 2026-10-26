@@ -566,15 +566,19 @@ storage"). A write is refused when the resulting document would disagree with a
 mapping where the current one does not: a pair with one end mapped and the
 other not, a mapping naming a target its end no longer declares, a
 `reverseReference` reading through a key that is not its partner's, both ends
-holding the reference, or a non-relationship property at a key mapped as a
-relationship. Disagreements already present do not block an unrelated write;
-`relationship verify` reports them. The check reads `repo.ds` only when the
-write adds a property or changes one's relationship shape. Two refusals come
+holding the reference, a non-relationship property at a key mapped as a
+relationship, or an object renamed away — by `object rename` or by undoing one —
+while a mapping names it. A disagreement already present between the same ends
+in every earlier read of the document does not block an unrelated write;
+`relationship verify` reports it. The check reads `repo.ds` only when the write
+adds a property, changes one's relationship shape, or renames an object. Two refusals come
 earlier, with their own wording: `relationship set` retargeting an end when
 either old end is mapped (measured to break a mapped end with no reverse;
 refusing it for a mapped reverse is a precaution), and `object rename` of an
 object a mapping names (inferred). `relationship delete` proceeds and notes on
-stderr which mappings it leaves behind.
+stderr which mappings it leaves behind; when `repo.ds` cannot be read it says
+so and deletes anyway, because a removal never needs it. `object delete` prints
+each inbound relationship it removed or narrowed.
 
 `relationship delete` removes the property and, when it declares one, the
 reverse property on the target, in one write. It refuses when the declared

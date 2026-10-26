@@ -1600,7 +1600,10 @@ pub async fn refuse_mapped_retarget(
     spec: &RelationshipSpec,
     previous: Option<&PreviousRelationship>,
 ) -> crate::Result<()> {
-    let Some(previous) = previous else {
+    // Only a retarget reads repo.ds: a title-only edit must not depend on it
+    // being readable (Sol round 7).
+    let Some(previous) = previous.filter(|previous| previous.old_target != spec.target_object)
+    else {
         return Ok(());
     };
     let repo_ds = crate::managed::api::get_repo_ds(tenant).await?;
@@ -1650,6 +1653,7 @@ async fn relationship_write_request(
     let result = updated.clone();
     crate::managed::api::replace_managed_confirmed(
         &request.tenant_name,
+        &live,
         updated,
         &expect,
         confirmed_prod,
@@ -1722,6 +1726,7 @@ async fn create_object_request(
     let result = new_doc.clone();
     crate::managed::api::replace_managed_confirmed(
         &request.tenant_name,
+        &live,
         new_doc,
         &expect,
         confirmed_prod,
@@ -1795,6 +1800,7 @@ async fn rename_object_request(
     let result = new_doc.clone();
     crate::managed::api::replace_managed_confirmed(
         &request.tenant_name,
+        &live,
         new_doc,
         &expect,
         confirmed_prod,
@@ -1824,6 +1830,7 @@ async fn delete_object_request(
     let result = new_doc.clone();
     crate::managed::api::replace_managed_confirmed(
         &request.tenant_name,
+        &live,
         new_doc,
         &expect,
         confirmed_prod,
@@ -2338,13 +2345,20 @@ async fn replace_object_with_snapshot(
         )));
     }
 
+    let base = doc.clone();
     crate::managed::api::replace_object(&mut doc, object_name, replacement.clone())?;
     let expect = [crate::managed::api::ConfigConfirm::ObjectContent {
         name: object_name.to_string(),
         content: replacement.clone(),
     }];
-    crate::managed::api::replace_managed_confirmed(tenant_name, doc, &expect, confirmed_prod)
-        .await?;
+    crate::managed::api::replace_managed_confirmed(
+        tenant_name,
+        &base,
+        doc,
+        &expect,
+        confirmed_prod,
+    )
+    .await?;
     Ok(replacement.clone())
 }
 
@@ -2514,6 +2528,7 @@ async fn apply_undo_entry(
             )];
             crate::managed::api::replace_managed_confirmed(
                 &tenant,
+                &live,
                 body.clone(),
                 &expect,
                 confirmed_prod,
@@ -4519,11 +4534,16 @@ mod tests {
     }
 
     /// Astra round 4: a property targeting the deleted object *and* another
-    /// keeps the other target, its reverse key and its required entry.
+    /// keeps the other target, its reverse key and its required entry. Both
+    /// partners are reciprocal, so the result must verify clean: healthy in,
+    /// healthy out (round 7 — the old fixture was dangling to begin with).
     #[test]
     fn delete_object_only_narrows_a_relationship_with_other_targets() {
+        let from = json!({"type": "array", "items": {"type": "relationship",
+            "reverseRelationship": true, "reversePropertyName": "to",
+            "resourceCollection": [{"path": "managed/B"}]}});
         let doc = json!({"objects": [
-            {"name": "A", "schema": {"properties": {}}},
+            {"name": "A", "schema": {"properties": {"from": from}}},
             {"name": "B", "schema": {
                 "properties": {
                     "to": {"type": "array", "items": {"type": "relationship",
@@ -4532,9 +4552,15 @@ mod tests {
                 },
                 "required": ["to"]
             }},
-            {"name": "C", "schema": {"properties": {}}}
+            {"name": "C", "schema": {"properties": {"from": from}}}
         ]});
+        let healthy = |doc: &Value| {
+            let report = crate::managed::verify::report(doc, &json!({}), "B", None).unwrap();
+            report.stale.is_empty() && report.pairs.iter().all(|pair| pair.problems.is_empty())
+        };
+        assert!(healthy(&doc));
         let (deleted, inbound) = delete_object_in_doc(&doc, "A").unwrap();
+        assert!(healthy(&deleted), "{deleted:#}");
         assert_eq!(
             inbound,
             vec![Inbound {

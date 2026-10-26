@@ -151,6 +151,7 @@ pub(super) async fn write(
     // Fresh read-modify-write against the LIVE document (not the pulled
     // snapshot) so concurrent edits to other objects/hooks survive our push.
     let mut doc = fetch_managed_doc(tenant).await?;
+    let base = doc.clone();
     {
         let slot = hook_slot(&mut doc, object, hook)?;
         if !is_inline_hook(slot) {
@@ -166,8 +167,14 @@ pub(super) async fn write(
         name: object.to_string(),
         content: crate::managed::api::object_named(&doc, object)?.clone(),
     }];
-    crate::managed::api::replace_managed_confirmed(tenant, doc.clone(), &expect, confirmed_prod)
-        .await?;
+    crate::managed::api::replace_managed_confirmed(
+        tenant,
+        &base,
+        doc.clone(),
+        &expect,
+        confirmed_prod,
+    )
+    .await?;
 
     // The PUT 200s before the hook registry applies the change (verified —
     // see docs/api/10). Confirm the new source is actually live so callers
@@ -195,6 +202,7 @@ pub async fn delete(tenant: &str, _realm: &str, id: &str, confirmed_prod: bool) 
     let name = name_from_id(id);
     let (object, hook) = parse_name(name)?;
     let mut doc = fetch_managed_doc(tenant).await?;
+    let base = doc.clone();
     // Borrow-check friendly: locate the entry directly rather than via hook_slot.
     let objects = doc
         .get_mut("objects")
@@ -214,8 +222,14 @@ pub async fn delete(tenant: &str, _realm: &str, id: &str, confirmed_prod: bool) 
         name: object.to_string(),
         content: crate::managed::api::object_named(&doc, object)?.clone(),
     }];
-    crate::managed::api::replace_managed_confirmed(tenant, doc.clone(), &expect, confirmed_prod)
-        .await?;
+    crate::managed::api::replace_managed_confirmed(
+        tenant,
+        &base,
+        doc.clone(),
+        &expect,
+        confirmed_prod,
+    )
+    .await?;
     Ok(doc)
 }
 

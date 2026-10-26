@@ -3283,31 +3283,54 @@ mod tests {
     /// discriminating cases are the two where the file and the workspace
     /// disagree — a CI checkout with no local copy (untracked, file matches)
     /// must pass, and an in-sync workspace must not rescue a stale artefact.
+    /// Both verdicts come from real files through `AgainstRow::compare`, so a
+    /// rule of "artefact matches **or** workspace matches" fails the second.
     #[test]
     fn status_gate_with_against_judges_the_file_only() {
-        use script::sync::Untracked;
-        let row = StatusRow::untracked(&Untracked {
+        use script::sync::{ScriptState, StatusEntry, Untracked};
+        let dir = std::env::temp_dir().join(format!("aic-against-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fresh = dir.join("fresh.cjs");
+        let stale = dir.join("stale.cjs");
+        std::fs::write(&fresh, "new\n").unwrap();
+        std::fs::write(&stale, "old\n").unwrap();
+        let remote = Some(script::sync::sha256_hex(b"new\n"));
+        let untracked = StatusRow::untracked(&Untracked {
             name: "x".into(),
             kind: script::Kind::IdmEndpoint,
             realm: None,
             local_sha256: None,
-            remote_sha256: Some("aa".into()),
+            remote_sha256: remote.clone(),
         });
-        assert!(!row.matches_tenant, "the precondition: no workspace copy");
-        let file = |matches| AgainstRow {
-            file: "dist/x.cjs".into(),
-            sha256: "aa".into(),
-            remote_sha256: Some("aa".into()),
-            matches,
-        };
-        let rows = [row];
-        assert!(status_ok(&rows, Some(&file(true))));
-        assert!(!status_ok(&rows, Some(&file(false))));
+        let in_sync = StatusRow::tracked(&StatusEntry {
+            name: "x".into(),
+            kind: script::Kind::IdmEndpoint,
+            realm: None,
+            state: ScriptState::InSync,
+            local_sha256: remote.clone(),
+            remote_sha256: remote,
+        });
         assert!(
-            !status_ok(&rows, None),
+            !untracked.matches_tenant,
+            "the precondition: no workspace copy"
+        );
+        assert!(
+            in_sync.matches_tenant,
+            "the precondition: workspace in sync"
+        );
+        let untracked = [untracked];
+        let in_sync = [in_sync];
+        let against =
+            |path: &std::path::Path, rows: &[StatusRow]| AgainstRow::compare(path, rows).unwrap();
+        assert!(status_ok(&untracked, Some(&against(&fresh, &untracked))));
+        assert!(!status_ok(&in_sync, Some(&against(&stale, &in_sync))));
+        assert!(status_ok(&in_sync, Some(&against(&fresh, &in_sync))));
+        assert!(
+            !status_ok(&untracked, None),
             "without --against the row still counts"
         );
         assert!(!status_ok(&[], None), "nothing selected is not a pass");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
