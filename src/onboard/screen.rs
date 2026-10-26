@@ -434,7 +434,8 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
         }
     };
 
-    let scopes: Vec<String> = super::bootstrap::SA_SCOPES
+    // A pasted SA: see `bootstrap::EXTERNAL_SA_SCOPES`.
+    let scopes: Vec<String> = super::bootstrap::EXTERNAL_SA_SCOPES
         .iter()
         .map(|s| s.to_string())
         .collect();

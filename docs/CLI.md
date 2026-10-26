@@ -2568,7 +2568,7 @@ Skipped entries are listed and make the command exit non-zero.
   branches can hold the same file. Exact bytes only — a rebuild that differs
   by a newline is not a match — and nothing is fetched: fetch first for the
   latest heads. A partial clone missing a tree fails rather than fetching it
-  (this needs git 2.44 or later, for `--no-lazy-fetch`; an older git refuses
+  (this needs git 2.45 or later, for `--no-lazy-fetch`; an older git refuses
   the search instead of risking a fetch), `git replace` objects are ignored, and an inherited `GIT_DIR` does not
   redirect the search. A script you have not pulled is looked up on the
   tenant by exact name.

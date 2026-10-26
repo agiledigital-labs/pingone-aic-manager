@@ -26,9 +26,22 @@ pub const SA_SCOPES: &[&str] = &[
     "fr:am:*",
     "fr:idc:esv:*",
     "fr:idc:cookie-domain:*",
-    // `aic promotion` (dev → UAT and up). Granted from 2026-10-26; tenants
-    // onboarded earlier keep their stored scopes and need re-onboarding.
+    // For `aic promotion`, from 2026-10-26. A stored scope list is never
+    // updated automatically; `aic ctx scopes --add` requests a scope the
+    // tenant has since granted.
     "fr:idc:promotion:*",
+];
+
+/// What a token for a service account aic did **not** create requests — one
+/// pasted in. Requesting a scope the SA lacks fails every token (`400
+/// invalid_scope`, measured 2026-10-26), and nothing says a pasted SA holds
+/// the scopes added after these four, so they are not assumed; `aic ctx
+/// scopes --add` requests more once granted.
+pub const EXTERNAL_SA_SCOPES: &[&str] = &[
+    "fr:idm:*",
+    "fr:am:*",
+    "fr:idc:esv:*",
+    "fr:idc:cookie-domain:*",
 ];
 
 pub fn credential_name(username: Option<&str>, tenant_name: &str) -> String {
