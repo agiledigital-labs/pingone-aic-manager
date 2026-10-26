@@ -192,6 +192,25 @@ pub fn field_capability_for_property(
     caps
 }
 
+pub const RELATIONSHIP_RENAME_REFUSAL: &str = "Relationship keys cannot be renamed: existing \
+     links stay filed under the old name. Delete and recreate the relationship";
+
+/// Why a property whose capabilities forbid a key rename cannot be renamed.
+///
+/// A relationship rename is refused because IDM files every link under the
+/// property name: renaming through `config/managed` leaves the existing links
+/// under the old name, and leaves any `config/repo.ds` mapping for the old name
+/// in place. Measured 2026-10-26 (`docs/api/10-managed-objects.md`): after such
+/// a rename, old links vanished from the forward side, new links were invisible
+/// from the reverse side, and writes from the reverse side failed.
+pub fn rename_refusal(property: &Value) -> &'static str {
+    if is_relationship_property(property) {
+        RELATIONSHIP_RENAME_REFUSAL
+    } else {
+        "Standard field keys cannot be renamed"
+    }
+}
+
 pub fn is_relationship_property(property: &Value) -> bool {
     property.get("type").and_then(Value::as_str) == Some("relationship")
         || (property.get("type").and_then(Value::as_str) == Some("array")

@@ -492,6 +492,13 @@ deletes the property from the target object. `<object>.<key>` must contain
 exactly one dot. Every schema write is recorded for reversal from the TUI
 history overlay; there is no CLI undo command.
 
+Relationship keys cannot be renamed — not by `field rename`, and not by giving
+`relationship set` a new key or a new `--reverse-key` for an existing reverse.
+IDM files every link under the property name, so a rename strands the existing
+links, and on a relationship with a `repo.ds` mapping it leaves the pair unable
+to read or write links from one side (`docs/api/10-managed-objects.md`,
+"Relationship storage"). Delete and recreate the relationship instead.
+
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the
 constraint entirely (`field add` rejects it — a new field has none to clear).
