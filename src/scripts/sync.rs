@@ -1859,6 +1859,17 @@ pub struct DiffPair {
     pub right: String,
 }
 
+/// The tenant's current source for a synced script, as raw bytes — what
+/// `script diff --find-in-git` hashes, so nothing lossy may touch it.
+pub async fn remote_source(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<Vec<u8>> {
+    let store = SnapshotStore::open(tenant);
+    let entry = store
+        .lookup(kind, name, realm)?
+        .ok_or_else(|| Error::Config(format!("{name:?} not synced yet")))?;
+    let remote = kind.fetch(tenant, realm, &entry.reference.id).await?;
+    kind.decode_source(&remote.raw_config)
+}
+
 /// Load exactly the two sides requested by the CLI. A missing local file is
 /// represented as empty content so the rendered diff shows its deletion.
 pub async fn diff(

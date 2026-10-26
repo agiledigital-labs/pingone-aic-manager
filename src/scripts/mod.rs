@@ -28,6 +28,7 @@ pub mod am;
 pub mod authorship;
 pub mod cli;
 pub mod gate;
+pub mod gitfind;
 pub mod idm;
 pub mod managed_hooks;
 pub mod managed_types;

@@ -336,6 +336,15 @@ pub enum ScriptCommand {
         /// Diff the last-synced snapshot against the tenant (remote drift).
         #[arg(long)]
         snapshot_vs_remote: bool,
+        /// Instead of a diff, list the branch heads in this git repository
+        /// whose tree holds the tenant's bytes exactly. Local refs only;
+        /// nothing is fetched.
+        #[arg(
+            long,
+            value_name = "REPO",
+            conflicts_with_all = ["local_vs_snapshot", "snapshot_vs_remote"]
+        )]
+        find_in_git: Option<std::path::PathBuf>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -1335,6 +1344,7 @@ pub(crate) async fn run_with_runtime(
             reference,
             local_vs_snapshot,
             snapshot_vs_remote,
+            find_in_git,
             tenant,
         } => {
             let t = tenant_for(tenant)?;
@@ -1348,6 +1358,12 @@ pub(crate) async fn run_with_runtime(
                 },
             };
             let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            if let Some(repo) = find_in_git {
+                let bytes = sync::remote_source(&t, ns.realm_arg(), ns.kind, &name).await?;
+                let found = script::gitfind::find(&repo, &bytes)?;
+                print_git_search(&full, &repo, &found);
+                return Ok(());
+            }
             // `-` is the left/older side, `+` is the right/newer side.
             let (mode, ll, rl) = if local_vs_snapshot {
                 (sync::DiffMode::LocalVsSnapshot, "snapshot", "local")
@@ -1360,6 +1376,35 @@ pub(crate) async fn run_with_runtime(
             show_diff(&full, ll, &pair.left, rl, &pair.right)?;
             Ok(())
         }
+    }
+}
+
+fn print_git_search(full: &str, repo: &std::path::Path, found: &script::gitfind::Search) {
+    if found.hits.is_empty() {
+        println!(
+            "{full}: no branch head in {} holds the tenant's bytes (blob {}; {} heads searched, \
+             local refs only — fetch first for the latest)",
+            repo.display(),
+            found.blob,
+            found.searched
+        );
+        return;
+    }
+    println!(
+        "{full}: the tenant's bytes (blob {}) are on {} of {} branch heads in {}:",
+        found.blob,
+        found
+            .hits
+            .iter()
+            .map(|hit| &hit.reference)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        found.searched,
+        repo.display()
+    );
+    for hit in &found.hits {
+        let short = hit.commit.get(..12).unwrap_or(&hit.commit);
+        println!("  {}  {short}  {}", hit.reference, hit.path);
     }
 }
 
