@@ -416,16 +416,31 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
 /// encryption first" message in that case.
 async fn do_unlock_plain(state: Arc<RwLock<AgentState>>) -> Result<()> {
     let paths = state.read().await.paths.clone();
-    let bytes = paths
-        .load_keys_plain()?
-        .ok_or_else(|| Error::Config("no .aic/keys.plain on disk".into()))?;
-    let map = serde_json::from_slice(&bytes)?;
-    let cache = std::fs::metadata(paths.artifact_plain_path(VaultArtifact::Jwks))
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .map(|modified| (map, modified));
+    let (modified, map) = stamped(&paths.artifact_plain_path(VaultArtifact::Jwks), || {
+        let bytes = paths
+            .load_keys_plain()?
+            .ok_or_else(|| Error::Config("no .aic/keys.plain on disk".into()))?;
+        Ok(serde_json::from_slice(&bytes)?)
+    })?;
+    let cache = modified.map(|modified| (map, modified));
     set_vault(state, Vault::Plain { cache }).await;
     Ok(())
+}
+
+/// Load a file's content stamped with its mtime, the stat taken **before**
+/// the read. A replacement landing between the two then leaves the new
+/// content under the old stamp, which the next stat sees as changed and
+/// reloads. The other order can pair the old content with the new stamp,
+/// which no later stat ever questions — the key the daemon serves would stay
+/// the replaced one until restart.
+fn stamped<T>(
+    path: &std::path::Path,
+    load: impl FnOnce() -> Result<T>,
+) -> Result<(Option<SystemTime>, T)> {
+    let modified = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    Ok((modified, load()?))
 }
 
 /// Replace whatever the daemon was holding. Any AicClients we'd cached are
@@ -710,7 +725,26 @@ async fn do_api_call(
 /// the caller-visible result.
 async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
     refresh_config_stamp(state.clone()).await;
-    let (paths, path, cached_mtime, dek) = {
+    // A vault replaced while this one read its file (`aic login`, lock and
+    // unlock) must not receive that file's keys: the attempt is discarded
+    // and repeated against the new vault.
+    for _ in 0..JWK_REFRESH_ATTEMPTS {
+        if refresh_jwk_cache_once(state.clone()).await? {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// Fence retries for `refresh_jwk_cache`. Each discarded attempt means the
+/// vault was replaced mid-read; after this many the request proceeds on
+/// whatever the current vault holds.
+const JWK_REFRESH_ATTEMPTS: usize = 3;
+
+/// One refresh attempt. `Ok(false)`: the generation moved while the file was
+/// read, so nothing was installed.
+async fn refresh_jwk_cache_once(state: Arc<RwLock<AgentState>>) -> Result<bool> {
+    let (paths, path, cached_mtime, dek, generation) = {
         let s = state.read().await;
         match &s.vault {
             Vault::Locked => return Err(Error::Auth("agent is locked".into())),
@@ -719,20 +753,22 @@ async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
                 s.paths.artifact_enc_path(VaultArtifact::Jwks),
                 cache.as_ref().map(|(_, mtime)| *mtime),
                 Some(dek.clone()),
+                s.generation,
             ),
             Vault::Plain { cache } => (
                 s.paths.clone(),
                 s.paths.artifact_plain_path(VaultArtifact::Jwks),
                 cache.as_ref().map(|(_, mtime)| *mtime),
                 None,
+                s.generation,
             ),
         }
     };
     let modified = std::fs::metadata(path).and_then(|metadata| metadata.modified());
     let modified = match modified {
-        Ok(modified) if Some(modified) == cached_mtime => return Ok(()),
+        Ok(modified) if Some(modified) == cached_mtime => return Ok(true),
         Ok(modified) => modified,
-        Err(_) if cached_mtime.is_some() => return Ok(()),
+        Err(_) if cached_mtime.is_some() => return Ok(true),
         // Reload to preserve the old missing/corrupt-file error semantics.
         // A later successful stat replaces the sentinel with the real
         // timestamp.
@@ -747,19 +783,34 @@ async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
         },
     };
     let mut s = state.write().await;
+    Ok(install_jwks(&mut s, generation, map, modified))
+}
+
+/// Install a freshly read key map, unless the vault it was read for has been
+/// replaced since (`generation` moved). Returns whether the cache is now
+/// current for this attempt; `false` asks the caller to read again.
+fn install_jwks(
+    s: &mut AgentState,
+    generation: u64,
+    map: HashMap<String, serde_json::Value>,
+    modified: SystemTime,
+) -> bool {
+    if s.generation != generation {
+        return false;
+    }
     match &mut s.vault {
-        Vault::Locked => return Ok(()),
+        Vault::Locked => return true,
         Vault::Encrypted { cache, .. } | Vault::Plain { cache }
             if cache.as_ref().is_some_and(|(_, mtime)| *mtime == modified) =>
         {
-            return Ok(());
+            return true;
         }
         Vault::Encrypted { cache, .. } | Vault::Plain { cache } => {
             *cache = Some((map, modified));
         }
     }
     s.invalidate_clients();
-    Ok(())
+    true
 }
 
 /// Drop every cached client when `config.toml`'s content changed since they
@@ -1085,6 +1136,60 @@ mod tests {
     /// The JWK race: a build captured generation N with its key; the vault
     /// was then reloaded (generation N+1) while config stayed the same. The
     /// matching config bytes must not let the old-key client be cached.
+    /// The plain-unlock race: the key file is replaced while it is being
+    /// read. The stamp must be the one taken before the read, so the next
+    /// stat sees a change and reloads; a stamp taken after would pair the old
+    /// keys with the new mtime and never reload.
+    #[test]
+    fn a_stamp_is_taken_before_the_read_it_describes() {
+        let project = test_project();
+        let path = project.directory.join("keys.plain");
+        std::fs::write(&path, "k1").unwrap();
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let new = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let (stamp, content) = stamped(&path, || {
+            let content = std::fs::read_to_string(&path)?;
+            // The replacement lands between the stat and the read's end.
+            std::fs::write(&path, "k2").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(new)
+                .unwrap();
+            Ok(content)
+        })
+        .unwrap();
+        assert_eq!(content, "k1");
+        assert_eq!(stamp, Some(old));
+    }
+
+    /// A key map read for one vault is not installed into its replacement.
+    #[tokio::test]
+    async fn keys_read_before_a_vault_replacement_are_not_installed() {
+        let project = test_project();
+        let state = state(&project);
+        let mut s = state.write().await;
+        s.vault = Vault::Plain { cache: None };
+        let captured = s.generation;
+        s.invalidate_clients();
+        let map = HashMap::from([("t".to_string(), serde_json::json!({"old": "jwk"}))]);
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(5);
+        assert!(!install_jwks(&mut s, captured, map.clone(), at));
+        assert!(matches!(&s.vault, Vault::Plain { cache: None }));
+
+        // Control: at the current generation the same map installs.
+        let current = s.generation;
+        assert!(install_jwks(&mut s, current, map, at));
+        assert!(matches!(&s.vault, Vault::Plain { cache: Some(_) }));
+    }
+
     #[tokio::test]
     async fn a_client_built_before_an_invalidation_is_not_cached() {
         let project = test_project();

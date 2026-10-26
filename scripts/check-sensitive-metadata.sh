@@ -37,7 +37,21 @@ set -uo pipefail
 # the redactor. Under a Turkish locale ASCII `I` folds to dotless `ı`, so an
 # uppercase `.ID.FORGEROCK.IO` host passed --redact unchanged and the checker
 # reported nothing (measured 2026-10-26). Pin the byte locale for the whole run.
+#
+# Except the external denylist: it holds literal names, which may not be
+# ASCII, and folding `É` onto `é` needs the caller's locale — under C, GNU
+# grep matched neither way (measured 2026-10-26). So the caller's LC_ALL is
+# kept, and every denylist match runs through `in_caller_locale`.
+CALLER_LC_ALL=${LC_ALL-}
+CALLER_LC_ALL_SET=${LC_ALL+set}
 export LC_ALL=C
+in_caller_locale() {
+  if [ -n "$CALLER_LC_ALL_SET" ]; then
+    LC_ALL=$CALLER_LC_ALL "$@"
+  else
+    env -u LC_ALL "$@"
+  fi
+}
 
 MODE=tracked
 HISTORY_RANGE=--all
@@ -138,9 +152,24 @@ decode_base64url() {
 CLIENT_CHECKOUT_RE='~/w/(<[^/>]*>|\{[^/}]*\}|client-[a-z])'
 
 CANDIDATE_RE='~/w/|forgeblocks|forgerock\.io|sts\.windows\.net|entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2|aHR0c'
-if [ -n "$DENY_RE" ]; then
-  CANDIDATE_RE="$CANDIDATE_RE|$DENY_RE"
-fi
+
+# The pre-filter every mode uses: stdin -> the lines worth scanning, in input
+# order, as `N:line` with -n. The ASCII rules match under C; the denylist
+# under the caller's locale (see `in_caller_locale`), and the two are merged
+# by line number. Without a denylist it is one grep, as before.
+candidates() {
+  local number="${1:-}" tmp
+  if [ -z "$DENY_RE" ]; then
+    grep "-I${number#-}iE" "$CANDIDATE_RE"
+    return 0
+  fi
+  tmp=$(mktemp) || return 1
+  cat >"$tmp"
+  { grep -IniE "$CANDIDATE_RE" -- "$tmp"; in_caller_locale grep -IniE "$DENY_RE" -- "$tmp"; } \
+    | sort -t: -k1,1n -u \
+    | if [ -n "$number" ]; then cat; else cut -d: -f2-; fi
+  rm -f "$tmp"
+}
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
 # replaces — a host stays a host, a GUID stays a same-shaped GUID — because
@@ -366,7 +395,7 @@ scan_text() {
     # Rule 5 — literal deny patterns held outside the repo (compiled once
     # into DENY_RE at startup, never echoed, so a finding does not reprint
     # the very name it is protecting).
-    if [ -n "$DENY_RE" ] && grep -qiE "$DENY_RE" <<<"$content"; then
+    if [ -n "$DENY_RE" ] && in_caller_locale grep -qiE "$DENY_RE" <<<"$content"; then
       report "$file" "$line" "denylist" "matched an external deny pattern" \
         "remove the value; see \$SENSITIVE_DENYLIST"
     fi
@@ -418,7 +447,7 @@ case "$MODE" in
       fi
     }
     # EXACTLY the pre-filter production uses, so the two cannot drift.
-    prefilter() { grep -iE "^[0-9]+:.*($CANDIDATE_RE)"; }
+    prefilter() { candidates; }
     negative() {
       local name="$1" text="$2" out
       out=$(findings=0; scan_text "selftest" <<<"1:$text"; echo "F=$findings")
@@ -455,6 +484,24 @@ case "$MODE" in
     negative "placeholder entity" '"entityId": "https://sp-b.example.com"'
     negative "generic azure host" 'COTUtils.setToPrototolMap: check https://sts.windows.net/<tenant-guid>/|saml2'
     negative "camelCase not a host" 'export interface CrestFault { readonly __aicCrestFault: true }'
+
+    # The denylist folds case in the caller's locale, not the pinned C one: a
+    # non-ASCII literal must still match its other case, and a line holding
+    # only that literal must survive the pre-filter. Run under C.UTF-8 here
+    # whatever the caller's locale, with a synthetic pattern, in a subshell so
+    # the real denylist is untouched. Under C this fixture fails (measured).
+    if (
+      DENY_RE='synthetiqué'
+      CALLER_LC_ALL=C.UTF-8
+      CALLER_LC_ALL_SET="set"
+      out=$(findings=0; scan_text "selftest" < <(printf 'line SYNTHETIQUÉ\n' | candidates -n); echo "F=$findings")
+      [[ "$out" != *"F=0"* ]]
+    ); then
+      echo "ok    denylist folds non-ASCII case in the caller's locale"
+    else
+      echo "FAIL  denylist folds non-ASCII case in the caller's locale"
+      fails=$((fails + 1))
+    fi
     # --fix must never touch a file the checker calls clean. Every negative
     # fixture must survive redaction byte-identical; a redactor stricter than
     # the checker silently rewrites good files.
@@ -503,7 +550,7 @@ case "$MODE" in
       '  "trustedProviders": ["https://sts.windows.net/7f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b/|saml2"]' \
       '  "_id": "aHR0cHM6Ly9zc28uYWNtZS5jb20uYXU"' \
       'corpus at ~/w/<client>/sandbox-scripts and ~/w/client-a/logs' | redact_stream)
-    left=$(findings=0; scan_text "roundtrip" < <(grep -iEn "$CANDIDATE_RE" <<<"$roundtrip"); echo "F=$findings")
+    left=$(findings=0; scan_text "roundtrip" < <(candidates -n <<<"$roundtrip"); echo "F=$findings")
     if [[ "$left" == *"F=0"* ]]; then
       echo "ok    redact output passes the checker (round-trip)"
     else
@@ -540,14 +587,14 @@ case "$MODE" in
       scan_text "$file" < <(git diff --cached -U0 -- "$file" \
         | awk '/^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); next }
                /^\+/ && !/^\+\+\+/ { print n":"substr($0,2); n++ }' \
-        | grep -iE "^[0-9]+:.*($CANDIDATE_RE)")
+        | candidates)
     done < <(git diff --cached --name-only --diff-filter=ACMR)
     ;;
   tracked)
     check_ignores
     while IFS= read -r file; do
       [ "$file" = "$SELF" ] && continue
-      scan_text "$file" < <(grep -IniE "$CANDIDATE_RE" -- "$file" 2>/dev/null)
+      scan_text "$file" < <(candidates -n <"$file" 2>/dev/null)
     done < <(git ls-files)
     ;;
   redact)
@@ -558,7 +605,7 @@ case "$MODE" in
     changed=0
     while IFS= read -r file; do
       [ "$file" = "$SELF" ] && continue
-      grep -IqiE "$CANDIDATE_RE" -- "$file" 2>/dev/null || continue
+      candidates <"$file" 2>/dev/null | grep -q . || continue
       redact_stream <"$file" >"$file.redacted" || { rm -f "$file.redacted"; continue; }
       if cmp -s "$file" "$file.redacted"; then
         rm -f "$file.redacted"
@@ -573,7 +620,7 @@ case "$MODE" in
     ;;
   history)
     while IFS= read -r obj; do
-      scan_text "blob:$obj" < <(git cat-file -p "$obj" 2>/dev/null | grep -IniE "$CANDIDATE_RE")
+      scan_text "blob:$obj" < <(git cat-file -p "$obj" 2>/dev/null | candidates -n)
     done < <(
       git rev-list --objects "$HISTORY_RANGE" \
         | while read -r object path; do

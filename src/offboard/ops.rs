@@ -170,7 +170,12 @@ pub trait ExecuteIo {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
     fn remove_path(&mut self, path: &Path, directory: bool) -> Result<()>;
     fn forget_undo(&mut self, path: &Path, tenant: &str) -> Result<usize>;
-    fn save_config(&mut self, config: &ProjectConfig) -> Result<()>;
+    /// Remove `tenant`'s entry from the config **as it is on disk now**, in
+    /// one locked read-modify-write, and return the document written. Not a
+    /// save of a copy the caller loaded earlier: offboarding awaits remote
+    /// and vault steps between its load and this point, and a whole-document
+    /// save would drop any tenant onboarded in that gap.
+    fn remove_config_entry(&mut self, tenant: &str) -> Result<ProjectConfig>;
     fn write_context(&mut self, name: Option<&str>) -> Result<()>;
 }
 
@@ -246,8 +251,11 @@ impl ExecuteIo for LiveIo {
         log.forget_tenant(tenant)
     }
 
-    fn save_config(&mut self, config: &ProjectConfig) -> Result<()> {
-        config.save()
+    fn remove_config_entry(&mut self, tenant: &str) -> Result<ProjectConfig> {
+        crate::config::project_paths().update_config(|config| {
+            drop_tenant(config, tenant);
+            Ok(config.clone())
+        })
     }
 
     fn write_context(&mut self, name: Option<&str>) -> Result<()> {
@@ -534,11 +542,6 @@ pub async fn execute<I: ExecuteIo>(
         }
     }
 
-    let mut next = config.clone();
-    drop_tenant(&mut next, &tenant.name);
-    let next_ctx = next_context(current_context, &tenant.name, &next);
-    let default_tenant = next.default_tenant.clone();
-
     if blocking_failure {
         steps.push(outcome(
             Step::ConfigEntry,
@@ -554,8 +557,10 @@ pub async fn execute<I: ExecuteIo>(
         };
     }
 
-    match io.save_config(&next) {
-        Ok(()) => {
+    match io.remove_config_entry(&tenant.name) {
+        Ok(next) => {
+            let next_ctx = next_context(current_context, &tenant.name, &next);
+            let default_tenant = next.default_tenant.clone();
             if let Err(error) = io.write_context(next_ctx.as_deref()) {
                 steps.push(outcome(
                     Step::ConfigEntry,
@@ -725,12 +730,22 @@ mod tests {
         vault_removed: Vec<(VaultArtifact, String)>,
         paths_removed: Vec<PathBuf>,
         saved_config: Option<ProjectConfig>,
+        /// What `config.toml` holds when the entry is removed — which need
+        /// not be the copy `execute` was handed.
+        disk: Option<ProjectConfig>,
         context: Option<Option<String>>,
         backup: Option<Vec<u8>>,
         fail_remote: bool,
     }
 
     impl RecordingIo {
+        fn with_disk(disk: ProjectConfig) -> Self {
+            Self {
+                disk: Some(disk),
+                ..Self::new()
+            }
+        }
+
         fn new() -> Self {
             Self {
                 events: Vec::new(),
@@ -738,6 +753,7 @@ mod tests {
                 vault_removed: Vec::new(),
                 paths_removed: Vec::new(),
                 saved_config: None,
+                disk: None,
                 context: None,
                 backup: None,
                 fail_remote: false,
@@ -780,10 +796,16 @@ mod tests {
             Ok(1)
         }
 
-        fn save_config(&mut self, config: &ProjectConfig) -> Result<()> {
+        fn remove_config_entry(&mut self, tenant: &str) -> Result<ProjectConfig> {
             self.events.push("config".into());
+            let mut config = self
+                .disk
+                .clone()
+                .ok_or_else(|| Error::Config("no config on the fake disk".into()))?;
+            drop_tenant(&mut config, tenant);
+            self.disk = Some(config.clone());
             self.saved_config = Some(config.clone());
-            Ok(())
+            Ok(config)
         }
 
         fn write_context(&mut self, name: Option<&str>) -> Result<()> {
@@ -829,7 +851,7 @@ mod tests {
 
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone(), tenant("uat", Some(UAT_SA))], "uat");
-        let mut io = RecordingIo::new();
+        let mut io = RecordingIo::with_disk(cfg.clone());
         let report = execute(
             &departing,
             &cfg,
@@ -861,7 +883,7 @@ mod tests {
         let purge = plan.resolve_purge(TargetKind::ALL);
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone(), tenant("uat", Some(UAT_SA))], "uat");
-        let mut io = RecordingIo::new();
+        let mut io = RecordingIo::with_disk(cfg.clone());
         io.fail_vault = Some(VaultArtifact::Jwks);
 
         let report = execute(
@@ -904,7 +926,7 @@ mod tests {
         let purge = plan.resolve_purge(TargetKind::ALL);
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone()], "UAT");
-        let mut io = RecordingIo::new();
+        let mut io = RecordingIo::with_disk(cfg.clone());
         io.fail_remote = true;
 
         let report = execute(
@@ -953,6 +975,44 @@ mod tests {
         );
     }
 
+    /// A tenant onboarded after `execute` was handed its config, while the
+    /// remote and vault steps were awaited, survives: the entry is removed
+    /// from the file as it is now, and the context and default follow that
+    /// document, not the stale copy.
+    #[tokio::test]
+    async fn execute_keeps_a_tenant_added_after_the_config_was_loaded() {
+        let departing = tenant("UAT", Some(DUP_SA));
+        let inventory = Inventory {
+            service_account_jwk: true,
+            ..Inventory::default()
+        };
+        let plan = spec::plan(&departing, &inventory, &[]);
+        let purge = plan.resolve_purge([TargetKind::ServiceAccountJwk]);
+        let (layout, root) = temp_layout();
+        let stale = config(vec![departing.clone()], "UAT");
+        let now = config(vec![departing.clone(), tenant("late", Some(UAT_SA))], "UAT");
+        let mut io = RecordingIo::with_disk(now);
+
+        let report = execute(
+            &departing,
+            &stale,
+            Some("UAT"),
+            &inventory,
+            &purge,
+            &layout,
+            &mut io,
+        )
+        .await;
+
+        assert!(report.config_removed);
+        let saved = io.saved_config.expect("config saved");
+        let names: Vec<_> = saved.tenants.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["late"]);
+        assert_eq!(report.default_tenant, "late");
+        assert_eq!(report.next_context.as_deref(), Some("late"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn execute_last_tenant_clears_context_and_default() {
         let departing = tenant("UAT", Some(DUP_SA));
@@ -964,7 +1024,7 @@ mod tests {
         let purge = plan.resolve_purge([TargetKind::ServiceAccountJwk]);
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone()], "UAT");
-        let mut io = RecordingIo::new();
+        let mut io = RecordingIo::with_disk(cfg.clone());
 
         let report = execute(
             &departing,
@@ -1054,7 +1114,7 @@ mod tests {
 
         let (layout, root) = temp_layout();
         let cfg = config(vec![departing.clone()], "UAT");
-        let mut io = RecordingIo::new();
+        let mut io = RecordingIo::with_disk(cfg.clone());
         let report = execute(&departing, &cfg, None, &inventory, &purge, &layout, &mut io).await;
 
         let sync = report
