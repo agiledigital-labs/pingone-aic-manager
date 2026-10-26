@@ -840,17 +840,19 @@ struct InvocationTenant {
     takes_tenant: bool,
 }
 
-/// The tenant this invocation settled on at parse time, if it settled on one.
-/// The TUI starts here, so bare `aic` opens the tenant `aic ctx current`
-/// names from the same directory.
-pub fn invocation_tenant() -> Option<String> {
-    INVOCATION_TENANT
-        .get()?
-        .resolution
-        .as_ref()
-        .ok()?
-        .as_ref()
-        .map(|resolution| resolution.tenant.clone())
+/// The tenant this invocation settled on at parse time, with the reason in
+/// the banner's words — or the error that stopped it settling. The TUI starts
+/// here, so bare `aic` opens the tenant `aic ctx current` names from the same
+/// directory, and fails where a CLI command would, rather than resolving a
+/// second time. No capture (a test, a library caller) is `Ok(None)`.
+pub fn invocation_tenant() -> std::result::Result<Option<(String, String)>, String> {
+    let Some(captured) = INVOCATION_TENANT.get() else {
+        return Ok(None);
+    };
+    Ok(captured.resolution.clone()?.map(|resolution| {
+        let why = resolution.source.describe(&resolution.tenant);
+        (resolution.tenant, why)
+    }))
 }
 
 /// The implicit resolution the `--tenant` default is injected from.

@@ -899,8 +899,11 @@ fn checked_reverse(
         return Ok(false);
     };
     let source_path = format!("managed/{source_object}");
-    let reciprocal = parse_relationship(reverse)
-        .is_some_and(|back| back.reverse_key.as_deref().is_none_or(|named| named == key))
+    // Read the shape directly, not through `parse_relationship`: that is the
+    // single-target editor's parser and refuses a collection whose *first*
+    // path is not `managed/`, which made this check depend on target order.
+    let reciprocal = crate::managed::state::is_relationship_property(reverse)
+        && declared_reverse_key(reverse).is_none_or(|named| named == key)
         && relationship_targets(reverse).contains(&source_path.as_str());
     if !reciprocal {
         return Err(format!(
@@ -916,9 +919,19 @@ fn checked_reverse(
     Ok(true)
 }
 
+/// The reverse key a relationship declares, through `items` for an array,
+/// whatever its targets are.
+pub(crate) fn declared_reverse_key(property: &Value) -> Option<&str> {
+    let node = property.get("items").unwrap_or(property);
+    if node.get("reverseRelationship").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    node.get("reversePropertyName").and_then(Value::as_str)
+}
+
 /// The `resourceCollection` paths of a relationship, through `items` for an
 /// array.
-fn relationship_targets(property: &Value) -> Vec<&str> {
+pub(crate) fn relationship_targets(property: &Value) -> Vec<&str> {
     let node = property.get("items").unwrap_or(property);
     node.get("resourceCollection")
         .and_then(Value::as_array)
@@ -5066,6 +5079,37 @@ mod tests {
         ]});
         let error = apply_delete_relationship(&source_multi, "a", "owner").unwrap_err();
         assert!(error.contains("relationship to 2 object types"), "{error}");
+    }
+
+    #[test]
+    fn a_kept_reverse_is_reciprocal_whatever_its_target_order() {
+        let doc = |owned: Value| {
+            json!({"objects": [
+                {"name": "a", "schema": {"properties": {
+                    "owner": one_relationship("managed/b", Some("owned")),
+                }, "order": ["owner"], "required": []}},
+                {"name": "b", "schema": {"properties": {"owned": owned},
+                    "order": ["owned"], "required": []}},
+            ]})
+        };
+        // Both reviewers' case: `internal/role` listed first made the editor's
+        // parser give up, so a rewrite that keeps both ends was refused.
+        for owned in [
+            two_target_relationship("managed/a", "internal/role", "owner"),
+            two_target_relationship("internal/role", "managed/a", "owner"),
+        ] {
+            assert_eq!(
+                checked_reverse(&doc(owned.clone()), "a", "owner", "b", "owned", false),
+                Ok(true),
+                "{owned}"
+            );
+            let mut many = json!({"type": "array", "items": owned});
+            many["items"]["type"] = json!("relationship");
+            assert_eq!(
+                checked_reverse(&doc(many), "a", "owner", "b", "owned", false),
+                Ok(true)
+            );
+        }
     }
 
     #[test]

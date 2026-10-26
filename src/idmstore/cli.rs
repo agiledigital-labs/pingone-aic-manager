@@ -142,7 +142,10 @@ pub async fn run(cmd: IdmCommand) -> Result<()> {
                         }
                         other => other?,
                     };
-                    crate::idmstore::api::parse_page(&body).map_err(|_| not_a_query())
+                    if body.get("result").is_none() {
+                        return Err(not_a_query());
+                    }
+                    crate::idmstore::api::parse_page(&body)
                 }
             })
             .await?;

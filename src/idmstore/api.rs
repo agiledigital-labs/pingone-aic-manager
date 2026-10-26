@@ -196,11 +196,20 @@ pub(crate) fn parse_page(body: &Value) -> Result<Page> {
             status: 0,
             body: format!("expected CREST page result array: {body}"),
         })?;
-    let cookie = body
-        .get("pagedResultsCookie")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .filter(|s| !s.is_empty());
+    // Absent, null or empty ends the walk. Anything else that is not a
+    // string is not a cookie, and reading it as "no more pages" would
+    // truncate silently.
+    let cookie = match body.get("pagedResultsCookie") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(cookie)) if cookie.is_empty() => None,
+        Some(Value::String(cookie)) => Some(cookie.clone()),
+        Some(other) => {
+            return Err(Error::Api {
+                status: 0,
+                body: format!("pagedResultsCookie is not a string: {other}"),
+            });
+        }
+    };
     Ok(Page { results, cookie })
 }
 
@@ -254,6 +263,25 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_cookie_that_is_not_a_string_is_an_error_not_the_last_page() {
+        for end in [
+            json!({"result": []}),
+            json!({"result": [], "pagedResultsCookie": null}),
+            json!({"result": [], "pagedResultsCookie": ""}),
+        ] {
+            assert_eq!(parse_page(&end).unwrap().cookie, None);
+        }
+        assert_eq!(
+            parse_page(&json!({"result": [], "pagedResultsCookie": "c1"}))
+                .unwrap()
+                .cookie
+                .as_deref(),
+            Some("c1")
+        );
+        assert!(parse_page(&json!({"result": [], "pagedResultsCookie": 7})).is_err());
+    }
 
     #[tokio::test]
     async fn a_repeated_cookie_stops_the_walk() {

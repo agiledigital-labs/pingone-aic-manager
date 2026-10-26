@@ -681,7 +681,10 @@ aic idm get /openidm/internal/role/openidm-admin
 The path may be written `/openidm/<path>`, `openidm/<path>` or `<path>`, with
 any query string. It is refused if it could leave `/openidm/` once the server
 normalises it: a URL, a dot segment (encoded or not), an encoded slash or
-backslash, an empty segment.
+backslash, an empty segment, a double-encoded or malformed escape, and any
+character outside RFC 3986's path set (a space, tab, backslash or non-ASCII
+character — percent-encode it). As a last check, the path the URL parser would
+send must be exactly the path validated; one it would rewrite is refused.
 
 - `--fields` is shorthand for `_fields=`; giving both is refused.
 - Without `--all-pages` the response is printed as the tenant returned it, and
@@ -690,7 +693,8 @@ backslash, an empty segment.
   `{"result": [...], "resultCount": N}`. It adds `_pageSize=1000` unless the
   path sets one, and refuses a path that already carries
   `_pagedResultsCookie` or `_pagedResultsOffset`. A cookie returned twice stops
-  the walk with an error rather than paging forever. On a single resource it
+  the walk with an error rather than paging forever, and so does a
+  `pagedResultsCookie` that is not a string. On a single resource it
   is refused, because the tenant rejects `_pageSize` there.
 
 It only ever sends `GET`, but **GET is not a promise of no side effects**: a GET
@@ -2339,7 +2343,9 @@ Skipped entries are listed and make the command exit non-zero.
   untouched since the last sync, or already equals the tenant's copy. It is
   the way to clear a screen of stale `modified on remote` rows so real drift
   stands out: `aic script pull endpoint --unmodified-only`. Local edits are
-  skipped and named; untracked scripts are skipped and counted, never adopted.
+  skipped and named. Scripts with no synced baseline — untracked, missing
+  locally, or with an unreadable snapshot — are skipped and counted, never
+  adopted.
   Nothing it installs is protected, so it never asks for `--force`; backups
   follow plain `pull`'s rule. It writes only the workspace, never the tenant.
 - `list` tags each row with its `ref` and narrows three ways. `--context TEXT`

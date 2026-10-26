@@ -201,13 +201,9 @@ impl App {
 
         // Start where a CLI command run from here would point — workspace
         // directory, stored context, default_tenant — so bare `aic` and
-        // `aic ctx current` agree. Falling back further to 0 keeps first-run
-        // (where nothing resolves) sane.
-        let active_tenant_idx = pick_initial_tenant_idx(
-            &tenants,
-            crate::cli::invocation_tenant().as_deref(),
-            config.as_ref(),
-        );
+        // `aic ctx current` agree, and refuse where it would refuse.
+        let active_tenant_idx = pick_initial_tenant_idx(&tenants, crate::cli::invocation_tenant())
+            .map_err(crate::Error::Config)?;
 
         // Sandbox import path is offered when the three required vars are
         // already exported in our environment (typically via direnv loading
@@ -736,27 +732,26 @@ pub fn refresh_view(app: &mut App, view: View, force: bool) {
 ///      tenant)
 fn pick_initial_tenant_idx(
     tenants: &[Tenant],
-    effective: Option<&str>,
-    config: Option<&ProjectConfig>,
-) -> usize {
+    invocation: std::result::Result<Option<(String, String)>, String>,
+) -> std::result::Result<usize, String> {
+    // No tenants is first run: onboarding, whatever a stale context says.
     if tenants.is_empty() {
-        return 0;
+        return Ok(0);
     }
-    if let Some(i) = effective.and_then(|name| tenants.iter().position(|t| t.name == name)) {
-        return i;
+    match invocation {
+        Err(error) => Err(format!("could not work out the target tenant: {error}")),
+        // Nothing names a tenant — no workspace, context or default_tenant.
+        Ok(None) => Ok(0),
+        Ok(Some((name, why))) => tenants
+            .iter()
+            .position(|tenant| tenant.name == name)
+            .ok_or_else(|| {
+                format!(
+                    "the target tenant is '{name}' ({why}), but no tenant of that name is \
+                     configured; choose one with `aic ctx use <tenant>`"
+                )
+            }),
     }
-    if let Ok(Some(name)) = config::read_current_context()
-        && let Some(i) = tenants.iter().position(|t| t.name == name)
-    {
-        return i;
-    }
-    if let Some(cfg) = config
-        && !cfg.default_tenant.is_empty()
-        && let Some(i) = tenants.iter().position(|t| t.name == cfg.default_tenant)
-    {
-        return i;
-    }
-    0
 }
 
 #[cfg(test)]
@@ -778,9 +773,22 @@ mod startup_tenant_tests {
     #[test]
     fn the_tui_starts_on_the_invocation_tenant() {
         let tenants = [tenant("sandbox"), tenant("dev")];
-        // The CLI's answer (here, from a workspace directory) wins outright:
-        // the stored context is never consulted when it names a tenant.
-        assert_eq!(pick_initial_tenant_idx(&tenants, Some("dev"), None), 1);
-        assert_eq!(pick_initial_tenant_idx(&[], Some("dev"), None), 0);
+        let named = |name: &str| Ok(Some((name.to_string(), "why".to_string())));
+        assert_eq!(pick_initial_tenant_idx(&tenants, named("dev")), Ok(1));
+        assert_eq!(pick_initial_tenant_idx(&tenants, Ok(None)), Ok(0));
+        assert_eq!(pick_initial_tenant_idx(&[], named("dev")), Ok(0));
+    }
+
+    #[test]
+    fn the_tui_refuses_where_the_cli_would_rather_than_falling_back() {
+        let tenants = [tenant("sandbox"), tenant("dev")];
+        // A failed capture is not permission to pick another tenant...
+        let error = pick_initial_tenant_idx(&tenants, Err("unreadable".into())).unwrap_err();
+        assert!(error.contains("unreadable"), "{error}");
+        // ...and neither is a captured name that is no longer configured.
+        let error =
+            pick_initial_tenant_idx(&tenants, Ok(Some(("gone".into(), "stored context".into()))))
+                .unwrap_err();
+        assert!(error.contains("'gone' (stored context)"), "{error}");
     }
 }

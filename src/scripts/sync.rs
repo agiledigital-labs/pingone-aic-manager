@@ -139,7 +139,7 @@ pub enum UnmodifiedSkip {
 impl UnmodifiedSkip {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Untracked => "skipped: not tracked here",
+            Self::Untracked => "skipped: no synced baseline here",
             Self::LocallyModified => "skipped: local edits",
         }
     }
