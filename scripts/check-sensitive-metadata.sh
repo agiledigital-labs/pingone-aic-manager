@@ -291,18 +291,6 @@ staged_lines() {
   # nothing in it, so one NUL anywhere in the added lines hid the rest, and
   # UTF-16 text (ASCII plus NULs) was never read at all.
   #
-  # A staged blob that opens with a UTF-16 byte-order mark is decoded and
-  # scanned whole: dropping NULs recovers ASCII from UTF-16 but turns `É`
-  # into a lone 0xC9, which neither the shape rules nor a denylist entry
-  # match. BOM-less UTF-16 is not detected; its ASCII survives the NUL drop
-  # and nothing else is promised. A BOM that does not decode stops the scan.
-  local bom
-  bom=$(git cat-file blob ":$1" 2>/dev/null | head -c2 | od -An -tx1 | tr -d ' \n')
-  if [ "$bom" = fffe ] || [ "$bom" = feff ]; then
-    git cat-file blob ":$1" | iconv -f UTF-16 -t UTF-8 | awk '{ print NR":"$0 }' \
-      || scan_failed "$1 has a UTF-16 byte-order mark but does not decode"
-    return 0
-  fi
   git -c diff.suppressBlankEmpty=false diff --cached --text --no-color --no-ext-diff \
     --no-textconv -U0 -- ":(literal)$1" \
     | awk '/^diff / { hunk = 0; next }
@@ -310,6 +298,34 @@ staged_lines() {
            hunk && /^\+/ { print n":"substr($0,2); n++ }
            hunk && /^ / { n++ }' \
     | tr -d '\000'
+}
+
+# A staged blob that opens with a UTF-16 byte-order mark gets a second pass,
+# decoded and scanned whole, on top of the raw added-line scan (never in
+# place of it: ASCII bytes behind a stray `ff fe` decode into unrelated
+# characters, and the raw scan is what still sees them). Dropping NULs
+# recovers UTF-16's ASCII but turns `É` into a lone 0xC9 that neither the
+# shape rules nor a denylist entry match. BOM-less UTF-16 is not detected;
+# its ASCII survives the NUL drop and nothing else is promised.
+#
+# `:0:` names stage zero explicitly. `:$1` alone reads a file called
+# `1:notes.md` as stage 1 of `notes.md`, and `0:foo` as `foo`.
+staged_is_utf16() {
+  local out
+  out=$(git cat-file blob ":0:$1" | od -An -tx1 -N2
+    printf ' status %s %s' "${PIPESTATUS[0]}" "${PIPESTATUS[1]}")
+  # od stops after two bytes, so git may die of SIGPIPE (141); that is not
+  # a failed read. Anything else is, and must not read as "no BOM".
+  case $out in
+    *' status 0 0' | *' status 141 0') ;;
+    *) scan_failed "reading the staged $1 failed" ;;
+  esac
+  out=${out% status *}
+  out=${out//[[:space:]]/}
+  [ "$out" = fffe ] || [ "$out" = feff ]
+}
+staged_utf16_lines() {
+  git cat-file blob ":0:$1" | iconv -f UTF-16 -t UTF-8 | awk '{ print NR":"$0 }'
 }
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
@@ -573,33 +589,54 @@ scan_text() {
 # review. Nested .gitignore files are out of scope.
 REQUIRED_IGNORES=(.envrc '.aic/' '/workspace/' '*.har' '/.ai/local.md')
 check_ignores() {
-  local from="$1" want text mode missing=0
+  local from="$1" want text mode tmp nuls missing=0
+  tmp=$(mktemp) || scan_failed "mktemp failed"
   if [ "$from" = index ]; then
     mode=$(git ls-files -s -- ":(literal).gitignore") \
-      || scan_failed "reading the staged .gitignore failed"
+      || { rm -f "$tmp"; scan_failed "reading the staged .gitignore failed"; }
     case ${mode%% *} in
       100644 | 100755)
-        text=$(git cat-file blob ":.gitignore") \
-          || scan_failed "reading the staged .gitignore failed"
+        git cat-file blob ":0:.gitignore" >"$tmp" \
+          || { rm -f "$tmp"; scan_failed "reading the staged .gitignore failed"; }
         ;;
-      *) text= ;; # absent, a symlink or a gitlink ignores nothing
+      *) ;; # absent, a symlink or a gitlink ignores nothing
     esac
   elif [ -L .gitignore ] || [ ! -e .gitignore ]; then
-    text=
+    :
   else
-    [ -f .gitignore ] && [ -r .gitignore ] || scan_failed ".gitignore cannot be read"
-    text=$(cat .gitignore) || scan_failed "reading .gitignore failed"
+    cat .gitignore >"$tmp" || { rm -f "$tmp"; scan_failed "reading .gitignore failed"; }
   fi
-  for want in "${REQUIRED_IGNORES[@]}"; do
-    if ! grep -qxF -- "$want" <<<"$text"; then
-      echo "  MISSING from the $from .gitignore: $want"
-      missing=1
-    fi
-  done
-  if grep -q '^!' <<<"$text"; then
-    echo "  NEGATION in the $from .gitignore: $(grep -m1 '^!' <<<"$text")"
+  # Judged as bytes before any shell variable holds them: bash drops NULs
+  # from a command substitution, so a UTF-16 .gitignore — which git reads as
+  # no rules at all — became five clean ASCII lines here. A trailing CR is
+  # dropped for the comparison, because git matches a CRLF file's rules.
+  nuls=$(tr -dc '\000' <"$tmp" | wc -c) || { rm -f "$tmp"; scan_failed "reading .gitignore failed"; }
+  text=$(sed 's/\r$//' "$tmp") || { rm -f "$tmp"; scan_failed "reading .gitignore failed"; }
+  rm -f "$tmp"
+  if [ "$nuls" -gt 0 ]; then
+    echo "  NUL BYTES in the $from .gitignore: git reads no rules from it (UTF-16?)"
     missing=1
   fi
+  for want in "${REQUIRED_IGNORES[@]}"; do
+    grep -qxF -- "$want" <<<"$text"
+    case $? in
+      0) ;;
+      1)
+        echo "  MISSING from the $from .gitignore: $want"
+        missing=1
+        ;;
+      *) scan_failed "reading the $from .gitignore failed" ;;
+    esac
+  done
+  grep -q '^!' <<<"$text"
+  case $? in
+    0)
+      echo "  NEGATION in the $from .gitignore: $(grep -m1 '^!' <<<"$text")"
+      missing=1
+      ;;
+    1) ;;
+    *) scan_failed "reading the $from .gitignore failed" ;;
+  esac
   if [ "$missing" = 1 ]; then
     findings=$((findings + 1))
     printf '\n.gitignore\n  rule:   ignore-rules-intact\n  fix:    keep .envrc, .aic/, /workspace/, *.har and /.ai/local.md as lines, with no ! exceptions; they keep live tenant data untracked\n'
@@ -867,6 +904,13 @@ case "$MODE" in
       run "a git template cannot lend the staged .gitignore its rules" 1 \
         GIT_TEMPLATE_DIR="$repo/.git/tpl" bash "$script" --staged
       rm -rf .git/tpl
+      # Judged as git reads it: a UTF-16 file holds no rules for git, and
+      # CRLF line ends still match.
+      { printf '\xef\xbb\xbf# rules\n'; cat .gitignore.keep; } | iconv -f UTF-8 -t UTF-16 >.gitignore
+      git add .gitignore
+      run "a UTF-16 .gitignore protects nothing" 1 bash "$script" --staged
+      sed 's/$/\r/' .gitignore.keep >.gitignore && git add .gitignore
+      run "control: a CRLF .gitignore still protects" 0 bash "$script" --staged
       mv .gitignore.keep .gitignore && git add .gitignore
       # git does not follow a .gitignore symlink, so neither may the check.
       mv .gitignore .git/real-ignore && ln -s .git/real-ignore .gitignore
@@ -885,6 +929,29 @@ case "$MODE" in
       run "a byte invalid in the locale does not hide a denylisted name" 1 \
         LC_ALL=C.UTF-8 SENSITIVE_DENYLIST="$repo/.git/deny-utf8" bash "$script" --staged
       git rm -q --cached badbyte.md >/dev/null && rm -f badbyte.md
+      # A stray BOM must add a pass, not replace the raw one: ASCII behind
+      # `ff fe` decodes into unrelated characters.
+      { printf '\xff\xfe'; printf '%s\n' "$leak"; } >ffeleak.md
+      [ $(($(wc -c <ffeleak.md) % 2)) = 0 ] || printf ' ' >>ffeleak.md
+      git add ffeleak.md >/dev/null
+      run "a stray byte-order mark does not replace the raw scan" 1 bash "$script" --staged
+      git rm -q --cached ffeleak.md >/dev/null && rm -f ffeleak.md
+      # Names that look like index stages are the file they name.
+      printf 'harmless\n' | iconv -f UTF-8 -t UTF-16 >foo
+      printf '%s\n' "$leak" >0:foo
+      git add foo 0:foo >/dev/null
+      run "a file named 0:foo is not read as foo" 1 bash "$script" --staged
+      git rm -q --cached foo 0:foo >/dev/null && rm -f foo 0:foo
+      printf 'ok\nÉcoleReview\n' | iconv -f UTF-8 -t UTF-16 >1:notes.md
+      git add 1:notes.md >/dev/null
+      run "a UTF-16 file named 1:notes.md is decoded" 1 \
+        SENSITIVE_DENYLIST="$repo/.git/deny-utf8" bash "$script" --staged
+      # A BOM sniff that cannot read must stop the scan, not mean "no BOM".
+      mkdir "$repo/.git/odshim" && printf '#!/bin/sh\nexit 3\n' >"$repo/.git/odshim/od"
+      chmod +x "$repo/.git/odshim/od"
+      run "a failing byte-order-mark read stops the scan" 2 \
+        PATH="$repo/.git/odshim:$PATH" bash "$script" --staged
+      git rm -q --cached 1:notes.md >/dev/null && rm -f 1:notes.md
       # Caller-added context must not shift the reported line.
       printf 'a\n\nc\nd\ne\n' >ctx.md && git add ctx.md && git commit -qm ctx >/dev/null
       printf 'a\n\nX\nd\n%s\n' "$leak" >ctx.md && git add ctx.md >/dev/null
@@ -991,6 +1058,9 @@ case "$MODE" in
     while IFS= read -r -d '' file; do
       [ "$file" = "$SELF" ] && continue
       scan_text "$file" < <(filtered staged_lines "$file")
+      if staged_is_utf16 "$file"; then
+        scan_text "$file (decoded from UTF-16)" < <(filtered staged_utf16_lines "$file")
+      fi
     done < <(listing git diff --cached --name-only -z --diff-filter=ACMRT)
     ;;
   tracked)
