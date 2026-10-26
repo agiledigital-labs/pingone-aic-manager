@@ -259,8 +259,9 @@ pub enum ScriptCommand {
         #[arg(long, value_name = "FILE")]
         against: Option<std::path::PathBuf>,
         /// Exit non-zero unless every selected script matches the tenant (in
-        /// sync, or converged), at least one was selected, and any --against
-        /// file matches. For deployment gates.
+        /// sync, or converged) and at least one was selected — or, with
+        /// --against, unless the file matches the tenant's copy (the workspace
+        /// copy is then reported, not judged). For deployment gates.
         #[arg(long)]
         check: bool,
         #[arg(long, help = "Print the status rows as JSON")]
@@ -928,9 +929,7 @@ pub(crate) async fn run_with_runtime(
                 Some(path) => Some(AgainstRow::compare(path, &rows)?),
                 None => None,
             };
-            let ok = !rows.is_empty()
-                && rows.iter().all(|row| row.matches_tenant)
-                && against.as_ref().is_none_or(|against| against.matches);
+            let ok = status_ok(&rows, against.as_ref());
             if json {
                 println!(
                     "{}",
@@ -989,9 +988,15 @@ pub(crate) async fn run_with_runtime(
             }
             check_managed_types_stale(&t).await;
             if check && !ok {
-                return Err(Error::Config(
-                    "status check failed: not every selected script matches the tenant".into(),
-                ));
+                return Err(Error::Config(match &against {
+                    Some(against) => format!(
+                        "status check failed: {} does not match the tenant's copy",
+                        against.file
+                    ),
+                    None => {
+                        "status check failed: not every selected script matches the tenant".into()
+                    }
+                }));
             }
             Ok(())
         }
@@ -2049,6 +2054,20 @@ impl StatusRow {
             local_sha256: entry.local_sha256.clone(),
             remote_sha256: entry.remote_sha256.clone(),
         }
+    }
+}
+
+/// What `status --check` passes on.
+///
+/// With `--against`, the file alone: the question is "is the artefact I built
+/// what the tenant runs?", and a CI checkout that never pulled the workspace
+/// has no local copy to agree with — requiring one made the gate red exactly
+/// where it is meant to run. Without it, every selected script, and at least
+/// one of them.
+fn status_ok(rows: &[StatusRow], against: Option<&AgainstRow>) -> bool {
+    match against {
+        Some(against) => against.matches,
+        None => !rows.is_empty() && rows.iter().all(|row| row.matches_tenant),
     }
 }
 
@@ -3213,6 +3232,37 @@ mod tests {
         assert_eq!(exact("endpoint/"), None);
         assert_eq!(exact("Email"), None);
         assert_eq!(exact("bogus/foo"), None);
+    }
+
+    /// D-S2b: with `--against`, the file is the whole verdict. The
+    /// discriminating cases are the two where the file and the workspace
+    /// disagree — a CI checkout with no local copy (untracked, file matches)
+    /// must pass, and an in-sync workspace must not rescue a stale artefact.
+    #[test]
+    fn status_gate_with_against_judges_the_file_only() {
+        use script::sync::Untracked;
+        let row = StatusRow::untracked(&Untracked {
+            name: "x".into(),
+            kind: script::Kind::IdmEndpoint,
+            realm: None,
+            local_sha256: None,
+            remote_sha256: Some("aa".into()),
+        });
+        assert!(!row.matches_tenant, "the precondition: no workspace copy");
+        let file = |matches| AgainstRow {
+            file: "dist/x.cjs".into(),
+            sha256: "aa".into(),
+            remote_sha256: Some("aa".into()),
+            matches,
+        };
+        let rows = [row];
+        assert!(status_ok(&rows, Some(&file(true))));
+        assert!(!status_ok(&rows, Some(&file(false))));
+        assert!(
+            !status_ok(&rows, None),
+            "without --against the row still counts"
+        );
+        assert!(!status_ok(&[], None), "nothing selected is not a pass");
     }
 
     #[test]
