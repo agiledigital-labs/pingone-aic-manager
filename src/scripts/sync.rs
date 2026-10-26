@@ -1723,20 +1723,26 @@ async fn status_with(
         };
         // An exact ref is a question about one script, often "is my build
         // deployed?", so its remote digest is worth one GET even when there is
-        // nothing local to classify against. A broad listing skips it.
+        // nothing local to classify against. A broad listing skips it. A 404
+        // is an answer (no digest); any other failure is the command's error,
+        // not an absent digest that reads as "not deployed".
         let remote_digest_only = || async {
-            match filter {
-                StatusFilter::Exact { .. } => io
-                    .fetch(r.kind, tenant, realm, &r.id)
-                    .await
-                    .and_then(|remote| r.kind.decode_source(&remote.raw_config))
-                    .ok(),
-                _ => None,
+            if !matches!(filter, StatusFilter::Exact { .. }) {
+                return Ok(None);
+            }
+            match io
+                .fetch(r.kind, tenant, realm, &r.id)
+                .await
+                .and_then(|remote| r.kind.decode_source(&remote.raw_config))
+            {
+                Ok(source) => Ok(Some(source)),
+                Err(error) if is_remote_missing(&error) => Ok(None),
+                Err(error) => Err(error),
             }
         };
         let Some(snapshot_cfg) = store.load_config(r, realm)? else {
             let local = read_local(&workspace_file_in(workspace_tree, realm, r))?;
-            let remote = remote_digest_only().await;
+            let remote = remote_digest_only().await?;
             out.push(row(
                 ScriptState::SnapshotMissing,
                 local.as_deref(),
@@ -1748,7 +1754,7 @@ async fn status_with(
 
         let dest = workspace_file_in(workspace_tree, realm, r);
         let Some(local_src) = read_local(&dest)? else {
-            let remote = remote_digest_only().await;
+            let remote = remote_digest_only().await?;
             out.push(row(ScriptState::LocalMissing, None, remote.as_deref()));
             continue;
         };
@@ -2399,6 +2405,39 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(status.entries.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn exact_status_surfaces_a_remote_error_but_not_a_404() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let reference = endpoint_ref("gone-local");
+        store
+            .record(&endpoint_script(&reference, "source", "snapshot"), "")
+            .unwrap();
+        let filter = StatusFilter::Exact {
+            kind: Kind::IdmEndpoint,
+            realm: None,
+            name: "gone-local",
+        };
+        let api = |status| Error::Api {
+            status,
+            body: "x".into(),
+        };
+        let io = FakeSyncIo::new(vec![Err(api(403))]);
+        let error = status_with(&store, &workspace, &io, "tenant", None, filter)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Api { status: 403, .. }), "{error}");
+
+        let io = FakeSyncIo::new(vec![Err(api(404))]);
+        let status = status_with(&store, &workspace, &io, "tenant", None, filter)
+            .await
+            .unwrap();
+        assert_eq!(status.entries[0].state, ScriptState::LocalMissing);
+        assert_eq!(status.entries[0].remote_sha256, None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
