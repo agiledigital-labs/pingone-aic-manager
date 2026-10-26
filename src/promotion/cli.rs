@@ -3,8 +3,10 @@
 
 use clap::Subcommand;
 
-use crate::cli::{print_json, print_table, tenant_for};
-use crate::promotion::{api, spec};
+use futures::StreamExt;
+
+use crate::cli::{print_json, print_table, tenant_config_for, tenant_for};
+use crate::promotion::{api, spec, verify};
 use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
@@ -35,6 +37,23 @@ pub enum PromotionCommand {
         provisional: bool,
         #[arg(long)]
         tenant: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check a report against both tenants: fetch every item it lists from
+    /// the lower and the upper environment and compare the content, ignoring
+    /// `_rev` and audit stamps. Exits non-zero if any item differs or could
+    /// not be checked. Reads only.
+    Verify {
+        /// The environment promoted from.
+        #[arg(long)]
+        lower: String,
+        /// The environment promoted to; the report is read from here.
+        #[arg(long)]
+        upper: String,
+        /// Report id to check; omit for the provisional report.
+        #[arg(long)]
+        report: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -208,5 +227,119 @@ pub async fn run(command: PromotionCommand) -> Result<()> {
             }
             Ok(())
         }
+        PromotionCommand::Verify {
+            lower,
+            upper,
+            report,
+            json,
+        } => run_verify(lower, upper, report, json).await,
+    }
+}
+
+/// How many items are fetched at once, per tenant pair.
+const VERIFY_CONCURRENCY: usize = 8;
+
+async fn judge_entry(lower: &str, upper: &str, entry: &verify::Entry) -> verify::Verdict {
+    let target = verify::target(entry);
+    if let verify::Target::Unchecked(why) = target {
+        return verify::Verdict::Unchecked(why);
+    }
+    let (l, u) = futures::join!(api::fetch(lower, &target), api::fetch(upper, &target));
+    match (l, u) {
+        (Ok(l), Ok(u)) => verify::settle(&entry.change, verify::judge(l.as_ref(), u.as_ref())),
+        (Err(e), _) => verify::Verdict::Unchecked(format!("{lower}: {e}")),
+        (_, Err(e)) => verify::Verdict::Unchecked(format!("{upper}: {e}")),
+    }
+}
+
+async fn run_verify(
+    lower: String,
+    upper: String,
+    report: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let (l, u) = (
+        tenant_config_for(Some(lower))?,
+        tenant_config_for(Some(upper))?,
+    );
+    if verify::same_tenant(&l.base_url, &u.base_url) {
+        return Err(Error::Config(format!(
+            "{} and {} are the same tenant; verify compares two",
+            l.name, u.name
+        )));
+    }
+    let which = report.map_or(spec::Which::Provisional, spec::Which::Id);
+    let raw = explained(api::report(&u.name, &which).await, &u.name)?;
+    let entries = decoded(verify::entries(&raw))?;
+    let verdicts: Vec<verify::Verdict> = futures::stream::iter(&entries)
+        .map(|entry| judge_entry(&l.name, &u.name, entry))
+        .buffered(VERIFY_CONCURRENCY)
+        .collect()
+        .await;
+    let pairs = entries.iter().zip(&verdicts);
+    if json {
+        let items: Vec<_> = pairs
+            .map(|(e, v)| {
+                serde_json::json!({
+                    "section": e.section,
+                    "item": e.item,
+                    "change": e.change,
+                    "name": e.name,
+                    "realm": e.realm,
+                    "verdict": v.label(),
+                    "detail": detail(v),
+                    "inSync": v.in_sync(),
+                })
+            })
+            .collect();
+        print_json(&serde_json::json!({ "lower": l.name, "upper": u.name, "items": items }))?;
+    } else {
+        let rows: Vec<Vec<String>> = pairs
+            .map(|(e, v)| {
+                vec![
+                    v.label().into(),
+                    e.item.clone(),
+                    e.change.clone(),
+                    e.name.clone(),
+                    e.realm.clone().unwrap_or_else(|| "-".into()),
+                    detail(v),
+                ]
+            })
+            .collect();
+        if rows.is_empty() {
+            println!("the report lists no changes");
+        } else {
+            print_table(
+                &["VERDICT", "ITEM", "REPORTED", "NAME", "REALM", "DETAIL"],
+                &rows,
+            );
+        }
+    }
+    let count = |f: fn(&verify::Verdict) -> bool| verdicts.iter().filter(|v| f(v)).count();
+    let in_sync = count(verify::Verdict::in_sync);
+    let unchecked = count(|v| matches!(v, verify::Verdict::Unchecked(_)));
+    let differ = verdicts.len() - in_sync - unchecked;
+    if !json {
+        println!(
+            "\n{} item(s): {in_sync} in sync, {differ} differ, {unchecked} unchecked ({} → {})",
+            verdicts.len(),
+            l.name,
+            u.name
+        );
+    }
+    if differ + unchecked == 0 {
+        Ok(())
+    } else {
+        Err(Error::Config(format!(
+            "{differ} item(s) differ and {unchecked} could not be checked"
+        )))
+    }
+}
+
+fn detail(verdict: &verify::Verdict) -> String {
+    match verdict {
+        verify::Verdict::Differs(paths) => paths.join(", "),
+        verify::Verdict::Unchecked(why) => why.clone(),
+        _ => String::new(),
     }
 }

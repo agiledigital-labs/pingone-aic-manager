@@ -857,6 +857,7 @@ measured to report both sides' lock and to hold the reports. API: `docs/api/23-p
 aic promotion status [--json]
 aic promotion reports [--json]
 aic promotion report [<report-id> | --provisional] [--json]
+aic promotion verify --lower <env> --upper <env> [--report <report-id>] [--json]
 ```
 
 - `status` prints `lock/state` and the promotion status side by side. They have
@@ -873,6 +874,15 @@ aic promotion report [<report-id> | --provisional] [--json]
   realm; a report whose shape it cannot count is refused, not half-summarised.
 - 403 for scope, 503 for no service and 404 for no report each get a message
   saying what they mean, so a permissions failure never reads as a lock state.
+- `verify` checks a report against the pair: it reads the report from
+  `--upper` (provisional unless `--report` names one), fetches every listed
+  item from both tenants and compares content, ignoring `_rev` and audit
+  stamps. Each item is `same`, `DIFFERS` (with the first differing JSON
+  paths), `ONLY-LOWER`, `ONLY-UPPER`, `absent-both` (only for an item
+  reported `deleted`) or `unchecked` with the reason — an item it cannot
+  read, including the global scripts it has no endpoint for, is never counted
+  as matching. Exits non-zero if anything differs or is unchecked. Refuses two
+  context names for one tenant.
 
 ## `aic role` — IDM internal roles
 

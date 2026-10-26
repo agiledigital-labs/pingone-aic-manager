@@ -4,8 +4,8 @@ Verified against a dev → UAT environment pair and a sandbox, 2026-10-26, with
 `scripts/verify-endpoint.sh` and then `aic promotion`. All reads; nothing here
 has locked, promoted or unlocked anything.
 
-`aic promotion status|reports|report` (`src/promotion/`) wraps the reads below.
-There is deliberately no write verb yet.
+`aic promotion status|reports|report|verify` (`src/promotion/`) wraps the reads
+below. There is deliberately no write verb yet.
 
 ## Scope
 
@@ -116,3 +116,56 @@ against something other than the live upper environment — which one is not
 known. Never read it as "dev and UAT differ". Unexplained as of this date: what
 baseline it uses; whether the upper env's `UNLOCKING` status (unchanged since
 that promotion) is related.
+
+## Verifying a report
+
+`aic promotion verify --lower <env> --upper <env> [--report <id>]` reads the
+report from the upper environment (provisional by default), fetches every item
+from **both** tenants and compares the content with `_rev`, `createdBy`,
+`creationDate`, `lastModifiedBy` and `lastModifiedDate` removed. The report's
+change kind is not trusted: an item is judged on what each tenant returns.
+
+Each report item maps to one live read, all measured 2026-10-26 on the dev →
+UAT pair (200 on both unless stated):
+
+| Report item                           | Read                                                                                                   |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Journeys`                            | `…/realms/{realm}/realm-config/authentication/authenticationtrees/trees/{name}` and every node it reaches, page-node children included |
+| `Scripts` with a `uid`                | `…/realms/{realm}/scripts/{id}` (`resource=1.1`); the id is the first `ou=` of `uid`                    |
+| `Scripts` without a `uid`             | `…/realms/{realm}/scripts?_queryFilter=name eq "<name>"` — the report gave one entry no `uid`           |
+| `ESV Secrets Store Mappings`          | the secret mapping for the entry's name, which is the AM secret label (404 = unmapped)                 |
+| `AM Services > <name>`                | `…/realms/{realm}/realm-config/services?_queryFilter=true`, then `…/services/{_id}`                    |
+| `AM Authentication > Settings`        | `…/realms/{realm}/realm-config/authentication`                                                         |
+| `CORS`                                | `/am/json/global-config/services/CorsService/configuration?_queryFilter=true`, matched by `_id`        |
+| `IDM Themes By Realm`                 | `/openidm/config/ui/themerealm`, the realm's **whole** list                                            |
+| `Global Scripts`                      | no reader: `/am/json/realms/root/scripts` is 403 and `global-config/services/scripting/globalScripts` 404 |
+
+AM config reads use `Accept-API-Version: protocol=1.0,resource=1.0`.
+
+Three naming mismatches, each measured, decide the lookups:
+
+- **Service names** — the item says `Session Service` where the service list
+  says `Session`, and `OAuth2 Provider Service` where it says
+  `OAuth2 Provider`; `Push Notification Service` and `Validation Service` match
+  as given. The name is tried as given and without a trailing ` Service`.
+- **CORS ids are lowercased** in the report (`client-a` for `Client-A`), so the
+  configuration is matched case-insensitively against the list. Two matches
+  are an error, not a pick.
+- **The theme name does not match the stored one** (`Starter` against
+  `Starter Theme`), so the realm's whole theme list is compared instead of
+  guessing which theme is meant.
+
+An earlier draft looked CORS entries and the theme up by the report's name,
+found them on neither tenant, and called four items in sync. So **absent from
+both counts as in sync only for an item reported `deleted`**; for one reported
+added or modified it is unchecked, because it means the lookup did not find
+what the report meant. A read error on either side, including one journey node,
+is likewise unchecked, never a match. `verify` exits non-zero when anything
+differs or is unchecked.
+
+Measured on the pair the console called in sync: **149 of 150 same, 0 differ,
+1 unchecked** (the global script). Positive control, the same report with the
+lower side swapped for a third environment: 73 same, 76 differ (18 `DIFFERS`,
+58 present only on the upper side), 1 unchecked — the comparison does find
+differences when they exist.
+
