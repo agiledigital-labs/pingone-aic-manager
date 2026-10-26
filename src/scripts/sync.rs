@@ -121,7 +121,44 @@ struct PreparedPull {
     script: RemoteScript,
     remote_source: Vec<u8>,
     local: Option<Vec<u8>>,
+    /// The last-synced source, or `None` when untracked or unreadable.
+    snapshot: Option<Vec<u8>>,
     protected: bool,
+}
+
+/// Why `pull --unmodified-only` left a script out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnmodifiedSkip {
+    /// No local file or no usable snapshot: a pull would adopt it, not
+    /// refresh it.
+    Untracked,
+    /// The local file differs from both the snapshot and the tenant.
+    LocallyModified,
+}
+
+impl UnmodifiedSkip {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Untracked => "skipped: not tracked here",
+            Self::LocallyModified => "skipped: local edits",
+        }
+    }
+}
+
+/// The `--unmodified-only` rule: a tracked script whose local file is the
+/// snapshot (untouched since the last sync) or already the tenant's copy.
+/// Either way installing the remote changes no one's work — it only moves the
+/// snapshot, which is the stale-snapshot noise this exists to clear.
+fn unmodified_skip(
+    local: Option<&[u8]>,
+    snapshot: Option<&[u8]>,
+    remote: &[u8],
+) -> Option<UnmodifiedSkip> {
+    match (local, snapshot) {
+        (Some(local), Some(snapshot)) if local == snapshot || local == remote => None,
+        (Some(_), Some(_)) => Some(UnmodifiedSkip::LocallyModified),
+        _ => Some(UnmodifiedSkip::Untracked),
+    }
 }
 
 /// Fetched remote content and local decisions for one atomic authorization
@@ -158,10 +195,32 @@ impl PullPlan {
                     },
                     remote_source: b"remote".to_vec(),
                     local: Some(b"local".to_vec()),
+                    snapshot: None,
                     protected: true,
                 })
                 .collect(),
         }
+    }
+
+    /// Narrow the plan to [`unmodified_skip`]'s scripts, returning the rest
+    /// by name. What remains is never protected, so it installs without
+    /// consent; backups follow the plain pull's rule.
+    pub fn retain_unmodified(&mut self) -> Vec<(String, UnmodifiedSkip)> {
+        let mut skipped = Vec::new();
+        self.entries.retain(|entry| {
+            match unmodified_skip(
+                entry.local.as_deref(),
+                entry.snapshot.as_deref(),
+                &entry.remote_source,
+            ) {
+                None => true,
+                Some(reason) => {
+                    skipped.push((pull_entry_name(entry), reason));
+                    false
+                }
+            }
+        });
+        skipped
     }
 
     pub fn protected_refs(&self) -> Vec<String> {
@@ -936,6 +995,7 @@ async fn prepare_pull_with(
                 script,
                 remote_source,
                 local,
+                snapshot,
                 protected,
             });
         }
@@ -2895,6 +2955,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unmodified_only_keeps_tracked_untouched_scripts_and_installs_them() {
+        use UnmodifiedSkip::*;
+        for (snapshot, local, malformed, skip) in [
+            // Untouched since the last sync: the case this exists for.
+            (Some("old"), Some("old"), false, None),
+            // Already the tenant's copy; only the snapshot moves.
+            (Some("old"), Some("remote"), false, None),
+            (Some("old"), Some("edited"), false, Some(LocallyModified)),
+            (Some("old"), None, false, Some(Untracked)),
+            // Equal to the tenant but never synced: pulling would adopt it.
+            (None, Some("remote"), false, Some(Untracked)),
+            (None, Some("old"), true, Some(Untracked)),
+        ] {
+            let (dir, mut plan) = prepared_fixture(snapshot, local, "remote", malformed).await;
+            let skipped = plan.retain_unmodified();
+            assert_eq!(
+                skipped.first().map(|(_, reason)| *reason),
+                skip,
+                "{snapshot:?} {local:?}"
+            );
+            assert!(plan.protected_refs().is_empty());
+            let outcomes = plan.install(false).unwrap();
+            assert_eq!(outcomes.len(), usize::from(skip.is_none()));
+            let path = workspace_file_in(&dir.join("workspace"), "", &endpoint_ref("protected"));
+            let expected = if skip.is_none() {
+                Some("remote")
+            } else {
+                local
+            };
+            assert_eq!(
+                std::fs::read(&path).ok().as_deref(),
+                expected.map(str::as_bytes)
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn protected_pull_plan_backs_up_and_rechecks_before_any_install() {
         let (dir, plan) = prepared_fixture(Some("old"), Some("edited"), "remote", false).await;
         let outcomes = plan.install(false).unwrap();
@@ -2963,6 +3061,7 @@ mod tests {
                     script: endpoint_script(&one, "remote one", "remote"),
                     remote_source: b"remote one".to_vec(),
                     local: Some(b"local one".to_vec()),
+                    snapshot: None,
                     protected: true,
                 },
                 PreparedPull {
@@ -2970,6 +3069,7 @@ mod tests {
                     script: endpoint_script(&two, "remote two", "remote"),
                     remote_source: b"remote two".to_vec(),
                     local: Some(b"local two".to_vec()),
+                    snapshot: None,
                     protected: true,
                 },
             ],
