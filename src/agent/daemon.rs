@@ -94,6 +94,23 @@ impl AgentState {
     fn is_unlocked(&self) -> bool {
         !matches!(self.vault, Vault::Locked)
     }
+
+    /// Whether the unlocked state still describes the vault on disk: an
+    /// encrypted state's key is still the vault's, a plain state's vault is
+    /// still plain. A transition another process committed — or one that
+    /// died before telling the daemon — leaves it "unlocked" in a mode every
+    /// secret operation then refuses, and `aic login` trusted that and
+    /// returned without repairing it.
+    fn matches_disk(&self) -> bool {
+        match &self.vault {
+            Vault::Locked => true,
+            Vault::Encrypted { dek, .. } => self.paths.hold_vault_key(dek).is_ok(),
+            Vault::Plain { .. } => matches!(
+                self.paths.load_settings(),
+                Ok(Some(settings)) if !settings.encrypt_keys
+            ),
+        }
+    }
 }
 
 pub struct DaemonOptions {
@@ -404,9 +421,13 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
     // unlock that raced a key change would otherwise leave the daemon
     // "unlocked" under the old key, and `aic login` would see that and
     // return without repairing it.
-    let paths = state.read().await.paths.clone();
-    paths.check_vault_key(&dek)?;
-    set_vault(state, Vault::Encrypted { dek, cache: None }).await;
+    // State first, then the vault lock — the order the daemon's other
+    // locked writes take — and both held from the check to the install.
+    let mut s = state.write().await;
+    let _vault = s.paths.hold_vault_key(&dek)?;
+    s.vault = Vault::Encrypted { dek, cache: None };
+    s.invalidate_clients();
+    s.touch();
     Ok(())
 }
 
@@ -454,6 +475,14 @@ async fn set_vault(state: Arc<RwLock<AgentState>>, vault: Vault) {
 }
 
 async fn do_status(state: Arc<RwLock<AgentState>>) -> StatusInfo {
+    // Report a daemon whose state no longer matches the vault as locked —
+    // and lock it — so the caller's fresh unlock replaces it.
+    {
+        let mut s = state.write().await;
+        if !s.matches_disk() {
+            s.lock();
+        }
+    }
     let s = state.read().await;
     let unlocked = s.is_unlocked();
     let mut tenants: Vec<String> = s.clients.keys().cloned().collect();
@@ -977,6 +1006,40 @@ mod tests {
             project.paths.clone(),
             Duration::from_secs(60),
         )))
+    }
+
+    /// A daemon left in a mode the vault has since left reports — and
+    /// becomes — locked, so `aic login` unlocks afresh instead of trusting
+    /// it; and a key the vault does not open is never installed.
+    #[tokio::test]
+    async fn a_daemon_out_of_step_with_the_vault_reports_locked() {
+        let project = test_project();
+        let paths = &project.paths;
+        let state = state(&project);
+        paths.set_up_plain(None).unwrap();
+        state.write().await.vault = Vault::Plain { cache: None };
+        assert!(do_status(state.clone()).await.unlocked);
+
+        let old = Dek::random();
+        paths
+            .enable_encryption(&old, Some(false), || Ok(()))
+            .unwrap();
+        assert!(!do_status(state.clone()).await.unlocked);
+        assert!(matches!(state.read().await.vault, Vault::Locked));
+
+        do_put_dek(&B64.encode(old.0), state.clone()).await.unwrap();
+        assert!(do_status(state.clone()).await.unlocked);
+
+        let new = Dek::random();
+        paths.disable_encryption(&old).unwrap();
+        paths
+            .enable_encryption(&new, Some(false), || Ok(()))
+            .unwrap();
+        assert!(!do_status(state.clone()).await.unlocked);
+        assert!(do_put_dek(&B64.encode(old.0), state.clone()).await.is_err());
+        assert!(matches!(state.read().await.vault, Vault::Locked));
+        do_put_dek(&B64.encode(new.0), state.clone()).await.unwrap();
+        assert!(do_status(state.clone()).await.unlocked);
     }
 
     #[test]
