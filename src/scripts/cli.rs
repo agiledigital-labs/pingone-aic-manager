@@ -77,6 +77,12 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
             }
             Refusal::Unsupported(_) =>
                 "pass --force=syntax-check to write it unchecked (retrying cannot help)",
+            // No flag: a bundle built for another endpoint is wrong whether or
+            // not it parses. Deleting the banner is the deliberate way past.
+            Refusal::WrongTarget { .. } => {
+                "rebuild with `npm run build`, or push the endpoint the banner names; \
+                 delete the banner to push it as hand-written source"
+            }
         }
     );
 }

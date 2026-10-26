@@ -90,6 +90,14 @@ because an endpoint's HTTP response body is the script's completion value.
 Bundle size is not a constraint: 2 MB of parsed source deploys and executes
 (probed 2026-08-13); the demo endpoints are ~44–54 KB.
 
+Each bundle opens with a banner whose `// Source:` line names the TypeScript
+file it came from, and the build refuses an endpoint whose name differs from
+its file name. So the banner says which endpoint a bundle belongs to, and every
+push checks it: a generated bundle copied into another endpoint's `.cjs` is
+refused before anything reaches the tenant, and `--force=syntax-check` does not
+get past it. Deleting the banner is the deliberate way to push the file as
+hand-written source.
+
 Tree-shaking is load-bearing all the same, and one export shape defeats it.
 `framework/index.ts` must not re-export a namespace: `export * as v from
 "./validate.ts"` materialises an object holding every validator, so esbuild can
