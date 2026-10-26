@@ -246,7 +246,10 @@ async fn judge_entry(lower: &str, upper: &str, entry: &verify::Entry) -> verify:
     }
     let (l, u) = futures::join!(api::fetch(lower, &target), api::fetch(upper, &target));
     match (l, u) {
-        (Ok(l), Ok(u)) => verify::settle(&entry.change, verify::judge(l.as_ref(), u.as_ref())),
+        (Ok(l), Ok(u)) => verify::settle(
+            &entry.change,
+            verify::judge(target.shape(), l.as_ref(), u.as_ref()),
+        ),
         (Err(e), _) => verify::Verdict::Unchecked(format!("{lower}: {e}")),
         (_, Err(e)) => verify::Verdict::Unchecked(format!("{upper}: {e}")),
     }

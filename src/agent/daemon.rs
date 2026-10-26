@@ -544,12 +544,9 @@ async fn do_put_secret(
 ) -> Result<bool> {
     let artifact = artifact_for(kind)?;
     let s = state.write().await;
-    let Some(mut map) = load_secret_map(&s.paths, artifact, &s.vault)? else {
-        return Ok(false);
-    };
-    map.insert(tenant.to_string(), value);
-    save_secret_map(&s.paths, artifact, &s.vault, &map)?;
-    Ok(true)
+    update_secret_map(&s.paths, artifact, &s.vault, |map| {
+        map.insert(tenant.to_string(), value);
+    })
 }
 
 async fn do_get_secret(
@@ -578,12 +575,9 @@ async fn do_remove_secret(
 ) -> Result<bool> {
     let artifact = artifact_for(kind)?;
     let s = state.write().await;
-    let Some(mut map) = load_secret_map(&s.paths, artifact, &s.vault)? else {
-        return Ok(false);
-    };
-    map.remove(tenant);
-    save_secret_map(&s.paths, artifact, &s.vault, &map)?;
-    Ok(true)
+    update_secret_map(&s.paths, artifact, &s.vault, |map| {
+        map.remove(tenant);
+    })
 }
 
 /// The decrypted per-tenant secret map for `artifact`, or `None` when the
@@ -605,18 +599,25 @@ fn load_secret_map(
     Ok(Some(map))
 }
 
-fn save_secret_map(
+/// Change one entry of an artifact's map under the map's file lock, against
+/// the file as it is then — the daemon's state lock does not serialise it
+/// with an onboarding `aic` writing the same file. `Ok(false)` when locked.
+fn update_secret_map(
     paths: &ProjectPaths,
     artifact: VaultArtifact,
     vault: &Vault,
-    map: &HashMap<String, serde_json::Value>,
-) -> Result<()> {
+    change: impl FnOnce(&mut HashMap<String, serde_json::Value>),
+) -> Result<bool> {
     let dek = match vault {
-        Vault::Locked => return Err(Error::Auth("agent is locked".into())),
+        Vault::Locked => return Ok(false),
         Vault::Encrypted { dek, .. } => Some(dek),
         Vault::Plain { .. } => None,
     };
-    paths.save_artifact_bytes(artifact, &serde_json::to_vec(map)?, dek)
+    paths.update_artifact_map(artifact, dek, |map| {
+        change(map);
+        Ok(())
+    })?;
+    Ok(true)
 }
 
 /// Proxy a tenant-scoped HTTP call to AIC. Returns `Ok(None)` when the
@@ -725,20 +726,36 @@ async fn do_api_call(
 /// the caller-visible result.
 async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
     refresh_config_stamp(state.clone()).await;
-    // A vault replaced while this one read its file (`aic login`, lock and
-    // unlock) must not receive that file's keys: the attempt is discarded
-    // and repeated against the new vault.
+    // The generation moves whenever clients are invalidated — the vault
+    // replaced (`aic login`, lock and unlock) or the config changing under
+    // it. A read that straddled one must not install its keys: the attempt is
+    // discarded and repeated against the new state.
+    fenced(|| refresh_jwk_cache_once(state.clone())).await
+}
+
+/// Run a fenced attempt until one installs (`Ok(true)`), at most
+/// `JWK_REFRESH_ATTEMPTS` times; split out so a test drives exhaustion.
+async fn fenced<F, Fut>(mut attempt: F) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
     for _ in 0..JWK_REFRESH_ATTEMPTS {
-        if refresh_jwk_cache_once(state.clone()).await? {
+        if attempt().await? {
             return Ok(());
         }
     }
-    Ok(())
+    Err(Error::Auth(format!(
+        "the agent's credentials changed during each of {JWK_REFRESH_ATTEMPTS} reads of the \
+         key file; retry the request"
+    )))
 }
 
 /// Fence retries for `refresh_jwk_cache`. Each discarded attempt means the
-/// vault was replaced mid-read; after this many the request proceeds on
-/// whatever the current vault holds.
+/// generation moved mid-read. When every attempt is discarded the request
+/// fails rather than proceeding: the cache may then hold no current keys,
+/// and a client built from what it does hold could be the stale one the
+/// fence exists to keep out.
 const JWK_REFRESH_ATTEMPTS: usize = 3;
 
 /// One refresh attempt. `Ok(false)`: the generation moved while the file was
@@ -1188,6 +1205,29 @@ mod tests {
         let current = s.generation;
         assert!(install_jwks(&mut s, current, map, at));
         assert!(matches!(&s.vault, Vault::Plain { cache: Some(_) }));
+    }
+
+    /// Every attempt discarded is a failure, not a pass on whatever the
+    /// cache held; one install within the budget is success.
+    #[tokio::test]
+    async fn a_fence_that_never_settles_fails_the_request() {
+        let mut calls = 0;
+        let exhausted = fenced(|| {
+            calls += 1;
+            async { Ok(false) }
+        })
+        .await;
+        assert!(exhausted.is_err());
+        assert_eq!(calls, JWK_REFRESH_ATTEMPTS);
+
+        let mut seen = 0;
+        let settled = fenced(|| {
+            seen += 1;
+            let ok = seen == JWK_REFRESH_ATTEMPTS;
+            async move { Ok(ok) }
+        })
+        .await;
+        assert!(settled.is_ok());
     }
 
     #[tokio::test]

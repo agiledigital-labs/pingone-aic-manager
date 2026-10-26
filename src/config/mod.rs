@@ -292,6 +292,31 @@ impl ProjectPaths {
             None => save_private_file(&self.artifact_plain_path(artifact), bytes),
         }
     }
+
+    /// Read-modify-write one artifact's per-tenant map as a transaction: an
+    /// exclusive lock on `<stem>.lock` is held across the read, `change` and
+    /// the write, and `change` sees the map **as it is on disk under that
+    /// lock**. A writer that saved its in-memory copy instead would drop
+    /// every entry another `aic` — or the daemon — added since that copy was
+    /// read. Returns the map as written, so a caller can refresh its copy.
+    ///
+    /// Only writers that come through here are serialised. Same non-re-entrant
+    /// rule as `update_config`: `change` must not take this lock again.
+    pub(crate) fn update_artifact_map<V, T>(
+        &self,
+        artifact: VaultArtifact,
+        dek: Option<&crypto::Dek>,
+        change: impl FnOnce(&mut HashMap<String, V>) -> Result<T>,
+    ) -> Result<(HashMap<String, V>, T)>
+    where
+        V: serde::de::DeserializeOwned + serde::Serialize,
+    {
+        let _guard = self.lock_sidecar(&format!("{}.lock", artifact.file_stem()))?;
+        let mut map = decode_json_map(self.load_artifact_bytes(artifact, dek)?)?;
+        let out = change(&mut map)?;
+        self.save_artifact_bytes(artifact, &serde_json::to_vec(&map)?, dek)?;
+        Ok((map, out))
+    }
 }
 
 /// The directory the operator ran the command in, recorded before the CLI
@@ -655,7 +680,7 @@ impl ProjectPaths {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project: String,
     pub default_tenant: String,
@@ -848,7 +873,7 @@ impl ProjectConfig {
         let mut content = String::new();
         for &artifact in VaultArtifact::ALL {
             content.push_str(&format!(
-                "{stem}.enc\n{stem}.plain\n",
+                "{stem}.enc\n{stem}.plain\n{stem}.lock\n",
                 stem = artifact.file_stem()
             ));
         }
@@ -923,7 +948,8 @@ impl ProjectPaths {
     /// and the process deadlocks against itself. Mutate the `&mut` it is
     /// given; that is what gets written.
     ///
-    /// A `change` that leaves the document as it was writes nothing.
+    /// A `change` that leaves the document as it was writes nothing — not
+    /// even to normalise a hand-edited file's formatting or comments.
     pub fn update_config<T>(
         &self,
         change: impl FnOnce(&mut ProjectConfig) -> Result<T>,
@@ -944,12 +970,18 @@ impl ProjectPaths {
         change: impl FnOnce(&mut ProjectConfig) -> Result<T>,
     ) -> Result<T> {
         let _guard = self.lock_config()?;
-        let mut config = match self.load_config()? {
-            Some(config) => config,
+        let loaded = self.load_config()?;
+        let mut config = match &loaded {
+            Some(config) => config.clone(),
             None => create()?,
         };
         let out = change(&mut config)?;
-        self.install_config(&config)?;
+        // Compared as parsed documents, not bytes: a hand-edited file
+        // (comments, its own key order) re-serialises differently, and a
+        // change that altered nothing must not rewrite it into ours.
+        if loaded.as_ref() != Some(&config) {
+            self.install_config(&config)?;
+        }
         Ok(out)
     }
 
@@ -957,6 +989,11 @@ impl ProjectPaths {
     /// itself is renamed over). `flock` underneath, released by the kernel
     /// when the descriptor closes, so a killed `aic` leaves no stale lock.
     fn lock_config(&self) -> Result<fs::File> {
+        self.lock_sidecar("config.toml.lock")
+    }
+
+    /// An exclusive `flock` on `.aic/<name>`, held until the handle drops.
+    fn lock_sidecar(&self, name: &str) -> Result<fs::File> {
         let dir = self.aic_dir();
         fs::create_dir_all(&dir)?;
         let handle = fs::OpenOptions::new()
@@ -964,7 +1001,7 @@ impl ProjectPaths {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(dir.join("config.toml.lock"))?;
+            .open(dir.join(name))?;
         handle.lock()?;
         Ok(handle)
     }
@@ -1220,6 +1257,94 @@ mod tests {
     /// Two `update_config` writers: the second blocks while the first holds
     /// the transaction, then sees its edit. Without the lock it would read
     /// the pre-edit file and its save would drop the first edit.
+    /// The discriminating case for a credential save: an entry another
+    /// process stored after this one loaded its copy survives, because the
+    /// change is applied to the file under the lock, not to that copy.
+    #[test]
+    fn an_artifact_update_merges_into_the_map_on_disk() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let dek = crypto::Dek::random();
+        paths
+            .save_artifact_bytes(VaultArtifact::LogKeys, br#"{"other":{"k":1}}"#, Some(&dek))
+            .unwrap();
+        let (map, ()) = paths
+            .update_artifact_map(VaultArtifact::LogKeys, Some(&dek), |map| {
+                map.insert("mine".to_string(), serde_json::json!({"k": 2}));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(map.len(), 2);
+        let on_disk: HashMap<String, serde_json::Value> = decode_json_map(
+            paths
+                .load_artifact_bytes(VaultArtifact::LogKeys, Some(&dek))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(on_disk, map);
+        // Absent and plain both work: no file is an empty map.
+        let (plain, ()) = paths
+            .update_artifact_map(VaultArtifact::JwtBearerKeys, None, |map| {
+                map.insert("t".to_string(), serde_json::json!(1));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(plain.len(), 1);
+    }
+
+    /// Two writers of one map, the first holding the transaction open: the
+    /// second waits, then sees and keeps the first's entry.
+    #[test]
+    fn artifact_updates_serialise_and_lose_no_entry() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let (inside_tx, inside_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let first = {
+            let paths = paths.clone();
+            std::thread::spawn(move || {
+                paths
+                    .update_artifact_map(VaultArtifact::Jwks, None, |map| {
+                        inside_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        map.insert("a".to_string(), serde_json::json!(1));
+                        Ok(())
+                    })
+                    .unwrap();
+            })
+        };
+        inside_rx.recv().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let second = {
+            let paths = paths.clone();
+            std::thread::spawn(move || {
+                paths
+                    .update_artifact_map(VaultArtifact::Jwks, None, |map| {
+                        map.insert("b".to_string(), serde_json::json!(2));
+                        Ok(())
+                    })
+                    .unwrap();
+                done_tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the second writer finished while the first held the transaction"
+        );
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        let map: HashMap<String, serde_json::Value> = decode_json_map(
+            paths
+                .load_artifact_bytes(VaultArtifact::Jwks, None)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(map.len(), 2, "{map:?}");
+    }
+
     #[test]
     fn update_config_serialises_writers_and_loses_no_edit() {
         use std::sync::mpsc;
@@ -1330,6 +1455,19 @@ mod tests {
             })
             .unwrap();
         assert_ne!(fs::metadata(paths.config_path()).unwrap().ino(), before);
+    }
+
+    /// The discriminating case for comparing parsed documents: a hand-edited
+    /// file whose bytes are not ours keeps its comment through a no-op.
+    #[test]
+    fn a_no_op_update_keeps_a_hand_edited_config() {
+        let tmp = TestDir::new();
+        let paths = ProjectPaths::new(tmp.path("p")).unwrap();
+        fs::create_dir_all(paths.aic_dir()).unwrap();
+        let hand = "# my notes\ndefault_tenant = \"t\"\nproject = \"x\"\ntenants = []\n";
+        fs::write(paths.config_path(), hand).unwrap();
+        paths.update_config(|_| Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(paths.config_path()).unwrap(), hand);
     }
 
     /// A link planted at a sidecar path is not followed: the sidecar name is

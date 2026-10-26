@@ -2,7 +2,8 @@
 //! item names, how two copies are compared, and what the comparison means.
 //!
 //! The provisional report is the promotion service's claim, not a diff — on
-//! 2026-10-26 it listed 150 items that were byte-identical on both tenants
+//! 2026-10-26 it listed 150 items on a pair the console called in sync, and
+//! every sampled one was byte-identical on both tenants
 //! (`docs/api/23-promotion.md`). So every item is fetched from **both**
 //! tenants and judged on content, whatever the report says its change kind is:
 //! a "modified" item that is identical is in sync, and a "deleted" item absent
@@ -10,7 +11,10 @@
 //!
 //! An item this module cannot read is `Unchecked`, never `Same`: a verifier
 //! that counted what it could not see as matching would recreate the defect it
-//! exists to expose.
+//! exists to expose. That covers a response that decodes but is not the shape
+//! measured — a tree without `nodes`, a theme document without a `realm`
+//! object, a list that says more pages follow — which is an error here, not
+//! an empty or absent item.
 
 use serde_json::{Map, Value};
 
@@ -200,26 +204,73 @@ pub fn target(entry: &Entry) -> Target {
     }
 }
 
-/// Fields that describe a copy rather than the configuration: AM's `_rev`
-/// anywhere, and a script's audit stamps. Everything else is compared.
-const VOLATILE: &[&str] = &[
-    "_rev",
+/// Where a target's copy metadata lives. Metadata is stripped **at those
+/// roots only**: a nested configuration map may legitimately hold a key
+/// spelt `lastModifiedDate`, and a difference there is a difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// `_rev` at the document root.
+    Rev,
+    /// A script: `_rev` and the four audit stamps at the root.
+    Script,
+    /// `{tree, nodes: {id: node}}` as `api::fetch` assembles it: `_rev` at
+    /// the tree root and at each node's root.
+    Journey,
+    /// Nothing is metadata (IDM documents carry no `_rev` here).
+    Plain,
+}
+
+impl Target {
+    pub fn shape(&self) -> Shape {
+        match self {
+            Target::Script { .. } | Target::ScriptByName { .. } => Shape::Script,
+            Target::Journey { .. } => Shape::Journey,
+            Target::Themes { .. } => Shape::Plain,
+            _ => Shape::Rev,
+        }
+    }
+}
+
+const SCRIPT_AUDIT: &[&str] = &[
     "createdBy",
     "creationDate",
     "lastModifiedBy",
     "lastModifiedDate",
 ];
 
-pub fn normalise(value: &Value) -> Value {
+fn strip_root(value: &Value, keys: &[&str]) -> Value {
     match value {
         Value::Object(map) => Value::Object(
             map.iter()
-                .filter(|(k, _)| !VOLATILE.contains(&k.as_str()))
-                .map(|(k, v)| (k.clone(), normalise(v)))
+                .filter(|(k, _)| !keys.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<Map<_, _>>(),
         ),
-        Value::Array(items) => Value::Array(items.iter().map(normalise).collect()),
         other => other.clone(),
+    }
+}
+
+pub fn normalise(shape: Shape, value: &Value) -> Value {
+    match shape {
+        Shape::Plain => value.clone(),
+        Shape::Rev => strip_root(value, &["_rev"]),
+        Shape::Script => {
+            let mut keys = vec!["_rev"];
+            keys.extend_from_slice(SCRIPT_AUDIT);
+            strip_root(value, &keys)
+        }
+        Shape::Journey => {
+            let mut out = value.clone();
+            if let Some(tree) = out.get_mut("tree") {
+                *tree = strip_root(tree, &["_rev"]);
+            }
+            if let Some(Value::Object(nodes)) = out.get_mut("nodes") {
+                for node in nodes.values_mut() {
+                    *node = strip_root(node, &["_rev"]);
+                }
+            }
+            out
+        }
     }
 }
 
@@ -256,14 +307,14 @@ pub const MAX_PATHS: usize = 5;
 
 /// `None` is "the tenant says it does not exist" (a measured 404), never "could
 /// not read" — that is an error before this is reached.
-pub fn judge(lower: Option<&Value>, upper: Option<&Value>) -> Verdict {
+pub fn judge(shape: Shape, lower: Option<&Value>, upper: Option<&Value>) -> Verdict {
     match (lower, upper) {
         (None, None) => Verdict::Neither,
         (Some(_), None) => Verdict::OnlyLower,
         (None, Some(_)) => Verdict::OnlyUpper,
         (Some(l), Some(u)) => {
             let mut paths = Vec::new();
-            diff("", &normalise(l), &normalise(u), &mut paths);
+            diff("", &normalise(shape, l), &normalise(shape, u), &mut paths);
             if paths.is_empty() {
                 Verdict::Same
             } else {
@@ -304,18 +355,57 @@ fn diff(at: &str, l: &Value, u: &Value, out: &mut Vec<String>) {
     }
 }
 
-/// Whether two configured base URLs name one tenant: compared without case
-/// or a trailing slash, so `verify` cannot pass by comparing a tenant with
-/// itself under two context names.
+/// Whether two configured base URLs name one tenant, so `verify` cannot pass
+/// by comparing a tenant with itself under two context names. Compared as
+/// parsed origins — scheme, lowercased host, port with the scheme's default
+/// filled in (`:443` is `https`'s) — plus the path without a trailing slash.
+/// A URL that does not parse falls back to a case-insensitive string match.
 pub fn same_tenant(a: &str, b: &str) -> bool {
-    a.trim_end_matches('/')
-        .eq_ignore_ascii_case(b.trim_end_matches('/'))
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(x), Ok(y)) => {
+            x.origin() == y.origin()
+                && x.path().trim_end_matches('/') == y.path().trim_end_matches('/')
+        }
+        _ => a
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case(b.trim_end_matches('/')),
+    }
 }
 
-/// A realm's theme list out of `ui/themerealm`. Absent realm → `Ok(None)`.
+/// A CREST list must be complete for absence to mean anything: an item not
+/// on a page that says more follow has not been shown to be absent.
+pub fn complete(list: &Value) -> Result<&[Value], String> {
+    let result = list
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("list has no `result` array: {list}"))?;
+    let cookie = list.get("pagedResultsCookie");
+    if cookie.is_some_and(|c| !c.is_null()) {
+        return Err("the list is paged (pagedResultsCookie set); absence cannot be shown".into());
+    }
+    if list
+        .get("remainingPagedResults")
+        .and_then(Value::as_i64)
+        .is_some_and(|n| n > 0)
+    {
+        return Err("the list says more results remain; absence cannot be shown".into());
+    }
+    Ok(result)
+}
+
+/// A realm's theme list out of `ui/themerealm`. The document must carry a
+/// `realm` object — anything else is an error, not absence. A realm that is
+/// missing, or whose list is empty, holds no theme, so `Ok(None)`: two empty
+/// lists show the reported theme on neither side, which `settle` then calls
+/// unchecked unless the report said deleted.
 pub fn themes<'a>(themerealm: &'a Value, realm: &str) -> Result<Option<&'a Value>, String> {
-    match themerealm.get("realm").and_then(|r| r.get(realm)) {
+    let realms = themerealm
+        .get("realm")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "ui/themerealm has no `realm` object".to_string())?;
+    match realms.get(realm) {
         None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(list)) if list.is_empty() => Ok(None),
         Some(list @ Value::Array(_)) => Ok(Some(list)),
         Some(other) => Err(format!("themerealm.realm.{realm} is not an array: {other}")),
     }
@@ -324,10 +414,7 @@ pub fn themes<'a>(themerealm: &'a Value, realm: &str) -> Result<Option<&'a Value
 /// The one entry of a list whose `field` equals `want` ignoring ASCII case.
 /// None → `Ok(None)`; several → an error, never a pick.
 pub fn one_by<'a>(list: &'a Value, field: &str, want: &str) -> Result<Option<&'a Value>, String> {
-    let result = list
-        .get("result")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("list has no `result` array: {list}"))?;
+    let result = complete(list)?;
     let hits: Vec<&Value> = result
         .iter()
         .filter(|v| {
@@ -371,10 +458,7 @@ pub fn settle(change: &str, verdict: Verdict) -> Verdict {
 /// given and without a trailing " Service". Two different matches are an
 /// error, not a guess. No match → `Ok(None)`: not configured in that realm.
 pub fn service_id(list: &Value, service: &str) -> Result<Option<String>, String> {
-    let result = list
-        .get("result")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("realm service list has no `result` array: {list}"))?;
+    let result = complete(list)?;
     let mut names = vec![service];
     if let Some(short) = service.strip_suffix(" Service") {
         names.push(short);
@@ -401,12 +485,31 @@ pub fn service_id(list: &Value, service: &str) -> Result<Option<String>, String>
     }
 }
 
-/// Every `(nodeType, _id)` a tree or a page node lists. A tree carries them
-/// as an object keyed by id; a page node as an array of `{_id, nodeType}`.
-pub fn node_refs(doc: &Value) -> Result<Vec<(String, String)>, String> {
+/// Which documents list child nodes, and must: a tree lists its nodes as an
+/// object keyed by id, a `PageNode` as an array of `{_id, nodeType}`. A tree
+/// or page node *without* its `nodes` is an incomplete read, not a leaf — two
+/// such responses would otherwise compare equal having read nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holder {
+    Tree,
+    /// A node of this type; only `PageNode` holds children.
+    Node,
+}
+
+pub fn node_refs(
+    holder: Holder,
+    node_type: &str,
+    doc: &Value,
+) -> Result<Vec<(String, String)>, String> {
+    let required = match holder {
+        Holder::Tree => true,
+        Holder::Node => node_type == "PageNode",
+    };
+    if !required {
+        return Ok(Vec::new());
+    }
     match doc.get("nodes") {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Object(map)) => map
+        Some(Value::Object(map)) if holder == Holder::Tree => map
             .iter()
             .map(|(id, meta)| {
                 let ty = meta
@@ -416,7 +519,7 @@ pub fn node_refs(doc: &Value) -> Result<Vec<(String, String)>, String> {
                 Ok((ty.to_string(), id.clone()))
             })
             .collect(),
-        Some(Value::Array(list)) => list
+        Some(Value::Array(list)) if holder == Holder::Node => list
             .iter()
             .map(|child| {
                 let id = child.get("_id").and_then(Value::as_str);
@@ -427,9 +530,15 @@ pub fn node_refs(doc: &Value) -> Result<Vec<(String, String)>, String> {
                 }
             })
             .collect(),
-        Some(other) => Err(format!(
-            "`nodes` is neither an object nor an array: {other}"
+        None | Some(Value::Null) => Err(format!(
+            "{} has no `nodes`; the read is incomplete",
+            if holder == Holder::Tree {
+                "the tree"
+            } else {
+                "a PageNode"
+            }
         )),
+        Some(other) => Err(format!("`nodes` has the wrong shape here: {other}")),
     }
 }
 
@@ -513,27 +622,62 @@ mod tests {
 
     #[test]
     fn judge_ignores_copy_metadata_and_names_the_differing_paths() {
-        let lower = json!({"_rev": "1", "script": "a", "lastModifiedDate": 1, "nodes": {"n": {"x": 1, "_rev": "9"}}});
-        let same = json!({"_rev": "2", "script": "a", "lastModifiedDate": 2, "nodes": {"n": {"x": 1, "_rev": "8"}}});
-        assert_eq!(judge(Some(&lower), Some(&same)), Verdict::Same);
-        let other = json!({"script": "b", "nodes": {"n": {"x": 2}}, "extra": true});
+        let lower = json!({"_rev": "1", "script": "a", "lastModifiedDate": 1});
+        let same = json!({"_rev": "2", "script": "a", "lastModifiedDate": 2});
         assert_eq!(
-            judge(Some(&lower), Some(&other)),
+            judge(Shape::Script, Some(&lower), Some(&same)),
+            Verdict::Same
+        );
+        let other = json!({"script": "b", "extra": true});
+        assert_eq!(
+            judge(Shape::Script, Some(&lower), Some(&other)),
+            Verdict::Differs(vec!["/extra (upper only)".into(), "/script".into()])
+        );
+        let tree =
+            json!({"tree": {"_rev": "1", "entry": "a"}, "nodes": {"n": {"_rev": "9", "x": 1}}});
+        let moved =
+            json!({"tree": {"_rev": "2", "entry": "a"}, "nodes": {"n": {"_rev": "8", "x": 1}}});
+        assert_eq!(
+            judge(Shape::Journey, Some(&tree), Some(&moved)),
+            Verdict::Same
+        );
+    }
+
+    /// The discriminating case for root-scoped stripping: a key spelt like
+    /// metadata *inside* the configuration is configuration.
+    #[test]
+    fn metadata_names_below_the_root_are_compared() {
+        let a = json!({"_rev": "1", "settings": {"lastModifiedDate": 1, "_rev": "a"}});
+        let b = json!({"_rev": "2", "settings": {"lastModifiedDate": 2, "_rev": "b"}});
+        assert_eq!(
+            judge(Shape::Rev, Some(&a), Some(&b)),
             Verdict::Differs(vec![
-                "/extra (upper only)".into(),
-                "/nodes/n/x".into(),
-                "/script".into()
+                "/settings/_rev".into(),
+                "/settings/lastModifiedDate".into()
             ])
         );
+        // A service document's audit-looking field is not a script's audit stamp.
+        let c = json!({"lastModifiedBy": "x"});
+        let d = json!({"lastModifiedBy": "y"});
+        assert!(matches!(
+            judge(Shape::Rev, Some(&c), Some(&d)),
+            Verdict::Differs(_)
+        ));
+        let journey_a = json!({"tree": {"x": {"_rev": "1"}}, "nodes": {}});
+        let journey_b = json!({"tree": {"x": {"_rev": "2"}}, "nodes": {}});
+        assert!(matches!(
+            judge(Shape::Journey, Some(&journey_a), Some(&journey_b)),
+            Verdict::Differs(_)
+        ));
     }
 
     #[test]
     fn presence_is_judged_whatever_the_report_called_the_change() {
         let v = json!({"a": 1});
-        assert_eq!(judge(None, None), Verdict::Neither);
+        assert_eq!(judge(Shape::Rev, None, None), Verdict::Neither);
         assert!(Verdict::Neither.in_sync());
-        assert_eq!(judge(Some(&v), None), Verdict::OnlyLower);
-        assert_eq!(judge(None, Some(&v)), Verdict::OnlyUpper);
+        assert_eq!(judge(Shape::Rev, Some(&v), None), Verdict::OnlyLower);
+        assert_eq!(judge(Shape::Rev, None, Some(&v)), Verdict::OnlyUpper);
     }
 
     #[test]
@@ -556,6 +700,15 @@ mod tests {
         );
         assert_eq!(themes(&doc, "bravo").unwrap(), None);
         assert!(themes(&json!({"realm": {"alpha": {}}}), "alpha").is_err());
+        // A document without a `realm` object was not read, so it is not absence.
+        assert!(themes(&json!({"realm": []}), "alpha").is_err());
+        assert!(themes(&json!({}), "alpha").is_err());
+        // An empty list holds no theme: absence, which `settle` refuses for
+        // a reported modify.
+        assert_eq!(
+            themes(&json!({"realm": {"alpha": []}}), "alpha").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -569,6 +722,16 @@ mod tests {
         let twice = json!({"result": [{"_id": "A"}, {"_id": "a"}]});
         assert!(one_by(&twice, "_id", "a").is_err());
         assert!(one_by(&json!({}), "_id", "a").is_err());
+        let paged = json!({"result": [], "pagedResultsCookie": "abc"});
+        assert!(one_by(&paged, "_id", "a").is_err());
+        let remaining =
+            json!({"result": [], "pagedResultsCookie": null, "remainingPagedResults": 3});
+        assert!(one_by(&remaining, "_id", "a").is_err());
+        let measured = json!({"result": [{"_id": "x"}], "pagedResultsCookie": null, "remainingPagedResults": -1});
+        assert_eq!(
+            one_by(&measured, "_id", "x").unwrap(),
+            Some(&json!({"_id": "x"}))
+        );
     }
 
     #[test]
@@ -611,16 +774,35 @@ mod tests {
     fn node_refs_read_trees_and_page_nodes() {
         let tree = json!({"nodes": {"id1": {"nodeType": "PageNode"}}});
         assert_eq!(
-            node_refs(&tree).unwrap(),
+            node_refs(Holder::Tree, "", &tree).unwrap(),
             vec![("PageNode".into(), "id1".into())]
         );
         let page = json!({"nodes": [{"_id": "c1", "nodeType": "ScriptedDecisionNode"}]});
         assert_eq!(
-            node_refs(&page).unwrap(),
+            node_refs(Holder::Node, "PageNode", &page).unwrap(),
             vec![("ScriptedDecisionNode".into(), "c1".into())]
         );
-        assert_eq!(node_refs(&json!({"x": 1})).unwrap(), vec![]);
-        assert!(node_refs(&json!({"nodes": [{"_id": "c1"}]})).is_err());
+        // A leaf node lists nothing, whatever it carries.
+        assert_eq!(
+            node_refs(Holder::Node, "ScriptedDecisionNode", &json!({"x": 1})).unwrap(),
+            vec![]
+        );
+        assert!(node_refs(Holder::Node, "PageNode", &json!({"nodes": [{"_id": "c1"}]})).is_err());
+        // An empty tree is a tree with no nodes.
+        assert_eq!(
+            node_refs(Holder::Tree, "", &json!({"nodes": {}})).unwrap(),
+            vec![]
+        );
+    }
+
+    /// The discriminating case: a tree or page node read without `nodes` is
+    /// incomplete, not childless — two such reads would otherwise match.
+    #[test]
+    fn a_holder_without_nodes_is_an_error() {
+        assert!(node_refs(Holder::Tree, "", &json!({"entryNodeId": "x"})).is_err());
+        assert!(node_refs(Holder::Node, "PageNode", &json!({"x": 1})).is_err());
+        assert!(node_refs(Holder::Tree, "", &json!({"nodes": []})).is_err());
+        assert!(node_refs(Holder::Node, "PageNode", &json!({"nodes": {}})).is_err());
     }
 
     #[test]
@@ -628,6 +810,14 @@ mod tests {
         assert!(same_tenant(
             "https://tenant.example.com/",
             "https://TENANT.example.com"
+        ));
+        assert!(same_tenant(
+            "https://tenant.example.com:443",
+            "https://tenant.example.com/"
+        ));
+        assert!(!same_tenant(
+            "http://tenant.example.com",
+            "https://tenant.example.com"
         ));
         assert!(!same_tenant(
             "https://tenant.example.com",

@@ -175,7 +175,13 @@ pub trait ExecuteIo {
     /// save of a copy the caller loaded earlier: offboarding awaits remote
     /// and vault steps between its load and this point, and a whole-document
     /// save would drop any tenant onboarded in that gap.
-    fn remove_config_entry(&mut self, tenant: &str) -> Result<ProjectConfig>;
+    ///
+    /// Refuses ([`drop_planned`]) when the entry under that name is no longer
+    /// the tenant this removal was planned for.
+    fn remove_config_entry(&mut self, planned: &Tenant) -> Result<ProjectConfig>;
+    /// `config.toml` as it is on disk now, for the identity check that runs
+    /// before anything is removed. `None` when there is no file.
+    fn current_config(&mut self) -> Result<Option<ProjectConfig>>;
     fn write_context(&mut self, name: Option<&str>) -> Result<()>;
 }
 
@@ -251,11 +257,15 @@ impl ExecuteIo for LiveIo {
         log.forget_tenant(tenant)
     }
 
-    fn remove_config_entry(&mut self, tenant: &str) -> Result<ProjectConfig> {
+    fn remove_config_entry(&mut self, planned: &Tenant) -> Result<ProjectConfig> {
         crate::config::project_paths().update_config(|config| {
-            drop_tenant(config, tenant);
+            drop_planned(config, planned)?;
             Ok(config.clone())
         })
+    }
+
+    fn current_config(&mut self) -> Result<Option<ProjectConfig>> {
+        crate::config::project_paths().load_config()
     }
 
     fn write_context(&mut self, name: Option<&str>) -> Result<()> {
@@ -373,6 +383,39 @@ async fn optional_secret(
     }
 }
 
+/// Whether the entry named like `planned` is still the tenant this removal
+/// was planned for. Everything offboarding removes is keyed by **name** —
+/// vault entries, paths, the config row — so a tenant re-onboarded under the
+/// same name between planning and execution (another base URL, another
+/// service account) would otherwise lose the new credentials and row. An
+/// entry that is gone is no conflict: removing nothing is safe.
+pub fn still_planned(config: &ProjectConfig, planned: &Tenant) -> Result<()> {
+    let Some(current) = config.tenants.iter().find(|t| t.name == planned.name) else {
+        return Ok(());
+    };
+    let same_url = current
+        .base_url
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(planned.base_url.trim_end_matches('/'));
+    if same_url && current.sa_id == planned.sa_id {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "tenant `{}` was replaced since this removal was planned (its base URL or \
+         service account changed); nothing more was removed — re-run `aic ctx rm` \
+         to plan against the current entry",
+        planned.name
+    )))
+}
+
+/// [`still_planned`], then [`drop_tenant`] — the config-row removal, checked
+/// against the document read under the config lock.
+pub fn drop_planned(config: &mut ProjectConfig, planned: &Tenant) -> Result<()> {
+    still_planned(config, planned)?;
+    drop_tenant(config, &planned.name);
+    Ok(())
+}
+
 /// Drop `name` from `config` and retarget `default_tenant` if it named it.
 pub fn drop_tenant(config: &mut ProjectConfig, name: &str) {
     config.tenants.retain(|tenant| tenant.name != name);
@@ -438,6 +481,28 @@ pub async fn execute<I: ExecuteIo>(
     let Some(backup_path) = write_backup_step(tenant, inventory, layout, io, &mut steps) else {
         return aborted(steps, current_context, config);
     };
+
+    // Before the first removal, which uses the tenant's credentials by name.
+    // `remove_config_entry` repeats the check under the config lock; between
+    // the two a replacement can still land, which narrows the window rather
+    // than closing it — the vault has no lock shared with the config.
+    if let Err(error) = io
+        .current_config()
+        .and_then(|current| current.map_or(Ok(()), |c| still_planned(&c, tenant)))
+    {
+        steps.push(outcome(
+            Step::ConfigEntry,
+            StepStatus::Failed(error.to_string()),
+        ));
+        return ExecuteReport {
+            backup_path: Some(backup_path),
+            steps,
+            config_removed: false,
+            next_context: current_context.map(str::to_string),
+            default_tenant: config.default_tenant.clone(),
+            remote_error,
+        };
+    }
 
     if purge.contains(&TargetKind::IssuerSigningKey) {
         match inventory.issuer_kid.as_deref() {
@@ -557,7 +622,7 @@ pub async fn execute<I: ExecuteIo>(
         };
     }
 
-    match io.remove_config_entry(&tenant.name) {
+    match io.remove_config_entry(tenant) {
         Ok(next) => {
             let next_ctx = next_context(current_context, &tenant.name, &next);
             let default_tenant = next.default_tenant.clone();
@@ -796,16 +861,20 @@ mod tests {
             Ok(1)
         }
 
-        fn remove_config_entry(&mut self, tenant: &str) -> Result<ProjectConfig> {
+        fn remove_config_entry(&mut self, planned: &Tenant) -> Result<ProjectConfig> {
             self.events.push("config".into());
             let mut config = self
                 .disk
                 .clone()
                 .ok_or_else(|| Error::Config("no config on the fake disk".into()))?;
-            drop_tenant(&mut config, tenant);
+            drop_planned(&mut config, planned)?;
             self.disk = Some(config.clone());
             self.saved_config = Some(config.clone());
             Ok(config)
+        }
+
+        fn current_config(&mut self) -> Result<Option<ProjectConfig>> {
+            Ok(self.disk.clone())
         }
 
         fn write_context(&mut self, name: Option<&str>) -> Result<()> {
@@ -1011,6 +1080,67 @@ mod tests {
         assert_eq!(report.default_tenant, "late");
         assert_eq!(report.next_context.as_deref(), Some("late"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The discriminating case: the same name, re-onboarded with another
+    /// service account after the plan, keeps its credentials and its row —
+    /// nothing keyed by that name is removed, remote step included.
+    #[tokio::test]
+    async fn execute_refuses_a_tenant_replaced_since_the_plan() {
+        let departing = tenant("UAT", Some(DUP_SA));
+        let inventory = Inventory {
+            service_account_jwk: true,
+            ..Inventory::default()
+        };
+        let plan = spec::plan(&departing, &inventory, &[]);
+        let purge = plan.resolve_purge([TargetKind::ServiceAccountJwk]);
+        let (layout, root) = temp_layout();
+        let stale = config(vec![departing.clone()], "UAT");
+        let replaced = config(vec![tenant("UAT", Some(UAT_SA))], "UAT");
+        let mut io = RecordingIo::with_disk(replaced.clone());
+
+        let report = execute(
+            &departing,
+            &stale,
+            Some("UAT"),
+            &inventory,
+            &purge,
+            &layout,
+            &mut io,
+        )
+        .await;
+
+        assert!(!report.config_removed);
+        assert!(io.vault_removed.is_empty(), "{:?}", io.vault_removed);
+        assert!(!io.events.iter().any(|e| e == "config"));
+        assert_eq!(io.disk, Some(replaced));
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|s| matches!(&s.status, StepStatus::Failed(m) if m.contains("replaced")))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn still_planned_compares_identity_not_name() {
+        let planned = tenant("UAT", Some(DUP_SA));
+        let same = config(vec![tenant("UAT", Some(DUP_SA))], "UAT");
+        assert!(still_planned(&same, &planned).is_ok());
+        let mut moved = tenant("UAT", Some(DUP_SA));
+        moved.base_url = "https://other.example.com".into();
+        assert!(still_planned(&config(vec![moved], "UAT"), &planned).is_err());
+        let resa = config(vec![tenant("UAT", Some(UAT_SA))], "UAT");
+        assert!(still_planned(&resa, &planned).is_err());
+        let mut slash = tenant("UAT", Some(DUP_SA));
+        slash.base_url = format!("{UAT_URL}/");
+        assert!(still_planned(&config(vec![slash], "UAT"), &planned).is_ok());
+        assert!(still_planned(&config(vec![], ""), &planned).is_ok());
+        // Under the lock, too: the row is not dropped.
+        let mut on_disk = resa.clone();
+        assert!(drop_planned(&mut on_disk, &planned).is_err());
+        assert_eq!(on_disk.tenants.len(), 1);
     }
 
     #[tokio::test]
