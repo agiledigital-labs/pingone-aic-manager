@@ -358,7 +358,7 @@ impl App {
     }
 
     /// Add one tenant's JWK to the map **on disk**, under the vault map's
-    /// lock, then adopt what was written. Not `insert` + `persist_keys`: that
+    /// lock, then adopt what was written. Not `insert` + a whole-map save: that
     /// writes this session's copy whole, dropping a credential another `aic`
     /// or the daemon stored since it was loaded.
     pub fn save_jwk(&mut self, tenant_name: &str, jwk: serde_json::Value) -> Result<()> {
@@ -392,28 +392,6 @@ impl App {
             .ok_or_else(|| Error::Crypto("not unlocked — no DEK in memory".into()))
     }
 
-    /// Write the current JWK map to disk — encrypted with the in-memory DEK,
-    /// or plain (mode 600) if the user opted out of encryption.
-    pub fn persist_keys(&self) -> Result<()> {
-        let encrypt = self
-            .settings
-            .as_ref()
-            .map(|settings| settings.encrypt_keys)
-            .unwrap_or(true);
-        let bytes = serde_json::to_vec(&self.jwks)?;
-        if encrypt {
-            let dek = self
-                .dek
-                .as_ref()
-                .ok_or_else(|| Error::Crypto("not unlocked — no DEK in memory".into()))?;
-            let enc = crypto::encrypt_data(&bytes, dek)?;
-            ProjectConfig::save_keys_enc(&enc)?;
-        } else {
-            ProjectConfig::save_keys_plain(&bytes)?;
-        }
-        Ok(())
-    }
-
     /// `save_jwk` for the log API key map: merged into the file on disk
     /// under its lock, never written from this session's copy.
     pub fn save_log_key(&mut self, tenant_name: &str, pair: LogKeyPair) -> Result<()> {
@@ -428,27 +406,6 @@ impl App {
         )?;
         self.log_keys = map;
         Ok(())
-    }
-
-    /// Write the current log API key map using the same vault mode and DEK
-    /// source as the service-account JWK map.
-    pub fn persist_log_keys(&self) -> Result<()> {
-        let bytes = serde_json::to_vec(&self.log_keys)?;
-        let dek = if self
-            .settings
-            .as_ref()
-            .map(|settings| settings.encrypt_keys)
-            .unwrap_or(true)
-        {
-            Some(
-                self.dek
-                    .as_ref()
-                    .ok_or_else(|| Error::Crypto("not unlocked — no DEK in memory".into()))?,
-            )
-        } else {
-            None
-        };
-        config::save_artifact_bytes(VaultArtifact::LogKeys, &bytes, dek)
     }
 
     pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {

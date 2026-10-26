@@ -602,6 +602,7 @@ mod tests {
         };
         let mut recording = RecordingExecuteIo {
             remote_calls: Vec::new(),
+            view: ops::view_of(&departing.name, &inventory),
         };
         let report = ops::execute(
             &departing,
@@ -629,6 +630,7 @@ mod tests {
 
     struct RecordingExecuteIo {
         remote_calls: Vec<(String, String)>,
+        view: (ops::VaultView, ops::PathPresence),
     }
 
     impl ExecuteIo for RecordingExecuteIo {
@@ -660,6 +662,15 @@ mod tests {
 
         fn begin(&mut self) -> Result<()> {
             Ok(())
+        }
+
+        async fn probe(
+            &mut self,
+            _names: &[String],
+            _tenant: &str,
+            _layout: &Layout,
+        ) -> Result<(ops::VaultView, ops::PathPresence)> {
+            Ok(self.view.clone())
         }
 
         fn remove_config_entry(&mut self, _planned: &Tenant) -> Result<ProjectConfig> {

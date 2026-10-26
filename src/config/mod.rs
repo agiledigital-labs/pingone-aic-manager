@@ -188,6 +188,33 @@ pub enum VaultArtifact {
     JwtBearerKeys,
 }
 
+/// Proof that a tenant's credentials may be written: the lifecycle lock is
+/// held and the tenant was confirmed present and unchanged under it. Minted
+/// only by [`hold_tenant`]; every per-tenant credential store requires one.
+#[derive(Debug)]
+pub struct TenantHold {
+    _lock: fs::File,
+    tenant: String,
+}
+
+impl TenantHold {
+    pub fn tenant(&self) -> &str {
+        &self.tenant
+    }
+}
+
+/// See [`ProjectPaths::hold_tenant`].
+pub fn hold_tenant(expected: &Tenant) -> Result<TenantHold> {
+    project_paths().hold_tenant(expected)
+}
+
+/// How a lock is held: many readers of a state, or the one changing it.
+#[derive(Debug, Clone, Copy)]
+enum Hold {
+    Shared,
+    Exclusive,
+}
+
 impl VaultArtifact {
     /// Every registered artifact. Iterated by gitignore + the encrypt/decrypt
     /// transitions so adding a variant here is all it takes for coverage.
@@ -296,9 +323,12 @@ impl ProjectPaths {
     /// rule as `update_config`: `change` must not take this lock again.
     ///
     /// The caller chose plain or encrypted before it got here, possibly long
-    /// before (a TUI open for hours); a mode switch since (`migrate_artifact`,
-    /// under this same lock) is refused rather than written into the form
-    /// the vault no longer reads.
+    /// before (a TUI open for hours); a mode switch since is refused rather
+    /// than written into the form the vault no longer reads. The mode is read
+    /// from `settings.toml` under a shared hold of the vault lock, which a
+    /// mode switch holds exclusively from its first file until the flag
+    /// flips — so it is authoritative for every artifact, including one that
+    /// had no file in either form when the switch ran.
     pub(crate) fn update_artifact_map<V, T>(
         &self,
         artifact: VaultArtifact,
@@ -308,7 +338,9 @@ impl ProjectPaths {
     where
         V: serde::de::DeserializeOwned + serde::Serialize,
     {
+        let _vault = self.lock_vault(Hold::Shared)?;
         let _guard = self.lock_artifact(artifact)?;
+        self.vault_mode_is(dek)?;
         self.mode_still(artifact, dek)?;
         let mut map = decode_json_map(self.load_artifact_bytes(artifact, dek)?)?;
         let out = change(&mut map)?;
@@ -512,20 +544,96 @@ fn decode_json_map<V: serde::de::DeserializeOwned>(
 /// `wraps.toml` is not touched here — callers must have already saved the
 /// wrap that protects this DEK before calling this function, otherwise
 /// `keys.enc` would be unreadable on next launch.
-pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
-    let paths = project_paths();
-    for &artifact in VaultArtifact::ALL {
-        // The JWK map must always exist encrypted after this: first-run
-        // installs never wrote keys.plain (no factors added yet), so an empty
-        // map stands in — decrypting empty bytes would fail the round-trip in
-        // `decrypt_keys_file`. Other artifacts are optional: only a present
-        // plaintext file is migrated, leaving nothing behind if unused.
-        paths.migrate_artifact(artifact, None, Some(dek), artifact == VaultArtifact::Jwks)?;
+///
+/// `expected` is the vault mode the caller decided from (`None`: no
+/// `settings.toml`, first run); `save_wrap` persists the wrap of `dek`. Both
+/// run under the exclusive vault lock, the mode rechecked first, so a second
+/// TUI finishing its own setup in the meantime is refused here instead of
+/// having its wrap replaced by one for a DEK its files were not written with.
+pub fn enable_encryption(
+    dek: &crypto::Dek,
+    expected: Option<bool>,
+    save_wrap: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    project_paths().enable_encryption(dek, expected, save_wrap)
+}
+
+/// First run without encryption: record `encrypt_keys = false` and make sure
+/// `keys.plain` exists, under the vault lock and only if no other `aic` has
+/// set the vault up since `expected` was read.
+pub fn set_up_plain(expected: Option<bool>) -> Result<()> {
+    project_paths().set_up_plain(expected)
+}
+
+impl ProjectPaths {
+    pub(crate) fn enable_encryption(
+        &self,
+        dek: &crypto::Dek,
+        expected: Option<bool>,
+        save_wrap: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let _vault = self.lock_vault(Hold::Exclusive)?;
+        self.expect_vault_mode(expected)?;
+        // Refuse before the wrap is replaced, not after: a destination this
+        // DEK cannot read means the files belong to some other setup.
+        for &artifact in VaultArtifact::ALL {
+            self.migration_preflight(artifact, None, Some(dek))?;
+        }
+        save_wrap()?;
+        for &artifact in VaultArtifact::ALL {
+            // The JWK map must always exist encrypted after this: first-run
+            // installs never wrote keys.plain (no factors added yet), so an
+            // empty map stands in — decrypting empty bytes would fail the
+            // round-trip in `decrypt_keys_file`. Other artifacts are optional:
+            // only a present plaintext file is migrated.
+            self.migrate_artifact(artifact, None, Some(dek), artifact == VaultArtifact::Jwks)?;
+        }
+        self.set_vault_mode(true)
     }
-    let mut settings = Settings::load()?.unwrap_or_default();
-    settings.encrypt_keys = true;
-    settings.save()?;
-    Ok(())
+
+    pub(crate) fn disable_encryption(&self, dek: &crypto::Dek) -> Result<()> {
+        let _vault = self.lock_vault(Hold::Exclusive)?;
+        self.expect_vault_mode(Some(true))?;
+        for &artifact in VaultArtifact::ALL {
+            self.migration_preflight(artifact, Some(dek), None)?;
+        }
+        for &artifact in VaultArtifact::ALL {
+            // The JWK map always lands as plaintext (even if empty) — the app
+            // expects keys.plain to exist in no-encryption mode. Other
+            // artifacts round-trip only when they had an encrypted file.
+            self.migrate_artifact(artifact, Some(dek), None, artifact == VaultArtifact::Jwks)?;
+        }
+        match fs::remove_file(self.wraps_path()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        self.set_vault_mode(false)
+    }
+
+    pub(crate) fn set_up_plain(&self, expected: Option<bool>) -> Result<()> {
+        if expected == Some(true) {
+            // Leaving encryption is `disable_encryption`, which decrypts
+            // the files first; flipping the flag alone would strand them.
+            return Err(crate::Error::Crypto(
+                "the vault is encrypted; disable encryption from Auth Settings instead".into(),
+            ));
+        }
+        let _vault = self.lock_vault(Hold::Exclusive)?;
+        self.expect_vault_mode(expected)?;
+        self.migration_preflight(VaultArtifact::Jwks, None, None)?;
+        if load_optional_file(&self.artifact_plain_path(VaultArtifact::Jwks))?.is_none() {
+            self.save_artifact_bytes(VaultArtifact::Jwks, b"{}", None)?;
+        }
+        self.set_vault_mode(false)
+    }
+
+    /// Callers hold the vault lock exclusively.
+    fn set_vault_mode(&self, encrypt: bool) -> Result<()> {
+        let mut settings = self.load_settings()?.unwrap_or_default();
+        settings.encrypt_keys = encrypt;
+        self.write_settings(&settings)
+    }
 }
 
 /// Transition from "encrypted" to "no encryption": decrypt `keys.enc` and
@@ -534,18 +642,7 @@ pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
 /// `settings.toml` to `encrypt_keys = false`. Called by the last-factor
 /// guard in the Settings screen.
 pub fn disable_encryption(dek: &crypto::Dek) -> Result<()> {
-    let paths = project_paths();
-    for &artifact in VaultArtifact::ALL {
-        // The JWK map always lands as plaintext (even if empty) — the app
-        // expects keys.plain to exist in no-encryption mode. Other artifacts
-        // round-trip only when they had an encrypted file.
-        paths.migrate_artifact(artifact, Some(dek), None, artifact == VaultArtifact::Jwks)?;
-    }
-    let _ = fs::remove_file(ProjectConfig::wraps_path());
-    let mut settings = Settings::load()?.unwrap_or_default();
-    settings.encrypt_keys = false;
-    settings.save()?;
-    Ok(())
+    project_paths().disable_encryption(dek)
 }
 
 /// Unlock via any enrolled security key in `wraps_file`. Builds an allowList
@@ -756,7 +853,23 @@ impl ProjectPaths {
         Ok(Some(Settings::load_from(&path)?))
     }
 
+    /// Save every field but the vault mode. `encrypt_keys` belongs to the
+    /// vault transitions, which flip it under the exclusive vault lock as
+    /// their last step; a settings edit that loaded the file before a
+    /// transition and saved after it would otherwise put the flag back, and
+    /// the vault would then name a form whose files are gone. So the flag on
+    /// disk wins whenever there is one.
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
+        let _vault = self.lock_vault(Hold::Exclusive)?;
+        let mut settings = settings.clone();
+        if let Some(on_disk) = self.load_settings()? {
+            settings.encrypt_keys = on_disk.encrypt_keys;
+        }
+        self.write_settings(&settings)
+    }
+
+    /// Callers hold the vault lock exclusively.
+    fn write_settings(&self, settings: &Settings) -> Result<()> {
         fs::create_dir_all(self.aic_dir())?;
         settings.save_to(&self.settings_path())?;
         self.write_gitignore()?;
@@ -864,6 +977,7 @@ impl ProjectConfig {
              config.toml.lock\n\
              # Onboarding/offboarding's tenant-lifecycle lock.\n\
              tenants.lock\n\
+             vault.lock\n\
              config.toml.new*\n",
         );
         content
@@ -966,6 +1080,61 @@ impl ProjectPaths {
         self.lock_sidecar(&format!("{}.lock", artifact.file_stem()))
     }
 
+    /// The vault lock: held exclusively by a mode switch (and by settings
+    /// saves), shared by every artifact writer.
+    fn lock_vault(&self, hold: Hold) -> Result<fs::File> {
+        let dir = self.aic_dir();
+        fs::create_dir_all(&dir)?;
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("vault.lock"))?;
+        match hold {
+            Hold::Shared => handle.lock_shared()?,
+            Hold::Exclusive => handle.lock()?,
+        }
+        Ok(handle)
+    }
+
+    /// The vault mode on disk, under the vault lock, against the one `dek`
+    /// assumes. No `settings.toml` is no vault: nothing set up the mode a
+    /// credential would be written in.
+    fn vault_mode_is(&self, dek: Option<&crypto::Dek>) -> Result<()> {
+        let assumed = dek.is_some();
+        match self.load_settings()? {
+            Some(settings) if settings.encrypt_keys == assumed => Ok(()),
+            Some(_) => Err(crate::Error::Crypto(format!(
+                "the vault is no longer {}; re-run `aic login` and retry",
+                if assumed { "encrypted" } else { "plain" }
+            ))),
+            None => Err(crate::Error::Crypto(
+                "the vault is not set up yet; run `aic` to set it up".into(),
+            )),
+        }
+    }
+
+    /// Whether the vault mode is still the one a setup step decided from —
+    /// `None` for no `settings.toml`. Anything else means another `aic`
+    /// changed it in the meantime.
+    fn expect_vault_mode(&self, expected: Option<bool>) -> Result<()> {
+        let current = self.load_settings()?.map(|s| s.encrypt_keys);
+        if current == expected {
+            return Ok(());
+        }
+        let describe = |mode: Option<bool>| match mode {
+            None => "not set up",
+            Some(true) => "encrypted",
+            Some(false) => "plain",
+        };
+        Err(crate::Error::Crypto(format!(
+            "another aic changed the vault (it was {}, it is now {}); restart aic and retry",
+            describe(expected),
+            describe(current)
+        )))
+    }
+
     /// Whether the vault is still in the mode `dek` assumes. The other form
     /// existing means a migration ran since the mode was chosen (or one died
     /// half way); writing would put a credential where nothing reads it.
@@ -988,8 +1157,16 @@ impl ProjectPaths {
     /// `update_artifact_map` either lands before the read (and is carried
     /// over) or after the old form is gone (and is refused by `mode_still`).
     /// Unlocked, a migration could read map A, a writer store A+B, and the
-    /// migration then publish A and delete A+B. `required` writes an empty
-    /// map when nothing is stored (the JWK map must always exist).
+    /// migration then publish A and delete A+B. Callers hold the vault lock
+    /// exclusively.
+    ///
+    /// Idempotent, so a transition that died part way can be run again: a
+    /// source that is gone while the destination exists is an artifact an
+    /// earlier run already moved, and the destination is kept — after
+    /// checking it reads under `to`, because one this DEK cannot open
+    /// belongs to some other setup. `required` writes an empty map only when
+    /// **neither** form exists (the JWK map must always exist); writing it
+    /// over a migrated destination would erase every credential in it.
     pub(crate) fn migrate_artifact(
         &self,
         artifact: VaultArtifact,
@@ -998,14 +1175,14 @@ impl ProjectPaths {
         required: bool,
     ) -> Result<()> {
         let _guard = self.lock_artifact(artifact)?;
-        let old = match from {
-            Some(_) => self.artifact_enc_path(artifact),
-            None => self.artifact_plain_path(artifact),
-        };
+        let old = self.artifact_form_path(artifact, from);
+        self.migration_preflight(artifact, from, to)?;
         let bytes = match self.load_artifact_bytes(artifact, from)? {
             Some(bytes) if !bytes.is_empty() => Some(bytes),
             Some(_) => Some(b"{}".to_vec()),
-            None if required => Some(b"{}".to_vec()),
+            None if required && !self.artifact_form_path(artifact, to).exists() => {
+                Some(b"{}".to_vec())
+            }
             None => None,
         };
         if let Some(bytes) = bytes {
@@ -1015,6 +1192,42 @@ impl ProjectPaths {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The one condition under which a migration keeps what it finds at the
+    /// destination — source gone, destination present — requires that
+    /// destination to read under `to`.
+    fn migration_preflight(
+        &self,
+        artifact: VaultArtifact,
+        from: Option<&crypto::Dek>,
+        to: Option<&crypto::Dek>,
+    ) -> Result<()> {
+        if self.artifact_form_path(artifact, from).exists()
+            || !self.artifact_form_path(artifact, to).exists()
+        {
+            return Ok(());
+        }
+        decode_json_map::<serde_json::Value>(self.load_artifact_bytes(artifact, to)?)
+            .map(drop)
+            .map_err(|e| {
+                crate::Error::Crypto(format!(
+                    "{} exists but cannot be read with this vault's key ({e}); \
+                     it was written by another setup, so nothing was changed",
+                    self.artifact_form_path(artifact, to)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                ))
+            })
+    }
+
+    /// The form `dek` selects: `<stem>.enc` under a key, else `<stem>.plain`.
+    fn artifact_form_path(&self, artifact: VaultArtifact, dek: Option<&crypto::Dek>) -> PathBuf {
+        match dek {
+            Some(_) => self.artifact_enc_path(artifact),
+            None => self.artifact_plain_path(artifact),
         }
     }
 
@@ -1042,6 +1255,35 @@ impl ProjectPaths {
                     .into(),
             )),
             Err(fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
+
+    /// The lifecycle lock, held for a credential write to `expected` once
+    /// the config shows that tenant is still there **and still the same
+    /// one**. Offboarding and onboarding hold the same lock, so while a
+    /// [`TenantHold`] lives neither can remove the row, replace it, or delete
+    /// credentials keyed by its name — and a write that lost the race is
+    /// refused rather than stored under a name that now means something else,
+    /// or nothing.
+    pub(crate) fn hold_tenant(&self, expected: &Tenant) -> Result<TenantHold> {
+        let lock = self.try_lock_lifecycle()?;
+        let current = self
+            .load_config()?
+            .and_then(|config| config.tenants.into_iter().find(|t| t.name == expected.name));
+        match current {
+            Some(current) if current.same_identity(expected) => Ok(TenantHold {
+                _lock: lock,
+                tenant: expected.name.clone(),
+            }),
+            Some(_) => Err(crate::Error::Config(format!(
+                "tenant `{}` was replaced since this command read it (its base URL or service \
+                 account changed); nothing was stored — re-run against the current entry",
+                expected.name
+            ))),
+            None => Err(crate::Error::Config(format!(
+                "tenant `{}` was removed since this command read it; nothing was stored",
+                expected.name
+            ))),
         }
     }
 
@@ -1332,11 +1574,22 @@ mod tests {
     /// The discriminating case for a credential save: an entry another
     /// process stored after this one loaded its copy survives, because the
     /// change is applied to the file under the lock, not to that copy.
+    /// Record the vault mode directly, as a finished setup would have.
+    fn vault_in(paths: &ProjectPaths, encrypt: bool) {
+        paths
+            .write_settings(&Settings {
+                encrypt_keys: encrypt,
+                ..Settings::default()
+            })
+            .unwrap();
+    }
+
     #[test]
     fn an_artifact_update_merges_into_the_map_on_disk() {
         let dir = TestDir::new();
         let paths = ProjectPaths::new(dir.path("p")).unwrap();
         let dek = crypto::Dek::random();
+        vault_in(&paths, true);
         paths
             .save_artifact_bytes(VaultArtifact::LogKeys, br#"{"other":{"k":1}}"#, Some(&dek))
             .unwrap();
@@ -1355,6 +1608,7 @@ mod tests {
         .unwrap();
         assert_eq!(on_disk, map);
         // Absent and plain both work: no file is an empty map.
+        vault_in(&paths, false);
         let (plain, ()) = paths
             .update_artifact_map(VaultArtifact::JwtBearerKeys, None, |map| {
                 map.insert("t".to_string(), serde_json::json!(1));
@@ -1362,6 +1616,51 @@ mod tests {
             })
             .unwrap();
         assert_eq!(plain.len(), 1);
+    }
+
+    /// A credential store for a tenant is held against the lifecycle lock
+    /// and the config as it is under it: refused once the tenant is gone or
+    /// another one holds its name, and, while held, offboarding and
+    /// onboarding cannot start.
+    #[test]
+    fn a_tenant_hold_requires_the_same_tenant_and_blocks_the_lifecycle() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let tenant = Tenant {
+            name: "uat".into(),
+            base_url: "https://tenant.example.com".into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: Some("sa-1".into()),
+            scopes: Vec::new(),
+            provenance: Provenance::default(),
+        };
+        let write = |tenants: Vec<Tenant>| {
+            paths
+                .update_or_create_config(
+                    || {
+                        Ok(ProjectConfig {
+                            project: "t".into(),
+                            default_tenant: String::new(),
+                            tenants: Vec::new(),
+                        })
+                    },
+                    |config| {
+                        config.tenants = tenants;
+                        Ok(())
+                    },
+                )
+                .unwrap()
+        };
+        assert!(paths.hold_tenant(&tenant).is_err(), "absent tenant");
+        write(vec![tenant.clone()]);
+        let hold = paths.hold_tenant(&tenant).unwrap();
+        assert_eq!(hold.tenant(), "uat");
+        assert!(paths.try_lock_lifecycle().is_err());
+        drop(hold);
+        let mut replaced = tenant.clone();
+        replaced.sa_id = Some("sa-2".into());
+        write(vec![replaced]);
+        assert!(paths.hold_tenant(&tenant).is_err(), "replaced tenant");
     }
 
     /// One lifecycle step at a time, and the loser is refused rather than
@@ -1383,11 +1682,12 @@ mod tests {
         let dir = TestDir::new();
         let paths = ProjectPaths::new(dir.path("p")).unwrap();
         let dek = crypto::Dek::random();
+        paths.set_up_plain(None).unwrap();
         paths
             .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1}"#, None)
             .unwrap();
         paths
-            .migrate_artifact(VaultArtifact::Jwks, None, Some(&dek), true)
+            .enable_encryption(&dek, Some(false), || Ok(()))
             .unwrap();
         assert!(!paths.artifact_plain_path(VaultArtifact::Jwks).exists());
         let stale = paths.update_artifact_map(VaultArtifact::Jwks, None, |m| {
@@ -1405,9 +1705,7 @@ mod tests {
             .unwrap();
         assert_eq!(map.len(), 2);
         // And back: an encrypted writer after a disable is refused.
-        paths
-            .migrate_artifact(VaultArtifact::Jwks, Some(&dek), None, true)
-            .unwrap();
+        paths.disable_encryption(&dek).unwrap();
         assert!(
             paths
                 .update_artifact_map(
@@ -1419,6 +1717,145 @@ mod tests {
         );
     }
 
+    /// The discriminating case for a per-artifact mode check: an artifact
+    /// with no file in **either** form when encryption was enabled. Nothing
+    /// on disk says the plain form is stale, so only the vault-wide mode can
+    /// refuse a writer that chose plain before the switch.
+    #[test]
+    fn a_stale_writer_is_refused_for_an_artifact_that_never_existed() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let dek = crypto::Dek::random();
+        paths.set_up_plain(None).unwrap();
+        paths
+            .enable_encryption(&dek, Some(false), || Ok(()))
+            .unwrap();
+        assert!(!paths.artifact_enc_path(VaultArtifact::LogKeys).exists());
+        let stale = paths.update_artifact_map(VaultArtifact::LogKeys, None, |m| {
+            m.insert("t".to_string(), serde_json::json!(1));
+            Ok(())
+        });
+        assert!(stale.is_err());
+        assert!(!paths.artifact_plain_path(VaultArtifact::LogKeys).exists());
+    }
+
+    /// A transition that died after moving the JWK map but before flipping
+    /// the flag is run again: the source is gone, and the moved map must
+    /// survive rather than be replaced by the empty map `required` writes
+    /// for a vault with no keys at all.
+    #[test]
+    fn retrying_a_finished_migration_keeps_the_moved_map() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let dek = crypto::Dek::random();
+        paths.set_up_plain(None).unwrap();
+        paths
+            .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1}"#, None)
+            .unwrap();
+        paths
+            .migrate_artifact(VaultArtifact::Jwks, None, Some(&dek), true)
+            .unwrap();
+        // The flag never flipped; the operator retries.
+        paths
+            .enable_encryption(&dek, Some(false), || Ok(()))
+            .unwrap();
+        let map: HashMap<String, serde_json::Value> = decode_json_map(
+            paths
+                .load_artifact_bytes(VaultArtifact::Jwks, Some(&dek))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(map.len(), 1, "{map:?}");
+    }
+
+    /// A destination this key cannot read is some other setup's, and is
+    /// refused before the wrap is replaced — the step that would make it
+    /// unreadable for good.
+    #[test]
+    fn a_destination_under_another_key_stops_the_transition_before_the_wrap() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let theirs = crypto::Dek::random();
+        let mine = crypto::Dek::random();
+        paths
+            .save_artifact_bytes(VaultArtifact::Jwks, br#"{"a":1}"#, Some(&theirs))
+            .unwrap();
+        let mut wrapped = false;
+        let refused = paths.enable_encryption(&mine, None, || {
+            wrapped = true;
+            Ok(())
+        });
+        assert!(refused.is_err());
+        assert!(!wrapped);
+        assert_eq!(paths.load_settings().unwrap().map(|s| s.encrypt_keys), None);
+    }
+
+    /// Two first-run screens: the second to commit finds the vault already
+    /// set up and is refused before its wrap is written, either way round.
+    #[test]
+    fn a_second_first_run_setup_is_refused() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        let first = crypto::Dek::random();
+        paths.enable_encryption(&first, None, || Ok(())).unwrap();
+        let mut wrapped = false;
+        let second = paths.enable_encryption(&crypto::Dek::random(), None, || {
+            wrapped = true;
+            Ok(())
+        });
+        assert!(second.is_err());
+        assert!(!wrapped);
+        assert!(paths.set_up_plain(None).is_err());
+        assert!(paths.decrypt_keys_file(&first).is_ok());
+        // The case the destination check cannot see: the other setup chose
+        // plain, so there is nothing under a foreign key to trip over —
+        // only the recorded mode says this screen's "not set up" is stale.
+        let other = TestDir::new();
+        let plain_first = ProjectPaths::new(other.path("p")).unwrap();
+        plain_first.set_up_plain(None).unwrap();
+        let mut wrapped = false;
+        let late = plain_first.enable_encryption(&crypto::Dek::random(), None, || {
+            wrapped = true;
+            Ok(())
+        });
+        assert!(late.is_err());
+        assert!(!wrapped);
+        assert!(
+            plain_first
+                .artifact_plain_path(VaultArtifact::Jwks)
+                .exists()
+        );
+        // Nor does naming the mode it is in make a plain setup legal: that
+        // would flip the flag over files still encrypted.
+        assert!(paths.set_up_plain(Some(true)).is_err());
+        // Control: a vault nothing set up takes a plain setup.
+        let other = TestDir::new();
+        let fresh = ProjectPaths::new(other.path("p")).unwrap();
+        fresh.set_up_plain(None).unwrap();
+        assert_eq!(
+            fresh.load_settings().unwrap().map(|s| s.encrypt_keys),
+            Some(false)
+        );
+    }
+
+    /// A settings edit loaded before a vault transition and saved after it
+    /// leaves the transition's flag alone.
+    #[test]
+    fn a_settings_save_does_not_revert_the_vault_mode() {
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        paths.set_up_plain(None).unwrap();
+        let mut stale = paths.load_settings().unwrap().unwrap();
+        paths
+            .enable_encryption(&crypto::Dek::random(), Some(false), || Ok(()))
+            .unwrap();
+        stale.agent_idle_timeout_secs = Some(5);
+        paths.save_settings(&stale).unwrap();
+        let now = paths.load_settings().unwrap().unwrap();
+        assert!(now.encrypt_keys);
+        assert_eq!(now.agent_idle_timeout_secs, Some(5));
+    }
+
     /// The migration waits for a writer holding the map, and carries its
     /// entry over instead of publishing the map it read before it.
     #[test]
@@ -1428,6 +1865,7 @@ mod tests {
         let dir = TestDir::new();
         let paths = ProjectPaths::new(dir.path("p")).unwrap();
         let dek = crypto::Dek::random();
+        paths.set_up_plain(None).unwrap();
         paths
             .save_artifact_bytes(VaultArtifact::LogKeys, br#"{"a":1}"#, None)
             .unwrap();
@@ -1453,7 +1891,7 @@ mod tests {
             let dek = dek.clone();
             std::thread::spawn(move || {
                 paths
-                    .migrate_artifact(VaultArtifact::LogKeys, None, Some(&dek), false)
+                    .enable_encryption(&dek, Some(false), || Ok(()))
                     .unwrap();
                 done_tx.send(()).unwrap();
             })
@@ -1505,6 +1943,7 @@ mod tests {
         use std::time::Duration;
         let dir = TestDir::new();
         let paths = ProjectPaths::new(dir.path("p")).unwrap();
+        vault_in(&paths, false);
         let (inside_tx, inside_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let first = {

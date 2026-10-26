@@ -80,6 +80,11 @@ pub async fn setup(
         ));
     }
 
+    // Held to the end: from the stored-key read through the publish, so an
+    // offboarding cannot unpublish and delete this tenant's key part way
+    // through, and a tenant replaced since it was resolved is refused.
+    let hold = crate::config::hold_tenant(tenant)?;
+
     // Production only: one extra issuer read, before the vault write. The
     // publish path reads again and re-checks the body it is about to send, so
     // this pre-check is fail-fast rather than the last word.
@@ -103,12 +108,7 @@ pub async fn setup(
 
     // Store first: if publishing fails, the next setup can retry this same
     // key instead of generating an orphaned public key in the shared JWKS.
-    crate::jwtbearer::put_key(
-        AgentClient::connect_or_spawn().await?,
-        &tenant.name,
-        &record,
-    )
-    .await?;
+    crate::jwtbearer::put_key(AgentClient::connect_or_spawn().await?, &hold, &record).await?;
 
     let tenant_name = tenant.name.clone();
     let realm_name = realm.to_string();
@@ -178,6 +178,8 @@ pub async fn rotate(
     operator: &ResolvedOperator,
     confirmed_prod: bool,
 ) -> Result<(String, String)> {
+    // Held across publish, store and retire — see `setup`.
+    let hold = crate::config::hold_tenant(tenant)?;
     let old_record = crate::jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name)
         .await?
         .ok_or_else(|| {
@@ -206,12 +208,7 @@ pub async fn rotate(
     // The production restriction check rides the existing publish read, so it
     // fires before the first irreversible step (the upsert).
     publish_public_jwk(&tenant.name, realm, &public, tenant.theme, confirmed_prod).await?;
-    crate::jwtbearer::put_key(
-        AgentClient::connect_or_spawn().await?,
-        &tenant.name,
-        &new_record,
-    )
-    .await?;
+    crate::jwtbearer::put_key(AgentClient::connect_or_spawn().await?, &hold, &new_record).await?;
     remove_published_key(&tenant.name, realm, &old_kid, confirmed_prod).await?;
 
     Ok((old_kid, new_kid))

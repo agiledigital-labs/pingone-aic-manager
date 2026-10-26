@@ -171,8 +171,18 @@ is likewise unchecked, never a match — and so is a response that is not the
 shape measured: a tree or `PageNode` without its `nodes`, a theme document
 without a `realm` object, a list whose `pagedResultsCookie` is set or which
 reports remaining results. An empty theme list is absence, so it too is
-unchecked unless the item was reported deleted. `verify` exits non-zero when anything
+unchecked unless the item was reported deleted. A script without its `script`
+source, a theme entry that is not an object, and a CREST error envelope (an
+HTTP-error `code` beside a string `reason` or `message`) answered in place of
+a document are unchecked as well. `verify` exits non-zero when anything
 differs or is unchecked.
+
+**Not measured: that the service and CORS lists are complete.** Both are read
+with `_queryFilter=true` and no paging request, and neither carried a
+`pagedResultsCookie` or remaining results on the pair measured. That rules out
+the paging this checks for; it does not prove AM never truncates an unpaged
+list. A truncated list would make a present item look absent — unchecked, if
+it was reported added or modified, never a false `same`.
 
 Measured on the pair the console called in sync: **149 of 150 same, 0 differ,
 1 unchecked** (the global script). Positive control, the same report with the

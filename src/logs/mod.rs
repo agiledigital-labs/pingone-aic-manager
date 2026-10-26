@@ -54,9 +54,13 @@ fn with_remediation(err: Error) -> Error {
 
 /// Store or replace a tenant's log API key pair via the agent's generic secret
 /// verbs. `agent` is consumed (one request per connection).
-pub async fn put_log_key(agent: AgentClient, tenant: &str, pair: &LogKeyPair) -> Result<()> {
+pub async fn put_log_key(
+    agent: AgentClient,
+    hold: &crate::config::TenantHold,
+    pair: &LogKeyPair,
+) -> Result<()> {
     agent
-        .put_secret(kind(), tenant, serde_json::to_value(pair)?)
+        .put_secret(kind(), hold.tenant(), serde_json::to_value(pair)?)
         .await
 }
 
@@ -71,8 +75,8 @@ pub async fn get_log_key(agent: AgentClient, tenant: &str) -> Result<LogKeyPair>
 }
 
 /// Remove a tenant's stored log API key pair.
-pub async fn remove_log_key(agent: AgentClient, tenant: &str) -> Result<()> {
-    agent.remove_secret(kind(), tenant).await
+pub async fn remove_log_key(agent: AgentClient, hold: &crate::config::TenantHold) -> Result<()> {
+    agent.remove_secret(kind(), hold.tenant()).await
 }
 
 /// A console-issued log API key pair for one tenant. The secret is shown only

@@ -9,7 +9,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::{App, InputMode};
-use crate::config::ProjectConfig;
 use crate::config::Settings;
 use crate::config::crypto::{self, Dek};
 use crate::config::wraps::{self, Wrap};
@@ -334,13 +333,11 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
             }
             // No encryption: write an empty keys.plain at mode 600 and
             // record settings. No DEK; no wraps.toml.
+            // Under the vault lock, and only if no other aic has set the
+            // vault up since this screen read it.
+            crate::config::set_up_plain(app.settings.as_ref().map(|s| s.encrypt_keys))?;
             app.set_dek(None);
-            let mut s = app.settings.take().unwrap_or_default();
-            s.encrypt_keys = false;
-            s.save()?;
-            app.settings = Some(s);
-            let bytes = serde_json::to_vec(app.jwks())?;
-            ProjectConfig::save_keys_plain(&bytes)?;
+            app.settings = Settings::load()?;
             app.auth_setup.form = AuthSetupForm::default();
             app.auth_setup.context = SetupContext::FirstRun;
             app.input_mode = InputMode::Normal;
@@ -364,14 +361,22 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
             let dek = app.dek_clone().unwrap_or_else(Dek::random);
             let (salt, nonce, ct) =
                 crypto::wrap_dek_with_password(&dek, &app.auth_setup.form.password)?;
+            let wraps_before = app.wraps.clone();
             app.wraps.upsert_password(Wrap::Password {
                 salt: wraps::b64_encode(&salt),
                 nonce: wraps::b64_encode(&nonce),
                 ciphertext: wraps::b64_encode(&ct),
             });
-            app.wraps.save()?;
             app.set_dek(Some(dek));
-            finalize_factor_addition(app, freshly_minted, context, "Password set").await?;
+            if let Err(e) =
+                finalize_factor_addition(app, freshly_minted, context, "Password set").await
+            {
+                if freshly_minted {
+                    app.set_dek(None);
+                }
+                app.wraps = wraps_before;
+                app.auth_setup.form.error = Some(format!("Save failed: {e}"));
+            }
         }
         AuthMethod::SecurityKey => {
             if app.auth_setup.form.pin.is_empty() {
@@ -425,20 +430,29 @@ async fn finalize_factor_addition(
 
     if !already_encrypted {
         // We just added the first factor while encryption was disabled
-        // (or this is first-run with no prior settings.toml). Promote
-        // keys.plain → keys.enc and flip the flag.
+        // (or this is first-run with no prior settings.toml). Save the wrap,
+        // promote keys.plain → keys.enc and flip the flag as one step under
+        // the vault lock, refused if another aic changed the mode since this
+        // screen read it — its wrap would otherwise be replaced by one for a
+        // DEK its files were never written with.
         let dek = app
             .dek_clone()
             .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
-        crate::config::enable_encryption(&dek)?;
+        let mode = app.settings.as_ref().map(|s| s.encrypt_keys);
+        let wraps = &app.wraps;
+        crate::config::enable_encryption(&dek, mode, || wraps.save())?;
         let mut s = app.settings.take().unwrap_or_default();
         s.encrypt_keys = true;
         app.settings = Some(s);
     } else if freshly_minted_dek {
-        // Defensive: should not happen — if encryption was already on,
-        // we have a DEK and didn't mint a fresh one. But if state ever
-        // drifts, persist the new DEK so keys.enc is readable.
-        app.persist_keys()?;
+        // Encryption is on but this session holds no DEK for it: the files
+        // are under a key this wrap does not open. Writing either would
+        // strand them.
+        return Err(crate::Error::Crypto(
+            "the vault is encrypted under a key this session does not hold; restart aic".into(),
+        ));
+    } else {
+        app.wraps.save()?;
     }
 
     app.auth_setup.form = AuthSetupForm::default();
@@ -474,18 +488,6 @@ pub async fn handle_enroll_result(app: &mut App, result: std::result::Result<Wra
     match result {
         Ok(wrap) => {
             app.wraps.push_security_key(wrap);
-            if let Err(e) = app.wraps.save() {
-                tracing::error!(error = %e, "wraps.toml save failed after enrol");
-                app.push_toast(ToastKind::Error, format!("wraps.toml: {e}"));
-                app.wraps.wraps.pop();
-                if was_dek_minted_for_this_op {
-                    app.set_dek(None);
-                }
-                app.auth_setup.form.busy = false;
-                app.auth_setup.form.error = Some(format!("Save failed: {e}"));
-                return;
-            }
-
             app.auth_setup.form.busy = false;
             if let Err(e) = finalize_factor_addition(
                 app,
@@ -496,7 +498,12 @@ pub async fn handle_enroll_result(app: &mut App, result: std::result::Result<Wra
             .await
             {
                 tracing::error!(error = %e, "finalize_factor_addition failed");
-                app.auth_setup.form.error = Some(format!("Finalise: {e}"));
+                app.push_toast(ToastKind::Error, format!("wraps.toml: {e}"));
+                app.wraps.wraps.pop();
+                if was_dek_minted_for_this_op {
+                    app.set_dek(None);
+                }
+                app.auth_setup.form.error = Some(format!("Save failed: {e}"));
             }
         }
         Err(msg) => {

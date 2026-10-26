@@ -440,6 +440,7 @@ async fn run_key(command: KeyCommand) -> Result<()> {
                 crate::Error::Config(format!("parse JWK file {}: {error}", file.display()))
             })?;
             let record = spec::import_private_jwk(value)?;
+            let hold = crate::config::hold_tenant(&tenant)?;
             let existing =
                 jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name).await?;
             if let Some(existing) = existing.filter(|_| !force) {
@@ -448,12 +449,8 @@ async fn run_key(command: KeyCommand) -> Result<()> {
                     tenant.name, existing.kid
                 )));
             }
-            jwtbearer::put_key(
-                AgentClient::connect_or_spawn().await?,
-                &tenant.name,
-                &record,
-            )
-            .await?;
+            jwtbearer::put_key(AgentClient::connect_or_spawn().await?, &hold, &record).await?;
+            drop(hold);
             ops::warn_if_key_not_published(&tenant.name, &realm, &record.kid).await;
             println!(
                 "imported Trusted JWT private key for tenant {} (kid {})",
