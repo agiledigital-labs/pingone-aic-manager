@@ -195,6 +195,9 @@ pub(crate) fn persist_tenant_overwriting(
     log_key: Option<LogKeyPair>,
 ) -> crate::Result<()> {
     let tenant_name = tenant.name.clone();
+    // Held until this function returns: the key, the row and the log key
+    // land as one lifecycle step that offboarding cannot interleave with.
+    let _lifecycle = crate::config::project_paths().try_lock_lifecycle()?;
     if let Some(jwk) = jwk {
         app.save_jwk(&tenant.name, jwk)?;
     }

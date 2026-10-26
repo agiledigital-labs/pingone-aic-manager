@@ -658,6 +658,10 @@ mod tests {
             Ok(None)
         }
 
+        fn begin(&mut self) -> Result<()> {
+            Ok(())
+        }
+
         fn remove_config_entry(&mut self, _planned: &Tenant) -> Result<ProjectConfig> {
             Ok(ProjectConfig {
                 project: "test".into(),

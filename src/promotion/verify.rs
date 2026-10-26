@@ -383,14 +383,78 @@ pub fn complete(list: &Value) -> Result<&[Value], String> {
     if cookie.is_some_and(|c| !c.is_null()) {
         return Err("the list is paged (pagedResultsCookie set); absence cannot be shown".into());
     }
-    if list
-        .get("remainingPagedResults")
-        .and_then(Value::as_i64)
-        .is_some_and(|n| n > 0)
-    {
-        return Err("the list says more results remain; absence cannot be shown".into());
+    match list.get("remainingPagedResults") {
+        None | Some(Value::Null) => {}
+        Some(n) if n.as_i64().is_some_and(|n| n <= 0) => {}
+        Some(n) if n.is_u64() || n.is_i64() => {
+            return Err("the list says more results remain; absence cannot be shown".into());
+        }
+        Some(other) => {
+            return Err(format!(
+                "remainingPagedResults is not an integer ({other}); the list cannot be read"
+            ));
+        }
     }
     Ok(result)
+}
+
+/// `complete`, plus every row must be an object carrying a string `field`.
+/// A row a selector cannot read is not a row that failed to match: skipping
+/// it would let the item it holds read as absent.
+pub fn rows<'a>(list: &'a Value, field: &str) -> Result<Vec<(&'a str, &'a Value)>, String> {
+    complete(list)?
+        .iter()
+        .map(|row| {
+            row.get(field)
+                .and_then(Value::as_str)
+                .map(|key| (key, row))
+                .ok_or_else(|| format!("list row without a string `{field}`: {row}"))
+        })
+        .collect()
+}
+
+/// What a fetched document must be before it is compared: an object, and
+/// where the read named a resource, the resource it named. Two `null`s, or
+/// two error envelopes answered with 200, would otherwise compare `Same`.
+pub fn check_document(target: &Target, doc: &Value) -> Result<(), String> {
+    fn identified(doc: &Value, key: &str, want: &str, what: &str) -> Result<(), String> {
+        match doc.get(key).and_then(Value::as_str) {
+            Some(got) if got == want => Ok(()),
+            Some(got) => Err(format!("{what} read returned {key} {got:?}, not {want:?}")),
+            None if doc.is_object() => Err(format!("{what} document has no string `{key}`")),
+            None => Err(format!("{what} read returned a non-object: {doc}")),
+        }
+    }
+    match target {
+        Target::Journey { name, .. } => {
+            identified(&doc["tree"], "_id", name, "journey tree")?;
+            let nodes = doc
+                .get("nodes")
+                .and_then(Value::as_object)
+                .ok_or("journey composite without a nodes map")?;
+            for (id, node) in nodes {
+                identified(node, "_id", id, "journey node")?;
+            }
+            Ok(())
+        }
+        Target::Script { id, .. } => identified(doc, "_id", id, "script"),
+        Target::ScriptByName { name, .. } => identified(doc, "name", name, "script"),
+        Target::Themes { .. } => match doc {
+            Value::Array(_) => Ok(()),
+            other => Err(format!("theme list is not an array: {other}")),
+        },
+        Target::Cors { name } => match doc.get("_id").and_then(Value::as_str) {
+            Some(got) if got.eq_ignore_ascii_case(name) => Ok(()),
+            _ => Err(format!("CORS read did not return {name:?}: {doc}")),
+        },
+        Target::SecretMapping { .. }
+        | Target::RealmService { .. }
+        | Target::AuthenticationSettings { .. } => match doc {
+            Value::Object(_) => Ok(()),
+            other => Err(format!("expected an object, got {other}")),
+        },
+        Target::Unchecked(why) => Err(why.clone()),
+    }
 }
 
 /// A realm's theme list out of `ui/themerealm`. The document must carry a
@@ -414,14 +478,10 @@ pub fn themes<'a>(themerealm: &'a Value, realm: &str) -> Result<Option<&'a Value
 /// The one entry of a list whose `field` equals `want` ignoring ASCII case.
 /// None → `Ok(None)`; several → an error, never a pick.
 pub fn one_by<'a>(list: &'a Value, field: &str, want: &str) -> Result<Option<&'a Value>, String> {
-    let result = complete(list)?;
-    let hits: Vec<&Value> = result
-        .iter()
-        .filter(|v| {
-            v.get(field)
-                .and_then(Value::as_str)
-                .is_some_and(|s| s.eq_ignore_ascii_case(want))
-        })
+    let hits: Vec<&Value> = rows(list, field)?
+        .into_iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case(want))
+        .map(|(_, row)| row)
         .collect();
     match hits.as_slice() {
         [] => Ok(None),
@@ -458,19 +518,14 @@ pub fn settle(change: &str, verdict: Verdict) -> Verdict {
 /// given and without a trailing " Service". Two different matches are an
 /// error, not a guess. No match → `Ok(None)`: not configured in that realm.
 pub fn service_id(list: &Value, service: &str) -> Result<Option<String>, String> {
-    let result = complete(list)?;
     let mut names = vec![service];
     if let Some(short) = service.strip_suffix(" Service") {
         names.push(short);
     }
-    let mut ids: Vec<&str> = result
-        .iter()
-        .filter(|s| {
-            s.get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|n| names.contains(&n))
-        })
-        .map(|s| {
+    let mut ids: Vec<&str> = rows(list, "name")?
+        .into_iter()
+        .filter(|(name, _)| names.contains(name))
+        .map(|(_, s)| {
             s.get("_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("realm service without a string _id: {s}"))
@@ -727,6 +782,13 @@ mod tests {
         let remaining =
             json!({"result": [], "pagedResultsCookie": null, "remainingPagedResults": 3});
         assert!(one_by(&remaining, "_id", "a").is_err());
+        let typed = json!({"result": [], "remainingPagedResults": "3"});
+        assert!(one_by(&typed, "_id", "a").is_err());
+        let huge = json!({"result": [], "remainingPagedResults": u64::MAX});
+        assert!(one_by(&huge, "_id", "a").is_err());
+        // A row the selector cannot read is an error, not a non-match.
+        assert!(one_by(&json!({"result": [{}]}), "_id", "a").is_err());
+        assert!(service_id(&json!({"result": [{"_id": "x"}]}), "X").is_err());
         let measured = json!({"result": [{"_id": "x"}], "pagedResultsCookie": null, "remainingPagedResults": -1});
         assert_eq!(
             one_by(&measured, "_id", "x").unwrap(),
@@ -819,10 +881,47 @@ mod tests {
             "http://tenant.example.com",
             "https://tenant.example.com"
         ));
+        // Credentials in the URL do not make it another tenant.
+        assert!(same_tenant(
+            "https://alice@tenant.example.com/",
+            "https://bob@tenant.example.com"
+        ));
         assert!(!same_tenant(
             "https://tenant.example.com",
             "https://other.example.com"
         ));
+    }
+
+    /// The discriminating cases: two `null`s, or two documents for some
+    /// other resource, must not reach `judge` as comparable equals.
+    #[test]
+    fn a_document_must_be_the_resource_it_was_read_as() {
+        let script = Target::Script {
+            realm: "alpha".into(),
+            id: "a".into(),
+        };
+        assert!(check_document(&script, &json!({"_id": "a"})).is_ok());
+        assert!(check_document(&script, &Value::Null).is_err());
+        assert!(check_document(&script, &json!({"_id": "b"})).is_err());
+        let journey = Target::Journey {
+            realm: "alpha".into(),
+            name: "J".into(),
+        };
+        let good = json!({"tree": {"_id": "J"}, "nodes": {"n1": {"_id": "n1"}}});
+        assert!(check_document(&journey, &good).is_ok());
+        let null_node = json!({"tree": {"_id": "J"}, "nodes": {"n1": null}});
+        assert!(check_document(&journey, &null_node).is_err());
+        let service = Target::RealmService {
+            realm: "alpha".into(),
+            service: "S".into(),
+        };
+        assert!(check_document(&service, &json!({})).is_ok());
+        assert!(check_document(&service, &Value::Null).is_err());
+        let cors = Target::Cors {
+            name: "client-a".into(),
+        };
+        assert!(check_document(&cors, &json!({"_id": "Client-A"})).is_ok());
+        assert!(check_document(&cors, &json!({"_id": "other"})).is_err());
     }
 
     #[test]

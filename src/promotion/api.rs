@@ -31,6 +31,14 @@ pub async fn report(tenant: &str, which: &crate::promotion::spec::Which) -> Resu
 /// including a journey node the tree names that cannot be read — is an
 /// error, so an unread document is never judged equal to anything.
 pub async fn fetch(tenant: &str, target: &verify::Target) -> Result<Option<Value>> {
+    let doc = read(tenant, target).await?;
+    if let Some(doc) = &doc {
+        verify::check_document(target, doc).map_err(Error::Config)?;
+    }
+    Ok(doc)
+}
+
+async fn read(tenant: &str, target: &verify::Target) -> Result<Option<Value>> {
     use verify::Target;
     match target {
         Target::Journey { realm, name } => journey(tenant, realm, name).await,
@@ -183,10 +191,11 @@ fn absent_on_404(result: Result<Value>) -> Result<Option<Value>> {
 /// script name, so `one_by`'s case-folding is not used, and a query that
 /// matched several is an error rather than a pick.
 fn exact_name(list: &Value, name: &str) -> Result<Option<Value>> {
-    let result = verify::complete(list).map_err(Error::Config)?;
-    let hits: Vec<&Value> = result
-        .iter()
-        .filter(|v| v.get("name").and_then(Value::as_str) == Some(name))
+    let hits: Vec<&Value> = verify::rows(list, "name")
+        .map_err(Error::Config)?
+        .into_iter()
+        .filter(|(got, _)| *got == name)
+        .map(|(_, row)| row)
         .collect();
     match hits.as_slice() {
         [] => Ok(None),

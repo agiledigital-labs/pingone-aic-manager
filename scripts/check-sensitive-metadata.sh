@@ -160,11 +160,13 @@ CANDIDATE_RE='~/w/|forgeblocks|forgerock\.io|sts\.windows\.net|entityid|trustedp
 #
 # It runs inside process substitutions and pipelines, whose exit status the
 # scan never sees: a pre-filter that fails there feeds the scan nothing, and
-# nothing scans clean. So a failure — mktemp, or grep exiting above 1 — is
-# reported and kills the main shell (`prefilter_failed`), which exits 2.
+# nothing scans clean. So a failure — mktemp, grep exiting above 1, the merge
+# — is reported and kills the main shell (`scan_failed`), which exits 2. The
+# same holds for what feeds it and for the lists the modes iterate: those go
+# through `filtered` and `listing` below, never a bare process substitution.
 MAIN_PID=$$
 trap 'exit 2' TERM
-prefilter_failed() {
+scan_failed() {
   echo "check-sensitive-metadata: pre-filter failed: $1" >&2
   kill -TERM "$MAIN_PID"
   exit 2
@@ -174,20 +176,58 @@ candidates() {
   if [ -z "$DENY_RE" ]; then
     grep "-I${number#-}iE" "$CANDIDATE_RE"
     status=$?
-    [ "$status" -le 1 ] || prefilter_failed "grep exited $status"
+    [ "$status" -le 1 ] || scan_failed "grep exited $status"
     return 0
   fi
-  tmp=$(mktemp -d) || prefilter_failed "mktemp failed"
-  cat >"$tmp/in" || prefilter_failed "could not buffer the input"
+  tmp=$(mktemp -d) || scan_failed "mktemp failed"
+  cat >"$tmp/in" || scan_failed "could not buffer the input"
   grep -IniE "$CANDIDATE_RE" -- "$tmp/in" >"$tmp/shape"
   status=$?
-  [ "$status" -le 1 ] || { rm -rf "$tmp"; prefilter_failed "grep exited $status"; }
+  [ "$status" -le 1 ] || { rm -rf "$tmp"; scan_failed "grep exited $status"; }
   in_caller_locale grep -IniE "$DENY_RE" -- "$tmp/in" >"$tmp/deny"
   status=$?
-  [ "$status" -le 1 ] || { rm -rf "$tmp"; prefilter_failed "denylist grep exited $status"; }
+  [ "$status" -le 1 ] || { rm -rf "$tmp"; scan_failed "denylist grep exited $status"; }
   sort -t: -k1,1n -u "$tmp/shape" "$tmp/deny" \
     | if [ -n "$number" ]; then cat; else cut -d: -f2-; fi
+  status=$?
   rm -rf "$tmp"
+  [ "$status" = 0 ] || scan_failed "merging the pre-filter's halves exited $status"
+}
+
+# `filtered [-n] CMD...`: CMD's output through the pre-filter, failing the
+# scan when CMD fails — a file that cannot be opened, a `git` that errors —
+# instead of handing the scan an empty stream. pipefail makes the pipeline's
+# status CMD's.
+filtered() {
+  local number=""
+  if [ "${1:-}" = -n ]; then number=-n; shift; fi
+  "$@" | candidates $number || scan_failed "reading the scan's input failed: $*"
+}
+
+# `listing CMD...`: what a mode iterates (files, blobs), failing the scan when
+# the listing itself fails — an empty list scans clean.
+listing() {
+  "$@" || scan_failed "listing what to scan failed: $*"
+}
+
+# Every blob the history range introduces, except this script's own. One
+# function so `listing` sees the whole pipeline's status under pipefail.
+history_blobs() {
+  git rev-list --objects "$HISTORY_RANGE" \
+    | while read -r object path; do
+        [ "$path" = "$SELF" ] && continue
+        printf '%s\n' "$object"
+      done \
+    | git cat-file --batch-check='%(objectname) %(objecttype)' \
+    | awk '$2 == "blob" {print $1}' \
+    | sort -u
+}
+
+# The added lines of one staged file, numbered as `N:line`.
+staged_lines() {
+  git diff --cached -U0 -- "$1" \
+    | awk '/^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); next }
+           /^\+/ && !/^\+\+\+/ { print n":"substr($0,2); n++ }'
 }
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
@@ -545,6 +585,28 @@ case "$MODE" in
       fi
     }
     prefilter_fails "a pre-filter whose mktemp fails stops the scan" 'synthetic' /nonexistent/dir
+    # What feeds the pre-filter, and what a mode iterates, fail the same way:
+    # the helpers every mode uses, driven with a failing producer.
+    feeder_fails() {
+      local name="$1" status
+      shift
+      (
+        MAIN_PID=$BASHPID
+        trap 'exit 2' TERM
+        scan_text "selftest" < <("$@" 2>/dev/null)
+        exit 0
+      ) >/dev/null 2>&1
+      status=$?
+      if [ "$status" = 2 ]; then
+        echo "ok    $name"
+      else
+        echo "FAIL  $name — the scan finished (exit $status)"
+        fails=$((fails + 1))
+      fi
+    }
+    feeder_fails "an input that cannot be opened stops the scan" filtered -n cat -- /nonexistent/file
+    feeder_fails "a failing producer stops the scan" filtered -n false
+    feeder_fails "a failing listing stops the scan" listing false
     (
       CANDIDATE_RE='('
       fails=0
@@ -633,18 +695,18 @@ case "$MODE" in
     # rejected for containing it on the '-' side.
     while IFS= read -r file; do
       [ "$file" = "$SELF" ] && continue
-      scan_text "$file" < <(git diff --cached -U0 -- "$file" \
-        | awk '/^@@/ { split($3, a, ","); n = a[1]; sub(/^\+/, "", n); next }
-               /^\+/ && !/^\+\+\+/ { print n":"substr($0,2); n++ }' \
-        | candidates)
-    done < <(git diff --cached --name-only --diff-filter=ACMR)
+      scan_text "$file" < <(filtered staged_lines "$file")
+    done < <(listing git diff --cached --name-only --diff-filter=ACMR)
     ;;
   tracked)
     check_ignores
     while IFS= read -r file; do
       [ "$file" = "$SELF" ] && continue
-      scan_text "$file" < <(candidates -n <"$file" 2>/dev/null)
-    done < <(git ls-files)
+      # A tracked file deleted from the work tree has nothing to scan;
+      # anything else that cannot be read fails the scan.
+      [ -e "$file" ] || [ -L "$file" ] || continue
+      scan_text "$file" < <(filtered -n cat -- "$file")
+    done < <(listing git ls-files)
     ;;
   redact)
     redact_stream
@@ -656,7 +718,8 @@ case "$MODE" in
       [ "$file" = "$SELF" ] && continue
       # Not `| grep -q .`: it closes the pipe at the first line, and the
       # pre-filter's grep would die of SIGPIPE and read as a failure.
-      [ -n "$(candidates <"$file")" ] || continue
+      [ -e "$file" ] || [ -L "$file" ] || continue
+      [ -n "$(filtered cat -- "$file")" ] || continue
       redact_stream <"$file" >"$file.redacted" || { rm -f "$file.redacted"; continue; }
       if cmp -s "$file" "$file.redacted"; then
         rm -f "$file.redacted"
@@ -665,23 +728,14 @@ case "$MODE" in
         echo "redacted $file"
         changed=$((changed + 1))
       fi
-    done < <(git ls-files)
+    done < <(listing git ls-files)
     echo "--fix rewrote $changed file(s). Re-run --tracked and read the diff."
     exit 0
     ;;
   history)
     while IFS= read -r obj; do
-      scan_text "blob:$obj" < <(git cat-file -p "$obj" 2>/dev/null | candidates -n)
-    done < <(
-      git rev-list --objects "$HISTORY_RANGE" \
-        | while read -r object path; do
-            [ "$path" = "$SELF" ] && continue
-            printf '%s\n' "$object"
-          done \
-        | git cat-file --batch-check='%(objectname) %(objecttype)' \
-        | awk '$2 == "blob" {print $1}' \
-        | sort -u
-    )
+      scan_text "blob:$obj" < <(filtered -n git cat-file -p "$obj")
+    done < <(listing history_blobs)
     ;;
 esac
 
