@@ -1,11 +1,12 @@
 //! HTTP wrappers for `/environment/promotion/*`. The reads are plain `GET`s;
-//! the three writes each require the permit `lifecycle` mints, so none can be
-//! reached without a state check and consent.
+//! the writes go through [`send`], which requires the [`Permit`] only
+//! `lifecycle::authorize` mints — so none can be reached without consent and
+//! a state check against a read taken after it.
 
 use serde_json::Value;
 
 use crate::aic::api::{ApiCall, get, get_versioned};
-use crate::promotion::lifecycle::{LockPermit, PromotePermit, UnlockPermit};
+use crate::promotion::lifecycle::Permit;
 use crate::promotion::verify;
 use crate::{Error, Result};
 
@@ -22,39 +23,42 @@ pub async fn status(tenant: &str) -> Result<Value> {
 const LOCK: &str = "/environment/promotion/lock";
 const PROMOTE: &str = "/environment/promotion/promote";
 
-/// `POST lock` with **no body**, as measured (202 `result: locking`).
-fn lock_call<'a>(tenant: &'a str, confirmed_prod: bool, _: &LockPermit) -> ApiCall<'a> {
-    ApiCall::new(tenant, "POST", LOCK).confirmed_prod(confirmed_prod)
+/// The path a permitted write goes to. `DELETE lock/{promotionId}` carries
+/// the id segment-encoded.
+fn path(permit: &Permit) -> String {
+    match permit {
+        Permit::Lock(_) => LOCK.into(),
+        Permit::Promote(..) => PROMOTE.into(),
+        Permit::Unlock(_, id) => format!("{LOCK}/{}", segment(id)),
+    }
 }
 
-/// `POST promote` with `{"dryRun": …}`. Measured with `true` (202, "Promotion
-/// process initiated successfully"); `false` is the documented real run and
-/// was not exercised when this was written.
-fn promote_call<'a>(tenant: &'a str, confirmed_prod: bool, permit: &PromotePermit) -> ApiCall<'a> {
-    ApiCall::new(tenant, "POST", PROMOTE)
-        .body(serde_json::json!({ "dryRun": permit.dry_run() }))
-        .confirmed_prod(confirmed_prod)
+/// The request a permit authorizes:
+///
+/// - `POST lock` with no body of its own — measured with none sent (202
+///   `result: locking`). The transport sends JSON `null` for a bodyless
+///   `POST`, as it does for every `DELETE`; the first run through `aic`
+///   measures that.
+/// - `POST promote` with `{"dryRun": …}`. Measured with `true` (202,
+///   "Promotion process initiated successfully"); `false` is the documented
+///   real run.
+/// - `DELETE lock/{promotionId}` (202 `result: unlocking`, measured).
+fn call<'a>(tenant: &'a str, path: &'a str, confirmed_prod: bool, permit: &Permit) -> ApiCall<'a> {
+    let call = match permit {
+        Permit::Lock(_) => ApiCall::new(tenant, "POST", path),
+        Permit::Promote(_, dry_run) => {
+            ApiCall::new(tenant, "POST", path).body(serde_json::json!({ "dryRun": dry_run }))
+        }
+        Permit::Unlock(..) => ApiCall::new(tenant, "DELETE", path),
+    };
+    call.confirmed_prod(confirmed_prod)
 }
 
-/// `DELETE lock/{promotionId}` (202 `result: unlocking`, measured).
-fn unlock_path(permit: &UnlockPermit) -> String {
-    format!("{LOCK}/{}", segment(permit.promotion_id()))
-}
-
-pub async fn lock(tenant: &str, confirmed_prod: bool, permit: &LockPermit) -> Result<Value> {
-    lock_call(tenant, confirmed_prod, permit).send().await
-}
-
-pub async fn promote(tenant: &str, confirmed_prod: bool, permit: &PromotePermit) -> Result<Value> {
-    promote_call(tenant, confirmed_prod, permit).send().await
-}
-
-pub async fn unlock(tenant: &str, confirmed_prod: bool, permit: &UnlockPermit) -> Result<Value> {
-    let path = unlock_path(permit);
-    ApiCall::new(tenant, "DELETE", &path)
-        .confirmed_prod(confirmed_prod)
-        .send()
-        .await
+/// Send the one write `permit` authorizes. It is taken by value: one permit,
+/// one request.
+pub async fn send(tenant: &str, confirmed_prod: bool, permit: Permit) -> Result<Value> {
+    let path = path(&permit);
+    call(tenant, &path, confirmed_prod, &permit).send().await
 }
 
 pub async fn reports(tenant: &str) -> Result<Value> {
@@ -266,30 +270,42 @@ mod tests {
 
     fn state(locked: bool) -> crate::promotion::spec::Assessment {
         let s = if locked { "locked" } else { "unlocked" };
+        let side = json!({"state": s, "proxyState": s});
         assess(
-            &json!({"result": s, "lowerEnv": {"state": s}, "upperEnv": {"state": s}}),
+            &json!({"result": s, "lowerEnv": side, "upperEnv": side}),
             &if locked {
-                json!({"status": "READY", "globalLock": "LOCKED", "promotionId": "a b/c"})
+                json!({"status": "READY", "globalLock": "LOCKED", "blockingError": false,
+                       "promotionId": "a b/c"})
             } else {
-                json!({"status": "UNLOCKED", "globalLock": "UNLOCKED"})
+                json!({"status": "UNLOCKED", "globalLock": "UNLOCKED", "blockingError": false})
             },
         )
         .unwrap()
     }
 
+    fn permit(verb: lifecycle::Verb, locked: bool) -> Permit {
+        let a = state(locked);
+        let approved = lifecycle::check(&verb, &a, "uat").unwrap();
+        lifecycle::authorize(&verb, &approved, &a, "uat", true).unwrap()
+    }
+
+    fn wire_of(permit: &Permit, confirmed_prod: bool) -> ApiCallRequest {
+        let path = path(permit);
+        wire(call("uat", &path, confirmed_prod, permit))
+    }
+
     #[test]
-    fn lock_posts_with_no_body() {
-        let permit = lifecycle::authorize_lock(&state(false), "uat", true).unwrap();
-        let req = wire(lock_call("uat", false, &permit));
+    fn lock_posts_with_no_body_of_its_own() {
+        let req = wire_of(&permit(lifecycle::Verb::Lock, false), false);
         assert_eq!((req.method.as_str(), req.path.as_str()), ("POST", LOCK));
         assert_eq!(req.body, None);
+        assert!(!req.confirmed_prod);
     }
 
     #[test]
     fn promote_sends_the_kind_the_permit_was_minted_for() {
         for dry_run in [true, false] {
-            let permit = lifecycle::authorize_promote(&state(true), "uat", dry_run, true).unwrap();
-            let req = wire(promote_call("uat", true, &permit));
+            let req = wire_of(&permit(lifecycle::Verb::Promote { dry_run }, true), true);
             assert_eq!((req.method.as_str(), req.path.as_str()), ("POST", PROMOTE));
             assert_eq!(req.body, Some(json!({ "dryRun": dry_run })));
             assert!(req.confirmed_prod);
@@ -298,10 +314,11 @@ mod tests {
 
     #[test]
     fn unlock_deletes_the_reported_id_encoded() {
-        let permit = lifecycle::authorize_unlock(&state(true), "uat", true).unwrap();
+        let req = wire_of(&permit(lifecycle::Verb::Unlock, true), false);
         assert_eq!(
-            unlock_path(&permit),
-            "/environment/promotion/lock/a%20b%2Fc"
+            (req.method.as_str(), req.path.as_str()),
+            ("DELETE", "/environment/promotion/lock/a%20b%2Fc")
         );
+        assert_eq!(req.body, None);
     }
 }
