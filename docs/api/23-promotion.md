@@ -1,8 +1,9 @@
 # 23 — Promotion (lock state, status, reports)
 
 Verified against a dev → UAT environment pair and a sandbox, 2026-10-26, with
-`scripts/verify-endpoint.sh` and then `aic promotion`. All reads; nothing here
-has locked, promoted or unlocked anything.
+`scripts/verify-endpoint.sh` and then `aic promotion`. The write cycle — lock,
+dry-run promotion, unlock — was measured on the same pair on 2026-10-27; a real
+(non-dry-run) promotion has not been exercised.
 
 `aic promotion status|reports|report|verify` (`src/promotion/`) wraps the reads
 below. There is deliberately no write verb yet.
@@ -26,7 +27,10 @@ the tenant's service account (console) **and** requested by aic — see
 | GET    | `/environment/promotion/lock/state`          | 200. Upper env: `{description, lowerEnv{proxyState,state}, result, upperEnv{…}}`. Lower env: `{description, result}` only |
 | GET    | `/environment/promotion/promote`             | 200 `{blockingError, globalLock, message, status, timeStamp, type?}`                           |
 | GET    | `/environment/promotion/status`              | **501** — the status lives on `GET …/promote`                                                  |
-| GET    | `/environment/promotion/lock`                | **405** — `POST` only (not exercised)                                                          |
+| GET    | `/environment/promotion/lock`                | **405** — `POST` only                                                                          |
+| POST   | `/environment/promotion/lock`                | 202 `{description: "Environment lock in progress", promotionId, result: "locking"}` (no body sent) |
+| POST   | `/environment/promotion/promote`             | 202 `{result: "Promotion process initiated successfully"}` with body `{"dryRun":true}`        |
+| DELETE | `/environment/promotion/lock/{promotionId}`  | 202 `{description: "Environment unlock in progress", promotionId, result: "unlocking"}`       |
 | GET    | `/environment/promotion/reports`             | 200, array of `{createdDate, dryRun, promoter, promotionId, reportId, type}`; `[]` on the lower env |
 | GET    | `/environment/promotion/report`              | 200 latest report on the upper env; lower env **404** `{"message":"No latest report data found"}` |
 | GET    | `/environment/promotion/report/{reportId}`   | 200, one report                                                                                |
@@ -84,9 +88,41 @@ reported `blockingError: true` also exits non-zero, on its own. Agreeing
 `LOCKED` values exit zero: this is not a readiness check. Which source a lock
 request consults is unmeasured.
 
-## Not yet exercised
+## The write cycle
 
-Locking, unlocking, dry runs and promotion (`POST` on `lock`, `promote`).
+Measured 2026-10-27 on the dev → UAT pair, twice for lock/unlock and once for
+the dry run, every call sent to the **upper** environment. Starting a lock from
+the lower environment was not tried.
+
+| Step | Request | Settles as | Took |
+| ---- | ------- | ---------- | ---- |
+| Lock | `POST …/lock` | `lock/state` `result: locked`, both sides `locked` (the upper side first, ~15 s earlier); `GET …/promote` then `status: READY`, `message: "Environment ready for promotion"`, `globalLock: LOCKED`, and carries the `promotionId` | ~3¼ min |
+| Dry run | `POST …/promote`, `Content-Type: application/json`, `{"dryRun":true}` | `GET …/promote` `status: RUNNING` through the messages `Start promotion`, `Clone repos`, `Checking promotion can proceed`, `Create report`, `Resetting promotion-gate attributes`; then `status: READY`, `message: "Promotion completed (no change)"`, still `globalLock: LOCKED` | ~8½ min |
+| Unlock | `DELETE …/lock/{promotionId}` (the id the lock returned) | `lock/state` `unlocking` on both sides together, then `unlocked`; `GET …/promote` `status: UNLOCKED` | ~3¼ min |
+
+What the dry run left behind: one new `reports` entry with `dryRun: true` and
+**no `promoter` key** (every real promotion's entry carries one), whose
+`reportName` ends `_dryrun=true_<promotionId>`, and the environment still
+locked — a dry run does not release the lock.
+
+`status` does not distinguish a dry run from a real promotion: both end
+`READY`. Only `message` said "(no change)", and that was a dry run on a pair
+with nothing to promote, so which of the two produced the wording is not
+separated.
+
+**The report lists items the promotion did not change.** That dry run's
+report was byte-identical to the report of the last real promotion five days
+earlier — a global script `modified` and nine ESV secret mappings `added` —
+while the service's own message said "no change" and the console showed
+nothing to promote. The global-script item was also in both earlier real reports
+checked (2026-10-11 and 2026-10-22). So a report is not evidence of what a promotion changed; this is
+the same observation as the provisional report below, made on a completed run.
+Use `aic promotion verify` for the live comparison.
+
+Not exercised: a real promotion (`{"dryRun":false}` or other bodies), a
+`POST …/promote` with no body, unlocking with a stale or foreign
+`promotionId`, a second lock while one is held, and a promotion while
+unlocked.
 
 ## The provisional report is not a live diff
 
