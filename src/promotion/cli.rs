@@ -406,6 +406,12 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
         _ => before.status.promotion_id.clone(),
     };
     if args.no_wait {
+        if promotion_id.is_none() {
+            eprintln!(
+                "  the acknowledgement named no promotionId, so the result cannot be tied to \
+                 this request"
+            );
+        }
         println!("not waiting — `aic promotion status --tenant {tenant}` shows progress");
         return Ok(());
     }

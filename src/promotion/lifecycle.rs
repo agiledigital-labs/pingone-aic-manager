@@ -14,7 +14,8 @@
 //! - **Completion** — [`Watch::judge`] reports done only on evidence under
 //!   the same `promotionId`: for a promotion, `READY` after `RUNNING` was
 //!   seen. A timestamp change proves nothing, and a report is not evidence
-//!   either — it appears mid-run and may be another run's — so reports are
+//!   either — when one becomes readable is unmeasured, and it may be another
+//!   run's — so reports are
 //!   only named afterwards, as candidates.
 //!
 //! Measured on a dev → UAT pair, every call sent to the upper environment
@@ -428,10 +429,10 @@ impl Watch {
         }
     }
 
-    /// Completion is judged from status alone. A report is not evidence: one
-    /// can appear while the run is still `RUNNING` (measured: "Create report"
-    /// is not the last step), and a report under the same id may be another
-    /// run's, so reports are named after completion, as candidates.
+    /// Completion is judged from status alone. A report is not evidence: the
+    /// status names a "Create report" step before later ones, when a report
+    /// becomes readable is unmeasured, and one under the same id may be
+    /// another run's — so reports are named after completion, as candidates.
     pub fn judge(&mut self, a: &Assessment) -> Settle {
         let phase = phase(a);
         // A state *about* a lock counts only under this operation's id: a

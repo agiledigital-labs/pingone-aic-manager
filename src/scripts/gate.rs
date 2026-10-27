@@ -174,9 +174,7 @@ fn marked_for_other(realm: &str, script: &RemoteScript) -> Option<Refusal> {
     let source = match kind.decode_source(&script.raw_config) {
         Ok(source) => source,
         Err(error) => {
-            return Some(Refusal::NoVerdict(format!(
-                "the source could not be decoded to read its aic-target marker: {error}"
-            )));
+            return Some(Refusal::Undecodable(error.to_string()));
         }
     };
     let marked = target_markers(&String::from_utf8_lossy(&source));
@@ -442,7 +440,7 @@ mod tests {
         script.raw_config = serde_json::json!({"type": "text/javascript"});
         assert!(matches!(
             local_refusal("", &script),
-            Some(Refusal::NoVerdict(_))
+            Some(Refusal::Undecodable(_))
         ));
     }
 
