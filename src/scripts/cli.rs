@@ -87,6 +87,9 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
                 "push it to the script the marker names, or rebuild it for this one; \
                  delete the marker to push it unmarked"
             }
+            // No flag gets past this one either: the bytes are not a script
+            // aic can read, so re-pull or repair the local file.
+            Refusal::Undecodable(_) => "repair the local file, or re-pull it from the tenant",
         }
     );
 }

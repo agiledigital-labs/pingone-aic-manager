@@ -84,6 +84,10 @@ pub enum Refusal {
     /// by a build outside this repo (decision D-S5); decided locally, before
     /// the syntax check, and past no `--force`, for the reason `WrongTarget` is.
     MarkedForOther { target: String, marked: Vec<String> },
+    /// The payload could not be decoded to source at all, so whether it
+    /// carries an `aic-target` marker cannot be known. Decided locally and
+    /// past every `--force`: not knowing is not "unmarked".
+    Undecodable(String),
 }
 
 impl Refusal {
@@ -104,6 +108,9 @@ impl Refusal {
                 built_for,
             } => {
                 format!("this is the generated bundle for endpoint `{built_for}`, not `{endpoint}`")
+            }
+            Refusal::Undecodable(reason) => {
+                format!("the source could not be decoded to read its aic-target marker — {reason}")
             }
             Refusal::MarkedForOther { target, marked } => match marked.as_slice() {
                 [one] => format!("this source is marked for `{one}`, not `{target}`"),
@@ -138,7 +145,7 @@ impl Refusal {
                 .iter()
                 .map(|m| format!("its leading comments say `// aic-target: {m}`"))
                 .collect(),
-            Refusal::NoVerdict(_) | Refusal::Unsupported(_) => Vec::new(),
+            Refusal::NoVerdict(_) | Refusal::Unsupported(_) | Refusal::Undecodable(_) => Vec::new(),
         }
     }
 

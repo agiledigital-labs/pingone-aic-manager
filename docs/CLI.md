@@ -932,7 +932,8 @@ While waiting, every reading about a lock is judged under the operation's
 names. A reading under a different id fails the wait: another operation has
 taken the pair. One naming no id is not counted either way. A `lock` whose
 acknowledgement names no id exits non-zero rather than wait, because nothing
-could tie the result to the request. A promotion counts as finished only on
+could tie the result to the request — except under `--no-wait`, which reports
+acceptance, not completion, and exits zero with a warning. A promotion counts as finished only on
 `READY` **after** it was seen `RUNNING` under its id; a run too quick to be
 seen is reported unconfirmed when the timeout expires.
 

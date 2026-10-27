@@ -109,9 +109,10 @@ locked — a dry run does not release the lock.
 
 A dry run ends `READY`, the same status a lock settles at and a promotion
 starts from, so `READY` alone does not say a run finished; `aic` takes it as
-the end only after seeing `RUNNING` under the same `promotionId` — a report
-appears while the run is still `RUNNING` ("Create report" is not the last
-step), so a report is not evidence the run ended. That a
+the end only after seeing `RUNNING` under the same `promotionId`. A report is
+not taken as evidence the run ended: the status named a "Create report" step
+before later steps, and when the report becomes readable has not been
+measured. That a
 real promotion ends the same way is **assumed**, not measured. Only `message`
 said "(no change)", and that was a dry run on a pair with nothing to promote,
 so whether the wording comes from the dry run or the empty pair is not
