@@ -128,9 +128,11 @@ pub enum Target {
         realm: String,
     },
     /// An IDM custom endpoint's config document, `endpoint/<name>`. The
-    /// report names it with every `/` turned to `-` (`endpoint-<name>`,
-    /// measured 2026-10-27), which cannot be reversed, so `api` resolves the
-    /// name against the config list (`endpoint_id`) rather than guessing.
+    /// report names it `endpoint-<name>` (measured 2026-10-27). `<name>`
+    /// holds no `/` — a config path of more than two parts is a 400 — so the
+    /// name reverses to one id; `api` still resolves it against the config
+    /// list (`endpoint_id`), because whether reports fold its case is
+    /// unmeasured.
     IdmEndpoint {
         name: String,
     },
@@ -512,7 +514,8 @@ fn reported_as(id: &str, reported: &str) -> bool {
 /// Absence here is what lets a reported delete pass, so everything that
 /// could fake it is an error instead: a paged list, a row with no string
 /// `_id`, and a row that is an endpoint by one sign (`factoryPid`) but not
-/// the other (an `endpoint/` id) — measured, the two always agree. Two
+/// the other (an `endpoint/<name>` id of two parts) — measured, the two
+/// always agree. Two
 /// candidates are refused rather than picked, and so is a candidate that
 /// matches only without case: the report lowercased CORS ids, but whether
 /// it folds endpoint names is unmeasured, and treating a case-only match as
@@ -525,7 +528,8 @@ pub fn endpoint_id(list: &Value, reported: &str) -> Result<Option<String>, Strin
             .and_then(Value::as_str)
             .ok_or_else(|| format!("config list row without a string `_id`: {row}"))?;
         let by_factory = row.get("factoryPid").and_then(Value::as_str) == Some("endpoint");
-        if by_factory != id.starts_with("endpoint/") {
+        let by_id = id.starts_with("endpoint/");
+        if (by_factory || by_id) && !(by_factory && endpoint_reading_of(id).is_some()) {
             return Err(format!(
                 "config list row is an endpoint by one sign and not the other: {row}"
             ));
@@ -547,9 +551,33 @@ pub fn endpoint_id(list: &Value, reported: &str) -> Result<Option<String>, Strin
     }
 }
 
+/// `endpoint/<name>` → `Some(name)` when `<name>` is one non-empty part.
+fn endpoint_reading_of(id: &str) -> Option<&str> {
+    id.strip_prefix("endpoint/")
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+}
+
+/// The one config id a report's `endpoint-<name>` stands for:
+/// `endpoint/<name>`. A config path of more than two parts is a 400
+/// ("The passed resourcePath has more than two parts", measured
+/// 2026-10-27 on both tenants), so no `-` in `<name>` can have been a `/`.
+/// A name of any other form is an error: it cannot be shown absent.
+pub fn endpoint_reading(reported: &str) -> Result<String, String> {
+    let id = reported
+        .strip_prefix("endpoint-")
+        .map(|name| format!("endpoint/{name}"))
+        .ok_or_else(|| format!("{reported:?} is not an `endpoint-<name>` report name"))?;
+    match endpoint_reading_of(&id) {
+        Some(_) => Ok(id),
+        None => Err(format!(
+            "{reported:?} is not an `endpoint-<name>` report name"
+        )),
+    }
+}
+
 /// An endpoint document read as config id `id`: that exact `_id` — encoding
-/// it back to the report's name would accept `endpoint/a-b` read for
-/// `endpoint/a/b` — and the measured inline shape. An endpoint backed by a
+/// it back to the report's name, without case, would accept `endpoint/Probe`
+/// read for `endpoint/probe` — and the measured inline shape. An endpoint backed by a
 /// `file`, or any other shape, is not one this compares.
 pub fn check_endpoint(doc: &Value, id: &str) -> Result<(), String> {
     match doc.get("_id").and_then(Value::as_str) {
@@ -873,9 +901,8 @@ mod tests {
         assert_eq!(judge(Shape::Rev, None, Some(&v)), Verdict::OnlyUpper);
     }
 
-    /// The report's name is the config id with `/` as `-`, which cannot be
-    /// reversed: `endpoint-a-b` is `endpoint/a-b` or `endpoint/a/b`. The
-    /// discriminating case is the nested id, which reversing gets wrong.
+    /// The report's name is the config id with `/` as `-`. Absence decides a
+    /// reported delete, so everything that could fake it is an error.
     #[test]
     fn endpoints_resolve_against_the_config_list() {
         assert_eq!(
@@ -887,15 +914,15 @@ mod tests {
         let ep = |id: &str| json!({"_id": id, "factoryPid": "endpoint"});
         let list = |rows: Vec<Value>| json!({"_id": "", "configurations": rows});
         let base = list(vec![
-            ep("endpoint/a/b"),
+            ep("endpoint/a-b"),
             ep("endpoint/Probe"),
             json!({"_id": "managed"}),
-            ep("endpoint/c-d"),
-            ep("endpoint/c/d"),
+            ep("endpoint/dup"),
+            ep("endpoint/Dup"),
         ]);
         assert_eq!(
             endpoint_id(&base, "endpoint-a-b"),
-            Ok(Some("endpoint/a/b".into()))
+            Ok(Some("endpoint/a-b".into()))
         );
         assert_eq!(
             endpoint_id(&base, "endpoint-Probe"),
@@ -904,7 +931,7 @@ mod tests {
         assert_eq!(endpoint_id(&base, "endpoint-gone"), Ok(None));
         // Folding finds a candidate but does not accept it.
         assert!(endpoint_id(&base, "endpoint-probe").is_err());
-        assert!(endpoint_id(&base, "endpoint-c-d").is_err());
+        assert!(endpoint_id(&base, "endpoint-dup").is_err());
         assert!(endpoint_id(&json!({}), "endpoint-a").is_err());
 
         // Everything that could fake absence is an error, not `None`.
@@ -922,24 +949,31 @@ mod tests {
         assert!(endpoint_id(&unflagged, "endpoint-a").is_err());
         let misnamed = list(vec![ep("other/a")]);
         assert!(endpoint_id(&misnamed, "endpoint-a").is_err());
+        // A three-part id is not one the config API can hold.
+        let deep = list(vec![ep("endpoint/a/b")]);
+        assert!(endpoint_id(&deep, "endpoint-a-b").is_err());
 
-        let measured = json!({"_id": "endpoint/a/b", "source": "x", "type": "text/javascript"});
-        assert_eq!(check_endpoint(&measured, "endpoint/a/b"), Ok(()));
-        // Encodes to the same name, but is not the id that was read.
-        let sibling = json!({"_id": "endpoint/a-b", "source": "x", "type": "text/javascript"});
-        assert!(check_endpoint(&sibling, "endpoint/a/b").is_err());
-        assert!(check_endpoint(&json!({"_id": "endpoint/a/b"}), "endpoint/a/b").is_err());
-        let untyped = json!({"_id": "endpoint/a/b", "source": "x"});
-        assert!(check_endpoint(&untyped, "endpoint/a/b").is_err());
-        let file = json!({"_id": "endpoint/a/b", "file": "a.js", "type": "text/javascript"});
-        assert!(check_endpoint(&file, "endpoint/a/b").is_err());
+        assert_eq!(endpoint_reading("endpoint-a-b"), Ok("endpoint/a-b".into()));
+        assert!(endpoint_reading("endpoint-").is_err());
+        assert!(endpoint_reading("endpoint-a/b").is_err());
+        assert!(endpoint_reading("probe").is_err());
+
+        let measured = json!({"_id": "endpoint/Probe", "source": "x", "type": "text/javascript"});
+        assert_eq!(check_endpoint(&measured, "endpoint/Probe"), Ok(()));
+        // Encodes to the same name without case, but is not the id read.
+        assert!(check_endpoint(&measured, "endpoint/probe").is_err());
+        assert!(check_endpoint(&json!({"_id": "endpoint/Probe"}), "endpoint/Probe").is_err());
+        let untyped = json!({"_id": "endpoint/Probe", "source": "x"});
+        assert!(check_endpoint(&untyped, "endpoint/Probe").is_err());
+        let file = json!({"_id": "endpoint/Probe", "file": "a.js", "type": "text/javascript"});
+        assert!(check_endpoint(&file, "endpoint/Probe").is_err());
 
         let probe = Target::IdmEndpoint {
-            name: "endpoint-a-b".into(),
+            name: "endpoint-Probe".into(),
         };
         assert_eq!(probe.shape(), Shape::Plain);
         assert!(check_document(&probe, &measured).is_ok());
-        assert!(check_document(&probe, &json!({"_id": "endpoint/a/b"})).is_err());
+        assert!(check_document(&probe, &json!({"_id": "endpoint/Probe"})).is_err());
         let other = json!({"_id": "endpoint/other", "source": "x", "type": "t"});
         assert!(check_document(&probe, &other).is_err());
     }

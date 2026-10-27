@@ -161,35 +161,46 @@ async fn read(tenant: &str, target: &verify::Target) -> Result<Option<Value>> {
             Ok(verify::themes(&doc, realm).map_err(Error::Config)?.cloned())
         }
         Target::IdmEndpoint { name } => {
-            let list = get(tenant, "/openidm/config").await?;
-            let Some(id) = verify::endpoint_id(&list, name).map_err(Error::Config)? else {
-                return endpoint_absent(tenant, name).await;
-            };
-            let doc = absent_on_404(get(tenant, &endpoint_path(&id)).await)?;
-            if let Some(doc) = &doc {
-                verify::check_endpoint(doc, &id).map_err(Error::Config)?;
-            }
-            Ok(doc)
+            endpoint(
+                name,
+                move |path: String| async move { get(tenant, &path).await },
+            )
+            .await
         }
         Target::Unchecked(why) => Err(Error::Config(why.clone())),
     }
 }
 
-/// The list's word that `name` is absent, cross-checked by reading the
-/// single-segment id the name most plainly stands for (`endpoint-x` →
-/// `endpoint/x`). That the config list is complete is not measured; a 200
-/// here says it was not, and absence is then not shown.
-async fn endpoint_absent(tenant: &str, name: &str) -> Result<Option<Value>> {
-    let Some(rest) = name.strip_prefix("endpoint-") else {
-        return Ok(None);
+/// The endpoint a report names, read through `get` (a path → document
+/// reader, injected so a test drives this orchestration).
+///
+/// The config list resolves a present endpoint to its exact id. When the
+/// list names none, absence is **not** taken from it — that the list is
+/// complete is unmeasured, and a reported delete passes on two absences —
+/// but from a direct read of the one id the name stands for
+/// (`verify::endpoint_reading`): a 404 is absent, a 200 means the list
+/// omitted it, and anything else is an error.
+async fn endpoint<G, F>(name: &str, get: G) -> Result<Option<Value>>
+where
+    G: Fn(String) -> F,
+    F: std::future::Future<Output = Result<Value>>,
+{
+    let list = get("/openidm/config".to_string()).await?;
+    let Some(id) = verify::endpoint_id(&list, name).map_err(Error::Config)? else {
+        let id = verify::endpoint_reading(name).map_err(Error::Config)?;
+        return match absent_on_404(get(endpoint_path(&id)).await)? {
+            None => Ok(None),
+            Some(_) => Err(Error::Config(format!(
+                "the config list omits {id:?}, which reads directly; \
+                 the list cannot show absence"
+            ))),
+        };
     };
-    let id = format!("endpoint/{rest}");
-    match absent_on_404(get(tenant, &endpoint_path(&id)).await)? {
-        None => Ok(None),
-        Some(_) => Err(Error::Config(format!(
-            "the config list omits {id:?}, which reads directly; the list cannot show absence"
-        ))),
+    let doc = absent_on_404(get(endpoint_path(&id)).await)?;
+    if let Some(doc) = &doc {
+        verify::check_endpoint(doc, &id).map_err(Error::Config)?;
     }
+    Ok(doc)
 }
 
 /// `endpoint/<name>` → `/openidm/config/endpoint/<name>`, each segment
@@ -306,6 +317,77 @@ mod tests {
             endpoint_path("endpoint/a b/c"),
             "/openidm/config/endpoint/a%20b/c"
         );
+    }
+
+    /// Drives `endpoint` with scripted responses, returning its result and
+    /// every path it asked for. A path not scripted answers 404.
+    fn endpoint_with(
+        name: &str,
+        script: &[(&str, std::result::Result<Value, u16>)],
+    ) -> (Result<Option<Value>>, Vec<String>) {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let reader = |path: String| {
+            asked.borrow_mut().push(path.clone());
+            let answer = match script.iter().find(|(p, _)| *p == path) {
+                Some((_, Ok(doc))) => Ok(doc.clone()),
+                Some((_, Err(status))) => Err(Error::Api {
+                    status: *status,
+                    body: String::new(),
+                }),
+                None => Err(Error::Api {
+                    status: 404,
+                    body: String::new(),
+                }),
+            };
+            async move { answer }
+        };
+        let result = futures::executor::block_on(endpoint(name, reader));
+        (result, asked.into_inner())
+    }
+
+    #[test]
+    fn an_endpoint_absent_from_the_list_is_read_directly() {
+        const LIST: &str = "/openidm/config";
+        const READ: &str = "/openidm/config/endpoint/a-b";
+        let ep = |id: &str| json!({"_id": id, "factoryPid": "endpoint"});
+        let empty = json!({"_id": "", "configurations": []});
+        let doc = json!({"_id": "endpoint/a-b", "source": "x", "type": "text/javascript"});
+
+        // The direct read 404s: absent, and it was asked for.
+        let (got, asked) = endpoint_with("endpoint-a-b", &[(LIST, Ok(empty.clone()))]);
+        assert!(matches!(got, Ok(None)));
+        assert_eq!(asked, [LIST, READ]);
+
+        // It reads though the list omits it: the list cannot show absence.
+        let (got, _) = endpoint_with(
+            "endpoint-a-b",
+            &[(LIST, Ok(empty.clone())), (READ, Ok(doc.clone()))],
+        );
+        assert!(got.is_err());
+
+        // A read that errors is not a 404.
+        let (got, _) = endpoint_with(
+            "endpoint-a-b",
+            &[(LIST, Ok(empty.clone())), (READ, Err(403))],
+        );
+        assert!(got.is_err());
+
+        // A name of another form is refused before any read.
+        let (got, asked) = endpoint_with("probe", &[(LIST, Ok(empty.clone()))]);
+        assert!(got.is_err());
+        assert_eq!(asked, [LIST]);
+
+        // Listed: read by its exact id, and checked.
+        let listed = json!({"_id": "", "configurations": [ep("endpoint/a-b")]});
+        let (got, asked) = endpoint_with(
+            "endpoint-a-b",
+            &[(LIST, Ok(listed.clone())), (READ, Ok(doc.clone()))],
+        );
+        assert_eq!(got.unwrap(), Some(doc));
+        assert_eq!(asked, [LIST, READ]);
+        let wrong = json!({"_id": "endpoint/A-B", "source": "x", "type": "t"});
+        let (got, _) = endpoint_with("endpoint-a-b", &[(LIST, Ok(listed)), (READ, Ok(wrong))]);
+        assert!(got.is_err());
     }
 
     fn wire(call: ApiCall<'_>) -> ApiCallRequest {

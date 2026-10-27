@@ -281,10 +281,12 @@ Four naming mismatches, each measured, decide the lookups:
 - **The theme name does not match the stored one** (`Starter` against
   `Starter Theme`), so the realm's whole theme list is compared instead of
   guessing which theme is meant.
-- **An endpoint's `/` becomes `-`** (`endpoint-aic-promotion-probe`), which
-  cannot be reversed: `endpoint-a-b` could be `endpoint/a-b` or
-  `endpoint/a/b`. So the name is matched against the config list's endpoint
-  ids encoded the same way. Two candidates are an error, and so is one that
+- **An endpoint's `/` becomes `-`** (`endpoint-aic-promotion-probe`). That
+  reverses to one id, because a config id has two parts: `GET
+  /openidm/config/endpoint/<a>/<b>` is a 400 "The passed resourcePath has more
+  than two parts" on both tenants, even under an endpoint that exists. So
+  `endpoint-a-b` is `endpoint/a-b`. The name is still matched against the
+  config list's endpoint ids encoded the same way. Two candidates are an error, and so is one that
   matches only without case: the report lowercases CORS ids, but whether it
   folds endpoint names is not measured (no report on the pair had ever listed
   an endpoint before this round trip). A wrong guess would be fail-open for a
@@ -316,11 +318,14 @@ list. A truncated list would make a present item look absent — unchecked, if
 it was reported added or modified, never a false `same`.
 
 The IDM config list carries the same caveat, and there absence matters more:
-an endpoint reported **deleted** and missing from both lists is in sync. So an
-endpoint the list does not name is also read directly at the single-segment id
-its name most plainly stands for (`endpoint-x` → `endpoint/x`); a 200 there
-means the list omitted it, and the item is unchecked. That covers every
-endpoint whose name has no further `/`; one that does relies on the list.
+an endpoint reported **deleted** and missing from both lists is in sync. So
+absence is never taken from the list. An endpoint the list does not name is
+read directly at the one id its name stands for, and is absent only if that
+answers 404. A 200 means the list omitted it, and any other answer is an
+error; both make the item unchecked, as does a name not of the form
+`endpoint-<name>`. What the direct read cannot exclude is a different *case*: if reports fold endpoint
+names as they fold CORS ids, an omitted `endpoint/Foo` reported as
+`endpoint-foo` is excluded only by the list.
 
 Measured on the pair the console called in sync: **149 of 150 same, 0 differ,
 1 unchecked** (the global script). Positive control, the same report with the
