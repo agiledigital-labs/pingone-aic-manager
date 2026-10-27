@@ -79,6 +79,11 @@ pub enum Refusal {
     /// and not something `--force=syntax-check` gets past: the source may
     /// parse perfectly, it is just not this endpoint's.
     WrongTarget { endpoint: String, built_for: String },
+    /// The source's leading comment block carries an `// aic-target: <ref>`
+    /// marker naming a different script, or markers that disagree. Written
+    /// by a build outside this repo (decision D-S5); decided locally, before
+    /// any request, and past no `--force`, for the reason `WrongTarget` is.
+    MarkedForOther { target: String, marked: Vec<String> },
 }
 
 impl Refusal {
@@ -100,6 +105,12 @@ impl Refusal {
             } => {
                 format!("this is the generated bundle for endpoint `{built_for}`, not `{endpoint}`")
             }
+            Refusal::MarkedForOther { target, marked } => match marked.as_slice() {
+                [one] => format!("this source is marked for `{one}`, not `{target}`"),
+                _ => format!(
+                    "this source carries conflicting targets, so it is not marked for `{target}`"
+                ),
+            },
         }
     }
 
@@ -123,6 +134,10 @@ impl Refusal {
             Refusal::WrongTarget { built_for, .. } => vec![format!(
                 "its `// Source:` banner names typescript/…/{built_for}.ts"
             )],
+            Refusal::MarkedForOther { marked, .. } => marked
+                .iter()
+                .map(|m| format!("its leading comments say `// aic-target: {m}`"))
+                .collect(),
             Refusal::NoVerdict(_) | Refusal::Unsupported(_) => Vec::new(),
         }
     }
