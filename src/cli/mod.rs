@@ -175,7 +175,8 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::journey::cli::JourneyCommand,
     },
-    /// Promotion lock state, status and reports (read-only).
+    /// Promotion: lock state, status, reports and live verify; lock, dry-run,
+    /// promote and unlock.
     Promotion {
         #[command(subcommand)]
         command: crate::promotion::cli::PromotionCommand,

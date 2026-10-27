@@ -6,7 +6,8 @@ dry-run promotion, unlock — was measured on the same pair on 2026-10-27; a rea
 (non-dry-run) promotion has not been exercised.
 
 `aic promotion status|reports|report|verify` (`src/promotion/`) wraps the reads
-below. There is deliberately no write verb yet.
+below, and `aic promotion lock|dry-run|promote|unlock` the write cycle
+(`src/promotion/lifecycle.rs` holds the states each may start from).
 
 ## Scope
 
