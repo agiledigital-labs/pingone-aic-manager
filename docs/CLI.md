@@ -952,10 +952,9 @@ finished, and is never what decides that it has. This is best-effort
 identification: **no** new report exits non-zero, because what the run did is
 then unconfirmed, and more than one is listed as candidates, since another run
 shared the lock. Even one is a candidate, not proof.
-Neither unlocks. With nothing to promote, a report repeats the previous
-one's items — a dry run's was byte-identical to the previous real promotion's —
-so check one live with `verify --report <id>`; with something to promote, the
-reports measured listed only that.
+Neither unlocks. A report can list items the promotion did not change — on a
+pair with nothing to promote, a dry run's was byte-identical to the previous
+real promotion's — so check one live with `verify --report <id>`.
 
 ## `aic role` — IDM internal roles
 

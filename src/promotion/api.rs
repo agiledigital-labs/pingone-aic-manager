@@ -163,11 +163,32 @@ async fn read(tenant: &str, target: &verify::Target) -> Result<Option<Value>> {
         Target::IdmEndpoint { name } => {
             let list = get(tenant, "/openidm/config").await?;
             let Some(id) = verify::endpoint_id(&list, name).map_err(Error::Config)? else {
-                return Ok(None);
+                return endpoint_absent(tenant, name).await;
             };
-            absent_on_404(get(tenant, &endpoint_path(&id)).await)
+            let doc = absent_on_404(get(tenant, &endpoint_path(&id)).await)?;
+            if let Some(doc) = &doc {
+                verify::check_endpoint(doc, &id).map_err(Error::Config)?;
+            }
+            Ok(doc)
         }
         Target::Unchecked(why) => Err(Error::Config(why.clone())),
+    }
+}
+
+/// The list's word that `name` is absent, cross-checked by reading the
+/// single-segment id the name most plainly stands for (`endpoint-x` →
+/// `endpoint/x`). That the config list is complete is not measured; a 200
+/// here says it was not, and absence is then not shown.
+async fn endpoint_absent(tenant: &str, name: &str) -> Result<Option<Value>> {
+    let Some(rest) = name.strip_prefix("endpoint-") else {
+        return Ok(None);
+    };
+    let id = format!("endpoint/{rest}");
+    match absent_on_404(get(tenant, &endpoint_path(&id)).await)? {
+        None => Ok(None),
+        Some(_) => Err(Error::Config(format!(
+            "the config list omits {id:?}, which reads directly; the list cannot show absence"
+        ))),
     }
 }
 

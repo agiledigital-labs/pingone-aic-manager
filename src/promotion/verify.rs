@@ -385,10 +385,16 @@ pub fn same_tenant(a: &str, b: &str) -> bool {
 /// A CREST list must be complete for absence to mean anything: an item not
 /// on a page that says more follow has not been shown to be absent.
 pub fn complete(list: &Value) -> Result<&[Value], String> {
+    complete_in(list, "result")
+}
+
+/// `complete` for a list whose entries are under `key` rather than `result`
+/// (`GET /openidm/config` answers `configurations`).
+fn complete_in<'a>(list: &'a Value, key: &str) -> Result<&'a [Value], String> {
     let result = list
-        .get("result")
+        .get(key)
         .and_then(Value::as_array)
-        .ok_or_else(|| format!("list has no `result` array: {list}"))?;
+        .ok_or_else(|| format!("list has no `{key}` array: {list}"))?;
     let cookie = list.get("pagedResultsCookie");
     if cookie.is_some_and(|c| !c.is_null()) {
         return Err("the list is paged (pagedResultsCookie set); absence cannot be shown".into());
@@ -476,7 +482,7 @@ pub fn check_document(target: &Target, doc: &Value) -> Result<(), String> {
             other => Err(format!("theme list is not an array: {other}")),
         },
         Target::IdmEndpoint { name } => match doc.get("_id").and_then(Value::as_str) {
-            Some(got) if reported_as(got, name) => Ok(()),
+            Some(got) if reported_as(got, name) => endpoint_body(doc),
             _ => Err(format!("endpoint read did not return {name:?}: {doc}")),
         },
         Target::Cors { name } => match doc.get("_id").and_then(Value::as_str) {
@@ -493,34 +499,76 @@ pub fn check_document(target: &Target, doc: &Value) -> Result<(), String> {
     }
 }
 
-/// Whether config id `id` is what a report calls `reported`: every `/` as
-/// `-`, compared without case — the report lowercased CORS ids, and whether
-/// it does the same here is unmeasured, so ambiguity is refused instead.
+/// Whether config id `id` could be what a report calls `reported`: every
+/// `/` as `-`, compared without case. Folding only *finds* candidates — see
+/// `endpoint_id` for why a match that needed it is not accepted.
 fn reported_as(id: &str, reported: &str) -> bool {
     id.replace('/', "-").eq_ignore_ascii_case(reported)
 }
 
 /// The one endpoint config id in `GET /openidm/config`'s `configurations`
-/// that the report's name stands for. `None` when there is none; an error
-/// when two ids encode to the same name, since reading either could compare
-/// the wrong endpoint — and two absent reads would pass a reported delete.
+/// that the report's name stands for, or `None` when the list has none.
+///
+/// Absence here is what lets a reported delete pass, so everything that
+/// could fake it is an error instead: a paged list, a row with no string
+/// `_id`, and a row that is an endpoint by one sign (`factoryPid`) but not
+/// the other (an `endpoint/` id) — measured, the two always agree. Two
+/// candidates are refused rather than picked, and so is a candidate that
+/// matches only without case: the report lowercased CORS ids, but whether
+/// it folds endpoint names is unmeasured, and treating a case-only match as
+/// either the endpoint or "not found" would be a guess.
 pub fn endpoint_id(list: &Value, reported: &str) -> Result<Option<String>, String> {
-    let configs = list
-        .get("configurations")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("config list has no `configurations` array: {list}"))?;
-    let mut found = configs
-        .iter()
-        .filter(|c| c.get("factoryPid").and_then(Value::as_str) == Some("endpoint"))
-        .filter_map(|c| c.get("_id").and_then(Value::as_str))
-        .filter(|id| reported_as(id, reported));
-    match (found.next(), found.next()) {
-        (None, _) => Ok(None),
-        (Some(id), None) => Ok(Some(id.to_string())),
-        (Some(a), Some(b)) => Err(format!(
+    let mut candidates = Vec::new();
+    for row in complete_in(list, "configurations")? {
+        let id = row
+            .get("_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("config list row without a string `_id`: {row}"))?;
+        let by_factory = row.get("factoryPid").and_then(Value::as_str) == Some("endpoint");
+        if by_factory != id.starts_with("endpoint/") {
+            return Err(format!(
+                "config list row is an endpoint by one sign and not the other: {row}"
+            ));
+        }
+        if by_factory && reported_as(id, reported) {
+            candidates.push(id);
+        }
+    }
+    match candidates[..] {
+        [] => Ok(None),
+        [id] if id.replace('/', "-") == reported => Ok(Some(id.to_string())),
+        [id] => Err(format!(
+            "{reported:?} matches endpoint {id:?} only without case, and whether \
+             reports fold endpoint case is unmeasured"
+        )),
+        [a, b, ..] => Err(format!(
             "{reported:?} could be endpoint {a:?} or {b:?}; refusing to pick one"
         )),
     }
+}
+
+/// An endpoint document read as config id `id`: that exact `_id` — encoding
+/// it back to the report's name would accept `endpoint/a-b` read for
+/// `endpoint/a/b` — and the measured inline shape. An endpoint backed by a
+/// `file`, or any other shape, is not one this compares.
+pub fn check_endpoint(doc: &Value, id: &str) -> Result<(), String> {
+    match doc.get("_id").and_then(Value::as_str) {
+        Some(got) if got == id => endpoint_body(doc),
+        _ => Err(format!("endpoint read as {id:?} returned another: {doc}")),
+    }
+}
+
+/// The measured inline endpoint: string `source` and `type`. An `_id` alone
+/// would compare `same` with nothing compared.
+fn endpoint_body(doc: &Value) -> Result<(), String> {
+    for field in ["source", "type"] {
+        if !doc.get(field).is_some_and(Value::is_string) {
+            return Err(format!(
+                "endpoint document has no string `{field}` (only the inline shape is compared): {doc}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A script's source, the thing a script comparison is about: the
@@ -837,32 +885,63 @@ mod tests {
             }
         );
         let ep = |id: &str| json!({"_id": id, "factoryPid": "endpoint"});
-        let list = json!({"configurations": [
-            ep("endpoint/a/b"), ep("endpoint/Probe"),
-            {"_id": "endpoint/x", "pid": "x"},
-            ep("endpoint/c-d"), ep("endpoint/c/d"),
-        ]});
+        let list = |rows: Vec<Value>| json!({"_id": "", "configurations": rows});
+        let base = list(vec![
+            ep("endpoint/a/b"),
+            ep("endpoint/Probe"),
+            json!({"_id": "managed"}),
+            ep("endpoint/c-d"),
+            ep("endpoint/c/d"),
+        ]);
         assert_eq!(
-            endpoint_id(&list, "endpoint-a-b"),
+            endpoint_id(&base, "endpoint-a-b"),
             Ok(Some("endpoint/a/b".into()))
         );
         assert_eq!(
-            endpoint_id(&list, "endpoint-probe"),
+            endpoint_id(&base, "endpoint-Probe"),
             Ok(Some("endpoint/Probe".into()))
         );
-        // Only factory endpoint configs count.
-        assert_eq!(endpoint_id(&list, "endpoint-x"), Ok(None));
-        assert_eq!(endpoint_id(&list, "endpoint-gone"), Ok(None));
-        assert!(endpoint_id(&list, "endpoint-c-d").is_err());
+        assert_eq!(endpoint_id(&base, "endpoint-gone"), Ok(None));
+        // Folding finds a candidate but does not accept it.
+        assert!(endpoint_id(&base, "endpoint-probe").is_err());
+        assert!(endpoint_id(&base, "endpoint-c-d").is_err());
         assert!(endpoint_id(&json!({}), "endpoint-a").is_err());
+
+        // Everything that could fake absence is an error, not `None`.
+        let mut paged = list(vec![]);
+        paged["pagedResultsCookie"] = json!("next");
+        assert!(endpoint_id(&paged, "endpoint-a").is_err());
+        let mut more = list(vec![]);
+        more["remainingPagedResults"] = json!(1);
+        assert!(endpoint_id(&more, "endpoint-a").is_err());
+        let no_id = list(vec![json!({"factoryPid": "endpoint"})]);
+        assert!(endpoint_id(&no_id, "endpoint-a").is_err());
+        let bare = list(vec![json!({"pid": "x"})]);
+        assert!(endpoint_id(&bare, "endpoint-a").is_err());
+        let unflagged = list(vec![json!({"_id": "endpoint/a", "pid": "x"})]);
+        assert!(endpoint_id(&unflagged, "endpoint-a").is_err());
+        let misnamed = list(vec![ep("other/a")]);
+        assert!(endpoint_id(&misnamed, "endpoint-a").is_err());
+
+        let measured = json!({"_id": "endpoint/a/b", "source": "x", "type": "text/javascript"});
+        assert_eq!(check_endpoint(&measured, "endpoint/a/b"), Ok(()));
+        // Encodes to the same name, but is not the id that was read.
+        let sibling = json!({"_id": "endpoint/a-b", "source": "x", "type": "text/javascript"});
+        assert!(check_endpoint(&sibling, "endpoint/a/b").is_err());
+        assert!(check_endpoint(&json!({"_id": "endpoint/a/b"}), "endpoint/a/b").is_err());
+        let untyped = json!({"_id": "endpoint/a/b", "source": "x"});
+        assert!(check_endpoint(&untyped, "endpoint/a/b").is_err());
+        let file = json!({"_id": "endpoint/a/b", "file": "a.js", "type": "text/javascript"});
+        assert!(check_endpoint(&file, "endpoint/a/b").is_err());
 
         let probe = Target::IdmEndpoint {
             name: "endpoint-a-b".into(),
         };
         assert_eq!(probe.shape(), Shape::Plain);
-        assert!(check_document(&probe, &json!({"_id": "endpoint/a/b"})).is_ok());
-        assert!(check_document(&probe, &json!({"_id": "endpoint/other"})).is_err());
-        assert!(check_document(&probe, &json!({"source": "x"})).is_err());
+        assert!(check_document(&probe, &measured).is_ok());
+        assert!(check_document(&probe, &json!({"_id": "endpoint/a/b"})).is_err());
+        let other = json!({"_id": "endpoint/other", "source": "x", "type": "t"});
+        assert!(check_document(&probe, &other).is_err());
     }
 
     #[test]

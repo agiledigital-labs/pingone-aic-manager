@@ -89,9 +89,9 @@ pub enum PromotionCommand {
     /// changes until `unlock`. Measured to settle in ~3 minutes.
     Lock(WriteArgs),
     /// Run a dry-run promotion on a locked pair and name the report it
-    /// produced. Changes no configuration; measured ~8½ minutes. With
-    /// nothing to promote a report repeats the previous one's items, so
-    /// check one with `verify`.
+    /// produced. Changes no configuration; measured ~8½ minutes. A report
+    /// can list items the promotion did not change, so check one with
+    /// `verify`.
     DryRun(WriteArgs),
     /// Promote the lower environment's configuration into the upper one, on
     /// a locked pair, and name the report it produced. Measured with a real
@@ -321,8 +321,12 @@ fn default_timeout(verb: &Verb) -> Duration {
 /// the reads are cheap but there is no reason to hammer the service.
 const POLL_INTERVAL: Duration = Duration::from_secs(15);
 
-/// Consecutive failed status reads tolerated while waiting before giving up.
-const POLL_READ_FAILURES: u32 = 3;
+/// Consecutive failed status reads that make the wait give up (the last
+/// one included). Two in a row were seen mid-lock on 2026-10-27, against an
+/// earlier limit of three; six at `POLL_INTERVAL` is ~1½ minutes of
+/// failures. An operational choice, not a measured bound — no write is
+/// resent either way.
+const POLL_READ_FAILURES: u32 = 6;
 
 async fn assessment(tenant: &str) -> Result<spec::Assessment> {
     let lock_raw = explained(api::lock_state(tenant).await, tenant)?;
@@ -485,7 +489,7 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
                 }
             }
             println!(
-                "with nothing to promote, a report repeats the previous one's items (measured); \
+                "a report can list items the promotion did not change (measured); \
                  `aic promotion verify --lower <env> --upper {tenant} --report <id>` checks them live"
             );
             println!("{unlock_hint}");
@@ -528,7 +532,7 @@ async fn wait(
             Err(error) => {
                 failures += 1;
                 eprintln!("  could not read the status ({failures}/{POLL_READ_FAILURES}): {error}");
-                if failures >= POLL_READ_FAILURES {
+                if failures >= POLL_READ_FAILURES || Instant::now() >= deadline {
                     return Err(lost());
                 }
                 continue;
