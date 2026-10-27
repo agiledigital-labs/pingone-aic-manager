@@ -118,22 +118,22 @@ the end only after seeing `RUNNING` under the same `promotionId`. A report is
 not taken as evidence the run ended: the status named a "Create report" step
 before later steps, and when the report becomes readable has not been
 measured. A real promotion ends the same way — `READY`, still locked — measured
-twice. **"(no change)" reports an empty pair, not a dry run**: the dry run with
-nothing to promote ended "Promotion completed (no change)", while both dry runs
-that had something to promote ended "Promotion completed", as both real
-promotions did.
+twice. **"(no change)" is not a dry-run marker**: it appeared only on the dry
+run of the pair with nothing to promote, while both dry runs that had something
+to promote ended "Promotion completed", as both real promotions did.
 
-**The step messages are not a fixed sequence.** The three dry runs measured
-showed three: `Start promotion`, `Clone repos`, `Checking promotion can
+**The observed step messages differed between runs.** The three dry runs
+showed three sets: `Start promotion`, `Clone repos`, `Checking promotion can
 proceed`, `Create report`, `Resetting promotion-gate attributes` (nothing to
 promote); the same without `Start promotion` (an endpoint added); and `Start
 promotion`, `Clone repos`, `Checking promotion can proceed`, `Notifying that
 config has been pushed`, `Resetting promotion-gate attributes` (an endpoint
 deleted) — with no `Create report`, yet that run's report was there afterwards.
-The messages are sampled by polling, so a short step can go unseen. `aic`
-prints them and decides nothing on them.
+The messages are sampled by polling, so a short step can go unseen, and one
+fixed sequence with differently timed steps would produce the same samples.
+`aic` prints them and decides nothing on them.
 
-**With nothing to promote, the report repeats the previous one.** That dry run's
+**On the pair with nothing to promote, the report repeated the previous one.** That dry run's
 report was byte-identical to the report of the last real promotion five days
 earlier — a global script `modified` and nine ESV secret mappings `added` —
 while the service's own message said "no change" and the console showed
@@ -141,7 +141,7 @@ nothing to promote. The global-script item was also in both earlier real reports
 checked (2026-10-11 and 2026-10-22). So in that case a report is not evidence of what a promotion changed; this is
 the same observation as the provisional report below, made on a completed run.
 
-**With something to promote, the report listed only that.** All four reports of
+**With something to promote, the reports listed only that.** All four reports of
 the real round trip — two dry runs, two promotions — named the one endpoint and
 nothing else; the global script and the nine mappings did not appear. Four runs
 on one pair do not establish that a report always lists exactly the change, so
@@ -171,7 +171,8 @@ That run also observed:
   `aic` never starts a write from one.
 - **A status read can fail transiently mid-lock**: one `GET …/promote` answered
   `500` "unable to read promotion-status document … context deadline exceeded";
-  the next read succeeded. `aic` tolerates three consecutive failed reads.
+  the next read succeeded. `aic` gives up waiting at six consecutive failed
+  reads, or at the timeout — whichever comes first.
 - **The dry run's report was found by difference** from the list read before
   it, as the only new `dryRun: true` entry under the lock's `promotionId`, and
   the run ended "Promotion completed (no change)" after `RUNNING` was seen.
@@ -202,9 +203,9 @@ second.
   `endpoint-aic-promotion-probe` for `endpoint/aic-promotion-probe`.
 - **Two consecutive status reads failed mid-lock** with 500 "context deadline
   exceeded" (once from the lower-lock check, once fetching the promotion
-  status); the third succeeded. `aic` tolerates three consecutive failures, so
-  that lock came within one read of giving up waiting — the lock itself
-  settled normally.
+  status); the third succeeded. The limit was then three, the third failure
+  ending the wait, so that lock came within one read of giving up waiting —
+  the lock itself settled normally. The limit is now six.
 
 ## The provisional report is not a live diff
 
@@ -263,7 +264,7 @@ UAT pair (200 on both unless stated):
 | `AM Authentication > Settings`        | `…/realms/{realm}/realm-config/authentication`                                                         |
 | `CORS`                                | `/am/json/global-config/services/CorsService/configuration?_queryFilter=true`, matched by `_id`        |
 | `IDM Themes By Realm`                 | `/openidm/config/ui/themerealm`, the realm's **whole** list                                            |
-| `IDM Custom Endpoints`                | `/openidm/config` (the config list), then `/openidm/config/{_id}` for the one `factoryPid: "endpoint"` entry the name stands for; 404 = absent. Measured 2026-10-27: `{_id, source, type}`, no `_rev`, compared whole |
+| `IDM Custom Endpoints`                | `/openidm/config` (the config list), then `/openidm/config/{_id}` for the one `factoryPid: "endpoint"` entry the name stands for; 404 = absent. Measured 2026-10-27: `{_id, source, type}`, no `_rev`, compared whole; the returned `_id` must be exactly the id read, and only that inline shape is compared (a `file`-backed endpoint is unchecked) |
 | `Global Scripts`                      | no reader: `/am/json/realms/root/scripts` is 403 and `global-config/services/scripting/globalScripts` 404 |
 
 AM config reads use `Accept-API-Version: protocol=1.0,resource=1.0`.
@@ -283,9 +284,14 @@ Four naming mismatches, each measured, decide the lookups:
 - **An endpoint's `/` becomes `-`** (`endpoint-aic-promotion-probe`), which
   cannot be reversed: `endpoint-a-b` could be `endpoint/a-b` or
   `endpoint/a/b`. So the name is matched against the config list's endpoint
-  ids encoded the same way, without case (whether the report lowercases these,
-  as it does CORS ids, is not measured), and two matches are an error. A wrong
-  guess would be fail-open for a deletion, where absent from both is in sync.
+  ids encoded the same way. Two candidates are an error, and so is one that
+  matches only without case: the report lowercases CORS ids, but whether it
+  folds endpoint names is not measured (no report on the pair had ever listed
+  an endpoint before this round trip). A wrong guess would be fail-open for a
+  deletion, where absent from both is in sync — so a paged list, a row with no
+  `_id`, and a row whose `factoryPid` and `endpoint/` prefix disagree are
+  errors too, never "not found". On both tenants, 2026-10-27, the list had 97
+  rows, no paging keys, every row an `_id`, and the two signs agreeing.
 
 An earlier draft looked CORS entries and the theme up by the report's name,
 found them on neither tenant, and called four items in sync. So **absent from
@@ -308,6 +314,13 @@ with `_queryFilter=true` and no paging request, and neither carried a
 the paging this checks for; it does not prove AM never truncates an unpaged
 list. A truncated list would make a present item look absent — unchecked, if
 it was reported added or modified, never a false `same`.
+
+The IDM config list carries the same caveat, and there absence matters more:
+an endpoint reported **deleted** and missing from both lists is in sync. So an
+endpoint the list does not name is also read directly at the single-segment id
+its name most plainly stands for (`endpoint-x` → `endpoint/x`); a 200 there
+means the list omitted it, and the item is unchecked. That covers every
+endpoint whose name has no further `/`; one that does relies on the list.
 
 Measured on the pair the console called in sync: **149 of 150 same, 0 differ,
 1 unchecked** (the global script). Positive control, the same report with the
