@@ -127,6 +127,13 @@ pub enum Target {
     Themes {
         realm: String,
     },
+    /// An IDM custom endpoint's config document, `endpoint/<name>`. The
+    /// report names it with every `/` turned to `-` (`endpoint-<name>`,
+    /// measured 2026-10-27), which cannot be reversed, so `api` resolves the
+    /// name against the config list (`endpoint_id`) rather than guessing.
+    IdmEndpoint {
+        name: String,
+    },
     Unchecked(String),
 }
 
@@ -191,6 +198,9 @@ pub fn target(entry: &Entry) -> Target {
             Ok(realm) => Target::Themes { realm },
             Err(why) => unchecked(why),
         },
+        "IDM Custom Endpoints" => Target::IdmEndpoint {
+            name: entry.name.clone(),
+        },
         item => match item.strip_prefix("AM Services > ") {
             Some(service) => match realm_of() {
                 Ok(realm) => Target::RealmService {
@@ -225,7 +235,7 @@ impl Target {
         match self {
             Target::Script { .. } | Target::ScriptByName { .. } => Shape::Script,
             Target::Journey { .. } => Shape::Journey,
-            Target::Themes { .. } => Shape::Plain,
+            Target::Themes { .. } | Target::IdmEndpoint { .. } => Shape::Plain,
             _ => Shape::Rev,
         }
     }
@@ -465,6 +475,10 @@ pub fn check_document(target: &Target, doc: &Value) -> Result<(), String> {
             },
             other => Err(format!("theme list is not an array: {other}")),
         },
+        Target::IdmEndpoint { name } => match doc.get("_id").and_then(Value::as_str) {
+            Some(got) if reported_as(got, name) => Ok(()),
+            _ => Err(format!("endpoint read did not return {name:?}: {doc}")),
+        },
         Target::Cors { name } => match doc.get("_id").and_then(Value::as_str) {
             Some(got) if got.eq_ignore_ascii_case(name) => Ok(()),
             _ => Err(format!("CORS read did not return {name:?}: {doc}")),
@@ -476,6 +490,36 @@ pub fn check_document(target: &Target, doc: &Value) -> Result<(), String> {
             other => Err(format!("expected an object, got {other}")),
         },
         Target::Unchecked(why) => Err(why.clone()),
+    }
+}
+
+/// Whether config id `id` is what a report calls `reported`: every `/` as
+/// `-`, compared without case — the report lowercased CORS ids, and whether
+/// it does the same here is unmeasured, so ambiguity is refused instead.
+fn reported_as(id: &str, reported: &str) -> bool {
+    id.replace('/', "-").eq_ignore_ascii_case(reported)
+}
+
+/// The one endpoint config id in `GET /openidm/config`'s `configurations`
+/// that the report's name stands for. `None` when there is none; an error
+/// when two ids encode to the same name, since reading either could compare
+/// the wrong endpoint — and two absent reads would pass a reported delete.
+pub fn endpoint_id(list: &Value, reported: &str) -> Result<Option<String>, String> {
+    let configs = list
+        .get("configurations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("config list has no `configurations` array: {list}"))?;
+    let mut found = configs
+        .iter()
+        .filter(|c| c.get("factoryPid").and_then(Value::as_str) == Some("endpoint"))
+        .filter_map(|c| c.get("_id").and_then(Value::as_str))
+        .filter(|id| reported_as(id, reported));
+    match (found.next(), found.next()) {
+        (None, _) => Ok(None),
+        (Some(id), None) => Ok(Some(id.to_string())),
+        (Some(a), Some(b)) => Err(format!(
+            "{reported:?} could be endpoint {a:?} or {b:?}; refusing to pick one"
+        )),
     }
 }
 
@@ -779,6 +823,46 @@ mod tests {
         assert!(Verdict::Neither.in_sync());
         assert_eq!(judge(Shape::Rev, Some(&v), None), Verdict::OnlyLower);
         assert_eq!(judge(Shape::Rev, None, Some(&v)), Verdict::OnlyUpper);
+    }
+
+    /// The report's name is the config id with `/` as `-`, which cannot be
+    /// reversed: `endpoint-a-b` is `endpoint/a-b` or `endpoint/a/b`. The
+    /// discriminating case is the nested id, which reversing gets wrong.
+    #[test]
+    fn endpoints_resolve_against_the_config_list() {
+        assert_eq!(
+            target(&entry("IDM Custom Endpoints", "endpoint-p", None, None)),
+            Target::IdmEndpoint {
+                name: "endpoint-p".into()
+            }
+        );
+        let ep = |id: &str| json!({"_id": id, "factoryPid": "endpoint"});
+        let list = json!({"configurations": [
+            ep("endpoint/a/b"), ep("endpoint/Probe"),
+            {"_id": "endpoint/x", "pid": "x"},
+            ep("endpoint/c-d"), ep("endpoint/c/d"),
+        ]});
+        assert_eq!(
+            endpoint_id(&list, "endpoint-a-b"),
+            Ok(Some("endpoint/a/b".into()))
+        );
+        assert_eq!(
+            endpoint_id(&list, "endpoint-probe"),
+            Ok(Some("endpoint/Probe".into()))
+        );
+        // Only factory endpoint configs count.
+        assert_eq!(endpoint_id(&list, "endpoint-x"), Ok(None));
+        assert_eq!(endpoint_id(&list, "endpoint-gone"), Ok(None));
+        assert!(endpoint_id(&list, "endpoint-c-d").is_err());
+        assert!(endpoint_id(&json!({}), "endpoint-a").is_err());
+
+        let probe = Target::IdmEndpoint {
+            name: "endpoint-a-b".into(),
+        };
+        assert_eq!(probe.shape(), Shape::Plain);
+        assert!(check_document(&probe, &json!({"_id": "endpoint/a/b"})).is_ok());
+        assert!(check_document(&probe, &json!({"_id": "endpoint/other"})).is_err());
+        assert!(check_document(&probe, &json!({"source": "x"})).is_err());
     }
 
     #[test]

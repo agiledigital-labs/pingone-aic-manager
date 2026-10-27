@@ -160,8 +160,22 @@ async fn read(tenant: &str, target: &verify::Target) -> Result<Option<Value>> {
             let doc = get(tenant, "/openidm/config/ui/themerealm").await?;
             Ok(verify::themes(&doc, realm).map_err(Error::Config)?.cloned())
         }
+        Target::IdmEndpoint { name } => {
+            let list = get(tenant, "/openidm/config").await?;
+            let Some(id) = verify::endpoint_id(&list, name).map_err(Error::Config)? else {
+                return Ok(None);
+            };
+            absent_on_404(get(tenant, &endpoint_path(&id)).await)
+        }
         Target::Unchecked(why) => Err(Error::Config(why.clone())),
     }
+}
+
+/// `endpoint/<name>` → `/openidm/config/endpoint/<name>`, each segment
+/// encoded and the `/`s kept as separators.
+fn endpoint_path(id: &str) -> String {
+    let segments: Vec<String> = id.split('/').map(segment).collect();
+    format!("/openidm/config/{}", segments.join("/"))
 }
 
 /// The tree and every node it lists, page-node children included, keyed by
@@ -260,6 +274,18 @@ mod tests {
     use crate::agent::{ApiCallRequest, Request};
     use crate::promotion::lifecycle;
     use crate::promotion::spec::assess;
+
+    #[test]
+    fn endpoint_paths_keep_separators_and_encode_segments() {
+        assert_eq!(
+            endpoint_path("endpoint/aic-promotion-probe"),
+            "/openidm/config/endpoint/aic-promotion-probe"
+        );
+        assert_eq!(
+            endpoint_path("endpoint/a b/c"),
+            "/openidm/config/endpoint/a%20b/c"
+        );
+    }
 
     fn wire(call: ApiCall<'_>) -> ApiCallRequest {
         let Request::ApiCall(req) = call.envelope() else {
