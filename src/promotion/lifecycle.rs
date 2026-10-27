@@ -11,9 +11,11 @@
 //!   eligibility or the `promotionId` changed, then mints the [`Permit`] from
 //!   that fresh read. This narrows the race; with no measured server
 //!   precondition it cannot close it.
-//! - **Completion** — [`Watch::judge`] reports done only on evidence the run
-//!   happened under the same `promotionId`: `RUNNING` seen, or a report this
-//!   run produced. A timestamp change alone proves nothing and is not used.
+//! - **Completion** — [`Watch::judge`] reports done only on evidence under
+//!   the same `promotionId`: for a promotion, `READY` after `RUNNING` was
+//!   seen. A timestamp change proves nothing, and a report is not evidence
+//!   either — it appears mid-run and may be another run's — so reports are
+//!   only named afterwards, as candidates.
 //!
 //! Measured on a dev → UAT pair, every call sent to the upper environment
 //! (`docs/api/23-promotion.md`, "The write cycle").
@@ -210,11 +212,12 @@ pub struct Approval {
 /// - `Promote` — from [`Phase::Ready`] with an id.
 /// - `Unlock` — from [`Phase::Ready`] with an id; never while a promotion
 ///   runs. The id is the tenant's, never one typed.
-/// - `Recover` — from [`Phase::Blocked`] over a lock every lock source agrees
-///   is held, not running, and naming exactly the id the operator expects.
-///   No failed promotion has been measured, so this is the one state let
-///   through: a status that is neither `READY` nor `RUNNING` stays a manual
-///   (console) recovery rather than be guessed safe.
+/// - `Recover` — from [`Phase::Blocked`] with the status `READY` — the one
+///   status measured as settled — over a lock every lock source agrees is
+///   held, naming exactly the id the operator expects. No failed promotion
+///   has been measured, and a blocking error does not say work has stopped,
+///   so every other status (a transition, `RUNNING`, an unknown name) stays a
+///   manual (console) recovery rather than be guessed safe.
 pub fn check(verb: &Verb, a: &Assessment, tenant: &str) -> Result<Approval, String> {
     pair_ok(a, tenant)?;
     let phase = phase(a);
@@ -238,7 +241,7 @@ pub fn check(verb: &Verb, a: &Assessment, tenant: &str) -> Result<Approval, Stri
         )),
         (Verb::Recover { expected }, Phase::Blocked) => {
             let found = id_of(&a.status.promotion_id)?;
-            if !held(a) || is(&a.status.status, "RUNNING") {
+            if !held(a) || !is(&a.status.status, "READY") {
                 Err(format!(
                     "{tenant} does not read as a held, stopped lock, so it will not be released \
                      blind: {}",
@@ -268,34 +271,26 @@ pub fn check(verb: &Verb, a: &Assessment, tenant: &str) -> Result<Approval, Stri
 }
 
 /// Proof that a write was checked against a fresh read and consented to.
-/// The payloads are private and [`authorize`] is the only constructor, so
-/// `api::send` cannot be reached without both.
+/// The operation is a private field and [`authorize`] is the only
+/// constructor, so `api::send` cannot be reached without both — and a permit
+/// for one operation cannot be relabelled as another.
 #[derive(Debug)]
-pub enum Permit {
-    Lock(Minted),
-    Promote(Minted, bool),
-    Unlock(Minted, String),
+pub struct Permit {
+    op: Op,
 }
 
-/// The private half of a [`Permit`].
-#[derive(Debug)]
-pub struct Minted(());
+/// The one write a [`Permit`] authorizes. Readable, never constructible
+/// into a permit outside this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Op {
+    Lock,
+    Promote { dry_run: bool },
+    Unlock { promotion_id: String },
+}
 
 impl Permit {
-    /// `Some(dry_run)` for a promotion permit.
-    pub fn dry_run(&self) -> Option<bool> {
-        match self {
-            Permit::Promote(_, dry_run) => Some(*dry_run),
-            _ => None,
-        }
-    }
-
-    /// The id an unlock permit releases.
-    pub fn promotion_id(&self) -> Option<&str> {
-        match self {
-            Permit::Unlock(_, id) => Some(id),
-            _ => None,
-        }
+    pub fn op(&self) -> &Op {
+        &self.op
     }
 }
 
@@ -339,16 +334,16 @@ pub fn authorize(
             now.promotion_id.as_deref().unwrap_or("none")
         ));
     }
-    let minted = Minted(());
-    Ok(match verb {
-        Verb::Lock => Permit::Lock(minted),
-        Verb::Promote { dry_run } => Permit::Promote(minted, *dry_run),
-        Verb::Unlock | Verb::Recover { .. } => Permit::Unlock(
-            minted,
-            now.promotion_id
+    let op = match verb {
+        Verb::Lock => Op::Lock,
+        Verb::Promote { dry_run } => Op::Promote { dry_run: *dry_run },
+        Verb::Unlock | Verb::Recover { .. } => Op::Unlock {
+            promotion_id: now
+                .promotion_id
                 .expect("check returns an id for every unlock"),
-        ),
-    })
+        },
+    };
+    Ok(Permit { op })
 }
 
 /// What [`begin`] did.
@@ -418,14 +413,14 @@ pub enum Settle {
 pub struct Watch {
     verb: Verb,
     /// The lock this operation belongs to: the approved one, or for a lock
-    /// the id the acknowledgement carried. A reading under any other id is
-    /// someone else's lock, never this operation's progress.
-    promotion_id: Option<String>,
+    /// the id its acknowledgement carried. Required: without it nothing can
+    /// tie a reading to this request, so the caller does not wait at all.
+    promotion_id: String,
     seen_running: bool,
 }
 
 impl Watch {
-    pub fn new(verb: Verb, promotion_id: Option<String>) -> Self {
+    pub fn new(verb: Verb, promotion_id: String) -> Self {
         Self {
             verb,
             promotion_id,
@@ -433,31 +428,37 @@ impl Watch {
         }
     }
 
-    pub fn seen_running(&self) -> bool {
-        self.seen_running
-    }
-
-    fn foreign_id<'a>(&self, a: &'a Assessment) -> Option<&'a str> {
-        let now = a.status.promotion_id.as_deref()?;
-        let mine = self.promotion_id.as_deref()?;
-        (now != mine).then_some(now)
-    }
-
-    /// `produced_report` is whether a report this run produced has appeared
-    /// (see [`new_reports`]); only a promotion consults it.
-    pub fn judge(&mut self, a: &Assessment, produced_report: bool) -> Settle {
+    /// Completion is judged from status alone. A report is not evidence: one
+    /// can appear while the run is still `RUNNING` (measured: "Create report"
+    /// is not the last step), and a report under the same id may be another
+    /// run's, so reports are named after completion, as candidates.
+    pub fn judge(&mut self, a: &Assessment) -> Settle {
         let phase = phase(a);
-        // Only a state that is *about* a lock is judged by its id: what the
-        // status carries mid-transition, or once unlocked, is unmeasured.
+        // A state *about* a lock counts only under this operation's id: a
+        // foreign one fails, a missing one proves nothing either way. What
+        // the status carries mid-transition, or once unlocked, is unmeasured
+        // and does not decide completion, so it is not judged.
         let about_a_lock = matches!(
             phase,
             Phase::Ready { .. } | Phase::Running { .. } | Phase::Blocked
         );
-        if let (true, Some(other)) = (about_a_lock, self.foreign_id(a)) {
-            return Settle::Failed(format!(
-                "the pair is now under promotionId {other}, not {} — another operation took over",
-                self.promotion_id.as_deref().unwrap_or("-")
-            ));
+        if about_a_lock {
+            match a.status.promotion_id.as_deref() {
+                Some(now) if now == self.promotion_id => {}
+                Some(other) => {
+                    return Settle::Failed(format!(
+                        "the pair is now under promotionId {other}, not {} — another operation \
+                         took over",
+                        self.promotion_id
+                    ));
+                }
+                None => {
+                    return Settle::Pending(format!(
+                        "the status names no promotionId, so it is not counted: {}",
+                        describe(a)
+                    ));
+                }
+            }
         }
         match (&self.verb, phase) {
             // A recovery starts from the blocked state it is releasing.
@@ -476,9 +477,10 @@ impl Watch {
                 Settle::Pending(message.unwrap_or_else(|| "running".into()))
             }
             // `READY` is also where a promotion starts, so it ends one only
-            // with evidence the run happened: RUNNING seen, or its report.
+            // after this run was seen `RUNNING`. A run too quick to be seen
+            // stays unconfirmed until the timeout says so.
             (Verb::Promote { .. }, Phase::Ready { .. }) => {
-                if self.seen_running || produced_report {
+                if self.seen_running {
                     Settle::Done
                 } else {
                     Settle::Pending("not seen to start yet".into())
@@ -526,9 +528,9 @@ pub fn new_reports(
         .collect())
 }
 
-/// Which report a finished promotion produced, from [`new_reports`]. None
-/// is an error: the run's outcome is then unconfirmed, and a zero exit would
-/// read as success.
+/// Which report a finished promotion produced, from [`new_reports`] read
+/// after completion. None is an error: what the run did is then unconfirmed,
+/// and a zero exit would read as success.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Identified {
     One(String),
@@ -555,7 +557,7 @@ pub fn identify(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
 
     use serde_json::json;
 
@@ -688,8 +690,8 @@ mod tests {
             assert!(matches!(phase(&a), Phase::Unsettled(_)), "{proxy}");
             assert!(check(&Verb::Promote { dry_run: true }, &a, "uat").is_err());
             assert!(check(&Verb::Unlock, &a, "uat").is_err());
-            let mut watch = Watch::new(Verb::Lock, Some(ID.into()));
-            assert!(matches!(watch.judge(&a, false), Settle::Pending(_)));
+            let mut watch = Watch::new(Verb::Lock, ID.into());
+            assert!(matches!(watch.judge(&a), Settle::Pending(_)));
         }
         // A missing proxy is not an agreeing one either.
         let a = assess(
@@ -787,7 +789,15 @@ mod tests {
                 .as_deref(),
             Some(ID)
         );
-        assert!(check(&recover(ID), &blocked("ERROR", ID), "uat").is_ok());
+        // A blocking error does not say work stopped: only READY, the one
+        // status measured as settled, is released — not a transition, not an
+        // unknown name.
+        for status in ["ERROR", "LOCKING", "QUEUED", "RUNNING"] {
+            assert!(
+                check(&recover(ID), &blocked(status, ID), "uat").is_err(),
+                "{status}"
+            );
+        }
         assert!(
             check(&recover(OTHER), &blocked("READY", ID), "uat")
                 .unwrap_err()
@@ -819,7 +829,12 @@ mod tests {
                 .contains("--force")
         );
         let permit = authorize(&Verb::Unlock, &approved, &ready(), "uat", true).unwrap();
-        assert_eq!(permit.promotion_id(), Some(ID));
+        assert_eq!(
+            permit.op(),
+            &Op::Unlock {
+                promotion_id: ID.into()
+            }
+        );
         // Replaced while the prompt was open.
         let err = authorize(&Verb::Unlock, &approved, &ready_as(OTHER), "uat", true).unwrap_err();
         assert!(err.contains(ID) && err.contains(OTHER), "{err}");
@@ -835,7 +850,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(permit.dry_run(), Some(false));
+        assert_eq!(permit.op(), &Op::Promote { dry_run: false });
     }
 
     /// Drive [`begin`] with a scripted tenant: what each read returns, what
@@ -844,44 +859,50 @@ mod tests {
         verb: Verb,
         reads: Vec<Assessment>,
         consent: bool,
-    ) -> (crate::Result<Begun<()>>, Option<Permit>, usize, bool) {
+    ) -> (crate::Result<Begun<()>>, Option<Permit>, Vec<&'static str>) {
         let reads = RefCell::new(reads.into_iter());
-        let count = Cell::new(0);
-        let prepared = Cell::new(false);
+        let events = RefCell::new(Vec::new());
         let sent = RefCell::new(None);
         let result = begin(
             &verb,
             "uat",
             async || {
-                count.set(count.get() + 1);
+                events.borrow_mut().push("read");
                 Ok(reads.borrow_mut().next().expect("no more scripted reads"))
             },
-            |_| Ok(consent),
+            |_| {
+                events.borrow_mut().push("consent");
+                Ok(consent)
+            },
             async || {
-                prepared.set(true);
+                events.borrow_mut().push("prepare");
                 Ok(())
             },
             async |permit, ()| {
+                events.borrow_mut().push("send");
                 *sent.borrow_mut() = Some(permit);
                 Ok(())
             },
         )
         .await;
-        (result, sent.into_inner(), count.get(), prepared.get())
+        (result, sent.into_inner(), events.into_inner())
     }
 
     #[tokio::test]
     async fn begin_sends_from_a_fresh_read_after_consent() {
-        let (result, sent, reads, prepared) = drive(
+        let (result, sent, events) = drive(
             Verb::Promote { dry_run: true },
             vec![ready(), ready()],
             true,
         )
         .await;
         assert!(matches!(result, Ok(Begun::Sent { .. })));
-        assert_eq!(sent.unwrap().dry_run(), Some(true));
-        assert_eq!(reads, 2, "the permit must come from a second read");
-        assert!(prepared);
+        assert_eq!(sent.unwrap().op(), &Op::Promote { dry_run: true });
+        assert_eq!(
+            events,
+            ["read", "consent", "prepare", "read", "send"],
+            "the permit must come from a read taken after consent and the prod gate"
+        );
     }
 
     /// The race both reviewers named: a promotion starts, or the lock is
@@ -900,7 +921,7 @@ mod tests {
             } else {
                 ready()
             };
-            let (result, sent, _, _) = drive(verb.clone(), vec![first, second], true).await;
+            let (result, sent, _) = drive(verb.clone(), vec![first, second], true).await;
             assert!(result.is_err(), "{verb:?}");
             assert!(sent.is_none(), "{verb:?} sent after drift");
         }
@@ -908,15 +929,16 @@ mod tests {
 
     #[tokio::test]
     async fn begin_without_consent_or_eligibility_neither_prepares_nor_sends() {
-        let (result, sent, reads, prepared) = drive(Verb::Lock, vec![unlocked()], false).await;
+        let (result, sent, events) = drive(Verb::Lock, vec![unlocked()], false).await;
         assert!(result.unwrap_err().to_string().contains("--force"));
-        assert!(sent.is_none() && !prepared);
-        assert_eq!(reads, 1);
-        // A refused state never reaches the production gate.
-        let (result, sent, _, prepared) = drive(Verb::Lock, vec![ready()], true).await;
-        assert!(result.is_err() && sent.is_none() && !prepared);
+        assert!(sent.is_none());
+        assert_eq!(events, ["read", "consent"]);
+        // A refused state never reaches consent or the production gate.
+        let (result, sent, events) = drive(Verb::Lock, vec![ready()], true).await;
+        assert!(result.is_err() && sent.is_none());
+        assert_eq!(events, ["read"]);
         // An unlock of an unlocked pair is nothing to do.
-        let (result, sent, _, _) = drive(Verb::Unlock, vec![unlocked()], true).await;
+        let (result, sent, _) = drive(Verb::Unlock, vec![unlocked()], true).await;
         assert!(matches!(result, Ok(Begun::AlreadyUnlocked)) && sent.is_none());
     }
 
@@ -937,25 +959,22 @@ mod tests {
 
     #[test]
     fn lock_and_unlock_settle_only_at_their_end_state_under_their_id() {
-        let mut lock = Watch::new(Verb::Lock, Some(ID.into()));
-        assert!(matches!(lock.judge(&unlocked(), false), Settle::Pending(_)));
+        let mut lock = Watch::new(Verb::Lock, ID.into());
+        assert!(matches!(lock.judge(&unlocked()), Settle::Pending(_)));
         assert!(matches!(
-            lock.judge(&locking_upper_first(), false),
+            lock.judge(&locking_upper_first()),
             Settle::Pending(_)
         ));
-        assert_eq!(lock.judge(&ready(), false), Settle::Done);
-        assert!(matches!(
-            lock.judge(&ready_as(OTHER), false),
-            Settle::Failed(_)
-        ));
-        assert!(matches!(lock.judge(&running(), false), Settle::Failed(_)));
+        assert_eq!(lock.judge(&ready()), Settle::Done);
+        assert!(matches!(lock.judge(&ready_as(OTHER)), Settle::Failed(_)));
+        assert!(matches!(lock.judge(&running()), Settle::Failed(_)));
 
-        let mut unlock = Watch::new(Verb::Unlock, Some(ID.into()));
-        assert!(matches!(unlock.judge(&ready(), false), Settle::Pending(_)));
-        assert_eq!(unlock.judge(&unlocked(), false), Settle::Done);
-        assert!(matches!(unlock.judge(&running(), false), Settle::Failed(_)));
+        let mut unlock = Watch::new(Verb::Unlock, ID.into());
+        assert!(matches!(unlock.judge(&ready()), Settle::Pending(_)));
+        assert_eq!(unlock.judge(&unlocked()), Settle::Done);
+        assert!(matches!(unlock.judge(&running()), Settle::Failed(_)));
         assert!(matches!(
-            unlock.judge(&blocked("READY", ID), false),
+            unlock.judge(&blocked("READY", ID)),
             Settle::Failed(_)
         ));
 
@@ -963,66 +982,96 @@ mod tests {
         let recover = Verb::Recover {
             expected: ID.into(),
         };
-        let mut watch = Watch::new(recover, Some(ID.into()));
+        let mut watch = Watch::new(recover, ID.into());
         assert!(matches!(
-            watch.judge(&blocked("READY", ID), false),
+            watch.judge(&blocked("READY", ID)),
             Settle::Pending(_)
         ));
         assert!(matches!(
-            watch.judge(&blocked("READY", OTHER), false),
+            watch.judge(&blocked("READY", OTHER)),
             Settle::Failed(_)
         ));
 
         // A transition carrying an old id is not a foreign lock.
-        let mut lock = Watch::new(Verb::Lock, Some(ID.into()));
+        let mut lock = Watch::new(Verb::Lock, ID.into());
         let mut stale = locking_upper_first();
         stale.status.promotion_id = Some(OTHER.into());
-        assert!(matches!(lock.judge(&stale, false), Settle::Pending(_)));
+        assert!(matches!(lock.judge(&stale), Settle::Pending(_)));
+    }
+
+    /// Both reviewers' discriminating inputs: a READY or RUNNING with no
+    /// `promotionId` proves nothing about this operation, either way.
+    #[test]
+    fn a_reading_without_a_promotion_id_is_not_counted() {
+        let anonymous = |mut a: Assessment| {
+            a.status.promotion_id = None;
+            a
+        };
+        let mut lock = Watch::new(Verb::Lock, ID.into());
+        assert!(matches!(
+            lock.judge(&anonymous(ready())),
+            Settle::Pending(_)
+        ));
+        let mut promote = Watch::new(Verb::Promote { dry_run: false }, ID.into());
+        assert!(matches!(
+            promote.judge(&anonymous(running())),
+            Settle::Pending(_)
+        ));
+        // …and it did not count as this run being seen to start.
+        assert!(matches!(promote.judge(&ready()), Settle::Pending(_)));
+        assert!(matches!(promote.judge(&running()), Settle::Pending(_)));
+        assert!(matches!(
+            promote.judge(&anonymous(ready())),
+            Settle::Pending(_)
+        ));
+        assert_eq!(promote.judge(&ready()), Settle::Done);
     }
 
     /// The discriminating case: `READY` is also where a promotion starts, so
-    /// without RUNNING seen or a report produced it is not the end — whatever
-    /// the timestamp did.
+    /// without this run seen RUNNING it is not the end — whatever the
+    /// timestamp did, and whatever reports appeared.
     #[test]
     fn a_promotion_is_not_finished_by_the_ready_it_started_from() {
-        let mut watch = Watch::new(Verb::Promote { dry_run: true }, Some(ID.into()));
+        let mut watch = Watch::new(Verb::Promote { dry_run: true }, ID.into());
         let mut moved = ready();
         moved.status.timestamp = Some("t-later".into());
-        assert!(matches!(watch.judge(&moved, false), Settle::Pending(_)));
-        assert!(matches!(watch.judge(&running(), false), Settle::Pending(_)));
-        assert!(watch.seen_running());
-        assert_eq!(watch.judge(&ready(), false), Settle::Done);
+        assert!(matches!(watch.judge(&moved), Settle::Pending(_)));
+        assert!(matches!(watch.judge(&running()), Settle::Pending(_)));
+        assert_eq!(watch.judge(&ready()), Settle::Done);
 
-        // A run too quick to be seen RUNNING ends on its report.
-        let mut quick = Watch::new(Verb::Promote { dry_run: true }, Some(ID.into()));
-        assert_eq!(quick.judge(&ready(), true), Settle::Done);
+        // A run too quick to be seen RUNNING stays unconfirmed: READY is
+        // where it started, and no report is evidence that it ended.
+        let mut quick = Watch::new(Verb::Promote { dry_run: true }, ID.into());
+        for _ in 0..3 {
+            assert!(matches!(quick.judge(&ready()), Settle::Pending(_)));
+        }
     }
 
     #[test]
     fn a_promotion_under_another_lock_or_state_is_not_this_one() {
-        let mut watch = Watch::new(Verb::Promote { dry_run: false }, Some(ID.into()));
-        assert!(matches!(watch.judge(&running(), false), Settle::Pending(_)));
-        let Settle::Failed(why) = watch.judge(&ready_as(OTHER), true) else {
+        let mut watch = Watch::new(Verb::Promote { dry_run: false }, ID.into());
+        assert!(matches!(watch.judge(&running()), Settle::Pending(_)));
+        let Settle::Failed(why) = watch.judge(&ready_as(OTHER)) else {
             panic!("a READY under another promotionId must not finish this run");
         };
         assert!(why.contains(OTHER), "{why}");
 
-        let mut watch = Watch::new(Verb::Promote { dry_run: false }, Some(ID.into()));
-        watch.judge(&running(), false);
-        assert!(matches!(watch.judge(&unlocked(), false), Settle::Failed(_)));
+        let mut watch = Watch::new(Verb::Promote { dry_run: false }, ID.into());
+        watch.judge(&running());
+        assert!(matches!(watch.judge(&unlocked()), Settle::Failed(_)));
         let odd = assess(
             &lock("locked", "locked", "locked"),
             &json!({"status": "ERROR", "globalLock": "LOCKED", "blockingError": false,
                     "message": "boom", "promotionId": ID}),
         )
         .unwrap();
-        let Settle::Failed(why) = watch.judge(&odd, false) else {
+        let Settle::Failed(why) = watch.judge(&odd) else {
             panic!("an unmeasured status after starting must fail");
         };
         assert!(why.contains("ERROR") && why.contains("boom"), "{why}");
         // …but before it has started, the same reading is only pending.
-        let mut fresh = Watch::new(Verb::Promote { dry_run: false }, Some(ID.into()));
-        assert!(matches!(fresh.judge(&odd, false), Settle::Pending(_)));
+        let mut fresh = Watch::new(Verb::Promote { dry_run: false }, ID.into());
+        assert!(matches!(fresh.judge(&odd), Settle::Pending(_)));
     }
 
     #[test]

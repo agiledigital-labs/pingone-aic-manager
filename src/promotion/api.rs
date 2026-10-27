@@ -6,7 +6,7 @@
 use serde_json::Value;
 
 use crate::aic::api::{ApiCall, get, get_versioned};
-use crate::promotion::lifecycle::Permit;
+use crate::promotion::lifecycle::{Op, Permit};
 use crate::promotion::verify;
 use crate::{Error, Result};
 
@@ -26,10 +26,10 @@ const PROMOTE: &str = "/environment/promotion/promote";
 /// The path a permitted write goes to. `DELETE lock/{promotionId}` carries
 /// the id segment-encoded.
 fn path(permit: &Permit) -> String {
-    match permit {
-        Permit::Lock(_) => LOCK.into(),
-        Permit::Promote(..) => PROMOTE.into(),
-        Permit::Unlock(_, id) => format!("{LOCK}/{}", segment(id)),
+    match permit.op() {
+        Op::Lock => LOCK.into(),
+        Op::Promote { .. } => PROMOTE.into(),
+        Op::Unlock { promotion_id } => format!("{LOCK}/{}", segment(promotion_id)),
     }
 }
 
@@ -44,12 +44,12 @@ fn path(permit: &Permit) -> String {
 ///   real run.
 /// - `DELETE lock/{promotionId}` (202 `result: unlocking`, measured).
 fn call<'a>(tenant: &'a str, path: &'a str, confirmed_prod: bool, permit: &Permit) -> ApiCall<'a> {
-    let call = match permit {
-        Permit::Lock(_) => ApiCall::new(tenant, "POST", path),
-        Permit::Promote(_, dry_run) => {
+    let call = match permit.op() {
+        Op::Lock => ApiCall::new(tenant, "POST", path),
+        Op::Promote { dry_run } => {
             ApiCall::new(tenant, "POST", path).body(serde_json::json!({ "dryRun": dry_run }))
         }
-        Permit::Unlock(..) => ApiCall::new(tenant, "DELETE", path),
+        Op::Unlock { .. } => ApiCall::new(tenant, "DELETE", path),
     };
     call.confirmed_prod(confirmed_prod)
 }

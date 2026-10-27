@@ -399,50 +399,28 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
             .unwrap_or("(no message)")
     );
     // The lock this operation belongs to: the one approved, or for a lock
-    // the id its acknowledgement carries (measured: `promotionId`).
+    // the id its acknowledgement carries (measured: `promotionId`). Without
+    // one, nothing can tie a later reading to this request.
     let promotion_id = match verb {
         Verb::Lock => said("promotionId").map(str::to_string),
         _ => before.status.promotion_id.clone(),
     };
-    if verb == Verb::Lock && promotion_id.is_none() {
-        eprintln!(
-            "  the acknowledgement carried no promotionId; the lock is judged by state alone"
-        );
-    }
     if args.no_wait {
         println!("not waiting — `aic promotion status --tenant {tenant}` shows progress");
         return Ok(());
     }
+    let Some(promotion_id) = promotion_id else {
+        return Err(Error::Config(format!(
+            "the acknowledgement named no promotionId, so whether {tenant} settled for this \
+             request cannot be confirmed — `aic promotion status --tenant {tenant}` shows the pair"
+        )));
+    };
 
     let timeout = args
         .timeout
         .map_or_else(|| default_timeout(&verb), |m| Duration::from_secs(60 * m));
     let mut watch = lifecycle::Watch::new(verb.clone(), promotion_id.clone());
-    // A promotion too quick to be seen RUNNING can only finish on its report,
-    // so while READY and no run has been seen, the list is read each poll.
-    let report_for = |dry_run: bool| {
-        let (tenant, before, id) = (&tenant, &reports_before, &promotion_id);
-        async move |a: &spec::Assessment| -> Result<Vec<String>> {
-            let (Some(before), Some(id)) = (before, id) else {
-                return Ok(Vec::new());
-            };
-            if !matches!(lifecycle::phase(a), lifecycle::Phase::Ready { .. }) {
-                return Ok(Vec::new());
-            }
-            let after = explained(api::reports(tenant).await, tenant)?;
-            decoded(lifecycle::new_reports(before, &after, id, dry_run))
-        }
-    };
-    let mut produced = Vec::new();
-    let settled = wait(&tenant, &verb, timeout, async |a: &spec::Assessment| {
-        if let Verb::Promote { dry_run } = verb
-            && produced.is_empty()
-        {
-            produced = report_for(dry_run)(a).await?;
-        }
-        Ok(watch.judge(a, !produced.is_empty()))
-    })
-    .await?;
+    let settled = wait(&tenant, &verb, timeout, |a| watch.judge(a)).await?;
 
     match verb {
         Verb::Lock => println!(
@@ -463,7 +441,21 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
             let unlock_hint = format!(
                 "{tenant} is still locked — `aic promotion unlock --tenant {tenant}` releases it"
             );
-            let identified = lifecycle::identify(&produced, &verb, promotion_id.as_deref())
+            // Named after completion, from the list read before the start:
+            // candidates, not proof, since another run may share the lock.
+            let produced = match (&verb, &reports_before) {
+                (Verb::Promote { dry_run }, Some(before)) => {
+                    let after = explained(api::reports(&tenant).await, &tenant)?;
+                    decoded(lifecycle::new_reports(
+                        before,
+                        &after,
+                        &promotion_id,
+                        *dry_run,
+                    ))?
+                }
+                _ => Vec::new(),
+            };
+            let identified = lifecycle::identify(&produced, &verb, Some(&promotion_id))
                 .inspect_err(|_| println!("{unlock_hint}"))
                 .map_err(|why| {
                     Error::Config(format!(
@@ -500,7 +492,7 @@ async fn wait(
     tenant: &str,
     verb: &Verb,
     timeout: Duration,
-    mut judge: impl AsyncFnMut(&spec::Assessment) -> Result<Settle>,
+    mut judge: impl FnMut(&spec::Assessment) -> Settle,
 ) -> Result<spec::Assessment> {
     let deadline = Instant::now() + timeout;
     let mut last = String::new();
@@ -515,7 +507,10 @@ async fn wait(
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
         let verdict = match assessment(tenant).await {
-            Ok(a) => judge(&a).await.map(|v| (a, v)),
+            Ok(a) => {
+                let verdict = judge(&a);
+                Ok((a, verdict))
+            }
             Err(error) => Err(error),
         };
         let (a, verdict) = match verdict {
