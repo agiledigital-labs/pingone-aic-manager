@@ -4,7 +4,10 @@ Verified against a dev → UAT environment pair and a sandbox, 2026-10-26, with
 `scripts/verify-endpoint.sh` and then `aic promotion`. The write cycle — lock,
 dry-run promotion, unlock — was measured on the same pair on 2026-10-27, first
 with `curl` and then end to end through `aic promotion lock` / `dry-run` /
-`unlock`; a real (non-dry-run) promotion has not been exercised.
+`unlock`. A real promotion was measured the same day as a round trip through
+`aic`: a temporary IDM endpoint created on dev, locked, dry-run, promoted,
+verified and unlocked; then deleted on dev and the deletion promoted the same
+way (see "The real round trip" below).
 
 `aic promotion status|reports|report|verify` (`src/promotion/`) wraps the reads
 below, and `aic promotion lock|dry-run|promote|unlock` the write cycle
@@ -101,6 +104,7 @@ the lower environment was not tried.
 | ---- | ------- | ---------- | ---- |
 | Lock | `POST …/lock` | `lock/state` `result: locked`, both sides `locked` (the upper side first, ~15 s earlier); `GET …/promote` then `status: READY`, `message: "Environment ready for promotion"`, `globalLock: LOCKED`, and carries the `promotionId` | ~3¼ min |
 | Dry run | `POST …/promote`, `Content-Type: application/json`, `{"dryRun":true}` | `GET …/promote` `status: RUNNING` through the messages `Start promotion`, `Clone repos`, `Checking promotion can proceed`, `Create report`, `Resetting promotion-gate attributes`; then `status: READY`, `message: "Promotion completed (no change)"`, still `globalLock: LOCKED` | ~8½ min |
+| Promote | `POST …/promote`, `Content-Type: application/json`, `{"dryRun":false}` | `RUNNING` through `Clone repos`, `Checking promotion can proceed`, `Update configuration`, `Tag lower env`, `Restart workloads`, `Resetting promotion-gate attributes`; then `status: READY`, `message: "Promotion completed"`, still `globalLock: LOCKED` (measured twice, through `aic`) | not timed; well inside 45 min |
 | Unlock | `DELETE …/lock/{promotionId}` (the id the lock returned) | `lock/state` `unlocking` on both sides together, then `unlocked`; `GET …/promote` `status: UNLOCKED` | ~3¼ min |
 
 What the dry run left behind: one new `reports` entry with `dryRun: true` and
@@ -113,22 +117,37 @@ starts from, so `READY` alone does not say a run finished; `aic` takes it as
 the end only after seeing `RUNNING` under the same `promotionId`. A report is
 not taken as evidence the run ended: the status named a "Create report" step
 before later steps, and when the report becomes readable has not been
-measured. That a
-real promotion ends the same way is **assumed**, not measured. Only `message`
-said "(no change)", and that was a dry run on a pair with nothing to promote,
-so whether the wording comes from the dry run or the empty pair is not
-separated.
+measured. A real promotion ends the same way — `READY`, still locked — measured
+twice. **"(no change)" reports an empty pair, not a dry run**: the dry run with
+nothing to promote ended "Promotion completed (no change)", while both dry runs
+that had something to promote ended "Promotion completed", as both real
+promotions did.
 
-**The report lists items the promotion did not change.** That dry run's
+**The step messages are not a fixed sequence.** The three dry runs measured
+showed three: `Start promotion`, `Clone repos`, `Checking promotion can
+proceed`, `Create report`, `Resetting promotion-gate attributes` (nothing to
+promote); the same without `Start promotion` (an endpoint added); and `Start
+promotion`, `Clone repos`, `Checking promotion can proceed`, `Notifying that
+config has been pushed`, `Resetting promotion-gate attributes` (an endpoint
+deleted) — with no `Create report`, yet that run's report was there afterwards.
+The messages are sampled by polling, so a short step can go unseen. `aic`
+prints them and decides nothing on them.
+
+**With nothing to promote, the report repeats the previous one.** That dry run's
 report was byte-identical to the report of the last real promotion five days
 earlier — a global script `modified` and nine ESV secret mappings `added` —
 while the service's own message said "no change" and the console showed
 nothing to promote. The global-script item was also in both earlier real reports
-checked (2026-10-11 and 2026-10-22). So a report is not evidence of what a promotion changed; this is
+checked (2026-10-11 and 2026-10-22). So in that case a report is not evidence of what a promotion changed; this is
 the same observation as the provisional report below, made on a completed run.
-Use `aic promotion verify` for the live comparison.
 
-Not exercised: a real promotion (`{"dryRun":false}` or other bodies), a
+**With something to promote, the report listed only that.** All four reports of
+the real round trip — two dry runs, two promotions — named the one endpoint and
+nothing else; the global script and the nine mappings did not appear. Four runs
+on one pair do not establish that a report always lists exactly the change, so
+`aic promotion verify` remains the live comparison either way.
+
+Not exercised: other `promote` bodies, a
 `POST …/promote` with no body, unlocking with a stale or foreign
 `promotionId`, a second lock while one is held, a promotion while unlocked,
 and any failed promotion — so which states a failure leaves (and so what
@@ -156,6 +175,36 @@ That run also observed:
 - **The dry run's report was found by difference** from the list read before
   it, as the only new `dryRun: true` entry under the lock's `promotionId`, and
   the run ended "Promotion completed (no change)" after `RUNNING` was seen.
+
+## The real round trip
+
+Run 2026-10-27 through `aic` on the dev → UAT pair, every write sent to UAT. A
+temporary endpoint `endpoint/aic-promotion-probe` was created on dev with `aic
+script create`; then `lock`, `dry-run`, `promote`, `verify`, `unlock`. Then the
+endpoint was deleted on dev with `aic script delete` and the same cycle run
+again. The plan was to stop before promoting if either dry run's report listed
+anything beyond the probe; neither did.
+
+| Run | Report | Item | `verify` |
+| --- | ------ | ---- | -------- |
+| Dry run, then promote (one lock) | `IDMConfig` / `IDM Custom Endpoints` | `endpoint-aic-promotion-probe`, `added` | `same` |
+| Dry run, then promote (one lock) | `IDMConfig` / `IDM Custom Endpoints` | `endpoint-aic-promotion-probe`, `deleted` | `absent-both` (in sync: reported deleted) |
+
+Afterwards `GET /openidm/config/endpoint/aic-promotion-probe` answered 200 on
+UAT, identical to dev, after the first promotion, and 404 on both after the
+second.
+
+- **A real promotion's report** has `dryRun: false` and a `reportName` ending
+  `_dryrun=false_<promotionId>`. The dry run and the promotion inside one lock
+  shared the lock's `promotionId`, and each report was found by difference from
+  the list read before its run.
+- **A report names an endpoint by its config id with `/` as `-`**:
+  `endpoint-aic-promotion-probe` for `endpoint/aic-promotion-probe`.
+- **Two consecutive status reads failed mid-lock** with 500 "context deadline
+  exceeded" (once from the lower-lock check, once fetching the promotion
+  status); the third succeeded. `aic` tolerates three consecutive failures, so
+  that lock came within one read of giving up waiting — the lock itself
+  settled normally.
 
 ## The provisional report is not a live diff
 
@@ -214,11 +263,12 @@ UAT pair (200 on both unless stated):
 | `AM Authentication > Settings`        | `…/realms/{realm}/realm-config/authentication`                                                         |
 | `CORS`                                | `/am/json/global-config/services/CorsService/configuration?_queryFilter=true`, matched by `_id`        |
 | `IDM Themes By Realm`                 | `/openidm/config/ui/themerealm`, the realm's **whole** list                                            |
+| `IDM Custom Endpoints`                | `/openidm/config` (the config list), then `/openidm/config/{_id}` for the one `factoryPid: "endpoint"` entry the name stands for; 404 = absent. Measured 2026-10-27: `{_id, source, type}`, no `_rev`, compared whole |
 | `Global Scripts`                      | no reader: `/am/json/realms/root/scripts` is 403 and `global-config/services/scripting/globalScripts` 404 |
 
 AM config reads use `Accept-API-Version: protocol=1.0,resource=1.0`.
 
-Three naming mismatches, each measured, decide the lookups:
+Four naming mismatches, each measured, decide the lookups:
 
 - **Service names** — the item says `Session Service` where the service list
   says `Session`, and `OAuth2 Provider Service` where it says
@@ -230,6 +280,12 @@ Three naming mismatches, each measured, decide the lookups:
 - **The theme name does not match the stored one** (`Starter` against
   `Starter Theme`), so the realm's whole theme list is compared instead of
   guessing which theme is meant.
+- **An endpoint's `/` becomes `-`** (`endpoint-aic-promotion-probe`), which
+  cannot be reversed: `endpoint-a-b` could be `endpoint/a-b` or
+  `endpoint/a/b`. So the name is matched against the config list's endpoint
+  ids encoded the same way, without case (whether the report lowercases these,
+  as it does CORS ids, is not measured), and two matches are an error. A wrong
+  guess would be fail-open for a deletion, where absent from both is in sync.
 
 An earlier draft looked CORS entries and the theme up by the report's name,
 found them on neither tenant, and called four items in sync. So **absent from
