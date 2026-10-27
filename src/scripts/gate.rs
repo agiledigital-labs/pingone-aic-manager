@@ -98,7 +98,7 @@ pub(super) async fn write_checked(
     confirmed_prod: bool,
     gate: SyntaxGate,
 ) -> Result<Gated> {
-    if let Some(refusal) = wrong_target(script) {
+    if let Some(refusal) = local_refusal(realm, script) {
         return Ok(Gated::Refused(refusal));
     }
     if gate == SyntaxGate::Check
@@ -110,6 +110,12 @@ pub(super) async fn write_checked(
     kind.write(tenant, realm, script, confirmed_prod, &WritePermit(()))
         .await?;
     Ok(Gated::Written)
+}
+
+/// The refusals decided from the source alone, before any request and past
+/// every `--force`: a bundle that says it belongs to another script.
+fn local_refusal(realm: &str, script: &RemoteScript) -> Option<Refusal> {
+    wrong_target(script).or_else(|| marked_for_other(realm, script))
 }
 
 /// A generated endpoint bundle pushed under another endpoint's name. Checked
@@ -126,6 +132,51 @@ fn wrong_target(script: &RemoteScript) -> Option<Refusal> {
         endpoint: script.reference.name.clone(),
         built_for: built_for.to_string(),
     })
+}
+
+/// The `aic-target` marker a build outside this repo writes into a bundle's
+/// leading comments (decision D-S5): `// aic-target: <full name>`, the same
+/// name `aic script push` takes — `managed/alpha_user.onCreate`,
+/// `endpoint/users`, `alpha/<script>`.
+const TARGET_MARKER: &str = "aic-target:";
+
+/// Every marker in the source's **leading** run of `//` lines, in order. Only
+/// the leading block counts: a bundle inlines other modules, and a marker
+/// inside inlined code belongs to whatever that code was built for, not to
+/// this file. A marker with nothing after it is kept as `""`, so it fails the
+/// comparison rather than vanishing.
+///
+/// Parsing errs towards *finding* a marker, because one that goes unread is
+/// fail-open: a leading byte-order mark is skipped (the banner check skips it
+/// too), and any spacing is allowed between `//` and `aic-target:`.
+pub(super) fn target_markers(source: &str) -> Vec<String> {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    source
+        .lines()
+        .map(str::trim_start)
+        .map_while(|line| line.strip_prefix("//"))
+        .filter_map(|comment| comment.trim_start().strip_prefix(TARGET_MARKER))
+        .map(|rest| rest.trim().to_string())
+        .collect()
+}
+
+/// A source marked for a different script than the one being written.
+/// Unmarked source makes no claim and passes: until the producer emits the
+/// marker, refusing it would refuse every hook.
+fn marked_for_other(realm: &str, script: &RemoteScript) -> Option<Refusal> {
+    let kind = script.reference.kind;
+    let source = kind.decode_source(&script.raw_config).ok()?;
+    let source = std::str::from_utf8(&source).ok()?;
+    let marked = target_markers(source);
+    let target = super::full_name(
+        kind,
+        (kind == Kind::Am).then_some(realm),
+        &script.reference.name,
+    );
+    marked
+        .iter()
+        .any(|m| *m != target)
+        .then_some(Refusal::MarkedForOther { target, marked })
 }
 
 /// Whether a verdict permits the write. Split out of [`write_checked`] because
@@ -225,6 +276,162 @@ mod tests {
             )),
             None
         );
+    }
+
+    fn hook(name: &str, source: &str) -> RemoteScript {
+        RemoteScript {
+            reference: super::super::RemoteRef {
+                kind: Kind::IdmManagedHook,
+                id: format!("managed/{name}"),
+                name: name.into(),
+                context: None,
+                is_default: false,
+                evaluator_version: None,
+            },
+            raw_config: serde_json::json!({"type": "text/javascript", "source": source}),
+        }
+    }
+
+    fn marked(target: &str) -> String {
+        format!("// built by the outside project\n// aic-target: {target}\n\nvar x = 1;\n")
+    }
+
+    /// D-S5's incident: one object's hook bundle pushed to another object's
+    /// hook. The matching marker is the control.
+    #[test]
+    fn a_hook_marked_for_another_hook_is_refused() {
+        assert_eq!(
+            local_refusal(
+                "",
+                &hook(
+                    "alpha_role.onCreate",
+                    &marked("managed/alpha_user.onCreate")
+                )
+            ),
+            Some(Refusal::MarkedForOther {
+                target: "managed/alpha_role.onCreate".into(),
+                marked: vec!["managed/alpha_user.onCreate".into()],
+            })
+        );
+        assert_eq!(
+            local_refusal(
+                "",
+                &hook(
+                    "alpha_user.onCreate",
+                    &marked("managed/alpha_user.onCreate")
+                )
+            ),
+            None
+        );
+        // Same object, another hook: still another target.
+        assert!(
+            local_refusal(
+                "",
+                &hook(
+                    "alpha_user.onUpdate",
+                    &marked("managed/alpha_user.onCreate")
+                )
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn unmarked_source_and_markers_outside_the_leading_block_make_no_claim() {
+        assert_eq!(
+            local_refusal("", &hook("alpha_user.onCreate", "var x = 1;\n")),
+            None
+        );
+        // An inlined module's marker is that module's, not this file's.
+        let inlined = "// header\nvar x = 1;\n// aic-target: managed/alpha_role.onCreate\n";
+        assert_eq!(
+            local_refusal("", &hook("alpha_user.onCreate", inlined)),
+            None
+        );
+    }
+
+    #[test]
+    fn conflicting_or_empty_markers_are_refused() {
+        let two = "// aic-target: managed/alpha_user.onCreate\n// aic-target: managed/alpha_role.onCreate\nvar x;\n";
+        let Some(Refusal::MarkedForOther { marked, .. }) =
+            local_refusal("", &hook("alpha_user.onCreate", two))
+        else {
+            panic!("two markers that disagree must refuse");
+        };
+        assert_eq!(marked.len(), 2);
+        assert!(
+            local_refusal(
+                "",
+                &hook("alpha_user.onCreate", "//   aic-target:\nvar x;\n")
+            )
+            .is_some()
+        );
+        // Indented comment lines are still the leading block.
+        assert!(
+            local_refusal(
+                "",
+                &hook(
+                    "alpha_user.onCreate",
+                    "  // aic-target: endpoint/users\nvar x;\n"
+                )
+            )
+            .is_some()
+        );
+    }
+
+    /// The marker names a full name, so an AM script's realm is part of it:
+    /// `alpha/x` is not `bravo/x`.
+    #[test]
+    fn an_am_marker_is_compared_with_its_realm() {
+        let am = |realm: &str, marker: &str| {
+            let opts = super::super::NewScriptOpts {
+                context: Some("OAUTH2_ACCESS_TOKEN_MODIFICATION".into()),
+                ..Default::default()
+            };
+            let script = Kind::Am
+                .new_script(
+                    "Toggle",
+                    format!("// aic-target: {marker}\nvar x;\n").as_bytes(),
+                    &opts,
+                )
+                .unwrap();
+            local_refusal(realm, &script)
+        };
+        assert_eq!(am("alpha", "alpha/Toggle"), None);
+        assert!(am("bravo", "alpha/Toggle").is_some());
+    }
+
+    /// Through the gate itself, as the banner check is: a marked hook is
+    /// refused before any request, with and without a byte-order mark.
+    #[tokio::test]
+    async fn the_gate_refuses_a_hook_marked_for_another_before_writing() {
+        let source = marked("managed/alpha_user.onCreate");
+        for source in [source.clone(), format!("\u{feff}{source}")] {
+            let outcome = write_checked(
+                Kind::IdmManagedHook,
+                "unused",
+                "",
+                &hook("alpha_role.onCreate", &source),
+                false,
+                SyntaxGate::Skip,
+            )
+            .await;
+            assert!(
+                matches!(outcome, Ok(Gated::Refused(Refusal::MarkedForOther { .. }))),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    /// Endpoints get both checks; the marker is not a way past the banner.
+    #[test]
+    fn an_endpoint_gets_the_banner_check_and_the_marker_check() {
+        assert!(local_refusal("", &endpoint("orders", &marked("endpoint/users"))).is_some());
+        assert_eq!(
+            local_refusal("", &endpoint("orders", &marked("endpoint/orders"))),
+            None
+        );
+        assert!(local_refusal("", &endpoint("orders", &bundle_for("users"))).is_some());
     }
 
     #[test]

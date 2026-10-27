@@ -2624,6 +2624,18 @@ Skipped entries are listed and make the command exit non-zero.
   endpoint. Rebuild, push the endpoint the banner names, or delete the banner to
   push the file as hand-written. Source without the banner is not checked.
 
+- **A marked script is pushed only to the script it is marked for.** A build
+  outside this repo (hook bundles come from another project) can write
+  `// aic-target: <full name>` — the name `aic script push` takes, such as
+  `managed/alpha_user.onCreate`, `endpoint/users` or `alpha/<script>` — in the
+  source's leading run of `//` comment lines. Every write path refuses a source
+  whose marker names another script, or whose markers disagree, before the
+  syntax check and past every `--force`. Only the leading block counts, because
+  a bundle inlines other modules and their markers belong to them; a leading
+  byte-order mark and any spacing after `//` are allowed, so a marker is not
+  missed. Unmarked source is not checked, so this protects a hook only once its
+  producer writes the marker. Delete the marker to push the file unmarked.
+
 - **`status` filters.** `am`/`idm` are group aliases; anything else is a
   case-insensitive substring of the full-name (use a trailing slash, e.g.
   `alpha/`, to match only that AM realm and exclude `managed/alpha_user…`).

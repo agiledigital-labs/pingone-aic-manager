@@ -83,6 +83,10 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
                 "rebuild with `npm run build`, or push the endpoint the banner names; \
                  delete the banner to push it as hand-written source"
             }
+            Refusal::MarkedForOther { .. } => {
+                "push it to the script the marker names, or rebuild it for this one; \
+                 delete the marker to push it unmarked"
+            }
         }
     );
 }
