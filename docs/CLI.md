@@ -902,7 +902,7 @@ proxies included — and `blockingError` reported `false`:
 | --------- | ---------------------------------------------------- | ----------------------------------------- | ---------- |
 | `lock`    | unlocked everywhere                                  | locked both sides, status `READY`         | ~3 minutes |
 | `dry-run` | locked, `READY`                                      | `READY` again, after `RUNNING` was seen   | ~8½ minutes |
-| `promote` | locked, `READY`                                      | as `dry-run` (assumed)                    | not yet run |
+| `promote` | locked, `READY`                                      | as `dry-run`                              | measured twice, not timed |
 | `unlock`  | locked, `READY`, with a `promotionId` on the status  | unlocked everywhere                       | ~3 minutes |
 
 Any other reading — a transition, one side ahead of the other, a running
@@ -952,9 +952,10 @@ finished, and is never what decides that it has. This is best-effort
 identification: **no** new report exits non-zero, because what the run did is
 then unconfirmed, and more than one is listed as candidates, since another run
 shared the lock. Even one is a candidate, not proof.
-Neither unlocks. A report lists items the
-promotion did not change — a dry run's was byte-identical to the previous real
-promotion's — so check one live with `verify --report <id>`.
+Neither unlocks. With nothing to promote, a report repeats the previous
+one's items — a dry run's was byte-identical to the previous real promotion's —
+so check one live with `verify --report <id>`; with something to promote, the
+reports measured listed only that.
 
 ## `aic role` — IDM internal roles
 

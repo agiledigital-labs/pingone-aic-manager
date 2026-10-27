@@ -89,12 +89,13 @@ pub enum PromotionCommand {
     /// changes until `unlock`. Measured to settle in ~3 minutes.
     Lock(WriteArgs),
     /// Run a dry-run promotion on a locked pair and name the report it
-    /// produced. Changes no configuration; measured ~8½ minutes. A report
-    /// lists items the promotion did not change, so check one with `verify`.
+    /// produced. Changes no configuration; measured ~8½ minutes. With
+    /// nothing to promote a report repeats the previous one's items, so
+    /// check one with `verify`.
     DryRun(WriteArgs),
     /// Promote the lower environment's configuration into the upper one, on
-    /// a locked pair, and name the report it produced. Not yet measured with a
-    /// real run; a dry run first shows what the service would promote.
+    /// a locked pair, and name the report it produced. Measured with a real
+    /// run; a dry run first shows what the service would promote.
     Promote(WriteArgs),
     /// Release the lock, by the promotionId the tenant reports. Refused while
     /// a promotion is running; `--recover` is the narrow escape for a lock a
@@ -484,7 +485,7 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
                 }
             }
             println!(
-                "a report lists items the promotion did not change (measured); \
+                "with nothing to promote, a report repeats the previous one's items (measured); \
                  `aic promotion verify --lower <env> --upper {tenant} --report <id>` checks them live"
             );
             println!("{unlock_hint}");

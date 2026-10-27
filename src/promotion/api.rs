@@ -40,8 +40,8 @@ fn path(permit: &Permit) -> String {
 ///   `POST`, as it does for every `DELETE`; the first run through `aic`
 ///   measures that.
 /// - `POST promote` with `{"dryRun": …}`. Measured with `true` (202,
-///   "Promotion process initiated successfully"); `false` is the documented
-///   real run.
+///   "Promotion process initiated successfully") and with `false`, the real
+///   run (accepted with the same message; 2026-10-27).
 /// - `DELETE lock/{promotionId}` (202 `result: unlocking`, measured).
 fn call<'a>(tenant: &'a str, path: &'a str, confirmed_prod: bool, permit: &Permit) -> ApiCall<'a> {
     let call = match permit.op() {
