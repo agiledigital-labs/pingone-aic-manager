@@ -75,14 +75,14 @@ pub enum Refusal {
     /// Retrying can never help; the explicit opt-out is the only way past it.
     Unsupported(String),
     /// The source is a generated endpoint bundle whose banner says it was
-    /// built for a different endpoint. Decided locally, before any request,
+    /// built for a different endpoint. Decided locally, before the syntax check,
     /// and not something `--force=syntax-check` gets past: the source may
     /// parse perfectly, it is just not this endpoint's.
     WrongTarget { endpoint: String, built_for: String },
     /// The source's leading comment block carries an `// aic-target: <ref>`
     /// marker naming a different script, or markers that disagree. Written
     /// by a build outside this repo (decision D-S5); decided locally, before
-    /// any request, and past no `--force`, for the reason `WrongTarget` is.
+    /// the syntax check, and past no `--force`, for the reason `WrongTarget` is.
     MarkedForOther { target: String, marked: Vec<String> },
 }
 

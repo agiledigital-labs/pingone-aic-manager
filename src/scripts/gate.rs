@@ -112,7 +112,8 @@ pub(super) async fn write_checked(
     Ok(Gated::Written)
 }
 
-/// The refusals decided from the source alone, before any request and past
+/// The refusals decided from the source alone — before the syntax check and
+/// the write, though a caller may already have read the tenant — and past
 /// every `--force`: a bundle that says it belongs to another script.
 fn local_refusal(realm: &str, script: &RemoteScript) -> Option<Refusal> {
     wrong_target(script).or_else(|| marked_for_other(realm, script))
@@ -126,8 +127,8 @@ fn wrong_target(script: &RemoteScript) -> Option<Refusal> {
         return None;
     }
     let source = super::idm::decode_source(&script.raw_config).ok()?;
-    let source = std::str::from_utf8(&source).ok()?;
-    let built_for = super::idm::built_for(source)?;
+    let source = String::from_utf8_lossy(&source);
+    let built_for = super::idm::built_for(&source)?;
     (built_for != script.reference.name).then(|| Refusal::WrongTarget {
         endpoint: script.reference.name.clone(),
         built_for: built_for.to_string(),
@@ -163,11 +164,22 @@ pub(super) fn target_markers(source: &str) -> Vec<String> {
 /// A source marked for a different script than the one being written.
 /// Unmarked source makes no claim and passes: until the producer emits the
 /// marker, refusing it would refuse every hook.
+///
+/// The source is read **lossily**: an AM script carries arbitrary bytes, and
+/// one undecodable byte elsewhere in the file must not erase an intact ASCII
+/// marker. A payload that cannot be decoded at all is refused — whether it is
+/// marked cannot be known, and not knowing is not "unmarked".
 fn marked_for_other(realm: &str, script: &RemoteScript) -> Option<Refusal> {
     let kind = script.reference.kind;
-    let source = kind.decode_source(&script.raw_config).ok()?;
-    let source = std::str::from_utf8(&source).ok()?;
-    let marked = target_markers(source);
+    let source = match kind.decode_source(&script.raw_config) {
+        Ok(source) => source,
+        Err(error) => {
+            return Some(Refusal::NoVerdict(format!(
+                "the source could not be decoded to read its aic-target marker: {error}"
+            )));
+        }
+    };
+    let marked = target_markers(&String::from_utf8_lossy(&source));
     let target = super::full_name(
         kind,
         (kind == Kind::Am).then_some(realm),
@@ -401,8 +413,42 @@ mod tests {
         assert!(am("bravo", "alpha/Toggle").is_some());
     }
 
+    /// Both reviewers' discriminating input: an intact marker followed by a
+    /// Latin-1 byte, which no UTF-8 decode accepts. The marker still binds.
+    #[test]
+    fn an_undecodable_byte_elsewhere_does_not_erase_the_marker() {
+        let opts = super::super::NewScriptOpts {
+            context: Some("OAUTH2_ACCESS_TOKEN_MODIFICATION".into()),
+            ..Default::default()
+        };
+        let source = b"// aic-target: alpha/Intended\n// caf\xe9\nvar x;\n";
+        let script = Kind::Am.new_script("Other", source, &opts).unwrap();
+        assert!(
+            matches!(
+                local_refusal("alpha", &script),
+                Some(Refusal::MarkedForOther { .. })
+            ),
+            "{:?}",
+            local_refusal("alpha", &script)
+        );
+        let control = Kind::Am.new_script("Intended", source, &opts).unwrap();
+        assert_eq!(local_refusal("alpha", &control), None);
+    }
+
+    /// A payload that cannot be decoded is refused, not read as unmarked.
+    #[test]
+    fn an_undecodable_payload_is_refused() {
+        let mut script = hook("alpha_user.onCreate", "var x;");
+        script.raw_config = serde_json::json!({"type": "text/javascript"});
+        assert!(matches!(
+            local_refusal("", &script),
+            Some(Refusal::NoVerdict(_))
+        ));
+    }
+
     /// Through the gate itself, as the banner check is: a marked hook is
-    /// refused before any request, with and without a byte-order mark.
+    /// refused before the syntax check or the write, with and without a
+    /// byte-order mark.
     #[tokio::test]
     async fn the_gate_refuses_a_hook_marked_for_another_before_writing() {
         let source = marked("managed/alpha_user.onCreate");

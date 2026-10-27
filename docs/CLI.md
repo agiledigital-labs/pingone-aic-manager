@@ -901,7 +901,7 @@ proxies included — and `blockingError` reported `false`:
 | Verb      | Starts from                                          | Settles at                                | Measured   |
 | --------- | ---------------------------------------------------- | ----------------------------------------- | ---------- |
 | `lock`    | unlocked everywhere                                  | locked both sides, status `READY`         | ~3 minutes |
-| `dry-run` | locked, `READY`                                      | `READY` again, after `RUNNING` was seen or once its report exists | ~8½ minutes |
+| `dry-run` | locked, `READY`                                      | `READY` again, after `RUNNING` was seen   | ~8½ minutes |
 | `promote` | locked, `READY`                                      | as `dry-run` (assumed)                    | not yet run |
 | `unlock`  | locked, `READY`, with a `promotionId` on the status  | unlocked everywhere                       | ~3 minutes |
 
@@ -913,21 +913,28 @@ type, refuses while a promotion runs, and on a pair already unlocked says so
 and exits zero.
 
 `unlock --recover <promotion-id>` is the escape for a lock a failed promotion
-left: it is accepted only while the status reports a blocking error over a
-lock every source agrees is held, not running, and only when the tenant's
+left: it is accepted only while the status is `READY` with a blocking error,
+over a lock every source agrees is held, and only when the tenant's
 `promotionId` is exactly the one given. No failed promotion has been measured,
-so any other state is refused and left to the console.
+and a blocking error does not say work has stopped, so any other status — a
+transition, `RUNNING`, a name never seen — is refused and left to the console.
 
 **The state is read twice.** Once before the prompt, and again after consent,
 the production gate and the report-list read; the write goes out only if the
 second read still allows it under the **same** `promotionId`. A promotion that
 started, or a lock replaced by someone else, while the prompt was open is
 refused with nothing sent. This narrows the race; it cannot close it, because
-the service offers no conditional write. A request that fails in flight is
-reported as possibly delivered — check `status` before retrying.
+no conditional write has been verified on this service. A request that fails
+in flight is reported as possibly delivered — check `status` before retrying.
 
-While waiting, a reading under a different `promotionId` fails the wait:
-another operation has taken the pair.
+While waiting, every reading about a lock is judged under the operation's
+`promotionId` — the approved one, or for `lock` the id its acknowledgement
+names. A reading under a different id fails the wait: another operation has
+taken the pair. One naming no id is not counted either way. A `lock` whose
+acknowledgement names no id exits non-zero rather than wait, because nothing
+could tie the result to the request. A promotion counts as finished only on
+`READY` **after** it was seen `RUNNING` under its id; a run too quick to be
+seen is reported unconfirmed when the timeout expires.
 
 Each asks for confirmation at a terminal; `--force` proceeds without one, and
 without either the verb refuses naming what it would do. `--yes` is the
@@ -939,9 +946,11 @@ after `--timeout` minutes (15 for `lock`/`unlock`, 45 for `dry-run`/`promote`)
 `dry-run` and `promote` finish by naming the report they produced, found by
 difference from the report list read before the start (one lock is one
 `promotionId`, so a dry run and a promotion inside it share it; the report's
-`dryRun` flag tells them apart). This is best-effort identification: **no**
-new report exits non-zero, because the run's outcome is then unconfirmed, and
-more than one is listed as candidates, since another run shared the lock.
+`dryRun` flag tells them apart). The report list is read once the run has
+finished, and is never what decides that it has. This is best-effort
+identification: **no** new report exits non-zero, because what the run did is
+then unconfirmed, and more than one is listed as candidates, since another run
+shared the lock. Even one is a candidate, not proof.
 Neither unlocks. A report lists items the
 promotion did not change — a dry run's was byte-identical to the previous real
 promotion's — so check one live with `verify --report <id>`.
@@ -2654,7 +2663,9 @@ Skipped entries are listed and make the command exit non-zero.
   syntax check and past every `--force`. Only the leading block counts, because
   a bundle inlines other modules and their markers belong to them; a leading
   byte-order mark and any spacing after `//` are allowed, so a marker is not
-  missed. Unmarked source is not checked, so this protects a hook only once its
+  missed. The source is read lossily, so a byte that is not UTF-8 elsewhere in
+the file does not hide the marker; a payload that cannot be decoded at all is
+refused. Unmarked source is not checked, so this protects a hook only once its
   producer writes the marker. Delete the marker to push the file unmarked.
 
 - **`status` filters.** `am`/`idm` are group aliases; anything else is a
