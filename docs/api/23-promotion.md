@@ -40,8 +40,9 @@ the tenant's service account (console) **and** requested by aic — see
 | GET    | each GET above, on a sandbox                 | **503** HTML "No server is available to handle this request" — sandboxes have no promotion service |
 
 Measured reads answer on the **upper** environment: only it reported both
-sides' lock, held the reports, and answered the provisional report. Which
-environment a lock or promotion is *started* from is not measured.
+sides' lock, held the reports, and answered the provisional report. The
+write cycle below was started from the upper environment too; starting any of
+it from the lower one has not been tried.
 
 ## Report shape
 
@@ -106,9 +107,12 @@ What the dry run left behind: one new `reports` entry with `dryRun: true` and
 `reportName` ends `_dryrun=true_<promotionId>`, and the environment still
 locked — a dry run does not release the lock.
 
-`status` does not distinguish a dry run from a real promotion: both end
-`READY`. Only `message` said "(no change)", and that was a dry run on a pair
-with nothing to promote, so which of the two produced the wording is not
+A dry run ends `READY`, the same status a lock settles at and a promotion
+starts from, so `READY` alone does not say a run finished; `aic` takes it as
+the end only after seeing `RUNNING`, or once the run's report exists. That a
+real promotion ends the same way is **assumed**, not measured. Only `message`
+said "(no change)", and that was a dry run on a pair with nothing to promote,
+so whether the wording comes from the dry run or the empty pair is not
 separated.
 
 **The report lists items the promotion did not change.** That dry run's
@@ -122,8 +126,14 @@ Use `aic promotion verify` for the live comparison.
 
 Not exercised: a real promotion (`{"dryRun":false}` or other bodies), a
 `POST …/promote` with no body, unlocking with a stale or foreign
-`promotionId`, a second lock while one is held, and a promotion while
-unlocked.
+`promotionId`, a second lock while one is held, a promotion while unlocked,
+and any failed promotion — so which states a failure leaves (and so what
+`aic promotion unlock --recover` will meet) is unknown.
+
+The lock `POST` above was sent with no body. `aic`'s transport sends JSON
+`null` as the body of a bodyless `POST`, as it does for every `DELETE`; that
+the lock endpoint accepts `null` is **not yet measured** and is checked by the
+first lock run through `aic`.
 
 ## The provisional report is not a live diff
 

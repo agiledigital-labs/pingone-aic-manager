@@ -13,7 +13,7 @@ use crate::cli::{
     confirm_destructive, ensure_prod_confirmed, print_json, print_table, prompt_available,
     tenant_config_for, tenant_for,
 };
-use crate::promotion::lifecycle::{self, Phase, Settle};
+use crate::promotion::lifecycle::{self, Begun, Settle, Verb};
 use crate::promotion::{api, spec, verify};
 use crate::saml::write::consent;
 use crate::{Error, Result};
@@ -40,6 +40,18 @@ pub struct WriteArgs {
     /// dry-run/promote — measured ~3 and ~8½.
     #[arg(long, value_name = "MINUTES")]
     timeout: Option<u64>,
+}
+
+#[derive(Args, Debug)]
+pub struct UnlockArgs {
+    #[command(flatten)]
+    write: WriteArgs,
+    /// Release a lock a failed promotion left behind: only while the status
+    /// reports a blocking error over a lock every source agrees is held, and
+    /// only if its promotionId is exactly this one. Which failure states the
+    /// tenant produces is unmeasured; anything else is refused.
+    #[arg(long, value_name = "PROMOTION_ID")]
+    recover: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -81,11 +93,13 @@ pub enum PromotionCommand {
     /// lists items the promotion did not change, so check one with `verify`.
     DryRun(WriteArgs),
     /// Promote the lower environment's configuration into the upper one, on
-    /// a locked pair. Every difference becomes live on the upper environment.
+    /// a locked pair, and name the report it produced. Not yet measured with a
+    /// real run; a dry run first shows what the service would promote.
     Promote(WriteArgs),
     /// Release the lock, by the promotionId the tenant reports. Refused while
-    /// a promotion is running.
-    Unlock(WriteArgs),
+    /// a promotion is running; `--recover` is the narrow escape for a lock a
+    /// failed promotion left.
+    Unlock(UnlockArgs),
     /// Check a report against both tenants: fetch every item it lists from
     /// the lower and the upper environment and compare the content, ignoring
     /// `_rev` and audit stamps. Exits non-zero if any item differs or could
@@ -282,36 +296,24 @@ pub async fn run(command: PromotionCommand) -> Result<()> {
         PromotionCommand::Lock(args) => run_write(Verb::Lock, args).await,
         PromotionCommand::DryRun(args) => run_write(Verb::Promote { dry_run: true }, args).await,
         PromotionCommand::Promote(args) => run_write(Verb::Promote { dry_run: false }, args).await,
-        PromotionCommand::Unlock(args) => run_write(Verb::Unlock, args).await,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Verb {
-    Lock,
-    Promote { dry_run: bool },
-    Unlock,
-}
-
-impl Verb {
-    fn name(self) -> &'static str {
-        match self {
-            Verb::Lock => "lock",
-            Verb::Promote { dry_run: true } => "dry run",
-            Verb::Promote { dry_run: false } => "promotion",
-            Verb::Unlock => "unlock",
+        PromotionCommand::Unlock(UnlockArgs { write, recover }) => {
+            let verb = match recover {
+                Some(expected) => Verb::Recover { expected },
+                None => Verb::Unlock,
+            };
+            run_write(verb, write).await
         }
     }
+}
 
-    fn default_timeout(self) -> Duration {
-        Duration::from_secs(
-            60 * if matches!(self, Verb::Promote { .. }) {
-                45
-            } else {
-                15
-            },
-        )
-    }
+fn default_timeout(verb: &Verb) -> Duration {
+    Duration::from_secs(
+        60 * if matches!(verb, Verb::Promote { .. }) {
+            45
+        } else {
+            15
+        },
+    )
 }
 
 /// Between status reads while waiting. Each settle measured took minutes;
@@ -327,74 +329,68 @@ async fn assessment(tenant: &str) -> Result<spec::Assessment> {
     decoded(spec::assess(&lock_raw, &status_raw))
 }
 
-fn prompt_for(verb: Verb, tenant: &str, a: &spec::Assessment) -> String {
+fn prompt_for(verb: &Verb, tenant: &str, a: &spec::Assessment) -> String {
+    let id = a.status.promotion_id.as_deref().unwrap_or("-");
     match verb {
         Verb::Lock => format!(
-            "Lock {tenant} and the environment it promotes from? Neither accepts configuration              changes until unlocked."
+            "Lock {tenant} and the environment it promotes from? Neither accepts configuration \
+             changes until unlocked."
         ),
         Verb::Promote { dry_run: true } => {
             format!("Start a dry-run promotion into {tenant}? (No configuration change.)")
         }
         Verb::Promote { dry_run: false } => format!(
-            "Promote into {tenant}? Every configuration difference from the lower environment              becomes live on {tenant}."
+            "Promote into {tenant} from the environment it is paired with? What the promotion \
+             service finds to promote becomes live on {tenant}."
         ),
-        Verb::Unlock => format!(
-            "Unlock {tenant} (promotionId {})?",
-            a.status.promotion_id.as_deref().unwrap_or("-")
+        Verb::Unlock => format!("Unlock {tenant} (promotionId {id})?"),
+        Verb::Recover { .. } => format!(
+            "Release the lock a failed promotion left on {tenant} (promotionId {id})? The \
+             promotion's outcome is unknown; check `aic promotion reports` afterwards."
         ),
     }
 }
 
-/// The three writes share one shape: read, check the state, consent, mint
-/// the permit, production gate, send, then wait for the tenant to settle.
-/// The state check runs before the prompt so a refused state never asks.
+/// Every write: `lifecycle::begin` reads and checks, asks, runs the
+/// production gate and captures the report list, re-reads and mints the
+/// permit from that second read, then sends. This function supplies the
+/// tenant calls and waits for the result.
 async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
     let tenant = tenant_for(args.tenant)?;
-    let a = assessment(&tenant).await?;
-    if verb == Verb::Unlock && lifecycle::phase(&a) == Phase::Unlocked {
-        lifecycle::pair_ok(&a, &tenant).map_err(Error::Config)?;
-        println!("{tenant} is already unlocked");
-        return Ok(());
-    }
-    let check = match verb {
-        Verb::Lock => lifecycle::check_lock(&a, &tenant),
-        Verb::Promote { .. } => lifecycle::check_promote(&a, &tenant),
-        Verb::Unlock => lifecycle::check_unlock(&a, &tenant).map(|_| ()),
-    };
-    check.map_err(Error::Config)?;
-
-    let consented = consent(args.force.operation(), prompt_available(), || {
-        confirm_destructive(verb.name(), &prompt_for(verb, &tenant, &a), "--force")
-    })?;
-
-    // Each arm mints its own permit and sends; the permit types differ, so
-    // the send cannot be shared without erasing which permit it needed.
-    let reports_before = match verb {
-        Verb::Promote { .. } => Some(explained(api::reports(&tenant).await, &tenant)?),
-        _ => None,
-    };
-    let response = match verb {
-        Verb::Lock => {
-            let permit =
-                lifecycle::authorize_lock(&a, &tenant, consented).map_err(Error::Config)?;
+    let begun = lifecycle::begin(
+        &verb,
+        &tenant,
+        async || assessment(&tenant).await,
+        |a| {
+            consent(args.force.operation(), prompt_available(), || {
+                confirm_destructive(verb.name(), &prompt_for(&verb, &tenant, a), "--force")
+            })
+        },
+        async || {
             let ok = ensure_prod_confirmed(&tenant, args.yes)?;
-            api::lock(&tenant, ok.confirmed_prod, &permit).await
+            let reports = match verb {
+                Verb::Promote { .. } => Some(explained(api::reports(&tenant).await, &tenant)?),
+                _ => None,
+            };
+            Ok((ok.confirmed_prod, reports))
+        },
+        async |permit, (confirmed_prod, reports)| {
+            let ack = explained(
+                crate::cli::prod_hint(api::send(&tenant, confirmed_prod, permit).await),
+                &tenant,
+            )?;
+            Ok((ack, reports))
+        },
+    )
+    .await?;
+    let (before, (ack, reports_before)) = match begun {
+        Begun::AlreadyUnlocked => {
+            println!("{tenant} is already unlocked");
+            return Ok(());
         }
-        Verb::Promote { dry_run } => {
-            let permit = lifecycle::authorize_promote(&a, &tenant, dry_run, consented)
-                .map_err(Error::Config)?;
-            let ok = ensure_prod_confirmed(&tenant, args.yes)?;
-            api::promote(&tenant, ok.confirmed_prod, &permit).await
-        }
-        Verb::Unlock => {
-            let permit =
-                lifecycle::authorize_unlock(&a, &tenant, consented).map_err(Error::Config)?;
-            let ok = ensure_prod_confirmed(&tenant, args.yes)?;
-            api::unlock(&tenant, ok.confirmed_prod, &permit).await
-        }
+        Begun::Sent { before, ack } => (*before, ack),
     };
-    let response = explained(crate::cli::prod_hint(response), &tenant)?;
-    let said = |k: &str| response.get(k).and_then(serde_json::Value::as_str);
+    let said = |k: &str| ack.get(k).and_then(serde_json::Value::as_str);
     println!(
         "{tenant} accepted the {}: {}",
         verb.name(),
@@ -402,6 +398,17 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
             .or(said("result"))
             .unwrap_or("(no message)")
     );
+    // The lock this operation belongs to: the one approved, or for a lock
+    // the id its acknowledgement carries (measured: `promotionId`).
+    let promotion_id = match verb {
+        Verb::Lock => said("promotionId").map(str::to_string),
+        _ => before.status.promotion_id.clone(),
+    };
+    if verb == Verb::Lock && promotion_id.is_none() {
+        eprintln!(
+            "  the acknowledgement carried no promotionId; the lock is judged by state alone"
+        );
+    }
     if args.no_wait {
         println!("not waiting — `aic promotion status --tenant {tenant}` shows progress");
         return Ok(());
@@ -409,15 +416,31 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
 
     let timeout = args
         .timeout
-        .map_or_else(|| verb.default_timeout(), |m| Duration::from_secs(60 * m));
-    let mut watch = lifecycle::PromoteWatch {
-        timestamp_before: a.status.timestamp.clone(),
-        seen_running: false,
+        .map_or_else(|| default_timeout(&verb), |m| Duration::from_secs(60 * m));
+    let mut watch = lifecycle::Watch::new(verb.clone(), promotion_id.clone());
+    // A promotion too quick to be seen RUNNING can only finish on its report,
+    // so while READY and no run has been seen, the list is read each poll.
+    let report_for = |dry_run: bool| {
+        let (tenant, before, id) = (&tenant, &reports_before, &promotion_id);
+        async move |a: &spec::Assessment| -> Result<Vec<String>> {
+            let (Some(before), Some(id)) = (before, id) else {
+                return Ok(Vec::new());
+            };
+            if !matches!(lifecycle::phase(a), lifecycle::Phase::Ready { .. }) {
+                return Ok(Vec::new());
+            }
+            let after = explained(api::reports(tenant).await, tenant)?;
+            decoded(lifecycle::new_reports(before, &after, id, dry_run))
+        }
     };
-    let settled = wait(&tenant, verb, timeout, |a| match verb {
-        Verb::Lock => lifecycle::lock_settled(a),
-        Verb::Promote { .. } => lifecycle::promote_settled(a, &mut watch),
-        Verb::Unlock => lifecycle::unlock_settled(a),
+    let mut produced = Vec::new();
+    let settled = wait(&tenant, &verb, timeout, async |a: &spec::Assessment| {
+        if let Verb::Promote { dry_run } = verb
+            && produced.is_empty()
+        {
+            produced = report_for(dry_run)(a).await?;
+        }
+        Ok(watch.judge(a, !produced.is_empty()))
     })
     .await?;
 
@@ -430,17 +453,43 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
                 .as_deref()
                 .unwrap_or("not reported")
         ),
-        Verb::Unlock => println!("{tenant} is unlocked"),
-        Verb::Promote { dry_run } => {
+        Verb::Unlock | Verb::Recover { .. } => println!("{tenant} is unlocked"),
+        Verb::Promote { .. } => {
             println!(
                 "the {} finished: {}",
                 verb.name(),
                 settled.status.message.as_deref().unwrap_or("(no message)")
             );
-            report_produced(&tenant, &settled, reports_before.as_ref(), dry_run).await?;
-            println!(
+            let unlock_hint = format!(
                 "{tenant} is still locked — `aic promotion unlock --tenant {tenant}` releases it"
             );
+            let identified = lifecycle::identify(&produced, &verb, promotion_id.as_deref())
+                .inspect_err(|_| println!("{unlock_hint}"))
+                .map_err(|why| {
+                    Error::Config(format!(
+                        "{why} — check `aic promotion reports --tenant {tenant}`"
+                    ))
+                })?;
+            match identified {
+                lifecycle::Identified::One(one) => {
+                    println!("report {one} — `aic promotion report {one} --tenant {tenant}`")
+                }
+                lifecycle::Identified::Candidates(many) => {
+                    println!(
+                        "{} new reports under this promotionId — another run shared the lock, so \
+                         which is this one's is not known:",
+                        many.len()
+                    );
+                    for report in many {
+                        println!("  {report}");
+                    }
+                }
+            }
+            println!(
+                "a report lists items the promotion did not change (measured); \
+                 `aic promotion verify --lower <env> --upper {tenant} --report <id>` checks them live"
+            );
+            println!("{unlock_hint}");
         }
     }
     Ok(())
@@ -449,33 +498,41 @@ async fn run_write(verb: Verb, args: WriteArgs) -> Result<()> {
 /// Poll until `judge` says done or failed, printing each new reading once.
 async fn wait(
     tenant: &str,
-    verb: Verb,
+    verb: &Verb,
     timeout: Duration,
-    mut judge: impl FnMut(&spec::Assessment) -> Settle,
+    mut judge: impl AsyncFnMut(&spec::Assessment) -> Result<Settle>,
 ) -> Result<spec::Assessment> {
     let deadline = Instant::now() + timeout;
     let mut last = String::new();
     let mut failures = 0;
+    let lost = || {
+        Error::Config(format!(
+            "lost track of the {} on {tenant}; it may still be running there — \
+             `aic promotion status --tenant {tenant}`",
+            verb.name()
+        ))
+    };
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
-        let a = match assessment(tenant).await {
-            Ok(a) => {
+        let verdict = match assessment(tenant).await {
+            Ok(a) => judge(&a).await.map(|v| (a, v)),
+            Err(error) => Err(error),
+        };
+        let (a, verdict) = match verdict {
+            Ok(read) => {
                 failures = 0;
-                a
+                read
             }
             Err(error) => {
                 failures += 1;
                 eprintln!("  could not read the status ({failures}/{POLL_READ_FAILURES}): {error}");
                 if failures >= POLL_READ_FAILURES {
-                    return Err(Error::Config(format!(
-                        "lost track of the {} on {tenant}; it may still be running there —                          `aic promotion status --tenant {tenant}`",
-                        verb.name()
-                    )));
+                    return Err(lost());
                 }
                 continue;
             }
         };
-        match judge(&a) {
+        match verdict {
             Settle::Done => return Ok(a),
             Settle::Failed(why) => {
                 return Err(Error::Config(format!(
@@ -492,39 +549,13 @@ async fn wait(
         }
         if Instant::now() >= deadline {
             return Err(Error::Config(format!(
-                "the {} on {tenant} did not settle within {} minutes; it carries on there —                  `aic promotion status --tenant {tenant}`",
+                "the {} on {tenant} did not settle within {} minutes; it carries on there — \
+                 `aic promotion status --tenant {tenant}`",
                 verb.name(),
                 timeout.as_secs() / 60
             )));
         }
     }
-}
-
-/// Name the report a dry run or promotion produced, by difference from the
-/// list read before it started.
-async fn report_produced(
-    tenant: &str,
-    settled: &spec::Assessment,
-    before: Option<&serde_json::Value>,
-    dry_run: bool,
-) -> Result<()> {
-    let (Some(before), Some(id)) = (before, settled.status.promotion_id.as_deref()) else {
-        println!("could not identify the report: no promotionId on the final status");
-        return Ok(());
-    };
-    let after = explained(api::reports(tenant).await, tenant)?;
-    match decoded(lifecycle::new_reports(before, &after, id, dry_run))?.as_slice() {
-        [] => println!("no new report found for promotionId {id}"),
-        ids => {
-            for report in ids {
-                println!("report {report} — `aic promotion report {report} --tenant {tenant}`");
-            }
-            println!(
-                "a report lists items the promotion did not change (measured);                  `aic promotion verify --lower <env> --upper {tenant} --report <id>` checks them live"
-            );
-        }
-    }
-    Ok(())
 }
 
 /// How many items are fetched at once, per tenant pair.

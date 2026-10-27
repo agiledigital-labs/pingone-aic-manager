@@ -862,7 +862,7 @@ aic promotion verify --lower <env> --upper <env> [--report <report-id>] [--json]
 aic promotion lock     [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
 aic promotion dry-run  [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
 aic promotion promote  [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
-aic promotion unlock   [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
+aic promotion unlock   [--tenant <upper>] [--recover <promotion-id>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
 ```
 
 - `status` prints `lock/state` and the promotion status side by side. They have
@@ -895,13 +895,14 @@ aic promotion unlock   [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeo
 
 `lock` → `dry-run` and/or `promote` → `unlock`, each sent to the **upper**
 environment; a tenant that does not report both sides of a pair is refused.
-Each verb starts only from a measured state, read fresh from both sources:
+Each verb starts only from a measured state, with every source agreeing —
+proxies included — and `blockingError` reported `false`:
 
 | Verb      | Starts from                                          | Settles at                                | Measured   |
 | --------- | ---------------------------------------------------- | ----------------------------------------- | ---------- |
 | `lock`    | unlocked everywhere                                  | locked both sides, status `READY`         | ~3 minutes |
-| `dry-run` | locked, `READY`                                      | `READY` again, after it was seen to start | ~8½ minutes |
-| `promote` | locked, `READY`                                      | as `dry-run`                              | not yet run |
+| `dry-run` | locked, `READY`                                      | `READY` again, after `RUNNING` was seen or once its report exists | ~8½ minutes |
+| `promote` | locked, `READY`                                      | as `dry-run` (assumed)                    | not yet run |
 | `unlock`  | locked, `READY`, with a `promotionId` on the status  | unlocked everywhere                       | ~3 minutes |
 
 Any other reading — a transition, one side ahead of the other, a running
@@ -910,6 +911,23 @@ refuses a lock already held (a second one is unmeasured, and the held one may
 be someone else's); `unlock` releases the id the tenant reports, never one you
 type, refuses while a promotion runs, and on a pair already unlocked says so
 and exits zero.
+
+`unlock --recover <promotion-id>` is the escape for a lock a failed promotion
+left: it is accepted only while the status reports a blocking error over a
+lock every source agrees is held, not running, and only when the tenant's
+`promotionId` is exactly the one given. No failed promotion has been measured,
+so any other state is refused and left to the console.
+
+**The state is read twice.** Once before the prompt, and again after consent,
+the production gate and the report-list read; the write goes out only if the
+second read still allows it under the **same** `promotionId`. A promotion that
+started, or a lock replaced by someone else, while the prompt was open is
+refused with nothing sent. This narrows the race; it cannot close it, because
+the service offers no conditional write. A request that fails in flight is
+reported as possibly delivered — check `status` before retrying.
+
+While waiting, a reading under a different `promotionId` fails the wait:
+another operation has taken the pair.
 
 Each asks for confirmation at a terminal; `--force` proceeds without one, and
 without either the verb refuses naming what it would do. `--yes` is the
@@ -921,7 +939,10 @@ after `--timeout` minutes (15 for `lock`/`unlock`, 45 for `dry-run`/`promote`)
 `dry-run` and `promote` finish by naming the report they produced, found by
 difference from the report list read before the start (one lock is one
 `promotionId`, so a dry run and a promotion inside it share it; the report's
-`dryRun` flag tells them apart). Neither unlocks. A report lists items the
+`dryRun` flag tells them apart). This is best-effort identification: **no**
+new report exits non-zero, because the run's outcome is then unconfirmed, and
+more than one is listed as candidates, since another run shared the lock.
+Neither unlocks. A report lists items the
 promotion did not change — a dry run's was byte-identical to the previous real
 promotion's — so check one live with `verify --report <id>`.
 

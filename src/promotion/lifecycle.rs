@@ -1,11 +1,22 @@
-//! Tenant-free half of the promotion write verbs: which state a lock, a
-//! promotion or an unlock may start from, the permits those checks mint, and
-//! when a started operation has settled.
+//! Tenant-free half of the promotion write verbs.
 //!
-//! Measured 2026-10-27 on a dev → UAT pair, every call sent to the upper
-//! environment (`docs/api/23-promotion.md`, "The write cycle"). Each phase
-//! below is a combination of fields that was **observed**; anything else is
-//! [`Phase::Unsettled`], which no verb starts from.
+//! Four separate questions, each answered here and nowhere else:
+//!
+//! - **Eligibility** — which reading a verb may start from ([`phase`],
+//!   [`check`]). Only combinations measured on 2026-10-27 qualify: every
+//!   source agreeing, proxies included, and `blockingError` reported `false`.
+//! - **Consent** — asked by the caller, between two reads.
+//! - **Identity** — the lock the operator approved is the lock written to:
+//!   [`begin`] re-reads both sources *after* consent and refuses if the
+//!   eligibility or the `promotionId` changed, then mints the [`Permit`] from
+//!   that fresh read. This narrows the race; with no measured server
+//!   precondition it cannot close it.
+//! - **Completion** — [`Watch::judge`] reports done only on evidence the run
+//!   happened under the same `promotionId`: `RUNNING` seen, or a report this
+//!   run produced. A timestamp change alone proves nothing and is not used.
+//!
+//! Measured on a dev → UAT pair, every call sent to the upper environment
+//! (`docs/api/23-promotion.md`, "The write cycle").
 
 use serde_json::Value;
 
@@ -18,43 +29,57 @@ fn is(a: &str, b: &str) -> bool {
 /// Where the pair stands, read from both sources at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
-    /// `lock/state` and both sides unlocked; the promotion status `UNLOCKED`.
+    /// Every source unlocked: `lock/state` and both sides (state and proxy),
+    /// the status `UNLOCKED` with `globalLock: UNLOCKED`, `blockingError`
+    /// reported `false`.
     Unlocked,
-    /// `lock/state` and both sides locked; the promotion status `READY` with
-    /// `globalLock: LOCKED`. Measured both after a lock settled and after a
-    /// dry run finished. Carries the id an unlock releases.
+    /// Every source locked, the status `READY` with `globalLock: LOCKED`,
+    /// `blockingError` reported `false`. Measured after a lock settled and
+    /// after a dry run finished. Carries the id an unlock releases.
     Ready { promotion_id: Option<String> },
     /// The promotion status says `RUNNING`.
     Running { message: Option<String> },
     /// The status reports `blockingError: true`.
     Blocked,
-    /// Any other combination: a transition (`locking`, `unlocking`, one side
-    /// ahead of the other), or a value never measured. Carries a description.
+    /// Anything else — a transition, one side or proxy ahead of the other, a
+    /// missing `blockingError`, a value never measured. Carries a description.
     Unsettled(String),
 }
 
-fn sides(lock: &LockState) -> [Option<&str>; 2] {
-    [
-        lock.lower.as_ref().map(|s| s.state.as_str()),
-        lock.upper.as_ref().map(|s| s.state.as_str()),
-    ]
+fn sides(lock: &LockState) -> [Option<&super::spec::EnvLock>; 2] {
+    [lock.lower.as_ref(), lock.upper.as_ref()]
 }
 
-/// Whether `lock/state` and both sides read `want`. A side the response
-/// omits fails — see [`pair_ok`] for why that is refused up front.
+/// `lock/state`, both sides and both proxies read `want`. A side or proxy the
+/// response omits fails: only the upper environment reports them, and a
+/// proxy disagreeing with its side is a transition, not a state.
 fn lock_reads(lock: &LockState, want: &str) -> bool {
-    is(&lock.result, want) && sides(lock).iter().all(|s| s.is_some_and(|s| is(s, want)))
+    is(&lock.result, want)
+        && sides(lock).iter().all(|side| {
+            side.is_some_and(|s| {
+                is(&s.state, want) && s.proxy_state.as_deref().is_some_and(|p| is(p, want))
+            })
+        })
 }
 
 fn describe(a: &Assessment) -> String {
+    let side = |s: Option<&super::spec::EnvLock>| match s {
+        Some(s) => format!("{}/{}", s.state, s.proxy_state.as_deref().unwrap_or("-")),
+        None => "-".into(),
+    };
     let [lower, upper] = sides(&a.lock);
     format!(
-        "lock/state `{}` (lower `{}`, upper `{}`), promotion status `{}` (globalLock `{}`){}",
+        "lock/state `{}` (lower `{}`, upper `{}`), promotion status `{}` (globalLock `{}`, \
+         blockingError `{}`, promotionId `{}`){}",
         a.lock.result,
-        lower.unwrap_or("-"),
-        upper.unwrap_or("-"),
+        side(lower),
+        side(upper),
         a.status.status,
         a.status.global_lock.as_deref().unwrap_or("-"),
+        a.status
+            .blocking_error
+            .map_or("-".to_string(), |b| b.to_string()),
+        a.status.promotion_id.as_deref().unwrap_or("-"),
         a.status
             .message
             .as_ref()
@@ -63,21 +88,38 @@ fn describe(a: &Assessment) -> String {
     )
 }
 
+/// The lock held and agreed on by every lock source: `lock/state`, both
+/// sides and proxies, `globalLock`. Says nothing about the promotion status.
+fn held(a: &Assessment) -> bool {
+    lock_reads(&a.lock, "locked")
+        && a.status
+            .global_lock
+            .as_deref()
+            .is_some_and(|g| is(g, "LOCKED"))
+}
+
 pub fn phase(a: &Assessment) -> Phase {
     let status = &a.status;
     let global = |want: &str| status.global_lock.as_deref().is_some_and(|g| is(g, want));
-    if a.blocking() {
+    // `spec::disagreements` is the diagnostic every surface prints; a reading
+    // it flags is never a write state, whatever the fields below say. Today
+    // the explicit checks below cover every rule it has (a mutation removing
+    // this term survives for that reason); it stays so a rule added there
+    // binds here too.
+    let agreed = a.disagreements.is_empty() && status.blocking_error == Some(false);
+    if status.blocking_error == Some(true) {
         Phase::Blocked
     } else if is(&status.status, "RUNNING") {
         Phase::Running {
             message: status.message.clone(),
         }
-    } else if is(&status.status, "UNLOCKED")
+    } else if agreed
+        && is(&status.status, "UNLOCKED")
         && global("UNLOCKED")
         && lock_reads(&a.lock, "unlocked")
     {
         Phase::Unlocked
-    } else if is(&status.status, "READY") && global("LOCKED") && lock_reads(&a.lock, "locked") {
+    } else if agreed && is(&status.status, "READY") && held(a) {
         Phase::Ready {
             promotion_id: status.promotion_id.clone(),
         }
@@ -87,8 +129,7 @@ pub fn phase(a: &Assessment) -> Phase {
 }
 
 /// Every write verb is sent to the **upper** environment of a pair: only it
-/// answers `lock/state` with both sides (measured), and starting a lock from
-/// the lower one was never tried.
+/// answers `lock/state` with both sides (measured).
 pub fn pair_ok(a: &Assessment, tenant: &str) -> Result<(), String> {
     if a.lock.lower.is_some() && a.lock.upper.is_some() {
         Ok(())
@@ -100,144 +141,268 @@ pub fn pair_ok(a: &Assessment, tenant: &str) -> Result<(), String> {
     }
 }
 
-fn refused(tenant: &str, a: &Assessment, verb: &str, phase: &Phase) -> String {
+/// What the operator asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verb {
+    Lock,
+    Promote {
+        dry_run: bool,
+    },
+    Unlock,
+    /// Release a lock a blocked promotion left behind. The operator names the
+    /// `promotionId` they expect, and it must match the tenant's exactly.
+    Recover {
+        expected: String,
+    },
+}
+
+impl Verb {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Verb::Lock => "lock",
+            Verb::Promote { dry_run: true } => "dry run",
+            Verb::Promote { dry_run: false } => "promotion",
+            Verb::Unlock => "unlock",
+            Verb::Recover { .. } => "recovery unlock",
+        }
+    }
+}
+
+fn refused(tenant: &str, a: &Assessment, verb: &Verb, phase: &Phase) -> String {
     match phase {
         Phase::Blocked => format!(
-            "{tenant}'s promotion status reports a blocking error, so it will not {verb}: {}",
-            describe(a)
+            "{tenant}'s promotion status reports a blocking error, so it will not {}: {}{}",
+            verb.name(),
+            describe(a),
+            if matches!(verb, Verb::Unlock) {
+                format!(
+                    " — if the lock is left over from that promotion, `aic promotion unlock \
+                     --tenant {tenant} --recover <promotionId>` releases it"
+                )
+            } else {
+                String::new()
+            }
         ),
         Phase::Running { message } => format!(
-            "a promotion is running on {tenant} ({}); wait for it before you {verb}",
-            message.as_deref().unwrap_or("no message")
+            "a promotion is running on {tenant} ({}); wait for it before the {}",
+            message.as_deref().unwrap_or("no message"),
+            verb.name()
         ),
-        _ => format!("{tenant} is not in a state to {verb} from: {}", describe(a)),
+        _ => format!(
+            "{tenant} is not in a state to start a {} from: {}",
+            verb.name(),
+            describe(a)
+        ),
     }
 }
 
-/// Proof that a lock was checked and consented to. The field is private and
-/// [`authorize_lock`] is the only constructor, so `api::lock` cannot be
-/// reached without both.
-#[derive(Debug)]
-pub struct LockPermit {
-    _minted_by_authorize_lock: (),
+/// What a check approved: the `promotionId` a write must still find. `None`
+/// for a lock, which starts from no lock at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Approval {
+    pub promotion_id: Option<String>,
 }
 
-/// Proof for a dry run or a promotion; which one is fixed at minting.
-#[derive(Debug)]
-pub struct PromotePermit {
-    dry_run: bool,
-}
-
-impl PromotePermit {
-    pub fn dry_run(&self) -> bool {
-        self.dry_run
-    }
-}
-
-/// Proof for an unlock, carrying the id read from the tenant — never one the
-/// operator typed: releasing another promotion's lock is unmeasured.
-#[derive(Debug)]
-pub struct UnlockPermit {
-    promotion_id: String,
-}
-
-impl UnlockPermit {
-    pub fn promotion_id(&self) -> &str {
-        &self.promotion_id
-    }
-}
-
-/// Whether a lock may start: from [`Phase::Unlocked`] only. A second lock
-/// over a held one is unmeasured, and the held one may be someone else's.
-pub fn check_lock(a: &Assessment, tenant: &str) -> Result<(), String> {
+/// Whether `verb` may start from `a`.
+///
+/// - `Lock` — from [`Phase::Unlocked`] only. A second lock over a held one is
+///   unmeasured, and the held one may be someone else's.
+/// - `Promote` — from [`Phase::Ready`] with an id.
+/// - `Unlock` — from [`Phase::Ready`] with an id; never while a promotion
+///   runs. The id is the tenant's, never one typed.
+/// - `Recover` — from [`Phase::Blocked`] over a lock every lock source agrees
+///   is held, not running, and naming exactly the id the operator expects.
+///   No failed promotion has been measured, so this is the one state let
+///   through: a status that is neither `READY` nor `RUNNING` stays a manual
+///   (console) recovery rather than be guessed safe.
+pub fn check(verb: &Verb, a: &Assessment, tenant: &str) -> Result<Approval, String> {
     pair_ok(a, tenant)?;
-    match phase(a) {
-        Phase::Unlocked => Ok(()),
-        Phase::Ready { promotion_id } => Err(format!(
+    let phase = phase(a);
+    let id_of = |id: &Option<String>| {
+        id.clone().ok_or_else(|| {
+            format!("{tenant} is locked but its promotion status names no promotionId")
+        })
+    };
+    match (verb, &phase) {
+        (Verb::Lock, Phase::Unlocked) => Ok(Approval { promotion_id: None }),
+        (Verb::Lock, Phase::Ready { promotion_id }) => Err(format!(
             "{tenant} is already locked (promotionId {}); a second lock is unmeasured — \
              `aic promotion unlock --tenant {tenant}` releases the held one",
             promotion_id.as_deref().unwrap_or("not reported")
         )),
-        other => Err(refused(tenant, a, "lock", &other)),
+        (Verb::Promote { .. } | Verb::Unlock, Phase::Ready { promotion_id }) => Ok(Approval {
+            promotion_id: Some(id_of(promotion_id)?),
+        }),
+        (Verb::Promote { .. }, Phase::Unlocked) => Err(format!(
+            "{tenant} is not locked; `aic promotion lock --tenant {tenant}` first"
+        )),
+        (Verb::Recover { expected }, Phase::Blocked) => {
+            let found = id_of(&a.status.promotion_id)?;
+            if !held(a) || is(&a.status.status, "RUNNING") {
+                Err(format!(
+                    "{tenant} does not read as a held, stopped lock, so it will not be released \
+                     blind: {}",
+                    describe(a)
+                ))
+            } else if found != *expected {
+                Err(format!(
+                    "{tenant}'s lock is promotionId {found}, not {expected}; nothing was released"
+                ))
+            } else {
+                Ok(Approval {
+                    promotion_id: Some(found),
+                })
+            }
+        }
+        (Verb::Recover { .. }, Phase::Ready { .. }) => Err(format!(
+            "{tenant} reports no blocking error; release it with `aic promotion unlock --tenant \
+             {tenant}`"
+        )),
+        (Verb::Recover { .. }, _) => Err(format!(
+            "{tenant} is not in a state a recovery unlock is measured to be safe from — release \
+             it from the console if it is stuck: {}",
+            describe(a)
+        )),
+        (_, other) => Err(refused(tenant, a, verb, other)),
     }
 }
 
-pub fn authorize_lock(a: &Assessment, tenant: &str, consented: bool) -> Result<LockPermit, String> {
-    check_lock(a, tenant)?;
+/// Proof that a write was checked against a fresh read and consented to.
+/// The payloads are private and [`authorize`] is the only constructor, so
+/// `api::send` cannot be reached without both.
+#[derive(Debug)]
+pub enum Permit {
+    Lock(Minted),
+    Promote(Minted, bool),
+    Unlock(Minted, String),
+}
+
+/// The private half of a [`Permit`].
+#[derive(Debug)]
+pub struct Minted(());
+
+impl Permit {
+    /// `Some(dry_run)` for a promotion permit.
+    pub fn dry_run(&self) -> Option<bool> {
+        match self {
+            Permit::Promote(_, dry_run) => Some(*dry_run),
+            _ => None,
+        }
+    }
+
+    /// The id an unlock permit releases.
+    pub fn promotion_id(&self) -> Option<&str> {
+        match self {
+            Permit::Unlock(_, id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// Mint a permit from a **fresh** reading taken after consent: the verb must
+/// still be eligible, and the `promotionId` must be the one approved. A lock
+/// replaced while the prompt was open is someone else's.
+pub fn authorize(
+    verb: &Verb,
+    approved: &Approval,
+    fresh: &Assessment,
+    tenant: &str,
+    consented: bool,
+) -> Result<Permit, String> {
     if !consented {
+        return Err(match verb {
+            Verb::Lock => format!(
+                "would lock {tenant} and the environment it promotes from — neither accepts \
+                 configuration changes until it is unlocked; pass --force to lock"
+            ),
+            Verb::Promote { dry_run: true } => format!(
+                "would start a dry-run promotion into {tenant} (measured: ~8 minutes); pass \
+                 --force to start it"
+            ),
+            Verb::Promote { dry_run: false } => format!(
+                "would promote into {tenant} from the environment it is paired with; pass --force \
+                 to promote"
+            ),
+            Verb::Unlock | Verb::Recover { .. } => format!(
+                "would unlock {tenant} (promotionId {}); pass --force to unlock",
+                approved.promotion_id.as_deref().unwrap_or("-")
+            ),
+        });
+    }
+    let now = check(verb, fresh, tenant)
+        .map_err(|why| format!("{tenant} changed after it was checked: {why}"))?;
+    if now != *approved {
         return Err(format!(
-            "would lock {tenant} and the environment it promotes from — neither accepts \
-             configuration changes until it is unlocked; pass --force to lock"
+            "{tenant}'s lock changed after it was checked (promotionId {} then, {} now); \
+             nothing was sent",
+            approved.promotion_id.as_deref().unwrap_or("none"),
+            now.promotion_id.as_deref().unwrap_or("none")
         ));
     }
-    Ok(LockPermit {
-        _minted_by_authorize_lock: (),
+    let minted = Minted(());
+    Ok(match verb {
+        Verb::Lock => Permit::Lock(minted),
+        Verb::Promote { dry_run } => Permit::Promote(minted, *dry_run),
+        Verb::Unlock | Verb::Recover { .. } => Permit::Unlock(
+            minted,
+            now.promotion_id
+                .expect("check returns an id for every unlock"),
+        ),
     })
 }
 
-/// Whether a dry run or a promotion may start: from [`Phase::Ready`] only —
-/// locked, and nothing running.
-pub fn check_promote(a: &Assessment, tenant: &str) -> Result<(), String> {
-    pair_ok(a, tenant)?;
-    match phase(a) {
-        Phase::Ready { .. } => Ok(()),
-        Phase::Unlocked => Err(format!(
-            "{tenant} is not locked; `aic promotion lock --tenant {tenant}` first"
-        )),
-        other => Err(refused(tenant, a, "promote", &other)),
-    }
+/// What [`begin`] did.
+#[derive(Debug)]
+pub enum Begun<T> {
+    /// Nothing to do: an unlock on a pair already unlocked.
+    AlreadyUnlocked,
+    /// Sent. `before` is the reading the write was authorized against.
+    Sent { before: Box<Assessment>, ack: T },
 }
 
-pub fn authorize_promote(
-    a: &Assessment,
+/// The write sequence, with every tenant interaction injected so a test can
+/// drive it: read and check; ask for consent; `prepare` (the production gate
+/// and anything to capture before the write — it runs only once a write is
+/// going ahead, so a refused state never demands `--yes`); read **again**
+/// and mint the permit from that reading; send.
+///
+/// A send that fails says the request may have landed: the tenant answers
+/// `202` and works asynchronously, so a lost response is not a refusal.
+pub async fn begin<P, T>(
+    verb: &Verb,
     tenant: &str,
-    dry_run: bool,
-    consented: bool,
-) -> Result<PromotePermit, String> {
-    check_promote(a, tenant)?;
-    if !consented {
-        return Err(if dry_run {
-            format!(
-                "would start a dry-run promotion into {tenant} (measured: ~8 minutes, no \
-                 configuration change); pass --force to start it"
-            )
-        } else {
-            format!(
-                "would promote into {tenant}: every configuration difference from the lower \
-                 environment becomes live there; pass --force to promote"
-            )
-        });
+    mut read: impl AsyncFnMut() -> crate::Result<Assessment>,
+    consent: impl FnOnce(&Assessment) -> crate::Result<bool>,
+    prepare: impl AsyncFnOnce() -> crate::Result<P>,
+    send: impl AsyncFnOnce(Permit, P) -> crate::Result<T>,
+) -> crate::Result<Begun<T>> {
+    let first = read().await?;
+    if matches!(verb, Verb::Unlock) && phase(&first) == Phase::Unlocked {
+        pair_ok(&first, tenant).map_err(crate::Error::Config)?;
+        return Ok(Begun::AlreadyUnlocked);
     }
-    Ok(PromotePermit { dry_run })
-}
-
-/// Whether an unlock may start: from [`Phase::Ready`] with an id. Never while
-/// a promotion runs — unlocking mid-promotion is unmeasured.
-pub fn check_unlock(a: &Assessment, tenant: &str) -> Result<String, String> {
-    pair_ok(a, tenant)?;
-    match phase(a) {
-        Phase::Ready {
-            promotion_id: Some(id),
-        } => Ok(id),
-        Phase::Ready { promotion_id: None } => Err(format!(
-            "{tenant} is locked but its promotion status names no promotionId to release"
-        )),
-        other => Err(refused(tenant, a, "unlock", &other)),
-    }
-}
-
-pub fn authorize_unlock(
-    a: &Assessment,
-    tenant: &str,
-    consented: bool,
-) -> Result<UnlockPermit, String> {
-    let promotion_id = check_unlock(a, tenant)?;
+    let approved = check(verb, &first, tenant).map_err(crate::Error::Config)?;
+    let consented = consent(&first)?;
     if !consented {
-        return Err(format!(
-            "would unlock {tenant} (promotionId {promotion_id}); pass --force to unlock"
+        // Same refusal `authorize` words, without a second read.
+        return Err(crate::Error::Config(
+            authorize(verb, &approved, &first, tenant, false).unwrap_err(),
         ));
     }
-    Ok(UnlockPermit { promotion_id })
+    let prepared = prepare().await?;
+    let fresh = read().await?;
+    let permit = authorize(verb, &approved, &fresh, tenant, true).map_err(crate::Error::Config)?;
+    match send(permit, prepared).await {
+        Ok(ack) => Ok(Begun::Sent {
+            before: Box::new(fresh),
+            ack,
+        }),
+        Err(error) => Err(crate::Error::Config(format!(
+            "{error}\n  the {} request may still have reached {tenant} — run `aic promotion \
+             status --tenant {tenant}` before retrying",
+            verb.name()
+        ))),
+    }
 }
 
 /// One poll's verdict on a started operation.
@@ -248,65 +413,88 @@ pub enum Settle {
     Failed(String),
 }
 
-/// A lock has settled at [`Phase::Ready`]. Reading unlocked is pending: the
-/// `202` arrives before either side moves.
-pub fn lock_settled(a: &Assessment) -> Settle {
-    match phase(a) {
-        Phase::Ready { .. } => Settle::Done,
-        Phase::Blocked => Settle::Failed(describe(a)),
-        Phase::Running { .. } => Settle::Failed(format!("a promotion started: {}", describe(a))),
-        _ => Settle::Pending(describe(a)),
-    }
+/// What a started operation is judged against while it settles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Watch {
+    verb: Verb,
+    /// The lock this operation belongs to: the approved one, or for a lock
+    /// the id the acknowledgement carried. A reading under any other id is
+    /// someone else's lock, never this operation's progress.
+    promotion_id: Option<String>,
+    seen_running: bool,
 }
 
-/// An unlock has settled at [`Phase::Unlocked`].
-pub fn unlock_settled(a: &Assessment) -> Settle {
-    match phase(a) {
-        Phase::Unlocked => Settle::Done,
-        Phase::Blocked | Phase::Running { .. } => Settle::Failed(describe(a)),
-        _ => Settle::Pending(describe(a)),
-    }
-}
-
-/// What a promotion's poll is judged against: the status before the `POST`,
-/// and whether `RUNNING` has been seen since.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PromoteWatch {
-    pub timestamp_before: Option<String>,
-    pub seen_running: bool,
-}
-
-/// A promotion has settled when the status is back at `READY` **after it
-/// started** — `RUNNING` was seen, or the status timestamp moved. `READY` is
-/// also the state it starts from, so a first poll that lands before the
-/// service has moved must not read as finished. A status other than `READY`
-/// or `RUNNING` once it has started is a failure, reported verbatim: no
-/// failed run has been measured, so nothing narrower is claimed.
-pub fn promote_settled(a: &Assessment, watch: &mut PromoteWatch) -> Settle {
-    match phase(a) {
-        Phase::Running { message } => {
-            watch.seen_running = true;
-            Settle::Pending(message.unwrap_or_else(|| "running".into()))
+impl Watch {
+    pub fn new(verb: Verb, promotion_id: Option<String>) -> Self {
+        Self {
+            verb,
+            promotion_id,
+            seen_running: false,
         }
-        Phase::Blocked => Settle::Failed(describe(a)),
-        Phase::Ready { .. } => {
-            let moved =
-                a.status.timestamp.is_some() && a.status.timestamp != watch.timestamp_before;
-            if watch.seen_running || moved {
-                Settle::Done
-            } else {
-                Settle::Pending("not started yet".into())
+    }
+
+    pub fn seen_running(&self) -> bool {
+        self.seen_running
+    }
+
+    fn foreign_id<'a>(&self, a: &'a Assessment) -> Option<&'a str> {
+        let now = a.status.promotion_id.as_deref()?;
+        let mine = self.promotion_id.as_deref()?;
+        (now != mine).then_some(now)
+    }
+
+    /// `produced_report` is whether a report this run produced has appeared
+    /// (see [`new_reports`]); only a promotion consults it.
+    pub fn judge(&mut self, a: &Assessment, produced_report: bool) -> Settle {
+        let phase = phase(a);
+        // Only a state that is *about* a lock is judged by its id: what the
+        // status carries mid-transition, or once unlocked, is unmeasured.
+        let about_a_lock = matches!(
+            phase,
+            Phase::Ready { .. } | Phase::Running { .. } | Phase::Blocked
+        );
+        if let (true, Some(other)) = (about_a_lock, self.foreign_id(a)) {
+            return Settle::Failed(format!(
+                "the pair is now under promotionId {other}, not {} — another operation took over",
+                self.promotion_id.as_deref().unwrap_or("-")
+            ));
+        }
+        match (&self.verb, phase) {
+            // A recovery starts from the blocked state it is releasing.
+            (Verb::Recover { .. }, Phase::Blocked) => Settle::Pending(describe(a)),
+            (_, Phase::Blocked) => Settle::Failed(describe(a)),
+            (Verb::Lock, Phase::Ready { .. }) => Settle::Done,
+            (Verb::Lock, Phase::Running { .. }) => {
+                Settle::Failed(format!("a promotion started: {}", describe(a)))
             }
+            (Verb::Unlock | Verb::Recover { .. }, Phase::Unlocked) => Settle::Done,
+            (Verb::Unlock | Verb::Recover { .. }, Phase::Running { .. }) => {
+                Settle::Failed(describe(a))
+            }
+            (Verb::Promote { .. }, Phase::Running { message }) => {
+                self.seen_running = true;
+                Settle::Pending(message.unwrap_or_else(|| "running".into()))
+            }
+            // `READY` is also where a promotion starts, so it ends one only
+            // with evidence the run happened: RUNNING seen, or its report.
+            (Verb::Promote { .. }, Phase::Ready { .. }) => {
+                if self.seen_running || produced_report {
+                    Settle::Done
+                } else {
+                    Settle::Pending("not seen to start yet".into())
+                }
+            }
+            (Verb::Promote { .. }, _) if self.seen_running => Settle::Failed(describe(a)),
+            (_, _) => Settle::Pending(describe(a)),
         }
-        _ if watch.seen_running => Settle::Failed(describe(a)),
-        _ => Settle::Pending(describe(a)),
     }
 }
 
 /// The report ids a promotion produced: entries of `after` absent from
 /// `before`, for this `promotionId` and this kind of run. A dry run and a
 /// real promotion inside one lock share the `promotionId` (one lock, one id),
-/// so the id alone does not say which run a report belongs to.
+/// so the id alone does not say which run a report belongs to — and these
+/// are candidates, not proof, if two operators run inside one lock.
 pub fn new_reports(
     before: &Value,
     after: &Value,
@@ -338,14 +526,44 @@ pub fn new_reports(
         .collect())
 }
 
+/// Which report a finished promotion produced, from [`new_reports`]. None
+/// is an error: the run's outcome is then unconfirmed, and a zero exit would
+/// read as success.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Identified {
+    One(String),
+    /// More than one new report of this kind under this id — another run
+    /// shared the lock, so which is this one's is not known.
+    Candidates(Vec<String>),
+}
+
+pub fn identify(
+    produced: &[String],
+    verb: &Verb,
+    promotion_id: Option<&str>,
+) -> Result<Identified, String> {
+    match produced {
+        [] => Err(format!(
+            "no new report for promotionId {} was found, so what the {} did is unconfirmed",
+            promotion_id.unwrap_or("(none)"),
+            verb.name()
+        )),
+        [one] => Ok(Identified::One(one.clone())),
+        many => Ok(Identified::Candidates(many.to_vec())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+
     use serde_json::json;
 
     use super::*;
     use crate::promotion::spec::assess;
 
     const ID: &str = "b5dfc43b-9da9-4c27-9ed8-47722bcab7f4";
+    const OTHER: &str = "0e0e0e0e-0000-4000-8000-000000000000";
 
     fn lock(result: &str, lower: &str, upper: &str) -> Value {
         json!({
@@ -355,7 +573,7 @@ mod tests {
         })
     }
 
-    /// The four observations measured 2026-10-27, as the tenant sent them.
+    /// The observations measured 2026-10-27, as the tenant sent them.
     fn unlocked() -> Assessment {
         assess(
             &lock("unlocked", "unlocked", "unlocked"),
@@ -365,21 +583,36 @@ mod tests {
         .unwrap()
     }
 
-    fn ready(ts: &str) -> Assessment {
+    fn ready_as(id: &str) -> Assessment {
         assess(
             &lock("locked", "locked", "locked"),
             &json!({"status": "READY", "message": "Environment ready for promotion",
                     "globalLock": "LOCKED", "blockingError": false,
-                    "promotionId": ID, "timeStamp": ts, "type": "promotion"}),
+                    "promotionId": id, "timeStamp": "t", "type": "promotion"}),
         )
         .unwrap()
     }
 
+    fn ready() -> Assessment {
+        ready_as(ID)
+    }
+
+    /// Only `GET promote` was polled during the measured run; the lock fields
+    /// here are an assumption, which is why `Running` does not depend on them.
     fn running() -> Assessment {
         assess(
             &lock("locked", "locked", "locked"),
             &json!({"status": "RUNNING", "message": "Clone repos", "globalLock": "LOCKED",
                     "blockingError": false, "promotionId": ID}),
+        )
+        .unwrap()
+    }
+
+    fn blocked(status: &str, id: &str) -> Assessment {
+        assess(
+            &lock("locked", "locked", "locked"),
+            &json!({"status": status, "globalLock": "LOCKED", "blockingError": true,
+                    "promotionId": id}),
         )
         .unwrap()
     }
@@ -396,7 +629,7 @@ mod tests {
     fn measured_observations_map_to_their_phases() {
         assert_eq!(phase(&unlocked()), Phase::Unlocked);
         assert_eq!(
-            phase(&ready("t1")),
+            phase(&ready()),
             Phase::Ready {
                 promotion_id: Some(ID.into())
             }
@@ -406,39 +639,67 @@ mod tests {
     }
 
     #[test]
-    fn a_phase_needs_every_source_to_agree() {
-        // READY with one side still locking is not ready to promote.
+    fn a_write_phase_needs_every_source_to_agree() {
+        // READY with one side still locking.
         let half = assess(
             &lock("locked", "locking", "locked"),
-            &json!({"status": "READY", "globalLock": "LOCKED", "promotionId": ID}),
+            &json!({"status": "READY", "globalLock": "LOCKED", "blockingError": false,
+                    "promotionId": ID}),
         )
         .unwrap();
         assert!(matches!(phase(&half), Phase::Unsettled(_)));
-        // UNLOCKED status over a lock/state still unlocking is not unlocked.
+        // UNLOCKED status over a lock/state still unlocking.
         let lagging = assess(
             &lock("unlocking", "unlocking", "unlocking"),
-            &json!({"status": "UNLOCKED", "globalLock": "UNLOCKED"}),
+            &json!({"status": "UNLOCKED", "globalLock": "UNLOCKED", "blockingError": false}),
         )
         .unwrap();
         assert!(matches!(phase(&lagging), Phase::Unsettled(_)));
         // A missing globalLock is not an agreeing one.
         let silent = assess(
             &lock("locked", "locked", "locked"),
-            &json!({"status": "READY", "promotionId": ID}),
+            &json!({"status": "READY", "blockingError": false, "promotionId": ID}),
         )
         .unwrap();
         assert!(matches!(phase(&silent), Phase::Unsettled(_)));
-    }
-
-    #[test]
-    fn a_blocking_error_outranks_every_other_reading() {
-        let blocked = assess(
+        // A missing blockingError is not a reported `false`.
+        let unsure = assess(
             &lock("locked", "locked", "locked"),
-            &json!({"status": "READY", "globalLock": "LOCKED", "blockingError": true}),
+            &json!({"status": "READY", "globalLock": "LOCKED", "promotionId": ID}),
         )
         .unwrap();
-        assert_eq!(phase(&blocked), Phase::Blocked);
-        assert!(check_promote(&blocked, "uat").is_err());
+        assert!(matches!(phase(&unsure), Phase::Unsettled(_)));
+    }
+
+    /// Both reviewers' discriminating input: every state agrees, one proxy
+    /// does not. `spec::disagreements` flags it, so no verb may start.
+    #[test]
+    fn a_proxy_that_disagrees_is_not_a_write_state() {
+        for proxy in ["unlocked", "locking"] {
+            let a = assess(
+                &json!({"result": "locked",
+                        "lowerEnv": {"state": "locked", "proxyState": proxy},
+                        "upperEnv": {"state": "locked", "proxyState": "locked"}}),
+                &json!({"status": "READY", "globalLock": "LOCKED", "blockingError": false,
+                        "promotionId": ID}),
+            )
+            .unwrap();
+            assert!(!a.disagreements.is_empty());
+            assert!(matches!(phase(&a), Phase::Unsettled(_)), "{proxy}");
+            assert!(check(&Verb::Promote { dry_run: true }, &a, "uat").is_err());
+            assert!(check(&Verb::Unlock, &a, "uat").is_err());
+            let mut watch = Watch::new(Verb::Lock, Some(ID.into()));
+            assert!(matches!(watch.judge(&a, false), Settle::Pending(_)));
+        }
+        // A missing proxy is not an agreeing one either.
+        let a = assess(
+            &json!({"result": "unlocked",
+                    "lowerEnv": {"state": "unlocked"},
+                    "upperEnv": {"state": "unlocked", "proxyState": "unlocked"}}),
+            &json!({"status": "UNLOCKED", "globalLock": "UNLOCKED", "blockingError": false}),
+        )
+        .unwrap();
+        assert!(check(&Verb::Lock, &a, "uat").is_err());
     }
 
     #[test]
@@ -446,145 +707,337 @@ mod tests {
         // The lower env answers lock/state with `result` alone (measured).
         let lower = assess(
             &json!({"result": "unlocked", "description": "Environment unlocked"}),
-            &json!({"status": "UNLOCKED", "globalLock": "UNLOCKED"}),
+            &json!({"status": "UNLOCKED", "globalLock": "UNLOCKED", "blockingError": false}),
         )
         .unwrap();
-        let err = check_lock(&lower, "dev").unwrap_err();
-        assert!(err.contains("not the upper environment"), "{err}");
-        assert!(check_promote(&lower, "dev").is_err());
-        assert!(check_unlock(&lower, "dev").is_err());
+        for verb in [
+            Verb::Lock,
+            Verb::Promote { dry_run: true },
+            Verb::Unlock,
+            Verb::Recover {
+                expected: ID.into(),
+            },
+        ] {
+            let err = check(&verb, &lower, "dev").unwrap_err();
+            assert!(err.contains("not the upper environment"), "{verb:?}: {err}");
+        }
     }
 
     #[test]
-    fn lock_starts_only_from_unlocked_and_needs_consent() {
-        assert!(check_lock(&unlocked(), "uat").is_ok());
-        let err = authorize_lock(&unlocked(), "uat", false).unwrap_err();
-        assert!(err.contains("--force"), "{err}");
-        assert!(authorize_lock(&unlocked(), "uat", true).is_ok());
-        let held = check_lock(&ready("t"), "uat").unwrap_err();
-        assert!(held.contains(ID), "{held}");
-        assert!(check_lock(&running(), "uat").is_err());
-        assert!(check_lock(&locking_upper_first(), "uat").is_err());
-    }
-
-    #[test]
-    fn promote_starts_only_from_ready_and_keeps_its_kind() {
+    fn each_verb_starts_only_from_its_phase() {
+        assert!(check(&Verb::Lock, &unlocked(), "uat").is_ok());
         assert!(
-            check_promote(&unlocked(), "uat")
+            check(&Verb::Lock, &ready(), "uat")
+                .unwrap_err()
+                .contains(ID)
+        );
+        assert!(check(&Verb::Lock, &running(), "uat").is_err());
+        assert!(check(&Verb::Lock, &locking_upper_first(), "uat").is_err());
+
+        let promote = Verb::Promote { dry_run: true };
+        assert_eq!(
+            check(&promote, &ready(), "uat")
+                .unwrap()
+                .promotion_id
+                .as_deref(),
+            Some(ID)
+        );
+        assert!(
+            check(&promote, &unlocked(), "uat")
                 .unwrap_err()
                 .contains("not locked")
         );
         assert!(
-            check_promote(&running(), "uat")
+            check(&promote, &running(), "uat")
                 .unwrap_err()
                 .contains("running")
         );
-        assert!(check_promote(&locking_upper_first(), "uat").is_err());
-        assert!(authorize_promote(&ready("t"), "uat", true, false).is_err());
-        assert!(
-            authorize_promote(&ready("t"), "uat", true, true)
-                .unwrap()
-                .dry_run()
-        );
-        assert!(
-            !authorize_promote(&ready("t"), "uat", false, true)
-                .unwrap()
-                .dry_run()
-        );
-        let real = authorize_promote(&ready("t"), "uat", false, false).unwrap_err();
-        assert!(real.contains("becomes live"), "{real}");
-    }
 
-    #[test]
-    fn unlock_releases_the_id_the_tenant_reported_and_never_mid_run() {
-        let permit = authorize_unlock(&ready("t"), "uat", true).unwrap();
-        assert_eq!(permit.promotion_id(), ID);
-        assert!(authorize_unlock(&ready("t"), "uat", false).is_err());
+        assert!(check(&Verb::Unlock, &ready(), "uat").is_ok());
         assert!(
-            check_unlock(&running(), "uat")
+            check(&Verb::Unlock, &running(), "uat")
                 .unwrap_err()
                 .contains("running")
         );
-        assert!(check_unlock(&unlocked(), "uat").is_err());
         let anonymous = assess(
             &lock("locked", "locked", "locked"),
-            &json!({"status": "READY", "globalLock": "LOCKED"}),
+            &json!({"status": "READY", "globalLock": "LOCKED", "blockingError": false}),
         )
         .unwrap();
         assert!(
-            check_unlock(&anonymous, "uat")
+            check(&Verb::Unlock, &anonymous, "uat")
                 .unwrap_err()
                 .contains("no promotionId")
         );
     }
 
+    /// The escape for a lock a failed promotion leaves: blocked, held by
+    /// every source, not running, and exactly the id the operator expects.
     #[test]
-    fn lock_and_unlock_settle_only_at_their_end_state() {
-        assert!(matches!(lock_settled(&unlocked()), Settle::Pending(_)));
-        assert!(matches!(
-            lock_settled(&locking_upper_first()),
-            Settle::Pending(_)
-        ));
-        assert_eq!(lock_settled(&ready("t")), Settle::Done);
-        assert!(matches!(lock_settled(&running()), Settle::Failed(_)));
-
-        assert!(matches!(unlock_settled(&ready("t")), Settle::Pending(_)));
-        assert_eq!(unlock_settled(&unlocked()), Settle::Done);
-        assert!(matches!(unlock_settled(&running()), Settle::Failed(_)));
-    }
-
-    #[test]
-    fn a_promotion_is_not_finished_by_the_ready_it_started_from() {
-        // The discriminating case: READY with the pre-POST timestamp is the
-        // state a promotion starts from, not its end.
-        let mut watch = PromoteWatch {
-            timestamp_before: Some("t0".into()),
-            seen_running: false,
+    fn recovery_releases_only_the_expected_blocked_lock() {
+        let recover = |id: &str| Verb::Recover {
+            expected: id.into(),
         };
-        assert!(matches!(
-            promote_settled(&ready("t0"), &mut watch),
-            Settle::Pending(_)
-        ));
-        assert!(matches!(
-            promote_settled(&running(), &mut watch),
-            Settle::Pending(_)
-        ));
-        assert!(watch.seen_running);
-        assert_eq!(promote_settled(&ready("t0"), &mut watch), Settle::Done);
-
-        // A run too quick to be seen RUNNING still ends: the timestamp moved.
-        let mut quick = PromoteWatch {
-            timestamp_before: Some("t0".into()),
-            seen_running: false,
-        };
-        assert_eq!(promote_settled(&ready("t1"), &mut quick), Settle::Done);
-    }
-
-    #[test]
-    fn a_promotion_that_leaves_ready_and_running_has_failed() {
-        let mut watch = PromoteWatch {
-            timestamp_before: Some("t0".into()),
-            seen_running: true,
-        };
-        assert!(matches!(
-            promote_settled(&unlocked(), &mut watch),
-            Settle::Failed(_)
-        ));
-        let odd = assess(
-            &lock("locked", "locked", "locked"),
-            &json!({"status": "ERROR", "globalLock": "LOCKED", "message": "boom"}),
+        let unlock = check(&Verb::Unlock, &blocked("READY", ID), "uat").unwrap_err();
+        assert!(unlock.contains("--recover"), "{unlock}");
+        assert_eq!(
+            check(&recover(ID), &blocked("READY", ID), "uat")
+                .unwrap()
+                .promotion_id
+                .as_deref(),
+            Some(ID)
+        );
+        assert!(check(&recover(ID), &blocked("ERROR", ID), "uat").is_ok());
+        assert!(
+            check(&recover(OTHER), &blocked("READY", ID), "uat")
+                .unwrap_err()
+                .contains(OTHER)
+        );
+        // Running, unblocked, or not held: never released blind.
+        assert!(check(&recover(ID), &blocked("RUNNING", ID), "uat").is_err());
+        assert!(
+            check(&recover(ID), &ready(), "uat")
+                .unwrap_err()
+                .contains("no blocking error")
+        );
+        assert!(check(&recover(ID), &running(), "uat").is_err());
+        let half = assess(
+            &lock("locked", "unlocking", "locked"),
+            &json!({"status": "READY", "globalLock": "LOCKED", "blockingError": true,
+                    "promotionId": ID}),
         )
         .unwrap();
-        let Settle::Failed(why) = promote_settled(&odd, &mut watch) else {
+        assert!(check(&recover(ID), &half, "uat").is_err());
+    }
+
+    #[test]
+    fn authorize_needs_consent_and_the_approved_lock() {
+        let approved = check(&Verb::Unlock, &ready(), "uat").unwrap();
+        assert!(
+            authorize(&Verb::Unlock, &approved, &ready(), "uat", false)
+                .unwrap_err()
+                .contains("--force")
+        );
+        let permit = authorize(&Verb::Unlock, &approved, &ready(), "uat", true).unwrap();
+        assert_eq!(permit.promotion_id(), Some(ID));
+        // Replaced while the prompt was open.
+        let err = authorize(&Verb::Unlock, &approved, &ready_as(OTHER), "uat", true).unwrap_err();
+        assert!(err.contains(ID) && err.contains(OTHER), "{err}");
+        // Started running while the prompt was open.
+        assert!(authorize(&Verb::Unlock, &approved, &running(), "uat", true).is_err());
+        // The promotion kind is fixed at minting.
+        let approved = check(&Verb::Promote { dry_run: false }, &ready(), "uat").unwrap();
+        let permit = authorize(
+            &Verb::Promote { dry_run: false },
+            &approved,
+            &ready(),
+            "uat",
+            true,
+        )
+        .unwrap();
+        assert_eq!(permit.dry_run(), Some(false));
+    }
+
+    /// Drive [`begin`] with a scripted tenant: what each read returns, what
+    /// consent says, and whether `send` was reached.
+    async fn drive(
+        verb: Verb,
+        reads: Vec<Assessment>,
+        consent: bool,
+    ) -> (crate::Result<Begun<()>>, Option<Permit>, usize, bool) {
+        let reads = RefCell::new(reads.into_iter());
+        let count = Cell::new(0);
+        let prepared = Cell::new(false);
+        let sent = RefCell::new(None);
+        let result = begin(
+            &verb,
+            "uat",
+            async || {
+                count.set(count.get() + 1);
+                Ok(reads.borrow_mut().next().expect("no more scripted reads"))
+            },
+            |_| Ok(consent),
+            async || {
+                prepared.set(true);
+                Ok(())
+            },
+            async |permit, ()| {
+                *sent.borrow_mut() = Some(permit);
+                Ok(())
+            },
+        )
+        .await;
+        (result, sent.into_inner(), count.get(), prepared.get())
+    }
+
+    #[tokio::test]
+    async fn begin_sends_from_a_fresh_read_after_consent() {
+        let (result, sent, reads, prepared) = drive(
+            Verb::Promote { dry_run: true },
+            vec![ready(), ready()],
+            true,
+        )
+        .await;
+        assert!(matches!(result, Ok(Begun::Sent { .. })));
+        assert_eq!(sent.unwrap().dry_run(), Some(true));
+        assert_eq!(reads, 2, "the permit must come from a second read");
+        assert!(prepared);
+    }
+
+    /// The race both reviewers named: a promotion starts, or the lock is
+    /// replaced, while the prompt is open. Nothing may be sent.
+    #[tokio::test]
+    async fn begin_refuses_what_changed_while_the_prompt_was_open() {
+        for (verb, second) in [
+            (Verb::Unlock, running()),
+            (Verb::Unlock, ready_as(OTHER)),
+            (Verb::Promote { dry_run: false }, unlocked()),
+            (Verb::Promote { dry_run: true }, ready_as(OTHER)),
+            (Verb::Lock, ready()),
+        ] {
+            let first = if verb == Verb::Lock {
+                unlocked()
+            } else {
+                ready()
+            };
+            let (result, sent, _, _) = drive(verb.clone(), vec![first, second], true).await;
+            assert!(result.is_err(), "{verb:?}");
+            assert!(sent.is_none(), "{verb:?} sent after drift");
+        }
+    }
+
+    #[tokio::test]
+    async fn begin_without_consent_or_eligibility_neither_prepares_nor_sends() {
+        let (result, sent, reads, prepared) = drive(Verb::Lock, vec![unlocked()], false).await;
+        assert!(result.unwrap_err().to_string().contains("--force"));
+        assert!(sent.is_none() && !prepared);
+        assert_eq!(reads, 1);
+        // A refused state never reaches the production gate.
+        let (result, sent, _, prepared) = drive(Verb::Lock, vec![ready()], true).await;
+        assert!(result.is_err() && sent.is_none() && !prepared);
+        // An unlock of an unlocked pair is nothing to do.
+        let (result, sent, _, _) = drive(Verb::Unlock, vec![unlocked()], true).await;
+        assert!(matches!(result, Ok(Begun::AlreadyUnlocked)) && sent.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_send_says_the_request_may_have_landed() {
+        let result: crate::Result<Begun<()>> = begin(
+            &Verb::Lock,
+            "uat",
+            async || Ok(unlocked()),
+            |_| Ok(true),
+            async || Ok(()),
+            async |_, ()| Err(crate::Error::Config("connection reset".into())),
+        )
+        .await;
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("may still have reached"), "{message}");
+    }
+
+    #[test]
+    fn lock_and_unlock_settle_only_at_their_end_state_under_their_id() {
+        let mut lock = Watch::new(Verb::Lock, Some(ID.into()));
+        assert!(matches!(lock.judge(&unlocked(), false), Settle::Pending(_)));
+        assert!(matches!(
+            lock.judge(&locking_upper_first(), false),
+            Settle::Pending(_)
+        ));
+        assert_eq!(lock.judge(&ready(), false), Settle::Done);
+        assert!(matches!(
+            lock.judge(&ready_as(OTHER), false),
+            Settle::Failed(_)
+        ));
+        assert!(matches!(lock.judge(&running(), false), Settle::Failed(_)));
+
+        let mut unlock = Watch::new(Verb::Unlock, Some(ID.into()));
+        assert!(matches!(unlock.judge(&ready(), false), Settle::Pending(_)));
+        assert_eq!(unlock.judge(&unlocked(), false), Settle::Done);
+        assert!(matches!(unlock.judge(&running(), false), Settle::Failed(_)));
+        assert!(matches!(
+            unlock.judge(&blocked("READY", ID), false),
+            Settle::Failed(_)
+        ));
+
+        // A recovery waits through the blocked state it started from.
+        let recover = Verb::Recover {
+            expected: ID.into(),
+        };
+        let mut watch = Watch::new(recover, Some(ID.into()));
+        assert!(matches!(
+            watch.judge(&blocked("READY", ID), false),
+            Settle::Pending(_)
+        ));
+        assert!(matches!(
+            watch.judge(&blocked("READY", OTHER), false),
+            Settle::Failed(_)
+        ));
+
+        // A transition carrying an old id is not a foreign lock.
+        let mut lock = Watch::new(Verb::Lock, Some(ID.into()));
+        let mut stale = locking_upper_first();
+        stale.status.promotion_id = Some(OTHER.into());
+        assert!(matches!(lock.judge(&stale, false), Settle::Pending(_)));
+    }
+
+    /// The discriminating case: `READY` is also where a promotion starts, so
+    /// without RUNNING seen or a report produced it is not the end — whatever
+    /// the timestamp did.
+    #[test]
+    fn a_promotion_is_not_finished_by_the_ready_it_started_from() {
+        let mut watch = Watch::new(Verb::Promote { dry_run: true }, Some(ID.into()));
+        let mut moved = ready();
+        moved.status.timestamp = Some("t-later".into());
+        assert!(matches!(watch.judge(&moved, false), Settle::Pending(_)));
+        assert!(matches!(watch.judge(&running(), false), Settle::Pending(_)));
+        assert!(watch.seen_running());
+        assert_eq!(watch.judge(&ready(), false), Settle::Done);
+
+        // A run too quick to be seen RUNNING ends on its report.
+        let mut quick = Watch::new(Verb::Promote { dry_run: true }, Some(ID.into()));
+        assert_eq!(quick.judge(&ready(), true), Settle::Done);
+    }
+
+    #[test]
+    fn a_promotion_under_another_lock_or_state_is_not_this_one() {
+        let mut watch = Watch::new(Verb::Promote { dry_run: false }, Some(ID.into()));
+        assert!(matches!(watch.judge(&running(), false), Settle::Pending(_)));
+        let Settle::Failed(why) = watch.judge(&ready_as(OTHER), true) else {
+            panic!("a READY under another promotionId must not finish this run");
+        };
+        assert!(why.contains(OTHER), "{why}");
+
+        let mut watch = Watch::new(Verb::Promote { dry_run: false }, Some(ID.into()));
+        watch.judge(&running(), false);
+        assert!(matches!(watch.judge(&unlocked(), false), Settle::Failed(_)));
+        let odd = assess(
+            &lock("locked", "locked", "locked"),
+            &json!({"status": "ERROR", "globalLock": "LOCKED", "blockingError": false,
+                    "message": "boom", "promotionId": ID}),
+        )
+        .unwrap();
+        let Settle::Failed(why) = watch.judge(&odd, false) else {
             panic!("an unmeasured status after starting must fail");
         };
         assert!(why.contains("ERROR") && why.contains("boom"), "{why}");
         // …but before it has started, the same reading is only pending.
-        let mut fresh = PromoteWatch::default();
-        assert!(matches!(
-            promote_settled(&odd, &mut fresh),
-            Settle::Pending(_)
-        ));
+        let mut fresh = Watch::new(Verb::Promote { dry_run: false }, Some(ID.into()));
+        assert!(matches!(fresh.judge(&odd, false), Settle::Pending(_)));
+    }
+
+    #[test]
+    fn a_finished_promotion_without_its_report_is_unconfirmed() {
+        let verb = Verb::Promote { dry_run: false };
+        let err = identify(&[], &verb, Some(ID)).unwrap_err();
+        assert!(err.contains(ID) && err.contains("unconfirmed"), "{err}");
+        assert_eq!(
+            identify(&["r".into()], &verb, Some(ID)),
+            Ok(Identified::One("r".into()))
+        );
+        assert_eq!(
+            identify(&["r".into(), "s".into()], &verb, Some(ID)),
+            Ok(Identified::Candidates(vec!["r".into(), "s".into()]))
+        );
     }
 
     #[test]
