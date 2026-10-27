@@ -372,7 +372,7 @@ mod tests {
         );
         assert!(got.is_err());
 
-        // A name of another form is refused before any read.
+        // A name of another form is refused before any endpoint read.
         let (got, asked) = endpoint_with("probe", &[(LIST, Ok(empty.clone()))]);
         assert!(got.is_err());
         assert_eq!(asked, [LIST]);
