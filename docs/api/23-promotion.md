@@ -281,11 +281,14 @@ Four naming mismatches, each measured, decide the lookups:
 - **The theme name does not match the stored one** (`Starter` against
   `Starter Theme`), so the realm's whole theme list is compared instead of
   guessing which theme is meant.
-- **An endpoint's `/` becomes `-`** (`endpoint-aic-promotion-probe`). That
-  reverses to one id, because a config id has two parts: `GET
+- **An endpoint's `/` becomes `-`** (`endpoint-aic-promotion-probe`). The
+  config read API takes two-part ids only: `GET
   /openidm/config/endpoint/<a>/<b>` is a 400 "The passed resourcePath has more
-  than two parts" on both tenants, even under an endpoint that exists. So
-  `endpoint-a-b` is `endpoint/a-b`. The name is still matched against the
+  than two parts" on both tenants, even under an endpoint that exists, and a
+  404 for an absent two-part id. So `verify` supports `endpoint/<name>` ids
+  only — `endpoint-a-b` is read as `endpoint/a-b` — and rejects a deeper id in
+  the list. That no stored id has more parts is not shown: the 400 may come
+  from routing, before any lookup. The name is still matched against the
   config list's endpoint ids encoded the same way. Two candidates are an error, and so is one that
   matches only without case: the report lowercases CORS ids, but whether it
   folds endpoint names is not measured (no report on the pair had ever listed

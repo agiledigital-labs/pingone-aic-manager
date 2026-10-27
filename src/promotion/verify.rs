@@ -128,9 +128,10 @@ pub enum Target {
         realm: String,
     },
     /// An IDM custom endpoint's config document, `endpoint/<name>`. The
-    /// report names it `endpoint-<name>` (measured 2026-10-27). `<name>`
-    /// holds no `/` — a config path of more than two parts is a 400 — so the
-    /// name reverses to one id; `api` still resolves it against the config
+    /// report names it `endpoint-<name>` (measured 2026-10-27). The config
+    /// read API takes two-part ids only — a longer path is a 400 — so this
+    /// verifier reads `<name>` as one part and rejects other shapes; `api`
+    /// still resolves it against the config
     /// list (`endpoint_id`), because whether reports fold its case is
     /// unmeasured.
     IdmEndpoint {
@@ -558,9 +559,11 @@ fn endpoint_reading_of(id: &str) -> Option<&str> {
 }
 
 /// The one config id a report's `endpoint-<name>` stands for:
-/// `endpoint/<name>`. A config path of more than two parts is a 400
-/// ("The passed resourcePath has more than two parts", measured
-/// 2026-10-27 on both tenants), so no `-` in `<name>` can have been a `/`.
+/// `endpoint/<name>`. The config read API answers a path of more than two
+/// parts with a 400 ("The passed resourcePath has more than two parts",
+/// measured 2026-10-27 on both tenants), so a deeper id could not be read
+/// anyway; this verifier supports two-part ids and rejects other shapes.
+/// That no stored id has more parts is not shown — the 400 may be routing.
 /// A name of any other form is an error: it cannot be shown absent.
 pub fn endpoint_reading(reported: &str) -> Result<String, String> {
     let id = reported
