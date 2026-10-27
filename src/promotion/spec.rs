@@ -50,6 +50,9 @@ pub struct Status {
     pub global_lock: Option<String>,
     pub blocking_error: Option<bool>,
     pub timestamp: Option<String>,
+    /// Present once a lock is held (measured while `READY`); the id
+    /// `DELETE lock/{promotionId}` releases.
+    pub promotion_id: Option<String>,
 }
 
 fn text(value: &Value, key: &str) -> Option<String> {
@@ -105,6 +108,7 @@ pub fn status(value: &Value) -> Result<Status, String> {
         global_lock: opt_text(value, "globalLock")?,
         blocking_error: opt_bool(value, "blockingError")?,
         timestamp: opt_text(value, "timeStamp")?,
+        promotion_id: opt_text(value, "promotionId")?,
     })
 }
 
@@ -121,7 +125,11 @@ fn same(a: &str, b: &str) -> bool {
 /// answer. Case is never a difference.
 pub fn disagreements(lock: &LockState, status: &Status) -> Vec<String> {
     let mut out = Vec::new();
-    if !same(&lock.result, &status.status) {
+    // A held lock reads `locked` here and `READY` there (measured 2026-10-27,
+    // after a lock settled and after a dry run): the status names what the
+    // lock is ready *for*, so that pair agrees.
+    let ready_over_lock = same(&lock.result, "locked") && same(&status.status, "READY");
+    if !same(&lock.result, &status.status) && !ready_over_lock {
         out.push(format!(
             "lock/state says `{}` but the promotion status says `{}`{}",
             lock.result,
@@ -296,6 +304,27 @@ mod tests {
         let found = disagreements(&lock, &status);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("UNLOCKING"), "{found:?}");
+    }
+
+    /// A held lock, as measured 2026-10-27: `locked` beside `READY` agrees.
+    /// `READY` beside `unlocked` still does not — the pairing is specific.
+    #[test]
+    fn ready_agrees_with_a_held_lock_and_only_with_one() {
+        let held = lock_state(&json!({
+            "description": "Environment locked", "result": "locked",
+            "lowerEnv": {"proxyState": "locked", "state": "locked"},
+            "upperEnv": {"proxyState": "locked", "state": "locked"}
+        }))
+        .unwrap();
+        let ready = status(&json!({
+            "blockingError": false, "globalLock": "LOCKED",
+            "message": "Environment ready for promotion", "status": "READY"
+        }))
+        .unwrap();
+        assert!(disagreements(&held, &ready).is_empty());
+        let free = lock_state(&json!({"result": "unlocked"})).unwrap();
+        let found = disagreements(&free, &ready);
+        assert!(found.iter().any(|d| d.contains("READY")), "{found:?}");
     }
 
     /// The control: the lower environment as measured, all agreeing.

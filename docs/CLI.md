@@ -846,9 +846,10 @@ verify locally before it evaluates. See `docs/api/21-am-policies.md`.
 
 ---
 
-## `aic promotion` — promotion lock state, status and reports
+## `aic promotion` — promotion lock state, status, reports and the write cycle
 
-Read-only. Nothing here locks, promotes or unlocks. Needs `fr:idc:promotion:*`
+`status`, `reports`, `report` and `verify` only read; `lock`, `dry-run`,
+`promote` and `unlock` write (below). Needs `fr:idc:promotion:*`
 on the token (`aic ctx scopes`); a sandbox has no promotion service and answers
 503. Run it against the **upper** environment of a pair — only that one has been
 measured to report both sides' lock and to hold the reports. API: `docs/api/23-promotion.md`.
@@ -858,6 +859,10 @@ aic promotion status [--json]
 aic promotion reports [--json]
 aic promotion report [<report-id> | --provisional] [--json]
 aic promotion verify --lower <env> --upper <env> [--report <report-id>] [--json]
+aic promotion lock     [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
+aic promotion dry-run  [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
+aic promotion promote  [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
+aic promotion unlock   [--tenant <upper>] [--force] [--yes] [--no-wait] [--timeout <minutes>]
 ```
 
 - `status` prints `lock/state` and the promotion status side by side. They have
@@ -883,6 +888,42 @@ aic promotion verify --lower <env> --upper <env> [--report <report-id>] [--json]
   read, including the global scripts it has no endpoint for, is never counted
   as matching. Exits non-zero if anything differs or is unchecked. Refuses two
   context names for one tenant.
+- `status` treats `lock/state` `locked` beside the promotion status `READY` as
+  agreement: that is how a held lock reads (measured 2026-10-27).
+
+### The write cycle
+
+`lock` → `dry-run` and/or `promote` → `unlock`, each sent to the **upper**
+environment; a tenant that does not report both sides of a pair is refused.
+Each verb starts only from a measured state, read fresh from both sources:
+
+| Verb      | Starts from                                          | Settles at                                | Measured   |
+| --------- | ---------------------------------------------------- | ----------------------------------------- | ---------- |
+| `lock`    | unlocked everywhere                                  | locked both sides, status `READY`         | ~3 minutes |
+| `dry-run` | locked, `READY`                                      | `READY` again, after it was seen to start | ~8½ minutes |
+| `promote` | locked, `READY`                                      | as `dry-run`                              | not yet run |
+| `unlock`  | locked, `READY`, with a `promotionId` on the status  | unlocked everywhere                       | ~3 minutes |
+
+Any other reading — a transition, one side ahead of the other, a running
+promotion, a blocking error — is refused with what each source said. `lock`
+refuses a lock already held (a second one is unmeasured, and the held one may
+be someone else's); `unlock` releases the id the tenant reports, never one you
+type, refuses while a promotion runs, and on a pair already unlocked says so
+and exits zero.
+
+Each asks for confirmation at a terminal; `--force` proceeds without one, and
+without either the verb refuses naming what it would do. `--yes` is the
+production gate, checked after the state check and consent. By default the
+command waits for the tenant to settle, printing each new status, and gives up
+after `--timeout` minutes (15 for `lock`/`unlock`, 45 for `dry-run`/`promote`)
+— the operation carries on there. `--no-wait` returns once the tenant accepts.
+
+`dry-run` and `promote` finish by naming the report they produced, found by
+difference from the report list read before the start (one lock is one
+`promotionId`, so a dry run and a promotion inside it share it; the report's
+`dryRun` flag tells them apart). Neither unlocks. A report lists items the
+promotion did not change — a dry run's was byte-identical to the previous real
+promotion's — so check one live with `verify --report <id>`.
 
 ## `aic role` — IDM internal roles
 
