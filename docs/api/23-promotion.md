@@ -2,8 +2,9 @@
 
 Verified against a dev → UAT environment pair and a sandbox, 2026-10-26, with
 `scripts/verify-endpoint.sh` and then `aic promotion`. The write cycle — lock,
-dry-run promotion, unlock — was measured on the same pair on 2026-10-27; a real
-(non-dry-run) promotion has not been exercised.
+dry-run promotion, unlock — was measured on the same pair on 2026-10-27, first
+with `curl` and then end to end through `aic promotion lock` / `dry-run` /
+`unlock`; a real (non-dry-run) promotion has not been exercised.
 
 `aic promotion status|reports|report|verify` (`src/promotion/`) wraps the reads
 below, and `aic promotion lock|dry-run|promote|unlock` the write cycle
@@ -133,10 +134,28 @@ Not exercised: a real promotion (`{"dryRun":false}` or other bodies), a
 and any failed promotion — so which states a failure leaves (and so what
 `aic promotion unlock --recover` will meet) is unknown.
 
-The lock `POST` above was sent with no body. `aic`'s transport sends JSON
-`null` as the body of a bodyless `POST`, as it does for every `DELETE`; that
-the lock endpoint accepts `null` is **not yet measured** and is checked by the
-first lock run through `aic`.
+The first lock `POST` was sent with no body. `aic`'s transport sends JSON
+`null` as the body of a bodyless `POST`, as it does for every `DELETE`, and
+the cycle run through `aic` on 2026-10-27 measured both: `POST …/lock` with a
+`null` body answered 202 "Environment lock in progress" and settled locked;
+`DELETE …/lock/{promotionId}` with a `null` body answered 202 and settled
+unlocked.
+
+That run also observed:
+
+- **The status carries the lock's `promotionId` during the transitions.**
+  `LOCKING` and `UNLOCKING` both named the same id the lock acknowledgement
+  returned, and so did the settled `READY`.
+- **The proxies move first.** Mid-lock each side read state `locking` with
+  proxy `locked`; mid-unlock, state `unlocking` with proxy `unlocked`. A
+  reading whose proxy disagrees with its state is a transition, which is why
+  `aic` never starts a write from one.
+- **A status read can fail transiently mid-lock**: one `GET …/promote` answered
+  `500` "unable to read promotion-status document … context deadline exceeded";
+  the next read succeeded. `aic` tolerates three consecutive failed reads.
+- **The dry run's report was found by difference** from the list read before
+  it, as the only new `dryRun: true` entry under the lock's `promotionId`, and
+  the run ended "Promotion completed (no change)" after `RUNNING` was seen.
 
 ## The provisional report is not a live diff
 
