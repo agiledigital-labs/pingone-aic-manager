@@ -132,8 +132,8 @@ pub enum Target {
     /// read API takes two-part ids only — a longer path is a 400 — so this
     /// verifier reads `<name>` as one part and rejects other shapes; `api`
     /// still resolves it against the config
-    /// list (`endpoint_id`), because whether reports fold its case is
-    /// unmeasured.
+    /// list (`endpoint_id`). Reports keep an endpoint name's case and reads
+    /// are case-sensitive (both measured 2026-10-28).
     IdmEndpoint {
         name: String,
     },
@@ -518,9 +518,10 @@ fn reported_as(id: &str, reported: &str) -> bool {
 /// the other (an `endpoint/<name>` id of two parts) — measured, the two
 /// always agree. Two
 /// candidates are refused rather than picked, and so is a candidate that
-/// matches only without case: the report lowercased CORS ids, but whether
-/// it folds endpoint names is unmeasured, and treating a case-only match as
-/// either the endpoint or "not found" would be a guess.
+/// matches only without case. Reports lowercase CORS ids but keep an
+/// endpoint name's case (one measured sample), so a case-only match is a
+/// different endpoint; reading it as either the endpoint or "not found"
+/// would rest on that one sample.
 pub fn endpoint_id(list: &Value, reported: &str) -> Result<Option<String>, String> {
     let mut candidates = Vec::new();
     for row in complete_in(list, "configurations")? {
@@ -544,7 +545,7 @@ pub fn endpoint_id(list: &Value, reported: &str) -> Result<Option<String>, Strin
         [id] if id.replace('/', "-") == reported => Ok(Some(id.to_string())),
         [id] => Err(format!(
             "{reported:?} matches endpoint {id:?} only without case, and whether \
-             reports fold endpoint case is unmeasured"
+             reports keep endpoint case (measured once), so it is not this item"
         )),
         [a, b, ..] => Err(format!(
             "{reported:?} could be endpoint {a:?} or {b:?}; refusing to pick one"
