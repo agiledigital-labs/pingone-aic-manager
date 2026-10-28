@@ -720,13 +720,14 @@ mod tests {
     /// thread is held inside the poll, as a late-scheduled task would be.
     /// `late_startup` makes the second startup read (`ready`) the late one,
     /// so completion must not be recorded; otherwise the pending read is late
-    /// and must not become `Finished`.
+    /// and must not become `Finished`. The margins are wide so preemption
+    /// before the late read cannot spend the deadline first.
     #[tokio::test]
     async fn an_answer_after_the_deadline_is_not_taken() {
         for late_startup in [true, false] {
-            let deadline = Instant::now() + Duration::from_millis(30);
+            let deadline = Instant::now() + Duration::from_millis(300);
             let reads = std::cell::Cell::new(0);
-            let late = || std::thread::sleep(Duration::from_millis(60));
+            let late = || std::thread::sleep(Duration::from_millis(600));
             let end = wait_with(
                 deadline,
                 || async {
