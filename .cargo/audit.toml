@@ -12,4 +12,11 @@ ignore = [
   # operations to exploit this. Reached directly and via jsonwebtoken. Remove
   # when an rsa release with constant-time operations ships.
   "RUSTSEC-2023-0071",
+  # crypto-bigint 0.5 — timing variability in operations meant to be
+  # constant-time. Fixed only in 0.7.6, which elliptic-curve 0.13 cannot use.
+  # It arrives via jsonwebtoken's `rust_crypto` feature (p256/p384), which
+  # jsonwebtoken 11.1 still pins to 0.13. `aic` uses RS256 only and never
+  # signs or verifies with an elliptic-curve key, so no EC operation runs.
+  # Remove when jsonwebtoken depends on p256/p384 0.14 or later.
+  "RUSTSEC-2026-0387",
 ]
