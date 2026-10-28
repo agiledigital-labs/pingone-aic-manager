@@ -63,8 +63,8 @@ effectively immutable post-create; to change them, delete and recreate.
 A restart's timeline, measured on the sandbox 2026-10-28 (`aic esv apply
 --wait` is built on it). The first `GET /environment/startup` after the `POST`
 already answered `restarting`, so a waiter can require one `restarting` read
-before it accepts `ready`, which is also the state a restart starts from. Two
-restarts took **213 s** and **230 s** to read `ready` again. A pending variable
+before it accepts `ready`, which is also the state a restart starts from. Three
+restarts took **213 s**, **230 s** and **184 s** to read `ready` again. A pending variable
 stayed in `?_onlyPending=true` throughout the restart and was gone once it read
 `ready`. One status read mid-restart answered `500 Internal Server Error`; the
 next succeeded.

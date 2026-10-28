@@ -367,13 +367,18 @@ aic esv apply [--yes] [--wait [--timeout <min>]] # restart the runtime to apply 
 ```
 
 `status` lists the variables and secrets the tenant reports as pending. Deletes
-are never reported as pending, so a pending delete does not show there.
+are never reported as pending, so a pending delete does not show there. A
+pending list that says more pages follow is refused rather than under-counted.
 
-`apply` is refused while a restart is already running. With `--wait` it stays
-until the restart reads `ready` again, showing the elapsed time on one live line
-at a terminal and one line per change elsewhere. A restart measured at 3½–4
-minutes; the default timeout is 15. It exits non-zero if changes are still
-pending afterwards, or if it gives up (the restart carries on).
+`apply` is refused while a restart is already running. With `--wait` it reads
+the restart state until `ready` follows a `restarting`, then reads the pending
+lists afresh. It shows the elapsed time on one live line at a terminal and one
+line per change elsewhere. Restarts measured at 3–4 minutes; `--timeout` (1 to
+1440 minutes, default 15) bounds every read and pause, so a read that hangs
+cannot outlast it. It exits non-zero if changes are still pending afterwards,
+or if it gives up (the restart carries on). The API names no restart, so one
+someone else starts between the pre-check and this `apply`'s request is
+indistinguishable from it.
 
 `--type` (`expressionType`) is one of `string`, `int`, `bool`, `list`, `object`,
 `array`, `keyvaluelist` (default `string`). Values are stored base64-encoded.
