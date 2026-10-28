@@ -207,16 +207,24 @@ impl Pending {
 /// The ids in one `?_onlyPending=true` answer, refusing one that says more
 /// pages follow: a partial list would under-count, and an empty first page
 /// would read as "nothing pending". An empty cookie ends a list (measured,
-/// `docs/api/03-esvs.md`); `remainingPagedResults` of -1 means unknown.
+/// `docs/api/03-esvs.md`); `remainingPagedResults` of -1 means unknown. Paging
+/// metadata of any other type is refused, not ignored: ignoring it is what
+/// would turn "more follow" into "complete".
 fn complete_ids(body: &Value, path: &str) -> Result<Vec<String>> {
-    let cookie = body.get("pagedResultsCookie").and_then(Value::as_str);
-    let remaining = body.get("remainingPagedResults").and_then(Value::as_i64);
-    if cookie.is_some_and(|c| !c.is_empty()) || remaining.is_some_and(|n| n > 0) {
+    let shape = || Error::Config(format!("unexpected {path} response shape: {body}"));
+    let more = match body.get("pagedResultsCookie") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(cookie)) => !cookie.is_empty(),
+        Some(_) => return Err(shape()),
+    } || match body.get("remainingPagedResults") {
+        None | Some(Value::Null) => false,
+        Some(n) => n.as_i64().ok_or_else(shape)? > 0,
+    };
+    if more {
         return Err(Error::Config(format!(
             "{path} answered one page of several; refusing a partial pending list"
         )));
     }
-    let shape = || Error::Config(format!("unexpected {path} response shape: {body}"));
     body.get("result")
         .and_then(Value::as_array)
         .ok_or_else(shape)?
@@ -318,12 +326,14 @@ enum WaitEnd {
     Finished(Pending),
     /// The deadline passed; `restarted` says whether completion was seen.
     TimedOut { restarted: bool },
-    /// Too many reads in a row failed; the last error.
-    Unreadable(Error),
+    /// Too many reads in a row failed; the last error, and whether
+    /// completion had been seen.
+    Unreadable { error: Error, restarted: bool },
 }
 
 enum Seen<'a> {
     Restarting,
+    Restarted,
     ReadFailed(u32, &'a Error),
 }
 
@@ -360,16 +370,25 @@ where
         let failed = if restarted {
             match tokio::time::timeout_at(deadline, pending()).await {
                 Err(_) => return WaitEnd::TimedOut { restarted },
+                // The read was polled before the timer, so one that
+                // answered only after the deadline still lands here.
+                Ok(Ok(_)) if Instant::now() > deadline => {
+                    return WaitEnd::TimedOut { restarted };
+                }
                 Ok(Ok(list)) => return WaitEnd::Finished(list),
                 Ok(Err(error)) => error,
             }
         } else {
             match tokio::time::timeout_at(deadline, startup()).await {
                 Err(_) => return WaitEnd::TimedOut { restarted },
+                Ok(Ok(_)) if Instant::now() > deadline => {
+                    return WaitEnd::TimedOut { restarted };
+                }
                 Ok(Ok(status)) => {
                     failures = 0;
                     restarted = watch.finished(status);
                     if restarted {
+                        seen(Seen::Restarted);
                         continue;
                     }
                     if status == StartupStatus::Restarting {
@@ -384,7 +403,10 @@ where
         failures += 1;
         seen(Seen::ReadFailed(failures, &failed));
         if failures >= POLL_READ_FAILURES {
-            return WaitEnd::Unreadable(failed);
+            return WaitEnd::Unreadable {
+                error: failed,
+                restarted,
+            };
         }
         pause_until(deadline, &mut pause).await;
     }
@@ -431,7 +453,16 @@ async fn wait_for_restart(tenant: &str, limit: Duration) -> Result<()> {
             "still not finished after {} minutes; the restart carries on — {status}",
             limit.as_secs() / 60
         ))),
-        WaitEnd::Unreadable(error) => Err(Error::Config(format!(
+        WaitEnd::Unreadable {
+            error,
+            restarted: true,
+        } => Err(Error::Config(format!(
+            "{tenant} restarted, but the pending lists could not be read ({error}) — {status}"
+        ))),
+        WaitEnd::Unreadable {
+            error,
+            restarted: false,
+        } => Err(Error::Config(format!(
             "gave up after {POLL_READ_FAILURES} failed reads ({error}); the restart carries on — {status}"
         ))),
     }
@@ -462,6 +493,10 @@ impl Progress {
                     eprintln!("  restarting");
                 }
                 self.draw();
+            }
+            Seen::Restarted => {
+                self.restarting.set(false);
+                self.clear();
             }
             Seen::ReadFailed(n, error) => {
                 self.clear();
@@ -656,7 +691,67 @@ mod tests {
         startup.extend((0..POLL_READ_FAILURES).map(|_| Err(failed())));
         let script = Script::new(startup, vec![]);
         let end = script.run(Duration::from_secs(5)).await;
-        assert!(matches!(end, WaitEnd::Unreadable(_)));
+        assert!(matches!(
+            end,
+            WaitEnd::Unreadable {
+                restarted: false,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_reads_failing_after_completion_say_it_restarted() {
+        let script = Script::new(
+            vec![Ok(StartupStatus::Restarting), Ok(StartupStatus::Ready)],
+            (0..POLL_READ_FAILURES).map(|_| Err(failed())).collect(),
+        );
+        let end = script.run(Duration::from_secs(5)).await;
+        assert!(matches!(
+            end,
+            WaitEnd::Unreadable {
+                restarted: true,
+                ..
+            }
+        ));
+    }
+
+    /// A read whose answer is ready only once the deadline has passed: the
+    /// thread is held inside the poll, as a late-scheduled task would be.
+    /// `late_startup` makes the second startup read (`ready`) the late one,
+    /// so completion must not be recorded; otherwise the pending read is late
+    /// and must not become `Finished`.
+    #[tokio::test]
+    async fn an_answer_after_the_deadline_is_not_taken() {
+        for late_startup in [true, false] {
+            let deadline = Instant::now() + Duration::from_millis(30);
+            let reads = std::cell::Cell::new(0);
+            let late = || std::thread::sleep(Duration::from_millis(60));
+            let end = wait_with(
+                deadline,
+                || async {
+                    reads.set(reads.get() + 1);
+                    if reads.get() == 1 {
+                        return Ok(StartupStatus::Restarting);
+                    }
+                    if late_startup {
+                        late();
+                    }
+                    Ok(StartupStatus::Ready)
+                },
+                || async {
+                    late();
+                    Ok(none())
+                },
+                |_| async {},
+                |_| {},
+            )
+            .await;
+            assert!(
+                matches!(end, WaitEnd::TimedOut { restarted } if restarted != late_startup),
+                "late_startup={late_startup}: {end:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -690,6 +785,24 @@ mod tests {
             ["esv-a"]
         );
         assert!(complete_ids(&serde_json::json!({"result": [{}]}), path).is_err());
+        let empty = |extra: Value| {
+            let mut body = serde_json::json!({"result": []});
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            complete_ids(&body, path)
+        };
+        assert!(
+            empty(serde_json::json!({"remainingPagedResults": 9_223_372_036_854_775_808u64}))
+                .is_err()
+        );
+        assert!(empty(serde_json::json!({"remainingPagedResults": "1"})).is_err());
+        assert!(empty(serde_json::json!({"pagedResultsCookie": 7})).is_err());
+        assert!(
+            empty(serde_json::json!({"pagedResultsCookie": null, "remainingPagedResults": 0}))
+                .unwrap()
+                .is_empty()
+        );
         assert!(complete_ids(&serde_json::json!({}), path).is_err());
     }
 
