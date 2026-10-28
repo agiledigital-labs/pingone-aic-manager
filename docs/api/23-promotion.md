@@ -290,9 +290,12 @@ Four naming mismatches, each measured, decide the lookups:
   the list. That no stored id has more parts is not shown: the 400 may come
   from routing, before any lookup. The name is still matched against the
   config list's endpoint ids encoded the same way. Two candidates are an error, and so is one that
-  matches only without case: the report lowercases CORS ids, but whether it
-  folds endpoint names is not measured (no report on the pair had ever listed
-  an endpoint before this round trip). A wrong guess would be fail-open for a
+  matches only without case. Reports lowercase CORS ids but keep an endpoint
+  name's case: measured 2026-10-28, a dry run for `endpoint/aicPromotionProbe`
+  listed `endpoint-aicPromotionProbe` (one sample). IDM config reads are
+  case-sensitive — on dev the same endpoint read 200 at its exact id and 404
+  in all-lowercase and all-uppercase. So a case-only match names a different
+  endpoint, and is refused rather than read as either. A wrong guess would be fail-open for a
   deletion, where absent from both is in sync — so a paged list, a row with no
   `_id`, and a row whose `factoryPid` and `endpoint/` prefix disagree are
   errors too, never "not found". On both tenants, 2026-10-27, the list had 97
@@ -326,9 +329,9 @@ absence is never taken from the list. An endpoint the list does not name is
 read directly at the one id its name stands for, and is absent only if that
 answers 404. A 200 means the list omitted it, and any other answer is an
 error; both make the item unchecked, as does a name not of the form
-`endpoint-<name>`. What the direct read cannot exclude is a different *case*: if reports fold endpoint
-names as they fold CORS ids, an omitted `endpoint/Foo` reported as
-`endpoint-foo` is excluded only by the list.
+`endpoint-<name>`. The direct read is at the report's own spelling, and a
+report keeps an endpoint name's case (measured once, above), so an omitted
+`endpoint/Foo` is read as `endpoint/Foo`, not as `endpoint/foo`.
 
 Measured on the pair the console called in sync: **149 of 150 same, 0 differ,
 1 unchecked** (the global script). Positive control, the same report with the
