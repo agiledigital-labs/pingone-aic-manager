@@ -362,8 +362,18 @@ aic esv list [--json]                           # all variables (table by defaul
 aic esv get esv-my-var                           # one variable as JSON
 aic esv set esv-my-var --value hello --type string [--description "…"] [--yes]
 aic esv delete esv-my-var [--yes]
-aic esv apply [--yes]                            # restart the runtime to apply staged changes
+aic esv status [--json]                         # pending changes, and whether a restart is running
+aic esv apply [--yes] [--wait [--timeout <min>]] # restart the runtime to apply staged changes
 ```
+
+`status` lists the variables and secrets the tenant reports as pending. Deletes
+are never reported as pending, so a pending delete does not show there.
+
+`apply` is refused while a restart is already running. With `--wait` it stays
+until the restart reads `ready` again, showing the elapsed time on one live line
+at a terminal and one line per change elsewhere. A restart measured at 3½–4
+minutes; the default timeout is 15. It exits non-zero if changes are still
+pending afterwards, or if it gives up (the restart carries on).
 
 `--type` (`expressionType`) is one of `string`, `int`, `bool`, `list`, `object`,
 `array`, `keyvaluelist` (default `string`). Values are stored base64-encoded.

@@ -60,6 +60,15 @@ effectively immutable post-create; to change them, delete and recreate.
 
 **Always** `GET /environment/startup` first and abort if status is not `ready`.
 
+A restart's timeline, measured on the sandbox 2026-10-28 (`aic esv apply
+--wait` is built on it). The first `GET /environment/startup` after the `POST`
+already answered `restarting`, so a waiter can require one `restarting` read
+before it accepts `ready`, which is also the state a restart starts from. Two
+restarts took **213 s** and **230 s** to read `ready` again. A pending variable
+stayed in `?_onlyPending=true` throughout the restart and was gone once it read
+`ready`. One status read mid-restart answered `500 Internal Server Error`; the
+next succeeded.
+
 ## Object shapes (verified from sandbox)
 
 ### Variable (list & single)
@@ -253,6 +262,9 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
 
 ## Verified against
 
+- 2026-10-28, sandbox: `POST /environment/startup?_action=restart` twice, with
+  `GET /environment/startup` and the two `?_onlyPending=true` lists polled
+  every 5–10 s until `ready` (timeline above).
 - Tenant: `<your-tenant>.forgeblocks.com`
 - Date: 2026-08-17
 - Calls: `GET /environment/variables?_pageSize=1000` → 400 (max 100);
