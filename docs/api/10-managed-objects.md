@@ -777,6 +777,40 @@ triggering request gets **HTTP 500** and the write rolls back. Any uncaught hook
 exception surfaces the same way. Probe with `typeof <name>`, never by
 enumerating scope.
 
+### Caller identity through a custom endpoint (verified 2026-10-28)
+
+A custom endpoint's synchronous `openidm.patch(...)` and
+`openidm.update(...)` calls preserve the originating caller's identity in
+`onUpdate`'s `context`. Read selected fields rather than serializing the
+security context (its parent chain can include credentials):
+
+```javascript
+var security = context.security;
+var authorization = security && security.authorization;
+var actorId = authorization && authorization.id;
+var actorComponent = authorization && authorization.component;
+var authenticationId = security && security.authenticationId;
+```
+
+The component identifies the collection containing the actor; the actor is
+distinct from the managed record being changed. A service-account bearer
+identifies the service account, not a human on whose behalf an application
+might be acting. An authenticated end-user caller is expected to retain its
+mapped user identity by the same context inheritance, but an end-user token
+was **not** exercised in this probe. This measurement also does not cover a
+separate HTTP request, an asynchronous job, or a deliberately replaced context.
+
+The probe used a temporary managed type, record, and endpoint. The hook stored
+an allowlist of scalar fields in the draft record; the endpoint compared that
+snapshot with its own context. For both PATCH and update, all five fields
+matched: `security.authenticationId`, `security.authorization.id`,
+`security.authorization.component`, `oauth2.rawInfo.user_id`, and `http.path`.
+The component was `managed/svcacct`, and authentication ID, authorization ID,
+and OAuth user ID were equal. Both writes changed the record as intended.
+All probe resources were deleted and the complete managed configuration was
+confirmed equal to its pre-probe content. The reproduce script was a scratch
+file, not committed.
+
 ### Relationship properties on `onUpdate`'s `object` (verified 2026-09-07)
 
 `object` and `oldObject` do not unconditionally contain relationship
@@ -1349,6 +1383,11 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-28 — development tenant; custom endpoint → synchronous
+  `openidm.patch` / `openidm.update` → managed `onUpdate`. Caller identity and
+  originating HTTP path matched across both hops with a service-account
+  bearer. See "Caller identity through a custom endpoint" above for fields,
+  scope, and confirmed cleanup. End-user bearer not exercised.
 - Date: 2026-10-26 — `config/managed` write-boundary check and `verify`
   coverage, sandbox. `aic managed field add test_from.hasOneHasOne --type
   string` (a key `config/managed` no longer declares but `repo.ds` still maps as
