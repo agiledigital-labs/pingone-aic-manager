@@ -429,6 +429,13 @@ caller receives.
   stashed in an `alpha_lock` record, then cleaned up). Always guard
   `context.http` before dereferencing it.
 
+Synchronous writes from an endpoint also carry the caller context into managed
+`onUpdate` hooks. Verified 2026-10-28 for both `openidm.patch` and
+`openidm.update`, with a service-account bearer; see
+[caller identity through a custom endpoint](10-managed-objects.md#caller-identity-through-a-custom-endpoint-verified-2026-10-28)
+for the measured fields and limits. This identifies the bearer principal; a
+service-account caller does not supply a human identity implicitly.
+
 ### Response shape
 
 The script's returned value is the HTTP response body. A **`query` handler MUST
@@ -732,6 +739,12 @@ Object shape (real example, `schedule/UpdateReviewList`):
 > visible in the AIC console.
 
 ## Verified against
+
+- Date: 2026-10-28 — development tenant, temporary endpoint and managed type:
+  synchronous PATCH and update preserved the endpoint's authentication ID,
+  authorization ID/component, OAuth user ID and HTTP path in `onUpdate`.
+  Service-account token only. Probe resources deleted and managed config
+  restoration confirmed; full method and limits in `10-managed-objects.md`.
 
 - Tenant: `<your-tenant>.forgeblocks.com`
 - Date: 2026-09-21 (anonymous runtime access and unsafe-method header). Four
