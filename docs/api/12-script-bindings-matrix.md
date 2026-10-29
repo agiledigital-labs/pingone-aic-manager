@@ -1738,6 +1738,14 @@ only way to its values is `values().toArray()` or `map[k]`. A key named `get`,
   (`patch` on an absent record was not probed).
 - Every write's `fields` argument narrows the returned record, keeping `_id`
   and `_rev`.
+- Every successful write returns the stored record with `_id` and `_rev`:
+  `create` (including a `null` id, which returns the generated one), `update`,
+  `patch` and `delete`. Re-run 2026-10-29 on next-gen AM, and the same four
+  calls checked on the IDM engine from a throwaway
+  `endpoint/aicprobe-idm-writes` (one `GET`, HTTP 200; endpoint deleted after,
+  `config/endpoint/aicprobe-idm-writes` 404, no probe records left in
+  `managed/alpha_role`). The script templates type these returns as
+  `StoredRecord`, the same as `read`.
 - `action("policy/<resource>/<id>", "validateObject", content[, params[, fields]])`
   returns `{ result, failedPolicyRequirements }`. An unknown action on a
   managed collection throws

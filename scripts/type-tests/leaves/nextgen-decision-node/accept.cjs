@@ -132,6 +132,21 @@ openidm.patch("managed/__aic_fixture_user/alice", null, [
 ]);
 openidm.create("managed/__aic_fixture_device", null, { deviceId: "d-2" });
 
+// RecordResult: every write hands back the stored record, so `_id` and `_rev`
+// are strings here too — a `null` id on create returns the generated one.
+var made = openidm.create("managed/__aic_fixture_user", null, { userName: "carol" });
+/** @type {string} */
+var madeId = made._id;
+/** @type {string} */
+var madeRev = openidm.update("managed/__aic_fixture_user/" + madeId, null, { sn: "c" })._rev;
+/** @type {string} */
+var patchedRev = openidm.patch("managed/__aic_fixture_user/" + madeId, madeRev, [
+  { operation: "replace", field: "sn", value: "d" },
+])._rev;
+/** @type {string} */
+var deletedId = openidm.delete("managed/__aic_fixture_user/" + madeId, patchedRev)._id;
+logger.info("deleted {}", deletedId);
+
 // --- Lookup<T>: a Java collection takes a JS string literal ------------------
 // The other small conditional in the ambient declarations. Every family reaches
 // a Java collection with a plain literal — `scopes.contains("openid")` — and
