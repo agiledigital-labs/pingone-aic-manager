@@ -186,7 +186,11 @@ type FieldsArg<T, R extends string> = [T] extends [never]
 
 type ContentArg<T> = [T] extends [never] ? object : Partial<T>;
 
-type RecordResult<T> = [T] extends [never] ? any : T;
+// What a write hands back. `create`, `update`, `patch` and `delete` all return
+// the stored record, `_id` and `_rev` included (verified 2026-10-29 on both
+// engines: `binding-openidm-writes` on next-gen AM and an IDM endpoint, with and
+// without `fields`; a `null` id on create returns the generated one).
+type RecordResult<T> = [T] extends [never] ? any : StoredRecord<T>;
 
 // A record handed back by the store always carries `_id` and `_rev`: a managed
 // object instance is "`_id` and `_rev` plus its declared properties"

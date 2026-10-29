@@ -243,6 +243,24 @@ export function typeTours(): void {
   openidm.patch(`${FIXTURE}/${id}`, null, [
     { operation: "replace", field: "sn", value: "smith" },
   ]);
+
+  // --- every write hands back the stored record, `_id`/`_rev` guaranteed ----
+  {
+    const made = openidm.create(FIXTURE, null, { userName: "carol" });
+    const madeId: string = made._id;
+    const updatedRev: string = openidm.update(`${FIXTURE}/${madeId}`, null, {
+      sn: "c",
+    })._rev;
+    const patchedRev: string = openidm.patch(`${FIXTURE}/${madeId}`, null, [
+      { operation: "replace", field: "sn", value: "d" },
+    ])._rev;
+    const deletedId: string = openidm.delete(
+      `${FIXTURE}/${madeId}`,
+      patchedRev
+    )._id;
+    void updatedRev;
+    void deletedId;
+  }
 }
 
 test("the openidm type tours are declared but never executed", () => {

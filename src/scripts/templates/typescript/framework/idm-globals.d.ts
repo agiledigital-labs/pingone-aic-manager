@@ -214,11 +214,14 @@ declare global {
     : Partial<T>;
 
   /**
-   * The result of a call whose path did not resolve to a managed object. The
-   * ambient workspace widens to `any` here; this project stays strict, so an
-   * unknown path hands back the generic CREST resource shape instead.
+   * What a write hands back. `create`, `update`, `patch` and `delete` all
+   * return the stored record, `_id` and `_rev` included (verified 2026-10-29 on
+   * both engines; a `null` id on create returns the generated one). For a path
+   * that did not resolve to a managed object the ambient workspace widens to
+   * `any`; this project stays strict, so it hands back the generic CREST
+   * resource shape instead.
    */
-  type RecordResult<T> = [T] extends [never] ? CrestResource : T;
+  type RecordResult<T> = [T] extends [never] ? CrestResource : StoredRecord<T>;
 
   /**
    * A record the store hands back always carries `_id` and `_rev`: a managed
