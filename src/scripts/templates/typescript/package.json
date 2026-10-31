@@ -21,12 +21,15 @@
     "@babel/parser": "^8.0.0",
     "@babel/preset-env": "^8.0.0",
     "@babel/traverse": "^8.0.0",
-    "@eslint/js": "^9.0.0",
+    "@eslint/js": "^10.0.0",
     "@hyperjump/json-schema": "^1.17.8",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.0",
-    "eslint": "^9.0.0",
+    "eslint": "^10.0.0",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.0.0"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
   }
 }
