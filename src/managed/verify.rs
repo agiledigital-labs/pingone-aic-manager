@@ -71,6 +71,13 @@ pub enum Problem {
         end: String,
         names: String,
         expected: String,
+        /// The forward end whose pair expected `expected`, when this end
+        /// was reached from it: two forwards with the same key on different
+        /// objects are different pairs, and one's mismatch must not excuse
+        /// the other's (Sol round 13). `None` when the expectation is this
+        /// end's own declaration.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        via: Option<String>,
     },
     /// A `repo.ds` entry for a property `config/managed` does not declare.
     StaleMapping { object: String, key: String },
@@ -122,7 +129,13 @@ impl Problem {
                 end,
                 names,
                 expected,
-            } => format!("{end}'s repo.ds mapping reads through {names}, expected {expected}"),
+                via,
+            } => format!(
+                "{end}'s repo.ds mapping reads through {names}, expected {expected}{}",
+                via.as_ref()
+                    .map(|via| format!(" (as {via}'s reverse)"))
+                    .unwrap_or_default()
+            ),
             Self::MappingConflict { end, sections, .. } => format!(
                 "{end} is mapped differently in config/repo.ds's {}; which one IDM uses is \
                  unmeasured",
@@ -394,7 +407,12 @@ fn label(end: &End) -> String {
     format!("{}.{}", end.object, end.key)
 }
 
-fn mapping_problems(end: &End, partner_key: Option<&str>, out: &mut Vec<Problem>) {
+fn mapping_problems(
+    end: &End,
+    partner_key: Option<&str>,
+    via: Option<&str>,
+    out: &mut Vec<Problem>,
+) {
     if !end.conflicting.is_empty() {
         let mut declared = end.targets.clone();
         declared.sort();
@@ -429,6 +447,7 @@ fn mapping_problems(end: &End, partner_key: Option<&str>, out: &mut Vec<Problem>
                 end: label(end),
                 names,
                 expected: partner_key.unwrap_or("a declared reverse").to_string(),
+                via: via.map(str::to_string),
             });
         }
     }
@@ -450,7 +469,12 @@ pub fn pairs(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<P
     };
     let reverse_key = declared_reverse_key(property).map(str::to_string);
     let mut forward_problems = Vec::new();
-    mapping_problems(&forward, reverse_key.as_deref(), &mut forward_problems);
+    mapping_problems(
+        &forward,
+        reverse_key.as_deref(),
+        None,
+        &mut forward_problems,
+    );
     let (managed_targets, unchecked): (Vec<&String>, Vec<&String>) = forward
         .targets
         .iter()
@@ -465,7 +489,7 @@ pub fn pairs(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<P
             match &reverse {
                 Err(problem) => problems.push(problem.clone()),
                 Ok(reverse) => {
-                    mapping_problems(reverse, Some(key), &mut problems);
+                    mapping_problems(reverse, Some(key), Some(&label(&forward)), &mut problems);
                     match (&forward.mapping, &reverse.mapping) {
                         (Some(_), None) => problems.push(Problem::Mixed {
                             mapped: label(&forward),
@@ -1414,6 +1438,46 @@ mod tests {
     }
 
     #[test]
+    fn a_new_pair_is_not_excused_by_another_objects_partner_mismatch() {
+        // Sol round 13: b.foo and c.foo both name a.link as their reverse;
+        // a.link reads through `old`. b.foo's existing mismatch must not
+        // excuse c.foo's identical-looking one.
+        let foo = json!({"type": "relationship", "reverseRelationship": true,
+            "reversePropertyName": "link", "resourceCollection": [{"path": "managed/a"}]});
+        let managed = |with_c: bool| {
+            let mut c = json!({});
+            if with_c {
+                c["foo"] = foo.clone();
+            }
+            json!({"_id": "managed", "objects": [
+                {"name": "a", "schema": {"properties": {
+                    "plain": {"type": "string"},
+                    "link": {"type": "array", "items": {"type": "relationship",
+                        "resourceCollection": [{"path": "managed/b"}, {"path": "managed/c"}]}}}}},
+                {"name": "b", "schema": {"properties": {"foo": foo.clone()}}},
+                {"name": "c", "schema": {"properties": c}}
+            ]})
+        };
+        let reference = json!({"type": "reference", "resourcePath": "managed/a"});
+        let repo_ds = json!({"resourceMapping": {"genericMapping": {
+            "managed/a": {"properties": {"link": {"type": "reverseReference",
+                "resourcePath": "managed/b", "propertyName": "old"}}},
+            "managed/b": {"properties": {"foo": reference.clone()}},
+            "managed/c": {"properties": {"foo": reference}}
+        }}});
+        let (before, after) = (managed(false), managed(true));
+        let error = transition_refusal(&[&before, &before], &after, &repo_ds).unwrap_err();
+        assert!(
+            error.contains("reads through old, expected foo (as c.foo's reverse)"),
+            "{error}"
+        );
+        // Control: an unrelated edit over the existing mismatch is allowed.
+        let mut titled = before.clone();
+        titled["objects"][0]["schema"]["properties"]["plain"]["title"] = json!("T");
+        assert_eq!(transition_refusal(&[&before], &titled, &repo_ds), Ok(()));
+    }
+
+    #[test]
     fn one_objects_keys_split_across_sections_are_all_read() {
         // A union, not "the first section that names the object".
         let mut repo_ds = repo(None, None);
@@ -1514,7 +1578,8 @@ mod tests {
             vec![Problem::MappingPartner {
                 end: "b.owned".into(),
                 names: "ownerOld".into(),
-                expected: "owner".into()
+                expected: "owner".into(),
+                via: Some("a.owner".into())
             }]
         );
     }
