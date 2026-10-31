@@ -940,6 +940,7 @@ pub(crate) async fn run_with_runtime(
             };
             let status = sync::status(&t, None, filter).await?;
             let mut rows: Vec<StatusRow> = status.entries.iter().map(StatusRow::tracked).collect();
+            attribute_rows(&t, &status.entries, &mut rows).await;
             rows.extend(status.untracked.as_ref().map(StatusRow::untracked));
             let against = match &against {
                 Some(path) => Some(AgainstRow::compare(path, &rows)?),
@@ -959,6 +960,9 @@ pub(crate) async fn run_with_runtime(
             } else {
                 for row in &rows {
                     println!("  {:<48} {}", row.reference, row.label);
+                    if let Some(line) = &row.last_modified_line {
+                        println!("    {line}");
+                    }
                     if exact.is_some() {
                         for (side, digest) in [
                             ("local ", &row.local_sha256),
@@ -2052,6 +2056,12 @@ struct StatusRow {
     /// Whether the local copy and the tenant's agree, which is what a
     /// deployment gate asks. A stale snapshot does not count against it.
     matches_tenant: bool,
+    /// Who last wrote the tenant's copy, for rows where the tenant changed
+    /// since the last sync — `script who`'s `modified` object. AM only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_modified: Option<serde_json::Value>,
+    #[serde(skip)]
+    last_modified_line: Option<String>,
 }
 
 impl StatusRow {
@@ -2082,6 +2092,8 @@ impl StatusRow {
             local_sha256: entry.local_sha256.clone(),
             remote_sha256: entry.remote_sha256.clone(),
             matches_tenant: matches!(entry.state, S::InSync | S::Converged),
+            last_modified: None,
+            last_modified_line: None,
         }
     }
 
@@ -2110,7 +2122,44 @@ impl StatusRow {
                 && entry.remote_sha256 == entry.local_sha256,
             local_sha256: entry.local_sha256.clone(),
             remote_sha256: entry.remote_sha256.clone(),
+            last_modified: None,
+            last_modified_line: None,
         }
+    }
+}
+
+/// Rows whose tenant copy changed since the last sync, so "who changed it?"
+/// is the next question. An unchanged remote's author is old news, and a
+/// local-only edit is the operator's own.
+fn attributable(state: &script::sync::ScriptState) -> bool {
+    use script::sync::ScriptState as S;
+    matches!(state, S::RemotelyModified | S::BothModified | S::Converged)
+}
+
+/// Fill `last_modified` on the rows [`attributable`] picks, resolving each
+/// distinct principal once — the same lookup `script who` makes.
+async fn attribute_rows(
+    tenant: &str,
+    entries: &[script::sync::StatusEntry],
+    rows: &mut [StatusRow],
+) {
+    use script::authorship::{self as auth, PrincipalCache};
+    let mut cache = PrincipalCache::default();
+    for (entry, row) in entries.iter().zip(rows.iter_mut()) {
+        let Some(change) = entry
+            .modified
+            .as_ref()
+            .filter(|_| attributable(&entry.state))
+        else {
+            continue;
+        };
+        let resolved = cache.resolve(tenant, &change.by).await;
+        row.last_modified = Some(author_json(change, resolved.as_ref()));
+        row.last_modified_line = Some(format!(
+            "last modified {} by {}",
+            auth::format_local(change.at),
+            auth::describe_author(&change.by, resolved.as_ref())
+        ));
     }
 }
 
@@ -3321,6 +3370,7 @@ mod tests {
             state: ScriptState::InSync,
             local_sha256: remote.clone(),
             remote_sha256: remote,
+            modified: None,
         });
         assert!(
             !untracked.matches_tenant,
@@ -3346,6 +3396,24 @@ mod tests {
     }
 
     #[test]
+    fn only_rows_the_tenant_changed_are_attributed() {
+        use script::sync::ScriptState as S;
+        for state in [S::RemotelyModified, S::BothModified, S::Converged] {
+            assert!(attributable(&state), "{state:?}");
+        }
+        for state in [
+            S::InSync,
+            S::LocallyModified,
+            S::LocalMissing,
+            S::SnapshotMissing,
+            S::RemoteMissing,
+            S::RemoteMissingLocallyModified,
+        ] {
+            assert!(!attributable(&state), "{state:?}");
+        }
+    }
+
+    #[test]
     fn status_gate_passes_converged_and_matching_untracked_only() {
         use script::sync::{ScriptState, StatusEntry, Untracked};
         let entry = |state| StatusEntry {
@@ -3355,6 +3423,7 @@ mod tests {
             state,
             local_sha256: None,
             remote_sha256: None,
+            modified: None,
         };
         assert!(StatusRow::tracked(&entry(ScriptState::InSync)).matches_tenant);
         assert!(StatusRow::tracked(&entry(ScriptState::Converged)).matches_tenant);

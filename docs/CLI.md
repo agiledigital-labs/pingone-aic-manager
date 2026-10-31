@@ -2541,6 +2541,11 @@ Skipped entries are listed and make the command exit non-zero.
     workspace can gate on the artefact it built.
   - `--json` prints the same rows with `state`, `tracked`, both digests and
     `matches_tenant`, plus an overall `ok`.
+  - A row whose tenant copy changed since the last sync — `modified on
+    remote`, `conflict`, or `converged` — also names who last wrote it and
+    when, the same `last modified` line and `modified` object `script who`
+    prints (`last_modified` in `--json`). AM only: IDM config objects record no
+    author, so IDM rows carry none; `script who` explains the logs route.
   - A tracked script whose snapshot file has gone is reported as `no snapshot`
     rather than silently skipped.
 - `pull --unmodified-only` refreshes only tracked scripts whose local file is
