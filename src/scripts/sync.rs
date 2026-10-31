@@ -636,6 +636,18 @@ impl SnapshotStore {
     }
 
     fn remove(&self, kind: Kind, name: &str, realm: &str) -> Result<()> {
+        self.remove_with(kind, name, realm, true)
+    }
+
+    /// [`Self::remove`], optionally leaving the snapshot file in place — for
+    /// a caller that has found it is the same file as one it must keep.
+    fn remove_with(
+        &self,
+        kind: Kind,
+        name: &str,
+        realm: &str,
+        delete_snapshot: bool,
+    ) -> Result<()> {
         let key = Self::realm_key(kind, realm);
         let matches = |e: &SyncedScript| {
             e.reference.kind == kind && e.reference.name == name && e.realm == key
@@ -645,7 +657,9 @@ impl SnapshotStore {
         // reader treats as untrustworthy (§5), rather than a snapshot no entry
         // owns. A failed snapshot removal keeps the entry.
         self.update_manifest(|entries| {
-            if let Some(entry) = entries.iter().find(|e| matches(e)) {
+            if let Some(entry) = entries.iter().find(|e| matches(e))
+                && delete_snapshot
+            {
                 match std::fs::remove_file(self.config_path(&entry.reference, realm)) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1467,13 +1481,25 @@ fn finish_rename_locally(
         false,
     )
     .map_err(&unfinished)?;
+    // Identity again, now that the new files exist: two names that were both
+    // absent at the preflight can resolve to one entry once created — a
+    // case-only rename on a case-insensitive filesystem, or a
+    // normalisation-insensitive one. Deleting through the old name would
+    // then delete what was just installed.
+    let new_ref = &confirmed.reference;
+    let old_file = workspace_file_in(tree, realm, old_ref);
+    let file_aliased = same_file(&old_file, &workspace_file_in(tree, realm, new_ref))?;
+    let snapshot_aliased = same_file(
+        &store.config_path(old_ref, realm),
+        &store.config_path(new_ref, realm),
+    )?;
     store
-        .remove(old_ref.kind, &old_ref.name, realm)
+        .remove_with(old_ref.kind, &old_ref.name, realm, !snapshot_aliased)
         .map_err(&unfinished)?;
     // Re-read the old file now: an edit made while the write was in flight is
     // kept rather than deleted with the name.
-    let old_file = workspace_file_in(tree, realm, old_ref);
-    Ok(read_local(&old_file)?.as_deref() == Some(remote_src)
+    Ok(!file_aliased
+        && read_local(&old_file)?.as_deref() == Some(remote_src)
         && std::fs::remove_file(&old_file).is_ok())
 }
 
@@ -2959,6 +2985,54 @@ mod tests {
         )
         .unwrap();
         assert!(resume_preflight(&store, &tree, "alpha", (&old, &new), remote).is_err());
+        // Names absent at the preflight that the install makes one file —
+        // the case-insensitive case, modelled by linking the old names to
+        // the new files the install writes in place. The finish must not
+        // delete through them.
+        setup(&|_, _| {});
+        std::fs::remove_file(workspace_file_in(&tree, "alpha", &old)).unwrap();
+        let expected = resume_preflight(&store, &tree, "alpha", (&old, &new), remote).unwrap();
+        assert_eq!(expected, None);
+        let new_file = workspace_file_in(&tree, "alpha", &new);
+        std::fs::write(&new_file, remote).unwrap();
+        std::fs::hard_link(&new_file, workspace_file_in(&tree, "alpha", &old)).unwrap();
+        std::fs::create_dir_all(store.config_path(&new, "alpha").parent().unwrap()).unwrap();
+        std::fs::remove_file(store.config_path(&old, "alpha")).unwrap();
+        std::fs::write(store.config_path(&new, "alpha"), b"{}").unwrap();
+        std::fs::hard_link(
+            store.config_path(&new, "alpha"),
+            store.config_path(&old, "alpha"),
+        )
+        .unwrap();
+        assert!(
+            !finish_rename_locally(
+                &store,
+                &tree,
+                "alpha",
+                &old,
+                &script,
+                remote,
+                Some(remote),
+                unfinished
+            )
+            .unwrap()
+        );
+        assert_eq!(std::fs::read(&new_file).unwrap(), remote);
+        assert!(store.load_config(&new, "alpha").unwrap().is_some());
+        // A hard link is two entries where a case-insensitive alias is one,
+        // so the observable here is that nothing was unlinked through an old
+        // name: on the real filesystem that unlink is the deletion.
+        assert!(workspace_file_in(&tree, "alpha", &old).exists());
+        assert!(store.config_path(&old, "alpha").exists());
+        assert_eq!(
+            store
+                .load_manifest()
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.reference.name)
+                .collect::<Vec<_>>(),
+            vec!["new".to_string()]
+        );
         // An edit at the new path: refused.
         setup(&|_, new_path| std::fs::write(new_path, edited).unwrap());
         assert!(resume_preflight(&store, &tree, "alpha", (&old, &new), remote).is_err());
