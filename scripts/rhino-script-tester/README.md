@@ -485,6 +485,13 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   `lib-const-loop-probe.lib.js` + `lib-const-loop-consumer.script.js` both
   returned `"0,0,0"` where correct is `"0,2,4"`). An enclosing function does
   NOT rescue loop-body `const`.
+- ES2017 `Object` members (2026-10-31): `Object.values`, `Object.entries` and
+  `Object.getOwnPropertyDescriptors` are `undefined` on next-gen
+  (`fixtures/es2017-object.script.js`), legacy
+  (`fixtures-legacy/legacy-es2017-object.script.js`) and in LIBRARY scope
+  (`fixtures/lib-es2017-object-probe.lib.js` + consumer, uploaded as
+  `rhino-lib-es2017-object-probe` with a minted id); `Object.keys` is the
+  present control. See `docs/api/12-script-bindings-matrix.md`.
 - LIBRARY top-level `const` (2026-07-13): WORKS correctly, unlike decision-node
   top level (`fixtures/lib-const-probe.lib.js` + `lib-const-consumer.script.js`
   round-tripped `fromConst: "lib-const-ok"`). A library's top level behaves as

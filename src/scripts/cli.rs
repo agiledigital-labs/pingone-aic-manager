@@ -90,6 +90,9 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
             // No flag gets past this one either: the bytes are not a script
             // aic can read, so re-pull or repair the local file.
             Refusal::Undecodable(_) => "repair the local file, or re-pull it from the tenant",
+            Refusal::AbsentMembers(_) => {
+                "use the replacement named, or pass --force=syntax-check to write it anyway"
+            }
         }
     );
 }
