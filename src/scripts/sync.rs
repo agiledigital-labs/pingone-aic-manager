@@ -2864,8 +2864,10 @@ fn forget_removing_local_in(
     let path = workspace_file_in(workspace_tree, realm, &entry.reference);
     // `symlink_metadata` refuses a link at the last component only; a
     // linked folder above it would put the file outside the workspace.
-    if linked_ancestor(workspace_tree, &path)? {
-        return Ok(LocalDisposition::Kept("a folder above it is a symlink"));
+    if !confined(workspace_tree, &path)? {
+        return Ok(LocalDisposition::Kept(
+            "its path leaves the workspace or passes through a symlink",
+        ));
     }
     match std::fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LocalDisposition::Absent),
@@ -2894,26 +2896,34 @@ fn forget_removing_local_in(
     Ok(LocalDisposition::Removed)
 }
 
-/// Whether a folder between `tree` and `path` is a symlink. A path outside
-/// `tree` counts as linked, so it is never treated as the workspace's.
-fn linked_ancestor(tree: &Path, path: &Path) -> Result<bool> {
-    let Some(parent) = path.parent() else {
-        return Ok(true);
+/// Whether `path` is inside `tree` by what it resolves to, not by its
+/// spelling: every component below `tree` is a plain name (a script name is
+/// joined verbatim, so `../` in one would otherwise walk out), and neither
+/// `tree` itself nor any folder between it and the file is a symlink.
+fn confined(tree: &Path, path: &Path) -> Result<bool> {
+    let Ok(below) = path.strip_prefix(tree) else {
+        return Ok(false);
     };
-    let Ok(below) = parent.strip_prefix(tree) else {
-        return Ok(true);
-    };
+    if below
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Ok(false);
+    }
     let mut current = tree.to_path_buf();
-    for component in below.components() {
-        current.push(component);
+    let folders = below.parent().into_iter().flat_map(Path::components);
+    for component in std::iter::once(None).chain(folders.map(Some)) {
+        if let Some(component) = component {
+            current.push(component);
+        }
         match std::fs::symlink_metadata(&current) {
-            Ok(meta) if meta.file_type().is_symlink() => return Ok(true),
+            Ok(meta) if meta.file_type().is_symlink() => return Ok(false),
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(false)
+    Ok(true)
 }
 
 /// Stop tracking every hook of a managed object that was just deleted, and
@@ -3643,9 +3653,57 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, folder).unwrap();
         assert_eq!(
             forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, "clean").unwrap(),
-            LocalDisposition::Kept("a folder above it is a symlink")
+            LocalDisposition::Kept("its path leaves the workspace or passes through a symlink")
         );
         assert!(elsewhere.join(file.file_name().unwrap()).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn forget_removing_local_keeps_a_file_outside_the_tree_by_any_route() {
+        let synced = |reference: &RemoteRef| RemoteScript {
+            reference: reference.clone(),
+            raw_config: json!({"type": "text/javascript", "source": "synced"}),
+        };
+        // A name that walks out through ordinary folders.
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let tree = dir.join("tree");
+        let name = "../../../victim";
+        let reference = endpoint_ref(name);
+        store.record(&synced(&reference), "").unwrap();
+        let file = workspace_file_in(&tree, "", &reference);
+        std::fs::create_dir_all(tree.join("idm/endpoint")).unwrap();
+        let resolved = dir.join("victim.cjs");
+        std::fs::write(&resolved, b"synced").unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&file).unwrap(),
+            std::fs::canonicalize(&resolved).unwrap(),
+            "the name must resolve outside the tree for this case to mean anything"
+        );
+        assert_eq!(
+            forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, name).unwrap(),
+            LocalDisposition::Kept("its path leaves the workspace or passes through a symlink")
+        );
+        assert!(resolved.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // The tenant tree itself is a link to another checkout.
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let other = dir.join("other-checkout");
+        let tree = dir.join("tree");
+        let reference = endpoint_ref("clean");
+        store.record(&synced(&reference), "").unwrap();
+        let file = workspace_file_in(&other, "", &reference);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"synced").unwrap();
+        std::os::unix::fs::symlink(&other, &tree).unwrap();
+        assert_eq!(
+            forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, "clean").unwrap(),
+            LocalDisposition::Kept("its path leaves the workspace or passes through a symlink")
+        );
+        assert!(file.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

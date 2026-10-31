@@ -319,6 +319,10 @@ impl AicClient {
 /// read runs `onRead`/`onRetrieve` hooks, a connector read runs connector
 /// scripts, and any of them may write or send. What is listed only reads
 /// stored configuration or schema. `_action` is a command whatever the path.
+///
+/// The decision is made on the path as it will be **sent**: a path the URL
+/// parser rewrites (`/openidm/config/../endpoint/x`, encoded dot segments)
+/// is not retried, because its prefix says nothing about where it goes.
 fn retry_safe(path: &str) -> bool {
     const READS: [&str; 6] = [
         "/openidm/config/",
@@ -328,8 +332,14 @@ fn retry_safe(path: &str) -> bool {
         "/monitoring/",
         "/openidm/info/",
     ];
-    let (route, query) = path.split_once('?').unwrap_or((path, ""));
-    let action = query.split('&').any(|pair| pair.starts_with("_action="));
+    let route = path.split_once('?').map_or(path, |(route, _)| route);
+    let Ok(sent) = url::Url::parse(&format!("https://tenant.invalid{path}")) else {
+        return false;
+    };
+    if route.contains('%') || sent.path() != route {
+        return false;
+    }
+    let action = sent.query_pairs().any(|(key, _)| key == "_action");
     !action
         && READS
             .iter()
@@ -638,6 +648,9 @@ mod tests {
             "/openidm/managed/alpha_user/abc",
             "/openidm/system/ldap/account?_queryFilter=true",
             "/openidm/config/managed?_action=reload",
+            "/openidm/config/../endpoint/example",
+            "/openidm/config/%2e%2e/endpoint/example",
+            "/openidm/config/managed?%5Faction=reload",
         ] {
             let (result, requests) = get_against(path, &[503, 200]).await;
             assert!(
@@ -664,6 +677,8 @@ mod tests {
             "/openidm/endpoint/x",
             "/am/json/realms/root/realms/alpha/scripts?_action=validate",
             "/openidm/managed/alpha_user",
+            "/openidm/config/./../endpoint/x",
+            "/am/json/realms/root/realms/alpha/scripts?_queryFilter=true&_action=x",
         ] {
             assert!(!retry_safe(path), "{path}");
         }

@@ -1566,24 +1566,46 @@ struct RelinkOutput<'a> {
 /// A record's links of `key` and its `_rev`; no links and no `_rev` when the
 /// record is gone.
 /// What the running IDM uses to store `end`, judged from record `id`, which
-/// was just seen holding a link through it; `None` when that can no longer
-/// be told.
-///
-/// A `pr` miss is only evidence while the record still holds the link: one
-/// removed by another writer in between also misses, on a mapped end as on
-/// a generic one. So a miss is followed by a re-read of the link, and if it
-/// is gone the answer is "unknown" rather than a verdict either way.
-async fn runtime_of(tenant: &str, end: &verify::End, id: &str) -> Result<Option<verify::Runtime>> {
+/// was just seen holding the link `edge`; `None` when that can no longer be
+/// told.
+async fn runtime_of(
+    tenant: &str,
+    end: &verify::End,
+    id: &str,
+    edge: Option<&str>,
+) -> Result<Option<verify::Runtime>> {
     let found = api::present_filter_finds(tenant, &end.object, id, &end.key).await?;
-    if !found
-        && read_edges(tenant, &end.object, id, &end.key)
-            .await?
-            .0
-            .is_empty()
-    {
-        return Ok(None);
+    let reread = if found {
+        None
+    } else {
+        Some(read_edges(tenant, &end.object, id, &end.key).await?.0)
+    };
+    Ok(runtime_verdict(end, found, edge, reread.as_deref()))
+}
+
+/// The pure half of [`runtime_of`].
+///
+/// A `pr` hit needs no control: some link was there to find. A miss is only
+/// evidence while the record still holds **the same edge** that justified
+/// the query: a link removed by another writer also misses, on a mapped end
+/// as on a generic one, and a replacement link created after the query says
+/// nothing about what the query saw. So a miss is judged only when the
+/// re-read still lists `edge`, and is "unknown" otherwise — including when
+/// the edge id was never known.
+fn runtime_verdict(
+    end: &verify::End,
+    found: bool,
+    edge: Option<&str>,
+    reread: Option<&[relink::Edge]>,
+) -> Option<verify::Runtime> {
+    if found {
+        return Some(verify::Runtime::judge(end, true));
     }
-    Ok(Some(verify::Runtime::judge(end, found)))
+    let edge = edge?;
+    reread?
+        .iter()
+        .any(|held| held.link.edge_id.as_deref() == Some(edge))
+        .then(|| verify::Runtime::judge(end, false))
 }
 
 async fn read_edges(
@@ -2590,7 +2612,7 @@ async fn probe_pair(
             out.failed = outcome != verify::LinkOutcome::Resolved;
             if outcome == verify::LinkOutcome::Resolved {
                 for (end, id) in [(near, &near_id), (far, &far_id)] {
-                    match runtime_of(ok.tenant, end, id).await {
+                    match runtime_of(ok.tenant, end, id, Some(&edge_id)).await {
                         Ok(None) => eprintln!(
                             "note: {}.{}'s runtime storage is unknown: the test link was gone \
                              before it could be checked",
@@ -2748,7 +2770,15 @@ async fn sample_direction(
         .iter()
         .find(|sampled| sampled.outcome == verify::LinkOutcome::Resolved)
     {
-        Some(sampled) => runtime_of(tenant, near, &sampled.link.from_id).await?,
+        Some(sampled) => {
+            runtime_of(
+                tenant,
+                near,
+                &sampled.link.from_id,
+                sampled.link.edge_id.as_deref(),
+            )
+            .await?
+        }
         None => None,
     };
     Ok(DirectionOutput {
@@ -3835,6 +3865,58 @@ mod tests {
         assert!(message.contains("verify a"), "{message}");
         let last = removal_failure_message("a.link", "a", &[], &pending[1..], &error);
         assert!(!last.contains("Not attempted"), "{last}");
+    }
+
+    #[test]
+    fn a_pr_miss_is_judged_only_while_the_same_edge_is_held() {
+        let end = |mapped: bool| verify::End {
+            object: "a".into(),
+            key: "link".into(),
+            targets: vec!["managed/b".into()],
+            array: false,
+            reverse_key: None,
+            mapping: mapped.then(|| verify::Mapping {
+                kind: "reference".into(),
+                resource_path: None,
+                property_name: None,
+            }),
+            conflicting: vec![],
+        };
+        let edge = |id: &str| relink::Edge {
+            link: verify::Link {
+                from_id: "r".into(),
+                to_collection: "managed/b".into(),
+                to_id: "t".into(),
+                edge_id: Some(id.into()),
+            },
+            properties: serde_json::Map::new(),
+        };
+        let (mapped, generic) = (end(true), end(false));
+        let e1 = [edge("E1")];
+        let e2 = [edge("E2")];
+        // Still holding E1: the miss is evidence.
+        assert_eq!(
+            runtime_verdict(&mapped, false, Some("E1"), Some(&e1)),
+            Some(verify::Runtime::MappedNotLive)
+        );
+        assert_eq!(
+            runtime_verdict(&generic, false, Some("E1"), Some(&e1)),
+            Some(verify::Runtime::GenericConfirmed)
+        );
+        // E1 removed, E2 created before the re-read: unknown, both ways.
+        assert_eq!(runtime_verdict(&mapped, false, Some("E1"), Some(&e2)), None);
+        assert_eq!(
+            runtime_verdict(&generic, false, Some("E1"), Some(&e2)),
+            None
+        );
+        // Gone, or never identified.
+        assert_eq!(runtime_verdict(&mapped, false, Some("E1"), Some(&[])), None);
+        assert_eq!(runtime_verdict(&mapped, false, None, Some(&e1)), None);
+        // A hit is a hit.
+        assert_eq!(
+            runtime_verdict(&mapped, true, None, None),
+            Some(verify::Runtime::MappedConfirmed)
+        );
     }
 
     #[test]
