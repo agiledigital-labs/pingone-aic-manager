@@ -644,10 +644,14 @@ sends the whole document; and polls for up to 30 s until a read equals what
 was sent. A read still equal to the old document — the PATCH behaviour above
 — or to a third document is reported and exits non-zero, judged over every
 read rather than the last, as does a failed send, which is never assumed not
-to have landed. Only `genericMapping."managed/<obj>"` is edited: the sandbox
-also maps four managed objects (`alpha_group`, `bravo_group`, `teammember`,
-`teammembergroup`) under `explicitMapping`, which neither `verify` nor
-`repair` reads as the object's own mappings. It never adds or edits a
+to have landed. Only `genericMapping."managed/<obj>"` is edited, and a mapping
+found only under another section is refused. The sandbox's `repo.ds` also
+maps four objects (`alpha_group`, `bravo_group`, `teammember`,
+`teammembergroup`) under `explicitMapping` — none of them declared in its
+`config/managed` — so an object's own mappings are read from **every**
+section that has a `managed/<obj>` entry, by `verify`, `managed get` and the
+write guards alike; reading `genericMapping` alone would take "mapped
+elsewhere" for "not mapped" and let a retarget through. It never adds or edits a
 mapping, and it refuses what was not measured: a declared property (even one
 declared as a scalar), IDM's own `_meta` / `_notifications`, a mapping
 another `reverseReference` reads through (a stale one is named, to be

@@ -93,16 +93,19 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
              config/managed, and removing a mapping from an undeclared object is unmeasured"
         ));
     };
-    let Some(entries) = verify::mappings_of(repo_ds, object) else {
-        return Err(format!(
-            "config/repo.ds has no mappings for managed/{object}; nothing to repair"
-        ));
-    };
-    if !entries.contains_key(key) {
+    if !verify::mappings_of(repo_ds, object).is_some_and(|all| all.contains_key(key)) {
         return Err(format!(
             "config/repo.ds has no mapping for {label}; nothing to repair"
         ));
     }
+    let Some(entries) =
+        verify::generic_mappings_of(repo_ds, object).filter(|generic| generic.contains_key(key))
+    else {
+        return Err(format!(
+            "refusing to repair {label}: its config/repo.ds mapping is outside \
+             genericMapping (explicitMapping, say), and removing one there is unmeasured"
+        ));
+    };
     let Some(mapping) = verify::mapped(repo_ds, object, key) else {
         let kind = entries[key]
             .get("type")
@@ -131,6 +134,10 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
             .map(|dependent| match dependent.owner {
                 Owner::Declared => format!("{} (declared)", dependent.label),
                 Owner::Stale => format!("{} (also stale: repair it first)", dependent.label),
+                Owner::StaleBlocked(why) => format!(
+                    "{} (also stale, but repair refuses it too: {why})",
+                    dependent.label
+                ),
                 Owner::Outside => format!(
                     "{} (not a managed property; repair does not edit it)",
                     dependent.label
@@ -214,12 +221,16 @@ struct Dependent {
     owner: Owner,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Owner {
     /// A property `config/managed` declares on a managed object.
     Declared,
-    /// A managed object's mapping naming no declared property: repairable.
+    /// A declared object's mapping naming no declared property, in
+    /// `genericMapping`, beside other mappings: what repair can remove.
     Stale,
+    /// Stale, but a repair of it would itself be refused for the reason
+    /// carried — so "repair it first" would be a dead end (Astra round 8).
+    StaleBlocked(&'static str),
     /// Outside `genericMapping."managed/…"`, which this verb does not edit.
     Outside,
 }
@@ -238,15 +249,20 @@ fn dependents(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<
             label: located.label(),
             owner: match located.generic_object() {
                 None => Owner::Outside,
-                Some(other) => {
-                    if verify::properties(managed, other)
-                        .is_some_and(|props| props.contains_key(&located.key))
-                    {
-                        Owner::Declared
-                    } else {
-                        Owner::Stale
+                Some(other) => match verify::properties(managed, other) {
+                    None => Owner::StaleBlocked("its object is not declared"),
+                    Some(props) if props.contains_key(&located.key) => Owner::Declared,
+                    Some(_) if verify::SYSTEM_RELATIONSHIPS.contains(&located.key.as_str()) => {
+                        Owner::StaleBlocked("it is one of IDM's own relationships")
                     }
-                }
+                    Some(_)
+                        if verify::generic_mappings_of(repo_ds, other)
+                            .is_some_and(|entries| entries.len() == 1) =>
+                    {
+                        Owner::StaleBlocked("it is its object's last mapping")
+                    }
+                    Some(_) => Owner::Stale,
+                },
             },
         })
         .collect()
@@ -514,6 +530,36 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_dependent_repair_would_refuse_is_not_offered_as_the_way_out() {
+        // Its object is undeclared.
+        let mut before = repo(json!({"old": reference("b")}), json!({}));
+        before["resourceMapping"]["genericMapping"]["managed/gone_obj"] =
+            json!({"properties": {"owner": reverse("a", "old"), "x": reference("b")}});
+        let error = plan(&managed(), &before, "a", "old").unwrap_err();
+        assert!(
+            error.contains("gone_obj.owner (also stale, but repair refuses it too: its object"),
+            "{error}"
+        );
+        // It is its object's last mapping.
+        let mut before = repo(json!({"old": reference("b")}), json!({}));
+        before["resourceMapping"]["genericMapping"]["managed/b"]["properties"] =
+            json!({"gone": reverse("a", "old")});
+        let error = plan(&managed(), &before, "a", "old").unwrap_err();
+        assert!(error.contains("its object's last mapping"), "{error}");
+    }
+
+    #[test]
+    fn an_explicit_mapping_is_found_but_not_edited() {
+        let mut before = repo(json!({}), json!({}));
+        before["resourceMapping"]["explicitMapping"] =
+            json!({"managed/a": {"properties": {"gone": reference("b"), "y": reference("b")}}});
+        let error = plan(&managed(), &before, "a", "gone").unwrap_err();
+        assert!(error.contains("outside genericMapping"), "{error}");
+        let error = plan(&managed(), &before, "a", "absent").unwrap_err();
+        assert!(error.contains("no mapping for a.absent"), "{error}");
+    }
+
+    #[test]
     fn the_unmeasured_and_the_absent_are_refused() {
         let before = repo(json!({"gone": reference("b")}), json!({}));
         for (object, key, expect) in [
@@ -615,6 +661,25 @@ mod tests {
         before["resourceMapping"]["genericMapping"]["managed/a"]["properties"] =
             json!({"other": reference("b")});
         let plan = plan(&managed(), &before, "b", "gone").unwrap();
+        assert!(
+            !plan
+                .notes
+                .iter()
+                .any(|note| note.contains("keeps that mapping")),
+            "{:?}",
+            plan.notes
+        );
+        // A declared relationship mapped as the *reverse*: not the measured
+        // state either (round 8). `b.back` reads through `a.live`, not
+        // through the repaired key.
+        let mut with_rev = managed();
+        with_rev["objects"][0]["schema"]["properties"]["rev"] = json!({"type": "relationship",
+            "resourceCollection": [{"path": "managed/b"}]});
+        let before = repo(
+            json!({"rev": reverse("b", "back")}),
+            json!({"gone": reverse("a", "rev")}),
+        );
+        let plan = self::plan(&with_rev, &before, "b", "gone").unwrap();
         assert!(
             !plan
                 .notes
