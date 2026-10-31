@@ -23,7 +23,7 @@ export function crestErrorFrom(run: () => unknown): CrestErrorResponse {
         typeof value["code"] === "number" && typeof value["message"] === "string") {
       return thrown as CrestErrorResponse;
     }
-    throw new Error("expected a CREST error response, got " + String(thrown));
+    throw new Error("expected a CREST error response, got " + String(thrown), { cause: thrown });
   }
   throw new Error("expected a throw");
 }
