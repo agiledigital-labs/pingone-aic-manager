@@ -823,14 +823,22 @@ pub(crate) async fn run_with_runtime(
                 sync::Renamed::Done {
                     script,
                     old_file,
-                    old_file_removed,
+                    old_file_outcome,
                 } => {
                     println!("renamed {full} -> {new_full} (id {})", script.reference.id);
-                    if !old_file_removed {
-                        eprintln!(
-                            "kept {}: it changed during the rename",
-                            crate::config::display_path(&old_file)
-                        );
+                    let kept = |why: &str| {
+                        eprintln!("kept {}: {why}", crate::config::display_path(&old_file));
+                    };
+                    match old_file_outcome {
+                        sync::OldFile::Removed | sync::OldFile::Absent => {}
+                        sync::OldFile::Edited => kept("it changed during the rename"),
+                        sync::OldFile::Aliased => kept(
+                            "it is the same file as the new name (a case-insensitive \
+                             filesystem), so it now holds the renamed script",
+                        ),
+                        sync::OldFile::RemoveFailed(error) => {
+                            kept(&format!("removing it failed ({error})"))
+                        }
                     }
                     if script.reference.context.as_deref() == Some("LIBRARY") {
                         eprintln!(
