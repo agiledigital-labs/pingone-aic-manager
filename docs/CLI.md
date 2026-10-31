@@ -713,9 +713,13 @@ prints how long that took. When the object has no records, or the wait runs
 out, it says so on stderr instead; the command still succeeds, because the
 schema write has landed. `--json` adds `"activation"`, one entry per new end
 with `outcome` `live`, `timeout`, `no_records` or `error`, and
-`"activation_verified"`, true only when every new end was `live`. `--check`
+`"activation_verified"`, true only when every probed end was `live`. `--check`
 makes anything else exit non-zero — after the write, which has landed either
-way — for a script that writes links straight afterwards. No schema-level
+way — for a script that writes links straight afterwards. With `--check`
+both ends of the relationship are probed, not only new ones, and a re-run
+that has nothing to write still probes them: so re-running after a failed
+`--check` on a type that still has no records fails again rather than
+passing. No schema-level
 wait exists for a type with no records: nothing measured so far tells a live
 end from a pending one without a record to read through.
 
@@ -830,7 +834,11 @@ record on a mapped end and never on a generic one. Each such check prints a
 `runtime: [{end, runtime}]` (on a probe): `mapped_confirmed` and
 `generic_confirmed` agree with the stored config; `mapped_not_live` (stored
 mapped, IDM answers as generic) and `live_not_stored` (the reverse) are
-findings. An end with no resolved link is not checked at runtime.
+findings. A `pr` miss counts only while the record still holds the link, so a
+miss is followed by a re-read; a link gone by then (another writer) leaves the
+runtime unknown rather than judged. An end with no resolved link is not
+checked at runtime. The pair header labels each end `stored mapping, <kind>`
+or `stored generic`, for the same reason.
 `--sample 0` checks configuration only. It exits
 non-zero on any finding or any link that does not resolve. A `STALE` finding —
 a mapping naming no declared property — is what `relationship repair`
@@ -846,8 +854,10 @@ the `reference` it reads through — and refuses outright, deleting nothing, if
 any of them would be refused. It asks once (or takes `--force`), deletes,
 then runs each removal exactly as `repair` does: re-read and recheck, backup,
 whole-document replace, confirm by re-read. If one fails after the delete has
-landed, it says what was deleted and unmapped and names the `repair`
-commands, in order, for what is still mapped. `--json` adds
+landed, it says what was deleted and unmapped, which removal failed (its own
+error says whether it may have landed), and which were not attempted, and
+points at `verify` to read what is mapped now before running `repair`. A
+failed delete write itself says that no mapping was touched. `--json` adds
 `"mappings_removed"`. Measured on the sandbox (2026-11-01) on a mapped
 has-one pair: both entries removed in order, every other byte of `repo.ds`
 unchanged.
@@ -2786,7 +2796,9 @@ prompt names the owning config or missing local file when re-create is unavailab
 Skipped entries are listed and make the command exit non-zero.
 `--remove-local` makes forgetting also remove the local file, but only one
 that still holds the last-synced bytes (and a LIBRARY script's generated
-wrapper with it); an edited file or a symlink is kept and named. The record is
+wrapper with it, when that is a plain file holding exactly the generated
+bytes); an edited file, a symlink, or a file under a symlinked folder is kept
+and named. The record is
 forgotten either way. It cannot be combined with `--resolve local`, which
 never forgets.
 

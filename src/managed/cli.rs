@@ -823,13 +823,29 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             ops::refuse_mapped_retarget(&tenant, &spec, previous.as_ref()).await?;
             let updated = ops::apply_relationship_spec(&doc, &spec, previous.as_ref())
                 .map_err(crate::Error::Config)?;
+            let ends = activation_ends(&doc, &updated, &source_object, &key, check);
             if changed_objects(&doc, &updated)?.is_empty() {
                 // Nothing to confirm, so nothing to write: the confirmed write
                 // refuses an empty expectation list rather than guess.
                 eprintln!(
                     "relationship {source_object}.{key} is already as requested; nothing written"
                 );
-                return output(json, &serde_json::json!({ "changed": [] }));
+                if !check {
+                    return output(json, &serde_json::json!({ "changed": [] }));
+                }
+                // A re-run after a failed `--check` must not pass on the
+                // strength of having nothing to write: it checks again.
+                let activation = wait_for_ends(&tenant, ends).await;
+                let unverified = unverified_ends(&activation);
+                output(
+                    json,
+                    &serde_json::json!({
+                        "changed": [],
+                        "activation": activation,
+                        "activation_verified": unverified.is_empty(),
+                    }),
+                )?;
+                return activation_check(&source_object, &key, &unverified, false);
             }
             record_config_undo(
                 &tenant,
@@ -840,7 +856,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let expect = relationship_expectations(&doc, &updated)?;
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
-            let activation = wait_for_new_ends(&tenant, &doc, &updated).await;
+            let activation = wait_for_ends(&tenant, ends).await;
             let one_sided = match relink::reverse_added(&doc, &updated, &source_object, &key) {
                 Some((far, far_key)) => {
                     sample_one_sided(&tenant, &updated, &source_object, &key, &far, &far_key).await
@@ -857,12 +873,8 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     "one_sided": one_sided,
                 }),
             )?;
-            if check && !unverified.is_empty() {
-                return Err(crate::Error::Config(format!(
-                    "relationship {source_object}.{key} was written, but activation is \
-                     unverified for {}",
-                    unverified.join(", ")
-                )));
+            if check {
+                return activation_check(&source_object, &key, &unverified, true);
             }
             Ok(())
         }
@@ -976,7 +988,16 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 format!("Restore relationship {source_object}.{key}"),
             )?;
             let expect = relationship_expectations(&doc, &updated)?;
-            put_managed(&ok, &doc, updated.clone(), &expect).await?;
+            if let Err(error) = put_managed(&ok, &doc, updated.clone(), &expect).await {
+                if permit.is_none() {
+                    return Err(error);
+                }
+                return Err(crate::Error::Config(format!(
+                    "{error}. The delete of {field} may or may not have landed, and no \
+                     config/repo.ds mapping was touched; check with `aic managed relationship \
+                     verify {source_object}` before re-running"
+                )));
+            }
             confirmation(&format!("relationship {source_object}.{key} deleted"));
             let mut removed = Vec::new();
             if let Some(permit) = &permit {
@@ -999,17 +1020,18 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                         }
                         Err(error) => {
                             // §5's batch rule: say what landed before what failed.
-                            let left: Vec<_> =
+                            // The failing removal's own state is whatever its
+                            // error says (it may have landed unconfirmed), so
+                            // it is not listed as still mapped; only the ones
+                            // after it are known untouched.
+                            let labels: Vec<_> =
                                 removals[index..].iter().map(repair::Plan::label).collect();
-                            return Err(crate::Error::Config(format!(
-                                "{field} was deleted{}, but {error}. Still mapped: {}; \
-                                 `aic managed relationship repair` each, in that order",
-                                if removed.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" and {} unmapped", removed.join(", "))
-                                },
-                                left.join(", ")
+                            return Err(crate::Error::Config(removal_failure_message(
+                                &field,
+                                &source_object,
+                                &removed,
+                                &labels,
+                                &error,
                             )));
                         }
                     }
@@ -1269,9 +1291,94 @@ fn unverified_ends(activation: &[ActivationOutput]) -> Vec<String> {
 /// a write through one before it is live answers 200 and is lost (measured
 /// 2026-10-31). Never fails the command — the schema write has landed — but
 /// says loudly when it could not confirm.
-async fn wait_for_new_ends(tenant: &str, doc: &Value, updated: &Value) -> Vec<ActivationOutput> {
+/// The relationship ends `relationship set` waits on: every end the write
+/// introduces, and with `--check` also both ends of the relationship being
+/// set, so an edit to an existing end — or a re-run with nothing to write —
+/// is probed rather than passing on an empty list. On an existing end the
+/// probe says little more than that it answers, but on an empty type it
+/// reports `no_records`, which is exactly what a failed `--check` re-run must
+/// not paper over.
+fn activation_ends(
+    before: &Value,
+    after: &Value,
+    object: &str,
+    key: &str,
+    check: bool,
+) -> Vec<relink::NewEnd> {
+    let mut ends = relink::new_ends(before, after);
+    if !check {
+        return ends;
+    }
+    let reverse = api::object_named(after, object)
+        .ok()
+        .and_then(state::properties)
+        .and_then(|properties| properties.get(key))
+        .and_then(|property| {
+            let target = ops::relationship_targets(property)
+                .first()?
+                .strip_prefix("managed/")?
+                .to_string();
+            Some((target, ops::declared_reverse_key(property)?.to_string()))
+        });
+    for (object, key) in std::iter::once((object.to_string(), key.to_string())).chain(reverse) {
+        let end = relink::NewEnd { object, key };
+        if !ends.contains(&end) {
+            ends.push(end);
+        }
+    }
+    ends
+}
+
+/// The report for `delete --remove-mapping` stopping at `pending[0]`. That
+/// removal's state is whatever `error` says — it may have landed
+/// unconfirmed — so it is not called still mapped; only the ones after it
+/// are known untouched.
+fn removal_failure_message(
+    field: &str,
+    object: &str,
+    removed: &[String],
+    pending: &[String],
+    error: &crate::Error,
+) -> String {
+    let (failed, untouched) = pending
+        .split_first()
+        .map_or(("", &[][..]), |(f, rest)| (f.as_str(), rest));
+    format!(
+        "{field} was deleted{}, but removing {failed}'s mapping failed: {error}. {}Run `aic \
+         managed relationship verify {object}` to see what config/repo.ds maps now, then `aic \
+         managed relationship repair` what remains, in the order {}",
+        if removed.is_empty() {
+            String::new()
+        } else {
+            format!(" and {} unmapped", removed.join(", "))
+        },
+        if untouched.is_empty() {
+            String::new()
+        } else {
+            format!("Not attempted: {}. ", untouched.join(", "))
+        },
+        pending.join(", ")
+    )
+}
+
+fn activation_check(object: &str, key: &str, unverified: &[String], written: bool) -> Result<()> {
+    if unverified.is_empty() {
+        return Ok(());
+    }
+    Err(crate::Error::Config(format!(
+        "relationship {object}.{key} {}, but activation is unverified for {}",
+        if written {
+            "was written"
+        } else {
+            "needed no write"
+        },
+        unverified.join(", ")
+    )))
+}
+
+async fn wait_for_ends(tenant: &str, ends: Vec<relink::NewEnd>) -> Vec<ActivationOutput> {
     let mut out = Vec::new();
-    for end in relink::new_ends(doc, updated) {
+    for end in ends {
         let label = format!("{}.{}", end.object, end.key);
         let report = |outcome, seconds, detail| ActivationOutput {
             end: label.clone(),
@@ -1458,6 +1565,27 @@ struct RelinkOutput<'a> {
 
 /// A record's links of `key` and its `_rev`; no links and no `_rev` when the
 /// record is gone.
+/// What the running IDM uses to store `end`, judged from record `id`, which
+/// was just seen holding a link through it; `None` when that can no longer
+/// be told.
+///
+/// A `pr` miss is only evidence while the record still holds the link: one
+/// removed by another writer in between also misses, on a mapped end as on
+/// a generic one. So a miss is followed by a re-read of the link, and if it
+/// is gone the answer is "unknown" rather than a verdict either way.
+async fn runtime_of(tenant: &str, end: &verify::End, id: &str) -> Result<Option<verify::Runtime>> {
+    let found = api::present_filter_finds(tenant, &end.object, id, &end.key).await?;
+    if !found
+        && read_edges(tenant, &end.object, id, &end.key)
+            .await?
+            .0
+            .is_empty()
+    {
+        return Ok(None);
+    }
+    Ok(Some(verify::Runtime::judge(end, found)))
+}
+
 async fn read_edges(
     tenant: &str,
     object: &str,
@@ -2462,11 +2590,13 @@ async fn probe_pair(
             out.failed = outcome != verify::LinkOutcome::Resolved;
             if outcome == verify::LinkOutcome::Resolved {
                 for (end, id) in [(near, &near_id), (far, &far_id)] {
-                    let found =
-                        api::present_filter_finds(ok.tenant, &end.object, id, &end.key).await;
-                    match found {
-                        Ok(found) => {
-                            let runtime = verify::Runtime::judge(end, found);
+                    match runtime_of(ok.tenant, end, id).await {
+                        Ok(None) => eprintln!(
+                            "note: {}.{}'s runtime storage is unknown: the test link was gone \
+                             before it could be checked",
+                            end.object, end.key
+                        ),
+                        Ok(Some(runtime)) => {
                             out.failed |= runtime.is_failure();
                             out.runtime.push(RuntimeOutput {
                                 end: format!("{}.{}", end.object, end.key),
@@ -2618,11 +2748,7 @@ async fn sample_direction(
         .iter()
         .find(|sampled| sampled.outcome == verify::LinkOutcome::Resolved)
     {
-        Some(sampled) => Some(verify::Runtime::judge(
-            near,
-            api::present_filter_finds(tenant, &near.object, &sampled.link.from_id, &near.key)
-                .await?,
-        )),
+        Some(sampled) => runtime_of(tenant, near, &sampled.link.from_id).await?,
         None => None,
     };
     Ok(DirectionOutput {
@@ -2796,12 +2922,30 @@ fn outcome_detail(outcome: &verify::LinkOutcome) -> String {
     }
 }
 
+/// One line for a probe's result, from the same predicate the exit code uses.
+fn probe_verdict(probe: &ProbeOutput) -> String {
+    match (&probe.outcome, probe.removed) {
+        _ if probe.verified() => {
+            "verified — a test link resolved from the far end and was removed".to_string()
+        }
+        (Some(verify::LinkOutcome::Resolved), true) => {
+            "a test link resolved from the far end and was removed, but a check below failed"
+                .to_string()
+        }
+        (Some(verify::LinkOutcome::Resolved), false) => {
+            "a test link resolved from the far end, but was not removed".to_string()
+        }
+        (Some(outcome), _) => format!("test link: {}", outcome_detail(outcome)),
+        (None, _) => "no test link made".to_string(),
+    }
+}
+
 fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) {
     for pair in pairs {
         let forward = &pair.pair.forward;
         let mode = |end: &verify::End| match &end.mapping {
-            Some(mapping) => format!("mapped {}", mapping.kind),
-            None => "generic".into(),
+            Some(mapping) => format!("stored mapping, {}", mapping.kind),
+            None => "stored generic".into(),
         };
         match &pair.pair.reverse {
             Some(reverse) => println!(
@@ -2870,14 +3014,12 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
             }
         }
         if let Some(probe) = &pair.probe {
-            let verdict = match (&probe.outcome, probe.removed) {
-                (Some(verify::LinkOutcome::Resolved), true) => {
-                    "verified — a test link resolved from the far end and was removed".to_string()
-                }
-                (Some(outcome), _) => format!("test link: {}", outcome_detail(outcome)),
-                (None, _) => "no test link made".to_string(),
-            };
-            println!("  probe {} -> {}: {verdict}", probe.from, probe.to);
+            println!(
+                "  probe {} -> {}: {}",
+                probe.from,
+                probe.to,
+                probe_verdict(probe)
+            );
             for runtime in &probe.runtime {
                 println!("    {}", runtime.message);
             }
@@ -3589,6 +3731,15 @@ mod tests {
                 failed,
             };
         assert!(probe(Some(verify::LinkOutcome::Resolved), true, false).verified());
+        // The discriminating case: resolved and removed, but a runtime
+        // check failed. Neither the predicate nor the line may say verified.
+        let disagreed = probe(Some(verify::LinkOutcome::Resolved), true, true);
+        assert!(!disagreed.verified());
+        assert!(!probe_verdict(&disagreed).starts_with("verified"));
+        assert!(
+            probe_verdict(&probe(Some(verify::LinkOutcome::Resolved), true, false))
+                .starts_with("verified")
+        );
         assert!(!probe(Some(verify::LinkOutcome::Resolved), false, true).verified());
         assert!(!probe(Some(verify::LinkOutcome::Missing), true, true).verified());
         assert!(!probe(None, false, false).verified());
@@ -3627,6 +3778,63 @@ mod tests {
         assert_eq!(required_end(&doc, &b, &a).as_deref(), Some("a.one"));
         let note = ProbeOutput::untested(&a, &b, "untested: x".into());
         assert!(!note.failed && !note.verified() && note.outcome.is_none());
+    }
+
+    #[test]
+    fn check_probes_both_ends_even_when_nothing_is_new() {
+        let doc = serde_json::json!({"objects": [
+            {"name": "a", "schema": {"properties": {"link": {
+                "type": "relationship",
+                "reverseRelationship": true,
+                "reversePropertyName": "back",
+                "resourceCollection": [{"path": "managed/b"}],
+            }}}},
+            {"name": "b", "schema": {"properties": {"back": {
+                "type": "array",
+                "items": {
+                    "type": "relationship",
+                    "reverseRelationship": true,
+                    "reversePropertyName": "link",
+                    "resourceCollection": [{"path": "managed/a"}],
+                },
+            }}}},
+        ]});
+        let labels = |ends: Vec<relink::NewEnd>| {
+            ends.into_iter()
+                .map(|end| format!("{}.{}", end.object, end.key))
+                .collect::<Vec<_>>()
+        };
+        assert!(activation_ends(&doc, &doc, "a", "link", false).is_empty());
+        assert_eq!(
+            labels(activation_ends(&doc, &doc, "a", "link", true)),
+            ["a.link", "b.back"]
+        );
+        let empty = serde_json::json!({"objects": [
+            {"name": "a", "schema": {"properties": {}}},
+            {"name": "b", "schema": {"properties": {}}},
+        ]});
+        let mut new = labels(activation_ends(&empty, &doc, "a", "link", true));
+        new.sort();
+        assert_eq!(new, ["a.link", "b.back"], "no end is probed twice");
+        assert!(activation_check("a", "link", &[], false).is_ok());
+        assert!(activation_check("a", "link", &["a.link".into()], false).is_err());
+    }
+
+    #[test]
+    fn a_failed_removal_is_not_reported_as_still_mapped() {
+        let error = crate::Error::Config("the write's outcome is unknown".into());
+        let pending = ["b.back".to_string(), "a.link".to_string()];
+        let message = removal_failure_message("a.link", "a", &["c.x".into()], &pending, &error);
+        assert!(!message.contains("Still mapped"), "{message}");
+        assert!(message.contains("and c.x unmapped"), "{message}");
+        assert!(
+            message.contains("removing b.back's mapping failed"),
+            "{message}"
+        );
+        assert!(message.contains("Not attempted: a.link."), "{message}");
+        assert!(message.contains("verify a"), "{message}");
+        let last = removal_failure_message("a.link", "a", &[], &pending[1..], &error);
+        assert!(!last.contains("Not attempted"), "{last}");
     }
 
     #[test]

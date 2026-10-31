@@ -2862,6 +2862,11 @@ fn forget_removing_local_in(
         ));
     };
     let path = workspace_file_in(workspace_tree, realm, &entry.reference);
+    // `symlink_metadata` refuses a link at the last component only; a
+    // linked folder above it would put the file outside the workspace.
+    if linked_ancestor(workspace_tree, &path)? {
+        return Ok(LocalDisposition::Kept("a folder above it is a symlink"));
+    }
     match std::fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LocalDisposition::Absent),
         Err(e) => return Err(e.into()),
@@ -2876,11 +2881,39 @@ fn forget_removing_local_in(
     std::fs::remove_file(&path)?;
     // A LIBRARY script's generated ES-module wrapper would import a file that
     // is gone. Only the exact bytes `extra_files` writes are ours to remove.
+    // `extra_files` writes one for LIBRARY only, and never as a link, so
+    // anything else at that path is the operator's whatever it holds.
     let wrapper = path.with_extension("js");
-    if kind == Kind::Am && super::am::is_library_wrapper_file(&wrapper) {
+    if kind == Kind::Am
+        && entry.reference.context.as_deref() == Some("LIBRARY")
+        && std::fs::symlink_metadata(&wrapper).is_ok_and(|meta| meta.file_type().is_file())
+        && super::am::is_library_wrapper_file(&wrapper)
+    {
         std::fs::remove_file(&wrapper)?;
     }
     Ok(LocalDisposition::Removed)
+}
+
+/// Whether a folder between `tree` and `path` is a symlink. A path outside
+/// `tree` counts as linked, so it is never treated as the workspace's.
+fn linked_ancestor(tree: &Path, path: &Path) -> Result<bool> {
+    let Some(parent) = path.parent() else {
+        return Ok(true);
+    };
+    let Ok(below) = parent.strip_prefix(tree) else {
+        return Ok(true);
+    };
+    let mut current = tree.to_path_buf();
+    for component in below.components() {
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => return Ok(true),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(false)
 }
 
 /// Stop tracking every hook of a managed object that was just deleted, and
@@ -3583,6 +3616,92 @@ mod tests {
             LocalDisposition::Kept("it is not a plain file")
         );
         assert!(target.exists() && file("linked").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn forget_removing_local_never_deletes_through_a_linked_folder() {
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let tree = dir.join("tree");
+        let reference = endpoint_ref("clean");
+        store
+            .record(
+                &RemoteScript {
+                    reference: reference.clone(),
+                    raw_config: json!({"type": "text/javascript", "source": "synced"}),
+                },
+                "",
+            )
+            .unwrap();
+        let file = workspace_file_in(&tree, "", &reference);
+        let folder = file.parent().unwrap();
+        let elsewhere = dir.join("other-checkout");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join(file.file_name().unwrap()), b"synced").unwrap();
+        std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, folder).unwrap();
+        assert_eq!(
+            forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, "clean").unwrap(),
+            LocalDisposition::Kept("a folder above it is a symlink")
+        );
+        assert!(elsewhere.join(file.file_name().unwrap()).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn forget_removing_local_removes_only_a_library_scripts_own_wrapper() {
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let tree = dir.join("tree");
+        let am = |name: &str, context: &str| RemoteRef {
+            context: Some(context.into()),
+            ..am_ref(name)
+        };
+        // (name, context, wrapper is a link, wrapper survives)
+        let cases = [
+            ("Lib", "LIBRARY", false, false),
+            ("Claims", "OIDC_CLAIMS", false, true),
+            ("Linked", "LIBRARY", true, true),
+        ];
+        for (name, context, linked, survives) in cases {
+            let reference = am(name, context);
+            store
+                .record(
+                    &RemoteScript {
+                        reference: reference.clone(),
+                        raw_config: json!({"script": base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            "synced"
+                        )}),
+                    },
+                    "alpha",
+                )
+                .unwrap();
+            let file = workspace_file_in(&tree, "alpha", &reference);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, b"synced").unwrap();
+            let wrapper = file.with_extension("js");
+            let bytes = super::super::am::library_wrapper_contents(name);
+            if linked {
+                let target = dir.join(format!("{name}-target.js"));
+                std::fs::write(&target, &bytes).unwrap();
+                std::os::unix::fs::symlink(&target, &wrapper).unwrap();
+            } else {
+                std::fs::write(&wrapper, &bytes).unwrap();
+            }
+            assert_eq!(
+                forget_removing_local_in(&store, &tree, "alpha", Kind::Am, name).unwrap(),
+                LocalDisposition::Removed,
+                "{name}"
+            );
+            assert!(!file.exists(), "{name}");
+            assert_eq!(
+                std::fs::symlink_metadata(&wrapper).is_ok(),
+                survives,
+                "{name}"
+            );
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
