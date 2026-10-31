@@ -736,6 +736,21 @@ end does not list, rechecking each link just before its writes and confirming
 from the far end afterwards; `relationship set` samples the links after adding
 a reverse and points at it.
 
+**The touched objects flap for a few seconds after any `config/managed`
+write.** Measured right after `relationship set` and `relationship delete`:
+`GET managed/<obj>?_queryFilter=true` answered
+`404 Resource 'managed/<obj>' not found`, then 200, then 404 again on a later
+request in the same run; a `PATCH managed/<obj>/<id>` of an existing record
+answered `404 Resource 'managed/<obj>/<id>' not found` and wrote nothing (the
+record read back unchanged). The waits observed were 0.6–1.1 s. A record that
+does not exist answers a different body —
+`No Such Entry: The search base entry 'uid=<id>,ou=<obj>,…' does not exist` —
+so the two can be told apart, and only the router's `Resource '…' not found`
+for the object or a path under it is the settling one. That a `POST` or
+`DELETE` given the same 404 also wrote nothing is inferred from the router
+answering, not measured. This is the "transient 404" a `verify` run straight
+after a `delete` hit.
+
 Two Q14 instances turned up during the measurement
 (`99-quirks-and-open-questions.md`): a reverse confirmed by re-read was gone a
 minute later, and a `relationship set` issued about a second after another one
@@ -1498,7 +1513,10 @@ on create, or when actually rotating it.
   relink` re-created 3 has-many and 2 has-one one-sided links; `relationship
   verify` then resolved every link from both ends, and raw reads of the far
   records showed the custom `note` carried over. See "Adding a reverse to a
-  relationship that has links".
+  relationship that has links". The settling 404 measured the same day: three
+  `relationship delete` → `relationship verify --probe` runs, the first of
+  which failed on it before the retry existed and the next two waited 0.6 s and
+  1.1 s; a missing record's 404 body read from `managed/zzevalqb/nosuch`.
 - Date: 2026-10-28 — development tenant; custom endpoint → synchronous
   `openidm.patch` / `openidm.update` → managed `onUpdate`. Caller identity and
   originating HTTP path matched across both hops with a service-account

@@ -265,8 +265,19 @@ pub enum RelationshipCommand {
         /// Records read per end when looking for links (one request).
         #[arg(long, default_value_t = 200)]
         scan: usize,
+        /// Also write one test link per pair from the forward end, read it
+        /// from the reverse end, and remove it — for pairs with no links yet.
+        /// Writes to two existing records, whose hooks fire.
+        #[arg(long)]
+        probe: bool,
+        /// With --probe, skip the confirmation prompt.
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
+        /// With --probe, confirm writes to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
         #[arg(long)]
         json: bool,
     },
@@ -724,6 +735,14 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             ops::refuse_mapped_retarget(&tenant, &spec, previous.as_ref()).await?;
             let updated = ops::apply_relationship_spec(&doc, &spec, previous.as_ref())
                 .map_err(crate::Error::Config)?;
+            if changed_objects(&doc, &updated)?.is_empty() {
+                // Nothing to confirm, so nothing to write: the confirmed write
+                // refuses an empty expectation list rather than guess.
+                eprintln!(
+                    "relationship {source_object}.{key} is already as requested; nothing written"
+                );
+                return output(json, &serde_json::json!({ "changed": [] }));
+            }
             record_config_undo(
                 &tenant,
                 &doc,
@@ -815,9 +834,18 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             target,
             sample,
             scan,
+            probe,
+            force,
             tenant,
+            yes,
             json,
-        } => relationship_verify(target, sample, scan, tenant, json).await,
+        } => {
+            let probe = probe.then_some(ProbeRequest {
+                force: force.operation(),
+                yes,
+            });
+            relationship_verify(target, sample, scan, probe, tenant, json).await
+        }
         RelationshipCommand::Relink {
             field,
             dry_run,
@@ -1186,12 +1214,12 @@ async fn relink_one(
         return Ok(RelinkStep::Changed);
     }
     let [remove, create] = relink::writes(permit, object, key, near_array, edge)?;
-    api::send_relink(ok.tenant, &remove, ok.confirmed_prod)
+    api::send_relink(ok.tenant, object, &remove, ok.confirmed_prod)
         .await
         .map_err(read(
             "removing the link failed; it may or may not be removed",
         ))?;
-    if let Err(error) = api::send_relink(ok.tenant, &create, ok.confirmed_prod).await {
+    if let Err(error) = api::send_relink(ok.tenant, object, &create, ok.confirmed_prod).await {
         return Err(format!(
             "{label}: the link was removed and re-creating it failed ({error}). Restore it with \
              {} {} {}",
@@ -1287,6 +1315,176 @@ struct PairOutput {
     #[serde(flatten)]
     pair: verify::PairReport,
     directions: Vec<DirectionOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe: Option<ProbeOutput>,
+}
+
+#[derive(Serialize)]
+struct ProbeOutput {
+    from: String,
+    to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    near_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    far_id: Option<String>,
+    /// What the far end said about the test link; absent when none was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<verify::LinkOutcome>,
+    /// Why no link was made or judged, or what went wrong removing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    /// The test link is gone again (re-read). `false` is a leftover to remove.
+    removed: bool,
+    #[serde(skip)]
+    failed: bool,
+}
+
+impl ProbeOutput {
+    fn is_failure(&self) -> bool {
+        self.failed
+    }
+}
+
+/// Writes one test link from a forward-end record to a reverse-end record,
+/// judges it from the reverse end, and removes it. Records are chosen so the
+/// link displaces nothing: a has-one end only through a record whose property
+/// is empty.
+async fn probe_pair(
+    ok: &WriteOk<'_>,
+    permit: &relink::ProbePermit,
+    near: &verify::End,
+    far: &verify::End,
+    scan: usize,
+) -> ProbeOutput {
+    let mut out = ProbeOutput {
+        from: format!("{}.{}", near.object, near.key),
+        to: format!("{}.{}", far.object, far.key),
+        near_id: None,
+        far_id: None,
+        outcome: None,
+        note: None,
+        removed: false,
+        failed: false,
+    };
+    let fail = |mut out: ProbeOutput, note: String| {
+        out.note = Some(note);
+        out.failed = true;
+        out
+    };
+    let candidates = async {
+        let near_records = api::records_with(ok.tenant, &near.object, &near.key, scan).await?;
+        let far_records = api::records_with(ok.tenant, &far.object, &far.key, scan).await?;
+        let near_id = relink::probe_candidate(&near_records, &near.key, near.array, None);
+        let exclude = near_id.as_deref().filter(|_| near.object == far.object);
+        let far_id = relink::probe_candidate(&far_records, &far.key, far.array, exclude);
+        Ok::<_, crate::Error>((near_id, far_id))
+    }
+    .await;
+    let (near_id, far_id) = match candidates {
+        Ok((Some(near_id), Some(far_id))) => (near_id, far_id),
+        Ok((near_id, _)) => {
+            let empty = if near_id.is_none() { near } else { far };
+            out.note = Some(format!(
+                "untested: no record of managed/{} in the {scan} read {}",
+                empty.object,
+                if empty.array {
+                    "to link through".to_string()
+                } else {
+                    format!("with {} empty", empty.key)
+                }
+            ));
+            return out;
+        }
+        Err(error) => return fail(out, format!("could not read records: {error}")),
+    };
+    out.near_id = Some(near_id.clone());
+    out.far_id = Some(far_id.clone());
+    let shape = (near.object.as_str(), near.key.as_str(), near.array);
+    let read_near = || async {
+        Ok::<_, crate::Error>(
+            match api::record_with(ok.tenant, &near.object, &near_id, &near.key).await? {
+                Some(record) => {
+                    relink::edges_of(&record, &near.key).map_err(crate::Error::Config)?
+                }
+                None => Vec::new(),
+            },
+        )
+    };
+    let before = match read_near().await {
+        Ok(edges) => edges,
+        Err(error) => return fail(out, format!("could not read {near_id}: {error}")),
+    };
+    let link = relink::probe_link(permit, shape, &near_id, &far.object, &far_id);
+    if let Err(error) = api::send_relink(ok.tenant, &near.object, &link, ok.confirmed_prod).await {
+        return fail(
+            out,
+            format!("the test link write failed ({error}); it may or may not exist"),
+        );
+    }
+    let after = match read_near().await {
+        Ok(edges) => edges,
+        Err(error) => {
+            return fail(
+                out,
+                format!(
+                    "linked, then could not re-read {near_id} ({error}); remove the link by hand"
+                ),
+            );
+        }
+    };
+    let Some(new) = relink::new_link(&before, &after, &far_id).cloned() else {
+        return fail(
+            out,
+            format!("the write succeeded but {near_id} does not list the test link"),
+        );
+    };
+    let near_collection = format!("managed/{}", near.object);
+    match far_outcome(
+        ok.tenant,
+        &far.object,
+        &far.key,
+        far.array,
+        &new.link,
+        &near_collection,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            out.failed = outcome != verify::LinkOutcome::Resolved;
+            out.outcome = Some(outcome);
+        }
+        Err(error) => {
+            out.failed = true;
+            out.note = Some(format!("could not read the far end: {error}"));
+        }
+    }
+    let edge_id = new.link.edge_id.as_deref().unwrap_or_default();
+    let unlink = relink::probe_unlink(permit, shape, &near_id, edge_id);
+    let removed = match api::send_relink(ok.tenant, &near.object, &unlink, ok.confirmed_prod).await
+    {
+        Ok(_) => read_near().await.map(|edges| {
+            !edges
+                .iter()
+                .any(|edge| edge.link.edge_id == new.link.edge_id)
+        }),
+        Err(error) => Err(error),
+    };
+    match removed {
+        Ok(true) => out.removed = true,
+        Ok(false) | Err(_) => {
+            let detail = removed
+                .err()
+                .map(|error| format!(" ({error})"))
+                .unwrap_or_default();
+            out.failed = true;
+            out.note = Some(format!(
+                "the test link {near_id} -> {far_id} (edge {edge_id}) was not removed{detail}; \
+                 remove it with {} {}",
+                unlink.method, unlink.path
+            ));
+        }
+    }
+    out
 }
 
 async fn sample_direction(
@@ -1351,10 +1549,16 @@ async fn sample_direction(
     })
 }
 
+struct ProbeRequest {
+    force: bool,
+    yes: bool,
+}
+
 async fn relationship_verify(
     target: String,
     sample: usize,
     scan: usize,
+    probe: Option<ProbeRequest>,
     tenant: Option<String>,
     json: bool,
 ) -> Result<()> {
@@ -1370,17 +1574,50 @@ async fn relationship_verify(
     let repo_ds = api::get_repo_ds(&tenant).await?;
     let report = verify::report(&managed, &repo_ds, &object, key.as_deref())
         .map_err(crate::Error::Config)?;
+    let probing = match &probe {
+        Some(request) => {
+            let count = report.pairs.iter().filter(|pair| pair.sampleable()).count();
+            let consented = request.force
+                || crate::cli::confirm_destructive(
+                    "relationship verify --probe",
+                    &format!(
+                        "Write and remove one test link on each of {count} pair(s)? It links two \
+                         existing records, and their hooks fire"
+                    ),
+                    "--force",
+                )?;
+            let Some(permit) = relink::authorize_probe(consented) else {
+                return Err(crate::Error::Config(
+                    "relationship verify --probe not confirmed".into(),
+                ));
+            };
+            Some((permit, ensure_prod_confirmed(&tenant, request.yes)?))
+        }
+        None => None,
+    };
     let mut pairs = Vec::new();
     for pair in report.pairs {
         let mut directions = Vec::new();
-        if sample > 0
-            && pair.sampleable()
+        let mut probe = None;
+        if pair.sampleable()
             && let Some(reverse) = &pair.reverse
+            && (sample > 0 || probing.is_some())
         {
-            directions.push(sample_direction(&tenant, &pair.forward, reverse, sample, scan).await?);
-            directions.push(sample_direction(&tenant, reverse, &pair.forward, sample, scan).await?);
+            if sample > 0 {
+                directions
+                    .push(sample_direction(&tenant, &pair.forward, reverse, sample, scan).await?);
+                directions
+                    .push(sample_direction(&tenant, reverse, &pair.forward, sample, scan).await?);
+            }
+            if let Some((permit, ok)) = &probing {
+                probe = Some(probe_pair(ok, permit, &pair.forward, reverse, scan).await);
+            }
         }
-        pairs.push(PairOutput { pair, directions });
+        pairs.push(PairOutput {
+            pair,
+            directions,
+            probe,
+        });
     }
     let failures = report.stale.len()
         + pairs
@@ -1402,6 +1639,7 @@ async fn relationship_verify(
                                 .is_some_and(verify::RefFilter::is_failure)
                         })
                         .count()
+                    + usize::from(pair.probe.as_ref().is_some_and(ProbeOutput::is_failure))
             })
             .sum::<usize>();
     if json {
@@ -1428,6 +1666,17 @@ fn direction_far<'a>(pair: &'a PairOutput, direction: &DirectionOutput) -> Optio
     [&pair.pair.forward, reverse]
         .into_iter()
         .find(|end| label(end) == direction.to)
+}
+
+fn outcome_detail(outcome: &verify::LinkOutcome) -> String {
+    match outcome {
+        verify::LinkOutcome::Resolved => "the far end lists it".into(),
+        verify::LinkOutcome::Missing => "the far end does not list it".into(),
+        verify::LinkOutcome::FarRecordMissing => "the far record does not exist".into(),
+        verify::LinkOutcome::EdgeDiffers { far_edges } => {
+            format!("the far end lists it under edge {}", far_edges.join(", "))
+        }
+    }
 }
 
 fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) {
@@ -1483,14 +1732,10 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
                 direction.links.len()
             );
             for link in &direction.links {
-                let detail = match &link.outcome {
-                    verify::LinkOutcome::Resolved => continue,
-                    verify::LinkOutcome::Missing => "the far end does not list it".to_string(),
-                    verify::LinkOutcome::FarRecordMissing => "the far record does not exist".into(),
-                    verify::LinkOutcome::EdgeDiffers { far_edges } => {
-                        format!("the far end lists it under edge {}", far_edges.join(", "))
-                    }
-                };
+                if link.outcome == verify::LinkOutcome::Resolved {
+                    continue;
+                }
+                let detail = outcome_detail(&link.outcome);
                 println!(
                     "    {} -> {} (edge {}): {detail}",
                     link.link.from_id,
@@ -1502,6 +1747,19 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
                 (direction.ref_filter, direction_far(pair, direction))
             {
                 println!("  {}", filter.message(far));
+            }
+        }
+        if let Some(probe) = &pair.probe {
+            let verdict = match (&probe.outcome, probe.removed) {
+                (Some(verify::LinkOutcome::Resolved), true) => {
+                    "a test link resolved from the far end and was removed".to_string()
+                }
+                (Some(outcome), _) => format!("test link: {}", outcome_detail(outcome)),
+                (None, _) => "no test link made".to_string(),
+            };
+            println!("  probe {} -> {}: {verdict}", probe.from, probe.to);
+            if let Some(note) = &probe.note {
+                println!("    {note}");
             }
         }
         if sample > 0 && pair.directions.is_empty() && pair.pair.reverse.is_some() {

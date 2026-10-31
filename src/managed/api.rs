@@ -116,7 +116,7 @@ pub async fn records_with(
         crate::idmstore::api::path_segment(object),
         query.finish()
     );
-    let body = crate::aic::api::get(tenant, &path).await?;
+    let body = get_settled(tenant, object, &path).await?;
     // A page without a `result` array is not a page of zero records: reading
     // it as one would report the pair "untested" on a response nothing
     // decoded (Sol round 6).
@@ -169,7 +169,7 @@ pub async fn far_end(
         query.append_pair("_fields", key);
         format!("{record}?{}", query.finish())
     };
-    match crate::aic::api::get(tenant, &path).await {
+    match get_settled(tenant, object, &path).await {
         Ok(body) if array => {
             let result = body
                 .get("result")
@@ -213,7 +213,7 @@ pub async fn ref_filter_finds(
         crate::idmstore::api::path_segment(key),
         query.finish()
     );
-    let body = crate::aic::api::get(tenant, &path).await?;
+    let body = get_settled(tenant, object, &path).await?;
     let result = body
         .get("result")
         .and_then(Value::as_array)
@@ -245,7 +245,7 @@ pub async fn any_record_id(tenant: &str, object: &str) -> Result<Option<String>>
         "/openidm/managed/{}?_queryFilter=true&_pageSize=1&_fields=_id",
         crate::idmstore::api::path_segment(object)
     );
-    let body = crate::aic::api::get(tenant, &path).await?;
+    let body = get_settled(tenant, object, &path).await?;
     let result = body
         .get("result")
         .and_then(Value::as_array)
@@ -260,19 +260,93 @@ pub async fn any_record_id(tenant: &str, object: &str) -> Result<Option<String>>
         .map(str::to_string))
 }
 
+/// How long [`get_settled`] retries a collection's 404.
+const SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a 404 is the settling one for `managed/<object>`: the router's
+/// `Resource '<path>' not found` for the collection or anything under it.
+/// Measured 2026-10-31: for some seconds after a `config/managed` write, reads
+/// of the collection and of existing records — and a `PATCH` of one, which
+/// wrote nothing — answered that, then answered normally, then 404 again. A
+/// record that does not exist answers differently, `No Such Entry: The search
+/// base entry '…' does not exist`, so it is never retried here.
+pub fn collection_not_found(body: &str, object: &str) -> bool {
+    let name = format!("managed/{object}");
+    [
+        format!("Resource &#39;{name}&#39;"),
+        format!("Resource &#39;{name}/"),
+        format!("Resource '{name}'"),
+        format!("Resource '{name}/"),
+    ]
+    .iter()
+    .any(|prefix| body.contains(prefix.as_str()))
+}
+
+/// `GET path`, retrying while the answer is the settling 404 for `object`
+/// (see [`collection_not_found`]), so a caller never reads it as "no such
+/// record". Says on stderr when it had to wait.
+async fn get_settled(tenant: &str, object: &str, path: &str) -> Result<Value> {
+    settled(object, || crate::aic::api::get(tenant, path)).await
+}
+
+/// Runs `call` until its answer is not the settling 404 for `object`, for up
+/// to [`SETTLE_TIMEOUT`]. Also used for link writes: the router answered the
+/// settling 404 without routing the request, so nothing was written (one
+/// measured `PATCH`; the other write shapes are inferred from the router).
+async fn settled<F, Fut>(object: &str, mut call: F) -> Result<Value>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let started = std::time::Instant::now();
+    let mut waited = false;
+    loop {
+        match call().await {
+            Err(Error::Api { status: 404, body })
+                if collection_not_found(&body, object) && started.elapsed() < SETTLE_TIMEOUT =>
+            {
+                waited = true;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            result => {
+                if waited && result.is_ok() {
+                    eprintln!(
+                        "note: managed/{object} answered 404 for {:.1}s, the settling after a \
+                         config/managed write; read again once it answered",
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+                return result;
+            }
+        }
+    }
+}
+
 /// Every record of `object` with only `_id` and `key`, paged to the end.
 pub async fn all_records_with(tenant: &str, object: &str, key: &str) -> Result<Vec<Value>> {
     let fields = format!("_id,{key}");
     crate::idmstore::api::collect_cursor_pages(|cookie| {
         let fields = fields.clone();
         async move {
-            crate::idmstore::api::list_records_cursor_page(
-                tenant,
-                object,
-                cookie.as_deref(),
-                Some(&fields),
-            )
-            .await
+            let started = std::time::Instant::now();
+            loop {
+                match crate::idmstore::api::list_records_cursor_page(
+                    tenant,
+                    object,
+                    cookie.as_deref(),
+                    Some(&fields),
+                )
+                .await
+                {
+                    Err(Error::Api { status: 404, body })
+                        if collection_not_found(&body, object)
+                            && started.elapsed() < SETTLE_TIMEOUT =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                    result => return result,
+                }
+            }
         }
     })
     .await
@@ -286,7 +360,7 @@ pub async fn record_with(tenant: &str, object: &str, id: &str, key: &str) -> Res
         crate::idmstore::api::path_segment(id),
         url::form_urlencoded::byte_serialize(key.as_bytes()).collect::<String>()
     );
-    match crate::aic::api::get(tenant, &path).await {
+    match get_settled(tenant, object, &path).await {
         Ok(body) => Ok(Some(body)),
         Err(Error::Api { status: 404, .. }) => Ok(None),
         Err(error) => Err(error),
@@ -296,16 +370,22 @@ pub async fn record_with(tenant: &str, object: &str, id: &str, key: &str) -> Res
 /// Sends one of the writes [`crate::managed::relink::writes`] planned.
 pub async fn send_relink(
     tenant: &str,
+    object: &str,
     write: &crate::managed::relink::Write,
     confirmed_prod: bool,
 ) -> Result<Value> {
-    let body = write.body.clone().unwrap_or(Value::Null);
-    match write.method {
-        "DELETE" => crate::aic::api::delete(tenant, &write.path, confirmed_prod).await,
-        "POST" => crate::aic::api::post(tenant, &write.path, body, confirmed_prod).await,
-        "PATCH" => crate::aic::api::patch(tenant, &write.path, body, confirmed_prod).await,
-        other => Err(Error::Config(format!("relink has no {other} write"))),
-    }
+    settled(object, || {
+        let body = write.body.clone().unwrap_or(Value::Null);
+        async move {
+            match write.method {
+                "DELETE" => crate::aic::api::delete(tenant, &write.path, confirmed_prod).await,
+                "POST" => crate::aic::api::post(tenant, &write.path, body, confirmed_prod).await,
+                "PATCH" => crate::aic::api::patch(tenant, &write.path, body, confirmed_prod).await,
+                other => Err(Error::Config(format!("relink has no {other} write"))),
+            }
+        }
+    })
+    .await
 }
 
 /// Unconfirmed `PUT /openidm/config/managed` with the complete managed config
@@ -542,6 +622,30 @@ pub fn summarize(doc: &Value) -> Result<Vec<ObjectSummary>> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_a_404_naming_the_collection_is_the_settling_one() {
+        let measured = r#"{"code":404,"reason":"Not Found","message":"Resource &#39;managed/zzevalqb&#39; not found"}"#;
+        assert!(collection_not_found(measured, "zzevalqb"));
+        assert!(collection_not_found(
+            "Resource 'managed/zzevalqb' not found",
+            "zzevalqb"
+        ));
+        // The same router answer for an existing record, measured on a PATCH.
+        assert!(collection_not_found(
+            "Resource &#39;managed/zzevalqa/a1&#39; not found",
+            "zzevalqa"
+        ));
+        // A record that does not exist, and another object's 404, are answers.
+        assert!(!collection_not_found(
+            "No Such Entry: The search base entry &#39;uid&#61;nosuch,ou&#61;zzevalqb,ou&#61;managed,dc&#61;openidm&#39; does not exist",
+            "zzevalqb"
+        ));
+        assert!(!collection_not_found(
+            "Resource &#39;managed/zzevalqbx&#39; not found",
+            "zzevalqb"
+        ));
+    }
     use super::*;
     use serde_json::json;
 

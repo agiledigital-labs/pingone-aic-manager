@@ -293,6 +293,102 @@ pub fn still_planned(current: &[Edge], edge: &Edge) -> bool {
     current.iter().any(|candidate| candidate == edge)
 }
 
+/// Proof that a `verify --probe` was consented to; minted only by
+/// [`authorize_probe`], required by [`probe_link`] and [`probe_unlink`].
+pub struct ProbePermit(());
+
+pub fn authorize_probe(consented: bool) -> Option<ProbePermit> {
+    consented.then_some(ProbePermit(()))
+}
+
+/// A record of a page read with `_fields=_id,<key>` that a probe can link
+/// through without disturbing a link: any record for a has-many end, one whose
+/// `key` is empty for a has-one end (setting it would replace the link it
+/// holds). `exclude` keeps a self-relationship from linking a record to itself.
+pub fn probe_candidate(
+    records: &[Value],
+    key: &str,
+    array: bool,
+    exclude: Option<&str>,
+) -> Option<String> {
+    records
+        .iter()
+        .filter(|record| array || matches!(record.get(key), None | Some(Value::Null)))
+        .filter_map(|record| record.get("_id").and_then(Value::as_str))
+        .find(|id| Some(*id) != exclude)
+        .map(str::to_string)
+}
+
+/// The write that adds the probe link from `near_id` to `far_id`.
+pub fn probe_link(
+    _permit: &ProbePermit,
+    (near_object, near_key, near_array): (&str, &str, bool),
+    near_id: &str,
+    far_object: &str,
+    far_id: &str,
+) -> Write {
+    let record = record_path(near_object, near_id);
+    let reference = json!({ "_ref": format!("managed/{far_object}/{far_id}") });
+    if near_array {
+        Write {
+            method: "POST",
+            path: format!(
+                "{record}/{}?_action=create",
+                crate::idmstore::api::path_segment(near_key)
+            ),
+            body: Some(reference),
+        }
+    } else {
+        Write {
+            method: "PATCH",
+            path: record,
+            body: Some(
+                json!([{ "operation": "replace", "field": format!("/{near_key}"), "value": reference }]),
+            ),
+        }
+    }
+}
+
+/// The write that removes the probe link again.
+pub fn probe_unlink(
+    _permit: &ProbePermit,
+    (near_object, near_key, near_array): (&str, &str, bool),
+    near_id: &str,
+    edge_id: &str,
+) -> Write {
+    let record = record_path(near_object, near_id);
+    if near_array {
+        Write {
+            method: "DELETE",
+            path: format!(
+                "{record}/{}/{}",
+                crate::idmstore::api::path_segment(near_key),
+                crate::idmstore::api::path_segment(edge_id)
+            ),
+            body: None,
+        }
+    } else {
+        Write {
+            method: "PATCH",
+            path: record,
+            body: Some(json!([{ "operation": "remove", "field": format!("/{near_key}") }])),
+        }
+    }
+}
+
+/// The probe's link among `after`: to `far_id`, under an edge id `before`
+/// did not have. A has-many record may already link the same far record, so
+/// matching on the far id alone could judge — and then remove — an old link.
+pub fn new_link<'a>(before: &[Edge], after: &'a [Edge], far_id: &str) -> Option<&'a Edge> {
+    after.iter().find(|edge| {
+        edge.link.to_id == far_id
+            && edge.link.edge_id.is_some()
+            && !before
+                .iter()
+                .any(|old| old.link.edge_id == edge.link.edge_id)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +543,66 @@ mod tests {
         edited[0].properties.insert("note".into(), json!("changed"));
         assert!(!still_planned(&edited, &edges[0]));
         assert!(!still_planned(&edges[1..], &edges[0]));
+    }
+
+    #[test]
+    fn probe_candidates_never_displace_a_has_one_link() {
+        let records = vec![
+            json!({"_id": "x1", "one": {"_ref": "managed/b/b1"}}),
+            json!({"_id": "x2", "one": null}),
+            json!({"_id": "x3"}),
+        ];
+        assert_eq!(
+            probe_candidate(&records, "one", false, None).as_deref(),
+            Some("x2")
+        );
+        assert_eq!(
+            probe_candidate(&records, "one", false, Some("x2")).as_deref(),
+            Some("x3")
+        );
+        assert_eq!(
+            probe_candidate(&records, "one", true, None).as_deref(),
+            Some("x1")
+        );
+        assert_eq!(probe_candidate(&records[..1], "one", false, None), None);
+    }
+
+    #[test]
+    fn probe_writes_add_then_remove_by_shape() {
+        let permit = authorize_probe(true).unwrap();
+        assert!(authorize_probe(false).is_none());
+        let many = probe_link(&permit, ("a", "owner", true), "a1", "b", "b9");
+        assert_eq!(
+            (many.method, many.path.as_str()),
+            ("POST", "/openidm/managed/a/a1/owner?_action=create")
+        );
+        assert_eq!(many.body, Some(json!({"_ref": "managed/b/b9"})));
+        let one = probe_link(&permit, ("a", "owner", false), "a1", "b", "b9");
+        assert_eq!(one.method, "PATCH");
+        assert_eq!(one.body.unwrap()[0]["operation"], "replace");
+        let gone = probe_unlink(&permit, ("a", "owner", true), "a1", "e9");
+        assert_eq!(
+            (gone.method, gone.path.as_str()),
+            ("DELETE", "/openidm/managed/a/a1/owner/e9")
+        );
+        let cleared = probe_unlink(&permit, ("a", "owner", false), "a1", "e9");
+        assert_eq!(
+            cleared.body,
+            Some(json!([{"operation": "remove", "field": "/owner"}]))
+        );
+    }
+
+    #[test]
+    fn the_probe_link_is_the_new_edge_not_an_old_one_to_the_same_record() {
+        let before = edges_of(&record(), "owner").unwrap();
+        let mut after = before.clone();
+        let mut added = before[0].clone();
+        added.link.edge_id = Some("e-new".into());
+        after.push(added);
+        assert_eq!(
+            new_link(&before, &after, "b1").and_then(|edge| edge.link.edge_id.as_deref()),
+            Some("e-new")
+        );
+        assert!(new_link(&before, &before, "b1").is_none());
     }
 }
