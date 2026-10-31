@@ -432,6 +432,62 @@ pub fn report(
     Ok(Report { pairs, stale })
 }
 
+/// One line per pair saying where its links are stored — the summary
+/// `managed get` prints so the mode is visible without running `verify`.
+/// Disagreement outranks mode: a mixed or otherwise inconsistent pair says so
+/// and names `verify`, because "mapped" on one end of a broken pair would read
+/// as healthy.
+pub fn storage_lines(report: &Report) -> Vec<String> {
+    let mut lines = Vec::new();
+    for pair in &report.pairs {
+        let ends = match &pair.reverse {
+            Some(reverse) => format!("{} <-> {}", label(&pair.forward), label(reverse)),
+            None => format!("{} (no reverse)", label(&pair.forward)),
+        };
+        let state = if pair
+            .problems
+            .iter()
+            .any(|problem| matches!(problem, Problem::Mixed { .. }))
+        {
+            "MIXED — one end mapped, the other generic".to_string()
+        } else if !pair.problems.is_empty() {
+            format!("INCONSISTENT — {}", pair.problems[0].message())
+        } else {
+            match (&pair.forward.mapping, &pair.reverse) {
+                (None, None) => "generic".to_string(),
+                (None, Some(reverse)) if reverse.mapping.is_none() => "generic".to_string(),
+                (_, Some(reverse)) => {
+                    format!(
+                        "mapped ({} / {})",
+                        mapped_kind(&pair.forward),
+                        mapped_kind(reverse)
+                    )
+                }
+                (Some(_), None) => format!("mapped ({})", mapped_kind(&pair.forward)),
+            }
+        };
+        let hint = if pair.problems.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; run `aic managed relationship verify {}`",
+                label(&pair.forward)
+            )
+        };
+        lines.push(format!("{ends}: {state}{hint}"));
+    }
+    for problem in &report.stale {
+        lines.push(format!("STALE — {}", problem.message()));
+    }
+    lines
+}
+
+fn mapped_kind(end: &End) -> &str {
+    end.mapping
+        .as_ref()
+        .map_or("generic", |mapping| mapping.kind.as_str())
+}
+
 /// `object.key`'s `repo.ds` mapping, if it has one.
 pub fn mapped(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
     mapping_for(repo_ds, object, key)
@@ -949,6 +1005,43 @@ mod tests {
             .pairs
             .remove(0)
             .problems
+    }
+
+    fn storage(repo_ds: &Value) -> Vec<String> {
+        storage_lines(&report(&managed(), repo_ds, "a", None).unwrap())
+    }
+
+    #[test]
+    fn storage_names_the_mode_and_puts_disagreement_first() {
+        assert_eq!(storage(&repo(None, None)), ["a.owner <-> b.owned: generic"]);
+        assert_eq!(
+            storage(&repo(Some(reference()), Some(reverse_reference()))),
+            ["a.owner <-> b.owned: mapped (reference / reverseReference)"]
+        );
+        // The measured broken state: never "mapped" for a half-mapped pair.
+        let mixed = storage(&repo(Some(reference()), None));
+        assert_eq!(mixed.len(), 1);
+        assert!(mixed[0].contains("MIXED"), "{mixed:?}");
+        assert!(
+            mixed[0].contains("relationship verify a.owner"),
+            "{mixed:?}"
+        );
+        let swapped = storage(&repo(None, Some(reverse_reference())));
+        assert!(swapped[0].contains("MIXED"), "{swapped:?}");
+    }
+
+    #[test]
+    fn storage_reports_stale_mappings_too() {
+        let mut repo_ds = repo(None, None);
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"] =
+            json!({"properties": {"gone": reference()}});
+        let lines = storage(&repo_ds);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("STALE") && line.contains("a.gone")),
+            "{lines:?}"
+        );
     }
 
     #[test]

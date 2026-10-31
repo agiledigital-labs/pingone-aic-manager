@@ -929,6 +929,23 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
             "add relationship"
         },
     );
+    if let Some(storage) = &draft.storage {
+        // Disagreement is the state worth noticing; a healthy mode is context.
+        let alarm = ["MIXED", "INCONSISTENT", "STALE", "unreadable"]
+            .iter()
+            .any(|word| storage.contains(word));
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                storage.clone(),
+                Style::default().fg(if alarm {
+                    Color::Yellow
+                } else {
+                    Color::DarkGray
+                }),
+            ))),
+            rows[1],
+        );
+    }
     draft
         .key
         .draw(f, rows[2], draft.focused == RelationshipFocus::Key);

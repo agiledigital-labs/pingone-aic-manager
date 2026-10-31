@@ -284,10 +284,16 @@ async fn get(
     projection: spec::GetProjection,
     tenant: Option<String>,
 ) -> Result<()> {
-    let object = api::object_named(&api::get_managed(&tenant_for(tenant)?).await?, &name)?.clone();
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let object = api::object_named(&managed, &name)?.clone();
     let view = spec::prepare_managed_get(object, &name, &fields, hook_sources)
         .map_err(crate::Error::Config)?;
     let whole = projection == spec::GetProjection::Object;
+    let storage_key = match &projection {
+        spec::GetProjection::Property(property) => Some(property.as_str()),
+        _ => None,
+    };
     print_json(
         &spec::project_managed_get(view.object, &name, &projection)
             .map_err(crate::Error::Config)?,
@@ -311,7 +317,40 @@ async fn get(
             view.elided_hooks
         );
     }
+    print_relationship_storage(&tenant, &managed, &name, storage_key).await;
     Ok(())
+}
+
+/// Where each relationship's links are stored, on stderr so the JSON on
+/// stdout stays the object itself (and diffable against a repo file).
+/// Informational: a failed `repo.ds` read is a note, not the command's error.
+async fn print_relationship_storage(
+    tenant: &str,
+    managed: &serde_json::Value,
+    object: &str,
+    key: Option<&str>,
+) {
+    let repo_ds = match api::get_repo_ds(tenant).await {
+        Ok(repo_ds) => repo_ds,
+        Err(error) => {
+            eprintln!(
+                "note: could not read config/repo.ds ({error}); relationship storage not shown"
+            );
+            return;
+        }
+    };
+    // A non-relationship property, or an object with none, has nothing to say.
+    let Ok(report) = verify::report(managed, &repo_ds, object, key) else {
+        return;
+    };
+    let lines = verify::storage_lines(&report);
+    if lines.is_empty() {
+        return;
+    }
+    eprintln!("relationship storage (config/repo.ds):");
+    for line in lines {
+        eprintln!("  {line}");
+    }
 }
 
 async fn list(tenant: Option<String>, json_output: bool) -> Result<()> {

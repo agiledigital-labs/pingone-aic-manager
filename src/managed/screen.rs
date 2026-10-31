@@ -40,6 +40,13 @@ pub enum Event {
         tenant: String,
         result: std::result::Result<Value, String>,
     },
+    /// The open relationship editor's storage line, read after it opened.
+    RelationshipStorage {
+        tenant: String,
+        object: String,
+        key: String,
+        line: String,
+    },
     UpdateResult {
         tenant: String,
         object_name: String,
@@ -91,6 +98,25 @@ pub enum Event {
 
 pub fn apply_event(app: &mut App, event: Event) {
     match event {
+        Event::RelationshipStorage {
+            tenant,
+            object,
+            key,
+            line,
+        } => {
+            // The form may have closed, or moved to another property, while
+            // the read was in flight: only the one it was read for takes it.
+            if let Some(form) = app.managed.relationship_form.as_mut()
+                && form.tenant_name == tenant
+                && form.source_object == object
+                && form
+                    .previous
+                    .as_ref()
+                    .is_some_and(|previous| previous.old_key == key)
+            {
+                form.storage = Some(line);
+            }
+        }
         Event::Listed { tenant, result } => {
             app.managed.refreshing.remove(&tenant);
             match result {
@@ -396,13 +422,39 @@ pub fn start_relationship_edit(app: &mut App) {
         return;
     };
     let Some(form) =
-        RelationshipFormState::edit(tenant_name, object_name, doc.clone(), key, property)
+        RelationshipFormState::edit(tenant_name, object_name, doc.clone(), key.clone(), property)
     else {
         app.push_toast(ToastKind::Error, "Could not parse relationship");
         return;
     };
+    let doc = form.original_doc.clone();
+    let (tenant, object) = (form.tenant_name.clone(), form.source_object.clone());
     app.managed.relationship_form = Some(form);
     app.input_mode = InputMode::Managed(Mode::Relationship);
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let line = match crate::managed::api::get_repo_ds(&tenant).await {
+            Ok(repo_ds) => storage_line(&doc, &repo_ds, &object, &key),
+            Err(error) => format!("storage: config/repo.ds unreadable ({error})"),
+        };
+        let _ = tx.send(AppEvent::Managed(Event::RelationshipStorage {
+            tenant,
+            object,
+            key,
+            line,
+        }));
+    });
+}
+
+/// The editor's one-line form of `verify::storage_lines` for one property.
+fn storage_line(doc: &Value, repo_ds: &Value, object: &str, key: &str) -> String {
+    match crate::managed::verify::report(doc, repo_ds, object, Some(key)) {
+        Ok(report) => format!(
+            "storage: {}",
+            crate::managed::verify::storage_lines(&report).join("; ")
+        ),
+        Err(error) => format!("storage: {error}"),
+    }
 }
 
 /// Opens a key-only rename draft when the selected property's capabilities allow it.
@@ -624,4 +676,100 @@ fn write_in_flight(app: &mut App, tenant_name: &str, object_name: &str) -> bool 
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::View;
+    use crate::config::{Provenance, Tenant, TenantTheme};
+    use serde_json::json;
+
+    fn app() -> App {
+        App::for_test(
+            vec![Tenant {
+                name: "sandbox".into(),
+                base_url: "https://tenant.example.com".into(),
+                theme: TenantTheme::Sandbox,
+                sa_id: None,
+                scopes: Vec::new(),
+                provenance: Provenance::default(),
+            }],
+            View::Managed,
+        )
+    }
+
+    fn doc() -> Value {
+        json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {
+                "owner": {"type": "relationship", "reverseRelationship": true,
+                    "reversePropertyName": "owned",
+                    "resourceCollection": [{"path": "managed/b"}]}}}},
+            {"name": "b", "schema": {"properties": {
+                "owned": {"type": "relationship", "reverseRelationship": true,
+                    "reversePropertyName": "owner",
+                    "resourceCollection": [{"path": "managed/a"}]}}}}
+        ]})
+    }
+
+    fn storage_event(object: &str, key: &str) -> Event {
+        Event::RelationshipStorage {
+            tenant: "sandbox".into(),
+            object: object.into(),
+            key: key.into(),
+            line: format!("storage: for {object}.{key}"),
+        }
+    }
+
+    #[test]
+    fn the_storage_line_lands_only_on_the_form_it_was_read_for() {
+        let mut app = app();
+        let property = doc()["objects"][0]["schema"]["properties"]["owner"].clone();
+        app.managed.relationship_form = RelationshipFormState::edit(
+            "sandbox".into(),
+            "a".into(),
+            doc(),
+            "owner".into(),
+            property,
+        );
+        let pending = app
+            .managed
+            .relationship_form
+            .as_ref()
+            .unwrap()
+            .storage
+            .clone();
+        assert!(pending.unwrap().contains("reading"));
+
+        apply_event(&mut app, storage_event("b", "owned"));
+        let form = app.managed.relationship_form.as_ref().unwrap();
+        assert!(
+            form.storage.as_deref().unwrap().contains("reading"),
+            "another property's read"
+        );
+
+        apply_event(&mut app, storage_event("a", "owner"));
+        let form = app.managed.relationship_form.as_ref().unwrap();
+        assert_eq!(form.storage.as_deref(), Some("storage: for a.owner"));
+    }
+
+    #[test]
+    fn a_create_form_has_no_storage_line_to_fill() {
+        let mut app = app();
+        app.managed.relationship_form = Some(RelationshipFormState::new_create(
+            "sandbox".into(),
+            "a".into(),
+            doc(),
+        ));
+        apply_event(&mut app, storage_event("a", "owner"));
+        assert_eq!(app.managed.relationship_form.unwrap().storage, None);
+    }
+
+    #[test]
+    fn storage_line_reads_the_real_report() {
+        assert_eq!(
+            storage_line(&doc(), &json!({}), "a", "owner"),
+            "storage: a.owner <-> b.owned: generic"
+        );
+    }
 }

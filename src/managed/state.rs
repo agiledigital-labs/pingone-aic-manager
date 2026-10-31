@@ -949,6 +949,10 @@ pub struct RelationshipFormState {
     pub ref_selected: usize,
     pub focused: RelationshipFocus,
     pub error: Option<String>,
+    /// Where an existing relationship's links are stored, read from
+    /// `config/repo.ds` after the form opens (`verify::storage_lines`).
+    /// `None` on a create, where there is nothing stored yet.
+    pub storage: Option<String>,
 }
 
 impl RelationshipFormState {
@@ -976,6 +980,7 @@ impl RelationshipFormState {
             ref_selected: 0,
             focused: RelationshipFocus::Key,
             error: None,
+            storage: None,
         }
     }
     pub fn edit(
@@ -1036,6 +1041,7 @@ impl RelationshipFormState {
             ref_selected: 0,
             focused: RelationshipFocus::Key,
             error: None,
+            storage: Some("storage: reading config/repo.ds…".into()),
         })
     }
 
