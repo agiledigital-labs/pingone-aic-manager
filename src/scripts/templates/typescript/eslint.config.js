@@ -87,6 +87,15 @@ export default tseslint.config(
     },
   },
   {
+    // eslint 10's `preserve-caught-error` asks for `new Error(msg, { cause })`
+    // when rethrowing from a `catch`. The endpoint program cannot write that:
+    // `ErrorOptions` is ES2022, outside the `lib` tsconfig.json admits, and
+    // whether IDM's engine keeps `cause` is unmeasured. Tests run under node
+    // with ES2022, so the rule stays on there.
+    files: ["framework/**/*.ts", "src/**/*.ts"],
+    rules: { "preserve-caught-error": "off" },
+  },
+  {
     // Build tooling runs under node, not on IDM: none of the above applies.
     files: ["tools/**/*.mjs"],
     languageOptions: {
