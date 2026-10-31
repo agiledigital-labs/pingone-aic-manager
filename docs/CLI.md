@@ -579,7 +579,7 @@ aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--yes] [--json]
-aic managed relationship delete custom_widget.owner [--yes] [--json]
+aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
 aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
@@ -822,6 +822,20 @@ a mapping naming no declared property — is what `relationship repair`
 removes. For the other findings neither the console's repair nor
 delete-and-recreate has been tested (`docs/api/10-managed-objects.md`,
 "Checking a pair").
+
+`relationship delete --remove-mapping` does the delete and then the repairs
+its leftovers need, in one command. Before writing anything it plans every
+removal against the document the delete will leave, in an order each
+`repair` would allow on its own — so a `reverseReference` comes out before
+the `reference` it reads through — and refuses outright, deleting nothing, if
+any of them would be refused. It asks once (or takes `--force`), deletes,
+then runs each removal exactly as `repair` does: re-read and recheck, backup,
+whole-document replace, confirm by re-read. If one fails after the delete has
+landed, it says what was deleted and unmapped and names the `repair`
+commands, in order, for what is still mapped. `--json` adds
+`"mappings_removed"`. Measured on the sandbox (2026-11-01) on a mapped
+has-one pair: both entries removed in order, every other byte of `repo.ds`
+unchanged.
 
 `relationship repair <object>.<key>` removes one `config/repo.ds`
 relationship mapping (`reference` or `reverseReference`) that names a

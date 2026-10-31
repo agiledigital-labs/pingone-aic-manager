@@ -670,6 +670,15 @@ property of an object, and an object `config/managed` does not declare.
 Whether links written while a key was mapped reappear if the key is
 recreated after a repair was not measured.
 
+`aic managed relationship delete <object>.<key> --remove-mapping` chains the
+two (measured 2026-11-01 on `test_from.hasOnehOne` ↔ `test_to.hasOneHasOne`,
+both mapped): one `config/managed` write removing both ends, then
+`test_to.hasOneHasOne`'s `reverseReference` and `test_from.hasOnehOne`'s
+`reference` removed in that order, each confirmed by re-read. The resulting
+`repo.ds` equalled the document before it minus exactly those two entries.
+Both documents were restored from copies taken first, and four re-reads over
+a minute matched them.
+
 #### Checking a pair (`aic managed relationship verify`, measured 2026-10-26)
 
 `verify` reads `config/managed` and `config/repo.ds` and reports a pair whose
