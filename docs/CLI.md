@@ -190,7 +190,7 @@ binary deliberately does not read passwords from environment variables.
 
 | Command                        | What it does                                                                                                   |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `aic ctx list [--json]`        | List tenants in `.aic/config.toml`, marking the effective tenant and the stored context. See below.            |
+| `aic ctx list [--json] [--domains]` | List tenants in `.aic/config.toml`, marking the effective tenant and the stored context. See below.            |
 | `aic ctx current [--tenant]`   | Print the effective tenant (stdout) and why it won (stderr). Alias: `aic ctx show`. See below.                 |
 | `aic ctx use <tenant>`         | Switch the active context.                                                                                     |
 | `aic ctx scopes [--tenant] [--add S]` | Show the scopes the tenant grants this install's SA beside the ones its tokens request; `--add` requests an already-granted scope. The SA cannot grant itself one. |
@@ -219,6 +219,23 @@ there was none.
 hit, `STORED` the one `aic ctx use` last chose. The column used to be `CURRENT`
 and meant the stored context. In `--json`, `effective` is new and `current`
 keeps its old meaning (the stored context) for existing consumers.
+
+Two contexts can share a word like "sandbox" in both name and base URL, which
+is how a change once landed on the wrong one. The domain an operator types
+into a browser tells them apart, so `whoami` prints the context's `host:` and
+its `domains:` (custom domains), and `ctx list --domains` adds a
+`CUSTOM_DOMAINS` column (`custom_domains` in `--json`). Both read
+`GET /environment/custom-domains/{alpha,bravo}` from the tenant — `ctx list`
+stays offline without the flag. That route needs `fr:idc:custom-domain:*`,
+which onboarding does not request; without it the answer is
+`unreadable — the token lacks fr:idc:custom-domain:*`, never `none`, because
+a refusal says nothing about whether domains exist. Grant the scope to the
+service account in the console, then `aic ctx scopes --add` it.
+
+`aic` cannot warn when a token from `whoami --token` is sent to another
+context's host: once printed, the token leaves `aic`. Commands that both mint
+and send — `aic idm get`, `scripts/verify-endpoint.sh` — pair the host with
+the token themselves.
 
 The normal `whoami` output includes `operator: <name> on <host>`. When the name
 has not been saved yet, the line says it is unset and points to

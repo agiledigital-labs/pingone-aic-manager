@@ -16,6 +16,7 @@
 
 pub(crate) mod diff;
 pub mod force;
+pub(crate) mod identity;
 
 use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -239,6 +240,11 @@ pub enum CtxCommand {
     List {
         #[arg(long, help = "Print tenants as JSON")]
         json: bool,
+        /// Also read each tenant's custom domains from the tenant (one call
+        /// per realm per tenant; needs an unlocked agent and
+        /// fr:idc:custom-domain:*).
+        #[arg(long)]
+        domains: bool,
     },
     /// Print the tenant commands here would target, and why.
     ///
@@ -1480,19 +1486,32 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let current = config::read_current_context()?;
     match cmd {
-        CtxCommand::List { json } => {
+        CtxCommand::List { json, domains } => {
             let effective = resolve_tenant_from(None, &cfg, || Ok(current.clone()))?
                 .map(|resolution| resolution.tenant);
+            let mut read = Vec::new();
+            for tenant in &cfg.tenants {
+                read.push(if domains {
+                    Some(identity::custom_domains(&tenant.name).await)
+                } else {
+                    None
+                });
+            }
             if json {
                 let rows = cfg
                     .tenants
                     .iter()
-                    .map(|tenant| CtxTenantOutput {
+                    .zip(&read)
+                    .map(|(tenant, domains)| CtxTenantOutput {
                         current: Some(&tenant.name) == current.as_ref(),
                         effective: Some(&tenant.name) == effective.as_ref(),
                         name: tenant.name.clone(),
                         theme: tenant.theme.label().to_string(),
                         base_url: tenant.base_url.clone(),
+                        custom_domains: domains.as_ref().map(|domains| match domains {
+                            identity::Domains::Listed(listed) => serde_json::json!(listed),
+                            other => serde_json::json!({ "unreadable": other.describe() }),
+                        }),
                     })
                     .collect::<Vec<_>>();
                 print_json(&rows)?;
@@ -1500,18 +1519,25 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
                 let rows = cfg
                     .tenants
                     .iter()
-                    .map(|tenant| {
+                    .zip(&read)
+                    .map(|(tenant, domains)| {
                         let mark = |on: bool| if on { "*" } else { "" }.to_string();
-                        vec![
+                        let mut row = vec![
                             mark(Some(&tenant.name) == effective.as_ref()),
                             mark(Some(&tenant.name) == current.as_ref()),
                             tenant.name.clone(),
                             tenant.theme.label().to_string(),
                             tenant.base_url.clone(),
-                        ]
+                        ];
+                        row.extend(domains.as_ref().map(identity::Domains::cell));
+                        row
                     })
                     .collect::<Vec<_>>();
-                print_table(&["EFFECTIVE", "STORED", "NAME", "THEME", "BASE_URL"], &rows);
+                let mut headers = vec!["EFFECTIVE", "STORED", "NAME", "THEME", "BASE_URL"];
+                if domains {
+                    headers.push("CUSTOM_DOMAINS");
+                }
+                print_table(&headers, &rows);
             }
         }
         CtxCommand::Current { tenant } => {
@@ -1606,6 +1632,13 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
                     .and_then(|candidate| candidate.sa_id.as_deref())
                     .unwrap_or("(none — log-only tenant)");
                 println!("tenant:  {tenant}");
+                if let Some(tenant_config) = tenant_config {
+                    println!("host:    {}", identity::host(&tenant_config.base_url));
+                }
+                println!(
+                    "domains: {}",
+                    identity::custom_domains(&tenant).await.describe()
+                );
                 println!("sa:      {sa}");
                 match operator.source {
                     NameSource::Placeholder => println!(
@@ -1807,6 +1840,9 @@ struct CtxTenantOutput {
     name: String,
     theme: String,
     base_url: String,
+    /// Only with `--domains`: the list, or `{"unreadable": reason}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    custom_domains: Option<serde_json::Value>,
 }
 
 /// Resolve a tenant name from a CLI flag, falling back to a configured

@@ -359,6 +359,19 @@ was supplied to this change; it was not re-run by the implementing agent.
 - With a custom domain, do `/am/json/...` paths still need the
   `/realms/root/realms/{realm}` segment, or does the hostname imply the realm?
   Not testable in sandbox (no custom domain configured).
+- **Where custom domains are read (2026-10-31).**
+  `GET /environment/custom-domains/{realm}` exists: on the sandbox and two
+  client tenants it answers `403 "The access token does not have sufficient
+  scope"` to a token carrying `fr:am:*`, `fr:idm:*`, `fr:idc:esv:*`,
+  `fr:idc:cookie-domain:*` (and, on one, `fr:idc:promotion:*`), and the bare
+  `/environment/custom-domains` is `405` naming `POST`. The scope it wants is
+  presumably `fr:idc:custom-domain:*`, which no context here holds, so the
+  **success shape is unmeasured**; `aic whoami` reads it as `{"domains": [..]}`,
+  the shape `GET /environment/cookie-domains` returned (`{"domains": []}`), and
+  calls anything else unreadable. AM realm `aliases`
+  (`/am/json/global-config/realms?_queryFilter=true`) were `[]` for root,
+  alpha and bravo on all three tenants, so they are not where AIC records a
+  custom domain — or none of the three has one.
 
 ### Q13. IDM script engine — does `openidm.query` take a `fields` argument? (2026-07-03)
 
