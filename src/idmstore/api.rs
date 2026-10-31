@@ -130,7 +130,27 @@ pub async fn get_record(
     }
 }
 
-pub async fn collect_cursor_pages<F, Fut>(mut source: F) -> Result<Vec<Value>>
+pub async fn collect_cursor_pages<F, Fut>(source: F) -> Result<Vec<Value>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: Future<Output = Result<Page>>,
+{
+    Ok(walk_cursor(source).await?.records)
+}
+
+/// A finished cursor walk: the distinct records, and what it took to get
+/// them — the completeness evidence a caller can check, since the tenant's
+/// own `totalPagedResults` is an estimate at best (docs/api/10, "Paging").
+#[derive(Debug)]
+pub struct CursorWalk {
+    pub records: Vec<Value>,
+    /// Responses read, including an empty last page.
+    pub pages: usize,
+    /// Records dropped because an earlier page already returned their `_id`.
+    pub duplicates: usize,
+}
+
+pub async fn walk_cursor<F, Fut>(mut source: F) -> Result<CursorWalk>
 where
     F: FnMut(Option<String>) -> Fut,
     Fut: Future<Output = Result<Page>>,
@@ -139,9 +159,12 @@ where
     let mut seen = HashSet::new();
     let mut cookies = HashSet::new();
     let mut cookie = None;
+    let (mut pages, mut received) = (0, 0);
 
     loop {
         let page = source(cookie.take()).await?;
+        pages += 1;
+        received += page.results.len();
         push_dedup(&mut out, &mut seen, page.results);
         match page.cookie {
             // A cookie handed back twice would page forever; the dedup above
@@ -160,7 +183,11 @@ where
         }
     }
 
-    Ok(out)
+    Ok(CursorWalk {
+        duplicates: received - out.len(),
+        records: out,
+        pages,
+    })
 }
 
 fn list_meta_cursor_page(
@@ -323,7 +350,7 @@ mod tests {
         let mut pages = pages.into_iter();
         let mut cookies = Vec::new();
 
-        let records = collect_cursor_pages(|cookie| {
+        let walk = walk_cursor(|cookie| {
             cookies.push(cookie);
             let page = pages.next().expect("expected page");
             async move { Ok(page) }
@@ -335,7 +362,11 @@ mod tests {
             cookies,
             vec![None, Some("next-1".into()), Some("next-2".into())]
         );
-        let ids = records
+        // What `idm get --all-pages` reports: three responses, six rows read,
+        // two of them repeats.
+        assert_eq!((walk.pages, walk.duplicates), (3, 2));
+        let ids = walk
+            .records
             .iter()
             .map(|v| v["_id"].as_str().unwrap())
             .collect::<Vec<_>>();

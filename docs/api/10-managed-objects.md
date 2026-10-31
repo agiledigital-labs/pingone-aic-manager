@@ -1108,6 +1108,18 @@ single-resource read rejects the paging parameters:
 `GET /openidm/config/ui/configuration?_pageSize=1000` is
 `400 Unrecognized request parameter '_pageSize'`.
 
+**The estimate is wrong, not just approximate (verified 2026-10-31).** The
+parameter is `_totalPagedResultsPolicy`; `_countPolicy=EXACT` is
+`400 Unrecognized request parameter '_countPolicy'`. Asked for `EXACT` at
+`_pageSize=1`/`2` with `_fields=_id`, the sandbox answered policy `ESTIMATE`
+every time, and the number disagreed with a full cursor walk of the same
+query: `alpha_user` `_queryFilter=true` estimated 27 and walked 27, but
+`alpha_role` `_queryFilter=true` estimated **4** and walked **1**, and
+`alpha_user` `userName sw "a"` estimated **7** and walked **4** (each walk
+cross-checked against one unpaged response). So `aic idm get --all-pages`
+reports the pages it fetched and the distinct records it kept, not a tenant
+total.
+
 **Query-filter negation (verified 2026-07-03).** AIC accepts symbolic CREST
 negation with `!`, for example `_queryFilter=!(/description eq "lkj")`. It
 rejects the word form `not (/description eq "lkj")` with HTTP 400
