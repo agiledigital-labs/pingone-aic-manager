@@ -72,8 +72,18 @@ pub enum Problem {
     StaleMapping { object: String, key: String },
     /// Two `resourceMapping` sections map the end differently. Which one
     /// IDM uses is unmeasured, so every other check here, which reads one
-    /// merged value, may be judging the wrong one.
-    MappingConflict { end: String, sections: Vec<String> },
+    /// merged value, may be judging the wrong one. The end's declared shape
+    /// rides along so a write that changes the relationship is not excused
+    /// by the same sections having conflicted before (Astra round 11): the
+    /// candidate the merge discarded is never checked against the new shape.
+    MappingConflict {
+        end: String,
+        sections: Vec<String>,
+        /// Sorted, deduplicated `managed/<obj>` targets.
+        declared: Vec<String>,
+        array: bool,
+        partner: Option<String>,
+    },
     /// A `repo.ds` relationship mapping on a property declared as something
     /// other than a relationship — a key reused after a delete.
     MappingOnScalar { object: String, key: String },
@@ -108,7 +118,7 @@ impl Problem {
                 names,
                 expected,
             } => format!("{end}'s repo.ds mapping reads through {names}, expected {expected}"),
-            Self::MappingConflict { end, sections } => format!(
+            Self::MappingConflict { end, sections, .. } => format!(
                 "{end} is mapped differently in config/repo.ds's {}; which one IDM uses is \
                  unmeasured",
                 sections.join(" and ")
@@ -380,9 +390,15 @@ fn label(end: &End) -> String {
 
 fn mapping_problems(end: &End, partner_key: Option<&str>, out: &mut Vec<Problem>) {
     if !end.conflicting.is_empty() {
+        let mut declared = end.targets.clone();
+        declared.sort();
+        declared.dedup();
         out.push(Problem::MappingConflict {
             end: label(end),
             sections: end.conflicting.clone(),
+            declared,
+            array: end.array,
+            partner: partner_key.map(str::to_string),
         });
     }
     let Some(mapping) = &end.mapping else {
@@ -1315,6 +1331,48 @@ mod tests {
             transition_refusal(&[&after], &unrelated, &repo_with(to("b"), to("c"))),
             Ok(())
         );
+
+        // Sol round 11: retargeting c -> b over the same conflict lands on the
+        // merged candidate, and is still a changed binding.
+        let to_c = objects(Some(json!({"type": "relationship",
+            "resourceCollection": [{"path": "managed/c"}]})));
+        let error = transition_refusal(&[&to_c], &after, &repo_with(to("b"), to("c"))).unwrap_err();
+        assert!(error.contains("a.link is mapped differently"), "{error}");
+
+        // An already-conflicted relationship that the write changes is not
+        // excused by the old conflict (Astra round 11): deleting `c` narrows
+        // a.link to [b], which the explicit entry matches and the generic one
+        // no longer does.
+        let both = json!({"type": "relationship",
+            "resourceCollection": [{"path": "managed/b"}, {"path": "managed/c"}]});
+        let conflicted = objects(Some(both));
+        let repo_ds = repo_with(to("b"), to("c"));
+        let (deleted, _) = crate::managed::ops::delete_object_in_doc(&conflicted, "c").unwrap();
+        let error = transition_refusal(&[&conflicted], &deleted, &repo_ds).unwrap_err();
+        assert!(error.contains("a.link is mapped differently"), "{error}");
+        // Unchanged in only one of two baselines is not enough.
+        assert!(transition_refusal(&[&deleted, &conflicted], &deleted, &repo_ds).is_err());
+        // Control: unchanged in every baseline is still allowed.
+        assert_eq!(
+            transition_refusal(&[&deleted, &deleted], &deleted, &repo_ds),
+            Ok(())
+        );
+        // Reversing the array flag or the partner is a change too.
+        let mut single = conflicted.clone();
+        single["objects"][0]["schema"]["properties"]["link"]["type"] = json!("relationship");
+        let mut array = conflicted.clone();
+        array["objects"][0]["schema"]["properties"]["link"] = json!({"type": "array",
+            "items": {"type": "relationship",
+                "resourceCollection": [{"path": "managed/b"}, {"path": "managed/c"}]}});
+        assert!(transition_refusal(&[&single], &array, &repo_ds).is_err());
+        let mut reverse = conflicted.clone();
+        reverse["objects"][0]["schema"]["properties"]["link"]["reverseRelationship"] = json!(true);
+        let mut renamed = reverse.clone();
+        renamed["objects"][0]["schema"]["properties"]["link"]["reversePropertyName"] =
+            json!("other");
+        let mut back = reverse.clone();
+        back["objects"][0]["schema"]["properties"]["link"]["reversePropertyName"] = json!("back");
+        assert!(transition_refusal(&[&back], &renamed, &repo_ds).is_err());
     }
 
     #[test]
