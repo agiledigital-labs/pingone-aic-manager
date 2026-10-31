@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::Result;
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, print_table, tenant_for};
-use crate::managed::{api, ops, spec, state, verify};
+use crate::managed::{api, diff, ops, recovery, relink, repair, spec, state, verify};
 use crate::undo::{DiskLog, UndoLog};
 
 #[derive(Subcommand, Debug)]
@@ -36,6 +36,21 @@ pub enum ManagedCommand {
         schema_only: bool,
         #[arg(long)]
         tenant: Option<String>,
+    },
+    /// Compare one object with a repository file — an object definition or a
+    /// whole config/managed document — after normalising known
+    /// representation differences (listed in the output). Read-only; exits
+    /// non-zero when they differ.
+    Diff {
+        name: String,
+        file: std::path::PathBuf,
+        /// Compare exactly, applying no normalisation.
+        #[arg(long)]
+        strict: bool,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Create, rename, or delete managed object definitions.
     Object {
@@ -233,6 +248,73 @@ pub enum RelationshipCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Re-create the links on `<object>.<key>` that its reverse end does not
+    /// list — the links written before the reverse was declared, which IDM
+    /// never migrates. Each is removed and created again, so it gets a new
+    /// edge id; custom `_refProperties` are carried over.
+    Relink {
+        field: String,
+        /// Read and report the plan; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt.
+        #[command(flatten)]
+        force: OperationForce,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a config/repo.ds relationship mapping that names no declared
+    /// property — the leftover a relationship delete leaves, which makes a
+    /// later `set` on that key refuse. Remove only: it never adds or edits a
+    /// mapping. Replaces the whole document after backing it up locally, and
+    /// confirms by reading it back.
+    Repair {
+        /// `<object>.<key>` of the stale mapping.
+        field: String,
+        /// Report the plan; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt.
+        #[command(flatten)]
+        force: OperationForce,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a relationship's definition — both ends when it declares a
+    /// reverse — so `restore` can merge its metadata back after the console
+    /// recreates it. Writes JSON to stdout, or to --output.
+    Snapshot {
+        field: String,
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Merge a snapshot's `title`, `description` and `query.fields` back
+    /// into the relationship ends it names. Changes nothing else.
+    Restore {
+        file: std::path::PathBuf,
+        /// Report what would change; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Read-only: check each relationship pair's two ends agree, in
     /// config/managed and config/repo.ds, and sample links from both ends.
     /// Exits non-zero on any disagreement or unresolved link.
@@ -245,8 +327,19 @@ pub enum RelationshipCommand {
         /// Records read per end when looking for links (one request).
         #[arg(long, default_value_t = 200)]
         scan: usize,
+        /// Also write one test link per pair from the forward end, read it
+        /// from the reverse end, and remove it — for pairs with no links yet.
+        /// Writes to two existing records, whose hooks fire.
+        #[arg(long)]
+        probe: bool,
+        /// With --probe, skip the confirmation prompt.
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
+        /// With --probe, confirm writes to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
         #[arg(long)]
         json: bool,
     },
@@ -255,6 +348,13 @@ pub enum RelationshipCommand {
 pub async fn run(cmd: ManagedCommand) -> Result<()> {
     match cmd {
         ManagedCommand::List { tenant, json } => list(tenant, json).await,
+        ManagedCommand::Diff {
+            name,
+            file,
+            strict,
+            tenant,
+            json,
+        } => managed_diff(name, file, strict, tenant, json).await,
         ManagedCommand::Get {
             name,
             fields,
@@ -284,10 +384,16 @@ async fn get(
     projection: spec::GetProjection,
     tenant: Option<String>,
 ) -> Result<()> {
-    let object = api::object_named(&api::get_managed(&tenant_for(tenant)?).await?, &name)?.clone();
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let object = api::object_named(&managed, &name)?.clone();
     let view = spec::prepare_managed_get(object, &name, &fields, hook_sources)
         .map_err(crate::Error::Config)?;
     let whole = projection == spec::GetProjection::Object;
+    let storage_key = match &projection {
+        spec::GetProjection::Property(property) => Some(property.as_str()),
+        _ => None,
+    };
     print_json(
         &spec::project_managed_get(view.object, &name, &projection)
             .map_err(crate::Error::Config)?,
@@ -311,7 +417,40 @@ async fn get(
             view.elided_hooks
         );
     }
+    print_relationship_storage(&tenant, &managed, &name, storage_key).await;
     Ok(())
+}
+
+/// Where each relationship's links are stored, on stderr so the JSON on
+/// stdout stays the object itself (and diffable against a repo file).
+/// Informational: a failed `repo.ds` read is a note, not the command's error.
+async fn print_relationship_storage(
+    tenant: &str,
+    managed: &serde_json::Value,
+    object: &str,
+    key: Option<&str>,
+) {
+    let repo_ds = match api::get_repo_ds(tenant).await {
+        Ok(repo_ds) => repo_ds,
+        Err(error) => {
+            eprintln!(
+                "note: could not read config/repo.ds ({error}); relationship storage not shown"
+            );
+            return;
+        }
+    };
+    // A non-relationship property, or an object with none, has nothing to say.
+    let Ok(report) = verify::report(managed, &repo_ds, object, key) else {
+        return;
+    };
+    let lines = verify::storage_lines(&report);
+    if lines.is_empty() {
+        return;
+    }
+    eprintln!("relationship storage (config/repo.ds):");
+    for line in lines {
+        eprintln!("  {line}");
+    }
 }
 
 async fn list(tenant: Option<String>, json_output: bool) -> Result<()> {
@@ -363,7 +502,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             let expect = [api::ConfigConfirm::ObjectPresent { name: name.clone() }];
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {name} created"));
-            output(json, &updated)
+            output(json, api::object_named(&updated, &name)?)
         }
         ObjectCommand::Rename {
             old,
@@ -390,7 +529,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             ];
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {old} renamed to {new}"));
-            output(json, &updated)
+            output(json, api::object_named(&updated, &new)?)
         }
         ObjectCommand::Delete {
             name,
@@ -412,7 +551,14 @@ async fn object(command: ObjectCommand) -> Result<()> {
             for change in &inbound {
                 eprintln!("also changed: {}", change.describe(&name));
             }
-            output(json, &updated)
+            untrack_hooks(&tenant, &name);
+            output(
+                json,
+                &serde_json::json!({
+                    "deleted": name,
+                    "changed": changed_objects(&doc, &updated)?,
+                }),
+            )
         }
     }
 }
@@ -658,6 +804,14 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             ops::refuse_mapped_retarget(&tenant, &spec, previous.as_ref()).await?;
             let updated = ops::apply_relationship_spec(&doc, &spec, previous.as_ref())
                 .map_err(crate::Error::Config)?;
+            if changed_objects(&doc, &updated)?.is_empty() {
+                // Nothing to confirm, so nothing to write: the confirmed write
+                // refuses an empty expectation list rather than guess.
+                eprintln!(
+                    "relationship {source_object}.{key} is already as requested; nothing written"
+                );
+                return output(json, &serde_json::json!({ "changed": [] }));
+            }
             record_config_undo(
                 &tenant,
                 &doc,
@@ -667,7 +821,21 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let expect = relationship_expectations(&doc, &updated)?;
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
-            output(json, &updated)
+            let activation = wait_for_new_ends(&tenant, &doc, &updated).await;
+            let one_sided = match relink::reverse_added(&doc, &updated, &source_object, &key) {
+                Some((far, far_key)) => {
+                    sample_one_sided(&tenant, &updated, &source_object, &key, &far, &far_key).await
+                }
+                None => None,
+            };
+            output(
+                json,
+                &serde_json::json!({
+                    "changed": changed_objects(&doc, &updated)?,
+                    "activation": activation,
+                    "one_sided": one_sided,
+                }),
+            )
         }
         RelationshipCommand::Delete {
             field,
@@ -719,23 +887,1114 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             confirmation(&format!("relationship {source_object}.{key} deleted"));
             if !leftovers.is_empty() {
                 eprintln!(
-                    "note: config/repo.ds still maps {}; aic does not edit it. Recreating the \
-                     same key with the same target reused the mapping when measured; aic \
-                     refuses one with another target (docs/api/10-managed-objects.md, \
-                     \"Relationship storage\")",
+                    "note: config/repo.ds still maps {}. Recreating the same key with the \
+                     same target reused the mapping when measured; aic refuses one with \
+                     another target. `aic managed relationship repair <object>.<key>` removes \
+                     a leftover (docs/api/10-managed-objects.md, \"Relationship storage\")",
                     leftovers.join(", ")
                 );
             }
-            output(json, &updated)
+            output(
+                json,
+                &serde_json::json!({ "changed": changed_objects(&doc, &updated)? }),
+            )
         }
         RelationshipCommand::Verify {
             target,
             sample,
             scan,
+            probe,
+            force,
             tenant,
+            yes,
             json,
-        } => relationship_verify(target, sample, scan, tenant, json).await,
+        } => {
+            let probe = probe.then_some(ProbeRequest {
+                force: force.operation(),
+                yes,
+            });
+            relationship_verify(target, sample, scan, probe, tenant, json).await
+        }
+        RelationshipCommand::Snapshot {
+            field,
+            output,
+            tenant,
+        } => {
+            let (object, key) = parse_object_key(&field)?;
+            let tenant = tenant_for(tenant)?;
+            let managed = api::get_managed(&tenant).await?;
+            let property_of = |object: &str, key: &str| {
+                api::object_named(&managed, object)
+                    .ok()
+                    .and_then(state::properties)
+                    .and_then(|properties| properties.get(key))
+                    .cloned()
+            };
+            let property = property_of(&object, &key)
+                .filter(state::is_relationship_property)
+                .ok_or_else(|| crate::Error::Config(format!("{field} is not a relationship")))?;
+            let mut ends = vec![spec::SnapshotEnd {
+                object: object.clone(),
+                key: key.clone(),
+                property: property.clone(),
+            }];
+            if let Some(reverse_key) = ops::declared_reverse_key(&property)
+                && let [target] = ops::relationship_targets(&property)[..]
+                && let Some(target) = target.strip_prefix("managed/")
+                && let Some(reverse) = property_of(target, reverse_key)
+            {
+                ends.push(spec::SnapshotEnd {
+                    object: target.to_string(),
+                    key: reverse_key.to_string(),
+                    property: reverse,
+                });
+            }
+            let text = serde_json::to_string_pretty(&spec::snapshot_document(&ends))?;
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, format!("{text}\n")).map_err(|error| {
+                        crate::Error::Config(format!("write {}: {error}", path.display()))
+                    })?;
+                    eprintln!(
+                        "saved {} to {}",
+                        ends.iter()
+                            .map(|end| format!("{}.{}", end.object, end.key))
+                            .collect::<Vec<_>>()
+                            .join(" and "),
+                        path.display()
+                    );
+                }
+                None => println!("{text}"),
+            }
+            Ok(())
+        }
+        RelationshipCommand::Restore {
+            file,
+            dry_run,
+            tenant,
+            yes,
+            json,
+        } => {
+            let text = std::fs::read_to_string(&file).map_err(|error| {
+                crate::Error::Config(format!("read {}: {error}", file.display()))
+            })?;
+            let parsed: Value = serde_json::from_str(&text).map_err(|error| {
+                crate::Error::Config(format!("parse {}: {error}", file.display()))
+            })?;
+            let ends = spec::parse_snapshot(&parsed).map_err(crate::Error::Config)?;
+            let tenant = tenant_for(tenant)?;
+            let doc = api::get_managed(&tenant).await?;
+            let mut updated = doc.clone();
+            let mut changes = Vec::new();
+            for end in &ends {
+                let (next, mut more) = ops::apply_relationship_metadata(
+                    &updated,
+                    &end.object,
+                    &end.key,
+                    &end.property,
+                )
+                .map_err(crate::Error::Config)?;
+                updated = next;
+                changes.append(&mut more);
+            }
+            for change in &changes {
+                eprintln!("{}{change}", if dry_run { "would set " } else { "set " });
+            }
+            if changes.is_empty() {
+                eprintln!("nothing to restore: the metadata already matches the snapshot");
+            } else if !dry_run {
+                let ok = ensure_prod_confirmed(&tenant, yes)?;
+                record_config_undo(
+                    &tenant,
+                    &doc,
+                    &updated,
+                    format!("Revert relationship restore from {}", file.display()),
+                )?;
+                let expect = relationship_expectations(&doc, &updated)?;
+                put_managed(&ok, &doc, updated.clone(), &expect).await?;
+                confirmation("relationship metadata restored");
+            }
+            output(
+                json,
+                &serde_json::json!({ "changes": changes, "dry_run": dry_run }),
+            )
+        }
+        RelationshipCommand::Relink {
+            field,
+            dry_run,
+            force,
+            tenant,
+            yes,
+            json,
+        } => relationship_relink(field, dry_run, force.operation(), tenant, yes, json).await,
+        RelationshipCommand::Repair {
+            field,
+            dry_run,
+            force,
+            tenant,
+            yes,
+            json,
+        } => relationship_repair(field, dry_run, force.operation(), tenant, yes, json).await,
     }
+}
+
+async fn managed_diff(
+    name: String,
+    file: std::path::PathBuf,
+    strict: bool,
+    tenant: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let text = std::fs::read_to_string(&file)
+        .map_err(|error| crate::Error::Config(format!("read {}: {error}", file.display())))?;
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|error| crate::Error::Config(format!("parse {}: {error}", file.display())))?;
+    let repo = diff::select_object(&parsed, &name).map_err(crate::Error::Config)?;
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let remote = api::object_named(&managed, &name)?.clone();
+    let (remote, repo, mut rules) = if strict {
+        (remote, repo, Vec::new())
+    } else {
+        let (remote, mut rules) = diff::normalise(&remote);
+        let (repo, repo_rules) = diff::normalise(&repo);
+        rules.extend(repo_rules);
+        (remote, repo, rules)
+    };
+    rules.sort_by_key(|rule| *rule as u8);
+    rules.dedup();
+    let differences = diff::differences(&remote, &repo);
+    if json {
+        print_json(&serde_json::json!({
+            "object": name,
+            "normalised": rules,
+            "differences": differences,
+        }))?;
+    } else {
+        for rule in &rules {
+            eprintln!("normalised: {}", rule.describe());
+        }
+        let render = |value: &Value| serde_json::to_string(value).unwrap_or_default();
+        for difference in &differences {
+            match difference {
+                diff::Difference::TenantOnly { path, tenant } => {
+                    println!("- {path}  tenant only: {}", render(tenant));
+                }
+                diff::Difference::RepoOnly { path, repo } => {
+                    println!("+ {path}  repo only: {}", render(repo));
+                }
+                diff::Difference::Changed { path, tenant, repo } => {
+                    println!(
+                        "~ {path}  tenant {} != repo {}",
+                        render(tenant),
+                        render(repo)
+                    );
+                }
+            }
+        }
+    }
+    if differences.is_empty() {
+        eprintln!("managed/{name} matches {}", file.display());
+        Ok(())
+    } else {
+        Err(crate::Error::Config(format!(
+            "managed/{name} differs from {} in {} place(s)",
+            file.display(),
+            differences.len()
+        )))
+    }
+}
+
+/// How long `relationship set` waits for a new end to go live. Measured
+/// flips took under a second; this bounds a tenant having a bad day.
+const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const ACTIVATION_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+#[derive(Serialize)]
+struct ActivationOutput {
+    end: String,
+    /// `live`, `timeout`, `no_records` (nothing to probe through) or `error`.
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+/// Waits for each relationship end `updated` declares that `doc` did not:
+/// a write through one before it is live answers 200 and is lost (measured
+/// 2026-10-31). Never fails the command — the schema write has landed — but
+/// says loudly when it could not confirm.
+async fn wait_for_new_ends(tenant: &str, doc: &Value, updated: &Value) -> Vec<ActivationOutput> {
+    let mut out = Vec::new();
+    for end in relink::new_ends(doc, updated) {
+        let label = format!("{}.{}", end.object, end.key);
+        let report = |outcome, seconds, detail| ActivationOutput {
+            end: label.clone(),
+            outcome,
+            seconds,
+            detail,
+        };
+        let id = match api::any_record_id(tenant, &end.object).await {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                eprintln!(
+                    "note: managed/{} has no records to probe {label} through; wait a few \
+                     seconds before writing through it — a write made before it is live is lost",
+                    end.object
+                );
+                out.push(report("no_records", None, None));
+                continue;
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: could not probe {label} ({error}); wait before writing through it"
+                );
+                out.push(report("error", None, Some(error.to_string())));
+                continue;
+            }
+        };
+        let started = std::time::Instant::now();
+        let entry = loop {
+            let probe = api::probe_relationship(tenant, &end.object, &id, &end.key).await;
+            match relink::activation(&probe) {
+                Ok(relink::Activation::Live) => {
+                    let seconds = started.elapsed().as_secs_f64();
+                    eprintln!("{label} is live ({seconds:.1}s)");
+                    break report("live", Some(seconds), None);
+                }
+                Ok(relink::Activation::Pending) if started.elapsed() < ACTIVATION_TIMEOUT => {
+                    tokio::time::sleep(ACTIVATION_POLL).await;
+                }
+                Ok(relink::Activation::Pending) => {
+                    eprintln!(
+                        "warning: {label} was not live after {}s; a write through it before it \
+                         is live answers 200 and is lost. Re-run `aic managed relationship \
+                         verify` before relying on it",
+                        ACTIVATION_TIMEOUT.as_secs()
+                    );
+                    break report("timeout", Some(started.elapsed().as_secs_f64()), None);
+                }
+                Err(detail) => {
+                    eprintln!("warning: could not confirm {label} is live ({detail})");
+                    break report("error", None, Some(detail));
+                }
+            }
+        };
+        out.push(entry);
+    }
+    out
+}
+
+/// Links sampled when a reverse is added to a relationship that has links.
+const ONE_SIDED_SCAN: usize = 200;
+const ONE_SIDED_SAMPLE: usize = 20;
+
+#[derive(Serialize)]
+struct OneSidedOutput {
+    sampled: usize,
+    one_sided: usize,
+}
+
+/// After a reverse is added to `object.key`, samples its existing links: each
+/// was written when the pair had no reverse, so the new far end does not list
+/// it, and IDM never migrates it. Informational — the write has landed.
+async fn sample_one_sided(
+    tenant: &str,
+    updated: &Value,
+    object: &str,
+    key: &str,
+    far: &str,
+    far_key: &str,
+) -> Option<OneSidedOutput> {
+    let far_array = end_is_array(updated, far, far_key);
+    let sampled = async {
+        let records = api::records_with(tenant, object, key, ONE_SIDED_SCAN).await?;
+        let far_collection = format!("managed/{far}");
+        let near_collection = format!("managed/{object}");
+        let mut links = Vec::new();
+        for record in &records {
+            links.extend(verify::links_of(record, key).map_err(crate::Error::Config)?);
+        }
+        let mut outcome = OneSidedOutput {
+            sampled: 0,
+            one_sided: 0,
+        };
+        for link in links
+            .into_iter()
+            .filter(|link| link.to_collection == far_collection)
+            .take(ONE_SIDED_SAMPLE)
+        {
+            let far_record =
+                api::far_end(tenant, far, &link.to_id, far_key, far_array, &link.from_id).await?;
+            let far_links = far_record
+                .map(|record| verify::links_of(&record, far_key))
+                .transpose()
+                .map_err(crate::Error::Config)?;
+            outcome.sampled += 1;
+            if verify::judge(&link, &near_collection, far_links.as_deref())
+                == verify::LinkOutcome::Missing
+            {
+                outcome.one_sided += 1;
+            }
+        }
+        Ok::<_, crate::Error>(outcome)
+    }
+    .await;
+    match sampled {
+        Ok(outcome) => {
+            if outcome.one_sided > 0 {
+                eprintln!(
+                    "warning: {} of {} sampled links on {object}.{key} are not listed by \
+                     {far}.{far_key}: links written before the reverse existed are not \
+                     migrated. `aic managed relationship relink {object}.{key}` re-creates them",
+                    outcome.one_sided, outcome.sampled
+                );
+            }
+            Some(outcome)
+        }
+        Err(error) => {
+            eprintln!(
+                "note: could not sample {object}.{key} for links the new reverse does not list \
+                 ({error}); `aic managed relationship relink {object}.{key} --dry-run` checks"
+            );
+            None
+        }
+    }
+}
+
+fn end_is_array(doc: &Value, object: &str, key: &str) -> bool {
+    api::object_named(doc, object)
+        .ok()
+        .and_then(state::properties)
+        .and_then(|properties| properties.get(key))
+        .and_then(|property| property.get("type"))
+        .and_then(Value::as_str)
+        == Some("array")
+}
+
+/// `object.key` as `config/managed` declares it now, for judging a recovery
+/// entry; `None` when it is no longer a relationship.
+fn current_shape(doc: &Value, object: &str, key: &str) -> Option<recovery::Shape> {
+    let property = api::object_named(doc, object)
+        .ok()
+        .and_then(state::properties)
+        .and_then(|properties| properties.get(key))
+        .filter(|property| state::is_relationship_property(property))?;
+    Some(recovery::Shape {
+        array: end_is_array(doc, object, key),
+        targets: ops::relationship_targets(property)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    })
+}
+
+#[derive(Serialize)]
+struct RelinkOutput<'a> {
+    #[serde(flatten)]
+    plan: &'a relink::Plan,
+    /// Recovery-journal entries this run re-creates (or, with `--dry-run`,
+    /// would), before the plan above.
+    to_restore: Vec<String>,
+    /// Links an earlier, interrupted run removed, re-created from the
+    /// recovery journal.
+    restored: Vec<String>,
+    relinked: Vec<relink::Edge>,
+    /// Re-created, but the far end did not list the new edge when re-read.
+    unconfirmed: Vec<relink::Edge>,
+    /// Changed on the tenant between the plan and its turn; not written.
+    changed: Vec<relink::Edge>,
+    /// Recovery-journal entries that still need a person.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    attention: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// A record's links of `key` and its `_rev`; no links and no `_rev` when the
+/// record is gone.
+async fn read_edges(
+    tenant: &str,
+    object: &str,
+    id: &str,
+    key: &str,
+) -> Result<(Vec<relink::Edge>, Option<String>)> {
+    Ok(match api::record_with(tenant, object, id, key).await? {
+        Some(record) => (
+            relink::edges_of(&record, key).map_err(crate::Error::Config)?,
+            relink::rev_of(&record),
+        ),
+        None => (Vec::new(), None),
+    })
+}
+
+/// What the recovery journal holds for `tenant`, judged against the tenant:
+/// settled entries are forgotten, `restore` holds the relink entries for
+/// `field` that a run of it should re-create, and `attention` says what is
+/// left for a person.
+struct Reconciled {
+    restore: Vec<recovery::Pending>,
+    attention: Vec<String>,
+}
+
+async fn reconcile(tenant: &str, managed: &Value, field: Option<&str>) -> Result<Reconciled> {
+    let mut out = Reconciled {
+        restore: Vec::new(),
+        attention: Vec::new(),
+    };
+    for pending in recovery::pending(tenant)? {
+        let label = pending.label();
+        let since = &pending.started_at;
+        // Shape first: a field that is no longer this relationship may not
+        // read as one, and one entry that cannot be read must not stop the
+        // others being judged.
+        let shape = current_shape(managed, &pending.object, &pending.key);
+        let verdict = if recovery::fits(&pending, shape.as_ref()) {
+            match read_edges(tenant, &pending.object, &pending.from_id, &pending.key).await {
+                Ok((current, _)) => recovery::judge(&pending, shape.as_ref(), &current),
+                Err(error) => {
+                    out.attention.push(format!(
+                        "{label}: recorded at {since}; the record could not be read ({error}), \
+                         so the entry is kept and not acted on"
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            recovery::Recovery::Reshaped
+        };
+        match verdict {
+            recovery::Recovery::Settled => recovery::clear(&pending.id)?,
+            recovery::Recovery::Reshaped => out.attention.push(format!(
+                "{label}: recorded at {since} while {} was {} to {}; it has changed shape since, \
+                 so the entry is not acted on. Check the record by hand, then remove the entry \
+                 from {}",
+                pending.field(),
+                if pending.array { "has-many" } else { "has-one" },
+                pending.to_collection,
+                recovery::file().display()
+            )),
+            recovery::Recovery::Altered => out.attention.push(format!(
+                "{label}: removed by a relink interrupted at {since}; the record links that \
+                 target again but without the custom properties it had ({}). Restore them by \
+                 hand if they matter, then remove the entry from {}",
+                Value::Object(pending.properties.clone()),
+                recovery::file().display()
+            )),
+            recovery::Recovery::Lost if field == Some(pending.field().as_str()) => {
+                out.restore.push(pending);
+            }
+            recovery::Recovery::Lost => out.attention.push(format!(
+                "{label}: removed by a relink interrupted at {since} and not re-created; run \
+                 `aic managed relationship relink {}` to restore it",
+                pending.field()
+            )),
+            recovery::Recovery::LostAndOccupied => out.attention.push(format!(
+                "{label}: removed by a relink interrupted at {since}; the property now holds \
+                 another link, so it is not restored over it. Restore it by hand if it should \
+                 win, then remove the entry from {}",
+                recovery::file().display()
+            )),
+            recovery::Recovery::Leftover { edge_id } => out.attention.push(format!(
+                "{label}: a `verify --probe` test link (edge {edge_id}) interrupted at {since} \
+                 is still there; remove it with DELETE /openidm/managed/{}/{}/{}/{edge_id} \
+                 (has-many) or a PATCH removing /{} (has-one)",
+                pending.object, pending.from_id, pending.key, pending.key
+            )),
+            recovery::Recovery::Ambiguous => out.attention.push(format!(
+                "{label}: a `verify --probe` interrupted at {since} before reading its test link \
+                 back, and the record links that target; check whether it is the probe's, then \
+                 remove the entry from {}",
+                recovery::file().display()
+            )),
+        }
+    }
+    for line in &out.attention {
+        eprintln!("recovery: {line}");
+    }
+    Ok(out)
+}
+
+async fn relationship_repair(
+    field: String,
+    dry_run: bool,
+    force: bool,
+    tenant: Option<String>,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
+    let (object, key) = parse_object_key(&field)?;
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let repo_ds = api::get_repo_ds(&tenant).await?;
+    let plan = repair::plan(&managed, &repo_ds, &object, &key).map_err(crate::Error::Config)?;
+    let mapping = match (&plan.mapping.resource_path, &plan.mapping.property_name) {
+        (Some(path), Some(through)) => format!("{} of {path} through {through}", plan.mapping.kind),
+        (Some(path), None) => format!("{} to {path}", plan.mapping.kind),
+        _ => plan.mapping.kind.clone(),
+    };
+    eprintln!("repair {field}: remove its config/repo.ds mapping ({mapping})");
+    for note in &plan.notes {
+        eprintln!("  note: {note}");
+    }
+    if dry_run {
+        return output(json, &serde_json::json!({ "plan": &plan, "dry_run": true }));
+    }
+    let consented = force
+        || crate::cli::confirm_destructive(
+            "relationship repair",
+            &format!(
+                "Remove {field}'s mapping from config/repo.ds? The whole document is replaced; \
+                 the current one is backed up locally first"
+            ),
+            "--force",
+        )?;
+    let Some(permit) = repair::authorize(dry_run, consented) else {
+        return Err(crate::Error::Config(
+            "relationship repair not confirmed".into(),
+        ));
+    };
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    let delays = [std::time::Duration::from_secs(3); 10];
+    let result = repair::apply_with(
+        &plan,
+        &permit,
+        async || api::get_managed(ok.tenant).await,
+        async || api::get_repo_ds(ok.tenant).await,
+        |document| {
+            crate::access::ops::backup_config_document(
+                "repo.ds",
+                ok.tenant,
+                document,
+                chrono::Utc::now(),
+            )
+        },
+        async |document| api::put_repo_ds(ok.tenant, &permit, document, ok.confirmed_prod).await,
+        &delays,
+    )
+    .await;
+    match result {
+        Err(repair::Failure::NotWritten(message)) => Err(crate::Error::Config(format!(
+            "relationship repair {field}: {message}"
+        ))),
+        Err(repair::Failure::SendFailed { error, backup }) => Err(crate::Error::Config(format!(
+            "relationship repair {field}: the write failed ({error}), and whether it landed is \
+             unknown. Run `aic managed relationship verify {object}` to see. The document it \
+             replaced is at {}",
+            backup.display()
+        ))),
+        Ok(applied) => {
+            eprintln!("  backup: {}", applied.backup.display());
+            if json {
+                print_json(&serde_json::json!({ "plan": &plan, "applied": &applied }))?;
+            }
+            match &applied.readback {
+                repair::Readback::Confirmed => {
+                    // No undo entry: the backup above is the way back.
+                    eprintln!("removed {field}'s config/repo.ds mapping (confirmed by re-read)");
+                    Ok(())
+                }
+                repair::Readback::Unchanged => Err(crate::Error::Config(format!(
+                    "relationship repair {field}: the write was accepted, but config/repo.ds \
+                     still reads as it did before it after 30s. Nothing appears to have \
+                     changed; run repair again, or `relationship verify {object}`"
+                ))),
+                repair::Readback::Different => Err(crate::Error::Config(format!(
+                    "relationship repair {field}: the write was accepted, but a read of \
+                     config/repo.ds returned neither the document sent nor the one it replaced — another \
+                     writer, or the tenant rewrote it. Run `relationship verify {object}`; the \
+                     replaced document is at {}",
+                    applied.backup.display()
+                ))),
+                repair::Readback::Unread { error } => Err(crate::Error::Config(format!(
+                    "relationship repair {field}: the write was accepted, but reading it back \
+                     failed ({error}). Run `relationship verify {object}`; the replaced \
+                     document is at {}",
+                    applied.backup.display()
+                ))),
+            }
+        }
+    }
+}
+
+async fn relationship_relink(
+    field: String,
+    dry_run: bool,
+    force: bool,
+    tenant: Option<String>,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
+    let (object, key) = parse_object_key(&field)?;
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let property = api::object_named(&managed, &object)
+        .ok()
+        .and_then(state::properties)
+        .and_then(|properties| properties.get(&key))
+        .filter(|property| state::is_relationship_property(property))
+        .ok_or_else(|| crate::Error::Config(format!("{field} is not a relationship")))?;
+    let far_key = ops::declared_reverse_key(property)
+        .ok_or_else(|| {
+            crate::Error::Config(format!(
+                "{field} declares no reverse, so there is nothing to relink to; add one with \
+                 `aic managed relationship set {field} --reverse ...` first"
+            ))
+        })?
+        .to_string();
+    let far = ops::relationship_targets(property)
+        .first()
+        .and_then(|target| target.strip_prefix("managed/"))
+        .ok_or_else(|| crate::Error::Config(format!("{field} has no managed target")))?
+        .to_string();
+    if ops::relationship_targets(property).len() > 1 {
+        return Err(crate::Error::Config(format!(
+            "{field} has more than one target; relink handles a single-target pair"
+        )));
+    }
+    // A link re-created on a pair whose ends disagree about storage can land
+    // in a store the other end does not read — the measured mixed state.
+    let repo_ds = api::get_repo_ds(&tenant).await?;
+    let problems: Vec<String> = verify::pairs(&managed, &repo_ds, &object, &key)
+        .iter()
+        .flat_map(|pair| pair.problems.iter().map(verify::Problem::message))
+        .collect();
+    if !problems.is_empty() {
+        return Err(crate::Error::Config(format!(
+            "relationship relink refuses {field}: `relationship verify` reports {}",
+            problems.join("; ")
+        )));
+    }
+    let near_array = end_is_array(&managed, &object, &key);
+    let far_array = end_is_array(&managed, &far, &far_key);
+    let far_collection = format!("managed/{far}");
+    let near_collection = format!("managed/{object}");
+    let far_end = (far.as_str(), far_key.as_str(), far_array);
+
+    let reconciled = reconcile(&tenant, &managed, Some(&field)).await?;
+    let records = api::all_records_with(&tenant, &object, &key).await?;
+    let mut judged = Vec::new();
+    for record in &records {
+        for edge in relink::edges_of(record, &key).map_err(crate::Error::Config)? {
+            if edge.link.to_collection != far_collection {
+                continue;
+            }
+            let (outcome, slot) =
+                far_outcome(&tenant, far_end, &edge.link, &near_collection).await?;
+            judged.push((edge, outcome, slot));
+            if judged.len() % 100 == 0 {
+                eprintln!("relink: {} links checked", judged.len());
+            }
+        }
+    }
+    let plan = relink::plan(judged);
+    let mut out = RelinkOutput {
+        plan: &plan,
+        to_restore: reconciled
+            .restore
+            .iter()
+            .map(recovery::Pending::label)
+            .collect(),
+        restored: Vec::new(),
+        relinked: Vec::new(),
+        unconfirmed: Vec::new(),
+        changed: Vec::new(),
+        attention: reconciled.attention,
+        error: None,
+    };
+    eprintln!(
+        "{field}: {} records, {} links listed by {far}.{far_key}, {} to relink, {} skipped",
+        records.len(),
+        plan.resolved,
+        plan.relink.len(),
+        plan.skipped.len()
+    );
+    for pending in &reconciled.restore {
+        eprintln!(
+            "  restore {}: removed by a run interrupted at {}",
+            pending.label(),
+            pending.started_at
+        );
+    }
+    for skipped in &plan.skipped {
+        eprintln!(
+            "  skip {} -> {}: {}",
+            skipped.edge.link.from_id, skipped.edge.link.to_id, skipped.reason
+        );
+    }
+    if (plan.relink.is_empty() && reconciled.restore.is_empty()) || dry_run {
+        return finish_relink(&out, json);
+    }
+    let consented = force
+        || crate::cli::confirm_destructive(
+            "relationship relink",
+            &format!(
+                "Remove and re-create {} link(s) on {field}{}? Each gets a new edge id; whether \
+                 onUpdate hooks fire for it is unmeasured",
+                plan.relink.len(),
+                match reconciled.restore.len() {
+                    0 => String::new(),
+                    n => format!(", and re-create {n} an interrupted run removed"),
+                }
+            ),
+            "--force",
+        )?;
+    let Some(permit) = relink::authorize(dry_run, consented) else {
+        return Err(crate::Error::Config(
+            "relationship relink not confirmed".into(),
+        ));
+    };
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    eprintln!(
+        "relink: each link is recorded in {} before it is removed; if this run stops, \
+         re-running it restores what it removed",
+        recovery::file().display()
+    );
+    let near_end = (object.as_str(), key.as_str(), near_array);
+    let shape = current_shape(&managed, &object, &key);
+    for pending in &reconciled.restore {
+        match restore_one(&ok, &permit, near_end, far_end, shape.as_ref(), pending).await {
+            Ok(Restored::Confirmed) => out.restored.push(pending.label()),
+            Ok(Restored::OneSided) => out.attention.push(format!(
+                "{}: restored, but the far end does not list it yet; re-run relink to check",
+                pending.label()
+            )),
+            Ok(Restored::NotWritten(why)) => out.attention.push(format!(
+                "{}: not restored, because {why}; re-run to check",
+                pending.label()
+            )),
+            Err(error) => {
+                out.error = Some(error);
+                return finish_relink(&out, json);
+            }
+        }
+    }
+    for edge in &plan.relink {
+        match relink_one(&ok, &permit, near_end, far_end, edge).await {
+            Ok(RelinkStep::Done) => out.relinked.push(edge.clone()),
+            Ok(RelinkStep::Unconfirmed) => out.unconfirmed.push(edge.clone()),
+            Ok(RelinkStep::Changed) => out.changed.push(edge.clone()),
+            Err(error) => {
+                // §5's batch rule: stop, and say what landed.
+                out.error = Some(error);
+                break;
+            }
+        }
+    }
+    finish_relink(&out, json)
+}
+
+/// The far end's verdict on `link`, and whether a has-one far end holds some
+/// other link.
+async fn far_outcome(
+    tenant: &str,
+    (far, far_key, far_array): (&str, &str, bool),
+    link: &verify::Link,
+    near_collection: &str,
+) -> Result<(verify::LinkOutcome, relink::FarSlot)> {
+    let far_record =
+        api::far_end(tenant, far, &link.to_id, far_key, far_array, &link.from_id).await?;
+    let far_links = far_record
+        .map(|record| verify::links_of(&record, far_key))
+        .transpose()
+        .map_err(crate::Error::Config)?;
+    let outcome = verify::judge(link, near_collection, far_links.as_deref());
+    let slot = relink::FarSlot::of(far_array, &outcome, far_links.as_deref());
+    Ok((outcome, slot))
+}
+
+fn is_precondition_failed(error: &crate::Error) -> bool {
+    matches!(error, crate::Error::Api { status: 412, .. })
+}
+
+enum RelinkStep {
+    Done,
+    Unconfirmed,
+    Changed,
+}
+
+/// Rechecks, rewrites and confirms one link. An `Err` is a message that
+/// already says whether the link was left removed.
+///
+/// The removed link is in the recovery journal from before its removal until
+/// a read shows it re-created, so a run killed between the two writes is
+/// finished by the next one ([`reconcile`]).
+async fn relink_one(
+    ok: &WriteOk<'_>,
+    permit: &relink::RelinkPermit,
+    (object, key, near_array): (&str, &str, bool),
+    far_end: (&str, &str, bool),
+    edge: &relink::Edge,
+) -> std::result::Result<RelinkStep, String> {
+    let label = format!(
+        "{object}/{}.{key} -> {}",
+        edge.link.from_id, edge.link.to_id
+    );
+    let read = |context: &'static str| {
+        let label = label.clone();
+        move |error: crate::Error| format!("{label}: {context}: {error}")
+    };
+    let (current, rev) = read_edges(ok.tenant, object, &edge.link.from_id, key)
+        .await
+        .map_err(read("recheck failed; nothing written"))?;
+    if !relink::still_planned(&current, edge) {
+        return Ok(RelinkStep::Changed);
+    }
+    // The far end too: a has-one reverse that gained a link since the plan
+    // makes the re-creation fail or come out one-sided (measured: IDM refuses
+    // a link into an occupied has-one with 400, except generic has-one to
+    // has-one, which accepts it one-sided). Neither displaces that link, but
+    // the first leaves this one removed, so do not start.
+    let near_collection = format!("managed/{object}");
+    let (outcome, slot) = far_outcome(ok.tenant, far_end, &edge.link, &near_collection)
+        .await
+        .map_err(read("far-end recheck failed; nothing written"))?;
+    if outcome != verify::LinkOutcome::Missing || slot == relink::FarSlot::Occupied {
+        return Ok(RelinkStep::Changed);
+    }
+    let pending = recovery::Pending::relink(ok.tenant, object, key, near_array, edge);
+    recovery::record(&pending).map_err(read(
+        "could not record it in the recovery journal; nothing written",
+    ))?;
+    let forget = || {
+        if let Err(error) = recovery::clear(&pending.id) {
+            eprintln!(
+                "warning: {label}: could not clear its recovery entry ({error}); the next run will"
+            );
+        }
+    };
+    let [remove, mut create] =
+        relink::writes(permit, object, key, near_array, edge, rev.as_deref())?;
+    match api::send_relink(ok.tenant, object, &remove, ok.confirmed_prod).await {
+        Ok(_) => {}
+        Err(error) if is_precondition_failed(&error) => {
+            forget();
+            return Ok(RelinkStep::Changed);
+        }
+        Err(error) => {
+            return Err(format!(
+                "{label}: removing the link failed ({error}); it may or may not be removed. \
+                 Re-running relink restores it from the recovery journal if it was"
+            ));
+        }
+    }
+    let restore_hint = |create: &relink::Write| {
+        format!(
+            "re-running relink restores it from the recovery journal, or send {} {} {}",
+            create.method,
+            create.path,
+            create.body.clone().unwrap_or(Value::Null)
+        )
+    };
+    if !near_array {
+        // Re-read before re-creating: a has-one that gained a link in the
+        // gap would be overwritten by the replace.
+        let (between, rev) = read_edges(ok.tenant, object, &edge.link.from_id, key)
+            .await
+            .map_err(|error| {
+                format!(
+                    "{label}: the link was removed and the re-read failed ({error}); {}",
+                    restore_hint(&create)
+                )
+            })?;
+        if !between.is_empty() {
+            return Err(format!(
+                "{label}: the link was removed, and the property gained another link before it \
+                 was re-created; that link is not overwritten. The removed one stays in the \
+                 recovery journal"
+            ));
+        }
+        create.if_match = rev;
+    }
+    let written = match api::send_relink(ok.tenant, object, &create, ok.confirmed_prod).await {
+        Ok(response) => relink::written_edge(&response, key, near_array),
+        Err(error) => {
+            let why = if is_precondition_failed(&error) {
+                "the record changed between the re-read and the re-creation, which was refused"
+                    .to_string()
+            } else {
+                format!("re-creating it failed ({error})")
+            };
+            return Err(format!(
+                "{label}: the link was removed and {why}; {}",
+                restore_hint(&create)
+            ));
+        }
+    };
+    let (after, _) = read_edges(ok.tenant, object, &edge.link.from_id, key)
+        .await
+        .map_err(read("re-created, but the confirming read failed"))?;
+    // Confirmed only with the properties it carried: until then the journal
+    // holds the only copy of them.
+    let Some(new) = recreated(&after, edge, written.as_deref()) else {
+        return Ok(RelinkStep::Unconfirmed);
+    };
+    forget();
+    let (outcome, _) = far_outcome(ok.tenant, far_end, &new.link, &near_collection)
+        .await
+        .map_err(read("re-created, but the far end could not be read"))?;
+    Ok(if outcome == verify::LinkOutcome::Resolved {
+        RelinkStep::Done
+    } else {
+        RelinkStep::Unconfirmed
+    })
+}
+
+/// The link a relink or restore re-created, among the record's links after
+/// it: the edge the write's response named when it named one, else one to
+/// the same target with the same properties. Never a link to the target
+/// alone — another writer's is not this one.
+fn recreated<'a>(
+    after: &'a [relink::Edge],
+    edge: &relink::Edge,
+    written: Option<&str>,
+) -> Option<&'a relink::Edge> {
+    after.iter().find(|candidate| {
+        candidate.link.to_id == edge.link.to_id
+            && candidate.link.to_collection == edge.link.to_collection
+            && candidate.properties == edge.properties
+            && written.is_none_or(|id| candidate.link.edge_id.as_deref() == Some(id))
+    })
+}
+
+enum Restored {
+    /// Re-created, and the far end lists it.
+    Confirmed,
+    /// Re-created and listed by the record, but not yet by the far end: the
+    /// journal entry is done, the link is one-sided like any other.
+    OneSided,
+    /// Not written; says what changed.
+    NotWritten(String),
+}
+
+/// Re-creates a link an interrupted run removed, under the same guards as
+/// [`relink_one`]: judged against the field's current `shape`, the near record
+/// must still lack it (and, has-one, hold nothing), and the far record must
+/// exist with a has-one end not holding another link. Confirmed from both
+/// ends afterwards, like a relink.
+async fn restore_one(
+    ok: &WriteOk<'_>,
+    permit: &relink::RelinkPermit,
+    (object, key, near_array): (&str, &str, bool),
+    far_end: (&str, &str, bool),
+    shape: Option<&recovery::Shape>,
+    pending: &recovery::Pending,
+) -> std::result::Result<Restored, String> {
+    let label = pending.label();
+    let (current, rev) = read_edges(ok.tenant, object, &pending.from_id, key)
+        .await
+        .map_err(|error| format!("{label}: recheck failed ({error}); nothing written"))?;
+    if recovery::judge(pending, shape, &current) != recovery::Recovery::Lost {
+        return Ok(Restored::NotWritten("the record changed".into()));
+    }
+    if !near_array && !current.is_empty() {
+        // `judge` says the same for an unchanged shape; this does not rely on it.
+        return Ok(Restored::NotWritten(
+            "the has-one property is occupied".into(),
+        ));
+    }
+    let edge = relink::Edge {
+        link: verify::Link {
+            from_id: pending.from_id.clone(),
+            to_collection: pending.to_collection.clone(),
+            to_id: pending.to_id.clone(),
+            edge_id: pending.edge_id.clone(),
+        },
+        properties: pending.properties.clone(),
+    };
+    let near_collection = format!("managed/{object}");
+    let (outcome, slot) = far_outcome(ok.tenant, far_end, &edge.link, &near_collection)
+        .await
+        .map_err(|error| format!("{label}: far-end recheck failed ({error}); nothing written"))?;
+    if outcome == verify::LinkOutcome::FarRecordMissing {
+        return Ok(Restored::NotWritten("the far record is gone".into()));
+    }
+    if slot == relink::FarSlot::Occupied {
+        return Ok(Restored::NotWritten(
+            "the far end is a has-one holding another link".into(),
+        ));
+    }
+    let [_, mut create] = relink::writes(permit, object, key, near_array, &edge, None)?;
+    if !near_array {
+        create.if_match = rev;
+    }
+    let written = match api::send_relink(ok.tenant, object, &create, ok.confirmed_prod).await {
+        Ok(response) => relink::written_edge(&response, key, near_array),
+        Err(error) if is_precondition_failed(&error) => {
+            return Ok(Restored::NotWritten(
+                "the record changed before the write".into(),
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "{label}: restoring it failed ({error}); it stays in the recovery journal"
+            ));
+        }
+    };
+    let (after, _) = read_edges(ok.tenant, object, &pending.from_id, key)
+        .await
+        .map_err(|error| format!("{label}: restored, but the confirming read failed ({error})"))?;
+    if recovery::judge(pending, shape, &after) != recovery::Recovery::Settled {
+        return Err(format!(
+            "{label}: the restore was accepted but the record does not list it with its \
+             properties; it stays in the recovery journal"
+        ));
+    }
+    recovery::clear(&pending.id).map_err(|error| {
+        format!("{label}: restored, but its recovery entry could not be cleared ({error})")
+    })?;
+    let Some(new) = recreated(&after, &edge, written.as_deref()) else {
+        return Ok(Restored::OneSided);
+    };
+    let (outcome, _) = far_outcome(ok.tenant, far_end, &new.link, &near_collection)
+        .await
+        .map_err(|error| {
+            format!("{label}: restored, but the far end could not be read ({error})")
+        })?;
+    Ok(if outcome == verify::LinkOutcome::Resolved {
+        Restored::Confirmed
+    } else {
+        Restored::OneSided
+    })
+}
+
+fn finish_relink(out: &RelinkOutput<'_>, json: bool) -> Result<()> {
+    if json {
+        print_json(out)?;
+    } else {
+        for restored in &out.restored {
+            println!("restored: {restored}");
+        }
+        for (label, edges) in [
+            ("relinked", &out.relinked),
+            ("unconfirmed", &out.unconfirmed),
+            ("changed since the plan, not written", &out.changed),
+        ] {
+            for edge in edges {
+                println!("{label}: {} -> {}", edge.link.from_id, edge.link.to_id);
+            }
+        }
+        for line in &out.attention {
+            println!("needs attention: {line}");
+        }
+    }
+    if let Some(error) = &out.error {
+        return Err(crate::Error::Config(format!(
+            "relationship relink stopped after {} relinked: {error}",
+            out.relinked.len()
+        )));
+    }
+    if !out.unconfirmed.is_empty() || !out.changed.is_empty() || !out.attention.is_empty() {
+        return Err(crate::Error::Config(format!(
+            "relationship relink: {} unconfirmed, {} changed since the plan, {} needing \
+             attention; re-run to check",
+            out.unconfirmed.len(),
+            out.changed.len(),
+            out.attention.len()
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -745,6 +2004,10 @@ struct DirectionOutput {
     /// Records read looking for links.
     scanned: usize,
     links: Vec<SampledLink>,
+    /// The `/_ref eq` filter, tried on the far end for one resolved link when
+    /// that end is a has-many (a singular end's collection is 501).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ref_filter: Option<verify::RefFilter>,
 }
 
 #[derive(Serialize)]
@@ -760,6 +2023,292 @@ struct PairOutput {
     #[serde(flatten)]
     pair: verify::PairReport,
     directions: Vec<DirectionOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe: Option<ProbeOutput>,
+}
+
+#[derive(Serialize)]
+struct ProbeOutput {
+    from: String,
+    to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    near_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    far_id: Option<String>,
+    /// What the far end said about the test link; absent when none was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<verify::LinkOutcome>,
+    /// Why no link was made or judged, or what went wrong removing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    /// The test link is gone again (re-read). `false` is a leftover to remove.
+    removed: bool,
+    #[serde(skip)]
+    failed: bool,
+}
+
+impl ProbeOutput {
+    fn is_failure(&self) -> bool {
+        self.failed
+    }
+}
+
+/// Writes one test link from a forward-end record to a reverse-end record,
+/// judges it from the reverse end, and removes it. Records are chosen so the
+/// link displaces nothing: a has-one end only through a record whose property
+/// is empty.
+async fn probe_pair(
+    ok: &WriteOk<'_>,
+    permit: &relink::ProbePermit,
+    near: &verify::End,
+    far: &verify::End,
+    scan: usize,
+) -> ProbeOutput {
+    let mut out = ProbeOutput {
+        from: format!("{}.{}", near.object, near.key),
+        to: format!("{}.{}", far.object, far.key),
+        near_id: None,
+        far_id: None,
+        outcome: None,
+        note: None,
+        removed: false,
+        failed: false,
+    };
+    let fail = |mut out: ProbeOutput, note: String| {
+        out.note = Some(note);
+        out.failed = true;
+        out
+    };
+    let candidates = async {
+        let near_records = api::records_with(ok.tenant, &near.object, &near.key, scan).await?;
+        let far_records = api::records_with(ok.tenant, &far.object, &far.key, scan).await?;
+        let near_id = relink::probe_candidate(&near_records, &near.key, near.array, None);
+        let exclude = near_id.as_deref().filter(|_| near.object == far.object);
+        let far_id = relink::probe_candidate(&far_records, &far.key, far.array, exclude);
+        Ok::<_, crate::Error>((near_id, far_id))
+    }
+    .await;
+    let (near_id, far_id) = match candidates {
+        Ok((Some(near_id), Some(far_id))) => (near_id, far_id),
+        Ok((near_id, _)) => {
+            let empty = if near_id.is_none() { near } else { far };
+            out.note = Some(format!(
+                "untested: no record of managed/{} in the {scan} read {}",
+                empty.object,
+                if empty.array {
+                    "to link through".to_string()
+                } else {
+                    format!("with {} empty", empty.key)
+                }
+            ));
+            return out;
+        }
+        Err(error) => return fail(out, format!("could not read records: {error}")),
+    };
+    out.near_id = Some(near_id.clone());
+    out.far_id = Some(far_id.clone());
+    let shape = (near.object.as_str(), near.key.as_str(), near.array);
+    let read_near = || read_edges(ok.tenant, &near.object, &near_id, &near.key);
+    let (before, rev) = match read_near().await {
+        Ok(read) => read,
+        Err(error) => return fail(out, format!("could not read {near_id}: {error}")),
+    };
+    // The candidates came from a page read some time ago. A has-one that has
+    // since gained a link would be overwritten by the probe — and then
+    // emptied by its cleanup — so both ends are read again here.
+    if !near.array && !before.is_empty() {
+        out.note = Some(format!(
+            "untested: managed/{}/{near_id}.{} gained a link after it was chosen; not \
+             overwritten",
+            near.object, near.key
+        ));
+        return out;
+    }
+    if !far.array {
+        match read_edges(ok.tenant, &far.object, &far_id, &far.key).await {
+            Ok((held, _)) if !held.is_empty() => {
+                out.note = Some(format!(
+                    "untested: managed/{}/{far_id}.{} gained a link after it was chosen; a test \
+                     link into it is refused or one-sided, so it proves nothing",
+                    far.object, far.key
+                ));
+                return out;
+            }
+            Ok(_) => {}
+            Err(error) => return fail(out, format!("could not read {far_id}: {error}")),
+        }
+    }
+    let pending = recovery::Pending::probe(ok.tenant, shape, &near_id, &far.object, &far_id);
+    if let Err(error) = recovery::record(&pending) {
+        return fail(
+            out,
+            format!(
+                "could not record the probe in the recovery journal ({error}); nothing written"
+            ),
+        );
+    }
+    let forget = || {
+        if let Err(error) = recovery::clear(&pending.id) {
+            eprintln!(
+                "warning: could not clear the probe's recovery entry ({error}); the next run will"
+            );
+        }
+    };
+    let link = relink::probe_link(
+        permit,
+        shape,
+        &near_id,
+        &far.object,
+        &far_id,
+        rev.as_deref(),
+    );
+    let written = match api::send_relink(ok.tenant, &near.object, &link, ok.confirmed_prod).await {
+        Ok(response) => relink::written_edge(&response, &near.key, near.array),
+        Err(error) if is_precondition_failed(&error) => {
+            forget();
+            out.note = Some(format!(
+                "untested: {near_id} changed between its read and the test link; nothing written"
+            ));
+            return out;
+        }
+        Err(error) => {
+            return fail(
+                out,
+                format!("the test link write failed ({error}); it may or may not exist"),
+            );
+        }
+    };
+    // Recorded before anything else can fail, so an interrupted run leaves
+    // the next one the edge to look for.
+    if let Some(edge_id) = &written
+        && let Err(error) = recovery::set_edge(&pending.id, edge_id)
+    {
+        eprintln!("warning: could not record the probe's edge id ({error})");
+    }
+    let after = match read_near().await {
+        Ok((edges, _)) => edges,
+        Err(error) => {
+            return fail(
+                out,
+                format!(
+                    "linked, then could not re-read {near_id} ({error}); remove the link by hand"
+                ),
+            );
+        }
+    };
+    let far_collection = format!("managed/{}", far.object);
+    // Only an edge the write's own response named is the probe's to remove:
+    // a link that is merely new since the read may be another writer's.
+    let Some(edge_id) = written else {
+        return fail(
+            out,
+            format!(
+                "the test link was written, but the response did not name its edge, so it \
+                 cannot be told apart from another writer's link to {far_id} and is not \
+                 removed; it stays in the recovery journal. Check {near_id}.{} by hand",
+                near.key
+            ),
+        );
+    };
+    let Some(new) = relink::new_link(&after, &far_collection, &far_id, &edge_id).cloned() else {
+        return fail(
+            out,
+            format!(
+                "the write succeeded but {near_id} does not list its edge {edge_id} — another \
+                 writer may have replaced it — so nothing is removed; check {near_id}.{} by hand",
+                near.key
+            ),
+        );
+    };
+    let near_collection = format!("managed/{}", near.object);
+    match far_outcome(
+        ok.tenant,
+        (&far.object, &far.key, far.array),
+        &new.link,
+        &near_collection,
+    )
+    .await
+    {
+        Ok((outcome, _)) => {
+            out.failed = outcome != verify::LinkOutcome::Resolved;
+            out.outcome = Some(outcome);
+        }
+        Err(error) => {
+            out.failed = true;
+            out.note = Some(format!("could not read the far end: {error}"));
+        }
+    }
+    // A has-many removal names the edge. A has-one removal names the
+    // property, so it is sent only while a fresh read shows the property
+    // still holding the test edge, and conditional on that read's `_rev`.
+    let unlink = if near.array {
+        Ok(relink::probe_unlink(
+            permit, shape, &near_id, &edge_id, None,
+        ))
+    } else {
+        match read_near().await {
+            Ok((held, rev))
+                if held
+                    .iter()
+                    .any(|edge| edge.link.edge_id == new.link.edge_id) =>
+            {
+                Ok(relink::probe_unlink(
+                    permit,
+                    shape,
+                    &near_id,
+                    &edge_id,
+                    rev.as_deref(),
+                ))
+            }
+            Ok(_) => Err(Some(format!(
+                "{near_id}.{} no longer holds the test link (edge {edge_id}) — another writer \
+                 replaced or removed it — so nothing was removed",
+                near.key
+            ))),
+            Err(error) => Err(Some(format!(
+                "could not re-read {near_id} before removing the test link ({error}); remove \
+                 edge {edge_id} by hand"
+            ))),
+        }
+    };
+    let unlink = match unlink {
+        Ok(unlink) => unlink,
+        Err(note) => {
+            out.failed = true;
+            out.note = note;
+            // The test edge is not there, or was not seen: the journal entry
+            // stays so the next run checks again.
+            return out;
+        }
+    };
+    let removed = match api::send_relink(ok.tenant, &near.object, &unlink, ok.confirmed_prod).await
+    {
+        Ok(_) => read_near().await.map(|(edges, _)| {
+            !edges
+                .iter()
+                .any(|edge| edge.link.edge_id == new.link.edge_id)
+        }),
+        Err(error) => Err(error),
+    };
+    match removed {
+        Ok(true) => {
+            out.removed = true;
+            forget();
+        }
+        Ok(false) | Err(_) => {
+            let detail = removed
+                .err()
+                .map(|error| format!(" ({error})"))
+                .unwrap_or_default();
+            out.failed = true;
+            out.note = Some(format!(
+                "the test link {near_id} -> {far_id} (edge {edge_id}) was not removed{detail}; \
+                 remove it with {} {}",
+                unlink.method, unlink.path
+            ));
+        }
+    }
+    out
 }
 
 async fn sample_direction(
@@ -798,18 +2347,42 @@ async fn sample_direction(
         let outcome = verify::judge(&link, &near_collection, far_links.as_deref());
         links.push(SampledLink { link, outcome });
     }
+    let mut ref_filter = None;
+    if far.array
+        && let Some(sampled) = links
+            .iter()
+            .find(|sampled| sampled.outcome == verify::LinkOutcome::Resolved)
+    {
+        let reference = format!("managed/{}/{}", near.object, sampled.link.from_id);
+        let found = api::ref_filter_finds(
+            tenant,
+            &far.object,
+            &sampled.link.to_id,
+            &far.key,
+            &reference,
+        )
+        .await?;
+        ref_filter = Some(verify::RefFilter::judge(far, found));
+    }
     Ok(DirectionOutput {
         from: format!("{}.{}", near.object, near.key),
         to: format!("{}.{}", far.object, far.key),
         scanned: records.len(),
         links,
+        ref_filter,
     })
+}
+
+struct ProbeRequest {
+    force: bool,
+    yes: bool,
 }
 
 async fn relationship_verify(
     target: String,
     sample: usize,
     scan: usize,
+    probe: Option<ProbeRequest>,
     tenant: Option<String>,
     json: bool,
 ) -> Result<()> {
@@ -825,19 +2398,60 @@ async fn relationship_verify(
     let repo_ds = api::get_repo_ds(&tenant).await?;
     let report = verify::report(&managed, &repo_ds, &object, key.as_deref())
         .map_err(crate::Error::Config)?;
+    let probing = match &probe {
+        Some(request) => {
+            let count = report.pairs.iter().filter(|pair| pair.sampleable()).count();
+            let consented = request.force
+                || crate::cli::confirm_destructive(
+                    "relationship verify --probe",
+                    &format!(
+                        "Write and remove one test link on each of {count} pair(s)? It links two \
+                         existing records, and their hooks fire"
+                    ),
+                    "--force",
+                )?;
+            let Some(permit) = relink::authorize_probe(consented) else {
+                return Err(crate::Error::Config(
+                    "relationship verify --probe not confirmed".into(),
+                ));
+            };
+            Some((permit, ensure_prod_confirmed(&tenant, request.yes)?))
+        }
+        None => None,
+    };
+    // A probe or relink this install interrupted earlier is reported before
+    // another probe writes, and counts as a failure until it is resolved.
+    let attention = if probing.is_some() {
+        reconcile(&tenant, &managed, None).await?.attention
+    } else {
+        Vec::new()
+    };
     let mut pairs = Vec::new();
     for pair in report.pairs {
         let mut directions = Vec::new();
-        if sample > 0
-            && pair.sampleable()
+        let mut probe = None;
+        if pair.sampleable()
             && let Some(reverse) = &pair.reverse
+            && (sample > 0 || probing.is_some())
         {
-            directions.push(sample_direction(&tenant, &pair.forward, reverse, sample, scan).await?);
-            directions.push(sample_direction(&tenant, reverse, &pair.forward, sample, scan).await?);
+            if sample > 0 {
+                directions
+                    .push(sample_direction(&tenant, &pair.forward, reverse, sample, scan).await?);
+                directions
+                    .push(sample_direction(&tenant, reverse, &pair.forward, sample, scan).await?);
+            }
+            if let Some((permit, ok)) = &probing {
+                probe = Some(probe_pair(ok, permit, &pair.forward, reverse, scan).await);
+            }
         }
-        pairs.push(PairOutput { pair, directions });
+        pairs.push(PairOutput {
+            pair,
+            directions,
+            probe,
+        });
     }
     let failures = report.stale.len()
+        + attention.len()
         + pairs
             .iter()
             .map(|pair| {
@@ -848,12 +2462,23 @@ async fn relationship_verify(
                         .flat_map(|direction| &direction.links)
                         .filter(|link| link.outcome != verify::LinkOutcome::Resolved)
                         .count()
+                    + pair
+                        .directions
+                        .iter()
+                        .filter(|direction| {
+                            direction
+                                .ref_filter
+                                .is_some_and(verify::RefFilter::is_failure)
+                        })
+                        .count()
+                    + usize::from(pair.probe.as_ref().is_some_and(ProbeOutput::is_failure))
             })
             .sum::<usize>();
     if json {
         print_json(&serde_json::json!({
             "pairs": pairs,
             "stale": report.stale,
+            "recovery": attention,
             "failures": failures,
         }))?;
     } else {
@@ -865,6 +2490,26 @@ async fn relationship_verify(
         )));
     }
     Ok(())
+}
+
+/// The end a direction's links point at.
+fn direction_far<'a>(pair: &'a PairOutput, direction: &DirectionOutput) -> Option<&'a verify::End> {
+    let reverse = pair.pair.reverse.as_ref()?;
+    let label = |end: &verify::End| format!("{}.{}", end.object, end.key);
+    [&pair.pair.forward, reverse]
+        .into_iter()
+        .find(|end| label(end) == direction.to)
+}
+
+fn outcome_detail(outcome: &verify::LinkOutcome) -> String {
+    match outcome {
+        verify::LinkOutcome::Resolved => "the far end lists it".into(),
+        verify::LinkOutcome::Missing => "the far end does not list it".into(),
+        verify::LinkOutcome::FarRecordMissing => "the far record does not exist".into(),
+        verify::LinkOutcome::EdgeDiffers { far_edges } => {
+            format!("the far end lists it under edge {}", far_edges.join(", "))
+        }
+    }
 }
 
 fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) {
@@ -920,20 +2565,34 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
                 direction.links.len()
             );
             for link in &direction.links {
-                let detail = match &link.outcome {
-                    verify::LinkOutcome::Resolved => continue,
-                    verify::LinkOutcome::Missing => "the far end does not list it".to_string(),
-                    verify::LinkOutcome::FarRecordMissing => "the far record does not exist".into(),
-                    verify::LinkOutcome::EdgeDiffers { far_edges } => {
-                        format!("the far end lists it under edge {}", far_edges.join(", "))
-                    }
-                };
+                if link.outcome == verify::LinkOutcome::Resolved {
+                    continue;
+                }
+                let detail = outcome_detail(&link.outcome);
                 println!(
                     "    {} -> {} (edge {}): {detail}",
                     link.link.from_id,
                     link.link.to_id,
                     link.link.edge_id.as_deref().unwrap_or("none")
                 );
+            }
+            if let (Some(filter), Some(far)) =
+                (direction.ref_filter, direction_far(pair, direction))
+            {
+                println!("  {}", filter.message(far));
+            }
+        }
+        if let Some(probe) = &pair.probe {
+            let verdict = match (&probe.outcome, probe.removed) {
+                (Some(verify::LinkOutcome::Resolved), true) => {
+                    "a test link resolved from the far end and was removed".to_string()
+                }
+                (Some(outcome), _) => format!("test link: {}", outcome_detail(outcome)),
+                (None, _) => "no test link made".to_string(),
+            };
+            println!("  probe {} -> {}: {verdict}", probe.from, probe.to);
+            if let Some(note) = &probe.note {
+                println!("    {note}");
             }
         }
         if sample > 0 && pair.directions.is_empty() && pair.pair.reverse.is_some() {
@@ -1167,6 +2826,26 @@ fn refuse_shipped(object: &Value, action: &str) -> Result<()> {
         Ok(())
     }
 }
+/// After a delete, stop tracking the object's hooks: their slots went with
+/// it. Reported, never fatal — the tenant write already landed.
+fn untrack_hooks(tenant: &str, object: &str) {
+    match crate::scripts::sync::forget_object_hooks(tenant, object) {
+        Ok(forgotten) if forgotten.is_empty() => {}
+        Ok(forgotten) => eprintln!(
+            "untracked hook(s) {} from script sync (local files kept)",
+            forgotten
+                .iter()
+                .map(|name| format!("managed/{name}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Err(error) => eprintln!(
+            "note: could not untrack {object}'s hooks from script sync ({error}); \
+             `aic script sync --resolve remote --force` forgets them"
+        ),
+    }
+}
+
 fn confirmation(message: &str) {
     eprintln!("{message}; undo it from the TUI history overlay");
 }
@@ -1181,18 +2860,32 @@ async fn put_managed(
 }
 
 fn relationship_expectations(previous: &Value, updated: &Value) -> Result<Vec<api::ConfigConfirm>> {
-    Ok(api::objects(updated)?
-        .iter()
+    Ok(changed_objects(previous, updated)?
+        .into_iter()
         .filter_map(|object| {
-            let name = object.get("name").and_then(Value::as_str)?;
-            let before = api::object_named(previous, name).ok()?;
-            (!api::object_content_equal(before, object)).then(|| {
-                api::ConfigConfirm::ObjectContent {
-                    name: name.to_string(),
-                    content: object.clone(),
-                }
+            let name = object.get("name").and_then(Value::as_str)?.to_string();
+            Some(api::ConfigConfirm::ObjectContent {
+                name,
+                content: object,
             })
         })
+        .collect())
+}
+
+/// The objects present on both sides whose content a write changed — what a
+/// multi-object verb's `--json` prints, rather than the whole document
+/// (67 objects, 1.8 MB, on one operator's tenant).
+fn changed_objects(previous: &Value, updated: &Value) -> Result<Vec<Value>> {
+    Ok(api::objects(updated)?
+        .iter()
+        .filter(|object| {
+            object
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|name| api::object_named(previous, name).ok())
+                .is_some_and(|before| !api::object_content_equal(before, object))
+        })
+        .cloned()
         .collect())
 }
 fn output(json_output: bool, value: &Value) -> Result<()> {
@@ -1230,6 +2923,28 @@ mod tests {
     use super::*;
     use crate::cli::Cli;
     use clap::Parser;
+
+    /// A multi-object verb's `--json` names only what it changed: not an
+    /// untouched object, and not one that exists on one side only (a created
+    /// or deleted object is reported by its own field).
+    #[test]
+    fn changed_objects_are_the_ones_present_on_both_sides_and_different() {
+        let before = serde_json::json!({"objects": [
+            {"name": "a", "schema": {"title": "A"}},
+            {"name": "b", "schema": {"title": "B"}},
+            {"name": "gone", "schema": {}},
+        ]});
+        let after = serde_json::json!({"objects": [
+            {"name": "a", "schema": {"title": "A2"}},
+            {"name": "b", "schema": {"title": "B"}},
+            {"name": "new", "schema": {}},
+        ]});
+        let changed = changed_objects(&before, &after).unwrap();
+        assert_eq!(
+            changed,
+            [serde_json::json!({"name": "a", "schema": {"title": "A2"}})]
+        );
+    }
 
     #[test]
     fn object_key_parser_rejects_missing_or_extra_dots() {

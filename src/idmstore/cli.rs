@@ -126,7 +126,7 @@ pub async fn run(cmd: IdmCommand) -> Result<()> {
                 }
                 return Ok(());
             }
-            let results = crate::idmstore::api::collect_cursor_pages(|cookie| {
+            let walk = crate::idmstore::api::walk_cursor(|cookie| {
                 let (tenant, path) = (tenant.clone(), get.page_path(cookie.as_deref()));
                 async move {
                     let not_a_query = || {
@@ -149,9 +149,21 @@ pub async fn run(cmd: IdmCommand) -> Result<()> {
                 }
             })
             .await?;
+            eprintln!(
+                "fetched {} record(s) in {} page(s){}",
+                walk.records.len(),
+                walk.pages,
+                if walk.duplicates > 0 {
+                    format!("; dropped {} repeated _id(s)", walk.duplicates)
+                } else {
+                    String::new()
+                }
+            );
             print_json(&serde_json::json!({
-                "result": results,
-                "resultCount": results.len(),
+                "resultCount": walk.records.len(),
+                "pagesFetched": walk.pages,
+                "duplicatesDropped": walk.duplicates,
+                "result": walk.records,
             }))
         }
         IdmCommand::Status { tenant } => {

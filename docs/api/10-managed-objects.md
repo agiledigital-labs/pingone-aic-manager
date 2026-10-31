@@ -524,8 +524,9 @@ documented allocation rule; treat it as a hint, never as a classifier.
 **`PUT config/managed` did not write `repo.ds` in either operation tried** —
 creating a pair, and renaming a mapped property (below). A has-many ↔ has-one
 pair created with `aic managed relationship set` between two fresh types got no
-mapping, re-checked over two minutes, and worked fully in generic mode: link
-from the forward side, read from both sides, one shared edge id. The mapped
+mapping, re-checked over two minutes, and navigated fully in generic mode:
+link from the forward side, read from both sides, one shared edge id. Not every
+query filter works there — see "Querying a relationship collection" below. The mapped
 pairs on the sandbox (`test_from` ↔ `test_to`) date from those types being
 opened in the console (99-quirks, 2026-08-04), so the console writing mappings
 is an inference, not an observation.
@@ -605,7 +606,69 @@ is a repair for a mixed pair (it reused the mapping for an end with no
 reverse, which is not the same question); and an operator-reported `400 Invalid relationship schema`
 when re-creating a relationship whose reverse has a stale mapping. A
 `config/managed` `PUT` of that state was a 200 here, which says only that
-config validation accepts it — not where the operator's 400 came from.
+config validation accepts it — not where the operator's 400 came from. `aic`
+refuses that write before sending it, and removing the stale mapping (below)
+let the same `set` through.
+
+#### Removing a stale mapping (`aic managed relationship repair`, measured 2026-10-31)
+
+All on the sandbox's `test_from` / `test_to` types and throwaway records, with
+both config documents saved first and restored byte-identical afterwards.
+
+**A JSON `PATCH` does not edit `repo.ds`.** `PATCH /openidm/config/repo.ds`
+with `[{"operation":"remove","field":"/resourceMapping/genericMapping/managed~1test_from/properties/hasOneHasOne"}]`
+was a `200` whose body still held the entry, and three re-reads were
+byte-identical to the document before it. Whether CREST honours the `~1`
+escape in that field path was not separated from "PATCH is ignored here"; it
+does not matter to `aic`, which never patches this document.
+
+**A whole-document `PUT` does.** The read document with one entry deleted,
+sent back with `PUT /openidm/config/repo.ds`, was a `200` whose body equalled
+the document sent, as did every re-read (four, over 30 s). Three removals
+were measured:
+
+| Removed                                                                | Afterwards                                                                                                                                                                                     |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test_from.hasOneHasOne`, a stale `reference` nothing read through      | the mapped pairs left alone still resolved both ways and a new link on one got a mapped `<uuid>-<counter>` id; `set test_from.hasOneHasOne` with a reverse, refused before, succeeded and its links resolved both ways |
+| `test_to.hasOneHasOne`, a stale `reverseReference` whose forward `test_from.hasOnehOne` was also stale (the state `relationship delete` of the reverse end leaves) | `set test_from.<new key> --reverse-key hasOneHasOne`, refused before, succeeded and its links resolved both ways                                                                                  |
+| `test_to.hasOneHasOne`, a stale `reverseReference` whose forward `test_from.hasOnehOne` was still declared and mapped (no reverse) | the forward's existing link read back with the same mapped edge id, a new link on it got a mapped id, and both were found by `hasOnehOne pr`                                                    |
+
+`alpha_user` records still read `200` after each write.
+
+So `aic managed relationship repair <object>.<key>` removes exactly one
+relationship mapping that names no declared property, by that `PUT`. It reads
+both documents, plans, asks (or takes `--force`), passes the production gate,
+then re-reads both and refuses if `repo.ds` changed at all or the plan no
+longer holds; backs the document up to `.aic/backups/repo.ds-<tenant>-…json`;
+sends the whole document; and polls for up to 30 s until a read equals what
+was sent. A read still equal to the old document — the PATCH behaviour above
+— or to a third document is reported and exits non-zero, judged over every
+read rather than the last, as does a failed send, which is never assumed not
+to have landed. Only `genericMapping."managed/<obj>"` is edited: a mapping
+found only under another section is refused, and so is a key mapped in more
+than one section, because which copy IDM honours is unmeasured and removing
+one would not leave the key unmapped. Where two sections disagree, the
+guards read a relationship mapping in either as "mapped", and `verify` and the
+`config/managed` write boundary report the disagreement itself as a finding
+(`MappingConflict`), so a write that introduces a relationship over it is
+refused. No resource appears in both sections on the sandbox. The sandbox's `repo.ds` also
+maps four objects (`alpha_group`, `bravo_group`, `teammember`,
+`teammembergroup`) under `explicitMapping` — none of them declared in its
+`config/managed` — so an object's own mappings are read from **every**
+section that has a `managed/<obj>` entry, by `verify`, `managed get` and the
+write guards alike; reading `genericMapping` alone would take "mapped
+elsewhere" for "not mapped" and let a retarget through. It never adds or edits a
+mapping, and it refuses what was not measured: a declared property (even one
+declared as a scalar), IDM's own `_meta` / `_notifications`, a mapping
+another `reverseReference` reads through (a stale one is named, to be
+repaired first — the order the second row above used) — looked for in every
+section of `resourceMapping` and on every resource, because the sandbox's
+`explicitMapping."internal/role".authzMembers` and
+`genericMapping."internal/notification".target` are `reverseReference`s
+reading through `managed/alpha_user` — the last mapped
+property of an object, and an object `config/managed` does not declare.
+Whether links written while a key was mapped reappear if the key is
+recreated after a repair was not measured.
 
 #### Checking a pair (`aic managed relationship verify`, measured 2026-10-26)
 
@@ -644,6 +707,177 @@ seconds** after the restoring `config/managed` `PUT` and then recovered with
 data intact; and the restore itself was **lost** — a `200`, a read equal to the
 backup, then the renamed document on every read for over two minutes until a
 second `PUT` — Q14 again (`99-quirks-and-open-questions.md`).
+
+### Querying a relationship collection (verified 2026-10-31)
+
+"Generic works" holds for navigation — reading the property, `GET`ting the
+collection, and linking from either end — but **not for every query filter**.
+Measured on the sandbox against a throwaway generic pair (a has-one forward
+with a has-many reverse, plus a has-one ↔ has-one pair, both created through
+`config/managed`, no `repo.ds` entry) and, as the control, the mapped
+`alpha_role.members` ↔ `alpha_user.roles`. Each row filters the has-many
+collection `managed/<obj>/<id>/<rel>` for a link the collection is known to
+list:
+
+| `_queryFilter` on the has-many collection | Generic pair         | Mapped pair |
+| ----------------------------------------- | -------------------- | ----------- |
+| `true`                                    | lists the link       | lists it    |
+| `/_refResourceId eq "<id>"`               | finds it             | finds it    |
+| `/_ref eq "managed/<obj>/<id>"`           | **0 results**        | finds it    |
+| a target field, e.g. `/userName eq "…"`   | **0 results**        | finds it    |
+
+And on both pairs:
+
+- **A singular end's collection is 501.** `managed/<obj>/<id>/<rel>?_queryFilter=true`
+  on a has-one property — forward or reverse, generic or mapped
+  (`alpha_user.manager`) — is `501 Not Implemented`. Read the record with
+  `_fields=<rel>` instead.
+- **Filtering the parent collection on a relationship sub-field returned 0.**
+  `managed/<obj>?_queryFilter=/<rel>/_refResourceId eq "<id>"` found nothing on
+  either pair, so this is not a generic-only limit and the query shape itself
+  may be wrong; not pursued.
+
+So on a generic pair, filter a relationship collection only on
+`/_refResourceId` — a `/_ref` or target-field filter silently returns an empty
+result, which reads as "no link" rather than as an error.
+`aic managed relationship verify` tries `/_ref eq` on each has-many end it
+samples and reports which of the two it got; a miss on a **mapped** end counts
+as a failure, because the mapped control answers it.
+
+### Adding a reverse to a relationship that has links (verified 2026-10-31)
+
+Measured on the sandbox with throwaway generic pairs (`config/managed` only, no
+`repo.ds` entry): a has-many forward and a has-one forward, each given links
+while forward-only and then given a reverse with `aic managed relationship set
+… --reverse`.
+
+**A new end is not live when the `PUT` returns.** A link written from the new
+reverse end immediately after the `PUT` answered `200` and was **lost**; one
+written from about four seconds on stuck. The forward end read briefly empty
+(about one second) during the same window. The read-only probe
+
+```
+GET /openidm/managed/<obj>/<id>/<key>?_queryFilter=true&_pageSize=1
+```
+
+answers `404` while the end is not live — the same `404` a key that does not
+exist gets — and, once live, `200` on a has-many end and `501` on a has-one end
+(the has-one collection is never readable, see below). The flip took 0.0–1.1 s
+across six new ends; two writes made immediately after it both stuck. `aic
+managed relationship set` now polls this probe (every 0.5 s, up to 60 s) for
+every relationship end its write declares, through any one record of that
+object, and says when it could not: an object with no records has nothing to
+probe through. An end that already existed answers the probe throughout, so a
+reconfiguration of one cannot be waited on this way.
+
+**Links written before the reverse existed are never migrated.** Every one of
+them stays listed by the forward end and unlisted by the new reverse, which
+`relationship verify` reports as "the far end does not list it". No write that
+leaves the link in place changes that:
+
+| Write on the near record                          | Result                    |
+| ------------------------------------------------- | ------------------------- |
+| `PATCH replace /<key>` with the same `_ref`        | 200, still one-sided      |
+| `PATCH add` of a `_ref` already linked             | 200, still one-sided      |
+| `PATCH remove` naming the link by value            | 200, link **not** removed |
+
+Removing the edge and creating it again does, on both shapes — the new edge is
+listed by both ends, carries the old custom `_refProperties`, and other links
+on the record are untouched:
+
+| Near end | Remove                                                          | Create                                                                                                 |
+| -------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| has-many | `DELETE managed/<obj>/<id>/<key>/<edgeId>`                      | `POST managed/<obj>/<id>/<key>?_action=create` with `{"_ref": …, "_refProperties": {…}}`               |
+| has-one  | `PATCH managed/<obj>/<id>` `[{"operation":"remove","field":"/<key>"}]` | `PATCH` `[{"operation":"replace","field":"/<key>","value":{"_ref": …, "_refProperties": {…}}}]` |
+
+`replace` with `null` is a `400` ("not a valid JSON patch"), which is why the
+has-one removal is `remove`. The edge gets a new `_id`. Whether `onUpdate` or
+other hooks fire for either write is **unmeasured**. `aic managed relationship
+relink <obj>.<key>` performs exactly these two writes for each link the far
+end does not list, rechecking each link just before its writes and confirming
+from the far end afterwards; `relationship set` samples the links after adding
+a reverse and points at it. Because the two writes are two requests, relink
+records each one in `.aic/managed-links.json` before the remove and clears it
+once a read shows the link back; a later run re-creates a link that entry says
+was removed and nothing replaced. It refuses to start while `relationship
+verify`'s configuration checks report a problem with the pair, and skips a
+link whose far end is a has-one already holding another link.
+
+**The touched objects flap for a few seconds after any `config/managed`
+write.** Measured right after `relationship set` and `relationship delete`:
+`GET managed/<obj>?_queryFilter=true` answered
+`404 Resource 'managed/<obj>' not found`, then 200, then 404 again on a later
+request in the same run; a `PATCH managed/<obj>/<id>` of an existing record
+answered `404 Resource 'managed/<obj>/<id>' not found` and wrote nothing (the
+record read back unchanged). The waits observed were 0.6–1.1 s. A record that
+does not exist answers a different body —
+`No Such Entry: The search base entry 'uid=<id>,ou=<obj>,…' does not exist` —
+so the two can be told apart, and only the router's `Resource '…' not found`
+for the object or a path under it is the settling one. That a `POST` or
+`DELETE` given the same 404 also wrote nothing is inferred from the router
+answering, not measured. This is the "transient 404" a `verify` run straight
+after a `delete` hit. `aic` retries the router 404 only within 120 s
+of a `config/managed` write the same process made; otherwise a missing
+property's 404 (identical shape) is reported at once rather than waited on.
+
+Two Q14 instances turned up during the measurement
+(`99-quirks-and-open-questions.md`): a reverse confirmed by re-read was gone a
+minute later, and a `relationship set` issued about a second after another one
+read a document without the property that one had just added, and deleted it.
+
+### Conditional link writes and `_rev` (verified 2026-10-31)
+
+Measured on the sandbox on one record with two has-one properties: one with a
+`repo.ds` mapping and one generic. For each, the record's `_rev` was read, a
+link was replaced with `If-Match: <that _rev>`, and then a second replace and a
+remove were sent with the now-stale `_rev`:
+
+| Has-one property | Link change moves the record's `_rev` | Stale `If-Match` on replace / remove |
+| ---------------- | ------------------------------------- | ------------------------------------ |
+| mapped           | yes                                   | `412`, nothing written               |
+| generic          | **no**                                | **`200`, the write lands**           |
+
+A link written from the **far** record moved the near record's `_rev` on the
+mapped pair as well. So `If-Match` on a record `PATCH` protects a link only on
+a mapped end; on a generic end it is accepted and ignored, because nothing a
+link write changes is in the `_rev`. `aic managed relationship relink` and
+`verify --probe` send `If-Match` on every has-one write and re-read the
+property immediately before it, which closes the window on a mapped end and
+only narrows it on a generic one.
+
+**A link into an occupied has-one is refused, not displacing.** Measured the
+same day, writing from the near end to a far record whose has-one reverse
+already held another link:
+
+| Pair                                      | Write                              | Result                                                                                       |
+| ----------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
+| mapped has-one ↔ has-one                  | near `PATCH replace`               | `400` "Field '<far key>' of managed object '<id>' is not null, and thus not available for assignment since there is an existing relationship to '<other>'"; nothing written |
+| generic has-many → has-one reverse        | near `POST …?_action=create`       | the same `400`; nothing written                                                              |
+| generic has-one ↔ has-one                 | near `PATCH replace`               | **`200`**: the near record links the far record, the far record still links the other one — one-sided, nothing displaced |
+
+So in the three measured shapes a near-side write did not take a far
+has-one's link away; the worst a race on the far end caused was a refusal or
+a one-sided link. Not measured: a mapped has-many → has-one reverse, which
+`aic` therefore does not assume behaves the same.
+
+**A link write's response names the edge it created.** A has-many
+`POST …/<key>?_action=create` answers with the edge itself, its top-level
+`_id` the edge id; a has-one `PATCH replace` sent with `?_fields=<key>`
+answers with the record and `<key>._refProperties._id`. Both equal the id a
+following read lists. This is how `verify --probe`, `relink` and a restore
+tell their own new link from another writer's link to the same record, which
+a before/after comparison cannot; a probe whose response names no edge
+removes nothing. Measured on a generic pair, and on 2026-10-31 on the
+sandbox's mapped pairs (`hasManyHasMany`, and `hasOnehOne` with
+`?_fields=hasOnehOne`), where both ids had the mapped `<uuid>-<counter>` shape.
+
+Two reads distinguish a record that does not exist:
+`managed/<obj>/<id>?_fields=_id` is `404` "No Such Entry", but
+`managed/<obj>/<id>/<rel>?_queryFilter=true` on a has-many property is `200`
+with an **empty** result — the same answer as an existing record with no
+links. An empty collection is therefore not evidence the record exists; `aic`
+reads the record itself before treating an empty far end as "does not list
+it".
 
 ### Object-type rename orphans records (verified 2026-07-27)
 
@@ -1108,6 +1342,18 @@ single-resource read rejects the paging parameters:
 `GET /openidm/config/ui/configuration?_pageSize=1000` is
 `400 Unrecognized request parameter '_pageSize'`.
 
+**The estimate is wrong, not just approximate (verified 2026-10-31).** The
+parameter is `_totalPagedResultsPolicy`; `_countPolicy=EXACT` is
+`400 Unrecognized request parameter '_countPolicy'`. Asked for `EXACT` at
+`_pageSize=1`/`2` with `_fields=_id`, the sandbox answered policy `ESTIMATE`
+every time, and the number disagreed with a full cursor walk of the same
+query: `alpha_user` `_queryFilter=true` estimated 27 and walked 27, but
+`alpha_role` `_queryFilter=true` estimated **4** and walked **1**, and
+`alpha_user` `userName sw "a"` estimated **7** and walked **4** (each walk
+cross-checked against one unpaged response). So `aic idm get --all-pages`
+reports the pages it fetched and the distinct records it kept, not a tenant
+total.
+
 **Query-filter negation (verified 2026-07-03).** AIC accepts symbolic CREST
 negation with `!`, for example `_queryFilter=!(/description eq "lkj")`. It
 rejects the word form `not (/description eq "lkj")` with HTTP 400
@@ -1383,6 +1629,49 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-31 — `config/repo.ds` repair, sandbox `test_from` / `test_to`
+  with throwaway records, both config documents restored byte-identical
+  afterwards: `PATCH /openidm/config/repo.ds` with one `remove` (200, document
+  unchanged on three re-reads); `PUT /openidm/config/repo.ds` of the read
+  document minus one relationship entry, three times over three stale shapes
+  (200; response and every re-read equal to the document sent); afterwards
+  `set` calls refused before the removal succeeded, links on the remaining
+  and recreated pairs resolved both ways, and `alpha_user` read 200. Mapped
+  link-write responses: `POST …/hasManyHasMany?_action=create` top-level
+  `_id` and `PATCH …?_fields=hasOnehOne` `hasOnehOne._refProperties._id`
+  each equalled the following read's edge id, both `<uuid>-<counter>`.
+  `aic managed relationship repair` was then run on two stale mappings left
+  by `relationship delete test_to.hasOneHasOne`: the forward first was
+  refused (the reverse reads through it), the reverse then the forward each
+  removed exactly their own entry, confirmed on the first re-read, and the
+  pair recreated over them passed `verify --probe`.
+- Date: 2026-10-31 — link-write responses, sandbox, throwaway `zzrla`/`zzrlb`
+  records created by `aic managed relationship set` (a has-many ↔ has-many
+  pair and a has-one with no reverse): the `POST …?_action=create` response's
+  `_id` and the `PATCH …?_fields=one` response's `one._refProperties._id` each
+  matched the edge id a following read listed. See "A link write's response
+  names the edge it created".
+- Date: 2026-10-31 — conditional link writes, sandbox, throwaway records on a
+  pair with one mapped and one generic has-one property: `_rev` read with
+  `_fields`, `PATCH replace` with the current `_rev` (200), the same with the
+  stale one (mapped 412 and unchanged; generic 200 and changed), `PATCH remove`
+  with the stale one (same split), and a far-end write's effect on the near
+  `_rev` (mapped: moved). A missing record's relationship collection read
+  `200` empty; its `_fields=_id` read `404`. A near-side write into an
+  occupied far has-one on three shapes (mapped has-one ↔ has-one, generic
+  has-many → has-one, generic has-one ↔ has-one), with both ends read after
+  each. See "Conditional link writes and `_rev`".
+- Date: 2026-10-31 — relationship activation and re-linking, sandbox, throwaway
+  `zzevalqa`/`zzevalqb` generic pairs. The probe's 404 → 200 (has-many) and
+  404 → 501 (has-one) flip observed through `aic managed relationship set` on
+  six new ends; a key that does not exist is 404. `aic managed relationship
+  relink` re-created 3 has-many and 2 has-one one-sided links; `relationship
+  verify` then resolved every link from both ends, and raw reads of the far
+  records showed the custom `note` carried over. See "Adding a reverse to a
+  relationship that has links". The settling 404 measured the same day: three
+  `relationship delete` → `relationship verify --probe` runs, the first of
+  which failed on it before the retry existed and the next two waited 0.6 s and
+  1.1 s; a missing record's 404 body read from `managed/zzevalqb/nosuch`.
 - Date: 2026-10-28 — development tenant; custom endpoint → synchronous
   `openidm.patch` / `openidm.update` → managed `onUpdate`. Caller identity and
   originating HTTP path matched across both hops with a service-account

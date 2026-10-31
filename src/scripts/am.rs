@@ -238,12 +238,29 @@ pub fn id_for_new(_name: &str) -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// A caller-chosen script id, as AM writes its own: a hyphenated, lowercase
+/// UUID. Anything else is refused rather than normalised, so the id that lands
+/// on the tenant is byte-for-byte the one the repository holds.
+pub fn chosen_id(id: &str) -> Result<String> {
+    match uuid::Uuid::parse_str(id) {
+        Ok(parsed) if parsed.hyphenated().to_string() == id => Ok(id.to_string()),
+        Ok(parsed) => Err(Error::Config(format!(
+            "--id {id:?} is a UUID but not in AM's form; use {}",
+            parsed.hyphenated()
+        ))),
+        Err(_) => Err(Error::Config(format!("--id {id:?} is not a UUID"))),
+    }
+}
+
 pub fn new_script(name: &str, source: &[u8], opts: &NewScriptOpts) -> Result<RemoteScript> {
     let context = opts
         .context
         .clone()
         .ok_or_else(|| Error::Config("AM script create requires --context".into()))?;
-    let id = id_for_new(name);
+    let id = match &opts.id {
+        Some(id) => chosen_id(id)?,
+        None => id_for_new(name),
+    };
     let language = opts.language.clone().unwrap_or_else(|| "JAVASCRIPT".into());
     // Always sent, never omitted: AM's own create default is "1.0" (verified
     // 2026-07-31), so leaving the field off would quietly produce legacy-engine
@@ -1186,6 +1203,28 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("ONE_CONTEXT") && error.contains("one_context"));
+    }
+
+    #[test]
+    fn a_chosen_id_must_be_ams_own_form_and_is_used_verbatim() {
+        let id = "da99b3ac-3fcc-41ad-9b71-7b6cd13c5ffa";
+        let opts = NewScriptOpts {
+            context: Some("LIBRARY".into()),
+            id: Some(id.into()),
+            ..Default::default()
+        };
+        assert_eq!(new_script("x", b"body", &opts).unwrap().reference.id, id);
+        assert!(chosen_id("not-a-uuid").is_err());
+        // Parses as a UUID, but is not the form AM writes: refused, with the
+        // form it would accept named.
+        let upper = chosen_id(&id.to_uppercase()).unwrap_err().to_string();
+        assert!(upper.contains(id), "{upper}");
+        assert!(chosen_id(&id.replace('-', "")).is_err());
+        let idm = NewScriptOpts {
+            id: Some(id.into()),
+            ..Default::default()
+        };
+        assert!(crate::scripts::idm::new_script("x", b"body", &idm).is_err());
     }
 
     #[test]

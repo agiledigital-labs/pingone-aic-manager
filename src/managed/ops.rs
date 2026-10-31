@@ -914,6 +914,121 @@ pub fn apply_relationship_spec(
     Ok(updated)
 }
 
+/// The fields `relationship restore` puts back: the ones measured to be
+/// overwritten (`title`, `description`) or trimmed (`query.fields`) when a
+/// relationship is recreated in the console.
+pub const RESTORED_METADATA: &[&str] = &["title", "description", "query.fields"];
+
+/// Merges a saved relationship property's metadata into the current one —
+/// [`RESTORED_METADATA`] and nothing else, so a snapshot older than a
+/// structural change cannot undo it. `title`/`description` are restored on
+/// the property and, for a has-many, on its `items`; `query.fields` on each
+/// `resourceCollection` entry whose `path` the saved one also has. A field the
+/// snapshot lacks is left alone. Returns the document and a line per change.
+pub fn apply_relationship_metadata(
+    doc: &Value,
+    object: &str,
+    key: &str,
+    saved: &Value,
+) -> Result<(Value, Vec<String>), String> {
+    let mut doc = doc.clone();
+    let target = crate::managed::api::object_named_mut(&mut doc, object)
+        .map_err(|error| error.to_string())?;
+    let property = properties_mut(target)?
+        .get_mut(key)
+        .ok_or_else(|| format!("field '{object}.{key}' does not exist"))?;
+    if !crate::managed::state::is_relationship_property(property) {
+        return Err(format!("field '{object}.{key}' is not a relationship"));
+    }
+    if !crate::managed::state::is_relationship_property(saved) {
+        return Err(format!("the saved '{object}.{key}' is not a relationship"));
+    }
+    if property.get("type") != saved.get("type") {
+        return Err(format!(
+            "'{object}.{key}' is {} now and {} in the snapshot; restore only merges metadata \
+             into the same shape",
+            property.get("type").unwrap_or(&Value::Null),
+            saved.get("type").unwrap_or(&Value::Null)
+        ));
+    }
+    let mut changes = Vec::new();
+    let label = format!("{object}.{key}");
+    let mut copy = |into: &mut Value, from: &Value, field: &str, at: &str| {
+        if let Some(value) = from.get(field)
+            && into.get(field) != Some(value)
+            && let Some(map) = into.as_object_mut()
+        {
+            changes.push(format!("{label}{at}.{field} = {value}"));
+            map.insert(field.to_string(), value.clone());
+        }
+    };
+    for field in ["title", "description"] {
+        copy(property, saved, field, "");
+    }
+    let array = property.get("type").and_then(Value::as_str) == Some("array");
+    if array
+        && let (Some(items), Some(saved_items)) = (property.get_mut("items"), saved.get("items"))
+    {
+        for field in ["title", "description"] {
+            copy(items, saved_items, field, ".items");
+        }
+    }
+    let node = if array {
+        property.get_mut("items")
+    } else {
+        Some(&mut *property)
+    };
+    let saved_node = if array {
+        saved.get("items")
+    } else {
+        Some(saved)
+    };
+    if let (Some(node), Some(saved_node)) = (node, saved_node) {
+        let saved_entries = saved_node
+            .get("resourceCollection")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for entry in node
+            .get_mut("resourceCollection")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            let path = entry
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let Some(saved_entry) = saved_entries
+                .iter()
+                .find(|candidate| candidate.get("path").and_then(Value::as_str) == path.as_deref())
+            else {
+                continue;
+            };
+            let Some(fields) = saved_entry.pointer("/query/fields") else {
+                continue;
+            };
+            if entry.pointer("/query/fields") == Some(fields) {
+                continue;
+            }
+            let Some(entry_map) = entry.as_object_mut() else {
+                continue;
+            };
+            let query = entry_map
+                .entry("query".to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(query) = query.as_object_mut() {
+                query.insert("fields".into(), fields.clone());
+                changes.push(format!(
+                    "{label} {} query.fields = {fields}",
+                    path.as_deref().unwrap_or("?")
+                ));
+            }
+        }
+    }
+    Ok((doc, changes))
+}
+
 /// Deletes a relationship property and, when it names one, its reverse on the
 /// target object. Both ends go in one document so the write never leaves a
 /// reverse pointing at a property that no longer exists.
@@ -1881,11 +1996,20 @@ pub fn apply_delete_object_result(
         .remove(&(tenant.clone(), object_name.clone()));
     match result {
         Ok(doc) => {
+            // The object's hook slots went with it; tracking them would leave
+            // each one in `script status` as missing.
+            let untracked = match crate::scripts::sync::forget_object_hooks(&tenant, &object_name) {
+                Ok(forgotten) if forgotten.is_empty() => String::new(),
+                Ok(forgotten) => {
+                    format!(" Untracked {} hook(s) from script sync.", forgotten.len())
+                }
+                Err(error) => format!(" Could not untrack its hooks from script sync: {error}."),
+            };
             app.managed.data.insert(tenant, LoadState::Loaded(doc));
             let suffix = if inbound_count == 0 {
-                String::new()
+                untracked
             } else {
-                format!(" Also changed {inbound_count} inbound relationship(s).")
+                format!(" Also changed {inbound_count} inbound relationship(s).{untracked}")
             };
             app.push_toast(
                 ToastKind::Success,
@@ -5767,5 +5891,67 @@ mod tests {
         ] {
             assert!(!enum_constraint_eligible(&property), "{property}");
         }
+    }
+
+    fn metadata_doc(property: Value) -> Value {
+        json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {"owner": property}}}]})
+    }
+
+    fn many(title: &str, fields: Value, target: &str) -> Value {
+        json!({"type": "array", "title": title, "description": "d",
+            "items": {"type": "relationship", "title": title,
+                "resourceCollection": [
+                    {"path": target, "label": "B", "query": {"queryFilter": "true", "fields": fields}},
+                    {"path": "managed/c", "query": {"fields": ["x"]}}]}})
+    }
+
+    #[test]
+    fn restore_merges_title_description_and_query_fields_only() {
+        // What the console leaves after recreating: new title, trimmed fields,
+        // and a structural change (validate) a snapshot must not undo.
+        let mut console = many("Console", json!([]), "managed/b");
+        console["items"]["validate"] = json!(true);
+        console["description"] = json!("console");
+        let saved = many("Owner", json!(["name", "mail"]), "managed/b");
+        let (doc, changes) =
+            apply_relationship_metadata(&metadata_doc(console), "a", "owner", &saved).unwrap();
+        let property = &doc["objects"][0]["schema"]["properties"]["owner"];
+        assert_eq!(property["title"], "Owner");
+        assert_eq!(property["description"], "d");
+        assert_eq!(property["items"]["title"], "Owner");
+        assert_eq!(
+            property["items"]["resourceCollection"][0]["query"],
+            json!({"queryFilter": "true", "fields": ["name", "mail"]})
+        );
+        assert_eq!(
+            property["items"]["resourceCollection"][1]["query"]["fields"],
+            json!(["x"])
+        );
+        assert_eq!(property["items"]["validate"], true);
+        assert_eq!(changes.len(), 4, "{changes:?}");
+    }
+
+    #[test]
+    fn restore_matches_targets_by_path_and_refuses_another_shape() {
+        let current = many("T", json!([]), "managed/b");
+        let other_target = many("T", json!(["name"]), "managed/z");
+        let (_, changes) = apply_relationship_metadata(
+            &metadata_doc(current.clone()),
+            "a",
+            "owner",
+            &other_target,
+        )
+        .unwrap();
+        assert!(changes.is_empty(), "{changes:?}");
+        let single = json!({"type": "relationship", "title": "T"});
+        assert!(
+            apply_relationship_metadata(&metadata_doc(current.clone()), "a", "owner", &single)
+                .is_err()
+        );
+        assert!(
+            apply_relationship_metadata(&metadata_doc(current), "a", "missing", &other_target)
+                .is_err()
+        );
     }
 }

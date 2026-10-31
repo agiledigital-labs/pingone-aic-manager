@@ -74,11 +74,16 @@ pub enum Refusal {
     /// Nothing can check this resource, decided before the request was made.
     /// Retrying can never help; the explicit opt-out is the only way past it.
     Unsupported(String),
-    /// The source is a generated endpoint bundle whose banner says it was
-    /// built for a different endpoint. Decided locally, before the syntax check,
+    /// The source is a generated bundle whose banner says it was built for a
+    /// different script (both are full names, `endpoint/<name>` or
+    /// `managed/<object>.<hook>`). Decided locally, before the syntax check,
     /// and not something `--force=syntax-check` gets past: the source may
-    /// parse perfectly, it is just not this endpoint's.
-    WrongTarget { endpoint: String, built_for: String },
+    /// parse perfectly, it is just not this script's.
+    WrongTarget {
+        target: String,
+        built_for: String,
+        source_path: String,
+    },
     /// The source's leading comment block carries an `// aic-target: <ref>`
     /// marker naming a different script, or markers that disagree. Written
     /// by a build outside this repo (decision D-S5); decided locally, before
@@ -88,6 +93,11 @@ pub enum Refusal {
     /// carries an `aic-target` marker cannot be known. Decided locally and
     /// past every `--force`: not knowing is not "unmarked".
     Undecodable(String),
+    /// An AM JavaScript source parses, but calls members the AM engine was
+    /// measured not to have (`super::runtime`). It would throw when the line
+    /// runs. Part of the pre-push check, so `--force=syntax-check` gets past
+    /// it like any other verdict of that check.
+    AbsentMembers(Vec<super::runtime::Miss>),
 }
 
 impl Refusal {
@@ -104,13 +114,15 @@ impl Refusal {
                 format!("the source cannot be syntax-checked — {reason}")
             }
             Refusal::WrongTarget {
-                endpoint,
-                built_for,
+                target, built_for, ..
             } => {
-                format!("this is the generated bundle for endpoint `{built_for}`, not `{endpoint}`")
+                format!("this is the generated bundle for `{built_for}`, not `{target}`")
             }
             Refusal::Undecodable(reason) => {
                 format!("the source could not be decoded to read its aic-target marker — {reason}")
+            }
+            Refusal::AbsentMembers(_) => {
+                "the source calls members the AM script engine does not have".into()
             }
             Refusal::MarkedForOther { target, marked } => match marked.as_slice() {
                 [one] => format!("this source is marked for `{one}`, not `{target}`"),
@@ -138,13 +150,14 @@ impl Refusal {
                 }
                 lines
             }
-            Refusal::WrongTarget { built_for, .. } => vec![format!(
-                "its `// Source:` banner names typescript/…/{built_for}.ts"
-            )],
+            Refusal::WrongTarget { source_path, .. } => {
+                vec![format!("its `// Source:` banner names {source_path}")]
+            }
             Refusal::MarkedForOther { marked, .. } => marked
                 .iter()
                 .map(|m| format!("its leading comments say `// aic-target: {m}`"))
                 .collect(),
+            Refusal::AbsentMembers(misses) => misses.iter().map(|m| m.render()).collect(),
             Refusal::NoVerdict(_) | Refusal::Unsupported(_) | Refusal::Undecodable(_) => Vec::new(),
         }
     }

@@ -240,6 +240,32 @@ curl -sS "$TENANT_BASE_URL/monitoring/logs/sources" \
 - **`transactionId` appears twice** in payload (top-level and inside `mdc`).
   They should match; use the top-level one.
 
+## IDM transactions (verified 2026-10-31)
+
+Measured on the sandbox with one IDM read,
+`GET /openidm/managed/alpha_role?_queryFilter=true` sent with a caller-chosen
+`X-ForgeRock-TransactionId: <root>`, then `aic logs tx <root>` per source:
+
+| Source       | Events for `<root>`                                                                                 |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| `idm-access` | **one** `access` event, stored as `<root>/0`, carrying `response.status` and `response.statusCode` |
+| `am-access`  | `AM-ACCESS-ATTEMPT` + `AM-ACCESS-OUTCOME` for `/am/oauth2/introspect`, stored as `<root>/0/0`       |
+| `idm-core`   | none                                                                                                |
+
+So IDM has no attempt/outcome pair: its one `access` event is written when
+the request finishes and is the completion signal for an IDM-only lookup. The
+`am-access` rows are AM introspecting the bearer IDM was called with — an IDM
+request authenticated by an access token produces an AM outcome under the same
+root, which is why `aic logs tx` prefers the AM marker when both are asked for.
+`idm-core` logs nothing for a plain read, so an empty `idm-core` result is
+expected, not lag; it only has lines when a script or sync logs something.
+
+All three lookups returned in 4–13s. A reported 180s timeout from
+`aic logs tx --source idm-core` on another tenant was **not reproduced** here;
+`aic` sets no client timeout of its own, so a 180s cut-off is the far end's.
+A wide `logs range` or `logs grep` is the expensive shape — see the throughput
+note under `aic logs grep` in `docs/CLI.md`.
+
 ## Transaction id matching is a prefix match
 
 Verified 2026-09-14 on the sandbox, against `am-access`.

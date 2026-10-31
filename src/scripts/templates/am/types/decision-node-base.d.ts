@@ -82,6 +82,13 @@ declare let outcome: StringLike | undefined;
 
 interface ExistingSession {
   Principal: string;
+  // A wrapped Java map, not a plain object (docs/api/12-script-bindings-matrix.md,
+  // "existingSession access surface", measured 2026-09-14). Values are strings,
+  // and `get` of an absent key is `null`. `keySet()` exists and throws, and
+  // `hasOwnProperty` is absent, so neither is declared.
+  get(key: string): string | null;
+  containsKey(key: string): boolean;
+  size(): number;
 }
 // AM leaves this name undeclared when no authenticated session is supplied.
 // Guard with `typeof existingSession !== "undefined"` before reading it.

@@ -190,7 +190,7 @@ binary deliberately does not read passwords from environment variables.
 
 | Command                        | What it does                                                                                                   |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `aic ctx list [--json]`        | List tenants in `.aic/config.toml`, marking the effective tenant and the stored context. See below.            |
+| `aic ctx list [--json] [--domains]` | List tenants in `.aic/config.toml`, marking the effective tenant and the stored context. See below.            |
 | `aic ctx current [--tenant]`   | Print the effective tenant (stdout) and why it won (stderr). Alias: `aic ctx show`. See below.                 |
 | `aic ctx use <tenant>`         | Switch the active context.                                                                                     |
 | `aic ctx scopes [--tenant] [--add S]` | Show the scopes the tenant grants this install's SA beside the ones its tokens request; `--add` requests an already-granted scope. The SA cannot grant itself one. |
@@ -219,6 +219,23 @@ there was none.
 hit, `STORED` the one `aic ctx use` last chose. The column used to be `CURRENT`
 and meant the stored context. In `--json`, `effective` is new and `current`
 keeps its old meaning (the stored context) for existing consumers.
+
+Two contexts can share a word like "sandbox" in both name and base URL, which
+is how a change once landed on the wrong one. The domain an operator types
+into a browser tells them apart, so `whoami` prints the context's `host:` and
+its `domains:` (custom domains), and `ctx list --domains` adds a
+`CUSTOM_DOMAINS` column (`custom_domains` in `--json`). Both read
+`GET /environment/custom-domains/{alpha,bravo}` from the tenant — `ctx list`
+stays offline without the flag. That route needs `fr:idc:custom-domain:*`,
+which onboarding does not request; without it the answer is
+`unreadable — the token lacks fr:idc:custom-domain:*`, never `none`, because
+a refusal says nothing about whether domains exist. Grant the scope to the
+service account in the console, then `aic ctx scopes --add` it.
+
+`aic` cannot warn when a token from `whoami --token` is sent to another
+context's host: once printed, the token leaves `aic`. Commands that both mint
+and send — `aic idm get`, `scripts/verify-endpoint.sh` — pair the host with
+the token themselves.
 
 The normal `whoami` output includes `operator: <name> on <host>`. When the name
 has not been saved yet, the line says it is unset and points to
@@ -444,7 +461,7 @@ but this standalone command does not set `operator.name`.
 | `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>] [--wait] [--timeout <secs>]`                  | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
 | `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`                            | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
 | `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]`                     | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
-| `aic logs grep <pattern> [--since <duration> \| --begin <iso> --end <iso>] [--source <csv>] [--tenant <name>] [--output <path>]` | Fetch live logs and match a case-sensitive substring within each normalized payload.             |
+| `aic logs grep <pattern> [--since <duration> \| --begin <iso> --end <iso>] [--source <csv>] [--limit <n>] [--max-time <duration>] [--tenant <name>] [--output <path>]` | Fetch live logs and match a case-sensitive substring within each normalized payload.             |
 | `aic logs tail [--source <csv>] [--pattern <text>] [--tenant <name>]`                                                            | Follow live logs until Ctrl-C, optionally filtering on the same payload substring match.         |
 
 `logs grep` defaults to `--since 15m`; durations accept positive whole seconds,
@@ -452,6 +469,22 @@ minutes, or hours (`30s`, `5m`, `1h`). `--begin` and `--end` are an alternative
 fixed ISO-8601 window and must be supplied together. Matches form one JSON array
 on stdout, or in `--output`; pages are filtered and written as they arrive
 rather than accumulating the whole window in memory.
+
+A grep reads every event in the window, and the log API serves it in
+1,000-event pages no faster than one request per 1.05s, so a wide window is
+slow: the default sources over the last hour on the sandbox were 395,112
+events, read in 15 minutes (~440 events/s, measured 2026-10-31). Three ways to
+bound it, each leaving the JSON array valid:
+
+- `--limit <n>` stops after `n` matches. The result is a prefix of the full
+  answer, so it exits **0**, and stderr says later events may also match.
+- `--max-time <duration>` (same `30s`/`5m`/`1h` form) stops reading when the
+  budget is spent and exits **non-zero**, naming how far the scan got. A
+  script must not read "no more matches" from a range nobody finished reading.
+- Ctrl-C stops the same way as `--max-time`: valid output, non-zero exit.
+
+A scan running longer than ten seconds prints a progress line to stderr every
+ten seconds — events scanned, the latest event time reached, matches so far.
 
 `logs tail` begins with the most recent 15 seconds and then requests
 **overlapping** windows until Ctrl-C. Each poll rewinds 90 seconds — never
@@ -474,20 +507,35 @@ page before matching and emission.
 
 Log ingestion can lag tens of seconds behind the request, so a short
 `aic logs tx` result is not proof the script never ran. After every `tx` fetch
-the CLI looks for the trailing `AM-ACCESS-OUTCOME` event. If it is missing, a
-note goes to **stderr** (stdout stays the JSON event list, including when
-redirected or written with `--output`):
+the CLI looks for the transaction's **completion event**, which depends on the
+sources asked for:
+
+| `--source` includes                                 | Completion event                          |
+| --------------------------------------------------- | ----------------------------------------- |
+| `am-access` or `am-everything` (the default does)   | `AM-ACCESS-OUTCOME`                       |
+| otherwise `idm-access` or `idm-everything`          | IDM's single `access` event               |
+| neither — e.g. `idm-core` or `am-core` alone        | none: an empty result cannot mean "done"  |
+
+AM wins when both are present, because an AM request that calls IDM can log
+IDM's `access` event before its own outcome. If the event is missing, a note
+goes to **stderr** (stdout stays the JSON event list, including when redirected
+or written with `--output`):
 
 ```text
 note: no AM-ACCESS-OUTCOME event yet for transaction <id> — logs can lag
 tens of seconds behind the request; retry, or pass --wait
 ```
 
-`--wait` polls the same transaction query until that event arrives or
-`--timeout` seconds elapse (default 60). Progress lines go to stderr. Timeout
-does not fail the command: the events from the last poll are still written.
-`--timeout` is accepted without `--wait` and ignored. Range and query have no
-equivalent completion signal, so they have no `--wait`.
+For sources with no completion event the note says so and suggests adding an
+access source or reading a narrow window with `aic logs range`, instead of
+advice to wait for an event those sources never write.
+
+`--wait` polls the same transaction query until the completion event arrives
+or `--timeout` seconds elapse (default 60). Progress lines go to stderr.
+Timeout does not fail the command: the events from the last poll are still
+written. `--timeout` is accepted without `--wait` and ignored, and sources with
+no completion event are not polled at all. Range and query have no equivalent
+completion signal, so they have no `--wait`.
 
 ### Local store
 
@@ -532,7 +580,12 @@ aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--yes] [--json]
-aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--json]
+aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
+aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship snapshot custom_widget.owner [--output FILE]
+aic managed relationship restore FILE [--dry-run] [--yes] [--json]
+aic managed diff custom_widget repo/managed-objects/custom_widget/custom_widget.json [--strict] [--json]
 ```
 
 `managed get` prints one object's definition as JSON. Inline hook `source`
@@ -552,6 +605,43 @@ shape to diff against a repository copy
 (`diff <(aic managed get alpha_user --property mail) repo/mail.json`). The name
 is exact and case-sensitive; a near miss names the property you probably
 meant. It cannot be combined with `--fields` or `--schema-only`.
+
+After the JSON, `managed get` prints each relationship's **storage** to stderr
+— one line per pair, read from `config/repo.ds`: `generic`, `mapped
+(reference / reverseReference)`, `MIXED` (one end mapped, the other not — the
+measured broken state), `INCONSISTENT` for any other disagreement `verify`
+reports, and `STALE` for a `repo.ds` mapping on a property `config/managed` no
+longer declares. A pair in any of the last three names the `relationship
+verify` command to run. stdout stays the definition alone, so the diff above is
+unaffected. With `--property`, only that property's pair is shown. The TUI
+relationship editor shows the same line under its title. What neither can show
+is whether the running IDM has *picked up* a `repo.ds` change: `aic` knows of
+no endpoint that reports it, so the line describes configuration, not runtime.
+
+`managed diff <object> <file>` compares the tenant's definition of one object
+with a repository file, read-only. The file holds that object's definition
+(`{"name", "schema", …}`, as `managed get --hook-sources` prints it) or a whole
+`config/managed` document, from which the named object is taken. Keys compare
+as a set and arrays by position, since order is meaning in `schema.order` and a
+`resourceCollection`. Each difference is printed as a JSON pointer with
+`-` (tenant only), `+` (repo only) or `~` (changed). Two representation
+differences are normalised away first, and each one applied is named on
+stderr: `_refProperties._id`, which the console writes with
+`propName`/`required` and Ping's shipped objects with a `description`, is
+compared on `type` alone; and an event hook's body (`source` on the tenant,
+perhaps `file` in a repository) is left to `aic script status`, while the
+hook's presence, `type` and `globals` are still compared. `--strict` applies
+neither. It exits non-zero when anything differs; `--json` prints
+`{"object", "normalised", "differences"}`.
+
+`--json` on a write prints what it changed, never the whole `config/managed`
+document: `object create`/`object rename`, `field …` and `hook add` print the
+one object they wrote; `relationship set`/`relationship delete` print
+`{"changed": [objects]}`, every object whose definition changed (both ends of a
+pair); `object delete` prints `{"deleted": "<name>", "changed": [objects]}`,
+the second list being the objects whose inbound relationships it removed.
+`object delete` also stops tracking the deleted object's hooks in script sync
+(local files are kept), because their slots went with the object.
 
 Every write accepts `--tenant <name>` and requires `--yes` for a
 production-themed tenant. Field and relationship booleans take explicit values
@@ -577,8 +667,8 @@ key, and delete-and-recreate is not a measured repair.
 
 Every `config/managed` write — every verb here, the Managed tab, hook pushes
 and TUI undo — is checked against `config/repo.ds` before it is sent, because
-`aic` does not edit `repo.ds` (`docs/api/10-managed-objects.md`, "Relationship
-storage"). A write is refused when the resulting document would disagree with a
+nothing here moves a `repo.ds` mapping with the property
+(`docs/api/10-managed-objects.md`, "Relationship storage"). A write is refused when the resulting document would disagree with a
 mapping where the current one does not: a pair with one end mapped and the
 other not, a mapping naming a target its end no longer declares, a
 `reverseReference` reading through a key that is not its partner's, both ends
@@ -595,7 +685,7 @@ earlier, with their own wording: `relationship set` retargeting an end when
 either old end is mapped (measured to break a mapped end with no reverse;
 refusing it for a mapped reverse is a precaution), and `object rename` of an
 object a mapping names (inferred). `relationship delete` proceeds and notes on
-stderr which mappings it leaves behind; when `repo.ds` cannot be read for that
+stderr which mappings it leaves behind, which `relationship repair` removes; when `repo.ds` cannot be read for that
 note it says so and deletes anyway. `object delete` prints
 each inbound relationship it removed or narrowed.
 
@@ -607,7 +697,81 @@ and when either end targets more than one object type, because removing the
 property would remove it for every target. `relationship set` holds a reverse
 it drops or moves to the same rules.
 
-`relationship verify` is read-only. For `<object>` it checks every
+For some seconds after any `config/managed` write, the objects it touched
+flap: reads of the collection and of existing records — and writes to them —
+answer `404 Resource 'managed/<object>…' not found`, then answer normally,
+then 404 again. `relationship verify`, `relink` and the waits below retry that
+404 for up to 30 s and say on stderr how long they waited, so a `verify` run
+straight after a `delete` no longer fails on it. A record that does not exist
+answers a different 404 and is never retried.
+
+A relationship end that a write declares is not live when the write returns:
+a link written through it in the first second or so answers `200` and is
+lost. `relationship set` therefore waits, after its write, until each end it
+added answers a read through one of its object's records (up to 60 s), and
+prints how long that took. When the object has no records, or the wait runs
+out, it says so on stderr instead; the command still succeeds, because the
+schema write has landed. `--json` adds `"activation"`, one entry per new end
+with `outcome` `live`, `timeout`, `no_records` or `error`.
+
+Adding a reverse to a relationship that already has links leaves every one of
+them one-sided: IDM does not migrate them, so the new reverse end does not list
+them. After such a `set`, `aic` checks up to 20 links from the first 200
+records, warns when any is one-sided and names the command below; `--json` adds
+`"one_sided": {"sampled", "one_sided"}`.
+
+`relationship relink <object>.<key>` re-creates those links. It reads every
+record of `<object>`, checks each link against the far end, and removes and
+re-creates each link the far end does not list — a has-many link by deleting
+its edge and creating it again, a has-one link by clearing the property and
+setting it again. The new link has a new edge id and keeps its custom
+`_refProperties`; whether hooks fire for these writes is unmeasured. A link the
+far end lists under another edge id, or whose far record is gone, is reported
+and left alone. `--dry-run` reports the plan and writes nothing. Otherwise it
+asks for confirmation (`--force` skips it; with no terminal it requires
+`--force`), then applies the production gate. Each link is re-read just before
+its writes and skipped if it changed since the plan, and is confirmed from the
+far end afterwards. The first failed write stops the run, and the error names
+what was relinked; if the link was removed and could not be re-created, it
+gives the request that restores it. It exits non-zero on a stopped run or on
+any link it skipped as changed or could not confirm.
+
+It refuses to start while the pair has a configuration finding from
+`relationship verify` (one end mapped and the other not, say), because
+re-creating a link cannot fix that. A link whose far end is a has-one already
+holding another link is skipped: IDM refuses a link into an occupied has-one
+(`400 … not available for assignment`), or on a generic has-one ↔ has-one
+pair accepts it one-sided, and either would come after the removal.
+Has-one writes carry `If-Match`, which IDM honours on a mapped end and ignores
+on a generic one (`docs/api/10-managed-objects.md`, "Conditional link writes"),
+so on a generic end the re-read just before each write is the only guard.
+
+**Interrupted runs.** Each remove-and-create is recorded in
+`.aic/managed-links.json` before the remove, and the path is printed before
+the first write; the entry is cleared once a read shows the link back. The next
+`relink` of the same field reads those entries first, judging each against
+the field as `config/managed` declares it now. A link that is gone and not
+replaced is re-created (`to_restore`, then `restored`, in `--json`; a dry run
+lists `to_restore` only) and confirmed from both ends like any relink. One
+that is back with its custom properties is forgotten. Everything else is named
+for the operator, kept in the journal, and makes the run exit non-zero: a
+has-one property now holding another link, a link back **without** the
+properties it had (the journal holds the only copy of them), or a field whose
+cardinality or targets changed since.
+
+`relationship snapshot <object>.<key>` saves the relationship's definition —
+and, when it declares a reverse, the reverse property too — as a JSON
+document (`"format": "aic-relationship-snapshot/1"`) on stdout or to
+`--output`. `relationship restore <file>` merges three things from it back into
+each end it names: `title`, `description` (on the property, and on `items` for
+a has-many) and each `resourceCollection` entry's `query.fields`, matched by
+`path`. These are what recreating a relationship in the console was reported
+to overwrite or trim. Nothing else is touched, so a snapshot older than a
+structural change cannot undo the change, and a snapshot of a has-many cannot
+be restored onto a has-one. It prints each change, `--dry-run` writes nothing,
+and when the metadata already matches it says so and writes nothing.
+
+`relationship verify` is read-only unless given `--probe`. For `<object>` it checks every
 relationship on that object (each pair once); for `<object>.<key>`, one. A
 relationship with several `managed/` targets is checked as one pair per target;
 a target outside `config/managed` (`internal/role`, say) is listed as
@@ -622,11 +786,64 @@ to `--scan` records from each end (one request per end) and checks up to
 `--sample` of their links from the far end, which must list the near record
 under the same collection, record id and edge id. An end with no links in the
 records read is reported as untested, not healthy; a response that does not
-decode is an error, never an empty sample. `--sample 0` checks configuration only. It exits
-non-zero on any finding or any link that does not resolve. What to do about a
-finding is not measured: `aic` does not write `repo.ds`, and neither the
-console's repair nor delete-and-recreate has been tested
-(`docs/api/10-managed-objects.md`, "Checking a pair").
+decode is an error, never an empty sample. On each has-many end it sampled it
+also tries the `/_ref eq` filter for one resolved link: a generic end is
+measured not to answer it, so a miss there prints the limit and the filter to
+use instead (`/_refResourceId`); a miss on a mapped end counts as a finding.
+`--probe` covers a pair with no links yet: for each pair it
+writes one test link from a record of the forward end to a record of the
+reverse end, checks that the reverse end lists it, and removes it again,
+confirming the removal by a re-read. It writes to existing records, so their
+hooks fire; it asks for confirmation (`--force` skips it, and is required with
+no terminal) and applies the production gate (`--yes`). Records are chosen so
+the test link displaces nothing — through a has-one end only a record whose
+property is empty — and the probe judges and removes only the edge it
+created, identified by the edge id its write's response names
+(`docs/api/10-managed-objects.md`), never an older or another writer's link
+to the same record. When the response names no edge it removes nothing,
+keeps the recovery entry and says so: a link that is merely new since the
+probe's read may be another writer's. A pair with
+no such record is reported
+untested. A test link that resolves and is removed passes; one the far end
+does not list, or that could not be removed, is a finding, and a leftover is
+named with the request that removes it. Each probe is recorded in
+`.aic/managed-links.json` before its write and cleared once the removal is
+confirmed; the next `--probe` run reports any entry still there (`"recovery"`
+in `--json`) and counts it as a finding. A has-one probe re-reads the
+property before its cleanup and removes it only if it still holds the probe's
+edge. `--sample 0` checks configuration only. It exits
+non-zero on any finding or any link that does not resolve. A `STALE` finding —
+a mapping naming no declared property — is what `relationship repair`
+removes. For the other findings neither the console's repair nor
+delete-and-recreate has been tested (`docs/api/10-managed-objects.md`,
+"Checking a pair").
+
+`relationship repair <object>.<key>` removes one `config/repo.ds`
+relationship mapping (`reference` or `reverseReference`) that names a
+property `config/managed` does not declare — the leftover a `relationship
+delete` reports, which otherwise makes a later `set` on that key refuse. It
+only removes; it never adds or edits a mapping. It refuses a declared
+property, IDM's `_meta` / `_notifications`, a mapping another
+`reverseReference` reads through — in any section of `resourceMapping` and on
+any resource, `internal/…` and `explicitMapping` included (naming it; repair
+a stale managed one first), the
+last mapped property of an object, and an object `config/managed` does not
+declare — the cases not measured. `--dry-run` prints the plan and writes
+nothing; otherwise it asks, or takes `--force`, and passes the production
+gate. Immediately before writing it re-reads both documents and refuses if
+`repo.ds` changed at all. It backs the current document up to
+`.aic/backups/repo.ds-<tenant>-<time>-<uuid>.json` and prints the path,
+replaces the whole document — a JSON `PATCH` was measured to return 200 and
+change nothing — and reads it back for up to 30 s. It exits zero only when a
+read equals the document sent. Otherwise the outcome is judged over every
+read, not the last: any read showing a third document is reported as another
+writer, any failed read means "unchanged" was not observed, and a failed send
+is never assumed not to have landed — each exits non-zero naming the backup.
+It edits only `genericMapping."managed/<obj>"` and refuses a mapping found
+only under another section such as `explicitMapping`, which `verify` and the
+write guards read as well, or a key mapped in more than one section. There is no undo
+entry: the backup is the way back (`docs/api/10-managed-objects.md`,
+"Removing a stale mapping").
 
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the
@@ -735,7 +952,14 @@ send must be exactly the path validated; one it would rewrite is refused.
 - Without `--all-pages` the response is printed as the tenant returned it, and
   a non-empty `pagedResultsCookie` adds a stderr note that more results follow.
 - `--all-pages` follows `pagedResultsCookie` to the end and prints
-  `{"result": [...], "resultCount": N}`. It adds `_pageSize=1000` unless the
+  `{"resultCount": N, "pagesFetched": P, "duplicatesDropped": D, "result": [...]}`,
+  with the same counts on stderr. A record whose `_id` an earlier page already
+  returned is dropped and counted in `duplicatesDropped`. There is no tenant
+  total to check `resultCount` against: the paging parameter is
+  `_totalPagedResultsPolicy` (`_countPolicy` is a 400), and the tenant answers
+  `EXACT` with an `ESTIMATE` that was measured wrong
+  (`docs/api/10-managed-objects.md`, "Paging"). The walk is complete when it
+  ends on an empty cookie, which is the only way it ends without an error. It adds `_pageSize=1000` unless the
   path sets one, and refuses a path that already carries
   `_pagedResultsCookie` or `_pagedResultsOffset`. A cookie returned twice stops
   the walk with an error rather than paging forever, and so does a
@@ -755,6 +979,8 @@ the workspace.
 ```bash
 aic journey list [--realm alpha] [--json]              # journey names
 aic journey pull <name> [--realm alpha] [--force] [--force=backup] # protected local install
+aic journey status [<name>...] [--realm alpha] [--check] [--json] # local / snapshot / tenant, read-only
+aic journey diff <name> [--local-vs-snapshot | --snapshot-vs-remote] [--realm alpha] [--json]
 aic journey push <name> [--realm alpha] [--force] [--yes] # push; production requires --yes
 aic journey delete <name> --force [--realm alpha] [--yes] # delete; production requires --yes
 aic journey using-script <script-uuid> [--realm alpha] [--json] # journeys referencing a script
@@ -775,6 +1001,53 @@ journey/realm/name plus timestamp and UUID, and are mode 0600 on Unix. The
 snapshot advances only after the export is installed successfully.
 
 ---
+
+### `journey status` and `journey diff`
+
+Both are read-only: they read the workspace export, the snapshot under
+`journeys/<realm>/.snapshots/` and the tenant, and write nothing — the snapshot
+is **not** refreshed, so asking cannot change what the next `push` decides.
+They compare the way `push` does, ignoring `_rev` everywhere.
+
+- `status` names each journey's state the way `script status` does: `in sync`,
+  `modified locally`, `modified on remote`, `conflict`, `converged` (both sides
+  made the same change; only the snapshot is stale), `no snapshot` (with
+  whether local matches the tenant), `not pulled`, `not on the tenant`, and
+  `not compared` when the tenant's copy could not be read whole — any node
+  read failing with something other than 404. The row names the problem, and
+  the command exits non-zero. A node that answers 404 is deleted on the
+  tenant, and is compared as absent. A copy whose tree lists a node it does not
+  carry is noted under its row (and in `notes` in `--json`) but still
+  compared. With no
+  names it covers every journey that has an export or a snapshot in the realm.
+  Under each row it lists the parts that moved — `tree`, or a node by type, id
+  and display name — on the `local` side (export vs snapshot) and the `remote`
+  side (snapshot vs tenant).
+- **Shared nodes.** A node's config is a realm object keyed by its id, so two
+  journeys listing the same id share it, and pushing either rewrites it for
+  both. When any node moved, `status` reads every tree in the realm once and
+  marks such a node `shared with <journey>, …`. Nothing is read for that when
+  only trees moved.
+- `--check` exits non-zero unless every journey matches the tenant (`in sync`,
+  `converged`, or `no snapshot` with local matching). `--json` prints
+  `{ok, journeys: [{journey, realm, state, label, matches_tenant, problems,
+  notes, local_changes, remote_changes}], sharing_unknown_for}`, each change carrying
+  `shared_with`; `state` is `null` for a journey not compared, and
+  `sharing_unknown_for` lists the trees that could not be read while looking
+  for shared nodes, so a node shared only with one of them is not marked.
+- `diff` notes on stderr a side whose tree lists a node it does not carry.
+  It prints each difference as a JSON pointer under the part it belongs to,
+  local against remote by default; `--local-vs-snapshot` shows your edits
+  only, `--snapshot-vs-remote` remote drift only. It exits non-zero when the
+  two differ.
+- **Secret values are never printed.** A value whose key names a secret
+  (`password`, `secret`, `token`, `credential`, `privateKey`, `apiKey`,
+  `hmacSigningKey`, …, in any case and with `_`/`-` ignored, but
+  not a `…Identifier` or `…Label` naming where one lives) shows as
+  `"<hidden>"`, at its own path and inside any value printed whole. The change
+  itself still counts. This is a name rule because the schema cannot be asked:
+  AM's node schemas mark nothing secret — `product-CaptchaNode.secretKey` is a
+  plain `"type": "string"` (read 2026-10-31).
 
 ## `aic policy` — AM policies, policy sets and the PDP
 
@@ -2451,8 +2724,10 @@ resolves its namespace from your current directory. A bare namespace (`bravo`,
 
 ```bash
 aic script list [<ref>] [--context TEXT] [--default | --no-default] [--json]
-aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes] [--force=syntax-check]
+aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--id UUID] [--tenant TENANT] [--yes] [--force=syntax-check]
 aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--force=syntax-check]
+aic script rename <realm>/<name> <new-name> [--tenant TENANT] [--yes] [--force=syntax-check] # AM only; keeps the id
+aic script ids <DIR> [--realm REALM] [--tenant TENANT] [--json] # repo vs tenant script UUIDs, read-only
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--unmodified-only] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
@@ -2494,6 +2769,11 @@ Skipped entries are listed and make the command exit non-zero.
     workspace can gate on the artefact it built.
   - `--json` prints the same rows with `state`, `tracked`, both digests and
     `matches_tenant`, plus an overall `ok`.
+  - A row whose tenant copy changed since the last sync — `modified on
+    remote`, `conflict`, or `converged` — also names who last wrote it and
+    when, the same `last modified` line and `modified` object `script who`
+    prints (`last_modified` in `--json`). AM only: IDM config objects record no
+    author, so IDM rows carry none; `script who` explains the logs route.
   - A tracked script whose snapshot file has gone is reported as `no snapshot`
     rather than silently skipped.
 - `pull --unmodified-only` refreshes only tracked scripts whose local file is
@@ -2546,6 +2826,50 @@ Skipped entries are listed and make the command exit non-zero.
   check is keyed on the language the create will send, so `--language GROOVY`
   refuses everywhere a next-gen engine is required — every next-gen context
   advertises JavaScript alone.
+- **Keeping script ids in step with a repository.** A configuration
+  repository that pushes AM scripts by id (fr-config-manager's
+  `realms/<realm>/scripts/scripts-config/<uuid>.json`) breaks quietly when the
+  tenant holds the same name under another id: no content comparison sees it.
+  Three verbs cover it:
+  - `create --id <uuid>` creates an AM script with that id instead of a fresh
+    one. The id must be a lowercase hyphenated UUID, the form AM writes;
+    anything else is refused rather than normalised. A create is a `PUT` to the
+    id, so an id the realm already has is refused — that would replace a
+    different script. IDM kinds refuse `--id`: their ids derive from the name.
+  - `rename <realm>/<name> <new-name>` renames an AM script and keeps its id.
+    A `PUT` of the script's own config with `name` changed is a rename: AM keeps
+    the id and the old name stops resolving (measured 2026-10-31). The script
+    must be tracked and in sync — local file, snapshot and tenant identical —
+    and not a product default; the new name must be free, on the tenant and
+    in the workspace — anything at the new file or snapshot path, a symlink
+    included, refuses the rename. The write goes through the same syntax gate
+    as a push, is confirmed by a re-read, and the new name is installed from
+    that read before the old one is forgotten, so a failure in between leaves
+    the old name tracked. Running the same `rename` again then finishes it:
+    when the tenant holds the tracked id under the new name and nothing under
+    the old, it moves the workspace without writing to the tenant. Wherever
+    the earlier attempt stopped, the second run accepts its own work — the
+    new file already holding the renamed bytes, the new name already tracked
+    under the same id, the old snapshot or old entry already gone — and
+    refuses only an edit: either file holding anything but the renamed bytes,
+    or a symlink at either path — and a new path that is the same file as the
+    old one (a hard link, or a case-only rename on a case-insensitive
+    filesystem), since finishing the move deletes the old paths. Identity is
+    checked again after the install, because two names that were both
+    absent can become one file when it is created; an aliased old path is
+    then left alone rather than deleted. The old file is removed only
+    if it still holds the bytes that were renamed. Scripts that load a library **by
+    name** (`require('Old')`) are not found or changed; a `LIBRARY` rename says
+    so.
+  - `ids <DIR>` walks every `*.json` under `DIR` for AM script exports —
+    objects carrying `_id`, `name` and `context` — takes the realm from a
+    `realms/<realm>/` path component (`--realm` otherwise, default `alpha`),
+    and compares each with the tenant's listing by name: `match`, `tenant id
+    <uuid>` (same name, other id — the case this exists for), `tenant name
+    <name>` (same id, other name: a rename on one side), `absent` (a push
+    creates it), or a repository id that is not a UUID. It reads the listing
+    only, never a body, and exits non-zero when any script disagrees; `absent`
+    is not a disagreement.
 - `watch` normally pushes only **tracked** scripts, and silently skips an
   untracked file. The one exception is an endpoint the TypeScript project
   declares it owns in `typescript/.aic-ts-manifest.json`: that has no snapshot
@@ -2661,14 +2985,19 @@ Skipped entries are listed and make the command exit non-zero.
   See [Flag migration](#flag-migration) for the removed `--no-syntax-check`
   spelling and for the change in what `pull --force` means.
 
-- **A generated endpoint bundle is pushed only to its own endpoint.** When an
-  endpoint's source opens with the `// @generated by \`npm run build\`` banner,
-  the file named on its `// Source:` line must be `<endpoint>.ts`; otherwise
-  every write path (`push`, `sync`, `watch`, `create`, `copy`, the TUI) refuses
-  it before the syntax check. No flag overrides this, `--force=syntax-check`
-  included, because the source may parse perfectly and still belong to another
-  endpoint. Rebuild, push the endpoint the banner names, or delete the banner to
-  push the file as hand-written. Source without the banner is not checked.
+- **A generated bundle is pushed only to the script it was built for.** When
+  an endpoint's or managed hook's source opens with the
+  `// @generated by \`npm run build\`` banner, the file named on its
+  `// Source:` line says what it belongs to: `…/endpoints/<name>.ts` is
+  `endpoint/<name>`, and `…/lifecycle/<object>.<hook>.ts` (the layout of the
+  outside project that builds hook bundles) is `managed/<object>.<hook>`. For an
+  endpoint, a file in any other directory still names `endpoint/<stem>`; for a
+  hook, it names nothing. Every write path (`push`, `sync`, `watch`, `create`,
+  `copy`, the TUI) refuses a bundle claiming another script before the syntax
+  check. No flag overrides this, `--force=syntax-check` included, because the
+  source may parse perfectly and still belong to another script. Rebuild, push
+  the script the banner names, or delete the banner to push the file as
+  hand-written. Source without the banner is not checked.
 
 - **A marked script is pushed only to the script it is marked for.** A build
   outside this repo (hook bundles come from another project) can write
@@ -2683,6 +3012,18 @@ Skipped entries are listed and make the command exit non-zero.
 the file does not hide the marker; a payload that cannot be decoded at all is
 refused. Unmarked source is not checked, so this protects a hook only once its
   producer writes the marker. Delete the marker to push the file unmarked.
+
+- **AM JavaScript that calls a member the AM engine lacks is refused.** After
+  the tenant parses an AM script, the same pre-push check scans it for calls to
+  `Object.values`, `Object.entries`, `Object.getOwnPropertyDescriptors` and the
+  ES2015 globals (`new Map`, `new Set`, `Symbol(…)`, `Promise`, `Reflect`, …),
+  each measured absent on AM (`docs/api/12-script-bindings-matrix.md`). They
+  parse, so the tenant's check passes them, and they throw when the line runs.
+  The refusal gives line, column and the substitute. Feature detection
+  (`typeof Object.values`) and a name the source declares itself are not
+  flagged; comments and strings are skipped. `--force=syntax-check` writes
+  anyway. IDM scripts are not scanned: that engine has `Object.values` and
+  `Object.entries`.
 
 - **`status` filters.** `am`/`idm` are group aliases; anything else is a
   case-insensitive substring of the full-name (use a trailing slash, e.g.

@@ -222,3 +222,18 @@ function hasConsent(cookies) {
   return cookies.get("consent") === "yes";
 }
 logger.info("{}", hasConsent(requestCookies));
+
+// --- null params and existingSession.get (operator report, 2026-10-30) -----
+// `read(path, null, fields)` is the measured convention for a projection with
+// no parameters; `params` used to be `object | undefined`, so this was TS2345.
+var projectedWithNull = openidm.read("managed/__aic_fixture_user/alice", null, ["userName"]);
+if (projectedWithNull) {
+  logger.info("{}", projectedWithNull.userName);
+}
+// The session map's `get` is measured on both evaluators; it used to be
+// TS2339 because `ExistingSession` declared only `Principal`.
+if (typeof existingSession !== "undefined" && existingSession) {
+  /** @type {string | null} */
+  var sessionUser = existingSession.get("UserId");
+  logger.info("{} {}", sessionUser, existingSession.containsKey("UserId"));
+}
