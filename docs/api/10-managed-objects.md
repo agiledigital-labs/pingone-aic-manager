@@ -804,7 +804,8 @@ a one-sided link. Not measured: a mapped has-many → has-one reverse, which
 answers with the record and `<key>._refProperties._id`. Both equal the id a
 following read lists. This is how `verify --probe`, `relink` and a restore
 tell their own new link from another writer's link to the same record, which
-a before/after comparison cannot. Measured on a generic pair only.
+a before/after comparison cannot; a probe whose response names no edge
+removes nothing. Measured on a generic pair only.
 
 Two reads distinguish a record that does not exist:
 `managed/<obj>/<id>?_fields=_id` is `404` "No Such Entry", but

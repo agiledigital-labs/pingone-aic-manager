@@ -799,8 +799,9 @@ the test link displaces nothing — through a has-one end only a record whose
 property is empty — and the probe judges and removes only the edge it
 created, identified by the edge id its write's response names
 (`docs/api/10-managed-objects.md`), never an older or another writer's link
-to the same record. When the response names no edge and more than one new
-link to the far record appears, it removes nothing and says so. A pair with
+to the same record. When the response names no edge it removes nothing,
+keeps the recovery entry and says so: a link that is merely new since the
+probe's read may be another writer's. A pair with
 no such record is reported
 untested. A test link that resolves and is removed passes; one the far end
 does not list, or that could not be removed, is a finding, and a leftover is
@@ -2822,7 +2823,9 @@ Skipped entries are listed and make the command exit non-zero.
     new file already holding the renamed bytes, the new name already tracked
     under the same id, the old snapshot or old entry already gone — and
     refuses only an edit: either file holding anything but the renamed bytes,
-    or a symlink at either path. The old file is removed only
+    or a symlink at either path — and a new path that is the same file as the
+    old one (a hard link, or a case-only rename on a case-insensitive
+    filesystem), since finishing the move deletes the old paths. The old file is removed only
     if it still holds the bytes that were renamed. Scripts that load a library **by
     name** (`require('Old')`) are not found or changed; a `LIBRARY` rename says
     so.

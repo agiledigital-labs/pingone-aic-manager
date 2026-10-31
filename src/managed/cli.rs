@@ -2065,30 +2065,29 @@ async fn probe_pair(
         }
     };
     let far_collection = format!("managed/{}", far.object);
-    let Some(new) = relink::new_link(
-        &before,
-        &after,
-        &far_collection,
-        &far_id,
-        written.as_deref(),
-    )
-    .cloned() else {
+    // Only an edge the write's own response named is the probe's to remove:
+    // a link that is merely new since the read may be another writer's.
+    let Some(edge_id) = written else {
         return fail(
             out,
             format!(
-                "the write succeeded but {near_id} does not list one test link it can be told \
-                 apart by — another writer's link to {far_id} may have landed too — so \
-                 nothing is removed; check {near_id}.{} by hand",
+                "the test link was written, but the response did not name its edge, so it \
+                 cannot be told apart from another writer's link to {far_id} and is not \
+                 removed; it stays in the recovery journal. Check {near_id}.{} by hand",
                 near.key
             ),
         );
     };
-    let edge_id = new.link.edge_id.clone().unwrap_or_default();
-    if written.is_none()
-        && let Err(error) = recovery::set_edge(&pending.id, &edge_id)
-    {
-        eprintln!("warning: could not record the probe's edge id ({error})");
-    }
+    let Some(new) = relink::new_link(&after, &far_collection, &far_id, &edge_id).cloned() else {
+        return fail(
+            out,
+            format!(
+                "the write succeeded but {near_id} does not list its edge {edge_id} — another \
+                 writer may have replaced it — so nothing is removed; check {near_id}.{} by hand",
+                near.key
+            ),
+        );
+    };
     let near_collection = format!("managed/{}", near.object);
     match far_outcome(
         ok.tenant,
