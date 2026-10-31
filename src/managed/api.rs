@@ -187,6 +187,45 @@ pub async fn far_end(
     }
 }
 
+/// Whether `<object>/<id>/<key>?_queryFilter=/_ref eq "<reference>"` lists
+/// the link — the filter callers reach for first. Measured 2026-10-31 on a
+/// has-many end: a mapped pair answers it, a generic pair returns an empty
+/// result for a link the collection lists (`docs/api/10-managed-objects.md`,
+/// "Querying a relationship collection").
+pub async fn ref_filter_finds(
+    tenant: &str,
+    object: &str,
+    id: &str,
+    key: &str,
+    reference: &str,
+) -> Result<bool> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair(
+            "_queryFilter",
+            &format!("/_ref eq \"{}\"", reference.replace('"', "\\\"")),
+        )
+        .append_pair("_fields", "_ref");
+    let path = format!(
+        "/openidm/managed/{}/{}/{}?{}",
+        crate::idmstore::api::path_segment(object),
+        crate::idmstore::api::path_segment(id),
+        crate::idmstore::api::path_segment(key),
+        query.finish()
+    );
+    let body = crate::aic::api::get(tenant, &path).await?;
+    let result = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Api {
+            status: 0,
+            body: format!("{path} returned no `result` array: {body}"),
+        })?;
+    Ok(result
+        .iter()
+        .any(|entry| entry.get("_ref").and_then(Value::as_str) == Some(reference)))
+}
+
 /// Unconfirmed `PUT /openidm/config/managed` with the complete managed config
 /// document.
 ///

@@ -797,6 +797,10 @@ struct DirectionOutput {
     /// Records read looking for links.
     scanned: usize,
     links: Vec<SampledLink>,
+    /// The `/_ref eq` filter, tried on the far end for one resolved link when
+    /// that end is a has-many (a singular end's collection is 501).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ref_filter: Option<verify::RefFilter>,
 }
 
 #[derive(Serialize)]
@@ -850,11 +854,29 @@ async fn sample_direction(
         let outcome = verify::judge(&link, &near_collection, far_links.as_deref());
         links.push(SampledLink { link, outcome });
     }
+    let mut ref_filter = None;
+    if far.array
+        && let Some(sampled) = links
+            .iter()
+            .find(|sampled| sampled.outcome == verify::LinkOutcome::Resolved)
+    {
+        let reference = format!("managed/{}/{}", near.object, sampled.link.from_id);
+        let found = api::ref_filter_finds(
+            tenant,
+            &far.object,
+            &sampled.link.to_id,
+            &far.key,
+            &reference,
+        )
+        .await?;
+        ref_filter = Some(verify::RefFilter::judge(far, found));
+    }
     Ok(DirectionOutput {
         from: format!("{}.{}", near.object, near.key),
         to: format!("{}.{}", far.object, far.key),
         scanned: records.len(),
         links,
+        ref_filter,
     })
 }
 
@@ -900,6 +922,15 @@ async fn relationship_verify(
                         .flat_map(|direction| &direction.links)
                         .filter(|link| link.outcome != verify::LinkOutcome::Resolved)
                         .count()
+                    + pair
+                        .directions
+                        .iter()
+                        .filter(|direction| {
+                            direction
+                                .ref_filter
+                                .is_some_and(verify::RefFilter::is_failure)
+                        })
+                        .count()
             })
             .sum::<usize>();
     if json {
@@ -917,6 +948,15 @@ async fn relationship_verify(
         )));
     }
     Ok(())
+}
+
+/// The end a direction's links point at.
+fn direction_far<'a>(pair: &'a PairOutput, direction: &DirectionOutput) -> Option<&'a verify::End> {
+    let reverse = pair.pair.reverse.as_ref()?;
+    let label = |end: &verify::End| format!("{}.{}", end.object, end.key);
+    [&pair.pair.forward, reverse]
+        .into_iter()
+        .find(|end| label(end) == direction.to)
 }
 
 fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) {
@@ -986,6 +1026,11 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
                     link.link.to_id,
                     link.link.edge_id.as_deref().unwrap_or("none")
                 );
+            }
+            if let (Some(filter), Some(far)) =
+                (direction.ref_filter, direction_far(pair, direction))
+            {
+                println!("  {}", filter.message(far));
             }
         }
         if sample > 0 && pair.directions.is_empty() && pair.pair.reverse.is_some() {
