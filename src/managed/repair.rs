@@ -93,20 +93,38 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
              config/managed, and removing a mapping from an undeclared object is unmeasured"
         ));
     };
-    if !verify::mappings_of(repo_ds, object).is_some_and(|all| all.contains_key(key)) {
-        return Err(format!(
-            "config/repo.ds has no mapping for {label}; nothing to repair"
-        ));
+    let sections = verify::sections_mapping(repo_ds, object, key);
+    match sections.as_slice() {
+        [] => {
+            return Err(format!(
+                "config/repo.ds has no mapping for {label}; nothing to repair"
+            ));
+        }
+        [only] if only == "genericMapping" => {}
+        [_] => {
+            return Err(format!(
+                "refusing to repair {label}: its config/repo.ds mapping is outside \
+                 genericMapping (in {}), and removing one there is unmeasured",
+                sections[0]
+            ));
+        }
+        many => {
+            // Which copy IDM honours is unknown, and removing one would not
+            // make the key unmapped (Sol/Astra round 9).
+            return Err(format!(
+                "refusing to repair {label}: config/repo.ds maps it in more than one section \
+                 ({}), and which one IDM uses is unmeasured",
+                many.join(", ")
+            ));
+        }
     }
-    let Some(entries) =
-        verify::generic_mappings_of(repo_ds, object).filter(|generic| generic.contains_key(key))
-    else {
+    let Some(entries) = verify::generic_mappings_of(repo_ds, object) else {
         return Err(format!(
-            "refusing to repair {label}: its config/repo.ds mapping is outside \
-             genericMapping (explicitMapping, say), and removing one there is unmeasured"
+            "internal: managed/{object} vanished from genericMapping"
         ));
     };
-    let Some(mapping) = verify::mapped(repo_ds, object, key) else {
+    // Validate the exact entry the write removes — never a merged view of it.
+    let Some(mapping) = verify::relationship_mapping(&entries[key]) else {
         let kind = entries[key]
             .get("type")
             .and_then(Value::as_str)
@@ -185,6 +203,7 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
         && verify::properties(managed, partner_object)
             .and_then(|props| props.get(partner_key))
             .is_some_and(crate::managed::state::is_relationship_property)
+        && verify::sections_mapping(repo_ds, partner_object, partner_key).len() == 1
         && verify::mapped(repo_ds, partner_object, partner_key)
             .is_some_and(|partner| partner.kind == "reference")
     {
@@ -557,6 +576,29 @@ mod tests {
         assert!(error.contains("outside genericMapping"), "{error}");
         let error = plan(&managed(), &before, "a", "absent").unwrap_err();
         assert!(error.contains("no mapping for a.absent"), "{error}");
+    }
+
+    #[test]
+    fn a_key_mapped_in_two_sections_is_refused_whichever_copy_is_a_relationship() {
+        // Sol/Astra round 9: a merged view validated the explicit reference
+        // and the write removed the generic scalar.
+        for (generic, explicit) in [
+            (
+                json!({"type": "string", "ldapAttribute": "x"}),
+                reference("b"),
+            ),
+            (
+                reference("b"),
+                json!({"type": "string", "ldapAttribute": "x"}),
+            ),
+            (reference("b"), reference("b")),
+        ] {
+            let mut before = repo(json!({"gone": generic}), json!({}));
+            before["resourceMapping"]["explicitMapping"] =
+                json!({"managed/a": {"properties": {"gone": explicit}}});
+            let error = plan(&managed(), &before, "a", "gone").unwrap_err();
+            assert!(error.contains("more than one section"), "{error}");
+        }
     }
 
     #[test]
