@@ -91,7 +91,9 @@ immediate manual retry cleared (2026-10-31, not isolated to `aic`).
 `AicClient::get` retries a `502`/`503`/`504` twice (250 ms, then 750 ms), but
 only on paths that read stored configuration or schema: `/openidm/config/…`,
 `/openidm/schema/…`, `/openidm/info/…`, `/am/json/…`, `/environment/…` and
-`/monitoring/…`, never with `_action`. A gateway error does not say the
+`/monitoring/…`, never with `_action`, and only when the URL parser sends the
+path unchanged (`/openidm/config/../endpoint/x` goes to the endpoint, so it is
+not retried). A gateway error does not say the
 request did not run, and a `GET` is not side-effect free here: a `GET` of
 `/openidm/endpoint/<name>` runs that endpoint's script, a managed record read
 runs `onRead`/`onRetrieve` hooks, and a connector read runs connector scripts.

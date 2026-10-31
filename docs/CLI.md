@@ -835,8 +835,9 @@ record on a mapped end and never on a generic one. Each such check prints a
 `generic_confirmed` agree with the stored config; `mapped_not_live` (stored
 mapped, IDM answers as generic) and `live_not_stored` (the reverse) are
 findings. A `pr` miss counts only while the record still holds the link, so a
-miss is followed by a re-read; a link gone by then (another writer) leaves the
-runtime unknown rather than judged. An end with no resolved link is not
+miss is followed by a re-read that must still list the same edge; a link gone
+or replaced by then (another writer) leaves the runtime unknown rather than
+judged. An end with no resolved link is not
 checked at runtime. The pair header labels each end `stored mapping, <kind>`
 or `stored generic`, for the same reason.
 `--sample 0` checks configuration only. It exits
