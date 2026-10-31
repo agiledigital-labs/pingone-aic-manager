@@ -235,6 +235,12 @@ pub enum RelationshipCommand {
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
+        /// Exit non-zero unless every end this write declares was confirmed
+        /// live. The schema write has landed either way; this is for scripts
+        /// that write links straight afterwards, since an end on a type with
+        /// no records cannot be probed.
+        #[arg(long)]
+        check: bool,
         #[arg(long)]
         json: bool,
     },
@@ -707,6 +713,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             ref_properties,
             tenant,
             yes,
+            check,
             json,
         } => {
             if !attrs.enum_values.is_empty()
@@ -828,14 +835,24 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 }
                 None => None,
             };
+            let unverified = unverified_ends(&activation);
             output(
                 json,
                 &serde_json::json!({
                     "changed": changed_objects(&doc, &updated)?,
                     "activation": activation,
+                    "activation_verified": unverified.is_empty(),
                     "one_sided": one_sided,
                 }),
-            )
+            )?;
+            if check && !unverified.is_empty() {
+                return Err(crate::Error::Config(format!(
+                    "relationship {source_object}.{key} was written, but activation is \
+                     unverified for {}",
+                    unverified.join(", ")
+                )));
+            }
+            Ok(())
         }
         RelationshipCommand::Delete {
             field,
@@ -1119,6 +1136,17 @@ struct ActivationOutput {
     seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+}
+
+/// The ends a `relationship set` could not confirm live, for `--check` and
+/// the JSON's `activation_verified`: anything but `live` — a type with no
+/// records to probe through is unverified, not exempt.
+fn unverified_ends(activation: &[ActivationOutput]) -> Vec<String> {
+    activation
+        .iter()
+        .filter(|entry| entry.outcome != "live")
+        .map(|entry| format!("{} ({})", entry.end, entry.outcome))
+        .collect()
 }
 
 /// Waits for each relationship end `updated` declares that `doc` did not:
@@ -2051,6 +2079,29 @@ impl ProbeOutput {
     fn is_failure(&self) -> bool {
         self.failed
     }
+
+    /// The test link resolved from the far end and is gone again: the pair is
+    /// healthy on the probe's evidence, whatever the sample found.
+    fn verified(&self) -> bool {
+        self.outcome == Some(verify::LinkOutcome::Resolved) && self.removed && !self.failed
+    }
+}
+
+/// A direction with no existing links to sample. "Untested" only when no
+/// probe stands in for the sample, or the output contradicts itself: the
+/// directions say untested and the probe line below says verified.
+fn unsampled_direction_line(direction: &DirectionOutput, probe_verified: bool) -> String {
+    if probe_verified {
+        format!(
+            "{} -> {}: no pre-existing links in {} records read; probe-verified (below)",
+            direction.from, direction.to, direction.scanned
+        )
+    } else {
+        format!(
+            "{} -> {}: untested, no links in {} records read",
+            direction.from, direction.to, direction.scanned
+        )
+    }
 }
 
 /// Writes one test link from a forward-end record to a reverse-end record,
@@ -2545,6 +2596,7 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
                 pair.pair.unchecked.join(", ")
             );
         }
+        let probe_verified = pair.probe.as_ref().is_some_and(ProbeOutput::verified);
         for direction in &pair.directions {
             let resolved = direction
                 .links
@@ -2552,10 +2604,7 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
                 .filter(|link| link.outcome == verify::LinkOutcome::Resolved)
                 .count();
             if direction.links.is_empty() {
-                println!(
-                    "  {} -> {}: untested, no links in {} records read",
-                    direction.from, direction.to, direction.scanned
-                );
+                println!("  {}", unsampled_direction_line(direction, probe_verified));
                 continue;
             }
             println!(
@@ -2585,7 +2634,7 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
         if let Some(probe) = &pair.probe {
             let verdict = match (&probe.outcome, probe.removed) {
                 (Some(verify::LinkOutcome::Resolved), true) => {
-                    "a test link resolved from the far end and was removed".to_string()
+                    "verified — a test link resolved from the far end and was removed".to_string()
                 }
                 (Some(outcome), _) => format!("test link: {}", outcome_detail(outcome)),
                 (None, _) => "no test link made".to_string(),
@@ -3271,5 +3320,60 @@ mod tests {
             },
             other => panic!("not a managed command: {other:?}"),
         }
+    }
+
+    /// Round-3 suggestion 5: an empty pair read "untested" per direction and
+    /// then "resolved" from the probe. A verified probe replaces "untested";
+    /// a probe that did not resolve, or left its link behind, does not.
+    #[test]
+    fn a_verified_probe_replaces_untested_on_an_unsampled_direction() {
+        let direction = DirectionOutput {
+            from: "a.b".into(),
+            to: "c.d".into(),
+            scanned: 3,
+            links: vec![],
+            ref_filter: None,
+        };
+        let probe =
+            |outcome: Option<verify::LinkOutcome>, removed: bool, failed: bool| ProbeOutput {
+                from: "a.b".into(),
+                to: "c.d".into(),
+                near_id: None,
+                far_id: None,
+                outcome,
+                note: None,
+                removed,
+                failed,
+            };
+        assert!(probe(Some(verify::LinkOutcome::Resolved), true, false).verified());
+        assert!(!probe(Some(verify::LinkOutcome::Resolved), false, true).verified());
+        assert!(!probe(Some(verify::LinkOutcome::Missing), true, true).verified());
+        assert!(!probe(None, false, false).verified());
+        let verified = unsampled_direction_line(&direction, true);
+        assert!(!verified.contains("untested"), "{verified}");
+        assert!(verified.contains("no pre-existing links in 3 records read"));
+        assert!(verified.contains("probe-verified"));
+        assert!(unsampled_direction_line(&direction, false).contains("untested"));
+    }
+
+    #[test]
+    fn only_a_live_end_counts_as_verified() {
+        let entry = |end: &str, outcome| ActivationOutput {
+            end: end.into(),
+            outcome,
+            seconds: None,
+            detail: None,
+        };
+        assert!(unverified_ends(&[]).is_empty());
+        assert!(unverified_ends(&[entry("a.b", "live")]).is_empty());
+        assert_eq!(
+            unverified_ends(&[
+                entry("a.b", "live"),
+                entry("c.d", "no_records"),
+                entry("e.f", "timeout"),
+                entry("g.h", "error"),
+            ]),
+            ["c.d (no_records)", "e.f (timeout)", "g.h (error)"]
+        );
     }
 }

@@ -578,7 +578,7 @@ aic managed field edit custom_widget.code --searchable true [--enum value[:Title
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
-aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
@@ -712,7 +712,12 @@ added answers a read through one of its object's records (up to 60 s), and
 prints how long that took. When the object has no records, or the wait runs
 out, it says so on stderr instead; the command still succeeds, because the
 schema write has landed. `--json` adds `"activation"`, one entry per new end
-with `outcome` `live`, `timeout`, `no_records` or `error`.
+with `outcome` `live`, `timeout`, `no_records` or `error`, and
+`"activation_verified"`, true only when every new end was `live`. `--check`
+makes anything else exit non-zero — after the write, which has landed either
+way — for a script that writes links straight afterwards. No schema-level
+wait exists for a type with no records: nothing measured so far tells a live
+end from a pending one without a record to read through.
 
 Adding a reverse to a relationship that already has links leaves every one of
 them one-sided: IDM does not migrate them, so the new reverse end does not list
@@ -2731,7 +2736,7 @@ aic script ids <DIR> [--realm REALM] [--tenant TENANT] [--json] # repo vs tenant
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--unmodified-only] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
-aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes] # prompts on remote deletion
+aic script sync [<ref>] [--resolve local|remote --force] [--remove-local] [--force=syntax-check] [--tenant TENANT] [--yes] # prompts on remote deletion
 aic script watch [--tenant TENANT] [--yes] [--force=syntax-check] # auto-push each .cjs you save (Ctrl-C to stop)
 aic script status [<ref>] [--against FILE] [--check] [--json] # in sync / modified / remote / conflict / converged / deleted on remote
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote | --find-in-git REPO]
@@ -2745,6 +2750,11 @@ id; `--resolve remote` forgets the record for missing resources. Embedded
 managed-hook and sync-mapping scripts cannot be re-created by this prompt; the
 prompt names the owning config or missing local file when re-create is unavailable.
 Skipped entries are listed and make the command exit non-zero.
+`--remove-local` makes forgetting also remove the local file, but only one
+that still holds the last-synced bytes (and a LIBRARY script's generated
+wrapper with it); an edited file or a symlink is kept and named. The record is
+forgotten either way. It cannot be combined with `--resolve local`, which
+never forgets.
 
 - `status` with a full `<namespace>/<name>` selects exactly that script,
   case-sensitively, and prints the SHA-256 of the local file and of the
