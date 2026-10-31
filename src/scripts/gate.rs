@@ -101,15 +101,38 @@ pub(super) async fn write_checked(
     if let Some(refusal) = local_refusal(realm, script) {
         return Ok(Gated::Refused(refusal));
     }
-    if gate == SyntaxGate::Check
-        && let Err(refusal) = decide(kind.check_syntax(tenant, realm, script).await?)
-    {
-        return Ok(Gated::Refused(refusal));
+    if gate == SyntaxGate::Check {
+        if let Err(refusal) = decide(kind.check_syntax(tenant, realm, script).await?) {
+            return Ok(Gated::Refused(refusal));
+        }
+        // After the parse, so a source that fails both reports its syntax
+        // error first: line numbers from a scan of unparseable text mislead.
+        if let Some(refusal) = absent_members(script) {
+            return Ok(Gated::Refused(refusal));
+        }
     }
     // The only `WritePermit` in the crate.
     kind.write(tenant, realm, script, confirmed_prod, &WritePermit(()))
         .await?;
     Ok(Gated::Written)
+}
+
+/// An AM JavaScript source calling a member the AM engine lacks. Every AM
+/// context shares one engine configuration; the measured ones are listed in
+/// `docs/api/12-script-bindings-matrix.md`.
+fn absent_members(script: &RemoteScript) -> Option<Refusal> {
+    if script.reference.kind != Kind::Am
+        || script
+            .raw_config
+            .get("language")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|language| language != "JAVASCRIPT")
+    {
+        return None;
+    }
+    let source = Kind::Am.decode_source(&script.raw_config).ok()?;
+    let misses = super::runtime::am_misses(&String::from_utf8_lossy(&source));
+    (!misses.is_empty()).then_some(Refusal::AbsentMembers(misses))
 }
 
 /// The refusals decided from the source alone — before the syntax check and
@@ -452,6 +475,42 @@ mod tests {
     }
 
     /// The marker names a full name, so an AM script's realm is part of it:
+    /// The check is AM JavaScript only: the same call is fine on IDM, which
+    /// has the member, and Groovy has no such global to miss.
+    #[test]
+    fn absent_members_are_refused_on_am_javascript_only() {
+        let source = "var v = Object.values({a: 1});\n";
+        let am = Kind::Am
+            .new_script(
+                "Lib",
+                source.as_bytes(),
+                &super::super::NewScriptOpts {
+                    context: Some("LIBRARY".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            absent_members(&am),
+            Some(Refusal::AbsentMembers(ref misses)) if misses.len() == 1
+        ));
+        let mut groovy = am.clone();
+        groovy.raw_config["language"] = serde_json::json!("GROOVY");
+        assert_eq!(absent_members(&groovy), None);
+        assert_eq!(absent_members(&endpoint("e", source)), None);
+        let clean = Kind::Am
+            .new_script(
+                "Lib",
+                b"var k = Object.keys({a: 1});\n",
+                &super::super::NewScriptOpts {
+                    context: Some("LIBRARY".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(absent_members(&clean), None);
+    }
+
     /// `alpha/x` is not `bravo/x`.
     #[test]
     fn an_am_marker_is_compared_with_its_realm() {

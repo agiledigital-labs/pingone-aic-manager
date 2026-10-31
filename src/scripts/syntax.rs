@@ -93,6 +93,11 @@ pub enum Refusal {
     /// carries an `aic-target` marker cannot be known. Decided locally and
     /// past every `--force`: not knowing is not "unmarked".
     Undecodable(String),
+    /// An AM JavaScript source parses, but calls members the AM engine was
+    /// measured not to have (`super::runtime`). It would throw when the line
+    /// runs. Part of the pre-push check, so `--force=syntax-check` gets past
+    /// it like any other verdict of that check.
+    AbsentMembers(Vec<super::runtime::Miss>),
 }
 
 impl Refusal {
@@ -115,6 +120,9 @@ impl Refusal {
             }
             Refusal::Undecodable(reason) => {
                 format!("the source could not be decoded to read its aic-target marker — {reason}")
+            }
+            Refusal::AbsentMembers(_) => {
+                "the source calls members the AM script engine does not have".into()
             }
             Refusal::MarkedForOther { target, marked } => match marked.as_slice() {
                 [one] => format!("this source is marked for `{one}`, not `{target}`"),
@@ -149,6 +157,7 @@ impl Refusal {
                 .iter()
                 .map(|m| format!("its leading comments say `// aic-target: {m}`"))
                 .collect(),
+            Refusal::AbsentMembers(misses) => misses.iter().map(|m| m.render()).collect(),
             Refusal::NoVerdict(_) | Refusal::Unsupported(_) | Refusal::Undecodable(_) => Vec::new(),
         }
     }

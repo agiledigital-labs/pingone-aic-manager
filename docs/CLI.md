@@ -2887,6 +2887,18 @@ the file does not hide the marker; a payload that cannot be decoded at all is
 refused. Unmarked source is not checked, so this protects a hook only once its
   producer writes the marker. Delete the marker to push the file unmarked.
 
+- **AM JavaScript that calls a member the AM engine lacks is refused.** After
+  the tenant parses an AM script, the same pre-push check scans it for calls to
+  `Object.values`, `Object.entries`, `Object.getOwnPropertyDescriptors` and the
+  ES2015 globals (`new Map`, `new Set`, `Symbol(…)`, `Promise`, `Reflect`, …),
+  each measured absent on AM (`docs/api/12-script-bindings-matrix.md`). They
+  parse, so the tenant's check passes them, and they throw when the line runs.
+  The refusal gives line, column and the substitute. Feature detection
+  (`typeof Object.values`) and a name the source declares itself are not
+  flagged; comments and strings are skipped. `--force=syntax-check` writes
+  anyway. IDM scripts are not scanned: that engine has `Object.values` and
+  `Object.entries`.
+
 - **`status` filters.** `am`/`idm` are group aliases; anything else is a
   case-insensitive substring of the full-name (use a trailing slash, e.g.
   `alpha/`, to match only that AM realm and exclude `managed/alpha_user…`).
