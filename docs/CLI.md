@@ -580,7 +580,7 @@ aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--yes] [--json]
-aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--json]
+aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
 ```
 
@@ -677,6 +677,14 @@ and when either end targets more than one object type, because removing the
 property would remove it for every target. `relationship set` holds a reverse
 it drops or moves to the same rules.
 
+For some seconds after any `config/managed` write, the objects it touched
+flap: reads of the collection and of existing records — and writes to them —
+answer `404 Resource 'managed/<object>…' not found`, then answer normally,
+then 404 again. `relationship verify`, `relink` and the waits below retry that
+404 for up to 30 s and say on stderr how long they waited, so a `verify` run
+straight after a `delete` no longer fails on it. A record that does not exist
+answers a different 404 and is never retried.
+
 A relationship end that a write declares is not live when the write returns:
 a link written through it in the first second or so answers `200` and is
 lost. `relationship set` therefore waits, after its write, until each end it
@@ -708,7 +716,7 @@ what was relinked; if the link was removed and could not be re-created, it
 gives the request that restores it. It exits non-zero on a stopped run or on
 any link it skipped as changed or could not confirm.
 
-`relationship verify` is read-only. For `<object>` it checks every
+`relationship verify` is read-only unless given `--probe`. For `<object>` it checks every
 relationship on that object (each pair once); for `<object>.<key>`, one. A
 relationship with several `managed/` targets is checked as one pair per target;
 a target outside `config/managed` (`internal/role`, say) is listed as
@@ -727,7 +735,18 @@ decode is an error, never an empty sample. On each has-many end it sampled it
 also tries the `/_ref eq` filter for one resolved link: a generic end is
 measured not to answer it, so a miss there prints the limit and the filter to
 use instead (`/_refResourceId`); a miss on a mapped end counts as a finding.
-`--sample 0` checks configuration only. It exits
+`--probe` covers a pair with no links yet: for each pair it
+writes one test link from a record of the forward end to a record of the
+reverse end, checks that the reverse end lists it, and removes it again,
+confirming the removal by a re-read. It writes to existing records, so their
+hooks fire; it asks for confirmation (`--force` skips it, and is required with
+no terminal) and applies the production gate (`--yes`). Records are chosen so
+the test link displaces nothing — through a has-one end only a record whose
+property is empty — and the probe judges only the edge it created, never an
+older link to the same record. A pair with no such record is reported
+untested. A test link that resolves and is removed passes; one the far end
+does not list, or that could not be removed, is a finding, and a leftover is
+named with the request that removes it. `--sample 0` checks configuration only. It exits
 non-zero on any finding or any link that does not resolve. What to do about a
 finding is not measured: `aic` does not write `repo.ds`, and neither the
 console's repair nor delete-and-recreate has been tested
