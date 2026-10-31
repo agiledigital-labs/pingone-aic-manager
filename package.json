@@ -1,5 +1,10 @@
 {
   "name": "pingone-aic-manager",
   "private": true,
-  "workspaces": ["packages/rhino-local"]
+  "workspaces": [
+    "packages/rhino-local"
+  ],
+  "overrides": {
+    "minimatch": "^11.0.1"
+  }
 }
