@@ -267,6 +267,32 @@ pub fn rev_of(record: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A has-one write asks for its property back with `_fields`, so the
+/// response names the edge it created ([`written_edge`]).
+fn fields_query(key: &str) -> String {
+    url::form_urlencoded::byte_serialize(key.as_bytes()).collect()
+}
+
+/// The edge id a link-creating write's response names: the top-level `_id`
+/// of a has-many `?_action=create`, and `<key>._refProperties._id` of a
+/// has-one `PATCH` sent with `_fields=<key>` (both measured 2026-10-31; each
+/// equals the id a following read lists). This, not a before/after
+/// comparison, is what says which edge **this** write made: another writer's
+/// link to the same record is equally new.
+pub fn written_edge(response: &Value, key: &str, array: bool) -> Option<String> {
+    let id = if array {
+        response.get("_id")
+    } else {
+        response
+            .get(key)
+            .and_then(|link| link.get("_refProperties"))
+            .and_then(|properties| properties.get("_id"))
+    };
+    id.and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
 fn record_path(object: &str, id: &str) -> String {
     format!(
         "/openidm/managed/{}/{}",
@@ -330,7 +356,7 @@ pub fn writes(
             },
             Write {
                 method: "PATCH",
-                path: record,
+                path: format!("{record}?_fields={}", fields_query(near_key)),
                 body: Some(
                     json!([{ "operation": "replace", "field": pointer, "value": reference }]),
                 ),
@@ -397,7 +423,7 @@ pub fn probe_link(
     } else {
         Write {
             method: "PATCH",
-            path: record,
+            path: format!("{record}?_fields={}", fields_query(near_key)),
             body: Some(
                 json!([{ "operation": "replace", "field": format!("/{near_key}"), "value": reference }]),
             ),
@@ -436,25 +462,35 @@ pub fn probe_unlink(
     }
 }
 
-/// The probe's link among `after`: to `far_id`, under an edge id `before`
-/// did not have. A has-many record may already link the same far record, so
-/// matching on the far id alone could judge — and then remove — an old link.
+/// The probe's link among `after`, to `far_id` in `far_collection`.
+///
+/// With `written` — the edge id the write's own response named — only that
+/// edge is the probe's. Without it, the one edge to the target `before` did
+/// not have, and **nothing** when there are two: another writer's link to
+/// the same record is just as new, and the probe deletes what this returns.
+/// A has-many record may already link the same far record, so matching on
+/// the far id alone could claim an old link; and on a multi-target field two
+/// collections can hold the same id, so the collection is matched too.
 pub fn new_link<'a>(
     before: &[Edge],
     after: &'a [Edge],
     far_collection: &str,
     far_id: &str,
+    written: Option<&str>,
 ) -> Option<&'a Edge> {
-    // The whole target identity: on a multi-target field two collections can
-    // hold the same id, and claiming the other one's edge would delete it.
-    after.iter().find(|edge| {
+    let mut fresh = after.iter().filter(|edge| {
         edge.link.to_collection == far_collection
             && edge.link.to_id == far_id
             && edge.link.edge_id.is_some()
-            && !before
-                .iter()
-                .any(|old| old.link.edge_id == edge.link.edge_id)
-    })
+            && match written {
+                Some(id) => edge.link.edge_id.as_deref() == Some(id),
+                None => !before
+                    .iter()
+                    .any(|old| old.link.edge_id == edge.link.edge_id),
+            }
+    });
+    let first = fresh.next()?;
+    fresh.next().is_none().then_some(first)
 }
 
 #[cfg(test)]
@@ -678,7 +714,10 @@ mod tests {
         assert_eq!(many.body, Some(json!({"_ref": "managed/b/b9"})));
         assert_eq!(many.if_match, None);
         let one = probe_link(&permit, ("a", "owner", false), "a1", "b", "b9", Some("r1"));
-        assert_eq!(one.method, "PATCH");
+        assert_eq!(
+            (one.method, one.path.as_str()),
+            ("PATCH", "/openidm/managed/a/a1?_fields=owner")
+        );
         assert_eq!(one.if_match.as_deref(), Some("r1"));
         assert_eq!(one.body.unwrap()[0]["operation"], "replace");
         let gone = probe_unlink(&permit, ("a", "owner", true), "a1", "e9", Some("r2"));
@@ -711,9 +750,41 @@ mod tests {
         added.link.edge_id = Some("e-new".into());
         after.push(added);
         assert_eq!(
-            new_link(&before, &after, &target, &id).and_then(|edge| edge.link.edge_id.as_deref()),
+            new_link(&before, &after, &target, &id, None)
+                .and_then(|edge| edge.link.edge_id.as_deref()),
             Some("e-new")
         );
-        assert!(new_link(&before, &before, &target, &id).is_none());
+        assert!(new_link(&before, &before, &target, &id, None).is_none());
+
+        // Another writer's link to the same record lands between the probe's
+        // read and its re-read: with no id from the response, neither new
+        // edge is claimed; with one, only the probe's is.
+        let mut theirs = before[0].clone();
+        theirs.link.edge_id = Some("e-theirs".into());
+        after.insert(1, theirs);
+        assert!(new_link(&before, &after, &target, &id, None).is_none());
+        for written in ["e-new", "e-theirs"] {
+            assert_eq!(
+                new_link(&before, &after, &target, &id, Some(written))
+                    .and_then(|edge| edge.link.edge_id.as_deref()),
+                Some(written)
+            );
+        }
+        // An id naming an edge to another target is not the probe's.
+        assert!(new_link(&before, &after, &target, &id, Some("e-other")).is_none());
+    }
+
+    #[test]
+    fn the_written_edge_is_read_from_the_write_response() {
+        // Shapes as measured 2026-10-31.
+        let many = json!({"_id": "e1", "_ref": "managed/b/b1",
+            "_refProperties": {"_id": "e1"}});
+        assert_eq!(written_edge(&many, "owner", true).as_deref(), Some("e1"));
+        let one = json!({"_id": "a1", "_rev": "r",
+            "owner": {"_ref": "managed/b/b1", "_refProperties": {"_id": "e2"}}});
+        assert_eq!(written_edge(&one, "owner", false).as_deref(), Some("e2"));
+        // The record's own `_id` is not the edge's.
+        assert_eq!(written_edge(&json!({"_id": "a1"}), "owner", false), None);
+        assert_eq!(written_edge(&json!({}), "owner", true), None);
     }
 }

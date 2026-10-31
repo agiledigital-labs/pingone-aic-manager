@@ -793,9 +793,18 @@ already held another link:
 | generic has-many → has-one reverse        | near `POST …?_action=create`       | the same `400`; nothing written                                                              |
 | generic has-one ↔ has-one                 | near `PATCH replace`               | **`200`**: the near record links the far record, the far record still links the other one — one-sided, nothing displaced |
 
-So a near-side write can never take a far has-one's link away; the worst a
-race on the far end causes is a refusal or a one-sided link. Not measured: a
-mapped has-many → has-one reverse.
+So in the three measured shapes a near-side write did not take a far
+has-one's link away; the worst a race on the far end caused was a refusal or
+a one-sided link. Not measured: a mapped has-many → has-one reverse, which
+`aic` therefore does not assume behaves the same.
+
+**A link write's response names the edge it created.** A has-many
+`POST …/<key>?_action=create` answers with the edge itself, its top-level
+`_id` the edge id; a has-one `PATCH replace` sent with `?_fields=<key>`
+answers with the record and `<key>._refProperties._id`. Both equal the id a
+following read lists. This is how `verify --probe`, `relink` and a restore
+tell their own new link from another writer's link to the same record, which
+a before/after comparison cannot. Measured on a generic pair only.
 
 Two reads distinguish a record that does not exist:
 `managed/<obj>/<id>?_fields=_id` is `404` "No Such Entry", but
@@ -1555,6 +1564,12 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-31 — link-write responses, sandbox, throwaway `zzrla`/`zzrlb`
+  records created by `aic managed relationship set` (a has-many ↔ has-many
+  pair and a has-one with no reverse): the `POST …?_action=create` response's
+  `_id` and the `PATCH …?_fields=one` response's `one._refProperties._id` each
+  matched the edge id a following read listed. See "A link write's response
+  names the edge it created".
 - Date: 2026-10-31 — conditional link writes, sandbox, throwaway records on a
   pair with one mapped and one generic has-one property: `_rev` read with
   `_fields`, `PATCH replace` with the current `_rev` (200), the same with the

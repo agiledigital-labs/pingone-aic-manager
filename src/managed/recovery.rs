@@ -167,10 +167,18 @@ pub enum Recovery {
 /// interrupted, then the field made has-one and given another link, must judge
 /// as occupied — the entry's own `array` would call it `Lost` and the restore
 /// would replace that link.
-pub fn judge(pending: &Pending, shape: Option<&Shape>, current: &[Edge]) -> Recovery {
-    let Some(shape) = shape.filter(|shape| {
+/// Whether the field still has the shape `pending` was recorded under: a
+/// relationship of the same cardinality, still able to target the
+/// collection. When it does not, the entry is [`Recovery::Reshaped`] whatever
+/// the record holds — so the record need not, and should not, be read.
+pub fn fits(pending: &Pending, shape: Option<&Shape>) -> bool {
+    shape.is_some_and(|shape| {
         shape.array == pending.array && shape.targets.contains(&pending.to_collection)
-    }) else {
+    })
+}
+
+pub fn judge(pending: &Pending, shape: Option<&Shape>, current: &[Edge]) -> Recovery {
+    let Some(shape) = shape.filter(|_| fits(pending, shape)) else {
         return Recovery::Reshaped;
     };
     let to_target = |edge: &&Edge| {
@@ -350,6 +358,15 @@ mod tests {
         assert_eq!(judge(&pending, Some(&retargeted), &[]), Recovery::Reshaped);
         assert_eq!(judge(&pending, None, &[]), Recovery::Reshaped);
         assert_eq!(judge(&pending, Some(&shape(true)), &[]), Recovery::Lost);
+        // `fits` is the same decision, taken before the record is read.
+        for (shape, fit) in [
+            (Some(shape(false)), false),
+            (Some(retargeted), false),
+            (None, false),
+            (Some(shape(true)), true),
+        ] {
+            assert_eq!(fits(&pending, shape.as_ref()), fit);
+        }
     }
 
     #[test]
