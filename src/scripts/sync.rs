@@ -1418,6 +1418,116 @@ fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// The local checks a resumed rename makes before touching anything: the new
+/// paths are distinct files from the old ones, and neither workspace file
+/// holds anything but the renamed bytes. Returns what the new workspace path
+/// holds, which the install then requires it still to hold.
+fn resume_preflight(
+    store: &SnapshotStore,
+    tree: &Path,
+    realm: &str,
+    (old_ref, new_ref): (&RemoteRef, &RemoteRef),
+    remote_src: &[u8],
+) -> Result<Option<Vec<u8>>> {
+    let old_file = workspace_file_in(tree, realm, old_ref);
+    let new_file = workspace_file_in(tree, realm, new_ref);
+    resume_paths_independent(
+        [&old_file, &store.config_path(old_ref, realm)],
+        [&new_file, &store.config_path(new_ref, realm)],
+    )?;
+    let old_local = regular_file(&old_file)?;
+    let new_local = regular_file(&new_file)?;
+    rename_resume_ok(old_local.as_deref(), new_local.as_deref(), remote_src)
+        .map_err(|why| Error::Config(why.to_string()))?;
+    Ok(new_local)
+}
+
+/// Install the new name from the confirmed read, forget the old one, then
+/// remove the old file if it still holds the renamed bytes — in that order,
+/// so a failure part-way leaves a state the same `rename` resumes from.
+/// Returns whether the old file was removed.
+#[allow(clippy::too_many_arguments)]
+fn finish_rename_locally(
+    store: &SnapshotStore,
+    tree: &Path,
+    realm: &str,
+    old_ref: &RemoteRef,
+    confirmed: &RemoteScript,
+    remote_src: &[u8],
+    new_expected: Option<&[u8]>,
+    unfinished: impl Fn(Error) -> Error,
+) -> Result<bool> {
+    install_remote(
+        store,
+        tree,
+        realm,
+        confirmed,
+        remote_src,
+        LocalExpectation::Exact(new_expected),
+        false,
+    )
+    .map_err(&unfinished)?;
+    store
+        .remove(old_ref.kind, &old_ref.name, realm)
+        .map_err(&unfinished)?;
+    // Re-read the old file now: an edit made while the write was in flight is
+    // kept rather than deleted with the name.
+    let old_file = workspace_file_in(tree, realm, old_ref);
+    Ok(read_local(&old_file)?.as_deref() == Some(remote_src)
+        && std::fs::remove_file(&old_file).is_ok())
+}
+
+/// Whether `a` and `b` are one file — a hard link, or two spellings a
+/// case-insensitive filesystem resolves to the same entry. Symlinks are not
+/// followed (callers refuse them separately). Absent paths are not the same
+/// file as anything.
+fn same_file(a: &Path, b: &Path) -> Result<bool> {
+    let meta = |path: &Path| match std::fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::from(error)),
+    };
+    let (Some(first), Some(second)) = (meta(a)?, meta(b)?) else {
+        return Ok(false);
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(first.dev() == second.dev() && first.ino() == second.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (first, second);
+        Ok(std::fs::canonicalize(a)? == std::fs::canonicalize(b)?)
+    }
+}
+
+/// A resumed rename skips [`destination_free`], so it establishes the one
+/// thing that check guaranteed: the new paths are distinct files from the old
+/// ones, because the move ends by deleting the old ones. A case-only rename on
+/// a case-insensitive filesystem, a hard link or a symlinked snapshot would
+/// otherwise have it delete the source and snapshot it just installed.
+fn resume_paths_independent(old: [&Path; 2], new: [&Path; 2]) -> Result<()> {
+    for (old, new) in old.into_iter().zip(new) {
+        if std::fs::symlink_metadata(new).is_ok_and(|meta| !meta.file_type().is_file()) {
+            return Err(Error::Config(format!(
+                "{} is not a regular file; a rename does not replace it. Move it aside and retry",
+                new.display()
+            )));
+        }
+        if same_file(old, new)? {
+            return Err(Error::Config(format!(
+                "{} and {} are the same file — a case-only rename on a case-insensitive \
+                 filesystem, or a link — so finishing the move would delete it; rename \
+                 through an intermediate name instead",
+                old.display(),
+                new.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a rename whose destination already has anything at it.
 ///
 /// `symlink_metadata`, not `exists`: a dangling or aliasing symlink counts. A
@@ -1555,10 +1665,9 @@ pub async fn rename(
     let old_file = workspace_file(tenant, realm, &old_ref);
     // What the new path is allowed to hold when the install runs: nothing on
     // a first attempt, the remote bytes when an earlier one already wrote it.
+    let tree = ProjectConfig::workspace_tree(tenant);
     let new_expected = if resuming {
-        let old_local = regular_file(&old_file)?;
-        let new_local = regular_file(&new_file)?;
-        rename_resume_ok(old_local.as_deref(), new_local.as_deref(), &remote_src).map_err(
+        resume_preflight(&store, &tree, realm, (&old_ref, &new_ref), &remote_src).map_err(
             |why| {
                 Error::Config(format!(
                     "{reference} was already renamed on the tenant, but {why}; nothing was \
@@ -1566,8 +1675,7 @@ pub async fn rename(
                      remove it, and run the same `aic script rename` again"
                 ))
             },
-        )?;
-        new_local
+        )?
     } else {
         let local = read_local(&old_file)?;
         let snapshot = store.pull_snapshot_source(&tracked.reference, realm)?;
@@ -1621,21 +1729,16 @@ pub async fn rename(
     if !resuming {
         destination_free(&destinations).map_err(unfinished)?;
     }
-    install_remote(
+    let old_file_removed = finish_rename_locally(
         &store,
-        &ProjectConfig::workspace_tree(tenant),
+        &tree,
         realm,
+        &old_ref,
         &confirmed,
         &remote_src,
-        LocalExpectation::Exact(new_expected.as_deref()),
-        false,
-    )
-    .map_err(unfinished)?;
-    store.remove(kind, old_name, realm)?;
-    // Re-read the old file now: an edit made while the write was in flight is
-    // kept rather than deleted with the name.
-    let old_file_removed = read_local(&old_file)?.as_deref() == Some(remote_src.as_slice())
-        && std::fs::remove_file(&old_file).is_ok();
+        new_expected.as_deref(),
+        unfinished,
+    )?;
     Ok(Renamed::Done {
         script: confirmed,
         old_file,
@@ -2770,30 +2873,63 @@ mod tests {
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(regular_file(&link).is_err());
 
-        // The store half: old snapshot already removed, new file already
-        // written. The install takes the file it expects, and forgetting the
-        // old name tolerates its missing snapshot.
+        // Independence: a hard link (what a case-insensitive filesystem's
+        // two spellings amount to) and a symlinked snapshot both refuse;
+        // two distinct files, or an absent one, pass.
+        let alias = dir.join("Alias.js");
+        std::fs::hard_link(&file, &alias).unwrap();
+        let distinct = dir.join("Other.js");
+        std::fs::write(&distinct, remote).unwrap();
+        let absent = dir.join("Absent.js");
+        assert!(same_file(&file, &alias).unwrap());
+        assert!(!same_file(&file, &distinct).unwrap());
+        assert!(!same_file(&file, &absent).unwrap());
+        assert!(resume_paths_independent([&file, &absent], [&alias, &absent]).is_err());
+        assert!(resume_paths_independent([&absent, &file], [&absent, &link]).is_err());
+        assert!(resume_paths_independent([&file, &absent], [&distinct, &absent]).is_ok());
+
+        // The orchestration's local half, driven through the functions
+        // `rename` calls. Partial state: the old snapshot is already gone and
+        // the new file already written by the stopped attempt.
         let store = store_at(&dir.join(".aic-sync"));
-        let workspace = dir.join("workspace");
+        let tree = dir.join("workspace");
         let old = endpoint_ref("old");
         let new = endpoint_ref("new");
-        store
-            .record(&endpoint_script(&old, "remote", "m"), "alpha")
-            .unwrap();
-        std::fs::remove_file(store.config_path(&old, "alpha")).unwrap();
         let script = endpoint_script(&new, "remote", "m");
-        write_workspace_source_in(&workspace, "alpha", &script, remote).unwrap();
-        install_remote(
-            &store,
-            &workspace,
-            "alpha",
-            &script,
-            remote,
-            LocalExpectation::Exact(Some(remote)),
-            false,
-        )
-        .unwrap();
-        store.remove(Kind::IdmEndpoint, "old", "alpha").unwrap();
+        let setup = |new_file: &dyn Fn(&Path, &Path)| {
+            let _ = std::fs::remove_dir_all(&tree);
+            let _ = std::fs::remove_dir_all(dir.join(".aic-sync"));
+            store
+                .record(&endpoint_script(&old, "remote", "m"), "alpha")
+                .unwrap();
+            write_workspace_source_in(&tree, "alpha", &endpoint_script(&old, "", "m"), remote)
+                .unwrap();
+            new_file(
+                &workspace_file_in(&tree, "alpha", &old),
+                &workspace_file_in(&tree, "alpha", &new),
+            );
+        };
+        let unfinished = |error: Error| error;
+
+        setup(&|_, new_path| {
+            std::fs::write(new_path, remote).unwrap();
+        });
+        std::fs::remove_file(store.config_path(&old, "alpha")).unwrap();
+        let expected = resume_preflight(&store, &tree, "alpha", (&old, &new), remote).unwrap();
+        assert_eq!(expected.as_deref(), Some(remote));
+        assert!(
+            finish_rename_locally(
+                &store,
+                &tree,
+                "alpha",
+                &old,
+                &script,
+                remote,
+                expected.as_deref(),
+                unfinished
+            )
+            .unwrap()
+        );
         let names: Vec<_> = store
             .load_manifest()
             .unwrap()
@@ -2801,6 +2937,31 @@ mod tests {
             .map(|entry| entry.reference.name)
             .collect();
         assert_eq!(names, vec!["new".to_string()]);
+        assert!(!workspace_file_in(&tree, "alpha", &old).exists());
+        assert_eq!(
+            std::fs::read(workspace_file_in(&tree, "alpha", &new)).unwrap(),
+            remote
+        );
+        assert!(store.config_path(&new, "alpha").exists());
+
+        // The same partial state, but the two names are one file (what a
+        // case-only rename is on a case-insensitive filesystem): refused
+        // before anything is touched.
+        setup(&|old_path, new_path| std::fs::hard_link(old_path, new_path).unwrap());
+        assert!(resume_preflight(&store, &tree, "alpha", (&old, &new), remote).is_err());
+        assert!(workspace_file_in(&tree, "alpha", &old).exists());
+        // A new snapshot that is a symlink to the old one: refused too.
+        setup(&|_, _| {});
+        std::fs::create_dir_all(store.config_path(&new, "alpha").parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(
+            store.config_path(&old, "alpha"),
+            store.config_path(&new, "alpha"),
+        )
+        .unwrap();
+        assert!(resume_preflight(&store, &tree, "alpha", (&old, &new), remote).is_err());
+        // An edit at the new path: refused.
+        setup(&|_, new_path| std::fs::write(new_path, edited).unwrap());
+        assert!(resume_preflight(&store, &tree, "alpha", (&old, &new), remote).is_err());
     }
 
     #[test]

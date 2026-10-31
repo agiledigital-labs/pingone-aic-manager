@@ -483,10 +483,11 @@ fn regex_may_start(code: &[u8]) -> bool {
         return true;
     };
     if is_ident(last) {
-        return matches!(
-            previous_word(code, end),
-            Some(
-                "return"
+        return labelled_jump(code, end)
+            || matches!(
+                previous_word(code, end),
+                Some(
+                    "return"
                     | "typeof"
                     | "case"
                     | "do"
@@ -504,8 +505,8 @@ fn regex_may_start(code: &[u8]) -> bool {
                     | "break"
                     | "continue"
                     | "debugger"
-            )
-        );
+                )
+            );
     }
     match last {
         b')' => matching_open(code, end - 1).is_some_and(|open| {
@@ -518,6 +519,24 @@ fn regex_may_start(code: &[u8]) -> bool {
         b']' | b'"' | b'\'' | b'`' => false,
         _ => true,
     }
+}
+
+/// Whether the code ends in `break <label>` or `continue <label>`, the label
+/// on the jump's own line. That statement ends there, so a `/` on the next
+/// line starts a regex: `break outer\n/new Map()/.test(s)`. A label on the
+/// line *after* a bare `break` is not one — ASI ended the `break` first, and
+/// `outer\n/x/` divides.
+fn labelled_jump(code: &[u8], end: usize) -> bool {
+    let Some(label) = previous_word(code, end) else {
+        return false;
+    };
+    let mut before = end - label.len();
+    while before > 0 && matches!(code[before - 1], b' ' | b'\t') {
+        before -= 1;
+    }
+    before > 0
+        && is_ident(code[before - 1])
+        && matches!(previous_word(code, before), Some("break" | "continue"))
 }
 
 /// The `(` matching the `)` at `close`, walking back over balanced brackets.
@@ -623,6 +642,8 @@ mod tests {
             "for (;;) { break\n/new Map()/.test(s); }",
             "while (x) { continue\n/new Set()/.test(s); }",
             "debugger\n/new Map()/.test(s);",
+            "outer: while (more()) {\n  if (stop()) break outer\n  /new Map()/.test(text);\n}",
+            "outer: while (more()) {\n  if (skip()) continue outer\n  /new Set()/.test(text);\n}",
         ] {
             assert_eq!(members(source), Vec::<&str>::new(), "{source}");
         }
@@ -662,6 +683,12 @@ mod tests {
         );
         assert_eq!(
             members("function f(x) { return (x) / Object.values(o).length; }"),
+            vec!["Object.values"]
+        );
+        // A label-looking name on the line after a bare `break` is its own
+        // statement, and the `/` after it divides.
+        assert_eq!(
+            members("for (;;) { break\nouter / 2; Object.values(o); }"),
             vec!["Object.values"]
         );
         // A name that merely starts with a statement keyword is an operand.
