@@ -39,6 +39,7 @@ mod keys;
 pub mod ops;
 pub mod recovery;
 pub mod relink;
+pub mod repair;
 pub mod screen;
 pub mod spec;
 pub mod state;

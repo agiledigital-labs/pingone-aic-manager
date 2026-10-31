@@ -732,18 +732,31 @@ pub(crate) fn backup_document(
     document: &Value,
     now: DateTime<Utc>,
 ) -> Result<PathBuf> {
-    backup_document_with_paths(project_paths(), tenant, document, now)
+    backup_config_document("access", tenant, document, now)
+}
+
+/// Back up the `config/<config>` document a whole-document write is about to
+/// replace, under `.aic/backups/`. Shared with `managed relationship repair`,
+/// which replaces `config/repo.ds` the same way.
+pub(crate) fn backup_config_document(
+    config: &str,
+    tenant: &str,
+    document: &Value,
+    now: DateTime<Utc>,
+) -> Result<PathBuf> {
+    backup_document_with_paths(project_paths(), config, tenant, document, now)
 }
 
 fn backup_document_with_paths(
     paths: &ProjectPaths,
+    config: &str,
     tenant: &str,
     document: &Value,
     now: DateTime<Utc>,
 ) -> Result<PathBuf> {
     let path = paths
         .backups_dir()
-        .join(backup_filename(tenant, now, uuid::Uuid::new_v4()));
+        .join(backup_filename(config, tenant, now, uuid::Uuid::new_v4()));
     let write = || -> Result<()> {
         paths.write_gitignore()?;
         let mut bytes = serde_json::to_vec_pretty(document)?;
@@ -752,26 +765,30 @@ fn backup_document_with_paths(
     };
     write().map_err(|error| {
         Error::Config(format!(
-            "could not create config/access backup {}: {error}; nothing was written to the tenant",
+            "could not create config/{config} backup {}: {error}; nothing was written to the tenant",
             path.display()
         ))
     })?;
     Ok(path)
 }
 
-fn backup_filename(tenant: &str, now: DateTime<Utc>, nonce: uuid::Uuid) -> String {
-    let tenant = tenant
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
+fn backup_filename(config: &str, tenant: &str, now: DateTime<Utc>, nonce: uuid::Uuid) -> String {
+    let safe = |value: &str| {
+        value
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+    };
     format!(
-        "access-{tenant}-{}-{nonce}.json",
+        "{}-{}-{}-{nonce}.json",
+        safe(config),
+        safe(tenant),
         now.format("%Y%m%dT%H%M%SZ")
     )
 }
@@ -1164,6 +1181,7 @@ mod tests {
 
         let backup = backup_document_with_paths(
             &paths,
+            "access",
             "sandbox",
             &document,
             Utc.with_ymd_and_hms(2026, 9, 11, 0, 0, 0).unwrap(),
@@ -1732,12 +1750,15 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 8, 11, 4, 5, 6).unwrap();
         let first_nonce = uuid::Uuid::from_u128(1);
         let second_nonce = uuid::Uuid::from_u128(2);
-        let filename = backup_filename("sand/box", now, first_nonce);
+        let filename = backup_filename("access", "sand/box", now, first_nonce);
         assert_eq!(
             filename,
             "access-sand_box-20260811T040506Z-00000000-0000-0000-0000-000000000001.json"
         );
-        assert_ne!(filename, backup_filename("sand/box", now, second_nonce));
+        assert_ne!(
+            filename,
+            backup_filename("access", "sand/box", now, second_nonce)
+        );
 
         let dir = std::env::temp_dir().join(format!("aic-access-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join(filename);

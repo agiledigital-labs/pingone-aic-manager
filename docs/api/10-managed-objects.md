@@ -606,7 +606,51 @@ is a repair for a mixed pair (it reused the mapping for an end with no
 reverse, which is not the same question); and an operator-reported `400 Invalid relationship schema`
 when re-creating a relationship whose reverse has a stale mapping. A
 `config/managed` `PUT` of that state was a 200 here, which says only that
-config validation accepts it — not where the operator's 400 came from.
+config validation accepts it — not where the operator's 400 came from. `aic`
+refuses that write before sending it, and removing the stale mapping (below)
+let the same `set` through.
+
+#### Removing a stale mapping (`aic managed relationship repair`, measured 2026-10-31)
+
+All on the sandbox's `test_from` / `test_to` types and throwaway records, with
+both config documents saved first and restored byte-identical afterwards.
+
+**A JSON `PATCH` does not edit `repo.ds`.** `PATCH /openidm/config/repo.ds`
+with `[{"operation":"remove","field":"/resourceMapping/genericMapping/managed~1test_from/properties/hasOneHasOne"}]`
+was a `200` whose body still held the entry, and three re-reads were
+byte-identical to the document before it. Whether CREST honours the `~1`
+escape in that field path was not separated from "PATCH is ignored here"; it
+does not matter to `aic`, which never patches this document.
+
+**A whole-document `PUT` does.** The read document with one entry deleted,
+sent back with `PUT /openidm/config/repo.ds`, was a `200` whose body equalled
+the document sent, as did every re-read (four, over 30 s). Three removals
+were measured:
+
+| Removed                                                                | Afterwards                                                                                                                                                                                     |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test_from.hasOneHasOne`, a stale `reference` nothing read through      | the mapped pairs left alone still resolved both ways and a new link on one got a mapped `<uuid>-<counter>` id; `set test_from.hasOneHasOne` with a reverse, refused before, succeeded and its links resolved both ways |
+| `test_to.hasOneHasOne`, a stale `reverseReference` whose forward `test_from.hasOnehOne` was also stale (the state `relationship delete` of the reverse end leaves) | `set test_from.<new key> --reverse-key hasOneHasOne`, refused before, succeeded and its links resolved both ways                                                                                  |
+| `test_to.hasOneHasOne`, a stale `reverseReference` whose forward `test_from.hasOnehOne` was still declared and mapped (no reverse) | the forward's existing link read back with the same mapped edge id, a new link on it got a mapped id, and both were found by `hasOnehOne pr`                                                    |
+
+`alpha_user` records still read `200` after each write.
+
+So `aic managed relationship repair <object>.<key>` removes exactly one
+relationship mapping that names no declared property, by that `PUT`. It reads
+both documents, plans, asks (or takes `--force`), passes the production gate,
+then re-reads both and refuses if `repo.ds` changed at all or the plan no
+longer holds; backs the document up to `.aic/backups/repo.ds-<tenant>-…json`;
+sends the whole document; and polls for up to 30 s until a read equals what
+was sent. A read still equal to the old document — the PATCH behaviour above
+— or to a third document is reported and exits non-zero, as does a failed
+send, which is never assumed not to have landed. It never adds or edits a
+mapping, and it refuses what was not measured: a declared property (even one
+declared as a scalar), IDM's own `_meta` / `_notifications`, a mapping
+another `reverseReference` reads through (a stale one is named, to be
+repaired first — the order the second row above used), the last mapped
+property of an object, and an object `config/managed` does not declare.
+Whether links written while a key was mapped reappear if the key is
+recreated after a repair was not measured.
 
 #### Checking a pair (`aic managed relationship verify`, measured 2026-10-26)
 
@@ -805,7 +849,9 @@ answers with the record and `<key>._refProperties._id`. Both equal the id a
 following read lists. This is how `verify --probe`, `relink` and a restore
 tell their own new link from another writer's link to the same record, which
 a before/after comparison cannot; a probe whose response names no edge
-removes nothing. Measured on a generic pair only.
+removes nothing. Measured on a generic pair, and on 2026-10-31 on the
+sandbox's mapped pairs (`hasManyHasMany`, and `hasOnehOne` with
+`?_fields=hasOnehOne`), where both ids had the mapped `<uuid>-<counter>` shape.
 
 Two reads distinguish a record that does not exist:
 `managed/<obj>/<id>?_fields=_id` is `404` "No Such Entry", but
@@ -1565,6 +1611,22 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-31 — `config/repo.ds` repair, sandbox `test_from` / `test_to`
+  with throwaway records, both config documents restored byte-identical
+  afterwards: `PATCH /openidm/config/repo.ds` with one `remove` (200, document
+  unchanged on three re-reads); `PUT /openidm/config/repo.ds` of the read
+  document minus one relationship entry, three times over three stale shapes
+  (200; response and every re-read equal to the document sent); afterwards
+  `set` calls refused before the removal succeeded, links on the remaining
+  and recreated pairs resolved both ways, and `alpha_user` read 200. Mapped
+  link-write responses: `POST …/hasManyHasMany?_action=create` top-level
+  `_id` and `PATCH …?_fields=hasOnehOne` `hasOnehOne._refProperties._id`
+  each equalled the following read's edge id, both `<uuid>-<counter>`.
+  `aic managed relationship repair` was then run on two stale mappings left
+  by `relationship delete test_to.hasOneHasOne`: the forward first was
+  refused (the reverse reads through it), the reverse then the forward each
+  removed exactly their own entry, confirmed on the first re-read, and the
+  pair recreated over them passed `verify --probe`.
 - Date: 2026-10-31 — link-write responses, sandbox, throwaway `zzrla`/`zzrlb`
   records created by `aic managed relationship set` (a has-many ↔ has-many
   pair and a has-one with no reverse): the `POST …?_action=create` response's

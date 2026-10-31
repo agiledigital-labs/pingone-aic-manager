@@ -90,11 +90,31 @@ pub async fn get_managed(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, "/openidm/config/managed").await
 }
 
-/// `GET /openidm/config/repo.ds` — the record-store mapping document. Read
-/// only: `aic` never writes it (`docs/api/10-managed-objects.md`,
-/// "Relationship storage").
+/// `GET /openidm/config/repo.ds` — the record-store mapping document
+/// (`docs/api/10-managed-objects.md`, "Relationship storage").
 pub async fn get_repo_ds(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, "/openidm/config/repo.ds").await
+}
+
+/// `PUT /openidm/config/repo.ds` — the whole document. Its one caller is
+/// `relationship repair`, which removes a stale mapping and holds a
+/// [`RepairPermit`](crate::managed::repair::RepairPermit) to get here. A JSON
+/// `PATCH` on this document was measured to return 200 and change nothing,
+/// which is why there is no patch wrapper.
+pub async fn put_repo_ds(
+    tenant: &str,
+    _permit: &crate::managed::repair::RepairPermit,
+    document: &Value,
+    confirmed_prod: bool,
+) -> Result<()> {
+    crate::aic::api::put(
+        tenant,
+        "/openidm/config/repo.ds",
+        document.clone(),
+        confirmed_prod,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// One page of `object`'s records carrying only `_id` and the relationship
