@@ -630,7 +630,9 @@ impl SnapshotStore {
             .cloned();
         entries
             .retain(|e| !(e.reference.kind == kind && e.reference.name == name && e.realm == key));
-        self.save_manifest(&entries)?;
+        // Snapshot first, manifest second: stopping between them leaves an
+        // entry with no snapshot, which every reader treats as untrustworthy
+        // (§5), rather than a snapshot no entry owns.
         if let Some(entry) = removed {
             let path = self.config_path(&entry.reference, realm);
             match std::fs::remove_file(&path) {
@@ -639,7 +641,7 @@ impl SnapshotStore {
                 Err(e) => return Err(e.into()),
             }
         }
-        Ok(())
+        self.save_manifest(&entries)
     }
 
     /// Last-synced raw config (the snapshot we forked from), if present.
@@ -1357,6 +1359,30 @@ pub fn rename_ok(
     }
 }
 
+/// Refuse a rename whose destination already has anything at it.
+///
+/// `symlink_metadata`, not `exists`: a dangling or aliasing symlink counts. A
+/// destination that resolves to the source file — a symlink to it, or a
+/// case-only rename on a case-insensitive filesystem — is caught by the same
+/// check, which matters because the rename later deletes the old file: two
+/// paths holding the same bytes is not evidence that they are two files.
+fn destination_free(paths: &[PathBuf]) -> Result<()> {
+    for path in paths {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {
+                return Err(Error::Config(format!(
+                    "{} already exists; a rename does not overwrite it. Move it aside \
+                     and retry",
+                    path.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 /// What a rename did.
 #[must_use = "a discarded rename outcome reports a refusal as a success"]
 #[derive(Debug)]
@@ -1421,6 +1447,15 @@ pub async fn rename(
     if listed.iter().any(|r| r.name == new_name) {
         return Err(Error::Config(name_taken_message(kind, realm, new_name)));
     }
+    let new_ref = RemoteRef {
+        name: new_name.to_string(),
+        ..tracked.reference.clone()
+    };
+    let destinations = [
+        workspace_file(tenant, realm, &new_ref),
+        store.config_path(&new_ref, realm),
+    ];
+    destination_free(&destinations)?;
     let remote = kind.fetch(tenant, realm, &current.id).await?;
     let remote_src = kind.decode_source(&remote.raw_config)?;
     let old_file = workspace_file(tenant, realm, &remote.reference);
@@ -1457,15 +1492,31 @@ pub async fn rename(
             }
         )));
     }
-    store.remove(kind, old_name, realm)?;
-    pull(
-        tenant,
+    // Install the new name from the confirmed read, then forget the old one:
+    // in that order, a failure in between leaves the old name tracked and its
+    // file in place rather than neither name tracked. The destination is
+    // checked again because the write took time; `Exact(None)` makes the
+    // install itself refuse anything that appeared there since.
+    let unfinished = |error: Error| {
+        Error::Config(format!(
+            "the tenant renamed {reference} to {new_name}, but the workspace was not moved \
+             ({error}); the old name is still tracked. Run `aic script pull {}`; `aic script \
+             sync` then offers to forget {reference}, which the tenant no longer has",
+            super::full_name(kind, Some(realm), new_name)
+        ))
+    };
+    destination_free(&destinations).map_err(unfinished)?;
+    install_remote(
+        &store,
+        &ProjectConfig::workspace_tree(tenant),
         realm,
-        kind,
-        &Selector::Name(new_name.to_string()),
+        &confirmed,
+        &remote_src,
+        LocalExpectation::Exact(None),
         false,
     )
-    .await?;
+    .map_err(unfinished)?;
+    store.remove(kind, old_name, realm)?;
     // Re-read the old file now: an edit made while the write was in flight is
     // kept rather than deleted with the name.
     let old_file_removed = read_local(&old_file)?.as_deref() == Some(remote_src.as_slice())
@@ -2518,6 +2569,28 @@ mod tests {
 
     /// Each of the three copies differing is its own block, and the local one
     /// wins when several differ, because its remedy comes first.
+    #[test]
+    fn a_rename_destination_is_free_only_when_nothing_is_there() {
+        let dir = std::env::temp_dir().join(format!("aic-rename-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("Old.js");
+        std::fs::write(&old, b"same").unwrap();
+        let new = dir.join("New.js");
+        assert!(destination_free(std::slice::from_ref(&new)).is_ok());
+        // The discriminating cases: a symlink to the source holds the same
+        // bytes, and a dangling one reads as absent to `exists`.
+        std::os::unix::fs::symlink(&old, &new).unwrap();
+        assert!(destination_free(std::slice::from_ref(&new)).is_err());
+        std::fs::remove_file(&new).unwrap();
+        std::os::unix::fs::symlink(dir.join("gone.js"), &new).unwrap();
+        assert!(!new.exists());
+        assert!(destination_free(std::slice::from_ref(&new)).is_err());
+        std::fs::remove_file(&new).unwrap();
+        std::fs::write(&new, b"edited").unwrap();
+        assert!(destination_free(&[dir.join("other.js"), new.clone()]).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn rename_needs_local_snapshot_and_remote_to_agree() {
         let same: &[u8] = b"a";

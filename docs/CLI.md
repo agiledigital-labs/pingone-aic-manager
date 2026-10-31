@@ -735,6 +735,22 @@ what was relinked; if the link was removed and could not be re-created, it
 gives the request that restores it. It exits non-zero on a stopped run or on
 any link it skipped as changed or could not confirm.
 
+It refuses to start while the pair has a configuration finding from
+`relationship verify` (one end mapped and the other not, say), because
+re-creating a link cannot fix that. A link whose far end is a has-one already
+holding another link is skipped: re-creating it would displace that one.
+Has-one writes carry `If-Match`, which IDM honours on a mapped end and ignores
+on a generic one (`docs/api/10-managed-objects.md`, "Conditional link writes"),
+so on a generic end the re-read just before each write is the only guard.
+
+**Interrupted runs.** Each remove-and-create is recorded in
+`.aic/managed-links.json` before the remove, and the path is printed before
+the first write; the entry is cleared once a read shows the link back. The next
+`relink` of the same field reads those entries first: a link that is gone and
+not replaced is re-created (reported as `restored`), one that is back is
+forgotten, and one whose has-one property now holds something else is named
+for the operator and makes the run exit non-zero.
+
 `relationship snapshot <object>.<key>` saves the relationship's definition —
 and, when it declares a reverse, the reverse property too — as a JSON
 document (`"format": "aic-relationship-snapshot/1"`) on stdout or to
@@ -777,7 +793,12 @@ property is empty — and the probe judges only the edge it created, never an
 older link to the same record. A pair with no such record is reported
 untested. A test link that resolves and is removed passes; one the far end
 does not list, or that could not be removed, is a finding, and a leftover is
-named with the request that removes it. `--sample 0` checks configuration only. It exits
+named with the request that removes it. Each probe is recorded in
+`.aic/managed-links.json` before its write and cleared once the removal is
+confirmed; the next `--probe` run reports any entry still there (`"recovery"`
+in `--json`) and counts it as a finding. A has-one probe re-reads the
+property before its cleanup and removes it only if it still holds the probe's
+edge. `--sample 0` checks configuration only. It exits
 non-zero on any finding or any link that does not resolve. What to do about a
 finding is not measured: `aic` does not write `repo.ds`, and neither the
 console's repair nor delete-and-recreate has been tested
@@ -950,7 +971,10 @@ They compare the way `push` does, ignoring `_rev` everywhere.
 - `status` names each journey's state the way `script status` does: `in sync`,
   `modified locally`, `modified on remote`, `conflict`, `converged` (both sides
   made the same change; only the snapshot is stale), `no snapshot` (with
-  whether local matches the tenant), `not pulled`, `not on the tenant`. With no
+  whether local matches the tenant), `not pulled`, `not on the tenant`, and
+  `not compared` when a side cannot be trusted: a tree whose node could not be
+  read from the tenant, or a local export or snapshot that lists a node it
+  does not carry. The row names the problem, and `--check` fails on it. With no
   names it covers every journey that has an export or a snapshot in the realm.
   Under each row it lists the parts that moved — `tree`, or a node by type, id
   and display name — on the `local` side (export vs snapshot) and the `remote`
@@ -962,14 +986,19 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   only trees moved.
 - `--check` exits non-zero unless every journey matches the tenant (`in sync`,
   `converged`, or `no snapshot` with local matching). `--json` prints
-  `{ok, journeys: [{journey, state, matches_tenant, local_changes,
-  remote_changes}]}`, each change carrying `shared_with`.
-- `diff` prints each difference as a JSON pointer under the part it belongs
-  to, local against remote by default; `--local-vs-snapshot` shows your edits
+  `{ok, journeys: [{journey, realm, state, label, matches_tenant, problems,
+  local_changes, remote_changes}], sharing_unknown_for}`, each change carrying
+  `shared_with`; `state` is `null` for a journey not compared, and
+  `sharing_unknown_for` lists the trees that could not be read while looking
+  for shared nodes, so a node shared only with one of them is not marked.
+- `diff` refuses either side that is missing a node the tree lists, rather
+  than showing the node as deleted. It prints each difference as a JSON
+  pointer under the part it belongs to, local against remote by default; `--local-vs-snapshot` shows your edits
   only, `--snapshot-vs-remote` remote drift only. It exits non-zero when the
   two differ.
 - **Secret values are never printed.** A value whose key names a secret
-  (`password`, `secret`, `token`, `credential`, `privateKey`, `apiKey`, …, but
+  (`password`, `secret`, `token`, `credential`, `privateKey`, `apiKey`,
+  `hmacSigningKey`, …, in any case and with `_`/`-` ignored, but
   not a `…Identifier` or `…Label` naming where one lives) shows as
   `"<hidden>"`, at its own path and inside any value printed whole. The change
   itself still counts. This is a name rule because the schema cannot be asked:
@@ -2767,10 +2796,13 @@ Skipped entries are listed and make the command exit non-zero.
     A `PUT` of the script's own config with `name` changed is a rename: AM keeps
     the id and the old name stops resolving (measured 2026-10-31). The script
     must be tracked and in sync — local file, snapshot and tenant identical —
-    and not a product default; the new name must be free. The write goes
-    through the same syntax gate as a push, is confirmed by a re-read, and the
-    workspace then tracks the new name. The old file is removed only if it
-    still holds the bytes that were renamed. Scripts that load a library **by
+    and not a product default; the new name must be free, on the tenant and
+    in the workspace — anything at the new file or snapshot path, a symlink
+    included, refuses the rename. The write goes through the same syntax gate
+    as a push, is confirmed by a re-read, and the new name is installed from
+    that read before the old one is forgotten, so a failure in between leaves
+    the old name tracked and says how to finish. The old file is removed only
+    if it still holds the bytes that were renamed. Scripts that load a library **by
     name** (`require('Old')`) are not found or changed; a `LIBRARY` rename says
     so.
   - `ids <DIR>` walks every `*.json` under `DIR` for AM script exports —

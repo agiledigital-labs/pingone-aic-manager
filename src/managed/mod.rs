@@ -37,6 +37,7 @@ pub mod cli;
 pub mod diff;
 mod keys;
 pub mod ops;
+pub mod recovery;
 pub mod relink;
 pub mod screen;
 pub mod spec;

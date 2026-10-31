@@ -184,6 +184,17 @@ pub fn node_ids(copy: &Value) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// The nodes `copy`'s tree lists that its `nodes` map lacks — an export
+/// written by a pull that left unread nodes out. Comparing such a copy says
+/// nothing about those nodes.
+pub fn missing_nodes(copy: &Value) -> Vec<String> {
+    let held = copy.get("nodes").and_then(Value::as_object);
+    node_ids(copy)
+        .into_iter()
+        .filter(|id| !held.is_some_and(|nodes| nodes.contains_key(id)))
+        .collect()
+}
+
 /// The other journeys that list a changed node. A node config is a realm
 /// object keyed by id, so pushing either journey rewrites it for both.
 /// `owners` maps node id to every journey listing it.
@@ -207,10 +218,30 @@ pub fn shared_with(
 /// 2026-10-31) — so the schema cannot be asked. A hidden value still counts as
 /// a difference; only its content is withheld.
 pub fn is_secret_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    ["password", "secret", "token", "credential", "privatekey", "apikey", "clientkey"]
-        .iter()
-        .any(|word| key.contains(word))
+    // Separators are dropped so `private_key`, `api-key` and `apiKey` are one
+    // name. Over-hiding costs a `<hidden>` where a value was harmless;
+    // under-hiding prints a secret, so the vocabulary errs wide.
+    let key: String = key
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    [
+        "password",
+        "passphrase",
+        "secret",
+        "token",
+        "credential",
+        "privatekey",
+        "apikey",
+        "clientkey",
+        "signingkey",
+        "encryptionkey",
+        "sharedkey",
+        "hmac",
+    ]
+    .iter()
+    .any(|word| key.contains(word))
         // A label naming *where* a secret lives is not the secret.
         && !key.ends_with("identifier")
         && !key.ends_with("label")
@@ -384,6 +415,33 @@ mod tests {
         assert!(printed.contains("site"), "non-secret fields still print");
     }
 
+    /// The persistent-cookie nodes wrap their key as `{"$string": …}`, so
+    /// the changed leaf is `/hmacSigningKey/$string` and the secret name is
+    /// one segment up.
+    #[test]
+    fn a_wrapped_hmac_signing_key_is_never_shown() {
+        let node = |key: &str| {
+            json!({"nodes": {"k": {"_id": "k", "nodeType": "SetPersistentCookieNode",
+                "hmacSigningKey": {"$string": key}, "idleTimeout": 5}}})
+        };
+        let shown = shown_changes(&node("DEMO_KEY_ONE"), &node("DEMO_KEY_TWO"));
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].left, Some(json!(HIDDEN)));
+        let added = shown_changes(&json!({"nodes": {}}), &node("DEMO_KEY_TWO"));
+        let printed = serde_json::to_string(&added).unwrap();
+        assert!(!printed.contains("DEMO_KEY"), "{printed}");
+        assert!(printed.contains("idleTimeout"), "{printed}");
+    }
+
+    #[test]
+    fn a_copy_missing_a_listed_node_is_incomplete() {
+        let whole = export("a", "s");
+        assert!(missing_nodes(&whole).is_empty());
+        let mut partial = whole.clone();
+        partial["nodes"].as_object_mut().unwrap().remove("c");
+        assert_eq!(missing_nodes(&partial), vec!["c"]);
+    }
+
     #[test]
     fn a_node_listed_by_another_journey_is_reported_as_shared() {
         let owners = std::collections::BTreeMap::from([
@@ -412,10 +470,23 @@ mod tests {
             "clientSecret",
             "apiKeySecret",
             "accessToken",
+            // Documented in docs/api/09-journeys.md on the persistent-cookie
+            // nodes, and missed by the first vocabulary.
+            "hmacSigningKey",
+            "private_key",
+            "api-key",
+            "Client_Secret",
+            "signing_key",
         ] {
             assert!(is_secret_key(key), "{key}");
         }
-        for key in ["siteKey", "secretLabelIdentifier", "tokenLabel", "username"] {
+        for key in [
+            "siteKey",
+            "publicKey",
+            "secretLabelIdentifier",
+            "tokenLabel",
+            "username",
+        ] {
             assert!(!is_secret_key(key), "{key}");
         }
     }

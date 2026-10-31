@@ -173,14 +173,43 @@ pub struct Plan {
     pub skipped: Vec<Skipped>,
 }
 
+/// What the far end's reverse property held when a link was judged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FarSlot {
+    /// Has-many, or a has-one holding nothing or the link back.
+    Free,
+    /// A has-one holding a link to some other record: re-creating this link
+    /// would set the reverse and displace that one.
+    Occupied,
+}
+
+impl FarSlot {
+    /// `far_links` is the far end's reverse read; `None` when the record is
+    /// gone.
+    pub fn of(far_array: bool, outcome: &LinkOutcome, far_links: Option<&[Link]>) -> Self {
+        let holds_other = far_links.is_some_and(|links| !links.is_empty());
+        if !far_array && *outcome == LinkOutcome::Missing && holds_other {
+            Self::Occupied
+        } else {
+            Self::Free
+        }
+    }
+}
+
 /// Sorts judged links. Only `Missing` is the one-sided state relink exists
 /// for; an edge-id disagreement and a missing far record are other defects,
 /// and re-creating either would write a link nothing measured is safe.
-pub fn plan(judged: Vec<(Edge, LinkOutcome)>) -> Plan {
+pub fn plan(judged: Vec<(Edge, LinkOutcome, FarSlot)>) -> Plan {
     let mut out = Plan::default();
-    for (edge, outcome) in judged {
+    for (edge, outcome, slot) in judged {
         match outcome {
             LinkOutcome::Resolved => out.resolved += 1,
+            LinkOutcome::Missing if slot == FarSlot::Occupied => out.skipped.push(Skipped {
+                edge,
+                outcome,
+                reason: "the far end is a has-one that holds another link; re-creating this one \
+                         would displace it",
+            }),
             LinkOutcome::Missing if edge.link.edge_id.is_none() => out.skipped.push(Skipped {
                 edge,
                 outcome,
@@ -218,6 +247,21 @@ pub struct Write {
     pub method: &'static str,
     pub path: String,
     pub body: Option<Value>,
+    /// The record `_rev` a has-one `PATCH` is conditional on. Measured
+    /// 2026-10-31: on a **mapped** has-one end a link change moves the
+    /// record's `_rev` and a stale `If-Match` is a 412 that writes nothing; on
+    /// a **generic** end a link change leaves `_rev` alone and a stale
+    /// `If-Match` is a 200 that writes. So it closes the race on mapped ends
+    /// only, and the callers recheck by reading on both.
+    pub if_match: Option<String>,
+}
+
+/// A record's `_rev`, which every read returns whatever `_fields` asked for.
+pub fn rev_of(record: &Value) -> Option<String> {
+    record
+        .get("_rev")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn record_path(object: &str, id: &str) -> String {
@@ -230,13 +274,16 @@ fn record_path(object: &str, id: &str) -> String {
 
 /// The two writes that re-create `edge` on `near_object.near_key`, in order.
 /// The first removes the link, so a failure between them leaves it gone:
-/// the caller must stop and say so.
+/// the caller must stop and say so. A has-one removal is conditional on
+/// `rev`; the caller sets the re-creation's `if_match` from a read taken
+/// after the removal.
 pub fn writes(
     _permit: &RelinkPermit,
     near_object: &str,
     near_key: &str,
     near_array: bool,
     edge: &Edge,
+    rev: Option<&str>,
 ) -> Result<[Write; 2], String> {
     let record = record_path(near_object, &edge.link.from_id);
     let reference = json!({
@@ -258,11 +305,13 @@ pub fn writes(
                     crate::idmstore::api::path_segment(edge_id)
                 ),
                 body: None,
+                if_match: None,
             },
             Write {
                 method: "POST",
                 path: format!("{collection}?_action=create"),
                 body: Some(reference),
+                if_match: None,
             },
         ])
     } else {
@@ -274,6 +323,7 @@ pub fn writes(
                 method: "PATCH",
                 path: record.clone(),
                 body: Some(json!([{ "operation": "remove", "field": pointer }])),
+                if_match: rev.map(str::to_string),
             },
             Write {
                 method: "PATCH",
@@ -281,6 +331,7 @@ pub fn writes(
                 body: Some(
                     json!([{ "operation": "replace", "field": pointer, "value": reference }]),
                 ),
+                if_match: None,
             },
         ])
     }
@@ -326,6 +377,7 @@ pub fn probe_link(
     near_id: &str,
     far_object: &str,
     far_id: &str,
+    rev: Option<&str>,
 ) -> Write {
     let record = record_path(near_object, near_id);
     let reference = json!({ "_ref": format!("managed/{far_object}/{far_id}") });
@@ -337,6 +389,7 @@ pub fn probe_link(
                 crate::idmstore::api::path_segment(near_key)
             ),
             body: Some(reference),
+            if_match: None,
         }
     } else {
         Write {
@@ -345,6 +398,7 @@ pub fn probe_link(
             body: Some(
                 json!([{ "operation": "replace", "field": format!("/{near_key}"), "value": reference }]),
             ),
+            if_match: rev.map(str::to_string),
         }
     }
 }
@@ -355,6 +409,7 @@ pub fn probe_unlink(
     (near_object, near_key, near_array): (&str, &str, bool),
     near_id: &str,
     edge_id: &str,
+    rev: Option<&str>,
 ) -> Write {
     let record = record_path(near_object, near_id);
     if near_array {
@@ -366,12 +421,14 @@ pub fn probe_unlink(
                 crate::idmstore::api::path_segment(edge_id)
             ),
             body: None,
+            if_match: None,
         }
     } else {
         Write {
             method: "PATCH",
             path: record,
             body: Some(json!([{ "operation": "remove", "field": format!("/{near_key}") }])),
+            if_match: rev.map(str::to_string),
         }
     }
 }
@@ -479,21 +536,44 @@ mod tests {
         let edges = edges_of(&record(), "owner").unwrap();
         let mut no_id = edges[1].clone();
         no_id.link.edge_id = None;
+        let free = FarSlot::Free;
         let plan = plan(vec![
-            (edges[0].clone(), LinkOutcome::Missing),
-            (edges[1].clone(), LinkOutcome::Resolved),
-            (edges[1].clone(), LinkOutcome::FarRecordMissing),
+            (edges[0].clone(), LinkOutcome::Missing, free),
+            (edges[1].clone(), LinkOutcome::Resolved, free),
+            (edges[1].clone(), LinkOutcome::FarRecordMissing, free),
             (
                 edges[1].clone(),
                 LinkOutcome::EdgeDiffers {
                     far_edges: vec!["x".into()],
                 },
+                free,
             ),
-            (no_id, LinkOutcome::Missing),
+            (no_id, LinkOutcome::Missing, free),
+            (edges[1].clone(), LinkOutcome::Missing, FarSlot::Occupied),
         ]);
         assert_eq!(plan.resolved, 1);
         assert_eq!(plan.relink, vec![edges[0].clone()]);
-        assert_eq!(plan.skipped.len(), 3);
+        assert_eq!(plan.skipped.len(), 4);
+    }
+
+    /// A has-one far end holding a link to someone else is occupied; the same
+    /// read from a has-many end, or holding nothing, is not.
+    #[test]
+    fn a_far_has_one_holding_another_link_is_occupied() {
+        let other = [Link {
+            from_id: "b1".into(),
+            to_collection: "managed/a".into(),
+            to_id: "a-other".into(),
+            edge_id: Some("e7".into()),
+        }];
+        let missing = LinkOutcome::Missing;
+        assert_eq!(
+            FarSlot::of(false, &missing, Some(&other)),
+            FarSlot::Occupied
+        );
+        assert_eq!(FarSlot::of(true, &missing, Some(&other)), FarSlot::Free);
+        assert_eq!(FarSlot::of(false, &missing, Some(&[])), FarSlot::Free);
+        assert_eq!(FarSlot::of(false, &missing, None), FarSlot::Free);
     }
 
     #[test]
@@ -507,9 +587,13 @@ mod tests {
     fn has_many_deletes_the_edge_then_creates_it_with_its_properties() {
         let permit = authorize(false, true).unwrap();
         let edge = &edges_of(&record(), "owner").unwrap()[0];
-        let [first, second] = writes(&permit, "a", "owner", true, edge).unwrap();
+        let [first, second] = writes(&permit, "a", "owner", true, edge, Some("r1")).unwrap();
         assert_eq!(first.method, "DELETE");
         assert_eq!(first.path, "/openidm/managed/a/a1/owner/e1");
+        assert_eq!(
+            (first.if_match.as_deref(), second.if_match.as_deref()),
+            (None, None)
+        );
         assert_eq!(second.method, "POST");
         assert_eq!(second.path, "/openidm/managed/a/a1/owner?_action=create");
         assert_eq!(
@@ -522,8 +606,12 @@ mod tests {
     fn has_one_removes_then_replaces() {
         let permit = authorize(false, true).unwrap();
         let edge = &edges_of(&record(), "owner").unwrap()[0];
-        let [first, second] = writes(&permit, "a", "owner", false, edge).unwrap();
+        let [first, second] = writes(&permit, "a", "owner", false, edge, Some("r1")).unwrap();
         assert_eq!((first.method, second.method), ("PATCH", "PATCH"));
+        // The removal is conditional on the read it was planned from; the
+        // re-creation's condition comes from a read after the removal.
+        assert_eq!(first.if_match.as_deref(), Some("r1"));
+        assert_eq!(second.if_match, None);
         assert_eq!(first.path, "/openidm/managed/a/a1");
         assert_eq!(
             first.body,
@@ -571,21 +659,25 @@ mod tests {
     fn probe_writes_add_then_remove_by_shape() {
         let permit = authorize_probe(true).unwrap();
         assert!(authorize_probe(false).is_none());
-        let many = probe_link(&permit, ("a", "owner", true), "a1", "b", "b9");
+        let many = probe_link(&permit, ("a", "owner", true), "a1", "b", "b9", Some("r1"));
         assert_eq!(
             (many.method, many.path.as_str()),
             ("POST", "/openidm/managed/a/a1/owner?_action=create")
         );
         assert_eq!(many.body, Some(json!({"_ref": "managed/b/b9"})));
-        let one = probe_link(&permit, ("a", "owner", false), "a1", "b", "b9");
+        assert_eq!(many.if_match, None);
+        let one = probe_link(&permit, ("a", "owner", false), "a1", "b", "b9", Some("r1"));
         assert_eq!(one.method, "PATCH");
+        assert_eq!(one.if_match.as_deref(), Some("r1"));
         assert_eq!(one.body.unwrap()[0]["operation"], "replace");
-        let gone = probe_unlink(&permit, ("a", "owner", true), "a1", "e9");
+        let gone = probe_unlink(&permit, ("a", "owner", true), "a1", "e9", Some("r2"));
         assert_eq!(
             (gone.method, gone.path.as_str()),
             ("DELETE", "/openidm/managed/a/a1/owner/e9")
         );
-        let cleared = probe_unlink(&permit, ("a", "owner", false), "a1", "e9");
+        assert_eq!(gone.if_match, None);
+        let cleared = probe_unlink(&permit, ("a", "owner", false), "a1", "e9", Some("r2"));
+        assert_eq!(cleared.if_match.as_deref(), Some("r2"));
         assert_eq!(
             cleared.body,
             Some(json!([{"operation": "remove", "field": "/owner"}]))

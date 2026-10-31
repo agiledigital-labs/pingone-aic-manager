@@ -734,7 +734,12 @@ other hooks fire for either write is **unmeasured**. `aic managed relationship
 relink <obj>.<key>` performs exactly these two writes for each link the far
 end does not list, rechecking each link just before its writes and confirming
 from the far end afterwards; `relationship set` samples the links after adding
-a reverse and points at it.
+a reverse and points at it. Because the two writes are two requests, relink
+records each one in `.aic/managed-links.json` before the remove and clears it
+once a read shows the link back; a later run re-creates a link that entry says
+was removed and nothing replaced. It refuses to start while `relationship
+verify`'s configuration checks report a problem with the pair, and skips a
+link whose far end is a has-one already holding another link.
 
 **The touched objects flap for a few seconds after any `config/managed`
 write.** Measured right after `relationship set` and `relationship delete`:
@@ -749,12 +754,42 @@ so the two can be told apart, and only the router's `Resource '…' not found`
 for the object or a path under it is the settling one. That a `POST` or
 `DELETE` given the same 404 also wrote nothing is inferred from the router
 answering, not measured. This is the "transient 404" a `verify` run straight
-after a `delete` hit.
+after a `delete` hit. `aic` retries the router 404 only within 120 s
+of a `config/managed` write the same process made; otherwise a missing
+property's 404 (identical shape) is reported at once rather than waited on.
 
 Two Q14 instances turned up during the measurement
 (`99-quirks-and-open-questions.md`): a reverse confirmed by re-read was gone a
 minute later, and a `relationship set` issued about a second after another one
 read a document without the property that one had just added, and deleted it.
+
+### Conditional link writes and `_rev` (verified 2026-10-31)
+
+Measured on the sandbox on one record with two has-one properties: one with a
+`repo.ds` mapping and one generic. For each, the record's `_rev` was read, a
+link was replaced with `If-Match: <that _rev>`, and then a second replace and a
+remove were sent with the now-stale `_rev`:
+
+| Has-one property | Link change moves the record's `_rev` | Stale `If-Match` on replace / remove |
+| ---------------- | ------------------------------------- | ------------------------------------ |
+| mapped           | yes                                   | `412`, nothing written               |
+| generic          | **no**                                | **`200`, the write lands**           |
+
+A link written from the **far** record moved the near record's `_rev` on the
+mapped pair as well. So `If-Match` on a record `PATCH` protects a link only on
+a mapped end; on a generic end it is accepted and ignored, because nothing a
+link write changes is in the `_rev`. `aic managed relationship relink` and
+`verify --probe` send `If-Match` on every has-one write and re-read the
+property immediately before it, which closes the window on a mapped end and
+only narrows it on a generic one.
+
+Two reads distinguish a record that does not exist:
+`managed/<obj>/<id>?_fields=_id` is `404` "No Such Entry", but
+`managed/<obj>/<id>/<rel>?_queryFilter=true` on a has-many property is `200`
+with an **empty** result — the same answer as an existing record with no
+links. An empty collection is therefore not evidence the record exists; `aic`
+reads the record itself before treating an empty far end as "does not list
+it".
 
 ### Object-type rename orphans records (verified 2026-07-27)
 
@@ -1506,6 +1541,14 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-31 — conditional link writes, sandbox, throwaway records on a
+  pair with one mapped and one generic has-one property: `_rev` read with
+  `_fields`, `PATCH replace` with the current `_rev` (200), the same with the
+  stale one (mapped 412 and unchanged; generic 200 and changed), `PATCH remove`
+  with the stale one (same split), and a far-end write's effect on the near
+  `_rev` (mapped: moved). A missing record's relationship collection read
+  `200` empty; its `_fields=_id` read `404`. See "Conditional link writes and
+  `_rev`".
 - Date: 2026-10-31 — relationship activation and re-linking, sandbox, throwaway
   `zzevalqa`/`zzevalqb` generic pairs. The probe's 404 → 200 (has-many) and
   404 → 501 (has-one) flip observed through `aic managed relationship set` on

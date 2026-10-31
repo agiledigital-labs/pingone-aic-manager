@@ -540,11 +540,14 @@ fn workspace_journeys(tenant: &str, realm: &str) -> Result<Vec<String>> {
 /// Which tenant journeys list each node id — read once, and only when a
 /// changed node needs it. A node config is a realm object keyed by id, so a
 /// node two trees share changes in both when either is pushed.
+/// Which journeys list each node, and the journeys that could not be read —
+/// for which "shared with" is therefore unknown, not "nobody".
 async fn node_owners(
     tenant: &str,
     realm: &str,
-) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+) -> Result<(std::collections::BTreeMap<String, Vec<String>>, Vec<String>)> {
     let mut owners: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut unread = Vec::new();
     for name in api::list_trees(tenant, realm).await? {
         match api::read_tree(tenant, realm, &name).await {
             Ok(tree) => {
@@ -552,10 +555,23 @@ async fn node_owners(
                     owners.entry(id).or_default().push(name.clone());
                 }
             }
-            Err(error) => eprintln!("warning: could not read journey {name}: {error}"),
+            Err(error) => {
+                eprintln!("warning: could not read journey {name}: {error}");
+                unread.push(name);
+            }
         }
     }
-    Ok(owners)
+    Ok((owners, unread))
+}
+
+/// One `journey status` row. `state` is `None` when a copy could not be
+/// compared whole; `problems` says why.
+struct Row {
+    name: String,
+    state: Option<drift::State>,
+    local: Vec<drift::Part>,
+    remote: Vec<drift::Part>,
+    problems: Vec<String>,
 }
 
 fn api_not_found(error: &Error) -> bool {
@@ -730,60 +746,123 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             for name in &names {
                 let local = read_local_value(&export_path(&tenant, &realm, name)?)?;
                 let snapshot = read_snapshot(&snapshot_path(&tenant, &realm, name)?)?;
-                let remote = read_remote_value(&tenant, &realm, name).await?;
+                // A copy that cannot be compared whole is reported, never
+                // compared: a node absent from one side for want of a read
+                // would otherwise show as a change, or hide one.
+                let mut problems = Vec::new();
+                for (side, copy) in [("local export", &local), ("snapshot", &snapshot)] {
+                    let missing = copy.as_ref().map(drift::missing_nodes).unwrap_or_default();
+                    if !missing.is_empty() {
+                        problems.push(format!(
+                            "the {side} lacks node(s) its tree lists: {}; pull again",
+                            missing.join(", ")
+                        ));
+                    }
+                }
+                let remote = match read_remote_value(&tenant, &realm, name).await {
+                    Ok(remote) => remote,
+                    Err(error) => {
+                        problems.push(format!("the tenant's copy could not be read: {error}"));
+                        None
+                    }
+                };
+                if !problems.is_empty() {
+                    rows.push(Row {
+                        name: name.clone(),
+                        state: None,
+                        local: Vec::new(),
+                        remote: Vec::new(),
+                        problems,
+                    });
+                    continue;
+                }
                 let state = drift::state(local.as_ref(), snapshot.as_ref(), remote.as_ref());
                 let parts = |a: Option<&Value>, b: Option<&Value>| match (a, b) {
                     (Some(a), Some(b)) => drift::changed_parts(a, b),
                     _ => Vec::new(),
                 };
-                let local_parts = parts(local.as_ref(), snapshot.as_ref());
-                let remote_parts = parts(snapshot.as_ref(), remote.as_ref());
-                rows.push((name.clone(), state, local_parts, remote_parts));
+                rows.push(Row {
+                    name: name.clone(),
+                    state: Some(state),
+                    local: parts(local.as_ref(), snapshot.as_ref()),
+                    remote: parts(snapshot.as_ref(), remote.as_ref()),
+                    problems,
+                });
             }
-            let any_node = rows.iter().any(|(_, _, local, remote)| {
-                local
+            let any_node = rows.iter().any(|row| {
+                row.local
                     .iter()
-                    .chain(remote)
+                    .chain(&row.remote)
                     .any(|part| matches!(part, drift::Part::Node { .. }))
             });
-            let owners = if any_node {
+            let (owners, unread_journeys) = if any_node {
                 node_owners(&tenant, &realm).await?
             } else {
                 Default::default()
             };
             let shared_with =
                 |name: &str, part: &drift::Part| drift::shared_with(&owners, name, part);
-            let ok = rows.iter().all(|(_, state, _, _)| state.matches_tenant());
+            let ok = rows
+                .iter()
+                .all(|row| row.state.is_some_and(drift::State::matches_tenant));
             if json {
                 let out: Vec<Value> = rows
                     .iter()
-                    .map(|(name, state, local, remote)| {
-                        let describe = |parts: &Vec<drift::Part>| -> Vec<Value> {
-                            parts
-                                .iter()
-                                .map(|part| {
-                                    let mut value = serde_json::to_value(part).unwrap_or_default();
-                                    value["shared_with"] =
-                                        serde_json::json!(shared_with(name, part));
-                                    value
-                                })
-                                .collect()
-                        };
-                        serde_json::json!({
-                            "journey": name,
-                            "realm": realm,
-                            "state": state,
-                            "label": state.label(),
-                            "matches_tenant": state.matches_tenant(),
-                            "local_changes": describe(local),
-                            "remote_changes": describe(remote),
-                        })
-                    })
+                    .map(
+                        |Row {
+                             name,
+                             state,
+                             local,
+                             remote,
+                             problems,
+                         }| {
+                            let describe = |parts: &Vec<drift::Part>| -> Vec<Value> {
+                                parts
+                                    .iter()
+                                    .map(|part| {
+                                        let mut value =
+                                            serde_json::to_value(part).unwrap_or_default();
+                                        value["shared_with"] =
+                                            serde_json::json!(shared_with(name, part));
+                                        value
+                                    })
+                                    .collect()
+                            };
+                            serde_json::json!({
+                                "journey": name,
+                                "realm": realm,
+                                "state": state,
+                                "label": state.map_or("not compared", drift::State::label),
+                                "matches_tenant": state.is_some_and(drift::State::matches_tenant),
+                                "problems": problems,
+                                "local_changes": describe(local),
+                                "remote_changes": describe(remote),
+                            })
+                        },
+                    )
                     .collect();
-                print_json(&serde_json::json!({ "ok": ok, "journeys": out }))?;
+                print_json(&serde_json::json!({
+                    "ok": ok,
+                    "journeys": out,
+                    "sharing_unknown_for": unread_journeys,
+                }))?;
             } else {
-                for (name, state, local, remote) in &rows {
-                    println!("  {:<40} {}", format!("{realm}/{name}"), state.label());
+                for Row {
+                    name,
+                    state,
+                    local,
+                    remote,
+                    problems,
+                } in &rows
+                {
+                    println!(
+                        "  {:<40} {}",
+                        format!("{realm}/{name}"),
+                        state.map_or("not compared", drift::State::label)
+                    );
+                    for problem in problems {
+                        println!("    {problem}");
+                    }
                     for (side, parts) in [("local", local), ("remote", remote)] {
                         for part in parts {
                             let shared = shared_with(name, part);
@@ -799,6 +878,18 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                         }
                     }
                 }
+                if !unread_journeys.is_empty() {
+                    println!(
+                        "  (sharing not known for journeys that could not be read: {})",
+                        unread_journeys.join(", ")
+                    );
+                }
+            }
+            let uncompared = rows.iter().filter(|row| row.state.is_none()).count();
+            if uncompared > 0 {
+                return Err(Error::Config(format!(
+                    "{uncompared} journey(s) could not be compared"
+                )));
             }
             if check && !ok {
                 return Err(Error::Config("not every journey matches the tenant".into()));
@@ -848,6 +939,16 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     )?,
                 )
             };
+            for (label, copy) in [(left_label, &left), (right_label, &right)] {
+                let missing = drift::missing_nodes(copy);
+                if !missing.is_empty() {
+                    return Err(Error::Config(format!(
+                        "journey {name}: the {label} copy lacks node(s) its tree lists ({}), so \
+                         a diff would show them as removed; pull again",
+                        missing.join(", ")
+                    )));
+                }
+            }
             let parts = drift::changed_parts(&left, &right);
             let shown = drift::shown_changes(&left, &right);
             if json {

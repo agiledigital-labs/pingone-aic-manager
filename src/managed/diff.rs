@@ -5,7 +5,7 @@
 //! Tenant-free: `cli.rs` reads both sides and prints what this returns.
 
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// A difference this module normalises away, named so the output can say
 /// which ones it applied.
@@ -20,7 +20,11 @@ pub enum Rule {
     RefPropertiesId,
     /// An event hook's body: the tenant holds `source`, a repository may hold
     /// `file`, and both are scripts `aic script status` compares. The hook's
-    /// presence, `type` and `globals` are still compared.
+    /// presence, `type` and `globals` are still compared. Only the object's
+    /// own top-level hooks — the slots `aic script` syncs as
+    /// `managed/<obj>.<hook>` — and nothing nested: a property-level
+    /// `onValidate` is not synced by anything else, and a schema property
+    /// map that happens to hold keys named `type` and `source` is not a hook.
     HookBody,
 }
 
@@ -63,14 +67,27 @@ pub fn select_object(file: &Value, name: &str) -> Result<Value, String> {
     }
 }
 
-fn is_hook(value: &Map<String, Value>) -> bool {
-    value.contains_key("type") && (value.contains_key("source") || value.contains_key("file"))
+fn is_hook(value: &Value) -> bool {
+    value.as_object().is_some_and(|map| {
+        map.get("type").is_some_and(Value::is_string)
+            && (map.contains_key("source") || map.contains_key("file"))
+    })
 }
 
-/// `value` with every rule applied, and the rules that changed something.
+/// `value` — one object definition — with every rule applied, and the rules
+/// that changed something.
 pub fn normalise(value: &Value) -> (Value, Vec<Rule>) {
     let mut applied = Vec::new();
-    let out = walk(value, false, &mut applied);
+    let mut out = walk(value, false, &mut applied);
+    if let Some(object) = out.as_object_mut() {
+        for hook in object.values_mut().filter(|child| is_hook(child)) {
+            if let Some(hook) = hook.as_object_mut() {
+                hook.remove("source");
+                hook.remove("file");
+                applied.push(Rule::HookBody);
+            }
+        }
+    }
     applied.sort_by_key(|rule| *rule as u8);
     applied.dedup();
     (out, applied)
@@ -78,15 +95,6 @@ pub fn normalise(value: &Value) -> (Value, Vec<Rule>) {
 
 fn walk(value: &Value, in_ref_properties: bool, applied: &mut Vec<Rule>) -> Value {
     match value {
-        Value::Object(map) if is_hook(map) => {
-            applied.push(Rule::HookBody);
-            Value::Object(
-                map.iter()
-                    .filter(|(key, _)| !matches!(key.as_str(), "source" | "file"))
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            )
-        }
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(key, child)| {
@@ -273,6 +281,36 @@ mod tests {
             differences(&n, &normalise(&gone).0)[..],
             [Difference::TenantOnly { .. }]
         ));
+    }
+
+    /// Sol's case: a properties map holding properties named `type` and
+    /// `source` is not a hook, and neither is a property-level hook, which no
+    /// script sync compares.
+    #[test]
+    fn only_top_level_hooks_lose_their_bodies() {
+        let schema = |title: &str, validate: &str| {
+            json!({"name": "widget", "schema": {"properties": {
+                "type": {"type": "string"},
+                "source": {"type": "string", "title": title},
+                "file": {"type": "string",
+                    "onValidate": {"type": "text/javascript", "source": validate}}}}})
+        };
+        let (a, rules) = normalise(&schema("A", "x"));
+        assert!(rules.is_empty(), "{rules:?}");
+        let paths = |left: &Value, right: &Value| {
+            differences(left, &normalise(right).0)
+                .iter()
+                .map(|difference| difference.path().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            paths(&a, &schema("B", "x")),
+            vec!["/schema/properties/source/title"]
+        );
+        assert_eq!(
+            paths(&a, &schema("A", "y")),
+            vec!["/schema/properties/file/onValidate/source"]
+        );
     }
 
     #[test]

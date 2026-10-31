@@ -37,43 +37,33 @@
 //!   document, the lock the writers take ([`lock_path`]) and the copy a
 //!   change is assembled in ([`temp_path`]).
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::ProjectConfig;
 use crate::saml::rotate::spec::StagePermit;
+use crate::statefile;
 use crate::{Error, Result};
 
 /// The file, beside `undo.log` and the vault, under `.aic/`.
 pub const JOURNAL_FILE: &str = "saml-rotations.json";
 
-/// The lock a writer holds, beside the journal it protects.
-///
-/// Its own inode is what the lock is on, and nothing ever replaces it — which
-/// is the point, because [`update_at`] replaces the journal's inode on every
-/// change. The file's *contents* are never read or written.
+/// The lock a writer holds, beside the journal it protects
+/// ([`crate::statefile`] says why it is a sidecar).
 pub fn lock_path(file: &Path) -> PathBuf {
-    sidecar(file, ".lock")
+    statefile::lock_path(file)
 }
 
 /// Where a change is assembled before it is renamed over the journal.
-///
-/// A fixed name rather than a random one: the exclusive lock means only one
-/// writer is ever assembling a change, and a predictable name is one a
-/// `.gitignore` can carry and an operator can recognise. A copy left by a
-/// crash is overwritten by the next change, never read.
 pub fn temp_path(file: &Path) -> PathBuf {
-    sidecar(file, ".new")
+    statefile::temp_path(file)
 }
 
-fn sidecar(file: &Path, suffix: &str) -> PathBuf {
-    let mut name = file.as_os_str().to_os_string();
-    name.push(suffix);
-    PathBuf::from(name)
-}
+const DESCRIBE: statefile::Describe = statefile::Describe {
+    what: "the SAML rotation journal",
+    unreadable,
+};
 
 /// One staged rollover, waiting to be completed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,16 +200,7 @@ pub(crate) fn find_in(entries: &[StagedRecord], key: &Key) -> Option<StagedRecor
 /// lock here would buy a reader nothing it could use: it would still be racing
 /// the writer, only with its answer taken a moment earlier.
 pub(crate) fn load_at(file: &Path) -> Result<Vec<StagedRecord>> {
-    let mut handle = match File::open(file) {
-        Ok(handle) => handle,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(io_failure("read", file, &error)),
-    };
-    let mut bytes = Vec::new();
-    handle
-        .read_to_end(&mut bytes)
-        .map_err(|error| io_failure("read", file, &error))?;
-    parse(&bytes, file)
+    statefile::load(file, &DESCRIBE)
 }
 
 /// Read, change and install the journal, with nothing able to interleave and
@@ -262,62 +243,7 @@ pub(crate) fn load_at(file: &Path) -> Result<Vec<StagedRecord>> {
 /// else: the lock (`flock` underneath) is released by the kernel when the descriptor closes, so a
 /// killed `aic` leaves a stale *file* and never a stale lock.
 pub(crate) fn update_at(file: &Path, change: impl FnOnce(&mut Vec<StagedRecord>)) -> Result<()> {
-    if let Some(parent) = parent_of(file) {
-        std::fs::create_dir_all(parent)?;
-    }
-    let lock_file = lock_path(file);
-    // Held across the read and the write both, and released when `guard`
-    // drops — on the error paths, and on a kill, because the kernel closes
-    // the descriptor either way.
-    let guard = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_file)
-        .map_err(|error| io_failure("lock", &lock_file, &error))?;
-    lock(&guard, &lock_file)?;
-
-    let mut entries = load_at(file)?;
-    change(&mut entries);
-    install(file, &serde_json::to_vec_pretty(&entries)?)
-}
-
-/// Make `body` the whole journal, by rename.
-///
-/// The temporary is `sync_all`ed before the rename, so the name never points
-/// at content the filesystem has not committed; the containing directory is
-/// synced after it, so the rename itself survives a power loss and not only a
-/// process death. The directory sync is best effort — a filesystem that
-/// refuses it has still taken the data, and failing a completed rollover over
-/// a durability nicety would be the worse trade.
-fn install(file: &Path, body: &[u8]) -> Result<()> {
-    let temp = temp_path(file);
-    let mut handle = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&temp)
-        .map_err(|error| io_failure("write", &temp, &error))?;
-    handle
-        .write_all(body)
-        .and_then(|()| handle.sync_all())
-        .map_err(|error| io_failure("write", &temp, &error))?;
-    drop(handle);
-
-    std::fs::rename(&temp, file).map_err(|error| io_failure("install", file, &error))?;
-
-    if let Some(dir) = parent_of(file).and_then(|parent| File::open(parent).ok()) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
-}
-
-/// The directory `file` lives in, or `None` when the path is a bare name and
-/// that directory is therefore the process's own.
-fn parent_of(file: &Path) -> Option<&Path> {
-    file.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
+    statefile::update(file, &DESCRIBE, change)
 }
 
 /// Replace the journal wholesale, under the same lock as any other change.
@@ -333,55 +259,17 @@ pub(crate) fn save_at(file: &Path, entries: &[StagedRecord]) -> Result<()> {
     })
 }
 
-/// An empty file is an empty journal; anything else has to parse.
-///
-/// Nothing here produces zero bytes any more: [`update_at`] installs a
-/// complete document by rename and never creates the journal in order to read
-/// it, which is what the in-place writer did. A zero-length file can still be
-/// left over from that writer, or from something outside `aic`, and it is
-/// still read as "nothing was staged" — which is safe in the direction that
+/// The error for a journal that does not parse. A zero-length one is read as
+/// "nothing was staged" by [`statefile::load`] — safe in the direction that
 /// matters, because `complete` without a record refuses to derive anything and
 /// demands both `--retain` and `--disable-version`.
-fn parse(bytes: &[u8], file: &Path) -> Result<Vec<StagedRecord>> {
-    if bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_slice(bytes).map_err(|error| {
-        Error::Config(format!(
-            "the SAML rotation journal {} is not readable ({error}); it records which ESV \
-             secret version holds which certificate, so move it aside and re-run naming both \
-             halves — --retain <sha256> for the certificate to keep and --disable-version <n> \
-             for the version to disable — rather than guessing. `aic saml rotate status` lists \
-             the versions and the fingerprints.",
-            file.display()
-        ))
-    })
-}
-
-/// Take a whole-file exclusive advisory lock, blocking until it is granted.
-///
-/// `std::fs::File::lock`, which is `flock(LOCK_EX)` on Unix. It is stable
-/// since 1.89, and this used to be a raw `libc::flock` because the crate then
-/// declared 1.85 — a reason that went away when `rust-version` moved to the
-/// measured 1.95 (`ci.yml`'s MSRV job), so the `unsafe` block went with it.
-/// The primitive is the same one: a lock the kernel releases when the
-/// descriptor closes, which a dying process does for free. That is true
-/// wherever the lock lives, so it is **not** an argument against the sidecar
-/// in [`update_at`] — a crash there leaves a stale file, which is inert, and
-/// never a stale lock.
-///
-/// `clippy::incompatible_msrv` is still worth distrusting for this kind of
-/// call: it is silent inside `#[cfg(test)]` code (measured 2026-09-21), which
-/// is why the MSRV job runs `cargo check --all-targets`.
-fn lock(handle: &File, file: &Path) -> Result<()> {
-    handle
-        .lock()
-        .map_err(|error| io_failure("lock", file, &error))
-}
-
-fn io_failure(verb: &str, file: &Path, error: &std::io::Error) -> Error {
+fn unreadable(file: &Path, error: &serde_json::Error) -> Error {
     Error::Config(format!(
-        "{verb} the SAML rotation journal {}: {error}",
+        "the SAML rotation journal {} is not readable ({error}); it records which ESV \
+         secret version holds which certificate, so move it aside and re-run naming both \
+         halves — --retain <sha256> for the certificate to keep and --disable-version <n> \
+         for the version to disable — rather than guessing. `aic saml rotate status` lists \
+         the versions and the fingerprints.",
         file.display()
     ))
 }
@@ -389,6 +277,8 @@ fn io_failure(verb: &str, file: &Path, error: &std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::io::Read;
 
     fn record_for(entity: &str, role: &str, version: &str, sha: &str) -> StagedRecord {
         StagedRecord {
