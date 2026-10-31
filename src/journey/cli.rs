@@ -571,7 +571,27 @@ struct Row {
     state: Option<drift::State>,
     local: Vec<drift::Part>,
     remote: Vec<drift::Part>,
+    /// Why the journey was not compared; non-empty only when `state` is
+    /// `None`.
     problems: Vec<String>,
+    /// Compared, but worth knowing: a copy whose tree lists a node it lacks.
+    notes: Vec<String>,
+}
+
+/// The note for a copy whose tree lists nodes it does not carry. Not a
+/// refusal: the tenant's copy is read strictly (only a 404 leaves a node out),
+/// so such a node is either deleted on the tenant — a dangling reference every
+/// copy then shares — or missing from a file an older `aic` wrote while
+/// skipping unread nodes, which the comparison against the tenant shows.
+fn missing_note(side: &str, copy: &Value) -> Option<String> {
+    let missing = drift::missing_nodes(copy);
+    (!missing.is_empty()).then(|| {
+        format!(
+            "the {side} lists node(s) it does not carry: {} — deleted on the tenant, or left \
+             out by an older pull",
+            missing.join(", ")
+        )
+    })
 }
 
 fn api_not_found(error: &Error) -> bool {
@@ -716,7 +736,12 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 PushDecision::Push => {
                     let pushed =
                         api::push(&tenant, &realm, &name, &local_export, ok.confirmed_prod).await?;
-                    let refreshed = api::pull(&tenant, &realm, &name).await?;
+                    let refreshed = api::pull(&tenant, &realm, &name).await.map_err(|error| {
+                        Error::Config(format!(
+                            "pushed journey {name} ({pushed} nodes) -> {tenant}/{realm}, but the \
+                             confirming read failed, so the snapshot was not updated: {error}"
+                        ))
+                    })?;
                     write_snapshot(&tenant, &realm, &name, &refreshed)?;
                     println!("pushed journey {name} ({pushed} nodes) -> {tenant}/{realm}");
                     Ok(())
@@ -746,19 +771,10 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             for name in &names {
                 let local = read_local_value(&export_path(&tenant, &realm, name)?)?;
                 let snapshot = read_snapshot(&snapshot_path(&tenant, &realm, name)?)?;
-                // A copy that cannot be compared whole is reported, never
-                // compared: a node absent from one side for want of a read
-                // would otherwise show as a change, or hide one.
+                // A tenant copy that could not be read whole is reported,
+                // never compared: a node absent for want of a read would
+                // otherwise show as a change, or hide one.
                 let mut problems = Vec::new();
-                for (side, copy) in [("local export", &local), ("snapshot", &snapshot)] {
-                    let missing = copy.as_ref().map(drift::missing_nodes).unwrap_or_default();
-                    if !missing.is_empty() {
-                        problems.push(format!(
-                            "the {side} lacks node(s) its tree lists: {}; pull again",
-                            missing.join(", ")
-                        ));
-                    }
-                }
                 let remote = match read_remote_value(&tenant, &realm, name).await {
                     Ok(remote) => remote,
                     Err(error) => {
@@ -766,6 +782,14 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                         None
                     }
                 };
+                let notes: Vec<String> = [
+                    ("local export", &local),
+                    ("snapshot", &snapshot),
+                    ("tenant's copy", &remote),
+                ]
+                .into_iter()
+                .filter_map(|(side, copy)| copy.as_ref().and_then(|copy| missing_note(side, copy)))
+                .collect();
                 if !problems.is_empty() {
                     rows.push(Row {
                         name: name.clone(),
@@ -773,6 +797,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                         local: Vec::new(),
                         remote: Vec::new(),
                         problems,
+                        notes,
                     });
                     continue;
                 }
@@ -787,6 +812,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     local: parts(local.as_ref(), snapshot.as_ref()),
                     remote: parts(snapshot.as_ref(), remote.as_ref()),
                     problems,
+                    notes,
                 });
             }
             let any_node = rows.iter().any(|row| {
@@ -815,6 +841,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                              local,
                              remote,
                              problems,
+                             notes,
                          }| {
                             let describe = |parts: &Vec<drift::Part>| -> Vec<Value> {
                                 parts
@@ -835,6 +862,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                                 "label": state.map_or("not compared", drift::State::label),
                                 "matches_tenant": state.is_some_and(drift::State::matches_tenant),
                                 "problems": problems,
+                                "notes": notes,
                                 "local_changes": describe(local),
                                 "remote_changes": describe(remote),
                             })
@@ -853,6 +881,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     local,
                     remote,
                     problems,
+                    notes,
                 } in &rows
                 {
                     println!(
@@ -860,8 +889,8 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                         format!("{realm}/{name}"),
                         state.map_or("not compared", drift::State::label)
                     );
-                    for problem in problems {
-                        println!("    {problem}");
+                    for line in problems.iter().chain(notes) {
+                        println!("    {line}");
                     }
                     for (side, parts) in [("local", local), ("remote", remote)] {
                         for part in parts {
@@ -940,13 +969,8 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 )
             };
             for (label, copy) in [(left_label, &left), (right_label, &right)] {
-                let missing = drift::missing_nodes(copy);
-                if !missing.is_empty() {
-                    return Err(Error::Config(format!(
-                        "journey {name}: the {label} copy lacks node(s) its tree lists ({}), so \
-                         a diff would show them as removed; pull again",
-                        missing.join(", ")
-                    )));
+                if let Some(note) = missing_note(label, copy) {
+                    eprintln!("note: journey {name}: {note}");
                 }
             }
             let parts = drift::changed_parts(&left, &right);

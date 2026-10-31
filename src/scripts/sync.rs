@@ -594,9 +594,18 @@ impl SnapshotStore {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    /// By rename, so a crash mid-write loses the change rather than leaving a
+    /// truncated manifest that tracks nothing.
     fn save_manifest(&self, entries: &[SyncedScript]) -> Result<()> {
+        use std::io::Write as _;
         std::fs::create_dir_all(&self.dir)?;
-        std::fs::write(self.manifest_path(), serde_json::to_vec_pretty(entries)?)?;
+        let path = self.manifest_path();
+        let temp = crate::statefile::temp_path(&path);
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(&serde_json::to_vec_pretty(entries)?)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, &path)?;
         Ok(())
     }
 
@@ -1359,6 +1368,13 @@ pub fn rename_ok(
     }
 }
 
+/// Whether the tenant already holds the tracked script under the new name and
+/// nothing under the old one — a rename whose tenant write landed.
+fn rename_resumes(listed: &[RemoteRef], old_name: &str, new_name: &str, id: &str) -> bool {
+    !listed.iter().any(|r| r.name == old_name)
+        && listed.iter().any(|r| r.name == new_name && r.id == id)
+}
+
 /// Refuse a rename whose destination already has anything at it.
 ///
 /// `symlink_metadata`, not `exists`: a dangling or aliasing symlink counts. A
@@ -1428,9 +1444,19 @@ pub async fn rename(
         ))
     })?;
     let listed = kind.list(tenant, realm).await?;
+    // A rename the tenant took and the workspace did not — the install after
+    // the write failed — shows as the tracked id under the new name. The
+    // same command finishes it, without writing again.
+    let resuming = rename_resumes(&listed, old_name, new_name, &tracked.reference.id);
     let current = listed
         .iter()
-        .find(|r| r.name == old_name)
+        .find(|r| {
+            if resuming {
+                r.name == new_name
+            } else {
+                r.name == old_name
+            }
+        })
         .ok_or_else(|| Error::Config(format!("{reference} is not on the tenant")))?;
     if current.id != tracked.reference.id {
         return Err(Error::Config(format!(
@@ -1444,7 +1470,7 @@ pub async fn rename(
             "{reference} is a product default script; AM's own configuration refers to it"
         )));
     }
-    if listed.iter().any(|r| r.name == new_name) {
+    if !resuming && listed.iter().any(|r| r.name == new_name) {
         return Err(Error::Config(name_taken_message(kind, realm, new_name)));
     }
     let new_ref = RemoteRef {
@@ -1458,23 +1484,25 @@ pub async fn rename(
     destination_free(&destinations)?;
     let remote = kind.fetch(tenant, realm, &current.id).await?;
     let remote_src = kind.decode_source(&remote.raw_config)?;
-    let old_file = workspace_file(tenant, realm, &remote.reference);
+    let old_file = workspace_file(tenant, realm, &tracked.reference);
     let local = read_local(&old_file)?;
     let snapshot = store.pull_snapshot_source(&tracked.reference, realm)?;
     rename_ok(local.as_deref(), snapshot.as_deref(), &remote_src)
         .map_err(|block| Error::Config(block.message(&reference)))?;
 
-    let body = copy_body(&remote.raw_config, &current.id, new_name)?;
-    let renamed = RemoteScript {
-        reference: RemoteRef {
-            name: new_name.to_string(),
-            ..remote.reference.clone()
-        },
-        raw_config: body,
-    };
-    match write_checked(kind, tenant, realm, &renamed, confirmed_prod, gate).await? {
-        Gated::Written => {}
-        Gated::Refused(refusal) => return Ok(Renamed::Refused(refusal)),
+    if !resuming {
+        let body = copy_body(&remote.raw_config, &current.id, new_name)?;
+        let renamed = RemoteScript {
+            reference: RemoteRef {
+                name: new_name.to_string(),
+                ..remote.reference.clone()
+            },
+            raw_config: body,
+        };
+        match write_checked(kind, tenant, realm, &renamed, confirmed_prod, gate).await? {
+            Gated::Written => {}
+            Gated::Refused(refusal) => return Ok(Renamed::Refused(refusal)),
+        }
     }
     // Confirm from a read, never from the body sent (§5).
     let confirmed = kind.fetch(tenant, realm, &current.id).await?;
@@ -1500,9 +1528,8 @@ pub async fn rename(
     let unfinished = |error: Error| {
         Error::Config(format!(
             "the tenant renamed {reference} to {new_name}, but the workspace was not moved \
-             ({error}); the old name is still tracked. Run `aic script pull {}`; `aic script \
-             sync` then offers to forget {reference}, which the tenant no longer has",
-            super::full_name(kind, Some(realm), new_name)
+             ({error}); the old name is still tracked. Fix that, then run the same \
+             `aic script rename` again: it finishes the move without writing to the tenant"
         ))
     };
     destination_free(&destinations).map_err(unfinished)?;
@@ -2589,6 +2616,49 @@ mod tests {
         std::fs::write(&new, b"edited").unwrap();
         assert!(destination_free(&[dir.join("other.js"), new.clone()]).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_rename_resumes_only_when_the_tenant_moved_this_id() {
+        let listed = |pairs: &[(&str, &str)]| -> Vec<RemoteRef> {
+            pairs
+                .iter()
+                .map(|(name, id)| RemoteRef {
+                    kind: Kind::Am,
+                    id: (*id).into(),
+                    name: (*name).into(),
+                    context: None,
+                    is_default: false,
+                    evaluator_version: None,
+                })
+                .collect()
+        };
+        assert!(rename_resumes(
+            &listed(&[("New", "id1")]),
+            "Old",
+            "New",
+            "id1"
+        ));
+        // The discriminating cases: a fresh rename, and a new name some other
+        // script already holds.
+        assert!(!rename_resumes(
+            &listed(&[("Old", "id1")]),
+            "Old",
+            "New",
+            "id1"
+        ));
+        assert!(!rename_resumes(
+            &listed(&[("New", "id2")]),
+            "Old",
+            "New",
+            "id1"
+        ));
+        assert!(!rename_resumes(
+            &listed(&[("Old", "id1"), ("New", "id1")]),
+            "Old",
+            "New",
+            "id1"
+        ));
     }
 
     #[test]

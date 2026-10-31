@@ -1243,10 +1243,30 @@ fn end_is_array(doc: &Value, object: &str, key: &str) -> bool {
         == Some("array")
 }
 
+/// `object.key` as `config/managed` declares it now, for judging a recovery
+/// entry; `None` when it is no longer a relationship.
+fn current_shape(doc: &Value, object: &str, key: &str) -> Option<recovery::Shape> {
+    let property = api::object_named(doc, object)
+        .ok()
+        .and_then(state::properties)
+        .and_then(|properties| properties.get(key))
+        .filter(|property| state::is_relationship_property(property))?;
+    Some(recovery::Shape {
+        array: end_is_array(doc, object, key),
+        targets: ops::relationship_targets(property)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    })
+}
+
 #[derive(Serialize)]
 struct RelinkOutput<'a> {
     #[serde(flatten)]
     plan: &'a relink::Plan,
+    /// Recovery-journal entries this run re-creates (or, with `--dry-run`,
+    /// would), before the plan above.
+    to_restore: Vec<String>,
     /// Links an earlier, interrupted run removed, re-created from the
     /// recovery journal.
     restored: Vec<String>,
@@ -1288,7 +1308,7 @@ struct Reconciled {
     attention: Vec<String>,
 }
 
-async fn reconcile(tenant: &str, field: Option<&str>) -> Result<Reconciled> {
+async fn reconcile(tenant: &str, managed: &Value, field: Option<&str>) -> Result<Reconciled> {
     let mut out = Reconciled {
         restore: Vec::new(),
         attention: Vec::new(),
@@ -1298,8 +1318,25 @@ async fn reconcile(tenant: &str, field: Option<&str>) -> Result<Reconciled> {
             read_edges(tenant, &pending.object, &pending.from_id, &pending.key).await?;
         let label = pending.label();
         let since = &pending.started_at;
-        match recovery::judge(&pending, &current) {
+        let shape = current_shape(managed, &pending.object, &pending.key);
+        match recovery::judge(&pending, shape.as_ref(), &current) {
             recovery::Recovery::Settled => recovery::clear(&pending.id)?,
+            recovery::Recovery::Reshaped => out.attention.push(format!(
+                "{label}: recorded at {since} while {} was {} to {}; it has changed shape since, \
+                 so the entry is not acted on. Check the record by hand, then remove the entry \
+                 from {}",
+                pending.field(),
+                if pending.array { "has-many" } else { "has-one" },
+                pending.to_collection,
+                recovery::file().display()
+            )),
+            recovery::Recovery::Altered => out.attention.push(format!(
+                "{label}: removed by a relink interrupted at {since}; the record links that \
+                 target again but without the custom properties it had ({}). Restore them by \
+                 hand if they matter, then remove the entry from {}",
+                Value::Object(pending.properties.clone()),
+                recovery::file().display()
+            )),
             recovery::Recovery::Lost if field == Some(pending.field().as_str()) => {
                 out.restore.push(pending);
             }
@@ -1388,7 +1425,7 @@ async fn relationship_relink(
     let near_collection = format!("managed/{object}");
     let far_end = (far.as_str(), far_key.as_str(), far_array);
 
-    let reconciled = reconcile(&tenant, Some(&field)).await?;
+    let reconciled = reconcile(&tenant, &managed, Some(&field)).await?;
     let records = api::all_records_with(&tenant, &object, &key).await?;
     let mut judged = Vec::new();
     for record in &records {
@@ -1407,6 +1444,11 @@ async fn relationship_relink(
     let plan = relink::plan(judged);
     let mut out = RelinkOutput {
         plan: &plan,
+        to_restore: reconciled
+            .restore
+            .iter()
+            .map(recovery::Pending::label)
+            .collect(),
         restored: Vec::new(),
         relinked: Vec::new(),
         unconfirmed: Vec::new(),
@@ -1463,11 +1505,16 @@ async fn relationship_relink(
         recovery::file().display()
     );
     let near_end = (object.as_str(), key.as_str(), near_array);
+    let shape = current_shape(&managed, &object, &key);
     for pending in &reconciled.restore {
-        match restore_one(&ok, &permit, near_end, far_end, pending).await {
-            Ok(true) => out.restored.push(pending.label()),
-            Ok(false) => out.attention.push(format!(
-                "{}: not restored, because the record or its far end changed; re-run to check",
+        match restore_one(&ok, &permit, near_end, far_end, shape.as_ref(), pending).await {
+            Ok(Restored::Confirmed) => out.restored.push(pending.label()),
+            Ok(Restored::OneSided) => out.attention.push(format!(
+                "{}: restored, but the far end does not list it yet; re-run relink to check",
+                pending.label()
+            )),
+            Ok(Restored::NotWritten(why)) => out.attention.push(format!(
+                "{}: not restored, because {why}; re-run to check",
                 pending.label()
             )),
             Err(error) => {
@@ -1548,7 +1595,10 @@ async fn relink_one(
         return Ok(RelinkStep::Changed);
     }
     // The far end too: a has-one reverse that gained a link since the plan
-    // would be displaced by the re-creation.
+    // makes the re-creation fail or come out one-sided (measured: IDM refuses
+    // a link into an occupied has-one with 400, except generic has-one to
+    // has-one, which accepts it one-sided). Neither displaces that link, but
+    // the first leaves this one removed, so do not start.
     let near_collection = format!("managed/{object}");
     let (outcome, slot) = far_outcome(ok.tenant, far_end, &edge.link, &near_collection)
         .await
@@ -1625,9 +1675,12 @@ async fn relink_one(
     let (after, _) = read_edges(ok.tenant, object, &edge.link.from_id, key)
         .await
         .map_err(read("re-created, but the confirming read failed"))?;
+    // Confirmed only with the properties it carried: until then the journal
+    // holds the only copy of them.
     let Some(new) = after.iter().find(|candidate| {
         candidate.link.to_id == edge.link.to_id
             && candidate.link.to_collection == edge.link.to_collection
+            && candidate.properties == edge.properties
     }) else {
         return Ok(RelinkStep::Unconfirmed);
     };
@@ -1642,23 +1695,41 @@ async fn relink_one(
     })
 }
 
+enum Restored {
+    /// Re-created, and the far end lists it.
+    Confirmed,
+    /// Re-created and listed by the record, but not yet by the far end: the
+    /// journal entry is done, the link is one-sided like any other.
+    OneSided,
+    /// Not written; says what changed.
+    NotWritten(String),
+}
+
 /// Re-creates a link an interrupted run removed, under the same guards as
-/// [`relink_one`]: the near record must still lack it (and, has-one, hold
-/// nothing), and a has-one far end must not hold another link. `Ok(false)`
-/// is "not written, something changed".
+/// [`relink_one`]: judged against the field's current `shape`, the near record
+/// must still lack it (and, has-one, hold nothing), and the far record must
+/// exist with a has-one end not holding another link. Confirmed from both
+/// ends afterwards, like a relink.
 async fn restore_one(
     ok: &WriteOk<'_>,
     permit: &relink::RelinkPermit,
     (object, key, near_array): (&str, &str, bool),
     far_end: (&str, &str, bool),
+    shape: Option<&recovery::Shape>,
     pending: &recovery::Pending,
-) -> std::result::Result<bool, String> {
+) -> std::result::Result<Restored, String> {
     let label = pending.label();
     let (current, rev) = read_edges(ok.tenant, object, &pending.from_id, key)
         .await
         .map_err(|error| format!("{label}: recheck failed ({error}); nothing written"))?;
-    if recovery::judge(pending, &current) != recovery::Recovery::Lost {
-        return Ok(false);
+    if recovery::judge(pending, shape, &current) != recovery::Recovery::Lost {
+        return Ok(Restored::NotWritten("the record changed".into()));
+    }
+    if !near_array && !current.is_empty() {
+        // `judge` says the same for an unchanged shape; this does not rely on it.
+        return Ok(Restored::NotWritten(
+            "the has-one property is occupied".into(),
+        ));
     }
     let edge = relink::Edge {
         link: verify::Link {
@@ -1670,11 +1741,16 @@ async fn restore_one(
         properties: pending.properties.clone(),
     };
     let near_collection = format!("managed/{object}");
-    let (_, slot) = far_outcome(ok.tenant, far_end, &edge.link, &near_collection)
+    let (outcome, slot) = far_outcome(ok.tenant, far_end, &edge.link, &near_collection)
         .await
         .map_err(|error| format!("{label}: far-end recheck failed ({error}); nothing written"))?;
+    if outcome == verify::LinkOutcome::FarRecordMissing {
+        return Ok(Restored::NotWritten("the far record is gone".into()));
+    }
     if slot == relink::FarSlot::Occupied {
-        return Ok(false);
+        return Ok(Restored::NotWritten(
+            "the far end is a has-one holding another link".into(),
+        ));
     }
     let [_, mut create] = relink::writes(permit, object, key, near_array, &edge, None)?;
     if !near_array {
@@ -1682,7 +1758,11 @@ async fn restore_one(
     }
     match api::send_relink(ok.tenant, object, &create, ok.confirmed_prod).await {
         Ok(_) => {}
-        Err(error) if is_precondition_failed(&error) => return Ok(false),
+        Err(error) if is_precondition_failed(&error) => {
+            return Ok(Restored::NotWritten(
+                "the record changed before the write".into(),
+            ));
+        }
         Err(error) => {
             return Err(format!(
                 "{label}: restoring it failed ({error}); it stays in the recovery journal"
@@ -1692,17 +1772,31 @@ async fn restore_one(
     let (after, _) = read_edges(ok.tenant, object, &pending.from_id, key)
         .await
         .map_err(|error| format!("{label}: restored, but the confirming read failed ({error})"))?;
-    if recovery::judge(pending, &after) == recovery::Recovery::Settled {
-        recovery::clear(&pending.id).map_err(|error| {
-            format!("{label}: restored, but its recovery entry could not be cleared ({error})")
-        })?;
-        Ok(true)
-    } else {
-        Err(format!(
-            "{label}: the restore was accepted but the record does not list it; it stays in \
-             the recovery journal"
-        ))
+    if recovery::judge(pending, shape, &after) != recovery::Recovery::Settled {
+        return Err(format!(
+            "{label}: the restore was accepted but the record does not list it with its \
+             properties; it stays in the recovery journal"
+        ));
     }
+    recovery::clear(&pending.id).map_err(|error| {
+        format!("{label}: restored, but its recovery entry could not be cleared ({error})")
+    })?;
+    let Some(new) = after.iter().find(|candidate| {
+        candidate.link.to_id == edge.link.to_id
+            && candidate.link.to_collection == edge.link.to_collection
+    }) else {
+        return Ok(Restored::OneSided);
+    };
+    let (outcome, _) = far_outcome(ok.tenant, far_end, &new.link, &near_collection)
+        .await
+        .map_err(|error| {
+            format!("{label}: restored, but the far end could not be read ({error})")
+        })?;
+    Ok(if outcome == verify::LinkOutcome::Resolved {
+        Restored::Confirmed
+    } else {
+        Restored::OneSided
+    })
 }
 
 fn finish_relink(out: &RelinkOutput<'_>, json: bool) -> Result<()> {
@@ -1875,7 +1969,7 @@ async fn probe_pair(
             Ok((held, _)) if !held.is_empty() => {
                 out.note = Some(format!(
                     "untested: managed/{}/{far_id}.{} gained a link after it was chosen; a test \
-                     link would displace it",
+                     link into it is refused or one-sided, so it proves nothing",
                     far.object, far.key
                 ));
                 return out;
@@ -1932,7 +2026,8 @@ async fn probe_pair(
             );
         }
     };
-    let Some(new) = relink::new_link(&before, &after, &far_id).cloned() else {
+    let far_collection = format!("managed/{}", far.object);
+    let Some(new) = relink::new_link(&before, &after, &far_collection, &far_id).cloned() else {
         return fail(
             out,
             format!("the write succeeded but {near_id} does not list the test link"),
@@ -2144,7 +2239,7 @@ async fn relationship_verify(
     // A probe or relink this install interrupted earlier is reported before
     // another probe writes, and counts as a failure until it is resolved.
     let attention = if probing.is_some() {
-        reconcile(&tenant, None).await?.attention
+        reconcile(&tenant, &managed, None).await?.attention
     } else {
         Vec::new()
     };

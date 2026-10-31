@@ -178,8 +178,11 @@ pub struct Plan {
 pub enum FarSlot {
     /// Has-many, or a has-one holding nothing or the link back.
     Free,
-    /// A has-one holding a link to some other record: re-creating this link
-    /// would set the reverse and displace that one.
+    /// A has-one holding a link to some other record. Re-creating this link
+    /// does not displace that one — IDM refuses it with `400 … not available
+    /// for assignment`, or on a generic has-one to has-one pair accepts it
+    /// one-sided (both measured 2026-10-31) — but the refusal would come after
+    /// the removal, leaving this link removed.
     Occupied,
 }
 
@@ -207,8 +210,8 @@ pub fn plan(judged: Vec<(Edge, LinkOutcome, FarSlot)>) -> Plan {
             LinkOutcome::Missing if slot == FarSlot::Occupied => out.skipped.push(Skipped {
                 edge,
                 outcome,
-                reason: "the far end is a has-one that holds another link; re-creating this one \
-                         would displace it",
+                reason: "the far end is a has-one that holds another link; IDM refuses or \
+                         one-sides a re-creation into it, so this link is not removed",
             }),
             LinkOutcome::Missing if edge.link.edge_id.is_none() => out.skipped.push(Skipped {
                 edge,
@@ -436,9 +439,17 @@ pub fn probe_unlink(
 /// The probe's link among `after`: to `far_id`, under an edge id `before`
 /// did not have. A has-many record may already link the same far record, so
 /// matching on the far id alone could judge — and then remove — an old link.
-pub fn new_link<'a>(before: &[Edge], after: &'a [Edge], far_id: &str) -> Option<&'a Edge> {
+pub fn new_link<'a>(
+    before: &[Edge],
+    after: &'a [Edge],
+    far_collection: &str,
+    far_id: &str,
+) -> Option<&'a Edge> {
+    // The whole target identity: on a multi-target field two collections can
+    // hold the same id, and claiming the other one's edge would delete it.
     after.iter().find(|edge| {
-        edge.link.to_id == far_id
+        edge.link.to_collection == far_collection
+            && edge.link.to_id == far_id
             && edge.link.edge_id.is_some()
             && !before
                 .iter()
@@ -687,14 +698,22 @@ mod tests {
     #[test]
     fn the_probe_link_is_the_new_edge_not_an_old_one_to_the_same_record() {
         let before = edges_of(&record(), "owner").unwrap();
+        let target = before[0].link.to_collection.clone();
+        let id = before[0].link.to_id.clone();
         let mut after = before.clone();
+        // Listed first: a new edge to the same id in another collection, as
+        // on a multi-target field another writer's link would be.
+        let mut elsewhere = before[0].clone();
+        elsewhere.link.to_collection = "managed/other".into();
+        elsewhere.link.edge_id = Some("e-other".into());
+        after.insert(0, elsewhere);
         let mut added = before[0].clone();
         added.link.edge_id = Some("e-new".into());
         after.push(added);
         assert_eq!(
-            new_link(&before, &after, "b1").and_then(|edge| edge.link.edge_id.as_deref()),
+            new_link(&before, &after, &target, &id).and_then(|edge| edge.link.edge_id.as_deref()),
             Some("e-new")
         );
-        assert!(new_link(&before, &before, "b1").is_none());
+        assert!(new_link(&before, &before, &target, &id).is_none());
     }
 }

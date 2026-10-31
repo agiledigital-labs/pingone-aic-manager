@@ -128,11 +128,26 @@ impl Pending {
     }
 }
 
+/// The field as `config/managed` declares it now. `None` passed to [`judge`]
+/// means it is no longer a relationship at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shape {
+    pub array: bool,
+    /// `resourceCollection` paths, `managed/<object>`.
+    pub targets: Vec<String>,
+}
+
 /// What the near record says about a pending write pair now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recovery {
     /// The pair finished, or its first write never landed: forget it.
     Settled,
+    /// The field's cardinality or targets changed since the entry was
+    /// written, so neither its write nor its judgement applies.
+    Reshaped,
+    /// Relink: the record links the target again, but not with the custom
+    /// properties the removed link carried. Kept: they exist nowhere else.
+    Altered,
     /// Relink: the link is gone and nothing replaced it — re-create it.
     Lost,
     /// Relink: the link is gone and the has-one property now holds another,
@@ -145,27 +160,47 @@ pub enum Recovery {
     Ambiguous,
 }
 
-/// Judges `pending` against the near record's current links of its property.
-pub fn judge(pending: &Pending, current: &[Edge]) -> Recovery {
+/// Judges `pending` against the field's current `shape` and the near record's
+/// current links of it.
+///
+/// The shape is read now, never taken from the entry: a has-many relink
+/// interrupted, then the field made has-one and given another link, must judge
+/// as occupied — the entry's own `array` would call it `Lost` and the restore
+/// would replace that link.
+pub fn judge(pending: &Pending, shape: Option<&Shape>, current: &[Edge]) -> Recovery {
+    let Some(shape) = shape.filter(|shape| {
+        shape.array == pending.array && shape.targets.contains(&pending.to_collection)
+    }) else {
+        return Recovery::Reshaped;
+    };
     let to_target = |edge: &&Edge| {
         edge.link.to_id == pending.to_id && edge.link.to_collection == pending.to_collection
     };
     match pending.kind {
         Kind::Relink => {
-            // Either the old edge is still there (the remove never landed) or
-            // a link to the same record is (re-created, under a new edge id).
-            if current.iter().any(|edge| to_target(&edge)) {
+            // The old edge still there means the remove never landed; a link
+            // to the same record with the same properties is the re-creation.
+            let mut matching = current.iter().filter(to_target).peekable();
+            if matching.peek().is_none() {
+                if !shape.array && !current.is_empty() {
+                    Recovery::LostAndOccupied
+                } else {
+                    Recovery::Lost
+                }
+            } else if matching.any(|edge| {
+                edge.link.edge_id.is_some() && edge.link.edge_id == pending.edge_id
+                    || edge.properties == pending.properties
+            }) {
                 Recovery::Settled
-            } else if !pending.array && !current.is_empty() {
-                Recovery::LostAndOccupied
             } else {
-                Recovery::Lost
+                Recovery::Altered
             }
         }
         Kind::Probe => match &pending.edge_id {
             Some(edge_id) => {
                 if current
                     .iter()
+                    .filter(to_target)
                     .any(|edge| edge.link.edge_id.as_deref() == Some(edge_id.as_str()))
                 {
                     Recovery::Leftover {
@@ -252,6 +287,17 @@ mod tests {
         }
     }
 
+    fn shape(array: bool) -> Shape {
+        Shape {
+            array,
+            targets: vec!["managed/b".into()],
+        }
+    }
+
+    fn judge_now(pending: &Pending, current: &[Edge]) -> Recovery {
+        judge(pending, Some(&shape(pending.array)), current)
+    }
+
     fn relink(array: bool) -> Pending {
         let mut old = edge("b1", "e-old");
         old.properties.insert("role".into(), json!("owner"));
@@ -259,40 +305,81 @@ mod tests {
     }
 
     #[test]
-    fn a_relink_is_settled_by_a_link_to_the_target_under_any_edge_id() {
+    fn a_relink_is_settled_by_its_own_edge_or_a_faithful_re_creation() {
+        let mut faithful = edge("b1", "e-new");
+        faithful.properties.insert("role".into(), json!("owner"));
         assert_eq!(
-            judge(&relink(true), &[edge("b1", "e-old")]),
-            Recovery::Settled
+            judge_now(&relink(true), &[edge("b1", "e-old")]),
+            Recovery::Settled,
+            "the remove never landed"
+        );
+        assert_eq!(judge_now(&relink(true), &[faithful]), Recovery::Settled);
+        // A bare re-link by someone else: the saved properties are the only
+        // copy, so the entry is kept.
+        assert_eq!(
+            judge_now(&relink(true), &[edge("b1", "e-new")]),
+            Recovery::Altered
+        );
+        // The edge is gone and the record links something else. Has-many:
+        // re-create alongside it. Has-one: that would displace it.
+        assert_eq!(
+            judge_now(&relink(true), &[edge("b2", "e9")]),
+            Recovery::Lost
         );
         assert_eq!(
-            judge(&relink(true), &[edge("b1", "e-new")]),
-            Recovery::Settled
-        );
-        // The discriminating case: the edge is gone and the record links
-        // something else. Has-many: re-create alongside it. Has-one: that
-        // would displace it.
-        assert_eq!(judge(&relink(true), &[edge("b2", "e9")]), Recovery::Lost);
-        assert_eq!(
-            judge(&relink(false), &[edge("b2", "e9")]),
+            judge_now(&relink(false), &[edge("b2", "e9")]),
             Recovery::LostAndOccupied
         );
-        assert_eq!(judge(&relink(false), &[]), Recovery::Lost);
+        assert_eq!(judge_now(&relink(false), &[]), Recovery::Lost);
+    }
+
+    #[test]
+    fn an_entry_is_judged_against_the_field_as_it_is_now() {
+        // Interrupted while has-many; the field is now has-one and holds
+        // another link. The entry's own flag would say `Lost`.
+        let pending = relink(true);
+        let occupied = [edge("b2", "e9")];
+        assert_eq!(
+            judge(&pending, Some(&shape(false)), &occupied),
+            Recovery::Reshaped
+        );
+        let retargeted = Shape {
+            array: true,
+            targets: vec!["managed/c".into()],
+        };
+        assert_eq!(judge(&pending, Some(&retargeted), &[]), Recovery::Reshaped);
+        assert_eq!(judge(&pending, None, &[]), Recovery::Reshaped);
+        assert_eq!(judge(&pending, Some(&shape(true)), &[]), Recovery::Lost);
     }
 
     #[test]
     fn a_probe_is_only_a_leftover_under_its_own_edge_id() {
         let mut probe = Pending::probe("sandbox", ("a", "k", true), "a1", "b", "b1");
         // Never read back: a link to the far record may predate the probe.
-        assert_eq!(judge(&probe, &[edge("b1", "e-real")]), Recovery::Ambiguous);
-        assert_eq!(judge(&probe, &[]), Recovery::Settled);
+        assert_eq!(
+            judge_now(&probe, &[edge("b1", "e-real")]),
+            Recovery::Ambiguous
+        );
+        assert_eq!(judge_now(&probe, &[]), Recovery::Settled);
         probe.edge_id = Some("e-probe".into());
         assert_eq!(
-            judge(&probe, &[edge("b1", "e-real")]),
+            judge_now(&probe, &[edge("b1", "e-real")]),
             Recovery::Settled,
             "a link to the same record under another edge is not the probe's"
         );
+        let mut elsewhere = edge("b1", "e-probe");
+        elsewhere.link.to_collection = "managed/c".into();
+        let both = Shape {
+            array: true,
+            targets: vec!["managed/b".into(), "managed/c".into()],
+        };
         assert_eq!(
-            judge(&probe, &[edge("b1", "e-probe")]),
+            judge(&probe, Some(&both), &[elsewhere]),
+            Recovery::Settled,
+            "an edge id recorded against another target is not the probe's"
+        );
+        assert_eq!(
+            judge_now(&probe, &[edge("b1", "e-probe")]),
             Recovery::Leftover {
                 edge_id: "e-probe".into()
             }

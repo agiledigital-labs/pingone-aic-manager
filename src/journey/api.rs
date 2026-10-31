@@ -255,15 +255,19 @@ fn node_refs(tree: &Value) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
-/// The tree and every node it lists, or an error naming each node that could
-/// not be read.
+/// The tree and every node it lists that exists, or an error naming each node
+/// that could not be read.
 ///
-/// **All or nothing.** This used to warn and leave an unread node out, which
-/// every caller then read as content: `journey status` called it remote
-/// drift, `journey diff` showed the node deleted, and `pull` wrote an export
-/// — and a snapshot — that a later status compared equal to a tenant it had
-/// never fully read. Measured 2026-10-31: every node of every journey in
-/// alpha and bravo (960) reads 200, so refusing costs nothing observed.
+/// **A 404 is an answer; anything else is not.** This used to warn and leave
+/// any unread node out, which every caller then read as content: `journey
+/// status` called a 503 remote drift, `journey diff` showed the node deleted,
+/// and `pull` wrote an export — and a snapshot — that a later status compared
+/// equal to a tenant it had never fully read. So any failure other than 404
+/// fails the whole export. A node the tree lists that answers 404 (measured
+/// 2026-10-31: `404 Not Found` for a node id that does not exist) really is
+/// absent, and is left out: that is what lets `journey push --force` re-create
+/// it from a local export. Every node of every journey in alpha and bravo (960)
+/// read 200 the same day, so neither case is routine.
 async fn assemble_export_with<F, Fut>(tree: Value, mut fetch_node: F) -> Result<JourneyExport>
 where
     F: FnMut(String, String) -> Fut,
@@ -277,14 +281,14 @@ where
             Ok(node) => {
                 nodes.insert(id, node);
             }
+            Err(Error::Api { status: 404, .. }) => {}
             Err(error) => unread.push(format!("{node_type}/{id} ({error})")),
         }
     }
     if !unread.is_empty() {
         let name = tree.get("_id").and_then(Value::as_str).unwrap_or("?");
         return Err(Error::Config(format!(
-            "journey {name}: could not read {} node(s), so the journey was not compared or \
-             written: {}",
+            "journey {name}: could not read {} node(s) from the tenant: {}",
             unread.len(),
             unread.join("; ")
         )));
@@ -489,31 +493,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_node_fetch_fails_the_export_and_names_the_node() {
+    async fn a_failed_node_fetch_fails_the_export_but_an_absent_node_does_not() {
         let tree = json!({
             "nodes": {
                 "good": {"nodeType": "PageNode"},
-                "missing": {"nodeType": "OddBuiltInNode"}
+                "gone": {"nodeType": "PageNode"},
+                "busy": {"nodeType": "OddBuiltInNode"}
             }
         });
-
-        let export = assemble_export_with(tree, |_, node_id| async move {
-            if node_id == "missing" {
-                Err(Error::Api {
-                    status: 404,
-                    body: "not found".into(),
-                })
-            } else {
-                Ok(json!({"_id": node_id}))
+        let fetch = |fail_busy: bool| {
+            move |_: String, node_id: String| async move {
+                match node_id.as_str() {
+                    "gone" => Err(Error::Api {
+                        status: 404,
+                        body: "Not Found".into(),
+                    }),
+                    "busy" if fail_busy => Err(Error::Api {
+                        status: 503,
+                        body: "unavailable".into(),
+                    }),
+                    _ => Ok(json!({"_id": node_id})),
+                }
             }
-        })
-        .await;
+        };
 
-        let error = export
+        let error = assemble_export_with(tree.clone(), fetch(true))
+            .await
             .expect_err("an unread node is not an absent one")
             .to_string();
-        assert!(error.contains("OddBuiltInNode/missing"), "{error}");
-        assert!(!error.contains("PageNode/good"), "{error}");
+        assert!(error.contains("OddBuiltInNode/busy"), "{error}");
+        assert!(!error.contains("gone"), "{error}");
+
+        let export = assemble_export_with(tree, fetch(false)).await.unwrap();
+        let mut ids: Vec<&String> = export.nodes.keys().collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            ["busy", "good"],
+            "the 404 node is absent, not an error"
+        );
     }
 
     #[test]

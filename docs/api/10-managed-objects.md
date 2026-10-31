@@ -783,6 +783,20 @@ link write changes is in the `_rev`. `aic managed relationship relink` and
 property immediately before it, which closes the window on a mapped end and
 only narrows it on a generic one.
 
+**A link into an occupied has-one is refused, not displacing.** Measured the
+same day, writing from the near end to a far record whose has-one reverse
+already held another link:
+
+| Pair                                      | Write                              | Result                                                                                       |
+| ----------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
+| mapped has-one ↔ has-one                  | near `PATCH replace`               | `400` "Field '<far key>' of managed object '<id>' is not null, and thus not available for assignment since there is an existing relationship to '<other>'"; nothing written |
+| generic has-many → has-one reverse        | near `POST …?_action=create`       | the same `400`; nothing written                                                              |
+| generic has-one ↔ has-one                 | near `PATCH replace`               | **`200`**: the near record links the far record, the far record still links the other one — one-sided, nothing displaced |
+
+So a near-side write can never take a far has-one's link away; the worst a
+race on the far end causes is a refusal or a one-sided link. Not measured: a
+mapped has-many → has-one reverse.
+
 Two reads distinguish a record that does not exist:
 `managed/<obj>/<id>?_fields=_id` is `404` "No Such Entry", but
 `managed/<obj>/<id>/<rel>?_queryFilter=true` on a has-many property is `200`
@@ -1547,8 +1561,10 @@ on create, or when actually rotating it.
   stale one (mapped 412 and unchanged; generic 200 and changed), `PATCH remove`
   with the stale one (same split), and a far-end write's effect on the near
   `_rev` (mapped: moved). A missing record's relationship collection read
-  `200` empty; its `_fields=_id` read `404`. See "Conditional link writes and
-  `_rev`".
+  `200` empty; its `_fields=_id` read `404`. A near-side write into an
+  occupied far has-one on three shapes (mapped has-one ↔ has-one, generic
+  has-many → has-one, generic has-one ↔ has-one), with both ends read after
+  each. See "Conditional link writes and `_rev`".
 - Date: 2026-10-31 — relationship activation and re-linking, sandbox, throwaway
   `zzevalqa`/`zzevalqb` generic pairs. The probe's 404 → 200 (has-many) and
   404 → 501 (has-one) flip observed through `aic managed relationship set` on

@@ -870,6 +870,12 @@ it in the confirming-read comparison rather than normalizing it away.
 
 ## Verified against
 
+- Date: 2026-10-31 — node reads, realms `alpha` and `bravo`: every node of
+  every journey (960) read `200` through `aic journey status`; a `GET` of
+  `…/authenticationtrees/nodes/PageNode/<an id that does not exist>` is
+  `404 Not Found`. So `aic` treats a node 404 as a node deleted on the tenant
+  and any other failure as an unread node, which fails the export rather than
+  omitting the node.
 - Date: 2026-09-14 — tree `description` round trip, realm `alpha`: throwaway
   trees created with 202- and 1024-character and multibyte descriptions, read
   back and compared byte-for-byte, then deleted. No reproduce script — the
