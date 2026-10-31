@@ -30,6 +30,7 @@ pub mod cli;
 pub mod gate;
 pub mod gitfind;
 pub mod idm;
+pub mod ids;
 pub mod managed_hooks;
 pub mod managed_types;
 pub mod schedule;
@@ -53,6 +54,20 @@ pub struct NewScriptOpts {
     pub language: Option<String>,
     pub evaluator_version: Option<String>,
     pub description: Option<String>,
+    /// A caller-chosen AM script UUID (`script create --id`), so the tenant
+    /// and a repository that names scripts by id stay in step. IDM ids derive
+    /// from the name and cannot be chosen.
+    pub id: Option<String>,
+}
+
+/// Refuses `create --id` for a kind whose id the caller cannot choose.
+pub(crate) fn refuse_chosen_id(opts: &NewScriptOpts) -> Result<()> {
+    match &opts.id {
+        Some(_) => Err(crate::Error::Config(
+            "--id is only valid for AM scripts; IDM ids derive from the name".into(),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// The script-like resource families we sync. The single dispatch point for
