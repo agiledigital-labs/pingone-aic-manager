@@ -566,7 +566,8 @@ fn merge_package_json(existing: &str, template: &str) -> Result<String> {
         // key-by-key at every depth: the template wins where it has an
         // opinion, extras ride along. Depth matters for `overrides`, whose
         // `eslint` entry is itself an object a user may have added to.
-        merge_object_value(&mut merged, key, value);
+        let overrides = key == "overrides";
+        merge_object_value(&mut merged, key, value, overrides);
     }
     Ok(format!(
         "{}\n",
@@ -576,16 +577,36 @@ fn merge_package_json(existing: &str, template: &str) -> Result<String> {
 
 /// Set `key` to `value` in `into`, except that where both sides are objects
 /// the template's entries are merged into the user's, recursively.
+///
+/// Inside `overrides` a string and an object can mean the same thing: npm
+/// reads `"pkg": "1.0.0"` as shorthand for `"pkg": { ".": "1.0.0" }`. So
+/// there a string meeting an object is lifted to the `"."` form first, and
+/// neither side's other entries are lost to the shape difference.
 fn merge_object_value(
     into: &mut serde_json::Map<String, serde_json::Value>,
     key: String,
     value: serde_json::Value,
+    overrides: bool,
 ) {
-    use serde_json::Value;
+    use serde_json::{Map, Value};
+    let lift = |version: String| {
+        Value::Object(Map::from_iter([(".".to_string(), Value::String(version))]))
+    };
+    let value = match (into.get_mut(&key), value) {
+        (Some(mine @ Value::String(_)), theirs @ Value::Object(_)) if overrides => {
+            let Value::String(version) = mine.take() else {
+                unreachable!("matched as a string");
+            };
+            *mine = lift(version);
+            theirs
+        }
+        (Some(Value::Object(_)), Value::String(version)) if overrides => lift(version),
+        (_, value) => value,
+    };
     match (into.get_mut(&key), value) {
         (Some(Value::Object(mine)), Value::Object(theirs)) => {
             for (inner_key, inner_value) in theirs {
-                merge_object_value(mine, inner_key, inner_value);
+                merge_object_value(mine, inner_key, inner_value, overrides);
             }
         }
         (_, value) => {
@@ -1795,6 +1816,37 @@ mod tests {
             value["overrides"]["@typescript-eslint/typescript-estree"],
             template["overrides"]["@typescript-eslint/typescript-estree"]
         );
+    }
+
+    /// npm reads a string override as the `"."` entry of the object form, so
+    /// a user's string meeting the template's object, or a user's object
+    /// meeting the template's string, must keep the user's other entries.
+    #[test]
+    fn merge_reconciles_string_and_object_override_forms() {
+        let template: serde_json::Value = serde_json::from_str(TS_PACKAGE_JSON).unwrap();
+        let estree = "@typescript-eslint/typescript-estree";
+        let framework = template["overrides"][estree]["minimatch"].clone();
+
+        // The user's shorthand fork of an entry the template writes an object to.
+        let existing = format!(
+            r#"{{ "overrides": {{ "{estree}": "npm:@company/typescript-estree@8.72.1" }} }}"#
+        );
+        let merged = merge_package_json(&existing, TS_PACKAGE_JSON).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(
+            value["overrides"][estree]["."],
+            "npm:@company/typescript-estree@8.72.1"
+        );
+        assert_eq!(value["overrides"][estree]["minimatch"], framework);
+
+        // The user's object form of an entry the template writes a string to.
+        let existing = r#"{ "overrides": { "eslint": { "minimatch": {
+            ".": "^10.0.0", "brace-expansion": "^5.0.0" } } } }"#;
+        let merged = merge_package_json(existing, TS_PACKAGE_JSON).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let minimatch = &value["overrides"]["eslint"]["minimatch"];
+        assert_eq!(minimatch["."], framework);
+        assert_eq!(minimatch["brace-expansion"], "^5.0.0");
     }
 
     #[test]
