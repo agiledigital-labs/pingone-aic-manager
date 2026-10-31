@@ -268,6 +268,31 @@ pub enum RelationshipCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Save a relationship's definition — both ends when it declares a
+    /// reverse — so `restore` can merge its metadata back after the console
+    /// recreates it. Writes JSON to stdout, or to --output.
+    Snapshot {
+        field: String,
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Merge a snapshot's `title`, `description` and `query.fields` back
+    /// into the relationship ends it names. Changes nothing else.
+    Restore {
+        file: std::path::PathBuf,
+        /// Report what would change; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Read-only: check each relationship pair's two ends agree, in
     /// config/managed and config/repo.ds, and sample links from both ends.
     /// Exits non-zero on any disagreement or unresolved link.
@@ -867,6 +892,110 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 yes,
             });
             relationship_verify(target, sample, scan, probe, tenant, json).await
+        }
+        RelationshipCommand::Snapshot {
+            field,
+            output,
+            tenant,
+        } => {
+            let (object, key) = parse_object_key(&field)?;
+            let tenant = tenant_for(tenant)?;
+            let managed = api::get_managed(&tenant).await?;
+            let property_of = |object: &str, key: &str| {
+                api::object_named(&managed, object)
+                    .ok()
+                    .and_then(state::properties)
+                    .and_then(|properties| properties.get(key))
+                    .cloned()
+            };
+            let property = property_of(&object, &key)
+                .filter(state::is_relationship_property)
+                .ok_or_else(|| crate::Error::Config(format!("{field} is not a relationship")))?;
+            let mut ends = vec![spec::SnapshotEnd {
+                object: object.clone(),
+                key: key.clone(),
+                property: property.clone(),
+            }];
+            if let Some(reverse_key) = ops::declared_reverse_key(&property)
+                && let [target] = ops::relationship_targets(&property)[..]
+                && let Some(target) = target.strip_prefix("managed/")
+                && let Some(reverse) = property_of(target, reverse_key)
+            {
+                ends.push(spec::SnapshotEnd {
+                    object: target.to_string(),
+                    key: reverse_key.to_string(),
+                    property: reverse,
+                });
+            }
+            let text = serde_json::to_string_pretty(&spec::snapshot_document(&ends))?;
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, format!("{text}\n")).map_err(|error| {
+                        crate::Error::Config(format!("write {}: {error}", path.display()))
+                    })?;
+                    eprintln!(
+                        "saved {} to {}",
+                        ends.iter()
+                            .map(|end| format!("{}.{}", end.object, end.key))
+                            .collect::<Vec<_>>()
+                            .join(" and "),
+                        path.display()
+                    );
+                }
+                None => println!("{text}"),
+            }
+            Ok(())
+        }
+        RelationshipCommand::Restore {
+            file,
+            dry_run,
+            tenant,
+            yes,
+            json,
+        } => {
+            let text = std::fs::read_to_string(&file).map_err(|error| {
+                crate::Error::Config(format!("read {}: {error}", file.display()))
+            })?;
+            let parsed: Value = serde_json::from_str(&text).map_err(|error| {
+                crate::Error::Config(format!("parse {}: {error}", file.display()))
+            })?;
+            let ends = spec::parse_snapshot(&parsed).map_err(crate::Error::Config)?;
+            let tenant = tenant_for(tenant)?;
+            let doc = api::get_managed(&tenant).await?;
+            let mut updated = doc.clone();
+            let mut changes = Vec::new();
+            for end in &ends {
+                let (next, mut more) = ops::apply_relationship_metadata(
+                    &updated,
+                    &end.object,
+                    &end.key,
+                    &end.property,
+                )
+                .map_err(crate::Error::Config)?;
+                updated = next;
+                changes.append(&mut more);
+            }
+            for change in &changes {
+                eprintln!("{}{change}", if dry_run { "would set " } else { "set " });
+            }
+            if changes.is_empty() {
+                eprintln!("nothing to restore: the metadata already matches the snapshot");
+            } else if !dry_run {
+                let ok = ensure_prod_confirmed(&tenant, yes)?;
+                record_config_undo(
+                    &tenant,
+                    &doc,
+                    &updated,
+                    format!("Revert relationship restore from {}", file.display()),
+                )?;
+                let expect = relationship_expectations(&doc, &updated)?;
+                put_managed(&ok, &doc, updated.clone(), &expect).await?;
+                confirmation("relationship metadata restored");
+            }
+            output(
+                json,
+                &serde_json::json!({ "changes": changes, "dry_run": dry_run }),
+            )
         }
         RelationshipCommand::Relink {
             field,
