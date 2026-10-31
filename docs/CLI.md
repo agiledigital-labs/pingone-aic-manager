@@ -841,7 +841,7 @@ writer, any failed read means "unchanged" was not observed, and a failed send
 is never assumed not to have landed — each exits non-zero naming the backup.
 It edits only `genericMapping."managed/<obj>"` and refuses a mapping found
 only under another section such as `explicitMapping`, which `verify` and the
-write guards read as well. There is no undo
+write guards read as well, or a key mapped in more than one section. There is no undo
 entry: the backup is the way back (`docs/api/10-managed-objects.md`,
 "Removing a stale mapping").
 

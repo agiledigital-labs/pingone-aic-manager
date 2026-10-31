@@ -147,7 +147,7 @@ fn mapping_for(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
 }
 
 /// `entry` as a relationship mapping, if it is one.
-fn relationship_mapping(entry: &Value) -> Option<Mapping> {
+pub(crate) fn relationship_mapping(entry: &Value) -> Option<Mapping> {
     let kind = entry.get("type").and_then(Value::as_str)?;
     if kind != "reference" && kind != "reverseReference" {
         return None;
@@ -228,8 +228,17 @@ pub(crate) fn all_relationship_mappings(repo_ds: &Value) -> Vec<Located> {
 /// `genericMapping`. The sandbox maps four managed objects under
 /// `explicitMapping`, and a guard that read only `genericMapping` took
 /// "mapped there" for "not mapped" and let a retarget or a config write
-/// through (Astra round 8). Where two sections name the same key the first
-/// in document order is kept; such a document has not been seen.
+/// through (Astra round 8).
+///
+/// Where two sections name the same key, which one IDM honours is unknown
+/// (no such document has been seen), so the merge is **conservative for the
+/// guards**: a relationship mapping in any section wins over a
+/// non-relationship one, so a conflict never reads as "not mapped" (Sol/Astra
+/// round 9). Otherwise the first section in iteration order — sorted by name,
+/// as `serde_json` here does not preserve document order — is kept. This is
+/// for guards and reports only: `relationship repair`, which deletes one
+/// specific entry, refuses a key mapped in more than one section
+/// ([`sections_mapping`]).
 pub(crate) fn mappings_of(repo_ds: &Value, object: &str) -> Option<serde_json::Map<String, Value>> {
     let resource = format!("managed/{object}");
     let mut out: Option<serde_json::Map<String, Value>> = None;
@@ -241,11 +250,42 @@ pub(crate) fn mappings_of(repo_ds: &Value, object: &str) -> Option<serde_json::M
         {
             let merged = out.get_or_insert_with(serde_json::Map::new);
             for (key, value) in entries {
-                merged.entry(key.clone()).or_insert_with(|| value.clone());
+                match merged.get(key) {
+                    None => {
+                        merged.insert(key.clone(), value.clone());
+                    }
+                    Some(kept)
+                        if relationship_mapping(kept).is_none()
+                            && relationship_mapping(value).is_some() =>
+                    {
+                        merged.insert(key.clone(), value.clone());
+                    }
+                    Some(_) => {}
+                }
             }
         }
     }
     out
+}
+
+/// The `resourceMapping` sections holding an entry for `object.key`, of any
+/// type.
+pub(crate) fn sections_mapping(repo_ds: &Value, object: &str, key: &str) -> Vec<String> {
+    let resource = format!("managed/{object}");
+    repo_ds
+        .get("resourceMapping")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(_, section)| {
+            section
+                .get(&resource)
+                .and_then(|entry| entry.get("properties"))
+                .and_then(|properties| properties.get(key))
+                .is_some()
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// `object`'s entries in `genericMapping` alone — the one section
@@ -1165,6 +1205,43 @@ mod tests {
                 .any(|line| line.starts_with("STALE") && line.contains("a.gone")),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn a_conflict_between_sections_never_reads_as_unmapped() {
+        // Sol/Astra round 9: a scalar in one section must not hide a
+        // reference in the other, whichever section sorts first.
+        let scalar = json!({"type": "string", "ldapAttribute": "x"});
+        for (generic, explicit) in [(reference(), scalar.clone()), (scalar.clone(), reference())] {
+            let mut repo_ds = repo(None, None);
+            repo_ds["resourceMapping"]["genericMapping"]["managed/a"] =
+                json!({"properties": {"owner": generic}});
+            repo_ds["resourceMapping"]["explicitMapping"] =
+                json!({"managed/a": {"properties": {"owner": explicit}}});
+            assert!(mapped(&repo_ds, "a", "owner").is_some());
+            let error =
+                repoint_refusal(&repo_ds, "a", "owner", "b", Some("owned"), "c").unwrap_err();
+            assert!(error.contains("from b to c"), "{error}");
+        }
+    }
+
+    #[test]
+    fn one_objects_keys_split_across_sections_are_all_read() {
+        // A union, not "the first section that names the object".
+        let mut repo_ds = repo(None, None);
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"] =
+            json!({"properties": {"gone2": reference()}});
+        repo_ds["resourceMapping"]["explicitMapping"] =
+            json!({"managed/a": {"properties": {"gone1": reference()}}});
+        let lines = storage(&repo_ds);
+        for key in ["a.gone1", "a.gone2"] {
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with("STALE") && line.contains(key)),
+                "{key}: {lines:?}"
+            );
+        }
     }
 
     #[test]

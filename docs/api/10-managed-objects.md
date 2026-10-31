@@ -644,8 +644,11 @@ sends the whole document; and polls for up to 30 s until a read equals what
 was sent. A read still equal to the old document — the PATCH behaviour above
 — or to a third document is reported and exits non-zero, judged over every
 read rather than the last, as does a failed send, which is never assumed not
-to have landed. Only `genericMapping."managed/<obj>"` is edited, and a mapping
-found only under another section is refused. The sandbox's `repo.ds` also
+to have landed. Only `genericMapping."managed/<obj>"` is edited: a mapping
+found only under another section is refused, and so is a key mapped in more
+than one section, because which copy IDM honours is unmeasured and removing
+one would not leave the key unmapped. Where two sections disagree, the
+guards read a relationship mapping in either as "mapped". The sandbox's `repo.ds` also
 maps four objects (`alpha_group`, `bravo_group`, `teammember`,
 `teammembergroup`) under `explicitMapping` — none of them declared in its
 `config/managed` — so an object's own mappings are read from **every**
