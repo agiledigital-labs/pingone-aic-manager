@@ -363,7 +363,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             let expect = [api::ConfigConfirm::ObjectPresent { name: name.clone() }];
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {name} created"));
-            output(json, &updated)
+            output(json, api::object_named(&updated, &name)?)
         }
         ObjectCommand::Rename {
             old,
@@ -390,7 +390,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             ];
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {old} renamed to {new}"));
-            output(json, &updated)
+            output(json, api::object_named(&updated, &new)?)
         }
         ObjectCommand::Delete {
             name,
@@ -412,7 +412,14 @@ async fn object(command: ObjectCommand) -> Result<()> {
             for change in &inbound {
                 eprintln!("also changed: {}", change.describe(&name));
             }
-            output(json, &updated)
+            untrack_hooks(&tenant, &name);
+            output(
+                json,
+                &serde_json::json!({
+                    "deleted": name,
+                    "changed": changed_objects(&doc, &updated)?,
+                }),
+            )
         }
     }
 }
@@ -667,7 +674,10 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let expect = relationship_expectations(&doc, &updated)?;
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
-            output(json, &updated)
+            output(
+                json,
+                &serde_json::json!({ "changed": changed_objects(&doc, &updated)? }),
+            )
         }
         RelationshipCommand::Delete {
             field,
@@ -726,7 +736,10 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     leftovers.join(", ")
                 );
             }
-            output(json, &updated)
+            output(
+                json,
+                &serde_json::json!({ "changed": changed_objects(&doc, &updated)? }),
+            )
         }
         RelationshipCommand::Verify {
             target,
@@ -1167,6 +1180,26 @@ fn refuse_shipped(object: &Value, action: &str) -> Result<()> {
         Ok(())
     }
 }
+/// After a delete, stop tracking the object's hooks: their slots went with
+/// it. Reported, never fatal — the tenant write already landed.
+fn untrack_hooks(tenant: &str, object: &str) {
+    match crate::scripts::sync::forget_object_hooks(tenant, object) {
+        Ok(forgotten) if forgotten.is_empty() => {}
+        Ok(forgotten) => eprintln!(
+            "untracked hook(s) {} from script sync (local files kept)",
+            forgotten
+                .iter()
+                .map(|name| format!("managed/{name}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Err(error) => eprintln!(
+            "note: could not untrack {object}'s hooks from script sync ({error}); \
+             `aic script sync --resolve remote --force` forgets them"
+        ),
+    }
+}
+
 fn confirmation(message: &str) {
     eprintln!("{message}; undo it from the TUI history overlay");
 }
@@ -1181,18 +1214,32 @@ async fn put_managed(
 }
 
 fn relationship_expectations(previous: &Value, updated: &Value) -> Result<Vec<api::ConfigConfirm>> {
-    Ok(api::objects(updated)?
-        .iter()
+    Ok(changed_objects(previous, updated)?
+        .into_iter()
         .filter_map(|object| {
-            let name = object.get("name").and_then(Value::as_str)?;
-            let before = api::object_named(previous, name).ok()?;
-            (!api::object_content_equal(before, object)).then(|| {
-                api::ConfigConfirm::ObjectContent {
-                    name: name.to_string(),
-                    content: object.clone(),
-                }
+            let name = object.get("name").and_then(Value::as_str)?.to_string();
+            Some(api::ConfigConfirm::ObjectContent {
+                name,
+                content: object,
             })
         })
+        .collect())
+}
+
+/// The objects present on both sides whose content a write changed — what a
+/// multi-object verb's `--json` prints, rather than the whole document
+/// (67 objects, 1.8 MB, on one operator's tenant).
+fn changed_objects(previous: &Value, updated: &Value) -> Result<Vec<Value>> {
+    Ok(api::objects(updated)?
+        .iter()
+        .filter(|object| {
+            object
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|name| api::object_named(previous, name).ok())
+                .is_some_and(|before| !api::object_content_equal(before, object))
+        })
+        .cloned()
         .collect())
 }
 fn output(json_output: bool, value: &Value) -> Result<()> {
@@ -1230,6 +1277,28 @@ mod tests {
     use super::*;
     use crate::cli::Cli;
     use clap::Parser;
+
+    /// A multi-object verb's `--json` names only what it changed: not an
+    /// untouched object, and not one that exists on one side only (a created
+    /// or deleted object is reported by its own field).
+    #[test]
+    fn changed_objects_are_the_ones_present_on_both_sides_and_different() {
+        let before = serde_json::json!({"objects": [
+            {"name": "a", "schema": {"title": "A"}},
+            {"name": "b", "schema": {"title": "B"}},
+            {"name": "gone", "schema": {}},
+        ]});
+        let after = serde_json::json!({"objects": [
+            {"name": "a", "schema": {"title": "A2"}},
+            {"name": "b", "schema": {"title": "B"}},
+            {"name": "new", "schema": {}},
+        ]});
+        let changed = changed_objects(&before, &after).unwrap();
+        assert_eq!(
+            changed,
+            [serde_json::json!({"name": "a", "schema": {"title": "A2"}})]
+        );
+    }
 
     #[test]
     fn object_key_parser_rejects_missing_or_extra_dots() {

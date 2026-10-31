@@ -1881,11 +1881,20 @@ pub fn apply_delete_object_result(
         .remove(&(tenant.clone(), object_name.clone()));
     match result {
         Ok(doc) => {
+            // The object's hook slots went with it; tracking them would leave
+            // each one in `script status` as missing.
+            let untracked = match crate::scripts::sync::forget_object_hooks(&tenant, &object_name) {
+                Ok(forgotten) if forgotten.is_empty() => String::new(),
+                Ok(forgotten) => {
+                    format!(" Untracked {} hook(s) from script sync.", forgotten.len())
+                }
+                Err(error) => format!(" Could not untrack its hooks from script sync: {error}."),
+            };
             app.managed.data.insert(tenant, LoadState::Loaded(doc));
             let suffix = if inbound_count == 0 {
-                String::new()
+                untracked
             } else {
-                format!(" Also changed {inbound_count} inbound relationship(s).")
+                format!(" Also changed {inbound_count} inbound relationship(s).{untracked}")
             };
             app.push_toast(
                 ToastKind::Success,
