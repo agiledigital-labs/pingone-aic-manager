@@ -477,6 +477,9 @@ pub struct StatusEntry {
     pub local_sha256: Option<String>,
     /// SHA-256 of the tenant's decoded source, when it was fetched.
     pub remote_sha256: Option<String>,
+    /// Who last wrote the tenant's copy and when, as AM stamps it. `None` for
+    /// IDM kinds, which record no author, and whenever the remote was not read.
+    pub modified: Option<super::authorship::Change>,
 }
 
 /// Which synced scripts `status` reports on.
@@ -1720,6 +1723,7 @@ async fn status_with(
             state,
             local_sha256: local.map(sha256_hex),
             remote_sha256: remote.map(sha256_hex),
+            modified: None,
         };
         // An exact ref is a question about one script, often "is my build
         // deployed?", so its remote digest is worth one GET even when there is
@@ -1758,13 +1762,24 @@ async fn status_with(
             out.push(row(ScriptState::LocalMissing, None, remote.as_deref()));
             continue;
         };
+        let mut modified = None;
         let remote_src = io
             .fetch(r.kind, tenant, realm, &r.id)
             .await
-            .and_then(|remote| r.kind.decode_source(&remote.raw_config));
+            .and_then(|remote| {
+                if r.kind.has_authorship() {
+                    modified = Some(
+                        super::authorship::Authorship::from_config(&remote.raw_config).modified,
+                    );
+                }
+                r.kind.decode_source(&remote.raw_config)
+            });
         let remote_bytes = remote_src.as_ref().ok().cloned();
         let state = classify_status(&snapshot_src, &local_src, remote_src)?;
-        out.push(row(state, Some(&local_src), remote_bytes.as_deref()));
+        out.push(StatusEntry {
+            modified,
+            ..row(state, Some(&local_src), remote_bytes.as_deref())
+        });
     }
     let untracked = match filter {
         StatusFilter::Exact { kind, realm, name } if out.is_empty() => {
