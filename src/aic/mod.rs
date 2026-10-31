@@ -93,13 +93,15 @@ impl AicClient {
         Ok(token)
     }
 
-    /// `GET` a JSON document. A `502`/`503`/`504` is retried, twice, with a
-    /// short backoff: operators saw intermittent gateway errors on plain
-    /// config reads that an immediate manual retry cleared. Only here — a
-    /// read is idempotent, and a write that answered a gateway error may
-    /// still have landed, so writes are never retried.
+    /// `GET` a JSON document. On a [`retry_safe`] path a `502`/`503`/`504`
+    /// is retried, twice, with a short backoff: operators saw intermittent
+    /// gateway errors on plain config reads that an immediate manual retry
+    /// cleared. A gateway error does not say the request did not run, so
+    /// only a path known to have no side effects is retried — a `GET` of a
+    /// custom endpoint runs its script — and writes never are.
     pub async fn get(&self, path: &str, api_version: Option<&str>) -> Result<serde_json::Value> {
         let url = self.url(path);
+        let retryable = retry_safe(path);
         let mut attempt = 0;
         loop {
             let token = self.bearer().await?;
@@ -112,7 +114,7 @@ impl AicClient {
                 .aic_transaction_id()
                 .send()
                 .await?;
-            if let Some(delay) = gateway_retry_delay(resp.status(), attempt) {
+            if retryable && let Some(delay) = gateway_retry_delay(resp.status(), attempt) {
                 tracing::warn!(status = %resp.status(), path, attempt, "retrying GET after a gateway error");
                 attempt += 1;
                 tokio::time::sleep(delay).await;
@@ -310,6 +312,30 @@ impl AicClient {
 
 /// Backoff before retry `attempt + 1` of a read that answered `status`, or
 /// `None` to stop: only a gateway error, and at most two retries.
+/// Whether a `GET` of `path` may be sent again after a gateway error.
+///
+/// An allowlist, because the HTTP verb is no guarantee here: a `GET` of
+/// `/openidm/endpoint/<name>` runs that endpoint's script, a managed record
+/// read runs `onRead`/`onRetrieve` hooks, a connector read runs connector
+/// scripts, and any of them may write or send. What is listed only reads
+/// stored configuration or schema. `_action` is a command whatever the path.
+fn retry_safe(path: &str) -> bool {
+    const READS: [&str; 6] = [
+        "/openidm/config/",
+        "/openidm/schema/",
+        "/am/json/",
+        "/environment/",
+        "/monitoring/",
+        "/openidm/info/",
+    ];
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let action = query.split('&').any(|pair| pair.starts_with("_action="));
+    !action
+        && READS
+            .iter()
+            .any(|prefix| route == prefix.trim_end_matches('/') || route.starts_with(prefix))
+}
+
 fn gateway_retry_delay(status: reqwest::StatusCode, attempt: u32) -> Option<std::time::Duration> {
     const DELAYS_MS: [u64; 2] = [250, 750];
     let gateway = matches!(status.as_u16(), 502..=504);
@@ -562,7 +588,7 @@ mod tests {
 
     /// Drives the real `get` against a server that answers each status in
     /// `script` in turn, and returns the result and how many requests arrived.
-    async fn get_against(script: &'static [u16]) -> (Result<serde_json::Value>, usize) {
+    async fn get_against(path: &str, script: &'static [u16]) -> (Result<serde_json::Value>, usize) {
         use std::io::{BufRead, BufReader, Write};
         use std::net::TcpListener;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -599,23 +625,63 @@ mod tests {
             .lock()
             .unwrap()
             .store("test-token".into(), chrono::Utc::now().timestamp() + 3600);
-        let result = client.get("/openidm/config/managed", None).await;
+        let result = client.get(path, None).await;
         (result, served.load(Ordering::SeqCst))
+    }
+
+    const CONFIG: &str = "/openidm/config/managed";
+
+    #[tokio::test]
+    async fn a_get_that_may_run_a_script_is_never_retried() {
+        for path in [
+            "/openidm/endpoint/example",
+            "/openidm/managed/alpha_user/abc",
+            "/openidm/system/ldap/account?_queryFilter=true",
+            "/openidm/config/managed?_action=reload",
+        ] {
+            let (result, requests) = get_against(path, &[503, 200]).await;
+            assert!(
+                matches!(result, Err(Error::Api { status: 503, .. })),
+                "{path}"
+            );
+            assert_eq!(requests, 1, "{path}");
+        }
+    }
+
+    #[test]
+    fn only_listed_reads_are_retry_safe() {
+        for path in [
+            "/openidm/config/managed",
+            "/openidm/config",
+            "/openidm/schema/managed/alpha_user",
+            "/am/json/realms/root/realms/alpha/scripts?_queryFilter=true",
+            "/environment/variables",
+        ] {
+            assert!(retry_safe(path), "{path}");
+        }
+        for path in [
+            "/openidm/configuration",
+            "/openidm/endpoint/x",
+            "/am/json/realms/root/realms/alpha/scripts?_action=validate",
+            "/openidm/managed/alpha_user",
+        ] {
+            assert!(!retry_safe(path), "{path}");
+        }
     }
 
     #[tokio::test]
     async fn a_get_retries_a_gateway_error_until_it_clears() {
-        let (result, requests) = get_against(&[503, 502, 200]).await;
+        let (result, requests) = get_against(CONFIG, &[503, 502, 200]).await;
         assert_eq!(result.unwrap(), serde_json::json!({"ok": true}));
         assert_eq!(requests, 3);
     }
 
     #[tokio::test]
     async fn a_get_gives_up_after_two_retries_and_never_retries_other_errors() {
-        let (result, requests) = get_against(&[503, 503, 503, 200]).await;
+        let (result, requests) = get_against(CONFIG, &[503, 503, 503, 200]).await;
         assert!(matches!(result, Err(Error::Api { status: 503, .. })));
         assert_eq!(requests, 3);
-        let (result, requests) = get_against(&[500, 200]).await;
+        let (result, requests) = get_against(CONFIG, &[500, 200]).await;
         assert!(matches!(result, Err(Error::Api { status: 500, .. })));
         assert_eq!(requests, 1);
     }
