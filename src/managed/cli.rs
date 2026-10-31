@@ -462,7 +462,10 @@ async fn print_relationship_storage(
     if lines.is_empty() {
         return;
     }
-    eprintln!("relationship storage (config/repo.ds):");
+    eprintln!(
+        "relationship storage, as stored in config/repo.ds (`aic managed relationship verify` \
+         checks what the running IDM uses):"
+    );
     for line in lines {
         eprintln!("  {line}");
     }
@@ -2168,6 +2171,10 @@ struct DirectionOutput {
     /// that end is a has-many (a singular end's collection is 501).
     #[serde(skip_serializing_if = "Option::is_none")]
     ref_filter: Option<verify::RefFilter>,
+    /// Whether the running IDM stores the near end as `repo.ds` says, from
+    /// one resolved link; absent when none resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime: Option<verify::Runtime>,
 }
 
 #[derive(Serialize)]
@@ -2203,11 +2210,43 @@ struct ProbeOutput {
     note: Option<String>,
     /// The test link is gone again (re-read). `false` is a leftover to remove.
     removed: bool,
+    /// Each end's runtime storage, judged while the test link existed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    runtime: Vec<RuntimeOutput>,
     #[serde(skip)]
     failed: bool,
 }
 
+#[derive(Serialize)]
+struct RuntimeOutput {
+    end: String,
+    runtime: verify::Runtime,
+    #[serde(skip)]
+    message: String,
+}
+
 impl ProbeOutput {
+    fn new(near: &verify::End, far: &verify::End) -> Self {
+        ProbeOutput {
+            from: format!("{}.{}", near.object, near.key),
+            to: format!("{}.{}", far.object, far.key),
+            near_id: None,
+            far_id: None,
+            outcome: None,
+            note: None,
+            removed: false,
+            runtime: Vec::new(),
+            failed: false,
+        }
+    }
+
+    fn untested(near: &verify::End, far: &verify::End, note: String) -> Self {
+        ProbeOutput {
+            note: Some(note),
+            ..Self::new(near, far)
+        }
+    }
+
     fn is_failure(&self) -> bool {
         self.failed
     }
@@ -2240,6 +2279,22 @@ fn unsampled_direction_line(direction: &DirectionOutput, probe_verified: bool) -
 /// judges it from the reverse end, and removes it. Records are chosen so the
 /// link displaces nothing: a has-one end only through a record whose property
 /// is empty.
+/// The first end of the pair its object's schema lists as `required`.
+///
+/// A probe has to remove its test link, and IDM's policy check refuses the
+/// removal through a required end: on 2026-11-01 a probe through the required
+/// has-one `test_from.aicRel` wrote its link and then got `403 Failed policy
+/// validation` (REQUIRED) on the cleanup, stranding it. So a required end is
+/// not probed at all.
+fn required_end(managed: &Value, near: &verify::End, far: &verify::End) -> Option<String> {
+    [near, far].into_iter().find_map(|end| {
+        let object = api::object_named(managed, &end.object).ok()?;
+        state::required_fields(object)
+            .contains(&end.key)
+            .then(|| format!("{}.{}", end.object, end.key))
+    })
+}
+
 async fn probe_pair(
     ok: &WriteOk<'_>,
     permit: &relink::ProbePermit,
@@ -2247,16 +2302,7 @@ async fn probe_pair(
     far: &verify::End,
     scan: usize,
 ) -> ProbeOutput {
-    let mut out = ProbeOutput {
-        from: format!("{}.{}", near.object, near.key),
-        to: format!("{}.{}", far.object, far.key),
-        near_id: None,
-        far_id: None,
-        outcome: None,
-        note: None,
-        removed: false,
-        failed: false,
-    };
+    let mut out = ProbeOutput::new(near, far);
     let fail = |mut out: ProbeOutput, note: String| {
         out.note = Some(note);
         out.failed = true;
@@ -2414,6 +2460,27 @@ async fn probe_pair(
     {
         Ok((outcome, _)) => {
             out.failed = outcome != verify::LinkOutcome::Resolved;
+            if outcome == verify::LinkOutcome::Resolved {
+                for (end, id) in [(near, &near_id), (far, &far_id)] {
+                    let found =
+                        api::present_filter_finds(ok.tenant, &end.object, id, &end.key).await;
+                    match found {
+                        Ok(found) => {
+                            let runtime = verify::Runtime::judge(end, found);
+                            out.failed |= runtime.is_failure();
+                            out.runtime.push(RuntimeOutput {
+                                end: format!("{}.{}", end.object, end.key),
+                                runtime,
+                                message: runtime.message(end),
+                            });
+                        }
+                        Err(error) => eprintln!(
+                            "warning: could not check {}.{}'s runtime storage ({error})",
+                            end.object, end.key
+                        ),
+                    }
+                }
+            }
             out.outcome = Some(outcome);
         }
         Err(error) => {
@@ -2547,12 +2614,24 @@ async fn sample_direction(
         .await?;
         ref_filter = Some(verify::RefFilter::judge(far, found));
     }
+    let runtime = match links
+        .iter()
+        .find(|sampled| sampled.outcome == verify::LinkOutcome::Resolved)
+    {
+        Some(sampled) => Some(verify::Runtime::judge(
+            near,
+            api::present_filter_finds(tenant, &near.object, &sampled.link.from_id, &near.key)
+                .await?,
+        )),
+        None => None,
+    };
     Ok(DirectionOutput {
         from: format!("{}.{}", near.object, near.key),
         to: format!("{}.{}", far.object, far.key),
         scanned: records.len(),
         links,
         ref_filter,
+        runtime,
     })
 }
 
@@ -2624,7 +2703,17 @@ async fn relationship_verify(
                     .push(sample_direction(&tenant, reverse, &pair.forward, sample, scan).await?);
             }
             if let Some((permit, ok)) = &probing {
-                probe = Some(probe_pair(ok, permit, &pair.forward, reverse, scan).await);
+                probe = Some(match required_end(&managed, &pair.forward, reverse) {
+                    Some(end) => ProbeOutput::untested(
+                        &pair.forward,
+                        reverse,
+                        format!(
+                            "untested: {end} is required, so policy refuses removing a test \
+                             link through it and the probe would strand one; nothing written"
+                        ),
+                    ),
+                    None => probe_pair(ok, permit, &pair.forward, reverse, scan).await,
+                });
             }
         }
         pairs.push(PairOutput {
@@ -2652,6 +2741,7 @@ async fn relationship_verify(
                             direction
                                 .ref_filter
                                 .is_some_and(verify::RefFilter::is_failure)
+                                || direction.runtime.is_some_and(verify::Runtime::is_failure)
                         })
                         .count()
                     + usize::from(pair.probe.as_ref().is_some_and(ProbeOutput::is_failure))
@@ -2673,6 +2763,17 @@ async fn relationship_verify(
         )));
     }
     Ok(())
+}
+
+/// The end a direction's links start from.
+fn direction_near<'a>(
+    pair: &'a PairOutput,
+    direction: &DirectionOutput,
+) -> Option<&'a verify::End> {
+    let reverse = pair.pair.reverse.as_ref()?;
+    [&pair.pair.forward, reverse]
+        .into_iter()
+        .find(|end| format!("{}.{}", end.object, end.key) == direction.from)
 }
 
 /// The end a direction's links point at.
@@ -2762,6 +2863,11 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
             {
                 println!("  {}", filter.message(far));
             }
+            if let (Some(runtime), Some(near)) =
+                (direction.runtime, direction_near(pair, direction))
+            {
+                println!("  {}", runtime.message(near));
+            }
         }
         if let Some(probe) = &pair.probe {
             let verdict = match (&probe.outcome, probe.removed) {
@@ -2772,6 +2878,9 @@ fn print_verify(pairs: &[PairOutput], stale: &[verify::Problem], sample: usize) 
                 (None, _) => "no test link made".to_string(),
             };
             println!("  probe {} -> {}: {verdict}", probe.from, probe.to);
+            for runtime in &probe.runtime {
+                println!("    {}", runtime.message);
+            }
             if let Some(note) = &probe.note {
                 println!("    {note}");
             }
@@ -3465,6 +3574,7 @@ mod tests {
             scanned: 3,
             links: vec![],
             ref_filter: None,
+            runtime: None,
         };
         let probe =
             |outcome: Option<verify::LinkOutcome>, removed: bool, failed: bool| ProbeOutput {
@@ -3475,6 +3585,7 @@ mod tests {
                 outcome,
                 note: None,
                 removed,
+                runtime: Vec::new(),
                 failed,
             };
         assert!(probe(Some(verify::LinkOutcome::Resolved), true, false).verified());
@@ -3486,6 +3597,36 @@ mod tests {
         assert!(verified.contains("no pre-existing links in 3 records read"));
         assert!(verified.contains("probe-verified"));
         assert!(unsampled_direction_line(&direction, false).contains("untested"));
+    }
+
+    #[test]
+    fn a_required_end_on_either_side_is_not_probed() {
+        let end = |object: &str, key: &str| verify::End {
+            object: object.into(),
+            key: key.into(),
+            targets: vec![],
+            array: false,
+            reverse_key: None,
+            mapping: None,
+            conflicting: vec![],
+        };
+        let managed = |required: serde_json::Value| {
+            serde_json::json!({"objects": [
+                {"name": "a", "schema": {"properties": {"one": {}}, "required": required}},
+                {"name": "b", "schema": {"properties": {"many": {}}, "required": []}},
+            ]})
+        };
+        let (a, b) = (end("a", "one"), end("b", "many"));
+        assert_eq!(required_end(&managed(serde_json::json!([])), &a, &b), None);
+        assert_eq!(
+            required_end(&managed(serde_json::json!(["other"])), &a, &b),
+            None
+        );
+        let doc = managed(serde_json::json!(["one"]));
+        assert_eq!(required_end(&doc, &a, &b).as_deref(), Some("a.one"));
+        assert_eq!(required_end(&doc, &b, &a).as_deref(), Some("a.one"));
+        let note = ProbeOutput::untested(&a, &b, "untested: x".into());
+        assert!(!note.failed && !note.verified() && note.outcome.is_none());
     }
 
     #[test]
