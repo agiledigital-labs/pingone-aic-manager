@@ -738,7 +738,9 @@ any link it skipped as changed or could not confirm.
 It refuses to start while the pair has a configuration finding from
 `relationship verify` (one end mapped and the other not, say), because
 re-creating a link cannot fix that. A link whose far end is a has-one already
-holding another link is skipped: re-creating it would displace that one.
+holding another link is skipped: IDM refuses a link into an occupied has-one
+(`400 … not available for assignment`), or on a generic has-one ↔ has-one
+pair accepts it one-sided, and either would come after the removal.
 Has-one writes carry `If-Match`, which IDM honours on a mapped end and ignores
 on a generic one (`docs/api/10-managed-objects.md`, "Conditional link writes"),
 so on a generic end the re-read just before each write is the only guard.
@@ -746,10 +748,15 @@ so on a generic end the re-read just before each write is the only guard.
 **Interrupted runs.** Each remove-and-create is recorded in
 `.aic/managed-links.json` before the remove, and the path is printed before
 the first write; the entry is cleared once a read shows the link back. The next
-`relink` of the same field reads those entries first: a link that is gone and
-not replaced is re-created (reported as `restored`), one that is back is
-forgotten, and one whose has-one property now holds something else is named
-for the operator and makes the run exit non-zero.
+`relink` of the same field reads those entries first, judging each against
+the field as `config/managed` declares it now. A link that is gone and not
+replaced is re-created (`to_restore`, then `restored`, in `--json`; a dry run
+lists `to_restore` only) and confirmed from both ends like any relink. One
+that is back with its custom properties is forgotten. Everything else is named
+for the operator, kept in the journal, and makes the run exit non-zero: a
+has-one property now holding another link, a link back **without** the
+properties it had (the journal holds the only copy of them), or a field whose
+cardinality or targets changed since.
 
 `relationship snapshot <object>.<key>` saves the relationship's definition —
 and, when it declares a reverse, the reverse property too — as a JSON
@@ -972,9 +979,12 @@ They compare the way `push` does, ignoring `_rev` everywhere.
   `modified locally`, `modified on remote`, `conflict`, `converged` (both sides
   made the same change; only the snapshot is stale), `no snapshot` (with
   whether local matches the tenant), `not pulled`, `not on the tenant`, and
-  `not compared` when a side cannot be trusted: a tree whose node could not be
-  read from the tenant, or a local export or snapshot that lists a node it
-  does not carry. The row names the problem, and `--check` fails on it. With no
+  `not compared` when the tenant's copy could not be read whole — any node
+  read failing with something other than 404. The row names the problem, and
+  the command exits non-zero. A node that answers 404 is deleted on the
+  tenant, and is compared as absent. A copy whose tree lists a node it does not
+  carry is noted under its row (and in `notes` in `--json`) but still
+  compared. With no
   names it covers every journey that has an export or a snapshot in the realm.
   Under each row it lists the parts that moved — `tree`, or a node by type, id
   and display name — on the `local` side (export vs snapshot) and the `remote`
@@ -987,13 +997,13 @@ They compare the way `push` does, ignoring `_rev` everywhere.
 - `--check` exits non-zero unless every journey matches the tenant (`in sync`,
   `converged`, or `no snapshot` with local matching). `--json` prints
   `{ok, journeys: [{journey, realm, state, label, matches_tenant, problems,
-  local_changes, remote_changes}], sharing_unknown_for}`, each change carrying
+  notes, local_changes, remote_changes}], sharing_unknown_for}`, each change carrying
   `shared_with`; `state` is `null` for a journey not compared, and
   `sharing_unknown_for` lists the trees that could not be read while looking
   for shared nodes, so a node shared only with one of them is not marked.
-- `diff` refuses either side that is missing a node the tree lists, rather
-  than showing the node as deleted. It prints each difference as a JSON
-  pointer under the part it belongs to, local against remote by default; `--local-vs-snapshot` shows your edits
+- `diff` notes on stderr a side whose tree lists a node it does not carry.
+  It prints each difference as a JSON pointer under the part it belongs to,
+  local against remote by default; `--local-vs-snapshot` shows your edits
   only, `--snapshot-vs-remote` remote drift only. It exits non-zero when the
   two differ.
 - **Secret values are never printed.** A value whose key names a secret
@@ -2801,7 +2811,9 @@ Skipped entries are listed and make the command exit non-zero.
     included, refuses the rename. The write goes through the same syntax gate
     as a push, is confirmed by a re-read, and the new name is installed from
     that read before the old one is forgotten, so a failure in between leaves
-    the old name tracked and says how to finish. The old file is removed only
+    the old name tracked. Running the same `rename` again then finishes it:
+    when the tenant holds the tracked id under the new name and nothing under
+    the old, it moves the workspace without writing to the tenant. The old file is removed only
     if it still holds the bytes that were renamed. Scripts that load a library **by
     name** (`require('Old')`) are not found or changed; a `LIBRARY` rename says
     so.

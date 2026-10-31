@@ -215,6 +215,7 @@ fn preceded_by_typeof(bytes: &[u8], at: usize) -> bool {
 /// - a declaration: `var`/`let`/`const`/`function`/`class` `name`;
 /// - an assignment, which also replaces the global: `name =` (and so a later
 ///   declarator, `var a = 0, name = …`, or a default parameter);
+/// - a lone arrow parameter, `name => …`;
 /// - a parameter or `catch` binding: `name` directly inside parentheses that
 ///   are followed by `{` or `=>`, and are not an `if`/`while`/`for`/
 ///   `switch`/`with` condition.
@@ -232,7 +233,8 @@ fn declares(code: &str, name: &str) -> bool {
             return true;
         }
         let after = skip_ws(bytes, end);
-        if bytes.get(after) == Some(&b'=') && !matches!(bytes.get(after + 1), Some(b'=' | b'>')) {
+        // `name = …`, and `name => …`: a lone arrow parameter.
+        if bytes.get(after) == Some(&b'=') && bytes.get(after + 1) != Some(&b'=') {
             return true;
         }
         is_parameter(bytes, at, end)
@@ -409,7 +411,10 @@ fn blank_non_code(source: &str) -> String {
                 if quote == b'`' && byte == b'$' && next == Some(b'{') {
                     interpolations.push(0);
                     state = State::Code;
-                    out.extend(*b"  ");
+                    // `;`, not a blank: an interpolation starts an
+                    // expression, so a `/` first in it opens a regex, and
+                    // the template's backtick must not read as an operand.
+                    out.extend(*b" ;");
                     i += 2;
                     continue;
                 }
@@ -456,9 +461,15 @@ fn blank_non_code(source: &str) -> String {
 
 /// Whether a `/` after `code` (already blanked) opens a regular expression
 /// rather than dividing: it does where an operand is expected — at the start,
-/// after an operator or opening bracket, or after a keyword that takes an
-/// expression. After an identifier, a number, a closing quote, or `)` /
-/// `]` it divides.
+/// after an operator or opening bracket, after a keyword that takes an
+/// expression, or after the `)` closing an `if`/`while`/`for`/`with`
+/// condition. After an identifier, a number, a closing quote, a postfix
+/// `++`/`--`, or any other `)` / `]` it divides.
+///
+/// After `}` it is ambiguous — a block ends before a statement, an object
+/// literal before an operator — and is read as a regex: that can only hide a
+/// call (`{} / Object.values(o)`, not a pattern anyone writes), while reading
+/// it as division would refuse `} /new Map/.test(s)`.
 fn regex_may_start(code: &[u8]) -> bool {
     let end = code
         .iter()
@@ -487,7 +498,31 @@ fn regex_may_start(code: &[u8]) -> bool {
             )
         );
     }
-    !matches!(last, b')' | b']' | b'"' | b'\'' | b'`')
+    match last {
+        b')' => matching_open(code, end - 1).is_some_and(|open| {
+            matches!(
+                previous_word(code, open),
+                Some("if" | "while" | "for" | "with")
+            )
+        }),
+        b'+' | b'-' => code.get(end.wrapping_sub(2)) != Some(&last),
+        b']' | b'"' | b'\'' | b'`' => false,
+        _ => true,
+    }
+}
+
+/// The `(` matching the `)` at `close`, walking back over balanced brackets.
+fn matching_open(code: &[u8], close: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for i in (0..close).rev() {
+        match code[i] {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' if depth == 0 => return Some(i),
+            b'(' | b'[' | b'{' => depth = depth.checked_sub(1)?,
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -570,6 +605,10 @@ mod tests {
             "var unused = 0, Map = function () {};\nnew Map();",
             "try { f(); } catch (Symbol) { Symbol(1); }",
             "var f = (Promise) => Promise.resolve(1);",
+            "var make = Map => new Map();",
+            "if (ready) /new Map()/.exec(text);",
+            "while (more()) /new Set/.test(s);",
+            "var s = `${/new Map()/.test(text)}`;",
         ] {
             assert_eq!(members(source), Vec::<&str>::new(), "{source}");
         }
@@ -601,6 +640,20 @@ mod tests {
             vec!["Object.entries"]
         );
         assert_eq!(members("Map == x;\nnew Map();"), vec!["new Map"]);
+        // A call's `)` and a postfix operator end an operand: the `/` after
+        // them divides, so what follows is still scanned.
+        assert_eq!(
+            members("var n = f(x) / 2; Object.values(o);"),
+            vec!["Object.values"]
+        );
+        assert_eq!(
+            members("var n = x++ / 2; Object.values(o);"),
+            vec!["Object.values"]
+        );
+        assert_eq!(
+            members("var n = x-- / 2; Object.values(o);"),
+            vec!["Object.values"]
+        );
     }
 
     #[test]
