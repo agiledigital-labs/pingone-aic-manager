@@ -444,7 +444,7 @@ but this standalone command does not set `operator.name`.
 | `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>] [--wait] [--timeout <secs>]`                  | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
 | `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`                            | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
 | `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]`                     | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
-| `aic logs grep <pattern> [--since <duration> \| --begin <iso> --end <iso>] [--source <csv>] [--tenant <name>] [--output <path>]` | Fetch live logs and match a case-sensitive substring within each normalized payload.             |
+| `aic logs grep <pattern> [--since <duration> \| --begin <iso> --end <iso>] [--source <csv>] [--limit <n>] [--max-time <duration>] [--tenant <name>] [--output <path>]` | Fetch live logs and match a case-sensitive substring within each normalized payload.             |
 | `aic logs tail [--source <csv>] [--pattern <text>] [--tenant <name>]`                                                            | Follow live logs until Ctrl-C, optionally filtering on the same payload substring match.         |
 
 `logs grep` defaults to `--since 15m`; durations accept positive whole seconds,
@@ -452,6 +452,22 @@ minutes, or hours (`30s`, `5m`, `1h`). `--begin` and `--end` are an alternative
 fixed ISO-8601 window and must be supplied together. Matches form one JSON array
 on stdout, or in `--output`; pages are filtered and written as they arrive
 rather than accumulating the whole window in memory.
+
+A grep reads every event in the window, and the log API serves it in
+1,000-event pages no faster than one request per 1.05s, so a wide window is
+slow: the default sources over the last hour on the sandbox were 395,112
+events, read in 15 minutes (~440 events/s, measured 2026-10-31). Three ways to
+bound it, each leaving the JSON array valid:
+
+- `--limit <n>` stops after `n` matches. The result is a prefix of the full
+  answer, so it exits **0**, and stderr says later events may also match.
+- `--max-time <duration>` (same `30s`/`5m`/`1h` form) stops reading when the
+  budget is spent and exits **non-zero**, naming how far the scan got. A
+  script must not read "no more matches" from a range nobody finished reading.
+- Ctrl-C stops the same way as `--max-time`: valid output, non-zero exit.
+
+A scan running longer than ten seconds prints a progress line to stderr every
+ten seconds — events scanned, the latest event time reached, matches so far.
 
 `logs tail` begins with the most recent 15 seconds and then requests
 **overlapping** windows until Ctrl-C. Each poll rewinds 90 seconds — never
@@ -474,20 +490,35 @@ page before matching and emission.
 
 Log ingestion can lag tens of seconds behind the request, so a short
 `aic logs tx` result is not proof the script never ran. After every `tx` fetch
-the CLI looks for the trailing `AM-ACCESS-OUTCOME` event. If it is missing, a
-note goes to **stderr** (stdout stays the JSON event list, including when
-redirected or written with `--output`):
+the CLI looks for the transaction's **completion event**, which depends on the
+sources asked for:
+
+| `--source` includes                                 | Completion event                          |
+| --------------------------------------------------- | ----------------------------------------- |
+| `am-access` or `am-everything` (the default does)   | `AM-ACCESS-OUTCOME`                       |
+| otherwise `idm-access` or `idm-everything`          | IDM's single `access` event               |
+| neither — e.g. `idm-core` or `am-core` alone        | none: an empty result cannot mean "done"  |
+
+AM wins when both are present, because an AM request that calls IDM can log
+IDM's `access` event before its own outcome. If the event is missing, a note
+goes to **stderr** (stdout stays the JSON event list, including when redirected
+or written with `--output`):
 
 ```text
 note: no AM-ACCESS-OUTCOME event yet for transaction <id> — logs can lag
 tens of seconds behind the request; retry, or pass --wait
 ```
 
-`--wait` polls the same transaction query until that event arrives or
-`--timeout` seconds elapse (default 60). Progress lines go to stderr. Timeout
-does not fail the command: the events from the last poll are still written.
-`--timeout` is accepted without `--wait` and ignored. Range and query have no
-equivalent completion signal, so they have no `--wait`.
+For sources with no completion event the note says so and suggests adding an
+access source or reading a narrow window with `aic logs range`, instead of
+advice to wait for an event those sources never write.
+
+`--wait` polls the same transaction query until the completion event arrives
+or `--timeout` seconds elapse (default 60). Progress lines go to stderr.
+Timeout does not fail the command: the events from the last poll are still
+written. `--timeout` is accepted without `--wait` and ignored, and sources with
+no completion event are not polled at all. Range and query have no equivalent
+completion signal, so they have no `--wait`.
 
 ### Local store
 
