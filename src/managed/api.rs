@@ -226,6 +226,88 @@ pub async fn ref_filter_finds(
         .any(|entry| entry.get("_ref").and_then(Value::as_str) == Some(reference)))
 }
 
+/// One activation probe of `object.key` through record `id`:
+/// `GET managed/<object>/<id>/<key>?_queryFilter=true&_pageSize=1`.
+/// [`crate::managed::relink::activation`] judges the answer.
+pub async fn probe_relationship(tenant: &str, object: &str, id: &str, key: &str) -> Result<Value> {
+    let path = format!(
+        "/openidm/managed/{}/{}/{}?_queryFilter=true&_pageSize=1&_fields=_ref",
+        crate::idmstore::api::path_segment(object),
+        crate::idmstore::api::path_segment(id),
+        crate::idmstore::api::path_segment(key),
+    );
+    crate::aic::api::get(tenant, &path).await
+}
+
+/// The `_id` of any one record of `object`, or `None` when it has none.
+pub async fn any_record_id(tenant: &str, object: &str) -> Result<Option<String>> {
+    let path = format!(
+        "/openidm/managed/{}?_queryFilter=true&_pageSize=1&_fields=_id",
+        crate::idmstore::api::path_segment(object)
+    );
+    let body = crate::aic::api::get(tenant, &path).await?;
+    let result = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Api {
+            status: 0,
+            body: format!("managed/{object} query returned no `result` array: {body}"),
+        })?;
+    Ok(result
+        .first()
+        .and_then(|record| record.get("_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string))
+}
+
+/// Every record of `object` with only `_id` and `key`, paged to the end.
+pub async fn all_records_with(tenant: &str, object: &str, key: &str) -> Result<Vec<Value>> {
+    let fields = format!("_id,{key}");
+    crate::idmstore::api::collect_cursor_pages(|cookie| {
+        let fields = fields.clone();
+        async move {
+            crate::idmstore::api::list_records_cursor_page(
+                tenant,
+                object,
+                cookie.as_deref(),
+                Some(&fields),
+            )
+            .await
+        }
+    })
+    .await
+}
+
+/// Record `id` of `object` with only `_id` and `key`; `None` when it is gone.
+pub async fn record_with(tenant: &str, object: &str, id: &str, key: &str) -> Result<Option<Value>> {
+    let path = format!(
+        "/openidm/managed/{}/{}?_fields=_id,{}",
+        crate::idmstore::api::path_segment(object),
+        crate::idmstore::api::path_segment(id),
+        url::form_urlencoded::byte_serialize(key.as_bytes()).collect::<String>()
+    );
+    match crate::aic::api::get(tenant, &path).await {
+        Ok(body) => Ok(Some(body)),
+        Err(Error::Api { status: 404, .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Sends one of the writes [`crate::managed::relink::writes`] planned.
+pub async fn send_relink(
+    tenant: &str,
+    write: &crate::managed::relink::Write,
+    confirmed_prod: bool,
+) -> Result<Value> {
+    let body = write.body.clone().unwrap_or(Value::Null);
+    match write.method {
+        "DELETE" => crate::aic::api::delete(tenant, &write.path, confirmed_prod).await,
+        "POST" => crate::aic::api::post(tenant, &write.path, body, confirmed_prod).await,
+        "PATCH" => crate::aic::api::patch(tenant, &write.path, body, confirmed_prod).await,
+        other => Err(Error::Config(format!("relink has no {other} write"))),
+    }
+}
+
 /// Unconfirmed `PUT /openidm/config/managed` with the complete managed config
 /// document.
 ///

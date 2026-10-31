@@ -268,6 +268,17 @@ was supplied to this change; it was not re-run by the implementing agent.
   our daemon, or our request shape is implicated — it is the tenant's config
   store. It also means a user can lose a schema change made in the console, with
   no indication, which is worth knowing before blaming this tool.
+- **Seen again 2026-10-31**, both failure shapes within one minute on the
+  sandbox, from consecutive `aic managed relationship set` calls about a second
+  apart. A reverse added to `zzevalqa.non` was confirmed by the write's own
+  re-read and absent a minute later, while the reverse written by the call
+  before it survived — consistent with the earlier write being applied after
+  the later one. And a `set` read a document lacking `zzevalqa.und`, which the
+  previous call had added and confirmed about a second earlier, so its write
+  deleted it; `.aic/undo.log` holds both documents. The new relationship ends
+  had each answered the activation probe (`10-managed-objects.md`, "Adding a
+  reverse") before the next call, so a live end does not mean the document has
+  settled.
 - **The instantiation window is one cause, not the whole story.** Run without a
   wait after `object create` and the _first_ `field add` is the casualty every
   time — the new managed type is instantiated asynchronously and a write landing

@@ -1,0 +1,451 @@
+//! Relationship activation and re-linking: what `relationship set` waits for
+//! after it declares a new end, and how `relationship relink` turns links
+//! written while a pair had no reverse into links both ends list.
+//!
+//! Measured 2026-10-31 on a generic pair (`docs/api/10-managed-objects.md`,
+//! "Adding a reverse to a relationship that has links"):
+//!
+//! - A newly declared end is not live when `PUT config/managed` returns. A
+//!   write through it in that window answered 200 and was lost.
+//!   `GET managed/<obj>/<id>/<key>?_queryFilter=true` answered 404 until the
+//!   end was live and 200 after; writes made after the flip stuck.
+//! - Links made before the reverse existed are never migrated: the far end
+//!   does not list them, and no no-op write (replacing a link with itself,
+//!   re-adding it, removing by value) changes that.
+//! - Removing the edge and creating it again does: a has-many end by
+//!   `DELETE <rel>/<edgeId>` then `POST <rel>?_action=create`, a has-one end
+//!   by a JSON-patch `remove` then `replace`. The new edge is listed by both
+//!   ends and keeps its custom `_refProperties`.
+//!
+//! Tenant-free: the decisions live here so tests drive the real ones, and
+//! `cli.rs` does the reads and writes.
+
+use serde::Serialize;
+use serde_json::{Map, Value, json};
+
+use crate::managed::verify::{Link, LinkOutcome};
+
+/// A relationship end `after` declares that `before` did not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEnd {
+    pub object: String,
+    pub key: String,
+}
+
+fn relationship_ends(doc: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for object in crate::managed::api::objects(doc).into_iter().flatten() {
+        let Some(name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        for (key, property) in crate::managed::state::properties(object)
+            .into_iter()
+            .flatten()
+        {
+            if crate::managed::state::is_relationship_property(property) {
+                out.push((name.to_string(), key.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The relationship ends `after` adds. Only these can be probed: an end that
+/// already existed answers the probe before and after a reconfiguration.
+pub fn new_ends(before: &Value, after: &Value) -> Vec<NewEnd> {
+    let before = relationship_ends(before);
+    relationship_ends(after)
+        .into_iter()
+        .filter(|end| !before.contains(end))
+        .map(|(object, key)| NewEnd { object, key })
+        .collect()
+}
+
+/// When `object.key` existed as a relationship with no reverse in `before`
+/// and declares one in `after`, the `(target, reverse key)` it gained — the
+/// change that leaves every existing link one-sided.
+pub fn reverse_added(
+    before: &Value,
+    after: &Value,
+    object: &str,
+    key: &str,
+) -> Option<(String, String)> {
+    let property = |doc: &Value| -> Option<Value> {
+        crate::managed::api::object_named(doc, object)
+            .ok()
+            .and_then(crate::managed::state::properties)
+            .and_then(|properties| properties.get(key))
+            .cloned()
+    };
+    let old = property(before)?;
+    if !crate::managed::state::is_relationship_property(&old)
+        || crate::managed::ops::declared_reverse_key(&old).is_some()
+    {
+        return None;
+    }
+    let new = property(after)?;
+    let reverse = crate::managed::ops::declared_reverse_key(&new)?.to_string();
+    let target = crate::managed::ops::relationship_targets(&new)
+        .first()?
+        .strip_prefix("managed/")?
+        .to_string();
+    Some((target, reverse))
+}
+
+/// What one activation probe said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activation {
+    /// 404: the end is not live yet.
+    Pending,
+    /// The collection answered. 200 was measured on a has-many end; a
+    /// has-one end's collection read is 501 once live (measured on existing
+    /// ends), so 501 counts too.
+    Live,
+}
+
+/// Judges one probe; any other failure is not an answer about activation.
+pub fn activation(result: &crate::Result<Value>) -> Result<Activation, String> {
+    match result {
+        Ok(_) | Err(crate::Error::Api { status: 501, .. }) => Ok(Activation::Live),
+        Err(crate::Error::Api { status: 404, .. }) => Ok(Activation::Pending),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// One link read from the near end, with what relink needs to re-create it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Edge {
+    #[serde(flatten)]
+    pub link: Link,
+    /// `_refProperties` without the edge's own `_id` / `_rev`.
+    pub properties: Map<String, Value>,
+}
+
+/// Pairs each link `links_of` decoded with the custom `_refProperties` of the
+/// raw entry it came from.
+pub fn edges_of(record: &Value, key: &str) -> Result<Vec<Edge>, String> {
+    let links = crate::managed::verify::links_of(record, key)?;
+    let entries: Vec<&Value> = match record.get(key) {
+        Some(Value::Array(items)) => items.iter().collect(),
+        Some(item @ Value::Object(_)) => vec![item],
+        _ => Vec::new(),
+    };
+    Ok(links
+        .into_iter()
+        .zip(entries)
+        .map(|(link, entry)| Edge {
+            link,
+            properties: custom_properties(entry),
+        })
+        .collect())
+}
+
+fn custom_properties(entry: &Value) -> Map<String, Value> {
+    entry
+        .get("_refProperties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .iter()
+                .filter(|(name, _)| !matches!(name.as_str(), "_id" | "_rev"))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Why a link is left alone.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Skipped {
+    #[serde(flatten)]
+    pub edge: Edge,
+    pub outcome: LinkOutcome,
+    pub reason: &'static str,
+}
+
+/// The links a relink would re-create, and the ones it will not touch.
+#[derive(Debug, Default, Serialize)]
+pub struct Plan {
+    /// Links the far end already lists.
+    pub resolved: usize,
+    /// Links the far end does not list: these are re-created.
+    pub relink: Vec<Edge>,
+    pub skipped: Vec<Skipped>,
+}
+
+/// Sorts judged links. Only `Missing` is the one-sided state relink exists
+/// for; an edge-id disagreement and a missing far record are other defects,
+/// and re-creating either would write a link nothing measured is safe.
+pub fn plan(judged: Vec<(Edge, LinkOutcome)>) -> Plan {
+    let mut out = Plan::default();
+    for (edge, outcome) in judged {
+        match outcome {
+            LinkOutcome::Resolved => out.resolved += 1,
+            LinkOutcome::Missing if edge.link.edge_id.is_none() => out.skipped.push(Skipped {
+                edge,
+                outcome,
+                reason: "the link has no edge id to remove",
+            }),
+            LinkOutcome::Missing => out.relink.push(edge),
+            LinkOutcome::EdgeDiffers { .. } => out.skipped.push(Skipped {
+                edge,
+                outcome,
+                reason: "the far end lists it under another edge; `relationship verify` explains",
+            }),
+            LinkOutcome::FarRecordMissing => out.skipped.push(Skipped {
+                edge,
+                outcome,
+                reason: "the far record does not exist",
+            }),
+        }
+    }
+    out
+}
+
+/// Proof that a relink was consented to. The field is private and
+/// [`authorize`] is the only minting site, so a `--dry-run` that holds none
+/// cannot reach [`writes`].
+pub struct RelinkPermit(());
+
+/// `consented` is the operator's answer (or `--force`); `dry_run` wins.
+pub fn authorize(dry_run: bool, consented: bool) -> Option<RelinkPermit> {
+    (!dry_run && consented).then_some(RelinkPermit(()))
+}
+
+/// One request a relink sends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Write {
+    pub method: &'static str,
+    pub path: String,
+    pub body: Option<Value>,
+}
+
+fn record_path(object: &str, id: &str) -> String {
+    format!(
+        "/openidm/managed/{}/{}",
+        crate::idmstore::api::path_segment(object),
+        crate::idmstore::api::path_segment(id)
+    )
+}
+
+/// The two writes that re-create `edge` on `near_object.near_key`, in order.
+/// The first removes the link, so a failure between them leaves it gone:
+/// the caller must stop and say so.
+pub fn writes(
+    _permit: &RelinkPermit,
+    near_object: &str,
+    near_key: &str,
+    near_array: bool,
+    edge: &Edge,
+) -> Result<[Write; 2], String> {
+    let record = record_path(near_object, &edge.link.from_id);
+    let reference = json!({
+        "_ref": format!("{}/{}", edge.link.to_collection, edge.link.to_id),
+        "_refProperties": Value::Object(edge.properties.clone()),
+    });
+    if near_array {
+        let edge_id = edge
+            .link
+            .edge_id
+            .as_deref()
+            .ok_or_else(|| format!("{}.{near_key} link has no edge id", edge.link.from_id))?;
+        let collection = format!("{record}/{}", crate::idmstore::api::path_segment(near_key));
+        Ok([
+            Write {
+                method: "DELETE",
+                path: format!(
+                    "{collection}/{}",
+                    crate::idmstore::api::path_segment(edge_id)
+                ),
+                body: None,
+            },
+            Write {
+                method: "POST",
+                path: format!("{collection}?_action=create"),
+                body: Some(reference),
+            },
+        ])
+    } else {
+        // `replace` with null is a 400 ("not a valid JSON patch"), so the
+        // link is cleared with `remove`.
+        let pointer = format!("/{near_key}");
+        Ok([
+            Write {
+                method: "PATCH",
+                path: record.clone(),
+                body: Some(json!([{ "operation": "remove", "field": pointer }])),
+            },
+            Write {
+                method: "PATCH",
+                path: record,
+                body: Some(
+                    json!([{ "operation": "replace", "field": pointer, "value": reference }]),
+                ),
+            },
+        ])
+    }
+}
+
+/// Whether the near record still holds `edge` exactly as planned —
+/// rechecked immediately before its writes, since a plan can be minutes old
+/// by the time a long batch reaches it.
+pub fn still_planned(current: &[Edge], edge: &Edge) -> bool {
+    current.iter().any(|candidate| candidate == edge)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(reverse: bool) -> Value {
+        let mut owner = json!({"type": "relationship",
+            "resourceCollection": [{"path": "managed/b"}]});
+        if reverse {
+            owner["reverseRelationship"] = json!(true);
+            owner["reversePropertyName"] = json!("owned");
+        }
+        let mut b = json!({"name": "b", "schema": {"properties": {"n": {"type": "string"}}}});
+        if reverse {
+            b["schema"]["properties"]["owned"] = json!({"type": "array", "items": {
+                "type": "relationship", "reverseRelationship": true,
+                "reversePropertyName": "owner",
+                "resourceCollection": [{"path": "managed/a"}]}});
+        }
+        json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {"owner": owner}}}, b]})
+    }
+
+    #[test]
+    fn adding_a_reverse_names_the_new_end_and_the_one_sided_change() {
+        let (before, after) = (doc(false), doc(true));
+        assert_eq!(
+            new_ends(&before, &after),
+            vec![NewEnd {
+                object: "b".into(),
+                key: "owned".into()
+            }]
+        );
+        assert_eq!(
+            reverse_added(&before, &after, "a", "owner"),
+            Some(("b".into(), "owned".into()))
+        );
+        // Discriminating: a pair that already had its reverse gained nothing,
+        // and a brand-new relationship has no links to leave one-sided.
+        assert_eq!(reverse_added(&after, &after, "a", "owner"), None);
+        assert!(new_ends(&after, &after).is_empty());
+        let empty = json!({"_id": "managed", "objects": [
+            {"name": "a", "schema": {"properties": {}}},
+            {"name": "b", "schema": {"properties": {}}}]});
+        assert_eq!(reverse_added(&empty, &after, "a", "owner"), None);
+        assert_eq!(new_ends(&empty, &after).len(), 2);
+    }
+
+    #[test]
+    fn activation_reads_404_as_pending_and_501_as_live() {
+        let api = |status| {
+            Err(crate::Error::Api {
+                status,
+                body: String::new(),
+            })
+        };
+        assert_eq!(activation(&Ok(json!({}))), Ok(Activation::Live));
+        assert_eq!(activation(&api(501)), Ok(Activation::Live));
+        assert_eq!(activation(&api(404)), Ok(Activation::Pending));
+        assert!(activation(&api(500)).is_err());
+        assert!(activation(&api(403)).is_err());
+    }
+
+    fn record() -> Value {
+        json!({"_id": "a1", "owner": [
+            {"_ref": "managed/b/b1", "_refResourceCollection": "managed/b",
+             "_refResourceId": "b1",
+             "_refProperties": {"_id": "e1", "_rev": "r", "note": "keep"}},
+            {"_ref": "managed/b/b2", "_refResourceCollection": "managed/b",
+             "_refResourceId": "b2", "_refProperties": {"_id": "e2", "_rev": "r"}}]})
+    }
+
+    #[test]
+    fn edges_keep_custom_ref_properties_only() {
+        let edges = edges_of(&record(), "owner").unwrap();
+        assert_eq!(edges.len(), 2);
+        assert_eq!(
+            edges[0].properties,
+            json!({"note": "keep"}).as_object().unwrap().clone()
+        );
+        assert_eq!(edges[0].link.edge_id.as_deref(), Some("e1"));
+        assert!(edges[1].properties.is_empty());
+        let single = json!({"_id": "a1", "owner": record()["owner"][0].clone()});
+        assert_eq!(edges_of(&single, "owner").unwrap()[0].link.to_id, "b1");
+    }
+
+    #[test]
+    fn plan_relinks_only_one_sided_links() {
+        let edges = edges_of(&record(), "owner").unwrap();
+        let mut no_id = edges[1].clone();
+        no_id.link.edge_id = None;
+        let plan = plan(vec![
+            (edges[0].clone(), LinkOutcome::Missing),
+            (edges[1].clone(), LinkOutcome::Resolved),
+            (edges[1].clone(), LinkOutcome::FarRecordMissing),
+            (
+                edges[1].clone(),
+                LinkOutcome::EdgeDiffers {
+                    far_edges: vec!["x".into()],
+                },
+            ),
+            (no_id, LinkOutcome::Missing),
+        ]);
+        assert_eq!(plan.resolved, 1);
+        assert_eq!(plan.relink, vec![edges[0].clone()]);
+        assert_eq!(plan.skipped.len(), 3);
+    }
+
+    #[test]
+    fn dry_run_mints_no_permit() {
+        assert!(authorize(true, true).is_none());
+        assert!(authorize(false, false).is_none());
+        assert!(authorize(false, true).is_some());
+    }
+
+    #[test]
+    fn has_many_deletes_the_edge_then_creates_it_with_its_properties() {
+        let permit = authorize(false, true).unwrap();
+        let edge = &edges_of(&record(), "owner").unwrap()[0];
+        let [first, second] = writes(&permit, "a", "owner", true, edge).unwrap();
+        assert_eq!(first.method, "DELETE");
+        assert_eq!(first.path, "/openidm/managed/a/a1/owner/e1");
+        assert_eq!(second.method, "POST");
+        assert_eq!(second.path, "/openidm/managed/a/a1/owner?_action=create");
+        assert_eq!(
+            second.body,
+            Some(json!({"_ref": "managed/b/b1", "_refProperties": {"note": "keep"}}))
+        );
+    }
+
+    #[test]
+    fn has_one_removes_then_replaces() {
+        let permit = authorize(false, true).unwrap();
+        let edge = &edges_of(&record(), "owner").unwrap()[0];
+        let [first, second] = writes(&permit, "a", "owner", false, edge).unwrap();
+        assert_eq!((first.method, second.method), ("PATCH", "PATCH"));
+        assert_eq!(first.path, "/openidm/managed/a/a1");
+        assert_eq!(
+            first.body,
+            Some(json!([{"operation": "remove", "field": "/owner"}]))
+        );
+        assert_eq!(
+            second.body.unwrap()[0]["value"],
+            json!({"_ref": "managed/b/b1", "_refProperties": {"note": "keep"}})
+        );
+    }
+
+    #[test]
+    fn a_changed_link_is_no_longer_planned() {
+        let edges = edges_of(&record(), "owner").unwrap();
+        assert!(still_planned(&edges, &edges[0]));
+        let mut edited = edges.clone();
+        edited[0].properties.insert("note".into(), json!("changed"));
+        assert!(!still_planned(&edited, &edges[0]));
+        assert!(!still_planned(&edges[1..], &edges[0]));
+    }
+}

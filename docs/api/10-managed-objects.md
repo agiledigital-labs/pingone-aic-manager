@@ -682,6 +682,65 @@ result, which reads as "no link" rather than as an error.
 samples and reports which of the two it got; a miss on a **mapped** end counts
 as a failure, because the mapped control answers it.
 
+### Adding a reverse to a relationship that has links (verified 2026-10-31)
+
+Measured on the sandbox with throwaway generic pairs (`config/managed` only, no
+`repo.ds` entry): a has-many forward and a has-one forward, each given links
+while forward-only and then given a reverse with `aic managed relationship set
+… --reverse`.
+
+**A new end is not live when the `PUT` returns.** A link written from the new
+reverse end immediately after the `PUT` answered `200` and was **lost**; one
+written from about four seconds on stuck. The forward end read briefly empty
+(about one second) during the same window. The read-only probe
+
+```
+GET /openidm/managed/<obj>/<id>/<key>?_queryFilter=true&_pageSize=1
+```
+
+answers `404` while the end is not live — the same `404` a key that does not
+exist gets — and, once live, `200` on a has-many end and `501` on a has-one end
+(the has-one collection is never readable, see below). The flip took 0.0–1.1 s
+across six new ends; two writes made immediately after it both stuck. `aic
+managed relationship set` now polls this probe (every 0.5 s, up to 60 s) for
+every relationship end its write declares, through any one record of that
+object, and says when it could not: an object with no records has nothing to
+probe through. An end that already existed answers the probe throughout, so a
+reconfiguration of one cannot be waited on this way.
+
+**Links written before the reverse existed are never migrated.** Every one of
+them stays listed by the forward end and unlisted by the new reverse, which
+`relationship verify` reports as "the far end does not list it". No write that
+leaves the link in place changes that:
+
+| Write on the near record                          | Result                    |
+| ------------------------------------------------- | ------------------------- |
+| `PATCH replace /<key>` with the same `_ref`        | 200, still one-sided      |
+| `PATCH add` of a `_ref` already linked             | 200, still one-sided      |
+| `PATCH remove` naming the link by value            | 200, link **not** removed |
+
+Removing the edge and creating it again does, on both shapes — the new edge is
+listed by both ends, carries the old custom `_refProperties`, and other links
+on the record are untouched:
+
+| Near end | Remove                                                          | Create                                                                                                 |
+| -------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| has-many | `DELETE managed/<obj>/<id>/<key>/<edgeId>`                      | `POST managed/<obj>/<id>/<key>?_action=create` with `{"_ref": …, "_refProperties": {…}}`               |
+| has-one  | `PATCH managed/<obj>/<id>` `[{"operation":"remove","field":"/<key>"}]` | `PATCH` `[{"operation":"replace","field":"/<key>","value":{"_ref": …, "_refProperties": {…}}}]` |
+
+`replace` with `null` is a `400` ("not a valid JSON patch"), which is why the
+has-one removal is `remove`. The edge gets a new `_id`. Whether `onUpdate` or
+other hooks fire for either write is **unmeasured**. `aic managed relationship
+relink <obj>.<key>` performs exactly these two writes for each link the far
+end does not list, rechecking each link just before its writes and confirming
+from the far end afterwards; `relationship set` samples the links after adding
+a reverse and points at it.
+
+Two Q14 instances turned up during the measurement
+(`99-quirks-and-open-questions.md`): a reverse confirmed by re-read was gone a
+minute later, and a `relationship set` issued about a second after another one
+read a document without the property that one had just added, and deleted it.
+
 ### Object-type rename orphans records (verified 2026-07-27)
 
 Renaming a custom object type by changing its `objects[].name` (X → Y) and
@@ -1432,6 +1491,14 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-10-31 — relationship activation and re-linking, sandbox, throwaway
+  `zzevalqa`/`zzevalqb` generic pairs. The probe's 404 → 200 (has-many) and
+  404 → 501 (has-one) flip observed through `aic managed relationship set` on
+  six new ends; a key that does not exist is 404. `aic managed relationship
+  relink` re-created 3 has-many and 2 has-one one-sided links; `relationship
+  verify` then resolved every link from both ends, and raw reads of the far
+  records showed the custom `note` carried over. See "Adding a reverse to a
+  relationship that has links".
 - Date: 2026-10-28 — development tenant; custom endpoint → synchronous
   `openidm.patch` / `openidm.update` → managed `onUpdate`. Caller identity and
   originating HTTP path matched across both hops with a service-account

@@ -581,6 +581,7 @@ aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--json]
+aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
 ```
 
 `managed get` prints one object's definition as JSON. Inline hook `source`
@@ -675,6 +676,37 @@ one property), when either end is a standard field, as `field delete` does,
 and when either end targets more than one object type, because removing the
 property would remove it for every target. `relationship set` holds a reverse
 it drops or moves to the same rules.
+
+A relationship end that a write declares is not live when the write returns:
+a link written through it in the first second or so answers `200` and is
+lost. `relationship set` therefore waits, after its write, until each end it
+added answers a read through one of its object's records (up to 60 s), and
+prints how long that took. When the object has no records, or the wait runs
+out, it says so on stderr instead; the command still succeeds, because the
+schema write has landed. `--json` adds `"activation"`, one entry per new end
+with `outcome` `live`, `timeout`, `no_records` or `error`.
+
+Adding a reverse to a relationship that already has links leaves every one of
+them one-sided: IDM does not migrate them, so the new reverse end does not list
+them. After such a `set`, `aic` checks up to 20 links from the first 200
+records, warns when any is one-sided and names the command below; `--json` adds
+`"one_sided": {"sampled", "one_sided"}`.
+
+`relationship relink <object>.<key>` re-creates those links. It reads every
+record of `<object>`, checks each link against the far end, and removes and
+re-creates each link the far end does not list — a has-many link by deleting
+its edge and creating it again, a has-one link by clearing the property and
+setting it again. The new link has a new edge id and keeps its custom
+`_refProperties`; whether hooks fire for these writes is unmeasured. A link the
+far end lists under another edge id, or whose far record is gone, is reported
+and left alone. `--dry-run` reports the plan and writes nothing. Otherwise it
+asks for confirmation (`--force` skips it; with no terminal it requires
+`--force`), then applies the production gate. Each link is re-read just before
+its writes and skipped if it changed since the plan, and is confirmed from the
+far end afterwards. The first failed write stops the run, and the error names
+what was relinked; if the link was removed and could not be re-created, it
+gives the request that restores it. It exits non-zero on a stopped run or on
+any link it skipped as changed or could not confirm.
 
 `relationship verify` is read-only. For `<object>` it checks every
 relationship on that object (each pair once); for `<object>.<key>`, one. A

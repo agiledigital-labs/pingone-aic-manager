@@ -7,6 +7,8 @@
 //! - [`cli`] implements `aic managed` read-only inspection; write-capable TUI
 //!   flows live in [`ops`], [`screen`], and [`view`].
 //! - [`ops`] owns managed-object schema writes and undo.
+//! - [`relink`] decides when a newly declared relationship end is live and
+//!   how one-sided links are re-created; tenant-free.
 //! - [`verify`] judges relationship pairs against `config/repo.ds` and
 //!   sampled links, for `aic managed relationship verify`; tenant-free.
 //! - [`state`], [`screen`], and [`view`] implement the TUI browser and field
@@ -32,6 +34,7 @@ pub mod api;
 pub mod cli;
 mod keys;
 pub mod ops;
+pub mod relink;
 pub mod screen;
 pub mod spec;
 pub mod state;
