@@ -28,6 +28,10 @@ pub struct End {
     pub targets: Vec<String>,
     pub array: bool,
     pub mapping: Option<Mapping>,
+    /// The `resourceMapping` sections that map this key with **different**
+    /// entries; empty when there is at most one distinct entry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conflicting: Vec<String>,
 }
 
 /// A `repo.ds` relationship mapping entry.
@@ -66,6 +70,10 @@ pub enum Problem {
     },
     /// A `repo.ds` entry for a property `config/managed` does not declare.
     StaleMapping { object: String, key: String },
+    /// Two `resourceMapping` sections map the end differently. Which one
+    /// IDM uses is unmeasured, so every other check here, which reads one
+    /// merged value, may be judging the wrong one.
+    MappingConflict { end: String, sections: Vec<String> },
     /// A `repo.ds` relationship mapping on a property declared as something
     /// other than a relationship — a key reused after a delete.
     MappingOnScalar { object: String, key: String },
@@ -100,6 +108,11 @@ impl Problem {
                 names,
                 expected,
             } => format!("{end}'s repo.ds mapping reads through {names}, expected {expected}"),
+            Self::MappingConflict { end, sections } => format!(
+                "{end} is mapped differently in config/repo.ds's {}; which one IDM uses is \
+                 unmeasured",
+                sections.join(" and ")
+            ),
             Self::StaleMapping { object, key } => {
                 format!("repo.ds maps {object}.{key}, which config/managed does not declare")
             }
@@ -333,7 +346,32 @@ fn end(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Option<End>
         targets,
         array: property.get("type").and_then(Value::as_str) == Some("array"),
         mapping: mapping_for(repo_ds, object, key),
+        conflicting: conflicting_sections(repo_ds, object, key),
     })
+}
+
+/// The sections holding `object.key` when they do not all hold the same
+/// entry — the state [`mappings_of`]'s merge cannot represent faithfully,
+/// because it keeps one value (Astra round 10).
+fn conflicting_sections(repo_ds: &Value, object: &str, key: &str) -> Vec<String> {
+    let sections = sections_mapping(repo_ds, object, key);
+    let resource = format!("managed/{object}");
+    let entries: Vec<&Value> = sections
+        .iter()
+        .filter_map(|section| {
+            repo_ds
+                .pointer("/resourceMapping")?
+                .get(section)?
+                .get(&resource)?
+                .get("properties")?
+                .get(key)
+        })
+        .collect();
+    if entries.windows(2).all(|pair| pair[0] == pair[1]) {
+        Vec::new()
+    } else {
+        sections
+    }
 }
 
 fn label(end: &End) -> String {
@@ -341,6 +379,12 @@ fn label(end: &End) -> String {
 }
 
 fn mapping_problems(end: &End, partner_key: Option<&str>, out: &mut Vec<Problem>) {
+    if !end.conflicting.is_empty() {
+        out.push(Problem::MappingConflict {
+            end: label(end),
+            sections: end.conflicting.clone(),
+        });
+    }
     let Some(mapping) = &end.mapping else {
         return;
     };
@@ -850,6 +894,7 @@ fn mapping_problem(problem: &Problem) -> bool {
     matches!(
         problem,
         Problem::Mixed { .. }
+            | Problem::MappingConflict { .. }
             | Problem::MappingKinds { .. }
             | Problem::MappingTarget { .. }
             | Problem::MappingPartner { .. }
@@ -1223,6 +1268,53 @@ mod tests {
                 repoint_refusal(&repo_ds, "a", "owner", "b", Some("owned"), "c").unwrap_err();
             assert!(error.contains("from b to c"), "{error}");
         }
+    }
+
+    /// Astra round 10: two relationship mappings for one key, disagreeing on
+    /// the target. The merge keeps one; the write guard must not judge only
+    /// that one.
+    #[test]
+    fn a_relationship_mapped_differently_in_two_sections_is_refused_at_the_boundary() {
+        let objects = |link: Option<Value>| {
+            let mut a = json!({"plain": {"type": "string"}});
+            if let Some(link) = link {
+                a["link"] = link;
+            }
+            json!({"_id": "managed", "objects": [
+                {"name": "a", "schema": {"properties": a}},
+                {"name": "b", "schema": {"properties": {}}},
+                {"name": "c", "schema": {"properties": {}}}
+            ]})
+        };
+        let link_to_b = json!({"type": "relationship",
+            "resourceCollection": [{"path": "managed/b"}]});
+        let to = |object: &str| json!({"type": "reference", "resourcePath": format!("managed/{object}")});
+        let repo_with = |explicit: Value, generic: Value| {
+            json!({"resourceMapping": {
+                "explicitMapping": {"managed/a": {"properties": {"link": explicit}}},
+                "genericMapping": {"managed/a": {"properties": {"link": generic}}}
+            }})
+        };
+        let before = objects(None);
+        let after = objects(Some(link_to_b.clone()));
+        // Either section holding the matching target: both refused.
+        for repo_ds in [repo_with(to("b"), to("c")), repo_with(to("c"), to("b"))] {
+            let error = transition_refusal(&[&before], &after, &repo_ds).unwrap_err();
+            assert!(error.contains("a.link is mapped differently"), "{error}");
+        }
+        // Control: the same entry in both sections is not a conflict.
+        assert_eq!(
+            transition_refusal(&[&before], &after, &repo_with(to("b"), to("b"))),
+            Ok(())
+        );
+        // Control: a conflict already present on an unchanged relationship
+        // does not block an unrelated edit.
+        let mut unrelated = after.clone();
+        unrelated["objects"][0]["schema"]["properties"]["plain"]["title"] = json!("T");
+        assert_eq!(
+            transition_refusal(&[&after], &unrelated, &repo_with(to("b"), to("c"))),
+            Ok(())
+        );
     }
 
     #[test]
