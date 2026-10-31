@@ -544,7 +544,7 @@ pub fn ensure_workspace_ready(app: &mut App, tenant: &str) -> bool {
 /// user keeps everything else: per-key, the template wins where it has an
 /// opinion, and the user's extra scripts and dependencies ride along.
 fn merge_package_json(existing: &str, template: &str) -> Result<String> {
-    use serde_json::{Map, Value};
+    use serde_json::Value;
 
     let template: Value = serde_json::from_str(template)?;
     let Ok(Value::Object(mut merged)) = serde_json::from_str::<Value>(existing) else {
@@ -562,22 +562,36 @@ fn merge_package_json(existing: &str, template: &str) -> Result<String> {
         if user_owned && merged.contains_key(&key) {
             continue;
         }
-        // Object-valued sections (scripts, devDependencies) merge key-by-key:
-        // the template wins where it has an opinion, extras ride along.
-        if let (Some(Value::Object(mine)), Value::Object(theirs)) = (merged.get(&key), &value) {
-            let mut combined: Map<String, Value> = mine.clone();
-            for (inner_key, inner_value) in theirs {
-                combined.insert(inner_key.clone(), inner_value.clone());
-            }
-            merged.insert(key, Value::Object(combined));
-            continue;
-        }
-        merged.insert(key, value);
+        // Object-valued sections (scripts, devDependencies, overrides) merge
+        // key-by-key at every depth: the template wins where it has an
+        // opinion, extras ride along. Depth matters for `overrides`, whose
+        // `eslint` entry is itself an object a user may have added to.
+        merge_object_value(&mut merged, key, value);
     }
     Ok(format!(
         "{}\n",
         serde_json::to_string_pretty(&Value::Object(merged))?
     ))
+}
+
+/// Set `key` to `value` in `into`, except that where both sides are objects
+/// the template's entries are merged into the user's, recursively.
+fn merge_object_value(
+    into: &mut serde_json::Map<String, serde_json::Value>,
+    key: String,
+    value: serde_json::Value,
+) {
+    use serde_json::Value;
+    match (into.get_mut(&key), value) {
+        (Some(Value::Object(mine)), Value::Object(theirs)) => {
+            for (inner_key, inner_value) in theirs {
+                merge_object_value(mine, inner_key, inner_value);
+            }
+        }
+        (_, value) => {
+            into.insert(key, value);
+        }
+    }
 }
 
 /// Write the TypeScript project's `package.json`, merging with any existing one.
@@ -1747,6 +1761,40 @@ mod tests {
         .unwrap();
         let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(value["engines"]["npm"], ">=9");
+    }
+
+    /// `overrides.eslint` is an object the framework writes one entry into.
+    /// A user's own entry beside it — here a forked dependency — must survive
+    /// the update, and a stale framework value must be replaced.
+    #[test]
+    fn merge_keeps_a_users_nested_override_beside_the_frameworks() {
+        let existing = r#"{
+          "name": "mine",
+          "overrides": {
+            "eslint": {
+              "@eslint/config-array": "npm:@company/config-array@0.23.5",
+              "minimatch": "^10.0.0"
+            },
+            "left-pad": "1.0.0"
+          }
+        }"#;
+        let template: serde_json::Value = serde_json::from_str(TS_PACKAGE_JSON).unwrap();
+        let framework = template["overrides"]["eslint"]["minimatch"].clone();
+        assert!(framework.is_string(), "the template overrides minimatch");
+
+        let merged = merge_package_json(existing, TS_PACKAGE_JSON).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let eslint = &value["overrides"]["eslint"];
+        assert_eq!(
+            eslint["@eslint/config-array"],
+            "npm:@company/config-array@0.23.5"
+        );
+        assert_eq!(eslint["minimatch"], framework);
+        assert_eq!(value["overrides"]["left-pad"], "1.0.0");
+        assert_eq!(
+            value["overrides"]["@typescript-eslint/typescript-estree"],
+            template["overrides"]["@typescript-eslint/typescript-estree"]
+        );
     }
 
     #[test]
