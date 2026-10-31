@@ -2679,10 +2679,15 @@ your editor gets full IntelliSense on script bodies.
 ```bash
 aic workspace init                            # scaffold the tenant tree (both realms + idm + typescript)
 aic workspace update                          # refresh bundled types/config to the latest
+aic workspace update --dry-run [--tenant T]     # preview versions and file changes; write nothing
 ```
 
-Both commands also regenerate the tenant-derived types: ambient
-`idm/types/managed/*.d.ts` for the `.cjs` scripts, and the module-form
+`update --dry-run` lists files it would create, change, or remove, plus seed
+drift and managed/sync-mapping type staleness. It writes nothing, including sync
+state and generated types. Schema fetch failures only warn.
+
+Without `--dry-run`, both commands also regenerate the tenant-derived types:
+ambient `idm/types/managed/*.d.ts` for the `.cjs` scripts, and the module-form
 `typescript/src/generated/managed.ts` for the TypeScript endpoint project.
 
 Each names any **dangling reverse** it finds — a relationship whose

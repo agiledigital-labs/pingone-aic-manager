@@ -2409,6 +2409,36 @@ scopes = []
     }
 
     #[test]
+    fn workspace_update_accepts_dry_run_with_an_optional_tenant() {
+        for tenant in [None, Some("preview-tenant")] {
+            let mut args = vec!["aic", "workspace", "update", "--dry-run"];
+            if let Some(tenant) = tenant {
+                args.extend(["--tenant", tenant]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Some(Command::Workspace {
+                command:
+                    crate::scripts::cli::WorkspaceCommand::Update {
+                        dry_run,
+                        tenant: parsed,
+                    },
+            }) = cli.command
+            else {
+                panic!("expected workspace update");
+            };
+            assert!(dry_run);
+            assert_eq!(parsed.as_deref(), tenant);
+        }
+        let cli = Cli::try_parse_from(["aic", "workspace", "update"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Workspace {
+                command: crate::scripts::cli::WorkspaceCommand::Update { dry_run: false, .. }
+            })
+        ));
+    }
+
+    #[test]
     fn script_workspace_is_no_longer_nested() {
         let result = Cli::try_parse_from(["aic", "script", "workspace", "init"]);
 
