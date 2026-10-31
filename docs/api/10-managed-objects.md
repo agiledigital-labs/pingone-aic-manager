@@ -642,12 +642,20 @@ then re-reads both and refuses if `repo.ds` changed at all or the plan no
 longer holds; backs the document up to `.aic/backups/repo.ds-<tenant>-…json`;
 sends the whole document; and polls for up to 30 s until a read equals what
 was sent. A read still equal to the old document — the PATCH behaviour above
-— or to a third document is reported and exits non-zero, as does a failed
-send, which is never assumed not to have landed. It never adds or edits a
+— or to a third document is reported and exits non-zero, judged over every
+read rather than the last, as does a failed send, which is never assumed not
+to have landed. Only `genericMapping."managed/<obj>"` is edited: the sandbox
+also maps four managed objects (`alpha_group`, `bravo_group`, `teammember`,
+`teammembergroup`) under `explicitMapping`, which neither `verify` nor
+`repair` reads as the object's own mappings. It never adds or edits a
 mapping, and it refuses what was not measured: a declared property (even one
 declared as a scalar), IDM's own `_meta` / `_notifications`, a mapping
 another `reverseReference` reads through (a stale one is named, to be
-repaired first — the order the second row above used), the last mapped
+repaired first — the order the second row above used) — looked for in every
+section of `resourceMapping` and on every resource, because the sandbox's
+`explicitMapping."internal/role".authzMembers` and
+`genericMapping."internal/notification".target` are `reverseReference`s
+reading through `managed/alpha_user` — the last mapped
 property of an object, and an object `config/managed` does not declare.
 Whether links written while a key was mapped reappear if the key is
 recreated after a repair was not measured.

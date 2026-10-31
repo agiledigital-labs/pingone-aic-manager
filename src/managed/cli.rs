@@ -1501,8 +1501,8 @@ async fn relationship_repair(
                      changed; run repair again, or `relationship verify {object}`"
                 ))),
                 repair::Readback::Different => Err(crate::Error::Config(format!(
-                    "relationship repair {field}: the write was accepted, but config/repo.ds \
-                     reads as neither the document sent nor the one it replaced — another \
+                    "relationship repair {field}: the write was accepted, but a read of \
+                     config/repo.ds returned neither the document sent nor the one it replaced — another \
                      writer, or the tenant rewrote it. Run `relationship verify {object}`; the \
                      replaced document is at {}",
                     applied.backup.display()

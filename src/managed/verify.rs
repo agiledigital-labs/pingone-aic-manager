@@ -143,7 +143,11 @@ pub struct Report {
 }
 
 fn mapping_for(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
-    let entry = mappings_of(repo_ds, object)?.get(key)?;
+    relationship_mapping(mappings_of(repo_ds, object)?.get(key)?)
+}
+
+/// `entry` as a relationship mapping, if it is one.
+fn relationship_mapping(entry: &Value) -> Option<Mapping> {
     let kind = entry.get("type").and_then(Value::as_str)?;
     if kind != "reference" && kind != "reverseReference" {
         return None;
@@ -159,6 +163,64 @@ fn mapping_for(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+/// A relationship mapping wherever `repo.ds` holds it: any section of
+/// `resourceMapping` (`genericMapping`, `explicitMapping`, …) and any
+/// resource, not only `managed/` ones. The sandbox has both kinds of outlier —
+/// `explicitMapping."internal/role".authzMembers` and
+/// `genericMapping."internal/notification".target` are `reverseReference`s
+/// reading through `managed/alpha_user` — so a check of what reads through a
+/// mapping that looks only at `genericMapping."managed/…"` misses them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Located {
+    pub section: String,
+    pub resource: String,
+    pub key: String,
+    pub mapping: Mapping,
+}
+
+impl Located {
+    /// `managed/<obj>` in `genericMapping` is the object's own property.
+    pub fn generic_object(&self) -> Option<&str> {
+        (self.section == "genericMapping")
+            .then(|| self.resource.strip_prefix("managed/"))
+            .flatten()
+    }
+
+    pub fn label(&self) -> String {
+        match self.generic_object() {
+            Some(object) => format!("{object}.{}", self.key),
+            None => format!("{}.{} (in {})", self.resource, self.key, self.section),
+        }
+    }
+}
+
+pub(crate) fn all_relationship_mappings(repo_ds: &Value) -> Vec<Located> {
+    let mut out = Vec::new();
+    let Some(sections) = repo_ds.get("resourceMapping").and_then(Value::as_object) else {
+        return out;
+    };
+    for (section, resources) in sections {
+        for (resource, entry) in resources.as_object().into_iter().flatten() {
+            for (key, property) in entry
+                .get("properties")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(mapping) = relationship_mapping(property) {
+                    out.push(Located {
+                        section: section.clone(),
+                        resource: resource.clone(),
+                        key: key.clone(),
+                        mapping,
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn mappings_of<'a>(
@@ -586,37 +648,16 @@ pub fn repoint_refusal(
 /// old path, which is the state a retarget was measured to break.
 pub fn rename_refusal(repo_ds: &Value, object: &str) -> Result<(), String> {
     let path = format!("managed/{object}");
-    let mut ends: Vec<String> = mappings_of(repo_ds, object)
+    // Every section and resource, not only `genericMapping."managed/…"`
+    // (Sol/Astra round 7 of D-S12): an `explicitMapping` entry for the object,
+    // or an `internal/…` reverse reading through it, names it just as well.
+    let ends: Vec<String> = all_relationship_mappings(repo_ds)
         .into_iter()
-        .flat_map(|mappings| mappings.keys())
-        .filter(|key| mapped(repo_ds, object, key).is_some())
-        .map(|key| format!("{object}.{key}"))
+        .filter(|located| {
+            located.resource == path || located.mapping.resource_path.as_deref() == Some(&path)
+        })
+        .map(|located| located.label())
         .collect();
-    if let Some(generic) = repo_ds
-        .pointer("/resourceMapping/genericMapping")
-        .and_then(Value::as_object)
-    {
-        for (resource, entry) in generic {
-            let Some(other) = resource.strip_prefix("managed/") else {
-                continue;
-            };
-            if other == object {
-                continue;
-            }
-            for (key, _) in entry
-                .get("properties")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-            {
-                if mapped(repo_ds, other, key)
-                    .is_some_and(|mapping| mapping.resource_path.as_deref() == Some(&path))
-                {
-                    ends.push(format!("{other}.{key}"));
-                }
-            }
-        }
-    }
     if ends.is_empty() {
         return Ok(());
     }
@@ -1321,6 +1362,26 @@ mod tests {
         assert_eq!(
             rename_refusal(&repo(None, Some(reverse_reference())), "c"),
             Ok(())
+        );
+        // Readers outside `genericMapping."managed/…"` name it too (round 7):
+        // an `internal/…` reverse, and an `explicitMapping` entry of its own.
+        let mut outside = repo(None, None);
+        outside["resourceMapping"]["genericMapping"]["internal/notification"] = json!({
+            "properties": {"target": {"type": "reverseReference",
+                "resourcePath": "managed/a", "propertyName": "_notifications"}}
+        });
+        let error = rename_refusal(&outside, "a").unwrap_err();
+        assert!(
+            error.contains("internal/notification.target (in genericMapping)"),
+            "{error}"
+        );
+        let mut explicit = repo(None, None);
+        explicit["resourceMapping"]["explicitMapping"] =
+            json!({"managed/a": {"properties": {"owner": reference()}}});
+        let error = rename_refusal(&explicit, "a").unwrap_err();
+        assert!(
+            error.contains("managed/a.owner (in explicitMapping)"),
+            "{error}"
         );
     }
 
