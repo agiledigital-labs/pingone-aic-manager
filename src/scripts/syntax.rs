@@ -74,11 +74,16 @@ pub enum Refusal {
     /// Nothing can check this resource, decided before the request was made.
     /// Retrying can never help; the explicit opt-out is the only way past it.
     Unsupported(String),
-    /// The source is a generated endpoint bundle whose banner says it was
-    /// built for a different endpoint. Decided locally, before the syntax check,
+    /// The source is a generated bundle whose banner says it was built for a
+    /// different script (both are full names, `endpoint/<name>` or
+    /// `managed/<object>.<hook>`). Decided locally, before the syntax check,
     /// and not something `--force=syntax-check` gets past: the source may
-    /// parse perfectly, it is just not this endpoint's.
-    WrongTarget { endpoint: String, built_for: String },
+    /// parse perfectly, it is just not this script's.
+    WrongTarget {
+        target: String,
+        built_for: String,
+        source_path: String,
+    },
     /// The source's leading comment block carries an `// aic-target: <ref>`
     /// marker naming a different script, or markers that disagree. Written
     /// by a build outside this repo (decision D-S5); decided locally, before
@@ -104,10 +109,9 @@ impl Refusal {
                 format!("the source cannot be syntax-checked — {reason}")
             }
             Refusal::WrongTarget {
-                endpoint,
-                built_for,
+                target, built_for, ..
             } => {
-                format!("this is the generated bundle for endpoint `{built_for}`, not `{endpoint}`")
+                format!("this is the generated bundle for `{built_for}`, not `{target}`")
             }
             Refusal::Undecodable(reason) => {
                 format!("the source could not be decoded to read its aic-target marker — {reason}")
@@ -138,9 +142,9 @@ impl Refusal {
                 }
                 lines
             }
-            Refusal::WrongTarget { built_for, .. } => vec![format!(
-                "its `// Source:` banner names typescript/…/{built_for}.ts"
-            )],
+            Refusal::WrongTarget { source_path, .. } => {
+                vec![format!("its `// Source:` banner names {source_path}")]
+            }
             Refusal::MarkedForOther { marked, .. } => marked
                 .iter()
                 .map(|m| format!("its leading comments say `// aic-target: {m}`"))
