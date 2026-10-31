@@ -434,6 +434,8 @@ pub enum WorkspaceCommand {
     Update {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[arg(long, help = "Preview changes without writing any files")]
+        dry_run: bool,
     },
 }
 
@@ -1201,7 +1203,7 @@ pub(crate) async fn run_with_runtime(
             if !json {
                 workspace_update_hint(&t)?;
             }
-            check_managed_types_stale(&t).await;
+            check_managed_types_stale(&t, false).await;
             if check && !ok {
                 return Err(Error::Config(match &against {
                     Some(against) => format!(
@@ -1716,15 +1718,37 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
                 sync_types,
                 workspace::TEMPLATES_VERSION
             );
-            print_seed_notes(&r);
+            print_seed_notes(&r, false);
             println!(
                 "next: cd {} && npm install   (installs the lint/type-check toolchain)",
                 crate::config::display_path(&r.tree)
             );
             Ok(())
         }
-        WorkspaceCommand::Update { tenant } => {
+        WorkspaceCommand::Update { tenant, dry_run } => {
             let t = tenant_for(tenant)?;
+            if dry_run {
+                if let Err(error) = guard_legacy_workspace(&t) {
+                    println!(
+                        "{}",
+                        templates_preview_note(workspace::applied_version(&t)?)
+                    );
+                    eprintln!("warning: {error}");
+                    return Ok(());
+                }
+                let preview = workspace::preview_update(&t)?;
+                print_workspace_preview(&preview);
+                if preview.report.applied_version != 0 {
+                    if let Some(schema) = check_managed_types_stale(&t, true).await {
+                        check_sync_types_stale(&t, &schema).await;
+                    } else {
+                        eprintln!(
+                            "warning: sync-mapping type staleness unknown (managed schema unavailable)"
+                        );
+                    }
+                }
+                return Ok(());
+            }
             guard_legacy_workspace(&t)?;
             let r = workspace::update(&t)?;
             let managed_types = generate_managed_types(&t).await;
@@ -1737,17 +1761,50 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
                 sync_types,
                 crate::config::display_path(&r.tree)
             );
-            print_seed_notes(&r);
+            print_seed_notes(&r, false);
             Ok(())
         }
     }
 }
 
-fn print_seed_notes(report: &crate::scripts::workspace::WorkspaceReport) {
+fn print_workspace_preview(preview: &crate::scripts::workspace::WorkspacePreview) {
+    use crate::scripts::workspace::{FileChange, TEMPLATES_VERSION};
+    let applied = preview.report.applied_version;
+    println!("{}", templates_preview_note(applied));
+    for (path, change) in &preview.changes {
+        let action = match change {
+            FileChange::Create => "create",
+            FileChange::Change => "change",
+            FileChange::Remove => "remove",
+        };
+        println!("{action} {}", path.display());
+    }
+    if preview.changes.is_empty() {
+        println!("no scaffold file changes (bundled v{TEMPLATES_VERSION})");
+    }
+    print_seed_notes(&preview.report, true);
+}
+
+fn templates_preview_note(applied: u32) -> String {
+    use crate::scripts::workspace::TEMPLATES_VERSION;
+    if applied == 0 {
+        format!(
+            "templates: workspace never initialised (v0) → bundled v{TEMPLATES_VERSION}; run `aic workspace init`"
+        )
+    } else if applied == TEMPLATES_VERSION {
+        format!("templates: workspace v{applied} → bundled v{TEMPLATES_VERSION} (up to date)")
+    } else {
+        format!("templates: workspace v{applied} → bundled v{TEMPLATES_VERSION}")
+    }
+}
+
+fn print_seed_notes(report: &crate::scripts::workspace::WorkspaceReport, dry_run: bool) {
     for path in &report.pruned {
         let rel = path.strip_prefix(&report.tree).unwrap_or(path);
+        let action = if dry_run { "remove" } else { "pruned" };
+        let suffix = if dry_run { "/" } else { "" };
         println!(
-            "pruned {rel} (generated files only; no script source)",
+            "{action} {rel}{suffix} (generated files only; no script source)",
             rel = rel.display()
         );
     }
@@ -3491,19 +3548,23 @@ fn workspace_update_hint(tenant: &str) -> Result<()> {
 
 /// Compare on-disk managed type files to a fresh in-memory generation from the
 /// live schema. Prints one summary line to stderr when any file is missing or differs;
-/// stays silent when current. Never writes, and never fails the caller: a
+/// stays silent when current unless `report_current` is set. Returns the schema
+/// for the preview's sync-type check. Never writes or fails the caller: a
 /// fetch or generate error warns once and returns, matching
 /// [`generate_managed_types`]'s best-effort discipline.
 ///
 /// Skips when no workspace has been initialised (`applied_version == 0`):
 /// every expected file would be "missing", and the remedy would be
 /// `workspace init`, not `update`.
-async fn check_managed_types_stale(tenant: &str) {
+async fn check_managed_types_stale(
+    tenant: &str,
+    report_current: bool,
+) -> Option<serde_json::Value> {
     let Ok(applied) = crate::scripts::workspace::applied_version(tenant) else {
-        return;
+        return None;
     };
     if applied == 0 {
-        return;
+        return None;
     }
     let schema = match crate::aic::api::get(tenant, "/openidm/config/managed").await {
         Ok(schema) => schema,
@@ -3511,7 +3572,7 @@ async fn check_managed_types_stale(tenant: &str) {
             eprintln!(
                 "warning: could not fetch managed schema (stale-types check skipped): {error}"
             );
-            return;
+            return None;
         }
     };
     let files = match crate::scripts::managed_types::generate(&schema) {
@@ -3520,13 +3581,52 @@ async fn check_managed_types_stale(tenant: &str) {
             eprintln!(
                 "warning: could not generate managed types (stale-types check skipped): {error}"
             );
+            return None;
+        }
+    };
+    let stale =
+        crate::scripts::managed_types::stale_files(&ProjectConfig::workspace_tree(tenant), &files);
+    if report_current {
+        print_type_staleness("managed", &stale);
+    } else if let Some(note) = managed_types_stale_note(stale.len()) {
+        eprintln!("{note}");
+    }
+    Some(schema)
+}
+
+/// Same pure generation and byte comparison as managed types; no type writes.
+async fn check_sync_types_stale(tenant: &str, schema: &serde_json::Value) {
+    let sync_doc = match crate::aic::api::get(tenant, "/openidm/config/sync").await {
+        Ok(doc) => doc,
+        Err(error) => {
+            eprintln!(
+                "warning: could not fetch sync mappings (stale-types check skipped): {error}"
+            );
+            return;
+        }
+    };
+    let files = match crate::scripts::sync_types::generate(&sync_doc, schema) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!(
+                "warning: could not generate sync mapping types (stale-types check skipped): {error}"
+            );
             return;
         }
     };
     let stale =
         crate::scripts::managed_types::stale_files(&ProjectConfig::workspace_tree(tenant), &files);
-    if let Some(note) = managed_types_stale_note(stale.len()) {
-        eprintln!("{note}");
+    print_type_staleness("sync-mapping", &stale);
+}
+
+fn print_type_staleness(kind: &str, stale: &[std::path::PathBuf]) {
+    if stale.is_empty() {
+        println!("{kind} type files: up to date");
+    } else {
+        println!("{kind} type files: {} stale", stale.len());
+        for relative in stale {
+            println!("  {}", relative.display());
+        }
     }
 }
 
@@ -3553,6 +3653,19 @@ fn print_conflict(name: &str, tw: &crate::scripts::sync::ThreeWay) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preview_version_note_covers_old_current_and_uninitialised_workspaces() {
+        use crate::scripts::workspace::TEMPLATES_VERSION;
+        assert_eq!(
+            templates_preview_note(93),
+            format!("templates: workspace v93 → bundled v{TEMPLATES_VERSION}")
+        );
+        assert!(templates_preview_note(TEMPLATES_VERSION).contains("up to date"));
+        let uninitialised = templates_preview_note(0);
+        assert!(uninitialised.contains("never initialised"));
+        assert!(uninitialised.contains("aic workspace init"));
+    }
+
     #[test]
     fn status_ref_is_exact_only_for_a_known_namespace_and_a_name() {
         let exact =
