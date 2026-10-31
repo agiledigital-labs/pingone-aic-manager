@@ -824,7 +824,9 @@ property `config/managed` does not declare — the leftover a `relationship
 delete` reports, which otherwise makes a later `set` on that key refuse. It
 only removes; it never adds or edits a mapping. It refuses a declared
 property, IDM's `_meta` / `_notifications`, a mapping another
-`reverseReference` reads through (naming it; repair a stale one first), the
+`reverseReference` reads through — in any section of `resourceMapping` and on
+any resource, `internal/…` and `explicitMapping` included (naming it; repair
+a stale managed one first), the
 last mapped property of an object, and an object `config/managed` does not
 declare — the cases not measured. `--dry-run` prints the plan and writes
 nothing; otherwise it asks, or takes `--force`, and passes the production
@@ -833,8 +835,12 @@ gate. Immediately before writing it re-reads both documents and refuses if
 `.aic/backups/repo.ds-<tenant>-<time>-<uuid>.json` and prints the path,
 replaces the whole document — a JSON `PATCH` was measured to return 200 and
 change nothing — and reads it back for up to 30 s. It exits zero only when a
-read equals the document sent; an unchanged read, a different one, a failed
-read or a failed send each exit non-zero naming the backup. There is no undo
+read equals the document sent. Otherwise the outcome is judged over every
+read, not the last: any read showing a third document is reported as another
+writer, any failed read means "unchanged" was not observed, and a failed send
+is never assumed not to have landed — each exits non-zero naming the backup.
+It edits only `genericMapping."managed/<obj>"`; an object mapped under
+`explicitMapping` reads as having no mapping to repair. There is no undo
 entry: the backup is the way back (`docs/api/10-managed-objects.md`,
 "Removing a stale mapping").
 

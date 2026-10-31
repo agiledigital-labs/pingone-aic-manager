@@ -128,12 +128,13 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
     if !dependents.is_empty() {
         let names: Vec<String> = dependents
             .iter()
-            .map(|dependent| {
-                if dependent.declared {
-                    format!("{} (declared)", dependent.label)
-                } else {
-                    format!("{} (also stale: repair it first)", dependent.label)
-                }
+            .map(|dependent| match dependent.owner {
+                Owner::Declared => format!("{} (declared)", dependent.label),
+                Owner::Stale => format!("{} (also stale: repair it first)", dependent.label),
+                Owner::Outside => format!(
+                    "{} (not a managed property; repair does not edit it)",
+                    dependent.label
+                ),
             })
             .collect();
         return Err(format!(
@@ -174,11 +175,19 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
                 .and_then(|path| path.strip_prefix("managed/")),
             mapping.property_name.as_deref(),
         )
-        && verify::properties(managed, partner_object).is_some_and(|p| p.contains_key(partner_key))
+        && verify::properties(managed, partner_object)
+            .and_then(|props| props.get(partner_key))
+            .is_some_and(crate::managed::state::is_relationship_property)
+        && verify::mapped(repo_ds, partner_object, partner_key)
+            .is_some_and(|partner| partner.kind == "reference")
     {
+        // Only the measured state: a declared relationship that is itself
+        // mapped as the `reference` (round 7 — declaration alone says nothing
+        // about storage).
         notes.push(format!(
-            "{partner_object}.{partner_key} is declared and keeps its own mapping; when this \
-             was measured its links still resolved and new links still wrote afterwards"
+            "{partner_object}.{partner_key} is a declared relationship mapped as a reference, \
+             and keeps that mapping; when this was measured its links still resolved and new \
+             links still wrote afterwards"
         ));
     }
     notes.push(format!(
@@ -196,49 +205,51 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
 }
 
 /// A `reverseReference` elsewhere in `repo.ds` that reads through
-/// `object.key`.
+/// `object.key` — in any section and on any resource, because the sandbox's
+/// own `internal/role` and `internal/notification` entries read through
+/// `managed/alpha_user` (Sol/Astra round 7).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Dependent {
     label: String,
-    declared: bool,
+    owner: Owner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    /// A property `config/managed` declares on a managed object.
+    Declared,
+    /// A managed object's mapping naming no declared property: repairable.
+    Stale,
+    /// Outside `genericMapping."managed/…"`, which this verb does not edit.
+    Outside,
 }
 
 fn dependents(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<Dependent> {
     let path = format!("managed/{object}");
-    let Some(generic) = repo_ds
-        .pointer("/resourceMapping/genericMapping")
-        .and_then(Value::as_object)
-    else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for resource in generic.keys() {
-        let Some(other) = resource.strip_prefix("managed/") else {
-            continue;
-        };
-        for other_key in verify::mappings_of(repo_ds, other)
-            .into_iter()
-            .flat_map(|entries| entries.keys())
-        {
-            if other == object && other_key == key {
-                continue;
-            }
-            let Some(mapping) = verify::mapped(repo_ds, other, other_key) else {
-                continue;
-            };
-            if mapping.kind == "reverseReference"
-                && mapping.resource_path.as_deref() == Some(path.as_str())
-                && mapping.property_name.as_deref() == Some(key)
-            {
-                out.push(Dependent {
-                    label: format!("{other}.{other_key}"),
-                    declared: verify::properties(managed, other)
-                        .is_some_and(|props| props.contains_key(other_key)),
-                });
-            }
-        }
-    }
-    out
+    verify::all_relationship_mappings(repo_ds)
+        .into_iter()
+        .filter(|located| {
+            !(located.generic_object() == Some(object) && located.key == key)
+                && located.mapping.kind == "reverseReference"
+                && located.mapping.resource_path.as_deref() == Some(path.as_str())
+                && located.mapping.property_name.as_deref() == Some(key)
+        })
+        .map(|located| Dependent {
+            label: located.label(),
+            owner: match located.generic_object() {
+                None => Owner::Outside,
+                Some(other) => {
+                    if verify::properties(managed, other)
+                        .is_some_and(|props| props.contains_key(&located.key))
+                    {
+                        Owner::Declared
+                    } else {
+                        Owner::Stale
+                    }
+                }
+            },
+        })
+        .collect()
 }
 
 /// RFC 6901 escaping for one pointer token.
@@ -267,13 +278,15 @@ pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), Stri
 pub enum Readback {
     /// A read returned exactly the document sent.
     Confirmed,
-    /// Every read still returned the pre-write document: the write did not
-    /// take effect, at least not yet.
+    /// Every read succeeded and returned the pre-write document: the write
+    /// did not take effect, at least not yet.
     Unchanged,
-    /// The last read was neither: someone else wrote, or the tenant
-    /// normalised what was sent.
+    /// Some read was neither, and none confirmed: someone else wrote, or the
+    /// tenant normalised what was sent. Kept even if later reads returned the
+    /// old document, because that read is evidence of another writer.
     Different,
-    /// The last read failed.
+    /// No read confirmed or differed, and at least one failed — so "every
+    /// read was unchanged" cannot be claimed. Carries the last failure.
     Unread { error: String },
 }
 
@@ -333,23 +346,33 @@ pub async fn apply_with(
         });
     }
 
-    let mut readback = Readback::Unread {
-        error: "no read-back was attempted".into(),
-    };
+    // The outcome is over every read, not the last one (round 7): a read
+    // showing a third document must not be forgotten when a later read
+    // returns the old one, and one failed read means "every read was
+    // unchanged" was not observed.
+    let mut differed = false;
+    let mut failed: Option<String> = None;
     for pause in std::iter::once(None).chain(delays.iter().map(Some)) {
         if let Some(pause) = pause {
             tokio::time::sleep(*pause).await;
         }
-        readback = match read_repo_ds().await {
-            Ok(read) => judge(plan, &read),
-            Err(error) => Readback::Unread {
-                error: error.to_string(),
-            },
-        };
-        if readback == Readback::Confirmed {
-            break;
+        match read_repo_ds().await.map(|read| judge(plan, &read)) {
+            Ok(Readback::Confirmed) => {
+                return Ok(Applied {
+                    backup,
+                    readback: Readback::Confirmed,
+                });
+            }
+            Ok(Readback::Different) => differed = true,
+            Ok(_) => {}
+            Err(error) => failed = Some(error.to_string()),
         }
     }
+    let readback = match (differed, failed) {
+        (true, _) => Readback::Different,
+        (false, Some(error)) => Readback::Unread { error },
+        (false, None) => Readback::Unchanged,
+    };
     Ok(Applied { backup, readback })
 }
 
@@ -421,7 +444,8 @@ mod tests {
         assert!(
             plan.notes
                 .iter()
-                .any(|note| note.starts_with("a.live is declared")),
+                .any(|note| note
+                    .starts_with("a.live is a declared relationship mapped as a reference")),
             "{:?}",
             plan.notes
         );
@@ -432,7 +456,10 @@ mod tests {
         );
         let plan = self::plan(&managed(), &both_stale, "b", "gone").unwrap();
         assert!(
-            !plan.notes.iter().any(|note| note.contains("is declared")),
+            !plan
+                .notes
+                .iter()
+                .any(|note| note.contains("keeps that mapping")),
             "{:?}",
             plan.notes
         );
@@ -551,6 +578,65 @@ mod tests {
         assert_eq!(judge(&plan, plan.after()), Readback::Confirmed);
         assert_eq!(judge(&plan, &before), Readback::Unchanged);
         assert_eq!(judge(&plan, &json!({})), Readback::Different);
+        // The near miss: the removal landed, and something unrelated changed
+        // too. A judge that checked only for the entry's absence would
+        // confirm this.
+        let mut near = plan.after().clone();
+        near["resourceMapping"]["genericMapping"]["managed/b"]["objectClasses"] = json!(["z"]);
+        assert_eq!(judge(&plan, &near), Readback::Different);
+    }
+
+    #[test]
+    fn a_reader_outside_managed_generic_mappings_still_blocks() {
+        // The sandbox's real shapes: an `explicitMapping` `internal/role` and
+        // a `genericMapping` `internal/notification` reverse reading through a
+        // managed object. Each alone must refuse.
+        for (section, resource) in [
+            ("explicitMapping", "internal/role"),
+            ("genericMapping", "internal/notification"),
+        ] {
+            let mut before = repo(json!({"gone": reference("b")}), json!({}));
+            before["resourceMapping"][section][resource] =
+                json!({"properties": {"members": reverse("a", "gone")}});
+            let error = plan(&managed(), &before, "a", "gone").unwrap_err();
+            assert!(
+                error.contains(&format!(
+                    "{resource}.members (in {section}) (not a managed property"
+                )),
+                "{section}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_partner_note_needs_the_partner_mapped_as_the_reference() {
+        // Declared but unmapped: the measured reassurance does not apply.
+        let mut before = repo(json!({}), json!({"gone": reverse("a", "live")}));
+        before["resourceMapping"]["genericMapping"]["managed/a"]["properties"] =
+            json!({"other": reference("b")});
+        let plan = plan(&managed(), &before, "b", "gone").unwrap();
+        assert!(
+            !plan
+                .notes
+                .iter()
+                .any(|note| note.contains("keeps that mapping")),
+            "{:?}",
+            plan.notes
+        );
+        // Mapped, but declared as a scalar: not a relationship.
+        let before = repo(
+            json!({"scalar": reference("b")}),
+            json!({"gone": reverse("a", "scalar")}),
+        );
+        let plan = self::plan(&managed(), &before, "b", "gone").unwrap();
+        assert!(
+            !plan
+                .notes
+                .iter()
+                .any(|note| note.contains("keeps that mapping")),
+            "{:?}",
+            plan.notes
+        );
     }
 
     /// Drives [`apply_with`] against a scripted tenant and records the order
@@ -559,6 +645,7 @@ mod tests {
         managed: Value,
         repo_reads: RefCell<Vec<crate::Result<Value>>>,
         send: RefCell<Option<crate::Result<()>>>,
+        backup_fails: bool,
         log: RefCell<Vec<String>>,
     }
 
@@ -572,6 +659,7 @@ mod tests {
                 managed,
                 repo_reads: RefCell::new(repo_reads.into_iter().rev().collect()),
                 send: RefCell::new(Some(send)),
+                backup_fails: false,
                 log: RefCell::new(Vec::new()),
             }
         }
@@ -600,6 +688,9 @@ mod tests {
                         plan.before(),
                         "the backup is the pre-write document"
                     );
+                    if self.backup_fails {
+                        return Err(crate::Error::Config("disk full".into()));
+                    }
                     Ok(PathBuf::from("/backup.json"))
                 },
                 async |document| {
@@ -702,5 +793,93 @@ mod tests {
         let tenant = Tenant::new(managed(), vec![Ok(before)], Ok(()));
         let applied = tenant.run(&plan, 1).await.unwrap();
         assert!(matches!(applied.readback, Readback::Unread { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_third_document_seen_once_is_not_forgotten() {
+        // Recheck read, then a third document, then the old one twice: the
+        // outcome is over every read, not the last.
+        let (before, plan) = fixture();
+        let mut third = before.clone();
+        third["dbType"] = json!("other");
+        let tenant = Tenant::new(
+            managed(),
+            vec![
+                Ok(before.clone()),
+                Ok(third),
+                Ok(before.clone()),
+                Ok(before),
+            ],
+            Ok(()),
+        );
+        assert_eq!(
+            tenant.run(&plan, 2).await.unwrap().readback,
+            Readback::Different
+        );
+    }
+
+    #[tokio::test]
+    async fn a_third_document_outranks_a_later_failed_read() {
+        // Evidence of another writer is the stronger report; a failed read
+        // after it must not replace it with "could not read".
+        let (before, plan) = fixture();
+        let mut third = before.clone();
+        third["dbType"] = json!("other");
+        let tenant = Tenant::new(
+            managed(),
+            vec![
+                Ok(before),
+                Ok(third),
+                Err(crate::Error::Config("timeout".into())),
+            ],
+            Ok(()),
+        );
+        assert_eq!(
+            tenant.run(&plan, 1).await.unwrap().readback,
+            Readback::Different
+        );
+    }
+
+    #[tokio::test]
+    async fn one_failed_read_among_unchanged_ones_is_not_unchanged() {
+        let (before, plan) = fixture();
+        let tenant = Tenant::new(
+            managed(),
+            vec![
+                Ok(before.clone()),
+                Err(crate::Error::Config("timeout".into())),
+                Ok(before),
+            ],
+            Ok(()),
+        );
+        match tenant.run(&plan, 1).await.unwrap().readback {
+            Readback::Unread { error } => assert!(error.contains("timeout"), "{error}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_key_declared_since_the_plan_writes_nothing() {
+        let (before, plan) = fixture();
+        let mut declared = managed();
+        declared["objects"][0]["schema"]["properties"]["gone"] =
+            json!({"type": "relationship", "resourceCollection": [{"path": "managed/b"}]});
+        let tenant = Tenant::new(declared, vec![Ok(before)], Ok(()));
+        let failure = tenant.run(&plan, 0).await.unwrap_err();
+        assert!(matches!(failure, Failure::NotWritten(ref m) if m.contains("declares it")));
+        assert_eq!(*tenant.log.borrow(), ["read managed", "read repo.ds"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_backup_sends_nothing() {
+        let (before, plan) = fixture();
+        let mut tenant = Tenant::new(managed(), vec![Ok(before)], Ok(()));
+        tenant.backup_fails = true;
+        let failure = tenant.run(&plan, 0).await.unwrap_err();
+        assert!(matches!(failure, Failure::NotWritten(ref m) if m.contains("disk full")));
+        assert_eq!(
+            *tenant.log.borrow(),
+            ["read managed", "read repo.ds", "backup"]
+        );
     }
 }
