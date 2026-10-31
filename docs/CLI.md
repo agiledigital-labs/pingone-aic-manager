@@ -691,7 +691,11 @@ to `--scan` records from each end (one request per end) and checks up to
 `--sample` of their links from the far end, which must list the near record
 under the same collection, record id and edge id. An end with no links in the
 records read is reported as untested, not healthy; a response that does not
-decode is an error, never an empty sample. `--sample 0` checks configuration only. It exits
+decode is an error, never an empty sample. On each has-many end it sampled it
+also tries the `/_ref eq` filter for one resolved link: a generic end is
+measured not to answer it, so a miss there prints the limit and the filter to
+use instead (`/_refResourceId`); a miss on a mapped end counts as a finding.
+`--sample 0` checks configuration only. It exits
 non-zero on any finding or any link that does not resolve. What to do about a
 finding is not measured: `aic` does not write `repo.ds`, and neither the
 console's repair nor delete-and-recreate has been tested

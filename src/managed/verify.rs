@@ -488,6 +488,47 @@ fn mapped_kind(end: &End) -> &str {
         .map_or("generic", |mapping| mapping.kind.as_str())
 }
 
+/// What a `/_ref eq` filter on a relationship collection said about a link
+/// the collection lists. A generic end is measured not to answer it, so a miss
+/// there is the documented limit, not a defect; a mapped end is measured to
+/// answer it, so a miss there is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefFilter {
+    Finds,
+    GenericLimit,
+    MappedMiss,
+}
+
+impl RefFilter {
+    pub fn judge(end: &End, found: bool) -> Self {
+        match (found, end.mapping.is_some()) {
+            (true, _) => Self::Finds,
+            (false, false) => Self::GenericLimit,
+            (false, true) => Self::MappedMiss,
+        }
+    }
+
+    pub fn is_failure(self) -> bool {
+        self == Self::MappedMiss
+    }
+
+    pub fn message(self, end: &End) -> String {
+        let end = label(end);
+        match self {
+            Self::Finds => format!("query: `/_ref eq` on {end} finds a sampled link"),
+            Self::GenericLimit => format!(
+                "query: `/_ref eq` on {end} returns nothing for a link it lists — the generic \
+                 storage limit; filter on `/_refResourceId` instead"
+            ),
+            Self::MappedMiss => format!(
+                "query: `/_ref eq` on {end} returns nothing for a link it lists, although the \
+                 end is mapped"
+            ),
+        }
+    }
+}
+
 /// `object.key`'s `repo.ds` mapping, if it has one.
 pub fn mapped(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
     mapping_for(repo_ds, object, key)
@@ -1041,6 +1082,31 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("STALE") && line.contains("a.gone")),
             "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_ref_filter_miss_is_a_failure_only_on_a_mapped_end() {
+        let ends = |repo_ds: &Value| {
+            report(&managed(), repo_ds, "a", Some("owner"))
+                .unwrap()
+                .pairs
+                .remove(0)
+                .reverse
+                .unwrap()
+        };
+        let generic = ends(&repo(None, None));
+        let mapped = ends(&repo(Some(reference()), Some(reverse_reference())));
+        assert_eq!(RefFilter::judge(&generic, true), RefFilter::Finds);
+        assert_eq!(RefFilter::judge(&mapped, true), RefFilter::Finds);
+        assert_eq!(RefFilter::judge(&generic, false), RefFilter::GenericLimit);
+        assert!(!RefFilter::GenericLimit.is_failure());
+        assert_eq!(RefFilter::judge(&mapped, false), RefFilter::MappedMiss);
+        assert!(RefFilter::MappedMiss.is_failure());
+        assert!(
+            RefFilter::GenericLimit
+                .message(&generic)
+                .contains("/_refResourceId")
         );
     }
 

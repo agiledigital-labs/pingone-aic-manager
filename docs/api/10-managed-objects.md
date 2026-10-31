@@ -524,8 +524,9 @@ documented allocation rule; treat it as a hint, never as a classifier.
 **`PUT config/managed` did not write `repo.ds` in either operation tried** —
 creating a pair, and renaming a mapped property (below). A has-many ↔ has-one
 pair created with `aic managed relationship set` between two fresh types got no
-mapping, re-checked over two minutes, and worked fully in generic mode: link
-from the forward side, read from both sides, one shared edge id. The mapped
+mapping, re-checked over two minutes, and navigated fully in generic mode:
+link from the forward side, read from both sides, one shared edge id. Not every
+query filter works there — see "Querying a relationship collection" below. The mapped
 pairs on the sandbox (`test_from` ↔ `test_to`) date from those types being
 opened in the console (99-quirks, 2026-08-04), so the console writing mappings
 is an inference, not an observation.
@@ -644,6 +645,42 @@ seconds** after the restoring `config/managed` `PUT` and then recovered with
 data intact; and the restore itself was **lost** — a `200`, a read equal to the
 backup, then the renamed document on every read for over two minutes until a
 second `PUT` — Q14 again (`99-quirks-and-open-questions.md`).
+
+### Querying a relationship collection (verified 2026-10-31)
+
+"Generic works" holds for navigation — reading the property, `GET`ting the
+collection, and linking from either end — but **not for every query filter**.
+Measured on the sandbox against a throwaway generic pair (a has-one forward
+with a has-many reverse, plus a has-one ↔ has-one pair, both created through
+`config/managed`, no `repo.ds` entry) and, as the control, the mapped
+`alpha_role.members` ↔ `alpha_user.roles`. Each row filters the has-many
+collection `managed/<obj>/<id>/<rel>` for a link the collection is known to
+list:
+
+| `_queryFilter` on the has-many collection | Generic pair         | Mapped pair |
+| ----------------------------------------- | -------------------- | ----------- |
+| `true`                                    | lists the link       | lists it    |
+| `/_refResourceId eq "<id>"`               | finds it             | finds it    |
+| `/_ref eq "managed/<obj>/<id>"`           | **0 results**        | finds it    |
+| a target field, e.g. `/userName eq "…"`   | **0 results**        | finds it    |
+
+And on both pairs:
+
+- **A singular end's collection is 501.** `managed/<obj>/<id>/<rel>?_queryFilter=true`
+  on a has-one property — forward or reverse, generic or mapped
+  (`alpha_user.manager`) — is `501 Not Implemented`. Read the record with
+  `_fields=<rel>` instead.
+- **Filtering the parent collection on a relationship sub-field returned 0.**
+  `managed/<obj>?_queryFilter=/<rel>/_refResourceId eq "<id>"` found nothing on
+  either pair, so this is not a generic-only limit and the query shape itself
+  may be wrong; not pursued.
+
+So on a generic pair, filter a relationship collection only on
+`/_refResourceId` — a `/_ref` or target-field filter silently returns an empty
+result, which reads as "no link" rather than as an error.
+`aic managed relationship verify` tries `/_ref eq` on each has-many end it
+samples and reports which of the two it got; a miss on a **mapped** end counts
+as a failure, because the mapped control answers it.
 
 ### Object-type rename orphans records (verified 2026-07-27)
 
