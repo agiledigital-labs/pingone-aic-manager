@@ -1314,12 +1314,27 @@ async fn reconcile(tenant: &str, managed: &Value, field: Option<&str>) -> Result
         attention: Vec::new(),
     };
     for pending in recovery::pending(tenant)? {
-        let (current, _) =
-            read_edges(tenant, &pending.object, &pending.from_id, &pending.key).await?;
         let label = pending.label();
         let since = &pending.started_at;
+        // Shape first: a field that is no longer this relationship may not
+        // read as one, and one entry that cannot be read must not stop the
+        // others being judged.
         let shape = current_shape(managed, &pending.object, &pending.key);
-        match recovery::judge(&pending, shape.as_ref(), &current) {
+        let verdict = if recovery::fits(&pending, shape.as_ref()) {
+            match read_edges(tenant, &pending.object, &pending.from_id, &pending.key).await {
+                Ok((current, _)) => recovery::judge(&pending, shape.as_ref(), &current),
+                Err(error) => {
+                    out.attention.push(format!(
+                        "{label}: recorded at {since}; the record could not be read ({error}), \
+                         so the entry is kept and not acted on"
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            recovery::Recovery::Reshaped
+        };
+        match verdict {
             recovery::Recovery::Settled => recovery::clear(&pending.id)?,
             recovery::Recovery::Reshaped => out.attention.push(format!(
                 "{label}: recorded at {since} while {} was {} to {}; it has changed shape since, \
@@ -1660,28 +1675,27 @@ async fn relink_one(
         }
         create.if_match = rev;
     }
-    if let Err(error) = api::send_relink(ok.tenant, object, &create, ok.confirmed_prod).await {
-        let why = if is_precondition_failed(&error) {
-            "the record changed between the re-read and the re-creation, which was refused"
-                .to_string()
-        } else {
-            format!("re-creating it failed ({error})")
-        };
-        return Err(format!(
-            "{label}: the link was removed and {why}; {}",
-            restore_hint(&create)
-        ));
-    }
+    let written = match api::send_relink(ok.tenant, object, &create, ok.confirmed_prod).await {
+        Ok(response) => relink::written_edge(&response, key, near_array),
+        Err(error) => {
+            let why = if is_precondition_failed(&error) {
+                "the record changed between the re-read and the re-creation, which was refused"
+                    .to_string()
+            } else {
+                format!("re-creating it failed ({error})")
+            };
+            return Err(format!(
+                "{label}: the link was removed and {why}; {}",
+                restore_hint(&create)
+            ));
+        }
+    };
     let (after, _) = read_edges(ok.tenant, object, &edge.link.from_id, key)
         .await
         .map_err(read("re-created, but the confirming read failed"))?;
     // Confirmed only with the properties it carried: until then the journal
     // holds the only copy of them.
-    let Some(new) = after.iter().find(|candidate| {
-        candidate.link.to_id == edge.link.to_id
-            && candidate.link.to_collection == edge.link.to_collection
-            && candidate.properties == edge.properties
-    }) else {
+    let Some(new) = recreated(&after, edge, written.as_deref()) else {
         return Ok(RelinkStep::Unconfirmed);
     };
     forget();
@@ -1692,6 +1706,23 @@ async fn relink_one(
         RelinkStep::Done
     } else {
         RelinkStep::Unconfirmed
+    })
+}
+
+/// The link a relink or restore re-created, among the record's links after
+/// it: the edge the write's response named when it named one, else one to
+/// the same target with the same properties. Never a link to the target
+/// alone — another writer's is not this one.
+fn recreated<'a>(
+    after: &'a [relink::Edge],
+    edge: &relink::Edge,
+    written: Option<&str>,
+) -> Option<&'a relink::Edge> {
+    after.iter().find(|candidate| {
+        candidate.link.to_id == edge.link.to_id
+            && candidate.link.to_collection == edge.link.to_collection
+            && candidate.properties == edge.properties
+            && written.is_none_or(|id| candidate.link.edge_id.as_deref() == Some(id))
     })
 }
 
@@ -1756,8 +1787,8 @@ async fn restore_one(
     if !near_array {
         create.if_match = rev;
     }
-    match api::send_relink(ok.tenant, object, &create, ok.confirmed_prod).await {
-        Ok(_) => {}
+    let written = match api::send_relink(ok.tenant, object, &create, ok.confirmed_prod).await {
+        Ok(response) => relink::written_edge(&response, key, near_array),
         Err(error) if is_precondition_failed(&error) => {
             return Ok(Restored::NotWritten(
                 "the record changed before the write".into(),
@@ -1768,7 +1799,7 @@ async fn restore_one(
                 "{label}: restoring it failed ({error}); it stays in the recovery journal"
             ));
         }
-    }
+    };
     let (after, _) = read_edges(ok.tenant, object, &pending.from_id, key)
         .await
         .map_err(|error| format!("{label}: restored, but the confirming read failed ({error})"))?;
@@ -1781,10 +1812,7 @@ async fn restore_one(
     recovery::clear(&pending.id).map_err(|error| {
         format!("{label}: restored, but its recovery entry could not be cleared ({error})")
     })?;
-    let Some(new) = after.iter().find(|candidate| {
-        candidate.link.to_id == edge.link.to_id
-            && candidate.link.to_collection == edge.link.to_collection
-    }) else {
+    let Some(new) = recreated(&after, &edge, written.as_deref()) else {
         return Ok(Restored::OneSided);
     };
     let (outcome, _) = far_outcome(ok.tenant, far_end, &new.link, &near_collection)
@@ -2002,18 +2030,28 @@ async fn probe_pair(
         &far_id,
         rev.as_deref(),
     );
-    if let Err(error) = api::send_relink(ok.tenant, &near.object, &link, ok.confirmed_prod).await {
-        if is_precondition_failed(&error) {
+    let written = match api::send_relink(ok.tenant, &near.object, &link, ok.confirmed_prod).await {
+        Ok(response) => relink::written_edge(&response, &near.key, near.array),
+        Err(error) if is_precondition_failed(&error) => {
             forget();
             out.note = Some(format!(
                 "untested: {near_id} changed between its read and the test link; nothing written"
             ));
             return out;
         }
-        return fail(
-            out,
-            format!("the test link write failed ({error}); it may or may not exist"),
-        );
+        Err(error) => {
+            return fail(
+                out,
+                format!("the test link write failed ({error}); it may or may not exist"),
+            );
+        }
+    };
+    // Recorded before anything else can fail, so an interrupted run leaves
+    // the next one the edge to look for.
+    if let Some(edge_id) = &written
+        && let Err(error) = recovery::set_edge(&pending.id, edge_id)
+    {
+        eprintln!("warning: could not record the probe's edge id ({error})");
     }
     let after = match read_near().await {
         Ok((edges, _)) => edges,
@@ -2027,14 +2065,28 @@ async fn probe_pair(
         }
     };
     let far_collection = format!("managed/{}", far.object);
-    let Some(new) = relink::new_link(&before, &after, &far_collection, &far_id).cloned() else {
+    let Some(new) = relink::new_link(
+        &before,
+        &after,
+        &far_collection,
+        &far_id,
+        written.as_deref(),
+    )
+    .cloned() else {
         return fail(
             out,
-            format!("the write succeeded but {near_id} does not list the test link"),
+            format!(
+                "the write succeeded but {near_id} does not list one test link it can be told \
+                 apart by — another writer's link to {far_id} may have landed too — so \
+                 nothing is removed; check {near_id}.{} by hand",
+                near.key
+            ),
         );
     };
     let edge_id = new.link.edge_id.clone().unwrap_or_default();
-    if let Err(error) = recovery::set_edge(&pending.id, &edge_id) {
+    if written.is_none()
+        && let Err(error) = recovery::set_edge(&pending.id, &edge_id)
+    {
         eprintln!("warning: could not record the probe's edge id ({error})");
     }
     let near_collection = format!("managed/{}", near.object);

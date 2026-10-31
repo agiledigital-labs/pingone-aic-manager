@@ -544,6 +544,17 @@ pub struct SyncedScript {
     pub realm: Option<String>,
 }
 
+const MANIFEST: crate::statefile::Describe = crate::statefile::Describe {
+    what: "the script manifest",
+    unreadable: |path, error| {
+        crate::Error::Config(format!(
+            "the script manifest {} does not parse ({error}); every script it tracked is \
+             untracked until it is repaired or removed",
+            path.display()
+        ))
+    },
+};
+
 /// On-disk record of the last-synced state for one tenant (both realms + IDM).
 #[derive(Debug)]
 pub struct SnapshotStore {
@@ -594,19 +605,13 @@ impl SnapshotStore {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    /// By rename, so a crash mid-write loses the change rather than leaving a
-    /// truncated manifest that tracks nothing.
-    fn save_manifest(&self, entries: &[SyncedScript]) -> Result<()> {
-        use std::io::Write as _;
-        std::fs::create_dir_all(&self.dir)?;
-        let path = self.manifest_path();
-        let temp = crate::statefile::temp_path(&path);
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(&serde_json::to_vec_pretty(entries)?)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temp, &path)?;
-        Ok(())
+    /// Change the manifest through [`crate::statefile::update`]: under its
+    /// sidecar lock, so two `aic` commands recording different scripts cannot
+    /// erase each other's entry (or share one `.new`), and installed by
+    /// rename, so a crash loses the change rather than leaving a truncated
+    /// manifest that tracks nothing. The on-disk format is unchanged.
+    fn update_manifest<R>(&self, change: impl FnOnce(&mut Vec<SyncedScript>) -> R) -> Result<R> {
+        crate::statefile::update(&self.manifest_path(), &MANIFEST, change)
     }
 
     /// The realm key under which a (kind, realm) entry is stored: Some for
@@ -617,40 +622,40 @@ impl SnapshotStore {
 
     /// Insert or replace a manifest entry, keyed by (kind, name, realm).
     fn upsert(&self, entry: &SyncedScript) -> Result<()> {
-        let mut entries = self.load_manifest()?;
-        if let Some(slot) = entries.iter_mut().find(|e| {
-            e.reference.kind == entry.reference.kind
-                && e.reference.name == entry.reference.name
-                && e.realm == entry.realm
-        }) {
-            *slot = entry.clone();
-        } else {
-            entries.push(entry.clone());
-        }
-        self.save_manifest(&entries)
+        self.update_manifest(|entries| {
+            if let Some(slot) = entries.iter_mut().find(|e| {
+                e.reference.kind == entry.reference.kind
+                    && e.reference.name == entry.reference.name
+                    && e.realm == entry.realm
+            }) {
+                *slot = entry.clone();
+            } else {
+                entries.push(entry.clone());
+            }
+        })
     }
 
     fn remove(&self, kind: Kind, name: &str, realm: &str) -> Result<()> {
         let key = Self::realm_key(kind, realm);
-        let mut entries = self.load_manifest()?;
-        let removed = entries
-            .iter()
-            .find(|e| e.reference.kind == kind && e.reference.name == name && e.realm == key)
-            .cloned();
-        entries
-            .retain(|e| !(e.reference.kind == kind && e.reference.name == name && e.realm == key));
-        // Snapshot first, manifest second: stopping between them leaves an
-        // entry with no snapshot, which every reader treats as untrustworthy
-        // (§5), rather than a snapshot no entry owns.
-        if let Some(entry) = removed {
-            let path = self.config_path(&entry.reference, realm);
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
+        let matches = |e: &SyncedScript| {
+            e.reference.kind == kind && e.reference.name == name && e.realm == key
+        };
+        // Snapshot first, manifest second, both under the manifest's lock:
+        // stopping between them leaves an entry with no snapshot, which every
+        // reader treats as untrustworthy (§5), rather than a snapshot no entry
+        // owns. A failed snapshot removal keeps the entry.
+        self.update_manifest(|entries| {
+            if let Some(entry) = entries.iter().find(|e| matches(e)) {
+                match std::fs::remove_file(self.config_path(&entry.reference, realm)) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
             }
-        }
-        self.save_manifest(&entries)
+            entries.retain(|e| !matches(e));
+            Ok(())
+        })?
+        .map_err(Into::into)
     }
 
     /// Last-synced raw config (the snapshot we forked from), if present.
@@ -1375,6 +1380,44 @@ fn rename_resumes(listed: &[RemoteRef], old_name: &str, new_name: &str, id: &str
         && listed.iter().any(|r| r.name == new_name && r.id == id)
 }
 
+/// Whether a rename the tenant already took may finish its local move, given
+/// what the old and new workspace paths hold now and the confirmed remote
+/// source. An earlier attempt may have stopped anywhere in its install, so
+/// either path may already hold the remote bytes — that is its own work, and
+/// is accepted. Anything else at either path is an edit the move would lose
+/// (the old file is deleted last), so it refuses.
+///
+/// The old snapshot is not consulted: the tenant has been confirmed to hold
+/// the new name, and the earlier attempt may already have removed it.
+fn rename_resume_ok(
+    old_local: Option<&[u8]>,
+    new_local: Option<&[u8]>,
+    remote: &[u8],
+) -> std::result::Result<(), &'static str> {
+    if old_local.is_some_and(|bytes| bytes != remote) {
+        return Err("the old file differs from the renamed script on the tenant");
+    }
+    if new_local.is_some_and(|bytes| bytes != remote) {
+        return Err("the new file differs from the renamed script on the tenant");
+    }
+    Ok(())
+}
+
+/// The bytes of a regular file at `path`, `None` when nothing is there. A
+/// symlink or other non-file is refused: a resumed rename deletes the old
+/// file, and only two distinct files make that safe.
+fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() => Ok(Some(std::fs::read(path)?)),
+        Ok(_) => Err(Error::Config(format!(
+            "{} is not a regular file; a rename does not replace it. Move it aside and retry",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Refuse a rename whose destination already has anything at it.
 ///
 /// `symlink_metadata`, not `exists`: a dangling or aliasing symlink counts. A
@@ -1438,16 +1481,37 @@ pub async fn rename(
         return Err(Error::Config(format!("{reference} already has that name")));
     }
     let store = SnapshotStore::open(tenant);
-    let tracked = store.lookup(kind, old_name, realm)?.ok_or_else(|| {
+    let not_tracked = || {
         Error::Config(format!(
             "{reference} is not tracked; `aic script pull {reference}` first"
         ))
-    })?;
+    };
+    let tracked_old = store.lookup(kind, old_name, realm)?;
+    let tracked_new = store.lookup(kind, new_name, realm)?;
+    // An earlier attempt that stopped after recording the new name and
+    // forgetting the old one leaves only the new name tracked; its id is the
+    // one to resume with.
+    let tracked = tracked_old
+        .clone()
+        .or_else(|| tracked_new.clone())
+        .ok_or_else(not_tracked)?;
     let listed = kind.list(tenant, realm).await?;
     // A rename the tenant took and the workspace did not — the install after
     // the write failed — shows as the tracked id under the new name. The
     // same command finishes it, without writing again.
     let resuming = rename_resumes(&listed, old_name, new_name, &tracked.reference.id);
+    if tracked_old.is_none() && !resuming {
+        return Err(not_tracked());
+    }
+    if let Some(new) = &tracked_new
+        && (!resuming || new.reference.id != tracked.reference.id)
+    {
+        return Err(Error::Config(format!(
+            "{} is already tracked, as id {}; a rename does not replace it",
+            super::full_name(kind, Some(realm), new_name),
+            new.reference.id
+        )));
+    }
     let current = listed
         .iter()
         .find(|r| {
@@ -1477,18 +1541,40 @@ pub async fn rename(
         name: new_name.to_string(),
         ..tracked.reference.clone()
     };
-    let destinations = [
-        workspace_file(tenant, realm, &new_ref),
-        store.config_path(&new_ref, realm),
-    ];
-    destination_free(&destinations)?;
+    let old_ref = RemoteRef {
+        name: old_name.to_string(),
+        ..tracked.reference.clone()
+    };
+    let new_file = workspace_file(tenant, realm, &new_ref);
+    let destinations = [new_file.clone(), store.config_path(&new_ref, realm)];
+    if !resuming {
+        destination_free(&destinations)?;
+    }
     let remote = kind.fetch(tenant, realm, &current.id).await?;
     let remote_src = kind.decode_source(&remote.raw_config)?;
-    let old_file = workspace_file(tenant, realm, &tracked.reference);
-    let local = read_local(&old_file)?;
-    let snapshot = store.pull_snapshot_source(&tracked.reference, realm)?;
-    rename_ok(local.as_deref(), snapshot.as_deref(), &remote_src)
-        .map_err(|block| Error::Config(block.message(&reference)))?;
+    let old_file = workspace_file(tenant, realm, &old_ref);
+    // What the new path is allowed to hold when the install runs: nothing on
+    // a first attempt, the remote bytes when an earlier one already wrote it.
+    let new_expected = if resuming {
+        let old_local = regular_file(&old_file)?;
+        let new_local = regular_file(&new_file)?;
+        rename_resume_ok(old_local.as_deref(), new_local.as_deref(), &remote_src).map_err(
+            |why| {
+                Error::Config(format!(
+                    "{reference} was already renamed on the tenant, but {why}; nothing was \
+                     moved. Keep what you need, then make the file match the tenant or \
+                     remove it, and run the same `aic script rename` again"
+                ))
+            },
+        )?;
+        new_local
+    } else {
+        let local = read_local(&old_file)?;
+        let snapshot = store.pull_snapshot_source(&tracked.reference, realm)?;
+        rename_ok(local.as_deref(), snapshot.as_deref(), &remote_src)
+            .map_err(|block| Error::Config(block.message(&reference)))?;
+        None
+    };
 
     if !resuming {
         let body = copy_body(&remote.raw_config, &current.id, new_name)?;
@@ -1532,14 +1618,16 @@ pub async fn rename(
              `aic script rename` again: it finishes the move without writing to the tenant"
         ))
     };
-    destination_free(&destinations).map_err(unfinished)?;
+    if !resuming {
+        destination_free(&destinations).map_err(unfinished)?;
+    }
     install_remote(
         &store,
         &ProjectConfig::workspace_tree(tenant),
         realm,
         &confirmed,
         &remote_src,
-        LocalExpectation::Exact(None),
+        LocalExpectation::Exact(new_expected.as_deref()),
         false,
     )
     .map_err(unfinished)?;
@@ -2659,6 +2747,60 @@ mod tests {
             "New",
             "id1"
         ));
+    }
+
+    /// An earlier attempt that stopped partway leaves the remote bytes at the
+    /// new path; a resume accepts its own work and refuses an edit at either
+    /// path, and never follows a symlink.
+    #[test]
+    fn a_resumed_rename_accepts_its_own_partial_install_and_nothing_else() {
+        let remote: &[u8] = b"remote";
+        let edited: &[u8] = b"edited";
+        assert_eq!(rename_resume_ok(None, None, remote), Ok(()));
+        assert_eq!(rename_resume_ok(Some(remote), Some(remote), remote), Ok(()));
+        assert!(rename_resume_ok(Some(edited), None, remote).is_err());
+        assert!(rename_resume_ok(Some(remote), Some(edited), remote).is_err());
+
+        let dir = tmp();
+        let file = dir.join("New.js");
+        assert_eq!(regular_file(&file).unwrap(), None);
+        std::fs::write(&file, remote).unwrap();
+        assert_eq!(regular_file(&file).unwrap().as_deref(), Some(remote));
+        let link = dir.join("Link.js");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(regular_file(&link).is_err());
+
+        // The store half: old snapshot already removed, new file already
+        // written. The install takes the file it expects, and forgetting the
+        // old name tolerates its missing snapshot.
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let old = endpoint_ref("old");
+        let new = endpoint_ref("new");
+        store
+            .record(&endpoint_script(&old, "remote", "m"), "alpha")
+            .unwrap();
+        std::fs::remove_file(store.config_path(&old, "alpha")).unwrap();
+        let script = endpoint_script(&new, "remote", "m");
+        write_workspace_source_in(&workspace, "alpha", &script, remote).unwrap();
+        install_remote(
+            &store,
+            &workspace,
+            "alpha",
+            &script,
+            remote,
+            LocalExpectation::Exact(Some(remote)),
+            false,
+        )
+        .unwrap();
+        store.remove(Kind::IdmEndpoint, "old", "alpha").unwrap();
+        let names: Vec<_> = store
+            .load_manifest()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.reference.name)
+            .collect();
+        assert_eq!(names, vec!["new".to_string()]);
     }
 
     #[test]
@@ -4815,6 +4957,32 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Concurrent writers recording different scripts: without the lock
+    /// around the read-modify-write, one's entry is erased by the other's
+    /// install, or they collide on the shared `.new`.
+    #[test]
+    fn concurrent_records_keep_every_entry() {
+        let dir = tmp();
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    let store = store_at(&dir);
+                    for i in 0..10 {
+                        let reference = endpoint_ref(&format!("s{t}-{i}"));
+                        store
+                            .record(&endpoint_script(&reference, "x", "m"), "alpha")
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(store_at(&dir).load_manifest().unwrap().len(), 80);
     }
 
     #[test]

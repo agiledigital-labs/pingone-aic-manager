@@ -796,8 +796,12 @@ confirming the removal by a re-read. It writes to existing records, so their
 hooks fire; it asks for confirmation (`--force` skips it, and is required with
 no terminal) and applies the production gate (`--yes`). Records are chosen so
 the test link displaces nothing — through a has-one end only a record whose
-property is empty — and the probe judges only the edge it created, never an
-older link to the same record. A pair with no such record is reported
+property is empty — and the probe judges and removes only the edge it
+created, identified by the edge id its write's response names
+(`docs/api/10-managed-objects.md`), never an older or another writer's link
+to the same record. When the response names no edge and more than one new
+link to the far record appears, it removes nothing and says so. A pair with
+no such record is reported
 untested. A test link that resolves and is removed passes; one the far end
 does not list, or that could not be removed, is a finding, and a leftover is
 named with the request that removes it. Each probe is recorded in
@@ -2813,7 +2817,12 @@ Skipped entries are listed and make the command exit non-zero.
     that read before the old one is forgotten, so a failure in between leaves
     the old name tracked. Running the same `rename` again then finishes it:
     when the tenant holds the tracked id under the new name and nothing under
-    the old, it moves the workspace without writing to the tenant. The old file is removed only
+    the old, it moves the workspace without writing to the tenant. Wherever
+    the earlier attempt stopped, the second run accepts its own work — the
+    new file already holding the renamed bytes, the new name already tracked
+    under the same id, the old snapshot or old entry already gone — and
+    refuses only an edit: either file holding anything but the renamed bytes,
+    or a symlink at either path. The old file is removed only
     if it still holds the bytes that were renamed. Scripts that load a library **by
     name** (`require('Old')`) are not found or changed; a `LIBRARY` rename says
     so.

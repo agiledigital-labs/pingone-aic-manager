@@ -274,12 +274,6 @@ fn is_parameter(bytes: &[u8], at: usize, end: usize) -> bool {
     let Some(open) = open else {
         return false;
     };
-    if matches!(
-        previous_word(bytes, open),
-        Some("if" | "while" | "for" | "switch" | "with" | "return" | "typeof")
-    ) {
-        return false;
-    }
     // Its matching `)`.
     let mut depth = 0usize;
     let close = (open + 1..bytes.len()).find(|&i| match bytes[i] {
@@ -298,8 +292,18 @@ fn is_parameter(bytes: &[u8], at: usize, end: usize) -> bool {
         return false;
     };
     let next = skip_ws(bytes, close + 1);
+    // An arrow's list is a parameter list wherever it stands, including
+    // after `return` or `typeof`: `return (Map) => new Map()`.
+    if bytes.get(next) == Some(&b'=') && bytes.get(next + 1) == Some(&b'>') {
+        return true;
+    }
+    // `(…) {` is a function's list unless a statement keyword owns the
+    // parentheses: `if (Map) { … }` tests a value, it binds nothing.
     bytes.get(next) == Some(&b'{')
-        || (bytes.get(next) == Some(&b'=') && bytes.get(next + 1) == Some(&b'>'))
+        && !matches!(
+            previous_word(bytes, open),
+            Some("if" | "while" | "for" | "switch" | "with" | "return" | "typeof")
+        )
 }
 
 /// 1-based line and column of byte `at`, counting columns in characters.
@@ -495,6 +499,11 @@ fn regex_may_start(code: &[u8]) -> bool {
                     | "throw"
                     | "instanceof"
                     | "yield"
+                    // These end their statement, so what follows starts one:
+                    // `break\n/new Map/.test(s)` is a regex, not a division.
+                    | "break"
+                    | "continue"
+                    | "debugger"
             )
         );
     }
@@ -609,6 +618,11 @@ mod tests {
             "if (ready) /new Map()/.exec(text);",
             "while (more()) /new Set/.test(s);",
             "var s = `${/new Map()/.test(text)}`;",
+            "function f() { return (Map) => new Map(); }",
+            "function f() { return (a, Promise) => Promise.resolve(a); }",
+            "for (;;) { break\n/new Map()/.test(s); }",
+            "while (x) { continue\n/new Set()/.test(s); }",
+            "debugger\n/new Map()/.test(s);",
         ] {
             assert_eq!(members(source), Vec::<&str>::new(), "{source}");
         }
@@ -640,6 +654,21 @@ mod tests {
             vec!["Object.entries"]
         );
         assert_eq!(members("Map == x;\nnew Map();"), vec!["new Map"]);
+        // Parenthesised after `return` but no arrow: a value, not a binding,
+        // and the `/` after it divides.
+        assert_eq!(
+            members("function f() { return (Map); }\nnew Map();"),
+            vec!["new Map"]
+        );
+        assert_eq!(
+            members("function f(x) { return (x) / Object.values(o).length; }"),
+            vec!["Object.values"]
+        );
+        // A name that merely starts with a statement keyword is an operand.
+        assert_eq!(
+            members("var n = breaks / 2; Object.values(o);"),
+            vec!["Object.values"]
+        );
         // A call's `)` and a postfix operator end an operand: the `/` after
         // them divides, so what follows is still scanned.
         assert_eq!(
