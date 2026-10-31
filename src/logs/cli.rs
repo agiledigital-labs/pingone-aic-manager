@@ -52,7 +52,9 @@ pub enum LogsCommand {
         output: Option<PathBuf>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        /// Poll until the trailing AM-ACCESS-OUTCOME event arrives.
+        /// Poll until the transaction's completion event arrives:
+        /// AM-ACCESS-OUTCOME when an AM access source is requested, otherwise
+        /// IDM's `access` event. Core-only sources have none and are not polled.
         #[arg(long)]
         wait: bool,
         /// Seconds to poll with --wait (ignored otherwise). Still writes
@@ -115,6 +117,15 @@ pub enum LogsCommand {
             help = "Fixed range end (requires --begin)"
         )]
         end: Option<String>,
+        /// Stop after this many matching events. Exits 0: the result is a
+        /// prefix of the full answer, and stderr says so.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+        limit: Option<u64>,
+        /// Stop reading after this long (s/m/h suffix) and exit non-zero.
+        /// The JSON written so far stays valid, and stderr names how far the
+        /// scan got. Ctrl-C stops the same way.
+        #[arg(long, value_name = "DURATION")]
+        max_time: Option<String>,
         #[arg(long, value_name = "PATH", help = "Write the JSON result to a file")]
         output: Option<PathBuf>,
         #[arg(long, help = "Tenant to target")]
@@ -284,6 +295,7 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             )
             .await?;
             let events = maybe_wait_for_outcome(
+                TxMarker::for_sources(&sources),
                 &transaction_id,
                 events,
                 wait,
@@ -357,6 +369,8 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             since,
             begin,
             end,
+            limit,
+            max_time,
             output,
             tenant,
         } => {
@@ -367,6 +381,16 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
                 end.as_deref(),
                 Utc::now(),
             )?;
+            let budget = max_time
+                .as_deref()
+                .map(|value| {
+                    parse_recent_duration(value).and_then(|duration| {
+                        duration
+                            .to_std()
+                            .map_err(|_| Error::Config(format!("invalid duration {value:?}")))
+                    })
+                })
+                .transpose()?;
             let sources = parse_sources(source.as_deref())?;
             let context = ops::fetch_context(tenant).await?;
             let writer: Box<dyn Write + Send> = match output {
@@ -374,17 +398,19 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
                 None => Box::new(BufWriter::new(std::io::stdout())),
             };
             let mut output = JsonArrayWriter::new(writer);
+            let mut scan = GrepScan::new(limit, Instant::now());
+            let limit_hit = tokio::sync::Notify::new();
             let fetch_result = {
-                let mut on_page = |mut page: Vec<Value>| -> Result<()> {
-                    sort_events_by_timestamp(&mut page);
-                    for event in page {
-                        if payload_matches(&event, &pattern) {
-                            output.write(&event)?;
-                        }
+                let mut on_page = |page: Vec<Value>| -> Result<()> {
+                    if scan.page(page, &pattern, &mut output)? {
+                        limit_hit.notify_one();
+                    }
+                    if let Some(line) = scan.progress(Instant::now()) {
+                        eprintln!("{line}");
                     }
                     Ok(())
                 };
-                api::fetch_range_streamed(
+                let fetch = api::fetch_range_streamed(
                     &context.client,
                     &context.base_url,
                     &context.key,
@@ -393,11 +419,19 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
                     &sources,
                     None,
                     &mut on_page,
-                )
+                );
+                bounded_grep(fetch, limit_hit.notified(), budget, async {
+                    // A failed handler install must not read as Ctrl-C.
+                    if tokio::signal::ctrl_c().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                })
                 .await
             };
             let finish_result = output.finish();
-            fetch_result.and(finish_result)
+            let stop = fetch_result?;
+            finish_result?;
+            scan.finish(stop, max_time.as_deref())
         }
         LogsCommand::Tail {
             source,
@@ -831,6 +865,155 @@ fn grep_range(
     }
 }
 
+/// Why a `logs grep` scan ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrepStop {
+    Complete,
+    Limit,
+    Budget,
+    Interrupted,
+}
+
+/// Drive a grep's fetch to whichever comes first: the end of the range, the
+/// match limit, the time budget, or Ctrl-C. Dropping `fetch` cancels the
+/// request in flight; everything already handed to `on_page` stays written.
+async fn bounded_grep(
+    fetch: impl Future<Output = Result<()>>,
+    limit_hit: impl Future<Output = ()>,
+    budget: Option<std::time::Duration>,
+    interrupt: impl Future<Output = ()>,
+) -> Result<GrepStop> {
+    let deadline = async {
+        match budget {
+            Some(budget) => tokio::time::sleep(budget).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        // Biased so a limit already signalled wins. A limit reached on the
+        // page that ends the range can still lose; `GrepScan::settle` corrects
+        // that from the count.
+        biased;
+        () = limit_hit => Ok(GrepStop::Limit),
+        result = fetch => result.map(|()| GrepStop::Complete),
+        () = deadline => Ok(GrepStop::Budget),
+        () = interrupt => Ok(GrepStop::Interrupted),
+    }
+}
+
+/// The counting half of `logs grep`, kept apart from the I/O so a test drives
+/// the real limit and progress rules.
+struct GrepScan {
+    limit: Option<u64>,
+    scanned: u64,
+    matched: u64,
+    reached: Option<DateTime<Utc>>,
+    started: Instant,
+    last_progress: Instant,
+}
+
+/// Quiet for short scans; one line per interval for long ones.
+const GREP_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl GrepScan {
+    fn new(limit: Option<u64>, now: Instant) -> Self {
+        Self {
+            limit,
+            scanned: 0,
+            matched: 0,
+            reached: None,
+            started: now,
+            last_progress: now,
+        }
+    }
+
+    fn limit_reached(&self) -> bool {
+        self.limit.is_some_and(|limit| self.matched >= limit)
+    }
+
+    /// Write this page's matches, up to the limit. Returns whether the limit
+    /// is now reached; pages after that write nothing.
+    fn page<W: Write>(
+        &mut self,
+        mut page: Vec<Value>,
+        pattern: &str,
+        output: &mut JsonArrayWriter<W>,
+    ) -> Result<bool> {
+        sort_events_by_timestamp(&mut page);
+        for event in page {
+            if self.limit_reached() {
+                break;
+            }
+            self.scanned += 1;
+            if let Some(at) = event_timestamp(&event) {
+                self.reached = Some(self.reached.map_or(at, |reached| reached.max(at)));
+            }
+            if payload_matches(&event, pattern) {
+                output.write(&event)?;
+                self.matched += 1;
+            }
+        }
+        Ok(self.limit_reached())
+    }
+
+    fn summary(&self) -> String {
+        let reached = self
+            .reached
+            .map_or_else(String::new, |at| format!(" up to {}", at.to_rfc3339()));
+        format!(
+            "{} events scanned{reached}, {} matched, {}s",
+            self.scanned,
+            self.matched,
+            self.started.elapsed().as_secs()
+        )
+    }
+
+    fn progress(&mut self, now: Instant) -> Option<String> {
+        if now.duration_since(self.last_progress) < GREP_PROGRESS_EVERY {
+            return None;
+        }
+        self.last_progress = now;
+        Some(format!("grep: {}", self.summary()))
+    }
+
+    /// The stop to report. A page that reaches the limit and ends the range
+    /// is one poll of the fetch: the notification lands on a waiter `select!`
+    /// already polled, so it returns `Complete`. The scan's own count is the
+    /// authority, not which future won.
+    fn settle(&self, stop: GrepStop) -> GrepStop {
+        match stop {
+            GrepStop::Complete if self.limit_reached() => GrepStop::Limit,
+            stop => stop,
+        }
+    }
+
+    /// A limit stop is an answer — a prefix of it — so it exits 0. A budget or
+    /// Ctrl-C stop is not: the range was not read, and a script reading exit 0
+    /// would take "no more matches" from a scan that never looked.
+    fn finish(&self, stop: GrepStop, budget: Option<&str>) -> Result<()> {
+        match self.settle(stop) {
+            GrepStop::Complete => Ok(()),
+            GrepStop::Limit => {
+                eprintln!(
+                    "note: stopped at --limit {}; later events may also match ({})",
+                    self.matched,
+                    self.summary()
+                );
+                Ok(())
+            }
+            GrepStop::Budget => Err(Error::Config(format!(
+                "logs grep: --max-time {} spent before the range was read; the output holds only what was found ({}). Narrow --since/--begin, --source, or raise --max-time",
+                budget.unwrap_or("?"),
+                self.summary()
+            ))),
+            GrepStop::Interrupted => Err(Error::Config(format!(
+                "logs grep: interrupted; the output holds only what was found ({})",
+                self.summary()
+            ))),
+        }
+    }
+}
+
 fn require_pattern(pattern: &str) -> Result<()> {
     if pattern.is_empty() {
         Err(Error::Config("log payload pattern cannot be empty".into()))
@@ -1038,33 +1221,90 @@ async fn tail(
 }
 
 const ACCESS_OUTCOME: &str = "AM-ACCESS-OUTCOME";
+/// IDM's access log has no attempt/outcome pair: one `access` event, written
+/// when the request finishes, carries `response.status` (measured 2026-10-31).
+const IDM_ACCESS: &str = "access";
 
 fn payload_event_name(event: &Value) -> Option<&str> {
     event.get("payload")?.get("eventName")?.as_str()
 }
 
-fn has_access_outcome(events: &[Value]) -> bool {
-    events
-        .iter()
-        .any(|event| payload_event_name(event) == Some(ACCESS_OUTCOME))
+fn payload_topic(event: &Value) -> Option<&str> {
+    event.get("payload")?.get("topic")?.as_str()
 }
 
-fn incomplete_tx_note(transaction_id: &str, waited_secs: Option<u64>) -> String {
-    match waited_secs {
-        Some(secs) => format!(
-            "note: no {ACCESS_OUTCOME} event yet for transaction {transaction_id} after waiting {secs}s — logs can lag tens of seconds behind the request; retry, or pass --wait"
-        ),
-        None => format!(
-            "note: no {ACCESS_OUTCOME} event yet for transaction {transaction_id} — logs can lag tens of seconds behind the request; retry, or pass --wait"
-        ),
+/// The event that says a transaction's log trail is complete, which depends on
+/// what was asked for. AM writes `AM-ACCESS-OUTCOME`; IDM writes one `access`
+/// event; the core/debug sources have no terminal event at all, so neither an
+/// empty result nor a partial one can be told apart from log lag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxMarker {
+    AmOutcome,
+    IdmAccess,
+    None,
+}
+
+impl TxMarker {
+    /// AM wins when both are requested: an IDM request authenticated by a
+    /// bearer also writes an AM introspection outcome under the same id, while
+    /// an AM request that calls IDM can log IDM's `access` before its own
+    /// outcome, so the IDM marker would end a wait early.
+    fn for_sources(sources: &[String]) -> Self {
+        let any = |ids: &[&str]| sources.iter().any(|source| ids.contains(&source.as_str()));
+        if any(&["am-access", "am-everything"]) {
+            Self::AmOutcome
+        } else if any(&["idm-access", "idm-everything"]) {
+            Self::IdmAccess
+        } else {
+            Self::None
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::AmOutcome => ACCESS_OUTCOME,
+            Self::IdmAccess => "IDM access",
+            Self::None => "",
+        }
+    }
+
+    fn present(self, events: &[Value]) -> bool {
+        events.iter().any(|event| match self {
+            Self::AmOutcome => payload_event_name(event) == Some(ACCESS_OUTCOME),
+            Self::IdmAccess => {
+                payload_event_name(event) == Some(IDM_ACCESS)
+                    && payload_topic(event) == Some(IDM_ACCESS)
+            }
+            Self::None => false,
+        })
     }
 }
 
-/// After the first fetch, warn if `AM-ACCESS-OUTCOME` is missing, or (with
-/// `--wait`) poll the same query until it appears or `timeout` elapses.
-/// Timeout still returns the last payload. Polls go through
-/// `api::fetch_transaction`, which is already rate-limited.
+#[cfg(test)]
+fn has_access_outcome(events: &[Value]) -> bool {
+    TxMarker::AmOutcome.present(events)
+}
+
+fn incomplete_tx_note(marker: TxMarker, transaction_id: &str, waited_secs: Option<u64>) -> String {
+    if marker == TxMarker::None {
+        return format!(
+            "note: these sources have no completion event, so an empty or partial result for transaction {transaction_id} cannot be told apart from log lag — add am-access or idm-access to --source, or read a narrow window with `aic logs range`"
+        );
+    }
+    let waited = waited_secs.map_or_else(String::new, |secs| format!(" after waiting {secs}s"));
+    format!(
+        "note: no {} event yet for transaction {transaction_id}{waited} — logs can lag tens of seconds behind the request; retry, or pass --wait",
+        marker.name()
+    )
+}
+
+/// After the first fetch, warn if the sources' completion event is missing,
+/// or (with `--wait`) poll the same query until it appears or `timeout`
+/// elapses. Timeout still returns the last payload. Sources with no
+/// completion event are never polled: there is nothing to wait for. Polls go
+/// through `api::fetch_transaction`, which is already rate-limited.
 async fn maybe_wait_for_outcome<F, Fut>(
+    marker: TxMarker,
     transaction_id: &str,
     mut events: Vec<Value>,
     wait: bool,
@@ -1075,29 +1315,30 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<Vec<Value>>>,
 {
-    if has_access_outcome(&events) {
+    if marker.present(&events) {
         return Ok(events);
     }
-    if !wait {
-        eprintln!("{}", incomplete_tx_note(transaction_id, None));
+    if !wait || marker == TxMarker::None {
+        eprintln!("{}", incomplete_tx_note(marker, transaction_id, None));
         return Ok(events);
     }
 
     let started = Instant::now();
     while started.elapsed() < timeout {
         eprintln!(
-            "waiting for {ACCESS_OUTCOME}… ({}s elapsed, {} events so far)",
+            "waiting for {}… ({}s elapsed, {} events so far)",
+            marker.name(),
             started.elapsed().as_secs(),
             events.len()
         );
         events = fetch().await?;
-        if has_access_outcome(&events) {
+        if marker.present(&events) {
             return Ok(events);
         }
     }
     eprintln!(
         "{}",
-        incomplete_tx_note(transaction_id, Some(started.elapsed().as_secs()))
+        incomplete_tx_note(marker, transaction_id, Some(started.elapsed().as_secs()))
     );
     Ok(events)
 }
@@ -1547,12 +1788,302 @@ mod tests {
     #[test]
     fn incomplete_note_names_the_transaction_and_optional_wait() {
         assert_eq!(
-            incomplete_tx_note("abc-1", None),
+            incomplete_tx_note(TxMarker::AmOutcome, "abc-1", None),
             "note: no AM-ACCESS-OUTCOME event yet for transaction abc-1 — logs can lag tens of seconds behind the request; retry, or pass --wait"
         );
         assert_eq!(
-            incomplete_tx_note("abc-1", Some(90)),
+            incomplete_tx_note(TxMarker::AmOutcome, "abc-1", Some(90)),
             "note: no AM-ACCESS-OUTCOME event yet for transaction abc-1 after waiting 90s — logs can lag tens of seconds behind the request; retry, or pass --wait"
+        );
+    }
+
+    fn idm_access_event() -> Value {
+        serde_json::json!({ "source": "idm-access", "payload": {
+            "eventName": "access", "topic": "access",
+            "response": { "status": "SUCCESSFUL" } } })
+    }
+
+    fn sources(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn tx_marker_follows_the_requested_sources() {
+        assert_eq!(
+            TxMarker::for_sources(&sources(&ops::DEFAULT_SOURCES)),
+            TxMarker::AmOutcome
+        );
+        assert_eq!(
+            TxMarker::for_sources(&sources(&["am-access"])),
+            TxMarker::AmOutcome
+        );
+        // AM wins over IDM: an AM request that calls IDM logs IDM's `access`
+        // before its own outcome.
+        assert_eq!(
+            TxMarker::for_sources(&sources(&["idm-access", "am-access"])),
+            TxMarker::AmOutcome
+        );
+        assert_eq!(
+            TxMarker::for_sources(&sources(&["idm-access"])),
+            TxMarker::IdmAccess
+        );
+        assert_eq!(
+            TxMarker::for_sources(&sources(&["idm-everything"])),
+            TxMarker::IdmAccess
+        );
+        assert_eq!(
+            TxMarker::for_sources(&sources(&["idm-core"])),
+            TxMarker::None
+        );
+        assert_eq!(
+            TxMarker::for_sources(&sources(&["am-core", "idm-core"])),
+            TxMarker::None
+        );
+    }
+
+    #[test]
+    fn idm_access_marker_is_the_access_event_not_an_am_one() {
+        assert!(TxMarker::IdmAccess.present(&[idm_access_event()]));
+        // AM's access events share topic `access` but not the event name.
+        assert!(
+            !TxMarker::IdmAccess.present(&[serde_json::json!({ "payload": {
+            "eventName": "AM-ACCESS-OUTCOME", "topic": "access" } })])
+        );
+        assert!(!TxMarker::AmOutcome.present(&[idm_access_event()]));
+        assert!(!TxMarker::None.present(&[idm_access_event()]));
+    }
+
+    #[test]
+    fn idm_only_notes_never_mention_the_am_outcome() {
+        let idm = incomplete_tx_note(TxMarker::IdmAccess, "abc-1", None);
+        assert!(!idm.contains("AM-ACCESS-OUTCOME"), "{idm}");
+        assert!(idm.contains("no IDM access event yet"), "{idm}");
+        let core = incomplete_tx_note(TxMarker::None, "abc-1", Some(5));
+        assert!(!core.contains("AM-ACCESS-OUTCOME"), "{core}");
+        assert!(!core.contains("--wait"), "{core}");
+        assert!(core.contains("aic logs range"), "{core}");
+    }
+
+    #[tokio::test]
+    async fn idm_only_wait_stops_on_the_idm_access_event() {
+        let mut calls = 0u32;
+        let result = maybe_wait_for_outcome(
+            TxMarker::IdmAccess,
+            "tx-1",
+            Vec::new(),
+            true,
+            std::time::Duration::from_secs(5),
+            || {
+                calls += 1;
+                async { Ok(vec![idm_access_event()]) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(result, vec![idm_access_event()]);
+    }
+
+    #[tokio::test]
+    async fn sources_without_a_completion_event_are_never_polled() {
+        let result = maybe_wait_for_outcome(
+            TxMarker::None,
+            "tx-1",
+            Vec::new(),
+            true,
+            std::time::Duration::from_secs(60),
+            || async { panic!("nothing to wait for on core-only sources") },
+        )
+        .await
+        .unwrap();
+        assert!(result.is_empty());
+    }
+
+    fn logged(at: &str, text: &str) -> Value {
+        serde_json::json!({ "timestamp": at, "payload": text })
+    }
+
+    fn grep_into(scan: &mut GrepScan, page: Vec<Value>) -> (bool, Vec<Value>) {
+        let mut bytes = Vec::new();
+        let mut output = JsonArrayWriter::new(&mut bytes);
+        let hit = scan.page(page, "hit", &mut output).unwrap();
+        output.finish().unwrap();
+        let written: Vec<Value> = serde_json::from_slice(&bytes).unwrap();
+        (hit, written)
+    }
+
+    #[test]
+    fn grep_limit_stops_writing_at_exactly_n_matches() {
+        let now = Instant::now();
+        let mut scan = GrepScan::new(Some(2), now);
+        let (hit, written) = grep_into(
+            &mut scan,
+            vec![
+                logged("2026-10-31T00:00:03Z", "hit c"),
+                logged("2026-10-31T00:00:01Z", "hit a"),
+                logged("2026-10-31T00:00:02Z", "miss"),
+                logged("2026-10-31T00:00:04Z", "hit d"),
+            ],
+        );
+        assert!(hit);
+        // Sorted first, so the two earliest matches are the ones kept.
+        assert_eq!(
+            written,
+            vec![
+                logged("2026-10-31T00:00:01Z", "hit a"),
+                logged("2026-10-31T00:00:03Z", "hit c")
+            ]
+        );
+        assert_eq!(scan.scanned, 3);
+        let (hit, written) = grep_into(&mut scan, vec![logged("2026-10-31T00:00:05Z", "hit e")]);
+        assert!(hit);
+        assert!(written.is_empty());
+    }
+
+    #[test]
+    fn grep_without_limit_never_reports_one() {
+        let mut scan = GrepScan::new(None, Instant::now());
+        let page = (0..50)
+            .map(|n| logged("2026-10-31T00:00:00Z", &format!("hit {n}")))
+            .collect();
+        let (hit, written) = grep_into(&mut scan, page);
+        assert!(!hit);
+        assert_eq!(written.len(), 50);
+    }
+
+    #[test]
+    fn grep_progress_is_quiet_until_the_interval_passes() {
+        let start = Instant::now();
+        let mut scan = GrepScan::new(None, start);
+        grep_into(&mut scan, vec![logged("2026-10-31T01:02:03Z", "hit")]);
+        assert_eq!(
+            scan.progress(start + std::time::Duration::from_secs(9)),
+            None
+        );
+        let line = scan.progress(start + GREP_PROGRESS_EVERY).unwrap();
+        assert!(
+            line.contains("1 events scanned up to 2026-10-31T01:02:03+00:00, 1 matched"),
+            "{line}"
+        );
+        assert_eq!(scan.progress(start + GREP_PROGRESS_EVERY), None);
+    }
+
+    #[tokio::test]
+    async fn a_limit_reached_on_the_final_page_is_still_reported() {
+        let mut scan = GrepScan::new(Some(1), Instant::now());
+        let limit_hit = tokio::sync::Notify::new();
+        // As at the call site: the page callback notifies from inside the
+        // fetch, which then completes in the same poll.
+        let stop = {
+            let fetch = async {
+                let (hit, _) = grep_into(
+                    &mut scan,
+                    vec![
+                        logged("2026-10-31T00:00:01Z", "hit a"),
+                        logged("2026-10-31T00:00:02Z", "hit b"),
+                    ],
+                );
+                if hit {
+                    limit_hit.notify_one();
+                }
+                Ok(())
+            };
+            bounded_grep(fetch, limit_hit.notified(), None, std::future::pending())
+                .await
+                .unwrap()
+        };
+        assert_eq!(stop, GrepStop::Complete, "the race the settle step covers");
+        assert_eq!(scan.settle(stop), GrepStop::Limit);
+        // Control: a range that ended under the limit stays complete.
+        let under = GrepScan::new(Some(5), Instant::now());
+        assert_eq!(under.settle(GrepStop::Complete), GrepStop::Complete);
+    }
+
+    #[test]
+    fn grep_limit_exits_zero_but_budget_and_interrupt_do_not() {
+        let scan = GrepScan::new(Some(1), Instant::now());
+        assert!(scan.finish(GrepStop::Complete, None).is_ok());
+        assert!(scan.finish(GrepStop::Limit, None).is_ok());
+        let budget = scan
+            .finish(GrepStop::Budget, Some("30s"))
+            .unwrap_err()
+            .to_string();
+        assert!(budget.contains("--max-time 30s"), "{budget}");
+        assert!(scan.finish(GrepStop::Interrupted, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn bounded_grep_reports_why_it_stopped() {
+        let never = || std::future::pending::<()>();
+        assert_eq!(
+            bounded_grep(async { Ok(()) }, never(), None, never())
+                .await
+                .unwrap(),
+            GrepStop::Complete
+        );
+        // The limit wins over a fetch that finished on the same page.
+        assert_eq!(
+            bounded_grep(async { Ok(()) }, async {}, None, never())
+                .await
+                .unwrap(),
+            GrepStop::Limit
+        );
+        assert_eq!(
+            bounded_grep(
+                std::future::pending(),
+                never(),
+                Some(std::time::Duration::from_millis(10)),
+                never()
+            )
+            .await
+            .unwrap(),
+            GrepStop::Budget
+        );
+        assert_eq!(
+            bounded_grep(std::future::pending(), never(), None, async {})
+                .await
+                .unwrap(),
+            GrepStop::Interrupted
+        );
+        assert!(
+            bounded_grep(
+                async { Err(Error::Config("boom".into())) },
+                never(),
+                None,
+                never()
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn grep_limit_and_max_time_parse() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "aic",
+            "logs",
+            "grep",
+            "x",
+            "--limit",
+            "5",
+            "--max-time",
+            "2m",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(crate::cli::Command::Logs {
+                command:
+                    LogsCommand::Grep {
+                        limit, max_time, ..
+                    },
+            }) => {
+                assert_eq!(limit, Some(5));
+                assert_eq!(max_time.as_deref(), Some("2m"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            crate::cli::Cli::try_parse_from(["aic", "logs", "grep", "x", "--limit", "0"]).is_err()
         );
     }
 
@@ -1614,6 +2145,7 @@ mod tests {
     async fn wait_does_not_poll_when_outcome_already_present() {
         let first = vec![event_with_name("AM-ACCESS-OUTCOME")];
         let result = maybe_wait_for_outcome(
+            TxMarker::AmOutcome,
             "tx-1",
             first.clone(),
             true,
@@ -1629,6 +2161,7 @@ mod tests {
     async fn missing_outcome_without_wait_does_not_poll() {
         let first = vec![event_with_name("AM-ACCESS-ATTEMPT")];
         let result = maybe_wait_for_outcome(
+            TxMarker::AmOutcome,
             "tx-1",
             first.clone(),
             false,
@@ -1646,6 +2179,7 @@ mod tests {
         let first = vec![event_with_name("AM-ACCESS-ATTEMPT")];
         let mut calls = 0u32;
         let result = maybe_wait_for_outcome(
+            TxMarker::AmOutcome,
             "tx-1",
             first,
             true,
@@ -1675,6 +2209,7 @@ mod tests {
     async fn wait_timeout_returns_partial_events() {
         let first = vec![event_with_name("AM-ACCESS-ATTEMPT")];
         let result = maybe_wait_for_outcome(
+            TxMarker::AmOutcome,
             "tx-missing",
             first.clone(),
             true,

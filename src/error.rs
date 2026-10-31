@@ -46,6 +46,13 @@ pub enum Error {
     #[error("AIC API error: {status} {body}")]
     Api { status: u16, body: String },
 
+    /// A script embedded in a config document whose slot is gone: the
+    /// document read succeeded and the object, mapping or hook it lived in is
+    /// no longer there. The embedded kinds' equivalent of a standalone
+    /// script's 404, and classified with it (`scripts::sync`).
+    #[error("{0}")]
+    SlotMissing(String),
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 

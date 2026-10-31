@@ -27,7 +27,15 @@ pub struct End {
     /// `managed/<obj>` paths from `resourceCollection` (through `items`).
     pub targets: Vec<String>,
     pub array: bool,
+    /// The reverse key this end itself declares — not the partner a caller
+    /// expects while visiting it from the other end (Sol/Astra round 12).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverse_key: Option<String>,
     pub mapping: Option<Mapping>,
+    /// The `resourceMapping` sections that map this key with **different**
+    /// entries; empty when there is at most one distinct entry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conflicting: Vec<String>,
 }
 
 /// A `repo.ds` relationship mapping entry.
@@ -63,9 +71,31 @@ pub enum Problem {
         end: String,
         names: String,
         expected: String,
+        /// The forward end whose pair expected `expected`, when this end
+        /// was reached from it: two forwards with the same key on different
+        /// objects are different pairs, and one's mismatch must not excuse
+        /// the other's (Sol round 13). `None` when the expectation is this
+        /// end's own declaration.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        via: Option<String>,
     },
     /// A `repo.ds` entry for a property `config/managed` does not declare.
     StaleMapping { object: String, key: String },
+    /// Two `resourceMapping` sections map the end differently. Which one
+    /// IDM uses is unmeasured, so every other check here, which reads one
+    /// merged value, may be judging the wrong one. The end's declared shape
+    /// rides along so a write that changes the relationship is not excused
+    /// by the same sections having conflicted before (Astra round 11): the
+    /// candidate the merge discarded is never checked against the new shape.
+    MappingConflict {
+        end: String,
+        sections: Vec<String>,
+        /// Sorted, deduplicated `managed/<obj>` targets.
+        declared: Vec<String>,
+        array: bool,
+        /// The reverse key the end declares.
+        partner: Option<String>,
+    },
     /// A `repo.ds` relationship mapping on a property declared as something
     /// other than a relationship — a key reused after a delete.
     MappingOnScalar { object: String, key: String },
@@ -99,7 +129,18 @@ impl Problem {
                 end,
                 names,
                 expected,
-            } => format!("{end}'s repo.ds mapping reads through {names}, expected {expected}"),
+                via,
+            } => format!(
+                "{end}'s repo.ds mapping reads through {names}, expected {expected}{}",
+                via.as_ref()
+                    .map(|via| format!(" (as {via}'s reverse)"))
+                    .unwrap_or_default()
+            ),
+            Self::MappingConflict { end, sections, .. } => format!(
+                "{end} is mapped differently in config/repo.ds's {}; which one IDM uses is \
+                 unmeasured",
+                sections.join(" and ")
+            ),
             Self::StaleMapping { object, key } => {
                 format!("repo.ds maps {object}.{key}, which config/managed does not declare")
             }
@@ -143,7 +184,11 @@ pub struct Report {
 }
 
 fn mapping_for(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
-    let entry = mappings_of(repo_ds, object)?.get(key)?;
+    relationship_mapping(mappings_of(repo_ds, object)?.get(key)?)
+}
+
+/// `entry` as a relationship mapping, if it is one.
+pub(crate) fn relationship_mapping(entry: &Value) -> Option<Mapping> {
     let kind = entry.get("type").and_then(Value::as_str)?;
     if kind != "reference" && kind != "reverseReference" {
         return None;
@@ -161,7 +206,135 @@ fn mapping_for(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
     })
 }
 
-fn mappings_of<'a>(repo_ds: &'a Value, object: &str) -> Option<&'a serde_json::Map<String, Value>> {
+/// A relationship mapping wherever `repo.ds` holds it: any section of
+/// `resourceMapping` (`genericMapping`, `explicitMapping`, …) and any
+/// resource, not only `managed/` ones. The sandbox has both kinds of outlier —
+/// `explicitMapping."internal/role".authzMembers` and
+/// `genericMapping."internal/notification".target` are `reverseReference`s
+/// reading through `managed/alpha_user` — so a check of what reads through a
+/// mapping that looks only at `genericMapping."managed/…"` misses them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Located {
+    pub section: String,
+    pub resource: String,
+    pub key: String,
+    pub mapping: Mapping,
+}
+
+impl Located {
+    /// `managed/<obj>` in `genericMapping` is the object's own property.
+    pub fn generic_object(&self) -> Option<&str> {
+        (self.section == "genericMapping")
+            .then(|| self.resource.strip_prefix("managed/"))
+            .flatten()
+    }
+
+    pub fn label(&self) -> String {
+        match self.generic_object() {
+            Some(object) => format!("{object}.{}", self.key),
+            None => format!("{}.{} (in {})", self.resource, self.key, self.section),
+        }
+    }
+}
+
+pub(crate) fn all_relationship_mappings(repo_ds: &Value) -> Vec<Located> {
+    let mut out = Vec::new();
+    let Some(sections) = repo_ds.get("resourceMapping").and_then(Value::as_object) else {
+        return out;
+    };
+    for (section, resources) in sections {
+        for (resource, entry) in resources.as_object().into_iter().flatten() {
+            for (key, property) in entry
+                .get("properties")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(mapping) = relationship_mapping(property) {
+                    out.push(Located {
+                        section: section.clone(),
+                        resource: resource.clone(),
+                        key: key.clone(),
+                        mapping,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `object`'s own mapping entries, from **every** section of
+/// `resourceMapping` that has a `managed/<object>` entry — not only
+/// `genericMapping`. The sandbox maps four managed objects under
+/// `explicitMapping`, and a guard that read only `genericMapping` took
+/// "mapped there" for "not mapped" and let a retarget or a config write
+/// through (Astra round 8).
+///
+/// Where two sections name the same key, which one IDM honours is unknown
+/// (no such document has been seen), so the merge is **conservative for the
+/// guards**: a relationship mapping in any section wins over a
+/// non-relationship one, so a conflict never reads as "not mapped" (Sol/Astra
+/// round 9). Otherwise the first section in iteration order — sorted by name,
+/// as `serde_json` here does not preserve document order — is kept. This is
+/// for guards and reports only: `relationship repair`, which deletes one
+/// specific entry, refuses a key mapped in more than one section
+/// ([`sections_mapping`]).
+pub(crate) fn mappings_of(repo_ds: &Value, object: &str) -> Option<serde_json::Map<String, Value>> {
+    let resource = format!("managed/{object}");
+    let mut out: Option<serde_json::Map<String, Value>> = None;
+    for section in repo_ds.get("resourceMapping")?.as_object()?.values() {
+        if let Some(entries) = section
+            .get(&resource)
+            .and_then(|entry| entry.get("properties"))
+            .and_then(Value::as_object)
+        {
+            let merged = out.get_or_insert_with(serde_json::Map::new);
+            for (key, value) in entries {
+                match merged.get(key) {
+                    None => {
+                        merged.insert(key.clone(), value.clone());
+                    }
+                    Some(kept)
+                        if relationship_mapping(kept).is_none()
+                            && relationship_mapping(value).is_some() =>
+                    {
+                        merged.insert(key.clone(), value.clone());
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The `resourceMapping` sections holding an entry for `object.key`, of any
+/// type.
+pub(crate) fn sections_mapping(repo_ds: &Value, object: &str, key: &str) -> Vec<String> {
+    let resource = format!("managed/{object}");
+    repo_ds
+        .get("resourceMapping")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(_, section)| {
+            section
+                .get(&resource)
+                .and_then(|entry| entry.get("properties"))
+                .and_then(|properties| properties.get(key))
+                .is_some()
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// `object`'s entries in `genericMapping` alone — the one section
+/// `relationship repair` edits.
+pub(crate) fn generic_mappings_of<'a>(
+    repo_ds: &'a Value,
+    object: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
     repo_ds
         .get("resourceMapping")?
         .get("genericMapping")?
@@ -170,7 +343,10 @@ fn mappings_of<'a>(repo_ds: &'a Value, object: &str) -> Option<&'a serde_json::M
         .as_object()
 }
 
-fn properties<'a>(managed: &'a Value, object: &str) -> Option<&'a serde_json::Map<String, Value>> {
+pub(crate) fn properties<'a>(
+    managed: &'a Value,
+    object: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
     let def = crate::managed::api::object_named(managed, object).ok()?;
     crate::managed::state::properties(def)
 }
@@ -197,15 +373,61 @@ fn end(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Option<End>
         key: key.to_string(),
         targets,
         array: property.get("type").and_then(Value::as_str) == Some("array"),
+        reverse_key: declared_reverse_key(property).map(str::to_string),
         mapping: mapping_for(repo_ds, object, key),
+        conflicting: conflicting_sections(repo_ds, object, key),
     })
+}
+
+/// The sections holding `object.key` when they do not all hold the same
+/// entry — the state [`mappings_of`]'s merge cannot represent faithfully,
+/// because it keeps one value (Astra round 10).
+fn conflicting_sections(repo_ds: &Value, object: &str, key: &str) -> Vec<String> {
+    let sections = sections_mapping(repo_ds, object, key);
+    let resource = format!("managed/{object}");
+    let entries: Vec<&Value> = sections
+        .iter()
+        .filter_map(|section| {
+            repo_ds
+                .pointer("/resourceMapping")?
+                .get(section)?
+                .get(&resource)?
+                .get("properties")?
+                .get(key)
+        })
+        .collect();
+    if entries.windows(2).all(|pair| pair[0] == pair[1]) {
+        Vec::new()
+    } else {
+        sections
+    }
 }
 
 fn label(end: &End) -> String {
     format!("{}.{}", end.object, end.key)
 }
 
-fn mapping_problems(end: &End, partner_key: Option<&str>, out: &mut Vec<Problem>) {
+fn mapping_problems(
+    end: &End,
+    partner_key: Option<&str>,
+    via: Option<&str>,
+    out: &mut Vec<Problem>,
+) {
+    if !end.conflicting.is_empty() {
+        let mut declared = end.targets.clone();
+        declared.sort();
+        declared.dedup();
+        out.push(Problem::MappingConflict {
+            end: label(end),
+            sections: end.conflicting.clone(),
+            declared,
+            array: end.array,
+            // The end's own declaration: `partner_key` is the visiting
+            // pair's expectation, and from the other end it can name a
+            // reverse this end does not declare yet.
+            partner: end.reverse_key.clone(),
+        });
+    }
     let Some(mapping) = &end.mapping else {
         return;
     };
@@ -225,6 +447,7 @@ fn mapping_problems(end: &End, partner_key: Option<&str>, out: &mut Vec<Problem>
                 end: label(end),
                 names,
                 expected: partner_key.unwrap_or("a declared reverse").to_string(),
+                via: via.map(str::to_string),
             });
         }
     }
@@ -246,7 +469,12 @@ pub fn pairs(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<P
     };
     let reverse_key = declared_reverse_key(property).map(str::to_string);
     let mut forward_problems = Vec::new();
-    mapping_problems(&forward, reverse_key.as_deref(), &mut forward_problems);
+    mapping_problems(
+        &forward,
+        reverse_key.as_deref(),
+        None,
+        &mut forward_problems,
+    );
     let (managed_targets, unchecked): (Vec<&String>, Vec<&String>) = forward
         .targets
         .iter()
@@ -261,7 +489,7 @@ pub fn pairs(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<P
             match &reverse {
                 Err(problem) => problems.push(problem.clone()),
                 Ok(reverse) => {
-                    mapping_problems(reverse, Some(key), &mut problems);
+                    mapping_problems(reverse, Some(key), Some(&label(&forward)), &mut problems);
                     match (&forward.mapping, &reverse.mapping) {
                         (Some(_), None) => problems.push(Problem::Mixed {
                             mapped: label(&forward),
@@ -342,7 +570,7 @@ fn reverse_end(
 /// normal state, not a leftover. Only these two, and only when absent — the
 /// observation covers nothing else underscore-prefixed, and a schema that
 /// declares one as a scalar is still a contradiction (Sol/Astra round 7).
-const SYSTEM_RELATIONSHIPS: [&str; 2] = ["_meta", "_notifications"];
+pub(crate) const SYSTEM_RELATIONSHIPS: [&str; 2] = ["_meta", "_notifications"];
 
 /// Every relationship on `object` (or just `key`), each pair once, plus
 /// `repo.ds` entries on `object` that name no declared property.
@@ -432,6 +660,103 @@ pub fn report(
     Ok(Report { pairs, stale })
 }
 
+/// One line per pair saying where its links are stored — the summary
+/// `managed get` prints so the mode is visible without running `verify`.
+/// Disagreement outranks mode: a mixed or otherwise inconsistent pair says so
+/// and names `verify`, because "mapped" on one end of a broken pair would read
+/// as healthy.
+pub fn storage_lines(report: &Report) -> Vec<String> {
+    let mut lines = Vec::new();
+    for pair in &report.pairs {
+        let ends = match &pair.reverse {
+            Some(reverse) => format!("{} <-> {}", label(&pair.forward), label(reverse)),
+            None => format!("{} (no reverse)", label(&pair.forward)),
+        };
+        let state = if pair
+            .problems
+            .iter()
+            .any(|problem| matches!(problem, Problem::Mixed { .. }))
+        {
+            "MIXED — one end mapped, the other generic".to_string()
+        } else if !pair.problems.is_empty() {
+            format!("INCONSISTENT — {}", pair.problems[0].message())
+        } else {
+            match (&pair.forward.mapping, &pair.reverse) {
+                (None, None) => "generic".to_string(),
+                (None, Some(reverse)) if reverse.mapping.is_none() => "generic".to_string(),
+                (_, Some(reverse)) => {
+                    format!(
+                        "mapped ({} / {})",
+                        mapped_kind(&pair.forward),
+                        mapped_kind(reverse)
+                    )
+                }
+                (Some(_), None) => format!("mapped ({})", mapped_kind(&pair.forward)),
+            }
+        };
+        let hint = if pair.problems.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; run `aic managed relationship verify {}`",
+                label(&pair.forward)
+            )
+        };
+        lines.push(format!("{ends}: {state}{hint}"));
+    }
+    for problem in &report.stale {
+        lines.push(format!("STALE — {}", problem.message()));
+    }
+    lines
+}
+
+fn mapped_kind(end: &End) -> &str {
+    end.mapping
+        .as_ref()
+        .map_or("generic", |mapping| mapping.kind.as_str())
+}
+
+/// What a `/_ref eq` filter on a relationship collection said about a link
+/// the collection lists. A generic end is measured not to answer it, so a miss
+/// there is the documented limit, not a defect; a mapped end is measured to
+/// answer it, so a miss there is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefFilter {
+    Finds,
+    GenericLimit,
+    MappedMiss,
+}
+
+impl RefFilter {
+    pub fn judge(end: &End, found: bool) -> Self {
+        match (found, end.mapping.is_some()) {
+            (true, _) => Self::Finds,
+            (false, false) => Self::GenericLimit,
+            (false, true) => Self::MappedMiss,
+        }
+    }
+
+    pub fn is_failure(self) -> bool {
+        self == Self::MappedMiss
+    }
+
+    pub fn message(self, end: &End) -> String {
+        let end = label(end);
+        match self {
+            Self::Finds => format!("query: `/_ref eq` on {end} finds a sampled link"),
+            Self::GenericLimit => format!(
+                "query: `/_ref eq` on {end} returns nothing for a link it lists — the generic \
+                 storage limit; filter on `/_refResourceId` instead"
+            ),
+            Self::MappedMiss => format!(
+                "query: `/_ref eq` on {end} returns nothing for a link it lists, although the \
+                 end is mapped"
+            ),
+        }
+    }
+}
+
 /// `object.key`'s `repo.ds` mapping, if it has one.
 pub fn mapped(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
     mapping_for(repo_ds, object, key)
@@ -483,37 +808,16 @@ pub fn repoint_refusal(
 /// old path, which is the state a retarget was measured to break.
 pub fn rename_refusal(repo_ds: &Value, object: &str) -> Result<(), String> {
     let path = format!("managed/{object}");
-    let mut ends: Vec<String> = mappings_of(repo_ds, object)
+    // Every section and resource, not only `genericMapping."managed/…"`
+    // (Sol/Astra round 7 of D-S12): an `explicitMapping` entry for the object,
+    // or an `internal/…` reverse reading through it, names it just as well.
+    let ends: Vec<String> = all_relationship_mappings(repo_ds)
         .into_iter()
-        .flat_map(|mappings| mappings.keys())
-        .filter(|key| mapped(repo_ds, object, key).is_some())
-        .map(|key| format!("{object}.{key}"))
+        .filter(|located| {
+            located.resource == path || located.mapping.resource_path.as_deref() == Some(&path)
+        })
+        .map(|located| located.label())
         .collect();
-    if let Some(generic) = repo_ds
-        .pointer("/resourceMapping/genericMapping")
-        .and_then(Value::as_object)
-    {
-        for (resource, entry) in generic {
-            let Some(other) = resource.strip_prefix("managed/") else {
-                continue;
-            };
-            if other == object {
-                continue;
-            }
-            for (key, _) in entry
-                .get("properties")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-            {
-                if mapped(repo_ds, other, key)
-                    .is_some_and(|mapping| mapping.resource_path.as_deref() == Some(&path))
-                {
-                    ends.push(format!("{other}.{key}"));
-                }
-            }
-        }
-    }
     if ends.is_empty() {
         return Ok(());
     }
@@ -639,6 +943,7 @@ fn mapping_problem(problem: &Problem) -> bool {
     matches!(
         problem,
         Problem::Mixed { .. }
+            | Problem::MappingConflict { .. }
             | Problem::MappingKinds { .. }
             | Problem::MappingTarget { .. }
             | Problem::MappingPartner { .. }
@@ -801,9 +1106,10 @@ pub fn transition_refusal(
         return Ok(());
     }
     Err(format!(
-        "refusing to write config/managed: it would contradict config/repo.ds, which aic does \
-         not edit — {}. Use another key, or repair the mapping in the console \
-         (docs/api/10-managed-objects.md, \"Relationship storage\")",
+        "refusing to write config/managed: it would contradict config/repo.ds — {}. Use \
+         another key; a mapping that names no declared property can be removed with `aic \
+         managed relationship repair <object>.<key>` (docs/api/10-managed-objects.md, \
+         \"Relationship storage\")",
         reasons.join("; ")
     ))
 }
@@ -922,6 +1228,13 @@ mod tests {
         ]})
     }
 
+    /// `repo_ds` with every `genericMapping` entry moved to `explicitMapping`
+    /// — the sandbox's shape for four managed objects (Astra round 8).
+    fn explicit(repo_ds: &Value) -> Value {
+        let generic = repo_ds["resourceMapping"]["genericMapping"].clone();
+        json!({"resourceMapping": {"genericMapping": {}, "explicitMapping": generic}})
+    }
+
     fn repo(a: Option<Value>, b: Option<Value>) -> Value {
         let mut generic = serde_json::Map::new();
         if let Some(a) = a {
@@ -949,6 +1262,284 @@ mod tests {
             .pairs
             .remove(0)
             .problems
+    }
+
+    fn storage(repo_ds: &Value) -> Vec<String> {
+        storage_lines(&report(&managed(), repo_ds, "a", None).unwrap())
+    }
+
+    #[test]
+    fn storage_names_the_mode_and_puts_disagreement_first() {
+        assert_eq!(storage(&repo(None, None)), ["a.owner <-> b.owned: generic"]);
+        assert_eq!(
+            storage(&repo(Some(reference()), Some(reverse_reference()))),
+            ["a.owner <-> b.owned: mapped (reference / reverseReference)"]
+        );
+        // The measured broken state: never "mapped" for a half-mapped pair.
+        let mixed = storage(&repo(Some(reference()), None));
+        assert_eq!(mixed.len(), 1);
+        assert!(mixed[0].contains("MIXED"), "{mixed:?}");
+        assert!(
+            mixed[0].contains("relationship verify a.owner"),
+            "{mixed:?}"
+        );
+        let swapped = storage(&repo(None, Some(reverse_reference())));
+        assert!(swapped[0].contains("MIXED"), "{swapped:?}");
+    }
+
+    #[test]
+    fn storage_reports_stale_mappings_too() {
+        let mut repo_ds = repo(None, None);
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"] =
+            json!({"properties": {"gone": reference()}});
+        let lines = storage(&repo_ds);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("STALE") && line.contains("a.gone")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_conflict_between_sections_never_reads_as_unmapped() {
+        // Sol/Astra round 9: a scalar in one section must not hide a
+        // reference in the other, whichever section sorts first.
+        let scalar = json!({"type": "string", "ldapAttribute": "x"});
+        for (generic, explicit) in [(reference(), scalar.clone()), (scalar.clone(), reference())] {
+            let mut repo_ds = repo(None, None);
+            repo_ds["resourceMapping"]["genericMapping"]["managed/a"] =
+                json!({"properties": {"owner": generic}});
+            repo_ds["resourceMapping"]["explicitMapping"] =
+                json!({"managed/a": {"properties": {"owner": explicit}}});
+            assert!(mapped(&repo_ds, "a", "owner").is_some());
+            let error =
+                repoint_refusal(&repo_ds, "a", "owner", "b", Some("owned"), "c").unwrap_err();
+            assert!(error.contains("from b to c"), "{error}");
+        }
+    }
+
+    /// Astra round 10: two relationship mappings for one key, disagreeing on
+    /// the target. The merge keeps one; the write guard must not judge only
+    /// that one.
+    #[test]
+    fn a_relationship_mapped_differently_in_two_sections_is_refused_at_the_boundary() {
+        let objects = |link: Option<Value>| {
+            let mut a = json!({"plain": {"type": "string"}});
+            if let Some(link) = link {
+                a["link"] = link;
+            }
+            json!({"_id": "managed", "objects": [
+                {"name": "a", "schema": {"properties": a}},
+                {"name": "b", "schema": {"properties": {}}},
+                {"name": "c", "schema": {"properties": {}}}
+            ]})
+        };
+        let link_to_b = json!({"type": "relationship",
+            "resourceCollection": [{"path": "managed/b"}]});
+        let to = |object: &str| json!({"type": "reference", "resourcePath": format!("managed/{object}")});
+        let repo_with = |explicit: Value, generic: Value| {
+            json!({"resourceMapping": {
+                "explicitMapping": {"managed/a": {"properties": {"link": explicit}}},
+                "genericMapping": {"managed/a": {"properties": {"link": generic}}}
+            }})
+        };
+        let before = objects(None);
+        let after = objects(Some(link_to_b.clone()));
+        // Either section holding the matching target: both refused.
+        for repo_ds in [repo_with(to("b"), to("c")), repo_with(to("c"), to("b"))] {
+            let error = transition_refusal(&[&before], &after, &repo_ds).unwrap_err();
+            assert!(error.contains("a.link is mapped differently"), "{error}");
+        }
+        // Control: the same entry in both sections is not a conflict.
+        assert_eq!(
+            transition_refusal(&[&before], &after, &repo_with(to("b"), to("b"))),
+            Ok(())
+        );
+        // Control: a conflict already present on an unchanged relationship
+        // does not block an unrelated edit.
+        let mut unrelated = after.clone();
+        unrelated["objects"][0]["schema"]["properties"]["plain"]["title"] = json!("T");
+        assert_eq!(
+            transition_refusal(&[&after], &unrelated, &repo_with(to("b"), to("c"))),
+            Ok(())
+        );
+
+        // Sol round 11: retargeting c -> b over the same conflict lands on the
+        // merged candidate, and is still a changed binding.
+        let to_c = objects(Some(json!({"type": "relationship",
+            "resourceCollection": [{"path": "managed/c"}]})));
+        let error = transition_refusal(&[&to_c], &after, &repo_with(to("b"), to("c"))).unwrap_err();
+        assert!(error.contains("a.link is mapped differently"), "{error}");
+
+        // An already-conflicted relationship that the write changes is not
+        // excused by the old conflict (Astra round 11): deleting `c` narrows
+        // a.link to [b], which the explicit entry matches and the generic one
+        // no longer does.
+        let both = json!({"type": "relationship",
+            "resourceCollection": [{"path": "managed/b"}, {"path": "managed/c"}]});
+        let conflicted = objects(Some(both));
+        let repo_ds = repo_with(to("b"), to("c"));
+        let (deleted, _) = crate::managed::ops::delete_object_in_doc(&conflicted, "c").unwrap();
+        let error = transition_refusal(&[&conflicted], &deleted, &repo_ds).unwrap_err();
+        assert!(error.contains("a.link is mapped differently"), "{error}");
+        // Unchanged in only one of two baselines is not enough.
+        assert!(transition_refusal(&[&deleted, &conflicted], &deleted, &repo_ds).is_err());
+        // Control: unchanged in every baseline is still allowed.
+        assert_eq!(
+            transition_refusal(&[&deleted, &deleted], &deleted, &repo_ds),
+            Ok(())
+        );
+        // Reversing the array flag or the partner is a change too.
+        let mut single = conflicted.clone();
+        single["objects"][0]["schema"]["properties"]["link"]["type"] = json!("relationship");
+        let mut array = conflicted.clone();
+        array["objects"][0]["schema"]["properties"]["link"] = json!({"type": "array",
+            "items": {"type": "relationship",
+                "resourceCollection": [{"path": "managed/b"}, {"path": "managed/c"}]}});
+        assert!(transition_refusal(&[&single], &array, &repo_ds).is_err());
+        let mut reverse = conflicted.clone();
+        reverse["objects"][0]["schema"]["properties"]["link"]["reverseRelationship"] = json!(true);
+        let mut renamed = reverse.clone();
+        renamed["objects"][0]["schema"]["properties"]["link"]["reversePropertyName"] =
+            json!("other");
+        let mut back = reverse.clone();
+        back["objects"][0]["schema"]["properties"]["link"]["reversePropertyName"] = json!("back");
+        assert!(transition_refusal(&[&back], &renamed, &repo_ds).is_err());
+
+        // Round 12: a declared b.back visits a.link as its reverse with
+        // expected partner `back`. a.link declaring that reverse is still a
+        // change to a.link's own shape.
+        let pair = |link_reverse: bool| {
+            let mut link = link_to_b.clone();
+            if link_reverse {
+                link["reverseRelationship"] = json!(true);
+                link["reversePropertyName"] = json!("back");
+            }
+            json!({"_id": "managed", "objects": [
+                {"name": "a", "schema": {"properties": {"link": link, "plain": {"type": "string"}}}},
+                {"name": "b", "schema": {"properties": {"back": {"type": "relationship",
+                    "reverseRelationship": true, "reversePropertyName": "link",
+                    "resourceCollection": [{"path": "managed/a"}]}}}},
+                {"name": "c", "schema": {"properties": {}}}
+            ]})
+        };
+        let mut paired_repo = repo_with(to("b"), to("c"));
+        paired_repo["resourceMapping"]["genericMapping"]["managed/b"] = json!({"properties":
+            {"back": {"type": "reverseReference", "resourcePath": "managed/a",
+                "propertyName": "link"}}});
+        let (lone, reciprocal) = (pair(false), pair(true));
+        let error = transition_refusal(&[&lone, &lone], &reciprocal, &paired_repo).unwrap_err();
+        assert!(error.contains("a.link is mapped differently"), "{error}");
+        // Control: an unrelated edit over the same pair is allowed.
+        let mut titled = lone.clone();
+        titled["objects"][0]["schema"]["properties"]["plain"]["title"] = json!("T");
+        assert_eq!(transition_refusal(&[&lone], &titled, &paired_repo), Ok(()));
+    }
+
+    #[test]
+    fn a_new_pair_is_not_excused_by_another_objects_partner_mismatch() {
+        // Sol round 13: b.foo and c.foo both name a.link as their reverse;
+        // a.link reads through `old`. b.foo's existing mismatch must not
+        // excuse c.foo's identical-looking one.
+        let foo = json!({"type": "relationship", "reverseRelationship": true,
+            "reversePropertyName": "link", "resourceCollection": [{"path": "managed/a"}]});
+        let managed = |with_c: bool| {
+            let mut c = json!({});
+            if with_c {
+                c["foo"] = foo.clone();
+            }
+            json!({"_id": "managed", "objects": [
+                {"name": "a", "schema": {"properties": {
+                    "plain": {"type": "string"},
+                    "link": {"type": "array", "items": {"type": "relationship",
+                        "resourceCollection": [{"path": "managed/b"}, {"path": "managed/c"}]}}}}},
+                {"name": "b", "schema": {"properties": {"foo": foo.clone()}}},
+                {"name": "c", "schema": {"properties": c}}
+            ]})
+        };
+        let reference = json!({"type": "reference", "resourcePath": "managed/a"});
+        let repo_ds = json!({"resourceMapping": {"genericMapping": {
+            "managed/a": {"properties": {"link": {"type": "reverseReference",
+                "resourcePath": "managed/b", "propertyName": "old"}}},
+            "managed/b": {"properties": {"foo": reference.clone()}},
+            "managed/c": {"properties": {"foo": reference}}
+        }}});
+        let (before, after) = (managed(false), managed(true));
+        let error = transition_refusal(&[&before, &before], &after, &repo_ds).unwrap_err();
+        assert!(
+            error.contains("reads through old, expected foo (as c.foo's reverse)"),
+            "{error}"
+        );
+        // Control: an unrelated edit over the existing mismatch is allowed.
+        let mut titled = before.clone();
+        titled["objects"][0]["schema"]["properties"]["plain"]["title"] = json!("T");
+        assert_eq!(transition_refusal(&[&before], &titled, &repo_ds), Ok(()));
+    }
+
+    #[test]
+    fn one_objects_keys_split_across_sections_are_all_read() {
+        // A union, not "the first section that names the object".
+        let mut repo_ds = repo(None, None);
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"] =
+            json!({"properties": {"gone2": reference()}});
+        repo_ds["resourceMapping"]["explicitMapping"] =
+            json!({"managed/a": {"properties": {"gone1": reference()}}});
+        let lines = storage(&repo_ds);
+        for key in ["a.gone1", "a.gone2"] {
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with("STALE") && line.contains(key)),
+                "{key}: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_explicit_mapping_is_reported_like_a_generic_one() {
+        let mut repo_ds = repo(None, None);
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"] =
+            json!({"properties": {"gone": reference()}});
+        let lines = storage(&explicit(&repo_ds));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("STALE") && line.contains("a.gone")),
+            "{lines:?}"
+        );
+        let mixed = problems(&explicit(&repo(Some(reference()), None)));
+        assert!(
+            mixed
+                .iter()
+                .any(|problem| matches!(problem, Problem::Mixed { .. })),
+            "{mixed:?}"
+        );
+    }
+
+    #[test]
+    fn a_ref_filter_miss_is_a_failure_only_on_a_mapped_end() {
+        let ends = |repo_ds: &Value| {
+            report(&managed(), repo_ds, "a", Some("owner"))
+                .unwrap()
+                .pairs
+                .remove(0)
+                .reverse
+                .unwrap()
+        };
+        let generic = ends(&repo(None, None));
+        let mapped = ends(&repo(Some(reference()), Some(reverse_reference())));
+        assert_eq!(RefFilter::judge(&generic, true), RefFilter::Finds);
+        assert_eq!(RefFilter::judge(&mapped, true), RefFilter::Finds);
+        assert_eq!(RefFilter::judge(&generic, false), RefFilter::GenericLimit);
+        assert!(!RefFilter::GenericLimit.is_failure());
+        assert_eq!(RefFilter::judge(&mapped, false), RefFilter::MappedMiss);
+        assert!(RefFilter::MappedMiss.is_failure());
+        assert!(
+            RefFilter::GenericLimit
+                .message(&generic)
+                .contains("/_refResourceId")
+        );
     }
 
     #[test]
@@ -987,7 +1578,8 @@ mod tests {
             vec![Problem::MappingPartner {
                 end: "b.owned".into(),
                 names: "ownerOld".into(),
-                expected: "owner".into()
+                expected: "owner".into(),
+                via: Some("a.owner".into())
             }]
         );
     }
@@ -1132,6 +1724,12 @@ mod tests {
             repoint_refusal(&reverse, "a", "owner", "b", None, "c"),
             Ok(())
         );
+        // Mapped under explicitMapping is mapped (Astra round 8).
+        for repo_ds in [&both, &forward, &reverse] {
+            let error = repoint_refusal(&explicit(repo_ds), "a", "owner", "b", Some("owned"), "c")
+                .unwrap_err();
+            assert!(error.contains("from b to c"), "{error}");
+        }
     }
 
     fn error_names(repo_ds: &Value) -> String {
@@ -1155,6 +1753,26 @@ mod tests {
         assert_eq!(
             rename_refusal(&repo(None, Some(reverse_reference())), "c"),
             Ok(())
+        );
+        // Readers outside `genericMapping."managed/…"` name it too (round 7):
+        // an `internal/…` reverse, and an `explicitMapping` entry of its own.
+        let mut outside = repo(None, None);
+        outside["resourceMapping"]["genericMapping"]["internal/notification"] = json!({
+            "properties": {"target": {"type": "reverseReference",
+                "resourcePath": "managed/a", "propertyName": "_notifications"}}
+        });
+        let error = rename_refusal(&outside, "a").unwrap_err();
+        assert!(
+            error.contains("internal/notification.target (in genericMapping)"),
+            "{error}"
+        );
+        let mut explicit = repo(None, None);
+        explicit["resourceMapping"]["explicitMapping"] =
+            json!({"managed/a": {"properties": {"owner": reference()}}});
+        let error = rename_refusal(&explicit, "a").unwrap_err();
+        assert!(
+            error.contains("managed/a.owner (in explicitMapping)"),
+            "{error}"
         );
     }
 
@@ -1211,6 +1829,13 @@ mod tests {
         let error =
             transition_refusal(&[&before], &managed(), &repo(Some(reference()), None)).unwrap_err();
         assert!(error.contains("a.owner is mapped"), "{error}");
+        let error = transition_refusal(
+            &[&before],
+            &managed(),
+            &explicit(&repo(Some(reference()), None)),
+        )
+        .unwrap_err();
+        assert!(error.contains("a.owner is mapped"), "explicit: {error}");
         assert_eq!(
             transition_refusal(&[&before], &managed(), &json!({})),
             Ok(())

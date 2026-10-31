@@ -186,8 +186,8 @@ fn mapping_mut<'a>(doc: &'a mut Value, mapping: &str) -> Result<&'a mut Value> {
         .iter_mut()
         .find(|m| m.get("name").and_then(Value::as_str) == Some(mapping))
         .ok_or_else(|| {
-            Error::Config(format!(
-                "sync mapping '{mapping}' no longer exists on the tenant -- re-pull"
+            Error::SlotMissing(format!(
+                "sync mapping '{mapping}' no longer exists on the tenant"
             ))
         })
 }
@@ -209,15 +209,15 @@ fn property_mut<'a>(
         .iter_mut()
         .find(|p| p.get("target").and_then(Value::as_str) == Some(attr))
         .ok_or_else(|| {
-            Error::Config(format!(
-                "property '{attr}' no longer exists on sync mapping '{mapping}' -- re-pull"
+            Error::SlotMissing(format!(
+                "property '{attr}' no longer exists on sync mapping '{mapping}'"
             ))
         })
 }
 
 fn missing_script_error(parsed: &ParsedName<'_>) -> Error {
-    Error::Config(format!(
-        "sync mapping script '{}.{}' no longer exists -- re-pull",
+    Error::SlotMissing(format!(
+        "sync mapping script '{}.{}' no longer exists",
         parsed.mapping, parsed.slotpath
     ))
 }

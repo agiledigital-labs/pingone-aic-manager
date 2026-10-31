@@ -79,13 +79,13 @@ fn hook_slot<'a>(doc: &'a mut Value, object: &str, hook: &str) -> Result<&'a mut
         .iter_mut()
         .find(|o| o.get("name").and_then(Value::as_str) == Some(object))
         .ok_or_else(|| {
-            Error::Config(format!(
-                "managed object '{object}' no longer exists on the tenant — re-pull"
+            Error::SlotMissing(format!(
+                "managed object '{object}' no longer exists on the tenant"
             ))
         })?;
     entry.get_mut(hook).ok_or_else(|| {
-        Error::Config(format!(
-            "hook '{hook}' no longer exists on managed object '{object}' — re-pull"
+        Error::SlotMissing(format!(
+            "hook '{hook}' no longer exists on managed object '{object}'"
         ))
     })
 }

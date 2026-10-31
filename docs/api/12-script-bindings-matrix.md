@@ -182,6 +182,41 @@ confirmed).
 > `es2015.symbol` and would re-declare the `Symbol` global we are removing.
 > Existing workspaces pick this up via `aic workspace update`.
 
+## ES2017 `Object` members: absent on AM, present on IDM (verified 2026-10-31)
+
+| Member                             | AM legacy (1.0) | AM next-gen (2.0) | AM `LIBRARY` scope | IDM endpoint |
+| ---------------------------------- | --------------- | ----------------- | ------------------ | ------------ |
+| `Object.values`                    | ❌ undefined    | ❌ undefined      | ❌ undefined       | ✅ function  |
+| `Object.entries`                   | ❌ undefined    | ❌ undefined      | ❌ undefined       | ✅ function  |
+| `Object.getOwnPropertyDescriptors` | ❌ undefined    | ❌ undefined      | ❌ undefined       | ❌ undefined |
+| `Object.keys` (control)            | ✅ function     | ✅ function       | ✅ function        | ✅ function  |
+
+Every AM cell is a probe result from 2026-10-31; the IDM column is the
+2026-10-08 probe in the next section. `typeof` answers `"undefined"`, and a
+call throws `TypeError: Cannot find function values in object function
+Object() { [native code for Object.Object, arity=1] }` — the same text for
+`entries` — while `Object.keys({a: 1, b: 2})` returns `a,b` in the same run.
+Like the ES2015 globals above, the source parses, so AM's `?_action=validate`
+accepts it and the failure arrives when the journey runs the line.
+
+**Enforced at push.** The pre-push check (`src/scripts/runtime.rs`, run by
+`gate::write_checked` after the tenant's parse) refuses AM JavaScript that
+**calls** one of these, or constructs or calls an ES2015 global from the table
+above, and names the substitute. Feature detection (`typeof Object.values`,
+`if (Object.entries)`) is not a call and stays legal, as does a name the source
+declares itself. `--force=syntax-check` gets past it like any other verdict of
+that check. Only the three contexts in the table were probed; the check applies
+to every AM context on the same evidence the ES2015 table rests on — one engine
+configuration — which is an assumption, not a measurement per context. The
+TypeScript workspace already rejects them: the AM `tsconfig.json` lib has no
+`ES2017.Object`.
+
+Fixtures: `fixtures/es2017-object.script.js` (next-gen, `AIC-Rhino-Let-Probe`),
+`fixtures-legacy/legacy-es2017-object.script.js` (legacy,
+`AIC-Rhino-Legacy-Probe`), `fixtures/lib-es2017-object-probe.lib.js` +
+`lib-es2017-object-consumer.script.js` (`LIBRARY`, uploaded as
+`rhino-lib-es2017-object-probe` with an id minted by `aic script create`).
+
 ## Post-ES5 features on the IDM endpoint engine (verified 2026-08-19)
 
 The TypeScript endpoint bundle is esbuild + Babel **ES5** output, so two

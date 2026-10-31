@@ -77,10 +77,10 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
             }
             Refusal::Unsupported(_) =>
                 "pass --force=syntax-check to write it unchecked (retrying cannot help)",
-            // No flag: a bundle built for another endpoint is wrong whether or
+            // No flag: a bundle built for another script is wrong whether or
             // not it parses. Deleting the banner is the deliberate way past.
             Refusal::WrongTarget { .. } => {
-                "rebuild with `npm run build`, or push the endpoint the banner names; \
+                "rebuild with `npm run build`, or push the script the banner names; \
                  delete the banner to push it as hand-written source"
             }
             Refusal::MarkedForOther { .. } => {
@@ -90,6 +90,9 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
             // No flag gets past this one either: the bytes are not a script
             // aic can read, so re-pull or repair the local file.
             Refusal::Undecodable(_) => "repair the local file, or re-pull it from the tenant",
+            Refusal::AbsentMembers(_) => {
+                "use the replacement named, or pass --force=syntax-check to write it anyway"
+            }
         }
     );
 }
@@ -178,6 +181,11 @@ pub enum ScriptCommand {
         evaluator_version: Option<String>,
         #[arg(long)]
         description: Option<String>,
+        /// AM only: create the script with this UUID instead of a fresh one,
+        /// so it matches a repository that names scripts by id. Refused when
+        /// the tenant already has a script with that id.
+        #[arg(long, value_name = "UUID")]
+        id: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -185,6 +193,34 @@ pub enum ScriptCommand {
         yes: bool,
         #[command(flatten)]
         force: SyntaxCheckForce,
+    },
+    /// Rename an AM script, keeping its id. The script must be in sync;
+    /// callers that `require` a library by name are not updated.
+    Rename {
+        #[arg(help = "<realm>/<name>")]
+        reference: String,
+        #[arg(help = "The new name (same realm)")]
+        new_name: String,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        force: SyntaxCheckForce,
+    },
+    /// Compare the AM script ids a configuration directory declares with the
+    /// tenant's, by name. Read-only; exits non-zero on any disagreement.
+    Ids {
+        /// A directory of exported config, e.g. an fr-config-manager tree.
+        dir: std::path::PathBuf,
+        /// Realm for files whose path has no `realms/<realm>/` component.
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Copy a standalone script, including its complete raw config.
     Copy {
@@ -593,6 +629,7 @@ pub(crate) async fn run_with_runtime(
             language,
             evaluator_version,
             description,
+            id,
             tenant,
             yes,
             force,
@@ -608,6 +645,14 @@ pub(crate) async fn run_with_runtime(
                     "--context is only valid for AM scripts".into(),
                 ));
             }
+            if let Some(id) = &id {
+                if ns.kind != script::Kind::Am {
+                    return Err(Error::Config(
+                        "--id is only valid for AM scripts; IDM ids derive from the name".into(),
+                    ));
+                }
+                script::am::chosen_id(id)?;
+            }
             let source = match from {
                 Some(path) => std::fs::read(&path).map_err(|e| {
                     Error::Config(format!("read source file {}: {e}", path.display()))
@@ -619,6 +664,7 @@ pub(crate) async fn run_with_runtime(
                 language,
                 evaluator_version,
                 description,
+                id,
             };
             if ns.kind == script::Kind::Am {
                 let input = opts
@@ -741,6 +787,150 @@ pub(crate) async fn run_with_runtime(
                 "copied {} -> {destination_full}",
                 script::full_name(source_ns.kind, source_ns.realm.as_deref(), &source_name),
             );
+            Ok(())
+        }
+        ScriptCommand::Rename {
+            reference,
+            new_name,
+            tenant,
+            yes,
+            force,
+        } => {
+            let gate = gate_for(force.syntax_check());
+            let tenant = writable_tenant_for(tenant)?;
+            guard_legacy_workspace(&tenant)?;
+            require_workspace(&tenant)?;
+            let (ns, name) = parse_one(&reference)?;
+            if ns.kind != script::Kind::Am {
+                return Err(Error::Config(
+                    "script rename is for AM scripts; an IDM script's id is its name".into(),
+                ));
+            }
+            if new_name.is_empty() || new_name.contains('/') {
+                return Err(Error::Config(
+                    "the new name is a bare name; the script stays in its realm".into(),
+                ));
+            }
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            let new_full = script::full_name(ns.kind, ns.realm.as_deref(), &new_name);
+            match prod_hint(
+                sync::rename(&tenant, ns.realm_arg(), &name, &new_name, yes, gate).await,
+            )? {
+                sync::Renamed::Refused(refusal) => {
+                    report_refusal(&full, &refusal);
+                    Err(Error::Config(format!("{full} was not renamed")))
+                }
+                sync::Renamed::Done {
+                    script,
+                    old_file,
+                    old_file_outcome,
+                } => {
+                    println!("renamed {full} -> {new_full} (id {})", script.reference.id);
+                    let kept = |why: &str| {
+                        eprintln!("kept {}: {why}", crate::config::display_path(&old_file));
+                    };
+                    match old_file_outcome {
+                        sync::OldFile::Removed | sync::OldFile::Absent => {}
+                        sync::OldFile::Edited => kept("it changed during the rename"),
+                        sync::OldFile::Aliased => kept(
+                            "it is the same file as the new name (a case-insensitive \
+                             filesystem), so it now holds the renamed script",
+                        ),
+                        sync::OldFile::RemoveFailed(error) => {
+                            kept(&format!("removing it failed ({error})"))
+                        }
+                    }
+                    if script.reference.context.as_deref() == Some("LIBRARY") {
+                        eprintln!(
+                            "note: scripts that load this library by name \
+                             (require('{name}')) still use the old name"
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        }
+        ScriptCommand::Ids {
+            dir,
+            realm,
+            tenant,
+            json,
+        } => {
+            use std::collections::BTreeMap;
+            let tenant = tenant_for(tenant)?;
+            let mut declared = Vec::new();
+            for file in script::ids::json_files(&dir)
+                .map_err(|e| Error::Config(format!("read {}: {e}", dir.display())))?
+            {
+                let Ok(bytes) = std::fs::read(&file) else {
+                    continue;
+                };
+                // Not every .json in a config tree parses (templates, partial
+                // files); a script export always does.
+                if let Ok(value) = serde_json::from_slice(&bytes) {
+                    declared.extend(script::ids::declared_in(&file, &value));
+                }
+            }
+            if declared.is_empty() {
+                return Err(Error::Config(format!(
+                    "no AM script exports (objects with _id, name and context) under {}",
+                    dir.display()
+                )));
+            }
+            let mut listings = BTreeMap::new();
+            for script in &declared {
+                let realm = script.realm.clone().unwrap_or_else(|| realm.clone());
+                if let std::collections::btree_map::Entry::Vacant(slot) = listings.entry(realm) {
+                    let listed = script::Kind::Am.list(&tenant, slot.key()).await?;
+                    slot.insert(listed);
+                }
+            }
+            let judged = script::ids::judge(&declared, &realm, &listings);
+            let problems = judged.iter().filter(|(_, _, v)| v.is_problem()).count();
+            if json {
+                let rows: Vec<_> = judged
+                    .iter()
+                    .map(|(script, realm, verdict)| {
+                        serde_json::json!({
+                            "realm": realm,
+                            "name": script.name,
+                            "id": script.id,
+                            "file": script.file,
+                            "verdict": verdict,
+                        })
+                    })
+                    .collect();
+                print_json(&rows)?;
+            } else {
+                let rows: Vec<Vec<String>> = judged
+                    .iter()
+                    .map(|(script, realm, verdict)| {
+                        use script::ids::Verdict as V;
+                        let state = match verdict {
+                            V::Match => "match".to_string(),
+                            V::Absent => "absent (a push creates it)".to_string(),
+                            V::NotUuid => "repo id is not a UUID".to_string(),
+                            V::IdDiffers { tenant_id } => format!("tenant id {tenant_id}"),
+                            V::NameDiffers { tenant_name } => {
+                                format!("tenant name {tenant_name}")
+                            }
+                        };
+                        vec![
+                            format!("{realm}/{}", script.name),
+                            script.id.clone(),
+                            state,
+                            crate::config::display_path(&script.file),
+                        ]
+                    })
+                    .collect();
+                print_table(&["REF", "REPO ID", "TENANT", "FILE"], &rows);
+            }
+            if problems > 0 {
+                return Err(Error::Config(format!(
+                    "{problems} of {} script(s) disagree with the tenant",
+                    judged.len()
+                )));
+            }
             Ok(())
         }
         ScriptCommand::Delete {
@@ -940,6 +1130,7 @@ pub(crate) async fn run_with_runtime(
             };
             let status = sync::status(&t, None, filter).await?;
             let mut rows: Vec<StatusRow> = status.entries.iter().map(StatusRow::tracked).collect();
+            attribute_rows(&t, &status.entries, &mut rows).await;
             rows.extend(status.untracked.as_ref().map(StatusRow::untracked));
             let against = match &against {
                 Some(path) => Some(AgainstRow::compare(path, &rows)?),
@@ -959,6 +1150,9 @@ pub(crate) async fn run_with_runtime(
             } else {
                 for row in &rows {
                     println!("  {:<48} {}", row.reference, row.label);
+                    if let Some(line) = &row.last_modified_line {
+                        println!("    {line}");
+                    }
                     if exact.is_some() {
                         for (side, digest) in [
                             ("local ", &row.local_sha256),
@@ -2052,6 +2246,12 @@ struct StatusRow {
     /// Whether the local copy and the tenant's agree, which is what a
     /// deployment gate asks. A stale snapshot does not count against it.
     matches_tenant: bool,
+    /// Who last wrote the tenant's copy, for rows where the tenant changed
+    /// since the last sync — `script who`'s `modified` object. AM only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_modified: Option<serde_json::Value>,
+    #[serde(skip)]
+    last_modified_line: Option<String>,
 }
 
 impl StatusRow {
@@ -2082,6 +2282,8 @@ impl StatusRow {
             local_sha256: entry.local_sha256.clone(),
             remote_sha256: entry.remote_sha256.clone(),
             matches_tenant: matches!(entry.state, S::InSync | S::Converged),
+            last_modified: None,
+            last_modified_line: None,
         }
     }
 
@@ -2110,7 +2312,44 @@ impl StatusRow {
                 && entry.remote_sha256 == entry.local_sha256,
             local_sha256: entry.local_sha256.clone(),
             remote_sha256: entry.remote_sha256.clone(),
+            last_modified: None,
+            last_modified_line: None,
         }
+    }
+}
+
+/// Rows whose tenant copy changed since the last sync, so "who changed it?"
+/// is the next question. An unchanged remote's author is old news, and a
+/// local-only edit is the operator's own.
+fn attributable(state: &script::sync::ScriptState) -> bool {
+    use script::sync::ScriptState as S;
+    matches!(state, S::RemotelyModified | S::BothModified | S::Converged)
+}
+
+/// Fill `last_modified` on the rows [`attributable`] picks, resolving each
+/// distinct principal once — the same lookup `script who` makes.
+async fn attribute_rows(
+    tenant: &str,
+    entries: &[script::sync::StatusEntry],
+    rows: &mut [StatusRow],
+) {
+    use script::authorship::{self as auth, PrincipalCache};
+    let mut cache = PrincipalCache::default();
+    for (entry, row) in entries.iter().zip(rows.iter_mut()) {
+        let Some(change) = entry
+            .modified
+            .as_ref()
+            .filter(|_| attributable(&entry.state))
+        else {
+            continue;
+        };
+        let resolved = cache.resolve(tenant, &change.by).await;
+        row.last_modified = Some(author_json(change, resolved.as_ref()));
+        row.last_modified_line = Some(format!(
+            "last modified {} by {}",
+            auth::format_local(change.at),
+            auth::describe_author(&change.by, resolved.as_ref())
+        ));
     }
 }
 
@@ -3321,6 +3560,7 @@ mod tests {
             state: ScriptState::InSync,
             local_sha256: remote.clone(),
             remote_sha256: remote,
+            modified: None,
         });
         assert!(
             !untracked.matches_tenant,
@@ -3346,6 +3586,24 @@ mod tests {
     }
 
     #[test]
+    fn only_rows_the_tenant_changed_are_attributed() {
+        use script::sync::ScriptState as S;
+        for state in [S::RemotelyModified, S::BothModified, S::Converged] {
+            assert!(attributable(&state), "{state:?}");
+        }
+        for state in [
+            S::InSync,
+            S::LocallyModified,
+            S::LocalMissing,
+            S::SnapshotMissing,
+            S::RemoteMissing,
+            S::RemoteMissingLocallyModified,
+        ] {
+            assert!(!attributable(&state), "{state:?}");
+        }
+    }
+
+    #[test]
     fn status_gate_passes_converged_and_matching_untracked_only() {
         use script::sync::{ScriptState, StatusEntry, Untracked};
         let entry = |state| StatusEntry {
@@ -3355,6 +3613,7 @@ mod tests {
             state,
             local_sha256: None,
             remote_sha256: None,
+            modified: None,
         };
         assert!(StatusRow::tracked(&entry(ScriptState::InSync)).matches_tenant);
         assert!(StatusRow::tracked(&entry(ScriptState::Converged)).matches_tenant);
