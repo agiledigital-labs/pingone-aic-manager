@@ -271,6 +271,9 @@ fn dependents(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<
                 Some(other) => match verify::properties(managed, other) {
                     None => Owner::StaleBlocked("its object is not declared"),
                     Some(props) if props.contains_key(&located.key) => Owner::Declared,
+                    Some(_) if verify::sections_mapping(repo_ds, other, &located.key).len() > 1 => {
+                        Owner::StaleBlocked("it is mapped in more than one section")
+                    }
                     Some(_) if verify::SYSTEM_RELATIONSHIPS.contains(&located.key.as_str()) => {
                         Owner::StaleBlocked("it is one of IDM's own relationships")
                     }
@@ -559,6 +562,16 @@ mod tests {
             error.contains("gone_obj.owner (also stale, but repair refuses it too: its object"),
             "{error}"
         );
+        // It is mapped in more than one section, which repair refuses
+        // (Sol round 10).
+        let mut before = repo(
+            json!({"old": reference("b")}),
+            json!({"gone": reverse("a", "old")}),
+        );
+        before["resourceMapping"]["explicitMapping"] =
+            json!({"managed/b": {"properties": {"gone": {"type": "string"}}}});
+        let error = plan(&managed(), &before, "a", "old").unwrap_err();
+        assert!(error.contains("b.gone (also stale, but repair refuses it too: it is mapped in more than one section)"), "{error}");
         // It is its object's last mapping.
         let mut before = repo(json!({"old": reference("b")}), json!({}));
         before["resourceMapping"]["genericMapping"]["managed/b"]["properties"] =

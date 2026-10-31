@@ -648,7 +648,10 @@ to have landed. Only `genericMapping."managed/<obj>"` is edited: a mapping
 found only under another section is refused, and so is a key mapped in more
 than one section, because which copy IDM honours is unmeasured and removing
 one would not leave the key unmapped. Where two sections disagree, the
-guards read a relationship mapping in either as "mapped". The sandbox's `repo.ds` also
+guards read a relationship mapping in either as "mapped", and `verify` and the
+`config/managed` write boundary report the disagreement itself as a finding
+(`MappingConflict`), so a write that introduces a relationship over it is
+refused. No resource appears in both sections on the sandbox. The sandbox's `repo.ds` also
 maps four objects (`alpha_group`, `bravo_group`, `teammember`,
 `teammembergroup`) under `explicitMapping` — none of them declared in its
 `config/managed` — so an object's own mappings are read from **every**
