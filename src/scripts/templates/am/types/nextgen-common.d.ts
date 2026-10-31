@@ -278,10 +278,13 @@ type Projected<T, F extends string> = string extends F
       } & MetaMemberOf<F>
     >;
 
+// `params` may be `null`: `openidm.read(path, null, fields)` is the measured
+// convention for a projection with no parameters (docs/api/10-managed-objects.md,
+// "Field selectors from a script").
 interface OpenIdm {
   read<R extends `${ManagedName}/${string}` | (string & {})>(
     resourceName: R,
-    params?: object
+    params?: object | null
   ): [ManagedRecordOf<R>] extends [never]
     ? any
     : StoredRecord<ManagedRecordOf<R>> | null;
@@ -292,7 +295,7 @@ interface OpenIdm {
     const F extends FieldsArg<ManagedRecordOf<R>, R>
   >(
     resourceName: R,
-    params: object | undefined,
+    params: object | null | undefined,
     fields: F
   ): [ManagedRecordOf<R>] extends [never]
     ? any
@@ -301,27 +304,27 @@ interface OpenIdm {
     resourceName: R,
     newResourceId: string | null,
     content: ContentArg<ManagedCollectionOf<R>>,
-    params?: object,
+    params?: object | null,
     fields?: FieldsArg<ManagedCollectionOf<R>, R>
   ): RecordResult<ManagedCollectionOf<R>>;
   update<R extends `${ManagedName}/${string}` | (string & {})>(
     id: R,
     rev: string | null,
     value: ContentArg<ManagedRecordOf<R>>,
-    params?: object,
+    params?: object | null,
     fields?: FieldsArg<ManagedRecordOf<R>, R>
   ): RecordResult<ManagedRecordOf<R>>;
   patch<R extends `${ManagedName}/${string}` | (string & {})>(
     resourceName: R,
     rev: string | null,
     patch: Patch[],
-    params?: object,
+    params?: object | null,
     fields?: FieldsArg<ManagedRecordOf<R>, R>
   ): RecordResult<ManagedRecordOf<R>>;
   delete<R extends `${ManagedName}/${string}` | (string & {})>(
     resourceName: R,
     rev: string | null,
-    params?: object,
+    params?: object | null,
     fields?: FieldsArg<ManagedRecordOf<R>, R>
   ): RecordResult<ManagedRecordOf<R>>;
   query<R extends ManagedName | (string & {})>(
@@ -345,7 +348,7 @@ interface OpenIdm {
     resource: string,
     actionName: string,
     content?: object,
-    params?: object,
+    params?: object | null,
     fields?: string[]
   ): any;
 }

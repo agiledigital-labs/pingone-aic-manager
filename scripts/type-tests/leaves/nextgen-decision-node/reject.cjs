@@ -141,3 +141,10 @@ if (cookieValue !== null) {
 /** @type {string} */
 var cookieMustExist = requestCookies.get("theme"); // expect: TS2322 — a missing cookie is null
 logger.info("{}", cookieMustExist);
+
+// --- existingSession.get: an absent key is null -----------------------------
+if (typeof existingSession !== "undefined" && existingSession) {
+  /** @type {string} */
+  var sessionUserMustExist = existingSession.get("UserId"); // expect: TS2322 — an absent key is null
+  logger.info("{}", sessionUserMustExist);
+}
