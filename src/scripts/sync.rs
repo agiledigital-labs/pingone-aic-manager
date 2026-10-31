@@ -2805,6 +2805,84 @@ pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
     store.remove(kind, name, realm)
 }
 
+/// What happened to the local file when [`forget_removing_local`] forgot a
+/// script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalDisposition {
+    /// It held exactly the last-synced bytes, so it was removed.
+    Removed,
+    /// Nothing was there to remove.
+    Absent,
+    /// Kept: it differs from the last sync — unsynced work, §5 — or it is not
+    /// a plain file (a symlink is never removed through).
+    Kept(&'static str),
+}
+
+/// [`forget`], then remove the local file — but only one that still holds the
+/// last-synced bytes. The record goes first: a removal that then fails leaves
+/// an untracked file, which is harmless, where the other order would leave a
+/// tracked script with no file.
+pub fn forget_removing_local(
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+) -> Result<LocalDisposition> {
+    forget_removing_local_in(
+        &SnapshotStore::open(tenant),
+        &ProjectConfig::workspace_tree(tenant),
+        realm,
+        kind,
+        name,
+    )
+}
+
+fn forget_removing_local_in(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+) -> Result<LocalDisposition> {
+    let entry = store.lookup(kind, name, realm)?;
+    let snapshot = match &entry {
+        Some(e) => match store.load_config(&e.reference, realm)? {
+            Some(cfg) => Some(kind.decode_source(&cfg)?),
+            None => None,
+        },
+        None => None,
+    };
+    store.remove(kind, name, realm)?;
+    let Some(entry) = entry else {
+        return Ok(LocalDisposition::Kept("it was not tracked"));
+    };
+    let Some(snapshot) = snapshot else {
+        return Ok(LocalDisposition::Kept(
+            "there is no last-synced copy to compare it with",
+        ));
+    };
+    let path = workspace_file_in(workspace_tree, realm, &entry.reference);
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LocalDisposition::Absent),
+        Err(e) => return Err(e.into()),
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Ok(LocalDisposition::Kept("it is not a plain file"));
+        }
+        Ok(_) => {}
+    }
+    if read_local(&path)?.as_deref() != Some(snapshot.as_slice()) {
+        return Ok(LocalDisposition::Kept("it differs from the last sync"));
+    }
+    std::fs::remove_file(&path)?;
+    // A LIBRARY script's generated ES-module wrapper would import a file that
+    // is gone. Only the exact bytes `extra_files` writes are ours to remove.
+    let wrapper = path.with_extension("js");
+    if kind == Kind::Am && super::am::is_library_wrapper_file(&wrapper) {
+        std::fs::remove_file(&wrapper)?;
+    }
+    Ok(LocalDisposition::Removed)
+}
+
 /// Stop tracking every hook of a managed object that was just deleted, and
 /// return their names. Their slots went with the object, so each would
 /// otherwise sit in `status` as missing until forgotten one by one. Local
@@ -3456,6 +3534,55 @@ mod tests {
                 .unwrap(),
             None
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `--remove-local` removes only a file still holding the last-synced
+    /// bytes, and forgets the record whatever it decides about the file.
+    #[test]
+    fn forget_removing_local_removes_only_an_unmodified_plain_file() {
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let tree = dir.join("tree");
+        let synced = |name: &str| RemoteScript {
+            reference: endpoint_ref(name),
+            raw_config: json!({"type": "text/javascript", "source": "synced"}),
+        };
+        let file = |name: &str| workspace_file_in(&tree, "", &endpoint_ref(name));
+        let cases: [(&str, Option<&[u8]>, LocalDisposition); 3] = [
+            ("clean", Some(b"synced"), LocalDisposition::Removed),
+            (
+                "edited",
+                Some(b"edited"),
+                LocalDisposition::Kept("it differs from the last sync"),
+            ),
+            ("gone", None, LocalDisposition::Absent),
+        ];
+        for (name, bytes, expected) in cases {
+            store.record(&synced(name), "").unwrap();
+            if let Some(bytes) = bytes {
+                std::fs::create_dir_all(file(name).parent().unwrap()).unwrap();
+                std::fs::write(file(name), bytes).unwrap();
+            }
+            let got = forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, name).unwrap();
+            assert_eq!(got, expected, "{name}");
+            assert_eq!(file(name).exists(), name == "edited", "{name}");
+            assert!(
+                store.lookup(Kind::IdmEndpoint, name, "").unwrap().is_none(),
+                "{name}"
+            );
+        }
+        // The discriminating case: a symlink to a file holding the synced bytes
+        // reads as unmodified, and must still not be removed through.
+        store.record(&synced("linked"), "").unwrap();
+        let target = dir.join("elsewhere.js");
+        std::fs::write(&target, b"synced").unwrap();
+        std::os::unix::fs::symlink(&target, file("linked")).unwrap();
+        assert_eq!(
+            forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, "linked").unwrap(),
+            LocalDisposition::Kept("it is not a plain file")
+        );
+        assert!(target.exists() && file("linked").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

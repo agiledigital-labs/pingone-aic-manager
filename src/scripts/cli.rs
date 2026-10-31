@@ -347,6 +347,11 @@ pub enum ScriptCommand {
         /// Make this side win for every selected entry, including non-conflicts.
         #[arg(long, value_enum)]
         resolve: Option<Resolution>,
+        /// When a script deleted on the tenant is forgotten, also remove its
+        /// local file — only if it still holds the last-synced bytes. An
+        /// edited file, or a symlink, is kept and named.
+        #[arg(long)]
+        remove_local: bool,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -1224,11 +1229,18 @@ pub(crate) async fn run_with_runtime(
         ScriptCommand::Sync {
             reference,
             resolve,
+            remove_local,
             tenant,
             yes,
             force,
         } => {
             validate_resolution_force(resolve, force)?;
+            if remove_local && resolve == Some(Resolution::Local) {
+                return Err(Error::Config(
+                    "--remove-local applies to forgetting a deleted script, which --resolve local never does"
+                        .into(),
+                ));
+            }
             let t = runtime.writable_tenant_for(tenant)?;
             runtime.guard_legacy_workspace(&t)?;
             let cands = select_synced(runtime.push_candidates(&t)?, reference)?;
@@ -1301,7 +1313,9 @@ pub(crate) async fn run_with_runtime(
                         let choice = match resolve {
                             Some(Resolution::Local) => RemoteMissingChoice::Recreate,
                             Some(Resolution::Remote) => RemoteMissingChoice::Forget,
-                            None => prompt_remote_missing(&full, unavailable.as_deref())?,
+                            None => {
+                                prompt_remote_missing(&full, unavailable.as_deref(), remove_local)?
+                            }
                         };
                         match choice {
                             RemoteMissingChoice::Recreate if unavailable.is_some() => {
@@ -1346,6 +1360,28 @@ pub(crate) async fn run_with_runtime(
                                         failed += 1;
                                     }
                                     Err(error) if batch_fatal(&error) => return Err(error),
+                                    Err(error) => {
+                                        eprintln!("! {full}: {error}");
+                                        failed += 1;
+                                    }
+                                }
+                            }
+                            RemoteMissingChoice::Forget if remove_local => {
+                                match sync::forget_removing_local(
+                                    &t,
+                                    ns.realm_arg(),
+                                    c.kind,
+                                    &c.name,
+                                ) {
+                                    Ok(sync::LocalDisposition::Removed) => {
+                                        println!("forgot {full} from sync (local file removed)")
+                                    }
+                                    Ok(sync::LocalDisposition::Absent) => {
+                                        println!("forgot {full} from sync (no local file)")
+                                    }
+                                    Ok(sync::LocalDisposition::Kept(why)) => {
+                                        println!("forgot {full} from sync (local file kept: {why})")
+                                    }
                                     Err(error) => {
                                         eprintln!("! {full}: {error}");
                                         failed += 1;
@@ -2610,7 +2646,13 @@ fn recreate_unavailable_reason(
 fn prompt_remote_missing(
     full: &str,
     unavailable_reason: Option<&str>,
+    remove_local: bool,
 ) -> Result<RemoteMissingChoice> {
+    let forget = if remove_local {
+        "forget — remove sync record and the local file, if unedited"
+    } else {
+        "forget — remove sync record, keep local file"
+    };
     use inquire::{Select, error::InquireError};
     if crate::cli::prompting_disabled() {
         return Ok(RemoteMissingChoice::Skip);
@@ -2626,13 +2668,10 @@ fn prompt_remote_missing(
         vec![
             "skip — leave local copy and sync record",
             "re-create — write the local copy to the tenant",
-            "forget — remove sync record, keep local file",
+            forget,
         ]
     } else {
-        vec![
-            "skip — leave local copy and sync record",
-            "forget — remove sync record, keep local file",
-        ]
+        vec!["skip — leave local copy and sync record", forget]
     };
     match Select::new(&prompt, opts).raw_prompt() {
         Ok(answer) if allow_recreate => Ok(match answer.index {
@@ -3436,12 +3475,13 @@ fn guard_legacy_workspace(tenant: &str) -> Result<()> {
 }
 
 /// Print a "templates out of date" nudge if the workspace predates the bundled
-/// template version (mirrors p1-sync's update prompt).
+/// template version (mirrors p1-sync's update prompt). Stderr, like every
+/// advisory: stdout may be a `--json` document a consumer pipes to `jq`.
 fn workspace_update_hint(tenant: &str) -> Result<()> {
     use crate::scripts::workspace;
     let applied = workspace::applied_version(tenant)?;
     if applied != 0 && applied < workspace::TEMPLATES_VERSION {
-        println!(
+        eprintln!(
             "note: workspace templates v{applied} → v{} available — run `aic workspace update`",
             workspace::TEMPLATES_VERSION
         );
@@ -3450,7 +3490,7 @@ fn workspace_update_hint(tenant: &str) -> Result<()> {
 }
 
 /// Compare on-disk managed type files to a fresh in-memory generation from the
-/// live schema. Prints one summary line when any file is missing or differs;
+/// live schema. Prints one summary line to stderr when any file is missing or differs;
 /// stays silent when current. Never writes, and never fails the caller: a
 /// fetch or generate error warns once and returns, matching
 /// [`generate_managed_types`]'s best-effort discipline.
@@ -3486,7 +3526,7 @@ async fn check_managed_types_stale(tenant: &str) {
     let stale =
         crate::scripts::managed_types::stale_files(&ProjectConfig::workspace_tree(tenant), &files);
     if let Some(note) = managed_types_stale_note(stale.len()) {
-        println!("{note}");
+        eprintln!("{note}");
     }
 }
 

@@ -1161,7 +1161,7 @@ async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) ->
         }
         auth::unlock_plain_agent().await?;
         if announce {
-            println!("unlocked (plain mode)");
+            eprintln!("unlocked (plain mode)");
         }
         return Ok(());
     }
@@ -1194,7 +1194,7 @@ async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) ->
     drop(dek);
     warn_unsettled();
     if announce {
-        println!("unlocked");
+        eprintln!("unlocked");
     }
     Ok(())
 }
