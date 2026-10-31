@@ -6,6 +6,8 @@
 //!   the `managed` config has no `_rev` and no partial patch).
 //! - [`cli`] implements `aic managed` read-only inspection; write-capable TUI
 //!   flows live in [`ops`], [`screen`], and [`view`].
+//! - [`diff`] normalises and compares an object against a repository file,
+//!   for `aic managed diff`; tenant-free.
 //! - [`ops`] owns managed-object schema writes and undo.
 //! - [`relink`] decides when a newly declared relationship end is live and
 //!   how one-sided links are re-created; tenant-free.
@@ -32,6 +34,7 @@
 
 pub mod api;
 pub mod cli;
+pub mod diff;
 mod keys;
 pub mod ops;
 pub mod relink;
