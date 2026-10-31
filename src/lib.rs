@@ -10,6 +10,7 @@ pub mod esv;
 pub(crate) mod http;
 pub mod idmstore;
 pub mod journey;
+pub mod jsondiff;
 pub mod jwtbearer;
 pub mod logging;
 pub mod logs;

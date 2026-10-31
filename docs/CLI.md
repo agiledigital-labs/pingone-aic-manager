@@ -917,6 +917,8 @@ the workspace.
 ```bash
 aic journey list [--realm alpha] [--json]              # journey names
 aic journey pull <name> [--realm alpha] [--force] [--force=backup] # protected local install
+aic journey status [<name>...] [--realm alpha] [--check] [--json] # local / snapshot / tenant, read-only
+aic journey diff <name> [--local-vs-snapshot | --snapshot-vs-remote] [--realm alpha] [--json]
 aic journey push <name> [--realm alpha] [--force] [--yes] # push; production requires --yes
 aic journey delete <name> --force [--realm alpha] [--yes] # delete; production requires --yes
 aic journey using-script <script-uuid> [--realm alpha] [--json] # journeys referencing a script
@@ -937,6 +939,42 @@ journey/realm/name plus timestamp and UUID, and are mode 0600 on Unix. The
 snapshot advances only after the export is installed successfully.
 
 ---
+
+### `journey status` and `journey diff`
+
+Both are read-only: they read the workspace export, the snapshot under
+`journeys/<realm>/.snapshots/` and the tenant, and write nothing — the snapshot
+is **not** refreshed, so asking cannot change what the next `push` decides.
+They compare the way `push` does, ignoring `_rev` everywhere.
+
+- `status` names each journey's state the way `script status` does: `in sync`,
+  `modified locally`, `modified on remote`, `conflict`, `converged` (both sides
+  made the same change; only the snapshot is stale), `no snapshot` (with
+  whether local matches the tenant), `not pulled`, `not on the tenant`. With no
+  names it covers every journey that has an export or a snapshot in the realm.
+  Under each row it lists the parts that moved — `tree`, or a node by type, id
+  and display name — on the `local` side (export vs snapshot) and the `remote`
+  side (snapshot vs tenant).
+- **Shared nodes.** A node's config is a realm object keyed by its id, so two
+  journeys listing the same id share it, and pushing either rewrites it for
+  both. When any node moved, `status` reads every tree in the realm once and
+  marks such a node `shared with <journey>, …`. Nothing is read for that when
+  only trees moved.
+- `--check` exits non-zero unless every journey matches the tenant (`in sync`,
+  `converged`, or `no snapshot` with local matching). `--json` prints
+  `{ok, journeys: [{journey, state, matches_tenant, local_changes,
+  remote_changes}]}`, each change carrying `shared_with`.
+- `diff` prints each difference as a JSON pointer under the part it belongs
+  to, local against remote by default; `--local-vs-snapshot` shows your edits
+  only, `--snapshot-vs-remote` remote drift only. It exits non-zero when the
+  two differ.
+- **Secret values are never printed.** A value whose key names a secret
+  (`password`, `secret`, `token`, `credential`, `privateKey`, `apiKey`, …, but
+  not a `…Identifier` or `…Label` naming where one lives) shows as
+  `"<hidden>"`, at its own path and inside any value printed whole. The change
+  itself still counts. This is a name rule because the schema cannot be asked:
+  AM's node schemas mark nothing secret — `product-CaptchaNode.secretKey` is a
+  plain `"type": "string"` (read 2026-10-31).
 
 ## `aic policy` — AM policies, policy sets and the PDP
 
