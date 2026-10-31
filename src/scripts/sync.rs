@@ -1459,7 +1459,7 @@ fn resume_preflight(
 /// Install the new name from the confirmed read, forget the old one, then
 /// remove the old file if it still holds the renamed bytes — in that order,
 /// so a failure part-way leaves a state the same `rename` resumes from.
-/// Returns whether the old file was removed.
+/// Returns what became of the old file.
 #[allow(clippy::too_many_arguments)]
 fn finish_rename_locally(
     store: &SnapshotStore,
@@ -1470,7 +1470,7 @@ fn finish_rename_locally(
     remote_src: &[u8],
     new_expected: Option<&[u8]>,
     unfinished: impl Fn(Error) -> Error,
-) -> Result<bool> {
+) -> Result<OldFile> {
     install_remote(
         store,
         tree,
@@ -1498,9 +1498,31 @@ fn finish_rename_locally(
         .map_err(&unfinished)?;
     // Re-read the old file now: an edit made while the write was in flight is
     // kept rather than deleted with the name.
-    Ok(!file_aliased
-        && read_local(&old_file)?.as_deref() == Some(remote_src)
-        && std::fs::remove_file(&old_file).is_ok())
+    if file_aliased {
+        return Ok(OldFile::Aliased);
+    }
+    match read_local(&old_file)? {
+        None => Ok(OldFile::Absent),
+        Some(bytes) if bytes != remote_src => Ok(OldFile::Edited),
+        Some(_) => Ok(match std::fs::remove_file(&old_file) {
+            Ok(()) => OldFile::Removed,
+            Err(error) => OldFile::RemoveFailed(error.to_string()),
+        }),
+    }
+}
+
+/// What became of the old workspace file at the end of a rename.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OldFile {
+    Removed,
+    /// There was none to remove.
+    Absent,
+    /// Its bytes changed after the preflight; kept so nothing typed is lost.
+    Edited,
+    /// It is the same file as the new one (a case-only rename on a
+    /// case-insensitive filesystem); deleting it would delete the new source.
+    Aliased,
+    RemoveFailed(String),
 }
 
 /// Whether `a` and `b` are one file — a hard link, or two spellings a
@@ -1584,10 +1606,9 @@ fn destination_free(paths: &[PathBuf]) -> Result<()> {
 pub enum Renamed {
     Done {
         script: RemoteScript,
-        /// The old workspace file, and whether it was removed. It is kept when
-        /// its bytes changed after the preflight, so nothing typed is lost.
+        /// The old workspace file, and what became of it.
         old_file: PathBuf,
-        old_file_removed: bool,
+        old_file_outcome: OldFile,
     },
     /// The gate refused the write; nothing changed on the tenant.
     Refused(Refusal),
@@ -1755,7 +1776,7 @@ pub async fn rename(
     if !resuming {
         destination_free(&destinations).map_err(unfinished)?;
     }
-    let old_file_removed = finish_rename_locally(
+    let old_file_outcome = finish_rename_locally(
         &store,
         &tree,
         realm,
@@ -1768,7 +1789,7 @@ pub async fn rename(
     Ok(Renamed::Done {
         script: confirmed,
         old_file,
-        old_file_removed,
+        old_file_outcome,
     })
 }
 
@@ -2943,7 +2964,7 @@ mod tests {
         std::fs::remove_file(store.config_path(&old, "alpha")).unwrap();
         let expected = resume_preflight(&store, &tree, "alpha", (&old, &new), remote).unwrap();
         assert_eq!(expected.as_deref(), Some(remote));
-        assert!(
+        assert_eq!(
             finish_rename_locally(
                 &store,
                 &tree,
@@ -2954,7 +2975,8 @@ mod tests {
                 expected.as_deref(),
                 unfinished
             )
-            .unwrap()
+            .unwrap(),
+            OldFile::Removed
         );
         let names: Vec<_> = store
             .load_manifest()
@@ -3004,8 +3026,8 @@ mod tests {
             store.config_path(&old, "alpha"),
         )
         .unwrap();
-        assert!(
-            !finish_rename_locally(
+        assert_eq!(
+            finish_rename_locally(
                 &store,
                 &tree,
                 "alpha",
@@ -3015,7 +3037,8 @@ mod tests {
                 Some(remote),
                 unfinished
             )
-            .unwrap()
+            .unwrap(),
+            OldFile::Aliased
         );
         assert_eq!(std::fs::read(&new_file).unwrap(), remote);
         assert!(store.load_config(&new, "alpha").unwrap().is_some());
