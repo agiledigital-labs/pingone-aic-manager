@@ -582,6 +582,7 @@ aic managed relationship set custom_widget.owner --target alpha_user --forward o
 aic managed relationship delete custom_widget.owner [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
+aic managed diff custom_widget repo/managed-objects/custom_widget/custom_widget.json [--strict] [--json]
 ```
 
 `managed get` prints one object's definition as JSON. Inline hook `source`
@@ -613,6 +614,22 @@ unaffected. With `--property`, only that property's pair is shown. The TUI
 relationship editor shows the same line under its title. What neither can show
 is whether the running IDM has *picked up* a `repo.ds` change: `aic` knows of
 no endpoint that reports it, so the line describes configuration, not runtime.
+
+`managed diff <object> <file>` compares the tenant's definition of one object
+with a repository file, read-only. The file holds that object's definition
+(`{"name", "schema", …}`, as `managed get --hook-sources` prints it) or a whole
+`config/managed` document, from which the named object is taken. Keys compare
+as a set and arrays by position, since order is meaning in `schema.order` and a
+`resourceCollection`. Each difference is printed as a JSON pointer with
+`-` (tenant only), `+` (repo only) or `~` (changed). Two representation
+differences are normalised away first, and each one applied is named on
+stderr: `_refProperties._id`, which the console writes with
+`propName`/`required` and Ping's shipped objects with a `description`, is
+compared on `type` alone; and an event hook's body (`source` on the tenant,
+perhaps `file` in a repository) is left to `aic script status`, while the
+hook's presence, `type` and `globals` are still compared. `--strict` applies
+neither. It exits non-zero when anything differs; `--json` prints
+`{"object", "normalised", "differences"}`.
 
 `--json` on a write prints what it changed, never the whole `config/managed`
 document: `object create`/`object rename`, `field …` and `hook add` print the

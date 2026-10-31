@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::Result;
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, print_table, tenant_for};
-use crate::managed::{api, ops, relink, spec, state, verify};
+use crate::managed::{api, diff, ops, relink, spec, state, verify};
 use crate::undo::{DiskLog, UndoLog};
 
 #[derive(Subcommand, Debug)]
@@ -36,6 +36,21 @@ pub enum ManagedCommand {
         schema_only: bool,
         #[arg(long)]
         tenant: Option<String>,
+    },
+    /// Compare one object with a repository file — an object definition or a
+    /// whole config/managed document — after normalising known
+    /// representation differences (listed in the output). Read-only; exits
+    /// non-zero when they differ.
+    Diff {
+        name: String,
+        file: std::path::PathBuf,
+        /// Compare exactly, applying no normalisation.
+        #[arg(long)]
+        strict: bool,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Create, rename, or delete managed object definitions.
     Object {
@@ -286,6 +301,13 @@ pub enum RelationshipCommand {
 pub async fn run(cmd: ManagedCommand) -> Result<()> {
     match cmd {
         ManagedCommand::List { tenant, json } => list(tenant, json).await,
+        ManagedCommand::Diff {
+            name,
+            file,
+            strict,
+            tenant,
+            json,
+        } => managed_diff(name, file, strict, tenant, json).await,
         ManagedCommand::Get {
             name,
             fields,
@@ -854,6 +876,73 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             yes,
             json,
         } => relationship_relink(field, dry_run, force.operation(), tenant, yes, json).await,
+    }
+}
+
+async fn managed_diff(
+    name: String,
+    file: std::path::PathBuf,
+    strict: bool,
+    tenant: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let text = std::fs::read_to_string(&file)
+        .map_err(|error| crate::Error::Config(format!("read {}: {error}", file.display())))?;
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|error| crate::Error::Config(format!("parse {}: {error}", file.display())))?;
+    let repo = diff::select_object(&parsed, &name).map_err(crate::Error::Config)?;
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let remote = api::object_named(&managed, &name)?.clone();
+    let (remote, repo, mut rules) = if strict {
+        (remote, repo, Vec::new())
+    } else {
+        let (remote, mut rules) = diff::normalise(&remote);
+        let (repo, repo_rules) = diff::normalise(&repo);
+        rules.extend(repo_rules);
+        (remote, repo, rules)
+    };
+    rules.sort_by_key(|rule| *rule as u8);
+    rules.dedup();
+    let differences = diff::differences(&remote, &repo);
+    if json {
+        print_json(&serde_json::json!({
+            "object": name,
+            "normalised": rules,
+            "differences": differences,
+        }))?;
+    } else {
+        for rule in &rules {
+            eprintln!("normalised: {}", rule.describe());
+        }
+        let render = |value: &Value| serde_json::to_string(value).unwrap_or_default();
+        for difference in &differences {
+            match difference {
+                diff::Difference::TenantOnly { path, tenant } => {
+                    println!("- {path}  tenant only: {}", render(tenant));
+                }
+                diff::Difference::RepoOnly { path, repo } => {
+                    println!("+ {path}  repo only: {}", render(repo));
+                }
+                diff::Difference::Changed { path, tenant, repo } => {
+                    println!(
+                        "~ {path}  tenant {} != repo {}",
+                        render(tenant),
+                        render(repo)
+                    );
+                }
+            }
+        }
+    }
+    if differences.is_empty() {
+        eprintln!("managed/{name} matches {}", file.display());
+        Ok(())
+    } else {
+        Err(crate::Error::Config(format!(
+            "managed/{name} differs from {} in {} place(s)",
+            file.display(),
+            differences.len()
+        )))
     }
 }
 
