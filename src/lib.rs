@@ -27,6 +27,7 @@ pub mod saml;
 pub mod scripts;
 pub mod secretmap;
 pub mod secrets;
+pub mod statefile;
 pub mod tui;
 pub mod undo;
 pub mod vault;

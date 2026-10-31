@@ -255,6 +255,15 @@ fn node_refs(tree: &Value) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
+/// The tree and every node it lists, or an error naming each node that could
+/// not be read.
+///
+/// **All or nothing.** This used to warn and leave an unread node out, which
+/// every caller then read as content: `journey status` called it remote
+/// drift, `journey diff` showed the node deleted, and `pull` wrote an export
+/// — and a snapshot — that a later status compared equal to a tenant it had
+/// never fully read. Measured 2026-10-31: every node of every journey in
+/// alpha and bravo (960) reads 200, so refusing costs nothing observed.
 async fn assemble_export_with<F, Fut>(tree: Value, mut fetch_node: F) -> Result<JourneyExport>
 where
     F: FnMut(String, String) -> Fut,
@@ -262,15 +271,23 @@ where
 {
     let refs = node_refs(&tree)?;
     let mut nodes = Map::new();
+    let mut unread = Vec::new();
     for (id, node_type) in refs {
         match fetch_node(node_type.clone(), id.clone()).await {
             Ok(node) => {
                 nodes.insert(id, node);
             }
-            Err(error) => {
-                eprintln!("warning: could not read journey node {node_type}/{id}: {error}");
-            }
+            Err(error) => unread.push(format!("{node_type}/{id} ({error})")),
         }
+    }
+    if !unread.is_empty() {
+        let name = tree.get("_id").and_then(Value::as_str).unwrap_or("?");
+        return Err(Error::Config(format!(
+            "journey {name}: could not read {} node(s), so the journey was not compared or \
+             written: {}",
+            unread.len(),
+            unread.join("; ")
+        )));
     }
     Ok(JourneyExport { tree, nodes })
 }
@@ -472,7 +489,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_node_fetch_does_not_abort_the_export() {
+    async fn a_failed_node_fetch_fails_the_export_and_names_the_node() {
         let tree = json!({
             "nodes": {
                 "good": {"nodeType": "PageNode"},
@@ -490,11 +507,13 @@ mod tests {
                 Ok(json!({"_id": node_id}))
             }
         })
-        .await
-        .unwrap();
+        .await;
 
-        assert_eq!(export.nodes.len(), 1);
-        assert_eq!(export.nodes["good"]["_id"], "good");
+        let error = export
+            .expect_err("an unread node is not an absent one")
+            .to_string();
+        assert!(error.contains("OddBuiltInNode/missing"), "{error}");
+        assert!(!error.contains("PageNode/good"), "{error}");
     }
 
     #[test]

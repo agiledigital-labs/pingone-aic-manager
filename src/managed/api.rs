@@ -179,10 +179,23 @@ pub async fn far_end(
                     status: 0,
                     body: format!("{record}/{key} query returned no `result` array: {body}"),
                 })?;
+            // Measured 2026-10-31: the relationship collection of a record
+            // that does not exist answers 200 with an empty result, not 404,
+            // so an empty answer is only "lists nothing" once the record is
+            // shown to exist. Without this a missing far record read as a
+            // one-sided link, and relink removed a link it could not re-create.
+            if result.as_array().is_some_and(Vec::is_empty)
+                && record_with(tenant, object, id, "_id").await?.is_none()
+            {
+                return Ok(None);
+            }
             Ok(Some(serde_json::json!({ "_id": id, key: result })))
         }
         Ok(body) => Ok(Some(body)),
-        Err(Error::Api { status: 404, .. }) => Ok(None),
+        // Only a 404 the router did not give is "no such record": the router's
+        // `Resource '…' not found` also answers for a relationship property
+        // the object does not declare, which is a question about the schema.
+        Err(Error::Api { status: 404, body }) if !collection_not_found(&body, object) => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -263,6 +276,45 @@ pub async fn any_record_id(tenant: &str, object: &str) -> Result<Option<String>>
 /// How long [`get_settled`] retries a collection's 404.
 const SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long after this process's last `config/managed` write a router 404 is
+/// read as settling. The measured settling lasted 0.6–1.1 s; outside the
+/// window the same answer is a real one — a relationship property or object
+/// that does not exist answers it too (`docs/api/10-managed-objects.md`) —
+/// and retrying it would only delay the error by thirty seconds.
+const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+
+static LAST_CONFIG_WRITE: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+/// Opens the settling window. Called after every `config/managed` write,
+/// failed ones included, because a write that errored may have landed.
+fn note_config_write() {
+    if let Ok(mut last) = LAST_CONFIG_WRITE.lock() {
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+fn since_config_write() -> Option<std::time::Duration> {
+    LAST_CONFIG_WRITE
+        .lock()
+        .ok()
+        .and_then(|last| last.map(|at| at.elapsed()))
+}
+
+/// Whether a 404 with `body` is retried: only the router's answer for
+/// `object`, only within [`SETTLE_WINDOW`] of a `config/managed` write this
+/// process made, and only for [`SETTLE_TIMEOUT`].
+fn retry_settling(
+    body: &str,
+    object: &str,
+    since_write: Option<std::time::Duration>,
+    waited: std::time::Duration,
+) -> bool {
+    since_write.is_some_and(|since| since < SETTLE_WINDOW)
+        && waited < SETTLE_TIMEOUT
+        && collection_not_found(body, object)
+}
+
 /// Whether a 404 is the settling one for `managed/<object>`: the router's
 /// `Resource '<path>' not found` for the collection or anything under it.
 /// Measured 2026-10-31: for some seconds after a `config/managed` write, reads
@@ -303,7 +355,7 @@ where
     loop {
         match call().await {
             Err(Error::Api { status: 404, body })
-                if collection_not_found(&body, object) && started.elapsed() < SETTLE_TIMEOUT =>
+                if retry_settling(&body, object, since_config_write(), started.elapsed()) =>
             {
                 waited = true;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -339,8 +391,12 @@ pub async fn all_records_with(tenant: &str, object: &str, key: &str) -> Result<V
                 .await
                 {
                     Err(Error::Api { status: 404, body })
-                        if collection_not_found(&body, object)
-                            && started.elapsed() < SETTLE_TIMEOUT =>
+                        if retry_settling(
+                            &body,
+                            object,
+                            since_config_write(),
+                            started.elapsed(),
+                        ) =>
                     {
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
@@ -362,7 +418,10 @@ pub async fn record_with(tenant: &str, object: &str, id: &str, key: &str) -> Res
     );
     match get_settled(tenant, object, &path).await {
         Ok(body) => Ok(Some(body)),
-        Err(Error::Api { status: 404, .. }) => Ok(None),
+        // Only a 404 the router did not give is "no such record": the router's
+        // `Resource '…' not found` also answers for a relationship property
+        // the object does not declare, which is a question about the schema.
+        Err(Error::Api { status: 404, body }) if !collection_not_found(&body, object) => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -374,16 +433,22 @@ pub async fn send_relink(
     write: &crate::managed::relink::Write,
     confirmed_prod: bool,
 ) -> Result<Value> {
+    if !matches!(write.method, "DELETE" | "POST" | "PATCH") {
+        return Err(Error::Config(format!(
+            "relink has no {} write",
+            write.method
+        )));
+    }
     settled(object, || {
-        let body = write.body.clone().unwrap_or(Value::Null);
-        async move {
-            match write.method {
-                "DELETE" => crate::aic::api::delete(tenant, &write.path, confirmed_prod).await,
-                "POST" => crate::aic::api::post(tenant, &write.path, body, confirmed_prod).await,
-                "PATCH" => crate::aic::api::patch(tenant, &write.path, body, confirmed_prod).await,
-                other => Err(Error::Config(format!("relink has no {other} write"))),
-            }
+        let mut call = crate::aic::api::ApiCall::new(tenant, write.method, &write.path)
+            .confirmed_prod(confirmed_prod);
+        if let Some(body) = &write.body {
+            call = call.body(body.clone());
         }
+        if let Some(revision) = &write.if_match {
+            call = call.if_match(revision);
+        }
+        call.send()
     })
     .await
 }
@@ -395,7 +460,9 @@ pub async fn send_relink(
 /// intended `objects[]` entry, and send the whole `{ "_id": "managed", ... }`
 /// envelope back. External callers should use [`replace_managed_confirmed`].
 async fn replace_managed(tenant: &str, doc: Value, confirmed_prod: bool) -> Result<Value> {
-    crate::aic::api::put(tenant, "/openidm/config/managed", doc, confirmed_prod).await
+    let result = crate::aic::api::put(tenant, "/openidm/config/managed", doc, confirmed_prod).await;
+    note_config_write();
+    result
 }
 
 /// Replaces a managed config document until every requested condition is visible.
@@ -622,6 +689,37 @@ pub fn summarize(doc: &Value) -> Result<Vec<ObjectSummary>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The control the first version lacked: a permanently missing property
+    /// answers the same router 404, so it is retried only just after a
+    /// config write this process made.
+    #[test]
+    fn a_router_404_is_retried_only_just_after_a_config_write() {
+        use std::time::Duration;
+        let missing = "Resource &#39;managed/a/a1/noSuchRelationship&#39; not found";
+        let zero = Duration::ZERO;
+        assert!(!retry_settling(missing, "a", None, zero));
+        assert!(retry_settling(
+            missing,
+            "a",
+            Some(Duration::from_secs(1)),
+            zero
+        ));
+        assert!(!retry_settling(missing, "a", Some(SETTLE_WINDOW), zero));
+        assert!(!retry_settling(
+            missing,
+            "a",
+            Some(Duration::from_secs(1)),
+            SETTLE_TIMEOUT
+        ));
+        let no_record = "No Such Entry: The search base entry &#39;uid&#61;x&#39; does not exist";
+        assert!(!retry_settling(
+            no_record,
+            "a",
+            Some(Duration::from_secs(1)),
+            zero
+        ));
+    }
 
     #[test]
     fn only_a_404_naming_the_collection_is_the_settling_one() {

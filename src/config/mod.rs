@@ -1307,6 +1307,11 @@ impl ProjectConfig {
              saml-rotations.json\n\
              saml-rotations.json.lock\n\
              saml-rotations.json.new\n\
+             # Links an interrupted relationship relink or verify --probe may\n\
+             # have left removed or added (`managed::recovery`); same three names.\n\
+             managed-links.json\n\
+             managed-links.json.lock\n\
+             managed-links.json.new\n\
              # config.toml's update lock and its rename-into-place sidecar.\n\
              config.toml.lock\n\
              # Onboarding/offboarding's tenant-lifecycle lock.\n\
@@ -3062,13 +3067,20 @@ mod tests {
         // Derived from the journal module's own path helpers rather than
         // spelled again here, so renaming a sidecar cannot leave this test
         // asserting the old name while production writes the new one.
-        use crate::saml::rotate::journal::{JOURNAL_FILE, lock_path, temp_path};
-        let journal = Path::new(JOURNAL_FILE);
-        for runtime_file in [
-            journal.to_path_buf(),
-            lock_path(journal),
-            temp_path(journal),
-        ] {
+        use crate::statefile::{lock_path, temp_path};
+        for journal in [
+            Path::new(crate::saml::rotate::journal::JOURNAL_FILE),
+            Path::new(crate::managed::recovery::JOURNAL_FILE),
+        ]
+        .into_iter()
+        .flat_map(|journal| {
+            [
+                journal.to_path_buf(),
+                lock_path(journal),
+                temp_path(journal),
+            ]
+        }) {
+            let runtime_file = journal;
             let name = runtime_file.to_string_lossy().into_owned();
             assert!(
                 content.lines().any(|line| line == name),

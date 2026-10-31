@@ -890,8 +890,9 @@ async fn bounded_grep(
         }
     };
     tokio::select! {
-        // Biased so a page that both hit the limit and ended the range
-        // reports the limit: more may match beyond it.
+        // Biased so a limit already signalled wins. A limit reached on the
+        // page that ends the range can still lose; `GrepScan::settle` corrects
+        // that from the count.
         biased;
         () = limit_hit => Ok(GrepStop::Limit),
         result = fetch => result.map(|()| GrepStop::Complete),
@@ -975,11 +976,22 @@ impl GrepScan {
         Some(format!("grep: {}", self.summary()))
     }
 
+    /// The stop to report. A page that reaches the limit and ends the range
+    /// is one poll of the fetch: the notification lands on a waiter `select!`
+    /// already polled, so it returns `Complete`. The scan's own count is the
+    /// authority, not which future won.
+    fn settle(&self, stop: GrepStop) -> GrepStop {
+        match stop {
+            GrepStop::Complete if self.limit_reached() => GrepStop::Limit,
+            stop => stop,
+        }
+    }
+
     /// A limit stop is an answer — a prefix of it — so it exits 0. A budget or
     /// Ctrl-C stop is not: the range was not read, and a script reading exit 0
     /// would take "no more matches" from a scan that never looked.
     fn finish(&self, stop: GrepStop, budget: Option<&str>) -> Result<()> {
-        match stop {
+        match self.settle(stop) {
             GrepStop::Complete => Ok(()),
             GrepStop::Limit => {
                 eprintln!(
@@ -1954,6 +1966,37 @@ mod tests {
             "{line}"
         );
         assert_eq!(scan.progress(start + GREP_PROGRESS_EVERY), None);
+    }
+
+    #[tokio::test]
+    async fn a_limit_reached_on_the_final_page_is_still_reported() {
+        let mut scan = GrepScan::new(Some(1), Instant::now());
+        let limit_hit = tokio::sync::Notify::new();
+        // As at the call site: the page callback notifies from inside the
+        // fetch, which then completes in the same poll.
+        let stop = {
+            let fetch = async {
+                let (hit, _) = grep_into(
+                    &mut scan,
+                    vec![
+                        logged("2026-10-31T00:00:01Z", "hit a"),
+                        logged("2026-10-31T00:00:02Z", "hit b"),
+                    ],
+                );
+                if hit {
+                    limit_hit.notify_one();
+                }
+                Ok(())
+            };
+            bounded_grep(fetch, limit_hit.notified(), None, std::future::pending())
+                .await
+                .unwrap()
+        };
+        assert_eq!(stop, GrepStop::Complete, "the race the settle step covers");
+        assert_eq!(scan.settle(stop), GrepStop::Limit);
+        // Control: a range that ended under the limit stays complete.
+        let under = GrepScan::new(Some(5), Instant::now());
+        assert_eq!(under.settle(GrepStop::Complete), GrepStop::Complete);
     }
 
     #[test]
