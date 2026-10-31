@@ -744,7 +744,14 @@ send must be exactly the path validated; one it would rewrite is refused.
 - Without `--all-pages` the response is printed as the tenant returned it, and
   a non-empty `pagedResultsCookie` adds a stderr note that more results follow.
 - `--all-pages` follows `pagedResultsCookie` to the end and prints
-  `{"result": [...], "resultCount": N}`. It adds `_pageSize=1000` unless the
+  `{"resultCount": N, "pagesFetched": P, "duplicatesDropped": D, "result": [...]}`,
+  with the same counts on stderr. A record whose `_id` an earlier page already
+  returned is dropped and counted in `duplicatesDropped`. There is no tenant
+  total to check `resultCount` against: the paging parameter is
+  `_totalPagedResultsPolicy` (`_countPolicy` is a 400), and the tenant answers
+  `EXACT` with an `ESTIMATE` that was measured wrong
+  (`docs/api/10-managed-objects.md`, "Paging"). The walk is complete when it
+  ends on an empty cookie, which is the only way it ends without an error. It adds `_pageSize=1000` unless the
   path sets one, and refuses a path that already carries
   `_pagedResultsCookie` or `_pagedResultsOffset`. A cookie returned twice stops
   the walk with an error rather than paging forever, and so does a
