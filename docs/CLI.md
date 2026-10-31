@@ -2825,7 +2825,10 @@ Skipped entries are listed and make the command exit non-zero.
     refuses only an edit: either file holding anything but the renamed bytes,
     or a symlink at either path — and a new path that is the same file as the
     old one (a hard link, or a case-only rename on a case-insensitive
-    filesystem), since finishing the move deletes the old paths. The old file is removed only
+    filesystem), since finishing the move deletes the old paths. Identity is
+    checked again after the install, because two names that were both
+    absent can become one file when it is created; an aliased old path is
+    then left alone rather than deleted. The old file is removed only
     if it still holds the bytes that were renamed. Scripts that load a library **by
     name** (`require('Old')`) are not found or changed; a `LIBRARY` rename says
     so.
