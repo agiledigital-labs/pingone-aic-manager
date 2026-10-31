@@ -93,19 +93,33 @@ impl AicClient {
         Ok(token)
     }
 
+    /// `GET` a JSON document. A `502`/`503`/`504` is retried, twice, with a
+    /// short backoff: operators saw intermittent gateway errors on plain
+    /// config reads that an immediate manual retry cleared. Only here — a
+    /// read is idempotent, and a write that answered a gateway error may
+    /// still have landed, so writes are never retried.
     pub async fn get(&self, path: &str, api_version: Option<&str>) -> Result<serde_json::Value> {
-        let token = self.bearer().await?;
         let url = self.url(path);
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
-            .header("Accept", "application/json")
-            .aic_transaction_id()
-            .send()
-            .await?;
-        self.check_response(resp).await
+        let mut attempt = 0;
+        loop {
+            let token = self.bearer().await?;
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
+                .header("Accept", "application/json")
+                .aic_transaction_id()
+                .send()
+                .await?;
+            if let Some(delay) = gateway_retry_delay(resp.status(), attempt) {
+                tracing::warn!(status = %resp.status(), path, attempt, "retrying GET after a gateway error");
+                attempt += 1;
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            return self.check_response(resp).await;
+        }
     }
 
     /// `GET` a non-JSON body with **no** `Authorization` header.
@@ -292,6 +306,15 @@ impl AicClient {
             })
         }
     }
+}
+
+/// Backoff before retry `attempt + 1` of a read that answered `status`, or
+/// `None` to stop: only a gateway error, and at most two retries.
+fn gateway_retry_delay(status: reqwest::StatusCode, attempt: u32) -> Option<std::time::Duration> {
+    const DELAYS_MS: [u64; 2] = [250, 750];
+    let gateway = matches!(status.as_u16(), 502..=504);
+    let delay = DELAYS_MS.get(usize::try_from(attempt).ok()?)?;
+    gateway.then(|| std::time::Duration::from_millis(*delay))
 }
 
 #[cfg(test)]
@@ -520,5 +543,80 @@ mod tests {
 
         assert!(plain.headers().get("if-match").is_none());
         assert_eq!(conditional.headers()["if-match"], "revision-1");
+    }
+
+    #[test]
+    fn only_gateway_errors_are_retried_and_only_twice() {
+        use reqwest::StatusCode;
+        for status in [502, 503, 504] {
+            let status = StatusCode::from_u16(status).unwrap();
+            assert!(gateway_retry_delay(status, 0).is_some());
+            assert!(gateway_retry_delay(status, 1).is_some());
+            assert!(gateway_retry_delay(status, 2).is_none());
+        }
+        for status in [200, 400, 401, 404, 412, 500, 501, 505] {
+            let status = StatusCode::from_u16(status).unwrap();
+            assert!(gateway_retry_delay(status, 0).is_none(), "{status}");
+        }
+    }
+
+    /// Drives the real `get` against a server that answers each status in
+    /// `script` in turn, and returns the result and how many requests arrived.
+    async fn get_against(script: &'static [u16]) -> (Result<serde_json::Value>, usize) {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("port").port();
+        let served = Arc::new(AtomicUsize::new(0));
+        let count = served.clone();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let n = count.fetch_add(1, Ordering::SeqCst);
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
+                    line.clear();
+                }
+                let status = script.get(n).copied().unwrap_or(500);
+                let body = "{\"ok\":true}";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let client = AicClient::new(
+            tenant(format!("http://127.0.0.1:{port}")),
+            serde_json::Value::Null,
+        );
+        client
+            .token_cache
+            .lock()
+            .unwrap()
+            .store("test-token".into(), chrono::Utc::now().timestamp() + 3600);
+        let result = client.get("/openidm/config/managed", None).await;
+        (result, served.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn a_get_retries_a_gateway_error_until_it_clears() {
+        let (result, requests) = get_against(&[503, 502, 200]).await;
+        assert_eq!(result.unwrap(), serde_json::json!({"ok": true}));
+        assert_eq!(requests, 3);
+    }
+
+    #[tokio::test]
+    async fn a_get_gives_up_after_two_retries_and_never_retries_other_errors() {
+        let (result, requests) = get_against(&[503, 503, 503, 200]).await;
+        assert!(matches!(result, Err(Error::Api { status: 503, .. })));
+        assert_eq!(requests, 3);
+        let (result, requests) = get_against(&[500, 200]).await;
+        assert!(matches!(result, Err(Error::Api { status: 500, .. })));
+        assert_eq!(requests, 1);
     }
 }
