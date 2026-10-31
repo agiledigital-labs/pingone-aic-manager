@@ -246,6 +246,15 @@ pub enum RelationshipCommand {
     },
     Delete {
         field: String,
+        /// Also remove the config/repo.ds mappings the delete would leave
+        /// behind, each the way `relationship repair` does — reverse end first,
+        /// nothing else touched. Planned in full before anything is written:
+        /// if any mapping could not be removed, nothing is deleted.
+        #[arg(long)]
+        remove_mapping: bool,
+        /// Skip the confirmation prompt for --remove-mapping.
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -856,10 +865,19 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
         }
         RelationshipCommand::Delete {
             field,
+            remove_mapping,
+            force,
             tenant,
             yes,
             json,
         } => {
+            if force.operation() && !remove_mapping {
+                return Err(crate::Error::Config(
+                    "relationship delete takes --force only with --remove-mapping; the delete \
+                     itself asks nothing"
+                        .into(),
+                ));
+            }
             let (source_object, key) = parse_object_key(&field)?;
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
@@ -881,17 +899,72 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             if let Some((target, reverse_key)) = &reverse {
                 ends.push((target.as_str(), reverse_key.as_str()));
             }
-            // Informational only: the write itself never needs repo.ds for a
-            // removal, so failing to read it must not block one (round 7).
-            let leftovers = match api::get_repo_ds(&tenant).await {
-                Ok(repo_ds) => verify::delete_leftovers(&repo_ds, &ends),
+            // Informational only without --remove-mapping: the write itself
+            // never needs repo.ds for a removal, so failing to read it must not
+            // block one (round 7). With it, the read is the plan.
+            let repo_ds = match api::get_repo_ds(&tenant).await {
+                Ok(repo_ds) => Some(repo_ds),
+                Err(error) if remove_mapping => return Err(error),
                 Err(error) => {
                     eprintln!(
                         "note: could not read config/repo.ds ({error}); not checking for \
                          mappings this delete leaves behind"
                     );
-                    Vec::new()
+                    None
                 }
+            };
+            let leftovers = repo_ds
+                .as_ref()
+                .map(|repo_ds| verify::delete_leftovers(repo_ds, &ends))
+                .unwrap_or_default();
+            let removals = match (&repo_ds, remove_mapping) {
+                (Some(repo_ds), true) => {
+                    let mapped: Vec<(String, String)> = ends
+                        .iter()
+                        .filter(|(object, key)| leftovers.contains(&format!("{object}.{key}")))
+                        .map(|(object, key)| (object.to_string(), key.to_string()))
+                        .collect();
+                    let plans =
+                        repair::plan_sequence(&updated, repo_ds, &mapped).map_err(|reasons| {
+                            crate::Error::Config(format!(
+                                "refusing relationship delete {field} --remove-mapping; nothing \
+                                 was written: {}",
+                                reasons.join("; ")
+                            ))
+                        })?;
+                    for plan in &plans {
+                        eprintln!(
+                            "  then remove {}'s config/repo.ds mapping ({})",
+                            plan.label(),
+                            plan.mapping.kind
+                        );
+                        for note in &plan.notes {
+                            eprintln!("    note: {note}");
+                        }
+                    }
+                    plans
+                }
+                _ => Vec::new(),
+            };
+            let permit = if removals.is_empty() {
+                None
+            } else {
+                let consented = force.operation()
+                    || crate::cli::confirm_destructive(
+                        "relationship delete",
+                        &format!(
+                            "Delete {field} and remove {} config/repo.ds mapping(s)? The whole \
+                             document is replaced for each; the current one is backed up \
+                             locally first",
+                            removals.len()
+                        ),
+                        "--force",
+                    )?;
+                Some(repair::authorize(false, consented).ok_or_else(|| {
+                    crate::Error::Config(
+                        "relationship delete not confirmed; nothing written".into(),
+                    )
+                })?)
             };
             record_config_undo(
                 &tenant,
@@ -902,18 +975,58 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let expect = relationship_expectations(&doc, &updated)?;
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} deleted"));
-            if !leftovers.is_empty() {
+            let mut removed = Vec::new();
+            if let Some(permit) = &permit {
+                for (index, plan) in removals.iter().enumerate() {
+                    let label = plan.label();
+                    let outcome = match send_repair(&ok, plan, permit).await {
+                        Ok(applied) => {
+                            repair_readback(&label, &plan.object, &applied).map(|()| applied)
+                        }
+                        Err(failure) => Err(repair_failure(&label, &plan.object, failure)),
+                    };
+                    match outcome {
+                        Ok(applied) => {
+                            eprintln!(
+                                "removed {label}'s config/repo.ds mapping (confirmed by re-read; \
+                                 backup {})",
+                                applied.backup.display()
+                            );
+                            removed.push(label);
+                        }
+                        Err(error) => {
+                            // §5's batch rule: say what landed before what failed.
+                            let left: Vec<_> =
+                                removals[index..].iter().map(repair::Plan::label).collect();
+                            return Err(crate::Error::Config(format!(
+                                "{field} was deleted{}, but {error}. Still mapped: {}; \
+                                 `aic managed relationship repair` each, in that order",
+                                if removed.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" and {} unmapped", removed.join(", "))
+                                },
+                                left.join(", ")
+                            )));
+                        }
+                    }
+                }
+            } else if !leftovers.is_empty() {
                 eprintln!(
                     "note: config/repo.ds still maps {}. Recreating the same key with the \
                      same target reused the mapping when measured; aic refuses one with \
-                     another target. `aic managed relationship repair <object>.<key>` removes \
-                     a leftover (docs/api/10-managed-objects.md, \"Relationship storage\")",
+                     another target. `--remove-mapping` removes them with the delete, or \
+                     `aic managed relationship repair <object>.<key>` one at a time \
+                     (docs/api/10-managed-objects.md, \"Relationship storage\")",
                     leftovers.join(", ")
                 );
             }
             output(
                 json,
-                &serde_json::json!({ "changed": changed_objects(&doc, &updated)? }),
+                &serde_json::json!({
+                    "changed": changed_objects(&doc, &updated)?,
+                    "mappings_removed": removed,
+                }),
             )
         }
         RelationshipCommand::Verify {
@@ -1484,10 +1597,32 @@ async fn relationship_repair(
         ));
     };
     let ok = ensure_prod_confirmed(&tenant, yes)?;
+    match send_repair(&ok, &plan, &permit).await {
+        Err(failure) => Err(repair_failure(&field, &object, failure)),
+        Ok(applied) => {
+            eprintln!("  backup: {}", applied.backup.display());
+            if json {
+                print_json(&serde_json::json!({ "plan": &plan, "applied": &applied }))?;
+            }
+            repair_readback(&field, &object, &applied)?;
+            // No undo entry: the backup above is the way back.
+            eprintln!("removed {field}'s config/repo.ds mapping (confirmed by re-read)");
+            Ok(())
+        }
+    }
+}
+
+/// One repair's write: `repair::apply_with` over the tenant, polling the
+/// read-back for 30 s.
+async fn send_repair(
+    ok: &crate::cli::WriteOk<'_>,
+    plan: &repair::Plan,
+    permit: &repair::RepairPermit,
+) -> std::result::Result<repair::Applied, repair::Failure> {
     let delays = [std::time::Duration::from_secs(3); 10];
-    let result = repair::apply_with(
-        &plan,
-        &permit,
+    repair::apply_with(
+        plan,
+        permit,
         async || api::get_managed(ok.tenant).await,
         async || api::get_repo_ds(ok.tenant).await,
         |document| {
@@ -1498,51 +1633,48 @@ async fn relationship_repair(
                 chrono::Utc::now(),
             )
         },
-        async |document| api::put_repo_ds(ok.tenant, &permit, document, ok.confirmed_prod).await,
+        async |document| api::put_repo_ds(ok.tenant, permit, document, ok.confirmed_prod).await,
         &delays,
     )
-    .await;
-    match result {
-        Err(repair::Failure::NotWritten(message)) => Err(crate::Error::Config(format!(
-            "relationship repair {field}: {message}"
-        ))),
-        Err(repair::Failure::SendFailed { error, backup }) => Err(crate::Error::Config(format!(
+    .await
+}
+
+fn repair_failure(field: &str, object: &str, failure: repair::Failure) -> crate::Error {
+    crate::Error::Config(match failure {
+        repair::Failure::NotWritten(message) => {
+            format!("relationship repair {field}: {message}")
+        }
+        repair::Failure::SendFailed { error, backup } => format!(
             "relationship repair {field}: the write failed ({error}), and whether it landed is \
              unknown. Run `aic managed relationship verify {object}` to see. The document it \
              replaced is at {}",
             backup.display()
+        ),
+    })
+}
+
+/// `Ok` only when a read-back showed exactly the document sent.
+fn repair_readback(field: &str, object: &str, applied: &repair::Applied) -> Result<()> {
+    match &applied.readback {
+        repair::Readback::Confirmed => Ok(()),
+        repair::Readback::Unchanged => Err(crate::Error::Config(format!(
+            "relationship repair {field}: the write was accepted, but config/repo.ds \
+             still reads as it did before it after 30s. Nothing appears to have \
+             changed; run repair again, or `relationship verify {object}`"
         ))),
-        Ok(applied) => {
-            eprintln!("  backup: {}", applied.backup.display());
-            if json {
-                print_json(&serde_json::json!({ "plan": &plan, "applied": &applied }))?;
-            }
-            match &applied.readback {
-                repair::Readback::Confirmed => {
-                    // No undo entry: the backup above is the way back.
-                    eprintln!("removed {field}'s config/repo.ds mapping (confirmed by re-read)");
-                    Ok(())
-                }
-                repair::Readback::Unchanged => Err(crate::Error::Config(format!(
-                    "relationship repair {field}: the write was accepted, but config/repo.ds \
-                     still reads as it did before it after 30s. Nothing appears to have \
-                     changed; run repair again, or `relationship verify {object}`"
-                ))),
-                repair::Readback::Different => Err(crate::Error::Config(format!(
-                    "relationship repair {field}: the write was accepted, but a read of \
-                     config/repo.ds returned neither the document sent nor the one it replaced — another \
-                     writer, or the tenant rewrote it. Run `relationship verify {object}`; the \
-                     replaced document is at {}",
-                    applied.backup.display()
-                ))),
-                repair::Readback::Unread { error } => Err(crate::Error::Config(format!(
-                    "relationship repair {field}: the write was accepted, but reading it back \
-                     failed ({error}). Run `relationship verify {object}`; the replaced \
-                     document is at {}",
-                    applied.backup.display()
-                ))),
-            }
-        }
+        repair::Readback::Different => Err(crate::Error::Config(format!(
+            "relationship repair {field}: the write was accepted, but a read of \
+             config/repo.ds returned neither the document sent nor the one it replaced — another \
+             writer, or the tenant rewrote it. Run `relationship verify {object}`; the \
+             replaced document is at {}",
+            applied.backup.display()
+        ))),
+        repair::Readback::Unread { error } => Err(crate::Error::Config(format!(
+            "relationship repair {field}: the write was accepted, but reading it back \
+             failed ({error}). Run `relationship verify {object}`; the replaced \
+             document is at {}",
+            applied.backup.display()
+        ))),
     }
 }
 

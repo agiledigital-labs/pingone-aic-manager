@@ -295,6 +295,48 @@ fn pointer_token(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")
 }
 
+/// Plans removing every mapping in `ends` from `repo_ds`, against a
+/// `config/managed` that no longer declares them (`managed` is the document
+/// *after* the delete), in an order where each removal is one [`plan`] allows
+/// on its own: a `reverseReference` that reads through a `reference` comes out
+/// first. Each plan's `before` is the previous plan's `after`, so they apply
+/// in sequence.
+///
+/// All or nothing: when no remaining end can be removed next, the reasons are
+/// returned and nothing should be written — a delete that leaves some of its
+/// mappings behind is the state this exists to avoid.
+pub fn plan_sequence(
+    managed: &Value,
+    repo_ds: &Value,
+    ends: &[(String, String)],
+) -> Result<Vec<Plan>, Vec<String>> {
+    let mut remaining: Vec<&(String, String)> = ends.iter().collect();
+    let mut current = repo_ds.clone();
+    let mut plans = Vec::new();
+    while !remaining.is_empty() {
+        let mut refusals = Vec::new();
+        let next = remaining
+            .iter()
+            .enumerate()
+            .find_map(
+                |(index, (object, key))| match plan(managed, &current, object, key) {
+                    Ok(plan) => Some((index, plan)),
+                    Err(reason) => {
+                        refusals.push(reason);
+                        None
+                    }
+                },
+            );
+        let Some((index, plan)) = next else {
+            return Err(refusals);
+        };
+        remaining.remove(index);
+        current = plan.after.clone();
+        plans.push(plan);
+    }
+    Ok(plans)
+}
+
 /// The pre-write check against fresh reads of both documents: `repo.ds` must
 /// be exactly what the plan was computed from, and the plan must still hold
 /// against the fresh `config/managed` (a property declared since would make
@@ -461,6 +503,76 @@ mod tests {
             "managed/a": {"objectClasses": ["x"], "properties": a},
             "managed/b": {"properties": b},
         }}})
+    }
+
+    /// `a.live` <-> `b.back` after both ends were deleted from
+    /// `config/managed`: the same pair's mappings, now naming nothing.
+    fn managed_without_the_pair() -> Value {
+        json!({"objects": [
+            {"name": "a", "schema": {"properties": {
+                "name": {"type": "string"},
+                "kept": {"type": "relationship",
+                         "resourceCollection": [{"path": "managed/b"}]},
+            }}},
+            {"name": "b", "schema": {"properties": {"x": {"type": "string"}}}},
+        ]})
+    }
+
+    /// The order is the point: `b.back` reads through `a.live`, so `a.live`
+    /// alone is refused and must come out second, whichever order the ends
+    /// were named in. Unrelated mappings survive.
+    #[test]
+    fn a_sequence_removes_the_reader_first_and_leaves_the_rest() {
+        let before = repo(
+            json!({"kept": reference("b")}),
+            json!({"other": reverse("a", "kept")}),
+        );
+        let ends = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(o, k)| (o.to_string(), k.to_string()))
+                .collect()
+        };
+        assert!(plan(&managed_without_the_pair(), &before, "a", "live").is_err());
+        for order in [
+            [("a", "live"), ("b", "back")],
+            [("b", "back"), ("a", "live")],
+        ] {
+            let plans = plan_sequence(&managed_without_the_pair(), &before, &ends(&order)).unwrap();
+            let labels: Vec<_> = plans.iter().map(Plan::label).collect();
+            assert_eq!(labels, ["b.back", "a.live"]);
+            assert_eq!(plans[0].before(), &before);
+            assert_eq!(plans[1].before(), plans[0].after());
+            let expected = json!({"dbType": "DS", "resourceMapping": {"genericMapping": {
+                "managed/a": {"objectClasses": ["x"], "properties": {"kept": reference("b")}},
+                "managed/b": {"properties": {"other": reverse("a", "kept")}},
+            }}});
+            assert_eq!(plans[1].after(), &expected);
+        }
+    }
+
+    /// All or nothing: if one end cannot come out, no plan is returned — not
+    /// even for the end that could.
+    #[test]
+    fn a_sequence_with_a_blocked_end_plans_nothing() {
+        // `b.other` is declared and reads through `a.live`, so `a.live` is
+        // refused; `b.back` on its own would be removable.
+        let mut managed = managed_without_the_pair();
+        managed["objects"][1]["schema"]["properties"]["other"] = json!({
+            "type": "relationship", "reverseRelationship": true,
+            "reversePropertyName": "live", "resourceCollection": [{"path": "managed/a"}]});
+        let before = repo(json!({}), json!({"other": reverse("a", "live")}));
+        assert!(plan(&managed, &before, "b", "back").is_ok());
+        let error = plan_sequence(
+            &managed,
+            &before,
+            &[("a".into(), "live".into()), ("b".into(), "back".into())],
+        )
+        .unwrap_err();
+        assert!(
+            error.iter().any(|reason| reason.contains("a.live")),
+            "{error:?}"
+        );
     }
 
     #[test]
