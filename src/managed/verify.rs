@@ -27,6 +27,10 @@ pub struct End {
     /// `managed/<obj>` paths from `resourceCollection` (through `items`).
     pub targets: Vec<String>,
     pub array: bool,
+    /// The reverse key this end itself declares — not the partner a caller
+    /// expects while visiting it from the other end (Sol/Astra round 12).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverse_key: Option<String>,
     pub mapping: Option<Mapping>,
     /// The `resourceMapping` sections that map this key with **different**
     /// entries; empty when there is at most one distinct entry.
@@ -82,6 +86,7 @@ pub enum Problem {
         /// Sorted, deduplicated `managed/<obj>` targets.
         declared: Vec<String>,
         array: bool,
+        /// The reverse key the end declares.
         partner: Option<String>,
     },
     /// A `repo.ds` relationship mapping on a property declared as something
@@ -355,6 +360,7 @@ fn end(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Option<End>
         key: key.to_string(),
         targets,
         array: property.get("type").and_then(Value::as_str) == Some("array"),
+        reverse_key: declared_reverse_key(property).map(str::to_string),
         mapping: mapping_for(repo_ds, object, key),
         conflicting: conflicting_sections(repo_ds, object, key),
     })
@@ -398,7 +404,10 @@ fn mapping_problems(end: &End, partner_key: Option<&str>, out: &mut Vec<Problem>
             sections: end.conflicting.clone(),
             declared,
             array: end.array,
-            partner: partner_key.map(str::to_string),
+            // The end's own declaration: `partner_key` is the visiting
+            // pair's expectation, and from the other end it can name a
+            // reverse this end does not declare yet.
+            partner: end.reverse_key.clone(),
         });
     }
     let Some(mapping) = &end.mapping else {
@@ -1373,6 +1382,35 @@ mod tests {
         let mut back = reverse.clone();
         back["objects"][0]["schema"]["properties"]["link"]["reversePropertyName"] = json!("back");
         assert!(transition_refusal(&[&back], &renamed, &repo_ds).is_err());
+
+        // Round 12: a declared b.back visits a.link as its reverse with
+        // expected partner `back`. a.link declaring that reverse is still a
+        // change to a.link's own shape.
+        let pair = |link_reverse: bool| {
+            let mut link = link_to_b.clone();
+            if link_reverse {
+                link["reverseRelationship"] = json!(true);
+                link["reversePropertyName"] = json!("back");
+            }
+            json!({"_id": "managed", "objects": [
+                {"name": "a", "schema": {"properties": {"link": link, "plain": {"type": "string"}}}},
+                {"name": "b", "schema": {"properties": {"back": {"type": "relationship",
+                    "reverseRelationship": true, "reversePropertyName": "link",
+                    "resourceCollection": [{"path": "managed/a"}]}}}},
+                {"name": "c", "schema": {"properties": {}}}
+            ]})
+        };
+        let mut paired_repo = repo_with(to("b"), to("c"));
+        paired_repo["resourceMapping"]["genericMapping"]["managed/b"] = json!({"properties":
+            {"back": {"type": "reverseReference", "resourcePath": "managed/a",
+                "propertyName": "link"}}});
+        let (lone, reciprocal) = (pair(false), pair(true));
+        let error = transition_refusal(&[&lone, &lone], &reciprocal, &paired_repo).unwrap_err();
+        assert!(error.contains("a.link is mapped differently"), "{error}");
+        // Control: an unrelated edit over the same pair is allowed.
+        let mut titled = lone.clone();
+        titled["objects"][0]["schema"]["properties"]["plain"]["title"] = json!("T");
+        assert_eq!(transition_refusal(&[&lone], &titled, &paired_repo), Ok(()));
     }
 
     #[test]
