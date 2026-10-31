@@ -816,7 +816,22 @@ named with the request that removes it. Each probe is recorded in
 confirmed; the next `--probe` run reports any entry still there (`"recovery"`
 in `--json`) and counts it as a finding. A has-one probe re-reads the
 property before its cleanup and removes it only if it still holds the probe's
-edge. `--sample 0` checks configuration only. It exits
+edge. A pair with an end its object lists in `schema.required` is not probed
+and is reported untested: IDM's policy check refuses removing the test link
+through a required end, so the probe could write its link but not clean it up.
+
+The configuration lines describe what `config/repo.ds` **stores** ("stored
+mapping … runtime unconfirmed"), which is not proof the running IDM has loaded
+it. For one resolved link per direction, and for both ends of a resolved probe
+link, `verify` also asks the running IDM with
+`_queryFilter=_id eq "<id>" and <key> pr`, which was measured to find a linked
+record on a mapped end and never on a generic one. Each such check prints a
+`runtime:` line and appears in `--json` as `runtime` (on a direction) or as
+`runtime: [{end, runtime}]` (on a probe): `mapped_confirmed` and
+`generic_confirmed` agree with the stored config; `mapped_not_live` (stored
+mapped, IDM answers as generic) and `live_not_stored` (the reverse) are
+findings. An end with no resolved link is not checked at runtime.
+`--sample 0` checks configuration only. It exits
 non-zero on any finding or any link that does not resolve. A `STALE` finding —
 a mapping naming no declared property — is what `relationship repair`
 removes. For the other findings neither the console's repair nor

@@ -703,6 +703,30 @@ reported **untested**, not healthy. Measured shapes it relies on:
 So links are found by paging records with `_fields=_id,<key>`, never by `pr`,
 and a singular far end is read with `_fields` on the record.
 
+**The `pr` asymmetry is how `verify` tells the stored config from the running
+one** (measured 2026-11-01, sandbox). `repo.ds` is stored configuration, and
+nothing else says whether IDM has loaded it. With a link in place,
+`managed/<obj>?_queryFilter=_id eq "<id>" and <key> pr` found the record on
+every mapped end tried — `test_from.hasOnehOne`, `test_from.hasOneHasMany`,
+`test_from.hasOneHasNone` (references) and `test_to.hasManyHasOne` (a
+`reverseReference`) — and found nothing on the generic pair `test_from.aicRel` ↔
+`test_to.revAicRel` with a link present on both ends. `verify` runs that query
+for one resolved link per direction and for both ends of a `--probe` link, and
+reports a stored mapping the query does not see (or the reverse) as a finding.
+Only the agreeing cases have been observed; the two disagreements are
+reported, not explained.
+
+**A required has-one cannot be emptied from its own side** (measured
+2026-11-01, sandbox). `test_from.aicRel` is listed in `schema.required`. A
+`--probe` through it wrote its test link, and the cleanup `PATCH` removing the
+property was refused `403 Failed policy validation` (`REQUIRED`), stranding the
+link. `DELETE managed/test_to/<id>/revAicRel/<edgeId>` — the same edge through
+the generic has-many reverse collection — returned 200 and emptied
+`test_from.aicRel` with no policy complaint, and was used to clean up. So the
+policy check runs on a write to the record holding the required property, not
+on the edge. `verify --probe` now refuses to probe a pair with a required end
+rather than rely on that.
+
 Positive and negative control, sandbox: with one link on each of the mapped
 pairs `hasOnehOne` ↔ `hasOneHasOne` and `hasManyHasMany` ↔ `hasManyhasMany`,
 every sampled link resolved in both directions. After the rename above was

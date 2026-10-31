@@ -259,6 +259,35 @@ pub async fn ref_filter_finds(
         .any(|entry| entry.get("_ref").and_then(Value::as_str) == Some(reference)))
 }
 
+/// Whether `managed/<object>?_queryFilter=_id eq "<id>" and <key> pr` finds
+/// record `id` — on a record holding a link through `key`, true only when the
+/// running IDM stores `key` mapped ([`crate::managed::verify::Runtime`]).
+pub async fn present_filter_finds(tenant: &str, object: &str, id: &str, key: &str) -> Result<bool> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair(
+            "_queryFilter",
+            &format!("_id eq \"{}\" and {key} pr", id.replace('"', "\\\"")),
+        )
+        .append_pair("_fields", "_id");
+    let path = format!(
+        "/openidm/managed/{}?{}",
+        crate::idmstore::api::path_segment(object),
+        query.finish()
+    );
+    let body = get_settled(tenant, object, &path).await?;
+    let result = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Api {
+            status: 0,
+            body: format!("{path} returned no `result` array: {body}"),
+        })?;
+    Ok(result
+        .iter()
+        .any(|entry| entry.get("_id").and_then(Value::as_str) == Some(id)))
+}
+
 /// One activation probe of `object.key` through record `id`:
 /// `GET managed/<object>/<id>/<key>?_queryFilter=true&_pageSize=1`.
 /// [`crate::managed::relink::activation`] judges the answer.
