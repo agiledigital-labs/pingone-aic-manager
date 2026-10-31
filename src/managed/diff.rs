@@ -177,67 +177,29 @@ impl Difference {
     }
 }
 
-fn pointer_segment(key: &str) -> String {
-    key.replace('~', "~0").replace('/', "~1")
-}
-
 /// Every difference between two normalised values. Keys compare as a set;
 /// arrays by position, because order is meaning in `schema.order` and in a
 /// `resourceCollection`.
 pub fn differences(tenant: &Value, repo: &Value) -> Vec<Difference> {
-    let mut out = Vec::new();
-    diff_into("", tenant, repo, &mut out);
-    out
-}
-
-fn diff_into(at: &str, tenant: &Value, repo: &Value, out: &mut Vec<Difference>) {
-    if tenant == repo {
-        return;
-    }
-    match (tenant, repo) {
-        (Value::Object(a), Value::Object(b)) => {
-            let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
-            keys.sort();
-            keys.dedup();
-            for key in keys {
-                let here = format!("{at}/{}", pointer_segment(key));
-                match (a.get(key), b.get(key)) {
-                    (Some(x), Some(y)) => diff_into(&here, x, y, out),
-                    (Some(x), None) => out.push(Difference::TenantOnly {
-                        path: here,
-                        tenant: x.clone(),
-                    }),
-                    (None, Some(y)) => out.push(Difference::RepoOnly {
-                        path: here,
-                        repo: y.clone(),
-                    }),
-                    (None, None) => {}
-                }
-            }
-        }
-        (Value::Array(a), Value::Array(b)) => {
-            for index in 0..a.len().max(b.len()) {
-                let here = format!("{at}/{index}");
-                match (a.get(index), b.get(index)) {
-                    (Some(x), Some(y)) => diff_into(&here, x, y, out),
-                    (Some(x), None) => out.push(Difference::TenantOnly {
-                        path: here,
-                        tenant: x.clone(),
-                    }),
-                    (None, Some(y)) => out.push(Difference::RepoOnly {
-                        path: here,
-                        repo: y.clone(),
-                    }),
-                    (None, None) => {}
-                }
-            }
-        }
-        _ => out.push(Difference::Changed {
-            path: if at.is_empty() { "/".into() } else { at.into() },
-            tenant: tenant.clone(),
-            repo: repo.clone(),
-        }),
-    }
+    crate::jsondiff::changes(tenant, repo)
+        .into_iter()
+        .filter_map(|change| match (change.left, change.right) {
+            (Some(tenant), Some(repo)) => Some(Difference::Changed {
+                path: change.path,
+                tenant,
+                repo,
+            }),
+            (Some(tenant), None) => Some(Difference::TenantOnly {
+                path: change.path,
+                tenant,
+            }),
+            (None, Some(repo)) => Some(Difference::RepoOnly {
+                path: change.path,
+                repo,
+            }),
+            (None, None) => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
