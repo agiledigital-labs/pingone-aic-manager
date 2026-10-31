@@ -839,8 +839,9 @@ read equals the document sent. Otherwise the outcome is judged over every
 read, not the last: any read showing a third document is reported as another
 writer, any failed read means "unchanged" was not observed, and a failed send
 is never assumed not to have landed — each exits non-zero naming the backup.
-It edits only `genericMapping."managed/<obj>"`; an object mapped under
-`explicitMapping` reads as having no mapping to repair. There is no undo
+It edits only `genericMapping."managed/<obj>"` and refuses a mapping found
+only under another section such as `explicitMapping`, which `verify` and the
+write guards read as well. There is no undo
 entry: the backup is the way back (`docs/api/10-managed-objects.md`,
 "Removing a stale mapping").
 

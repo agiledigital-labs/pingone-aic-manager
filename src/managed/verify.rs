@@ -223,7 +223,34 @@ pub(crate) fn all_relationship_mappings(repo_ds: &Value) -> Vec<Located> {
     out
 }
 
-pub(crate) fn mappings_of<'a>(
+/// `object`'s own mapping entries, from **every** section of
+/// `resourceMapping` that has a `managed/<object>` entry — not only
+/// `genericMapping`. The sandbox maps four managed objects under
+/// `explicitMapping`, and a guard that read only `genericMapping` took
+/// "mapped there" for "not mapped" and let a retarget or a config write
+/// through (Astra round 8). Where two sections name the same key the first
+/// in document order is kept; such a document has not been seen.
+pub(crate) fn mappings_of(repo_ds: &Value, object: &str) -> Option<serde_json::Map<String, Value>> {
+    let resource = format!("managed/{object}");
+    let mut out: Option<serde_json::Map<String, Value>> = None;
+    for section in repo_ds.get("resourceMapping")?.as_object()?.values() {
+        if let Some(entries) = section
+            .get(&resource)
+            .and_then(|entry| entry.get("properties"))
+            .and_then(Value::as_object)
+        {
+            let merged = out.get_or_insert_with(serde_json::Map::new);
+            for (key, value) in entries {
+                merged.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    out
+}
+
+/// `object`'s entries in `genericMapping` alone — the one section
+/// `relationship repair` edits.
+pub(crate) fn generic_mappings_of<'a>(
     repo_ds: &'a Value,
     object: &str,
 ) -> Option<&'a serde_json::Map<String, Value>> {
@@ -1067,6 +1094,13 @@ mod tests {
         ]})
     }
 
+    /// `repo_ds` with every `genericMapping` entry moved to `explicitMapping`
+    /// — the sandbox's shape for four managed objects (Astra round 8).
+    fn explicit(repo_ds: &Value) -> Value {
+        let generic = repo_ds["resourceMapping"]["genericMapping"].clone();
+        json!({"resourceMapping": {"genericMapping": {}, "explicitMapping": generic}})
+    }
+
     fn repo(a: Option<Value>, b: Option<Value>) -> Value {
         let mut generic = serde_json::Map::new();
         if let Some(a) = a {
@@ -1130,6 +1164,27 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("STALE") && line.contains("a.gone")),
             "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_mapping_is_reported_like_a_generic_one() {
+        let mut repo_ds = repo(None, None);
+        repo_ds["resourceMapping"]["genericMapping"]["managed/a"] =
+            json!({"properties": {"gone": reference()}});
+        let lines = storage(&explicit(&repo_ds));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("STALE") && line.contains("a.gone")),
+            "{lines:?}"
+        );
+        let mixed = problems(&explicit(&repo(Some(reference()), None)));
+        assert!(
+            mixed
+                .iter()
+                .any(|problem| matches!(problem, Problem::Mixed { .. })),
+            "{mixed:?}"
         );
     }
 
@@ -1339,6 +1394,12 @@ mod tests {
             repoint_refusal(&reverse, "a", "owner", "b", None, "c"),
             Ok(())
         );
+        // Mapped under explicitMapping is mapped (Astra round 8).
+        for repo_ds in [&both, &forward, &reverse] {
+            let error = repoint_refusal(&explicit(repo_ds), "a", "owner", "b", Some("owned"), "c")
+                .unwrap_err();
+            assert!(error.contains("from b to c"), "{error}");
+        }
     }
 
     fn error_names(repo_ds: &Value) -> String {
@@ -1438,6 +1499,13 @@ mod tests {
         let error =
             transition_refusal(&[&before], &managed(), &repo(Some(reference()), None)).unwrap_err();
         assert!(error.contains("a.owner is mapped"), "{error}");
+        let error = transition_refusal(
+            &[&before],
+            &managed(),
+            &explicit(&repo(Some(reference()), None)),
+        )
+        .unwrap_err();
+        assert!(error.contains("a.owner is mapped"), "explicit: {error}");
         assert_eq!(
             transition_refusal(&[&before], &managed(), &json!({})),
             Ok(())
