@@ -5,6 +5,11 @@
     "packages/rhino-local"
   ],
   "overrides": {
-    "minimatch": "^11.0.1"
+    "eslint": {
+      "minimatch": "^11.0.1"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
   }
 }
