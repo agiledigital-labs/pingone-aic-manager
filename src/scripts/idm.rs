@@ -15,7 +15,8 @@ pub fn id_for_new(name: &str) -> String {
     format!("{ID_PREFIX}{name}")
 }
 
-pub fn new_script(name: &str, source: &[u8], _opts: &NewScriptOpts) -> Result<RemoteScript> {
+pub fn new_script(name: &str, source: &[u8], opts: &NewScriptOpts) -> Result<RemoteScript> {
+    super::refuse_chosen_id(opts)?;
     let source = String::from_utf8(source.to_vec())
         .map_err(|e| Error::Config(format!("IDM endpoint source is not UTF-8: {e}")))?;
     let id = id_for_new(name);

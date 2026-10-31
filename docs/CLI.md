@@ -2613,8 +2613,10 @@ resolves its namespace from your current directory. A bare namespace (`bravo`,
 
 ```bash
 aic script list [<ref>] [--context TEXT] [--default | --no-default] [--json]
-aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes] [--force=syntax-check]
+aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--id UUID] [--tenant TENANT] [--yes] [--force=syntax-check]
 aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--force=syntax-check]
+aic script rename <realm>/<name> <new-name> [--tenant TENANT] [--yes] [--force=syntax-check] # AM only; keeps the id
+aic script ids <DIR> [--realm REALM] [--tenant TENANT] [--json] # repo vs tenant script UUIDs, read-only
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--unmodified-only] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
@@ -2713,6 +2715,35 @@ Skipped entries are listed and make the command exit non-zero.
   check is keyed on the language the create will send, so `--language GROOVY`
   refuses everywhere a next-gen engine is required — every next-gen context
   advertises JavaScript alone.
+- **Keeping script ids in step with a repository.** A configuration
+  repository that pushes AM scripts by id (fr-config-manager's
+  `realms/<realm>/scripts/scripts-config/<uuid>.json`) breaks quietly when the
+  tenant holds the same name under another id: no content comparison sees it.
+  Three verbs cover it:
+  - `create --id <uuid>` creates an AM script with that id instead of a fresh
+    one. The id must be a lowercase hyphenated UUID, the form AM writes;
+    anything else is refused rather than normalised. A create is a `PUT` to the
+    id, so an id the realm already has is refused — that would replace a
+    different script. IDM kinds refuse `--id`: their ids derive from the name.
+  - `rename <realm>/<name> <new-name>` renames an AM script and keeps its id.
+    A `PUT` of the script's own config with `name` changed is a rename: AM keeps
+    the id and the old name stops resolving (measured 2026-10-31). The script
+    must be tracked and in sync — local file, snapshot and tenant identical —
+    and not a product default; the new name must be free. The write goes
+    through the same syntax gate as a push, is confirmed by a re-read, and the
+    workspace then tracks the new name. The old file is removed only if it
+    still holds the bytes that were renamed. Scripts that load a library **by
+    name** (`require('Old')`) are not found or changed; a `LIBRARY` rename says
+    so.
+  - `ids <DIR>` walks every `*.json` under `DIR` for AM script exports —
+    objects carrying `_id`, `name` and `context` — takes the realm from a
+    `realms/<realm>/` path component (`--realm` otherwise, default `alpha`),
+    and compares each with the tenant's listing by name: `match`, `tenant id
+    <uuid>` (same name, other id — the case this exists for), `tenant name
+    <name>` (same id, other name: a rename on one side), `absent` (a push
+    creates it), or a repository id that is not a UUID. It reads the listing
+    only, never a body, and exits non-zero when any script disagrees; `absent`
+    is not a disagreement.
 - `watch` normally pushes only **tracked** scripts, and silently skips an
   untracked file. The one exception is an endpoint the TypeScript project
   declares it owns in `typescript/.aic-ts-manifest.json`: that has no snapshot

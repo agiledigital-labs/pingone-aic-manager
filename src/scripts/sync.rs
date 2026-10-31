@@ -1130,13 +1130,25 @@ pub async fn create(
     gate: SyntaxGate,
 ) -> Result<CreateOutcome> {
     let kind = script.reference.kind;
-    if let Some(existing) = kind
-        .list(tenant, realm)
-        .await?
-        .into_iter()
+    let listed = kind.list(tenant, realm).await?;
+    if let Some(existing) = listed
+        .iter()
         .find(|existing| existing.name == script.reference.name)
     {
-        return Ok(CreateOutcome::NameTaken(existing));
+        return Ok(CreateOutcome::NameTaken(existing.clone()));
+    }
+    // A create is a `PUT` to the id, and a `PUT` to an id the tenant already
+    // has replaces that script. A generated id never collides; a chosen one
+    // (`create --id`) can, and the script it names is a *different* one, so
+    // this is a refusal, never an adoption.
+    if let Some(existing) = listed
+        .iter()
+        .find(|existing| existing.id == script.reference.id)
+    {
+        return Err(Error::Config(format!(
+            "id {} is already {} on the tenant; a create with it would replace that script",
+            existing.id, existing.name
+        )));
     }
     match write_checked(kind, tenant, realm, script, confirmed_prod, gate).await? {
         Gated::Written => {}
@@ -1293,6 +1305,176 @@ pub async fn copy(
         raw_config,
     };
     create_new(tenant, realm, &script, confirmed_prod, gate).await
+}
+
+/// Why a rename will not start from the bytes it found. Renaming writes the
+/// tenant's own config back under a new name, so it must be the copy the
+/// workspace forked from — otherwise the write either discards a remote edit
+/// the operator has never seen or leaves a local edit stranded under a name
+/// that no longer exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameBlock {
+    LocalMissing,
+    LocallyModified,
+    SnapshotMissing,
+    RemotelyModified,
+}
+
+impl RenameBlock {
+    pub fn message(self, reference: &str) -> String {
+        match self {
+            RenameBlock::LocalMissing => {
+                format!("{reference} has no local file; `aic script pull {reference}` first")
+            }
+            RenameBlock::LocallyModified => format!(
+                "{reference} has local edits; `aic script push {reference}` (or revert them) first"
+            ),
+            RenameBlock::SnapshotMissing => {
+                format!("{reference} has no sync baseline; `aic script pull {reference}` first")
+            }
+            RenameBlock::RemotelyModified => format!(
+                "{reference} changed on the tenant since the last sync; \
+                 `aic script pull {reference}` first"
+            ),
+        }
+    }
+}
+
+/// A rename starts only when local, snapshot and tenant all hold the same
+/// source. The local file is judged before the snapshot so the remedy named is
+/// the one the operator can act on first.
+pub fn rename_ok(
+    local: Option<&[u8]>,
+    snapshot: Option<&[u8]>,
+    remote: &[u8],
+) -> std::result::Result<(), RenameBlock> {
+    match (local, snapshot) {
+        (None, _) => Err(RenameBlock::LocalMissing),
+        (Some(_), None) => Err(RenameBlock::SnapshotMissing),
+        (Some(local), Some(snapshot)) if local != snapshot => Err(RenameBlock::LocallyModified),
+        (Some(_), Some(snapshot)) if snapshot != remote => Err(RenameBlock::RemotelyModified),
+        _ => Ok(()),
+    }
+}
+
+/// What a rename did.
+#[must_use = "a discarded rename outcome reports a refusal as a success"]
+#[derive(Debug)]
+pub enum Renamed {
+    Done {
+        script: RemoteScript,
+        /// The old workspace file, and whether it was removed. It is kept when
+        /// its bytes changed after the preflight, so nothing typed is lost.
+        old_file: PathBuf,
+        old_file_removed: bool,
+    },
+    /// The gate refused the write; nothing changed on the tenant.
+    Refused(Refusal),
+}
+
+/// Rename an AM script in place: same id, new `name`.
+///
+/// A `PUT` of the script's own config with `name` changed is a rename — AM
+/// keeps the id and the old name stops resolving (measured 2026-10-31). Every
+/// other field rides along, so this is the one way to rename without minting a
+/// new id, which a repository that names scripts by id (a journey's
+/// `script` field, an OAuth2 provider's `*Script` setting) needs.
+///
+/// Callers that load a library **by name** (`require('Old')`) are not found or
+/// rewritten; the CLI warns about that for `LIBRARY` scripts.
+pub async fn rename(
+    tenant: &str,
+    realm: &str,
+    old_name: &str,
+    new_name: &str,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Result<Renamed> {
+    let kind = Kind::Am;
+    let reference = super::full_name(kind, Some(realm), old_name);
+    if old_name == new_name {
+        return Err(Error::Config(format!("{reference} already has that name")));
+    }
+    let store = SnapshotStore::open(tenant);
+    let tracked = store.lookup(kind, old_name, realm)?.ok_or_else(|| {
+        Error::Config(format!(
+            "{reference} is not tracked; `aic script pull {reference}` first"
+        ))
+    })?;
+    let listed = kind.list(tenant, realm).await?;
+    let current = listed
+        .iter()
+        .find(|r| r.name == old_name)
+        .ok_or_else(|| Error::Config(format!("{reference} is not on the tenant")))?;
+    if current.id != tracked.reference.id {
+        return Err(Error::Config(format!(
+            "{reference} on the tenant is id {}, but the workspace tracks id {}; \
+             `aic script pull {reference}` first",
+            current.id, tracked.reference.id
+        )));
+    }
+    if current.is_default {
+        return Err(Error::Config(format!(
+            "{reference} is a product default script; AM's own configuration refers to it"
+        )));
+    }
+    if listed.iter().any(|r| r.name == new_name) {
+        return Err(Error::Config(name_taken_message(kind, realm, new_name)));
+    }
+    let remote = kind.fetch(tenant, realm, &current.id).await?;
+    let remote_src = kind.decode_source(&remote.raw_config)?;
+    let old_file = workspace_file(tenant, realm, &remote.reference);
+    let local = read_local(&old_file)?;
+    let snapshot = store.pull_snapshot_source(&tracked.reference, realm)?;
+    rename_ok(local.as_deref(), snapshot.as_deref(), &remote_src)
+        .map_err(|block| Error::Config(block.message(&reference)))?;
+
+    let body = copy_body(&remote.raw_config, &current.id, new_name)?;
+    let renamed = RemoteScript {
+        reference: RemoteRef {
+            name: new_name.to_string(),
+            ..remote.reference.clone()
+        },
+        raw_config: body,
+    };
+    match write_checked(kind, tenant, realm, &renamed, confirmed_prod, gate).await? {
+        Gated::Written => {}
+        Gated::Refused(refusal) => return Ok(Renamed::Refused(refusal)),
+    }
+    // Confirm from a read, never from the body sent (§5).
+    let confirmed = kind.fetch(tenant, realm, &current.id).await?;
+    if confirmed.reference.name != new_name
+        || kind.decode_source(&confirmed.raw_config)? != remote_src
+    {
+        return Err(Error::Config(format!(
+            "the write to {reference} returned success, but the tenant now holds name {:?} \
+             with {} source; the workspace was left as it was",
+            confirmed.reference.name,
+            if kind.decode_source(&confirmed.raw_config)? == remote_src {
+                "the same"
+            } else {
+                "different"
+            }
+        )));
+    }
+    store.remove(kind, old_name, realm)?;
+    pull(
+        tenant,
+        realm,
+        kind,
+        &Selector::Name(new_name.to_string()),
+        false,
+    )
+    .await?;
+    // Re-read the old file now: an edit made while the write was in flight is
+    // kept rather than deleted with the name.
+    let old_file_removed = read_local(&old_file)?.as_deref() == Some(remote_src.as_slice())
+        && std::fs::remove_file(&old_file).is_ok();
+    Ok(Renamed::Done {
+        script: confirmed,
+        old_file,
+        old_file_removed,
+    })
 }
 
 /// Delete a remote standalone script and remove only its local sync metadata.
@@ -2333,6 +2515,40 @@ fn forget_object_hooks_in(store: &SnapshotStore, object: &str) -> Result<Vec<Str
 mod tests {
     use super::*;
     use crate::cli::force::OperationAndSyntaxCheckForce;
+
+    /// Each of the three copies differing is its own block, and the local one
+    /// wins when several differ, because its remedy comes first.
+    #[test]
+    fn rename_needs_local_snapshot_and_remote_to_agree() {
+        let same: &[u8] = b"a";
+        assert_eq!(rename_ok(Some(same), Some(same), same), Ok(()));
+        assert_eq!(
+            rename_ok(None, Some(same), same),
+            Err(RenameBlock::LocalMissing)
+        );
+        assert_eq!(
+            rename_ok(Some(same), None, same),
+            Err(RenameBlock::SnapshotMissing)
+        );
+        assert_eq!(
+            rename_ok(Some(b"b"), Some(same), same),
+            Err(RenameBlock::LocallyModified)
+        );
+        assert_eq!(
+            rename_ok(Some(same), Some(same), b"b"),
+            Err(RenameBlock::RemotelyModified)
+        );
+        // Converged (local == remote, both off the snapshot) is not in sync:
+        // the snapshot is stale, and the next push would misjudge drift.
+        assert_eq!(
+            rename_ok(Some(b"b"), Some(same), b"b"),
+            Err(RenameBlock::LocallyModified)
+        );
+        assert_eq!(
+            rename_ok(Some(b"b"), Some(same), b"c"),
+            Err(RenameBlock::LocallyModified)
+        );
+    }
     use clap::Parser;
     use std::collections::VecDeque;
     use std::sync::Mutex;

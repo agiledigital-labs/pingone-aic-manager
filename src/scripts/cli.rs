@@ -178,6 +178,11 @@ pub enum ScriptCommand {
         evaluator_version: Option<String>,
         #[arg(long)]
         description: Option<String>,
+        /// AM only: create the script with this UUID instead of a fresh one,
+        /// so it matches a repository that names scripts by id. Refused when
+        /// the tenant already has a script with that id.
+        #[arg(long, value_name = "UUID")]
+        id: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -185,6 +190,34 @@ pub enum ScriptCommand {
         yes: bool,
         #[command(flatten)]
         force: SyntaxCheckForce,
+    },
+    /// Rename an AM script, keeping its id. The script must be in sync;
+    /// callers that `require` a library by name are not updated.
+    Rename {
+        #[arg(help = "<realm>/<name>")]
+        reference: String,
+        #[arg(help = "The new name (same realm)")]
+        new_name: String,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        force: SyntaxCheckForce,
+    },
+    /// Compare the AM script ids a configuration directory declares with the
+    /// tenant's, by name. Read-only; exits non-zero on any disagreement.
+    Ids {
+        /// A directory of exported config, e.g. an fr-config-manager tree.
+        dir: std::path::PathBuf,
+        /// Realm for files whose path has no `realms/<realm>/` component.
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Copy a standalone script, including its complete raw config.
     Copy {
@@ -593,6 +626,7 @@ pub(crate) async fn run_with_runtime(
             language,
             evaluator_version,
             description,
+            id,
             tenant,
             yes,
             force,
@@ -608,6 +642,14 @@ pub(crate) async fn run_with_runtime(
                     "--context is only valid for AM scripts".into(),
                 ));
             }
+            if let Some(id) = &id {
+                if ns.kind != script::Kind::Am {
+                    return Err(Error::Config(
+                        "--id is only valid for AM scripts; IDM ids derive from the name".into(),
+                    ));
+                }
+                script::am::chosen_id(id)?;
+            }
             let source = match from {
                 Some(path) => std::fs::read(&path).map_err(|e| {
                     Error::Config(format!("read source file {}: {e}", path.display()))
@@ -619,6 +661,7 @@ pub(crate) async fn run_with_runtime(
                 language,
                 evaluator_version,
                 description,
+                id,
             };
             if ns.kind == script::Kind::Am {
                 let input = opts
@@ -741,6 +784,142 @@ pub(crate) async fn run_with_runtime(
                 "copied {} -> {destination_full}",
                 script::full_name(source_ns.kind, source_ns.realm.as_deref(), &source_name),
             );
+            Ok(())
+        }
+        ScriptCommand::Rename {
+            reference,
+            new_name,
+            tenant,
+            yes,
+            force,
+        } => {
+            let gate = gate_for(force.syntax_check());
+            let tenant = writable_tenant_for(tenant)?;
+            guard_legacy_workspace(&tenant)?;
+            require_workspace(&tenant)?;
+            let (ns, name) = parse_one(&reference)?;
+            if ns.kind != script::Kind::Am {
+                return Err(Error::Config(
+                    "script rename is for AM scripts; an IDM script's id is its name".into(),
+                ));
+            }
+            if new_name.is_empty() || new_name.contains('/') {
+                return Err(Error::Config(
+                    "the new name is a bare name; the script stays in its realm".into(),
+                ));
+            }
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            let new_full = script::full_name(ns.kind, ns.realm.as_deref(), &new_name);
+            match prod_hint(
+                sync::rename(&tenant, ns.realm_arg(), &name, &new_name, yes, gate).await,
+            )? {
+                sync::Renamed::Refused(refusal) => {
+                    report_refusal(&full, &refusal);
+                    Err(Error::Config(format!("{full} was not renamed")))
+                }
+                sync::Renamed::Done {
+                    script,
+                    old_file,
+                    old_file_removed,
+                } => {
+                    println!("renamed {full} -> {new_full} (id {})", script.reference.id);
+                    if !old_file_removed {
+                        eprintln!(
+                            "kept {}: it changed during the rename",
+                            crate::config::display_path(&old_file)
+                        );
+                    }
+                    if script.reference.context.as_deref() == Some("LIBRARY") {
+                        eprintln!(
+                            "note: scripts that load this library by name \
+                             (require('{name}')) still use the old name"
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        }
+        ScriptCommand::Ids {
+            dir,
+            realm,
+            tenant,
+            json,
+        } => {
+            use std::collections::BTreeMap;
+            let tenant = tenant_for(tenant)?;
+            let mut declared = Vec::new();
+            for file in script::ids::json_files(&dir)
+                .map_err(|e| Error::Config(format!("read {}: {e}", dir.display())))?
+            {
+                let Ok(bytes) = std::fs::read(&file) else {
+                    continue;
+                };
+                // Not every .json in a config tree parses (templates, partial
+                // files); a script export always does.
+                if let Ok(value) = serde_json::from_slice(&bytes) {
+                    declared.extend(script::ids::declared_in(&file, &value));
+                }
+            }
+            if declared.is_empty() {
+                return Err(Error::Config(format!(
+                    "no AM script exports (objects with _id, name and context) under {}",
+                    dir.display()
+                )));
+            }
+            let mut listings = BTreeMap::new();
+            for script in &declared {
+                let realm = script.realm.clone().unwrap_or_else(|| realm.clone());
+                if let std::collections::btree_map::Entry::Vacant(slot) = listings.entry(realm) {
+                    let listed = script::Kind::Am.list(&tenant, slot.key()).await?;
+                    slot.insert(listed);
+                }
+            }
+            let judged = script::ids::judge(&declared, &realm, &listings);
+            let problems = judged.iter().filter(|(_, _, v)| v.is_problem()).count();
+            if json {
+                let rows: Vec<_> = judged
+                    .iter()
+                    .map(|(script, realm, verdict)| {
+                        serde_json::json!({
+                            "realm": realm,
+                            "name": script.name,
+                            "id": script.id,
+                            "file": script.file,
+                            "verdict": verdict,
+                        })
+                    })
+                    .collect();
+                print_json(&rows)?;
+            } else {
+                let rows: Vec<Vec<String>> = judged
+                    .iter()
+                    .map(|(script, realm, verdict)| {
+                        use script::ids::Verdict as V;
+                        let state = match verdict {
+                            V::Match => "match".to_string(),
+                            V::Absent => "absent (a push creates it)".to_string(),
+                            V::NotUuid => "repo id is not a UUID".to_string(),
+                            V::IdDiffers { tenant_id } => format!("tenant id {tenant_id}"),
+                            V::NameDiffers { tenant_name } => {
+                                format!("tenant name {tenant_name}")
+                            }
+                        };
+                        vec![
+                            format!("{realm}/{}", script.name),
+                            script.id.clone(),
+                            state,
+                            crate::config::display_path(&script.file),
+                        ]
+                    })
+                    .collect();
+                print_table(&["REF", "REPO ID", "TENANT", "FILE"], &rows);
+            }
+            if problems > 0 {
+                return Err(Error::Config(format!(
+                    "{problems} of {} script(s) disagree with the tenant",
+                    judged.len()
+                )));
+            }
             Ok(())
         }
         ScriptCommand::Delete {
