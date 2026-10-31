@@ -582,6 +582,7 @@ aic managed relationship set custom_widget.owner --target alpha_user --forward o
 aic managed relationship delete custom_widget.owner [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
 aic managed diff custom_widget repo/managed-objects/custom_widget/custom_widget.json [--strict] [--json]
@@ -666,8 +667,8 @@ key, and delete-and-recreate is not a measured repair.
 
 Every `config/managed` write — every verb here, the Managed tab, hook pushes
 and TUI undo — is checked against `config/repo.ds` before it is sent, because
-`aic` does not edit `repo.ds` (`docs/api/10-managed-objects.md`, "Relationship
-storage"). A write is refused when the resulting document would disagree with a
+nothing here moves a `repo.ds` mapping with the property
+(`docs/api/10-managed-objects.md`, "Relationship storage"). A write is refused when the resulting document would disagree with a
 mapping where the current one does not: a pair with one end mapped and the
 other not, a mapping naming a target its end no longer declares, a
 `reverseReference` reading through a key that is not its partner's, both ends
@@ -684,7 +685,7 @@ earlier, with their own wording: `relationship set` retargeting an end when
 either old end is mapped (measured to break a mapped end with no reverse;
 refusing it for a mapped reverse is a precaution), and `object rename` of an
 object a mapping names (inferred). `relationship delete` proceeds and notes on
-stderr which mappings it leaves behind; when `repo.ds` cannot be read for that
+stderr which mappings it leaves behind, which `relationship repair` removes; when `repo.ds` cannot be read for that
 note it says so and deletes anyway. `object delete` prints
 each inbound relationship it removed or narrowed.
 
@@ -811,10 +812,31 @@ confirmed; the next `--probe` run reports any entry still there (`"recovery"`
 in `--json`) and counts it as a finding. A has-one probe re-reads the
 property before its cleanup and removes it only if it still holds the probe's
 edge. `--sample 0` checks configuration only. It exits
-non-zero on any finding or any link that does not resolve. What to do about a
-finding is not measured: `aic` does not write `repo.ds`, and neither the
-console's repair nor delete-and-recreate has been tested
-(`docs/api/10-managed-objects.md`, "Checking a pair").
+non-zero on any finding or any link that does not resolve. A `STALE` finding —
+a mapping naming no declared property — is what `relationship repair`
+removes. For the other findings neither the console's repair nor
+delete-and-recreate has been tested (`docs/api/10-managed-objects.md`,
+"Checking a pair").
+
+`relationship repair <object>.<key>` removes one `config/repo.ds`
+relationship mapping (`reference` or `reverseReference`) that names a
+property `config/managed` does not declare — the leftover a `relationship
+delete` reports, which otherwise makes a later `set` on that key refuse. It
+only removes; it never adds or edits a mapping. It refuses a declared
+property, IDM's `_meta` / `_notifications`, a mapping another
+`reverseReference` reads through (naming it; repair a stale one first), the
+last mapped property of an object, and an object `config/managed` does not
+declare — the cases not measured. `--dry-run` prints the plan and writes
+nothing; otherwise it asks, or takes `--force`, and passes the production
+gate. Immediately before writing it re-reads both documents and refuses if
+`repo.ds` changed at all. It backs the current document up to
+`.aic/backups/repo.ds-<tenant>-<time>-<uuid>.json` and prints the path,
+replaces the whole document — a JSON `PATCH` was measured to return 200 and
+change nothing — and reads it back for up to 30 s. It exits zero only when a
+read equals the document sent; an unchanged read, a different one, a failed
+read or a failed send each exit non-zero naming the backup. There is no undo
+entry: the backup is the way back (`docs/api/10-managed-objects.md`,
+"Removing a stale mapping").
 
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the

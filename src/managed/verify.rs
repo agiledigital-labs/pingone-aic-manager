@@ -161,7 +161,10 @@ fn mapping_for(repo_ds: &Value, object: &str, key: &str) -> Option<Mapping> {
     })
 }
 
-fn mappings_of<'a>(repo_ds: &'a Value, object: &str) -> Option<&'a serde_json::Map<String, Value>> {
+pub(crate) fn mappings_of<'a>(
+    repo_ds: &'a Value,
+    object: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
     repo_ds
         .get("resourceMapping")?
         .get("genericMapping")?
@@ -170,7 +173,10 @@ fn mappings_of<'a>(repo_ds: &'a Value, object: &str) -> Option<&'a serde_json::M
         .as_object()
 }
 
-fn properties<'a>(managed: &'a Value, object: &str) -> Option<&'a serde_json::Map<String, Value>> {
+pub(crate) fn properties<'a>(
+    managed: &'a Value,
+    object: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
     let def = crate::managed::api::object_named(managed, object).ok()?;
     crate::managed::state::properties(def)
 }
@@ -342,7 +348,7 @@ fn reverse_end(
 /// normal state, not a leftover. Only these two, and only when absent — the
 /// observation covers nothing else underscore-prefixed, and a schema that
 /// declares one as a scalar is still a contradiction (Sol/Astra round 7).
-const SYSTEM_RELATIONSHIPS: [&str; 2] = ["_meta", "_notifications"];
+pub(crate) const SYSTEM_RELATIONSHIPS: [&str; 2] = ["_meta", "_notifications"];
 
 /// Every relationship on `object` (or just `key`), each pair once, plus
 /// `repo.ds` entries on `object` that name no declared property.
@@ -898,9 +904,10 @@ pub fn transition_refusal(
         return Ok(());
     }
     Err(format!(
-        "refusing to write config/managed: it would contradict config/repo.ds, which aic does \
-         not edit — {}. Use another key, or repair the mapping in the console \
-         (docs/api/10-managed-objects.md, \"Relationship storage\")",
+        "refusing to write config/managed: it would contradict config/repo.ds — {}. Use \
+         another key; a mapping that names no declared property can be removed with `aic \
+         managed relationship repair <object>.<key>` (docs/api/10-managed-objects.md, \
+         \"Relationship storage\")",
         reasons.join("; ")
     ))
 }
