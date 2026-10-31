@@ -553,6 +553,15 @@ shape to diff against a repository copy
 is exact and case-sensitive; a near miss names the property you probably
 meant. It cannot be combined with `--fields` or `--schema-only`.
 
+`--json` on a write prints what it changed, never the whole `config/managed`
+document: `object create`/`object rename`, `field …` and `hook add` print the
+one object they wrote; `relationship set`/`relationship delete` print
+`{"changed": [objects]}`, every object whose definition changed (both ends of a
+pair); `object delete` prints `{"deleted": "<name>", "changed": [objects]}`,
+the second list being the objects whose inbound relationships it removed.
+`object delete` also stops tracking the deleted object's hooks in script sync
+(local files are kept), because their slots went with the object.
+
 Every write accepts `--tenant <name>` and requires `--yes` for a
 production-themed tenant. Field and relationship booleans take explicit values
 (for example `--viewable false`). Field creation defaults to non-searchable,

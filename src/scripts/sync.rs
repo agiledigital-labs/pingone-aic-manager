@@ -1838,8 +1838,13 @@ fn classify_status(snapshot: &[u8], local: &[u8], remote: Result<Vec<u8>>) -> Re
     })
 }
 
+/// A standalone script's 404, or an embedded script whose containing object,
+/// mapping or hook slot is gone from a document that did read.
 fn is_remote_missing(error: &Error) -> bool {
-    matches!(error, Error::Api { status: 404, .. })
+    matches!(
+        error,
+        Error::Api { status: 404, .. } | Error::SlotMissing(_)
+    )
 }
 
 /// Which two script versions to load for `aic script diff`.
@@ -2287,6 +2292,28 @@ pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
     store.remove(kind, name, realm)
 }
 
+/// Stop tracking every hook of a managed object that was just deleted, and
+/// return their names. Their slots went with the object, so each would
+/// otherwise sit in `status` as missing until forgotten one by one. Local
+/// files are kept, as [`forget`] keeps them.
+pub fn forget_object_hooks(tenant: &str, object: &str) -> Result<Vec<String>> {
+    forget_object_hooks_in(&SnapshotStore::open(tenant), object)
+}
+
+fn forget_object_hooks_in(store: &SnapshotStore, object: &str) -> Result<Vec<String>> {
+    let mut forgotten = Vec::new();
+    for entry in store.load_manifest()? {
+        let r = &entry.reference;
+        if r.kind == Kind::IdmManagedHook
+            && r.name.rsplit_once('.').map(|(owner, _)| owner) == Some(object)
+        {
+            store.remove(r.kind, &r.name, "")?;
+            forgotten.push(r.name.clone());
+        }
+    }
+    Ok(forgotten)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2599,6 +2626,63 @@ mod tests {
             "b",
         );
         assert!(idm.unwrap().get("default").is_none());
+    }
+
+    /// Deleting a managed object untracks exactly its hooks: not another
+    /// object whose name shares the prefix, and not a non-hook script that
+    /// happens to share the name.
+    #[test]
+    fn forgetting_an_objects_hooks_leaves_every_other_entry() {
+        let dir = tmp();
+        let store = store_at(&dir);
+        let hook = |name: &str| RemoteScript {
+            reference: RemoteRef {
+                kind: Kind::IdmManagedHook,
+                id: format!("managed/{name}"),
+                name: name.into(),
+                context: None,
+                is_default: false,
+                evaluator_version: None,
+            },
+            raw_config: json!({"type": "text/javascript", "source": "x"}),
+        };
+        for name in [
+            "zz.onCreate",
+            "zz.onUpdate",
+            "zzz.onCreate",
+            "alpha_user.onCreate",
+        ] {
+            store.record(&hook(name), "").unwrap();
+        }
+        let endpoint = RemoteScript {
+            reference: endpoint_ref("zz.onCreate"),
+            raw_config: json!({"source": "x"}),
+        };
+        store.record(&endpoint, "").unwrap();
+
+        let forgotten = forget_object_hooks_in(&store, "zz").unwrap();
+        assert_eq!(forgotten, ["zz.onCreate", "zz.onUpdate"]);
+        let left: Vec<_> = store
+            .load_manifest()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.reference.kind, e.reference.name))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                (Kind::IdmManagedHook, "zzz.onCreate".to_string()),
+                (Kind::IdmManagedHook, "alpha_user.onCreate".to_string()),
+                (Kind::IdmEndpoint, "zz.onCreate".to_string()),
+            ]
+        );
+        assert_eq!(
+            store
+                .load_config(&hook("zz.onCreate").reference, "")
+                .unwrap(),
+            None
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn store_at(dir: &Path) -> SnapshotStore {
@@ -4021,12 +4105,24 @@ mod tests {
 
     #[tokio::test]
     async fn missing_remote_is_a_resolution_outcome_but_other_errors_stay_failures() {
-        for resolution in [None, Some(Resolution::Local), Some(Resolution::Remote)] {
+        // A standalone 404, and an embedded slot whose object is gone from a
+        // document that did read: both are the remote-missing outcome, which
+        // is what lets `sync --resolve remote` forget a deleted object's hook.
+        let missing = || {
+            [
+                Error::Api {
+                    status: 404,
+                    body: "missing".into(),
+                },
+                Error::SlotMissing("managed object 'zz' no longer exists on the tenant".into()),
+            ]
+        };
+        for (resolution, error) in [None, Some(Resolution::Local), Some(Resolution::Remote)]
+            .into_iter()
+            .flat_map(|resolution| missing().map(|error| (resolution, error)))
+        {
             let (dir, store, workspace, reference) = push_fixture("old", "local edit");
-            let io = FakeSyncIo::new(vec![Err(Error::Api {
-                status: 404,
-                body: "missing".into(),
-            })]);
+            let io = FakeSyncIo::new(vec![Err(error)]);
             let context = test_context(&store, &workspace, &io, "tenant");
             let result = match resolution {
                 Some(direction) => {
