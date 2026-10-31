@@ -174,6 +174,44 @@ pub struct AddFieldSpec {
     pub default_value: Option<String>,
 }
 
+/// The `format` a `relationship snapshot` file carries.
+pub const SNAPSHOT_FORMAT: &str = "aic-relationship-snapshot/1";
+
+/// One relationship end as `relationship snapshot` saved it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotEnd {
+    pub object: String,
+    pub key: String,
+    pub property: Value,
+}
+
+/// A snapshot document: the named end and, when it declares one, its reverse.
+pub fn snapshot_document(ends: &[SnapshotEnd]) -> Value {
+    serde_json::json!({ "format": SNAPSHOT_FORMAT, "ends": ends })
+}
+
+/// The ends a snapshot file holds; refuses any other document, so a bare
+/// property (which names no object or key) is not guessed at.
+pub fn parse_snapshot(file: &Value) -> Result<Vec<SnapshotEnd>, String> {
+    match file.get("format").and_then(Value::as_str) {
+        Some(SNAPSHOT_FORMAT) => {}
+        Some(other) => return Err(format!("unsupported snapshot format {other}")),
+        None => {
+            return Err(format!(
+                "not a relationship snapshot (no \"format\": \"{SNAPSHOT_FORMAT}\"); write one \
+                 with `aic managed relationship snapshot`"
+            ));
+        }
+    }
+    let ends: Vec<SnapshotEnd> =
+        serde_json::from_value(file.get("ends").cloned().unwrap_or(Value::Null))
+            .map_err(|error| format!("snapshot `ends`: {error}"))?;
+    if ends.is_empty() {
+        return Err("the snapshot holds no relationship ends".into());
+    }
+    Ok(ends)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -208,6 +246,21 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn snapshots_round_trip_and_nothing_else_parses() {
+        let ends = vec![SnapshotEnd {
+            object: "a".into(),
+            key: "owner".into(),
+            property: serde_json::json!({"type": "relationship"}),
+        }];
+        assert_eq!(parse_snapshot(&snapshot_document(&ends)).unwrap(), ends);
+        assert!(parse_snapshot(&serde_json::json!({"type": "relationship"})).is_err());
+        assert!(parse_snapshot(&serde_json::json!({"format": "other/1", "ends": []})).is_err());
+        assert!(
+            parse_snapshot(&serde_json::json!({"format": SNAPSHOT_FORMAT, "ends": []})).is_err()
+        );
+    }
 
     #[test]
     fn enum_items_parse_and_round_trip() {

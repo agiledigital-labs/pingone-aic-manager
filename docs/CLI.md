@@ -582,6 +582,8 @@ aic managed relationship set custom_widget.owner --target alpha_user --forward o
 aic managed relationship delete custom_widget.owner [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship snapshot custom_widget.owner [--output FILE]
+aic managed relationship restore FILE [--dry-run] [--yes] [--json]
 aic managed diff custom_widget repo/managed-objects/custom_widget/custom_widget.json [--strict] [--json]
 ```
 
@@ -732,6 +734,18 @@ far end afterwards. The first failed write stops the run, and the error names
 what was relinked; if the link was removed and could not be re-created, it
 gives the request that restores it. It exits non-zero on a stopped run or on
 any link it skipped as changed or could not confirm.
+
+`relationship snapshot <object>.<key>` saves the relationship's definition —
+and, when it declares a reverse, the reverse property too — as a JSON
+document (`"format": "aic-relationship-snapshot/1"`) on stdout or to
+`--output`. `relationship restore <file>` merges three things from it back into
+each end it names: `title`, `description` (on the property, and on `items` for
+a has-many) and each `resourceCollection` entry's `query.fields`, matched by
+`path`. These are what recreating a relationship in the console was reported
+to overwrite or trim. Nothing else is touched, so a snapshot older than a
+structural change cannot undo the change, and a snapshot of a has-many cannot
+be restored onto a has-one. It prints each change, `--dry-run` writes nothing,
+and when the metadata already matches it says so and writes nothing.
 
 `relationship verify` is read-only unless given `--probe`. For `<object>` it checks every
 relationship on that object (each pair once); for `<object>.<key>`, one. A
