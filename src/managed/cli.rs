@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::Result;
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, print_table, tenant_for};
-use crate::managed::{api, ops, spec, state, verify};
+use crate::managed::{api, ops, relink, spec, state, verify};
 use crate::undo::{DiskLog, UndoLog};
 
 #[derive(Subcommand, Debug)]
@@ -225,6 +225,26 @@ pub enum RelationshipCommand {
     },
     Delete {
         field: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Re-create the links on `<object>.<key>` that its reverse end does not
+    /// list — the links written before the reverse was declared, which IDM
+    /// never migrates. Each is removed and created again, so it gets a new
+    /// edge id; custom `_refProperties` are carried over.
+    Relink {
+        field: String,
+        /// Read and report the plan; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt.
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -713,9 +733,20 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             let expect = relationship_expectations(&doc, &updated)?;
             put_managed(&ok, &doc, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
+            let activation = wait_for_new_ends(&tenant, &doc, &updated).await;
+            let one_sided = match relink::reverse_added(&doc, &updated, &source_object, &key) {
+                Some((far, far_key)) => {
+                    sample_one_sided(&tenant, &updated, &source_object, &key, &far, &far_key).await
+                }
+                None => None,
+            };
             output(
                 json,
-                &serde_json::json!({ "changed": changed_objects(&doc, &updated)? }),
+                &serde_json::json!({
+                    "changed": changed_objects(&doc, &updated)?,
+                    "activation": activation,
+                    "one_sided": one_sided,
+                }),
             )
         }
         RelationshipCommand::Delete {
@@ -787,7 +818,447 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             tenant,
             json,
         } => relationship_verify(target, sample, scan, tenant, json).await,
+        RelationshipCommand::Relink {
+            field,
+            dry_run,
+            force,
+            tenant,
+            yes,
+            json,
+        } => relationship_relink(field, dry_run, force.operation(), tenant, yes, json).await,
     }
+}
+
+/// How long `relationship set` waits for a new end to go live. Measured
+/// flips took under a second; this bounds a tenant having a bad day.
+const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const ACTIVATION_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+#[derive(Serialize)]
+struct ActivationOutput {
+    end: String,
+    /// `live`, `timeout`, `no_records` (nothing to probe through) or `error`.
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+/// Waits for each relationship end `updated` declares that `doc` did not:
+/// a write through one before it is live answers 200 and is lost (measured
+/// 2026-10-31). Never fails the command — the schema write has landed — but
+/// says loudly when it could not confirm.
+async fn wait_for_new_ends(tenant: &str, doc: &Value, updated: &Value) -> Vec<ActivationOutput> {
+    let mut out = Vec::new();
+    for end in relink::new_ends(doc, updated) {
+        let label = format!("{}.{}", end.object, end.key);
+        let report = |outcome, seconds, detail| ActivationOutput {
+            end: label.clone(),
+            outcome,
+            seconds,
+            detail,
+        };
+        let id = match api::any_record_id(tenant, &end.object).await {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                eprintln!(
+                    "note: managed/{} has no records to probe {label} through; wait a few \
+                     seconds before writing through it — a write made before it is live is lost",
+                    end.object
+                );
+                out.push(report("no_records", None, None));
+                continue;
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: could not probe {label} ({error}); wait before writing through it"
+                );
+                out.push(report("error", None, Some(error.to_string())));
+                continue;
+            }
+        };
+        let started = std::time::Instant::now();
+        let entry = loop {
+            let probe = api::probe_relationship(tenant, &end.object, &id, &end.key).await;
+            match relink::activation(&probe) {
+                Ok(relink::Activation::Live) => {
+                    let seconds = started.elapsed().as_secs_f64();
+                    eprintln!("{label} is live ({seconds:.1}s)");
+                    break report("live", Some(seconds), None);
+                }
+                Ok(relink::Activation::Pending) if started.elapsed() < ACTIVATION_TIMEOUT => {
+                    tokio::time::sleep(ACTIVATION_POLL).await;
+                }
+                Ok(relink::Activation::Pending) => {
+                    eprintln!(
+                        "warning: {label} was not live after {}s; a write through it before it \
+                         is live answers 200 and is lost. Re-run `aic managed relationship \
+                         verify` before relying on it",
+                        ACTIVATION_TIMEOUT.as_secs()
+                    );
+                    break report("timeout", Some(started.elapsed().as_secs_f64()), None);
+                }
+                Err(detail) => {
+                    eprintln!("warning: could not confirm {label} is live ({detail})");
+                    break report("error", None, Some(detail));
+                }
+            }
+        };
+        out.push(entry);
+    }
+    out
+}
+
+/// Links sampled when a reverse is added to a relationship that has links.
+const ONE_SIDED_SCAN: usize = 200;
+const ONE_SIDED_SAMPLE: usize = 20;
+
+#[derive(Serialize)]
+struct OneSidedOutput {
+    sampled: usize,
+    one_sided: usize,
+}
+
+/// After a reverse is added to `object.key`, samples its existing links: each
+/// was written when the pair had no reverse, so the new far end does not list
+/// it, and IDM never migrates it. Informational — the write has landed.
+async fn sample_one_sided(
+    tenant: &str,
+    updated: &Value,
+    object: &str,
+    key: &str,
+    far: &str,
+    far_key: &str,
+) -> Option<OneSidedOutput> {
+    let far_array = end_is_array(updated, far, far_key);
+    let sampled = async {
+        let records = api::records_with(tenant, object, key, ONE_SIDED_SCAN).await?;
+        let far_collection = format!("managed/{far}");
+        let near_collection = format!("managed/{object}");
+        let mut links = Vec::new();
+        for record in &records {
+            links.extend(verify::links_of(record, key).map_err(crate::Error::Config)?);
+        }
+        let mut outcome = OneSidedOutput {
+            sampled: 0,
+            one_sided: 0,
+        };
+        for link in links
+            .into_iter()
+            .filter(|link| link.to_collection == far_collection)
+            .take(ONE_SIDED_SAMPLE)
+        {
+            let far_record =
+                api::far_end(tenant, far, &link.to_id, far_key, far_array, &link.from_id).await?;
+            let far_links = far_record
+                .map(|record| verify::links_of(&record, far_key))
+                .transpose()
+                .map_err(crate::Error::Config)?;
+            outcome.sampled += 1;
+            if verify::judge(&link, &near_collection, far_links.as_deref())
+                == verify::LinkOutcome::Missing
+            {
+                outcome.one_sided += 1;
+            }
+        }
+        Ok::<_, crate::Error>(outcome)
+    }
+    .await;
+    match sampled {
+        Ok(outcome) => {
+            if outcome.one_sided > 0 {
+                eprintln!(
+                    "warning: {} of {} sampled links on {object}.{key} are not listed by \
+                     {far}.{far_key}: links written before the reverse existed are not \
+                     migrated. `aic managed relationship relink {object}.{key}` re-creates them",
+                    outcome.one_sided, outcome.sampled
+                );
+            }
+            Some(outcome)
+        }
+        Err(error) => {
+            eprintln!(
+                "note: could not sample {object}.{key} for links the new reverse does not list \
+                 ({error}); `aic managed relationship relink {object}.{key} --dry-run` checks"
+            );
+            None
+        }
+    }
+}
+
+fn end_is_array(doc: &Value, object: &str, key: &str) -> bool {
+    api::object_named(doc, object)
+        .ok()
+        .and_then(state::properties)
+        .and_then(|properties| properties.get(key))
+        .and_then(|property| property.get("type"))
+        .and_then(Value::as_str)
+        == Some("array")
+}
+
+#[derive(Serialize)]
+struct RelinkOutput<'a> {
+    #[serde(flatten)]
+    plan: &'a relink::Plan,
+    relinked: Vec<relink::Edge>,
+    /// Re-created, but the far end did not list the new edge when re-read.
+    unconfirmed: Vec<relink::Edge>,
+    /// Changed on the tenant between the plan and its turn; not written.
+    changed: Vec<relink::Edge>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+async fn relationship_relink(
+    field: String,
+    dry_run: bool,
+    force: bool,
+    tenant: Option<String>,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
+    let (object, key) = parse_object_key(&field)?;
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let property = api::object_named(&managed, &object)
+        .ok()
+        .and_then(state::properties)
+        .and_then(|properties| properties.get(&key))
+        .filter(|property| state::is_relationship_property(property))
+        .ok_or_else(|| crate::Error::Config(format!("{field} is not a relationship")))?;
+    let far_key = ops::declared_reverse_key(property)
+        .ok_or_else(|| {
+            crate::Error::Config(format!(
+                "{field} declares no reverse, so there is nothing to relink to; add one with \
+                 `aic managed relationship set {field} --reverse ...` first"
+            ))
+        })?
+        .to_string();
+    let far = ops::relationship_targets(property)
+        .first()
+        .and_then(|target| target.strip_prefix("managed/"))
+        .ok_or_else(|| crate::Error::Config(format!("{field} has no managed target")))?
+        .to_string();
+    if ops::relationship_targets(property).len() > 1 {
+        return Err(crate::Error::Config(format!(
+            "{field} has more than one target; relink handles a single-target pair"
+        )));
+    }
+    let near_array = end_is_array(&managed, &object, &key);
+    let far_array = end_is_array(&managed, &far, &far_key);
+    let far_collection = format!("managed/{far}");
+    let near_collection = format!("managed/{object}");
+
+    let records = api::all_records_with(&tenant, &object, &key).await?;
+    let mut judged = Vec::new();
+    for record in &records {
+        for edge in relink::edges_of(record, &key).map_err(crate::Error::Config)? {
+            if edge.link.to_collection != far_collection {
+                continue;
+            }
+            let outcome = far_outcome(
+                &tenant,
+                &far,
+                &far_key,
+                far_array,
+                &edge.link,
+                &near_collection,
+            )
+            .await?;
+            judged.push((edge, outcome));
+            if judged.len() % 100 == 0 {
+                eprintln!("relink: {} links checked", judged.len());
+            }
+        }
+    }
+    let plan = relink::plan(judged);
+    let mut out = RelinkOutput {
+        plan: &plan,
+        relinked: Vec::new(),
+        unconfirmed: Vec::new(),
+        changed: Vec::new(),
+        error: None,
+    };
+    eprintln!(
+        "{field}: {} records, {} links listed by {far}.{far_key}, {} to relink, {} skipped",
+        records.len(),
+        plan.resolved,
+        plan.relink.len(),
+        plan.skipped.len()
+    );
+    for skipped in &plan.skipped {
+        eprintln!(
+            "  skip {} -> {}: {}",
+            skipped.edge.link.from_id, skipped.edge.link.to_id, skipped.reason
+        );
+    }
+    if plan.relink.is_empty() || dry_run {
+        return finish_relink(&out, json);
+    }
+    let consented = force
+        || crate::cli::confirm_destructive(
+            "relationship relink",
+            &format!(
+                "Remove and re-create {} link(s) on {field}? Each gets a new edge id; whether \
+                 onUpdate hooks fire for it is unmeasured",
+                plan.relink.len()
+            ),
+            "--force",
+        )?;
+    let Some(permit) = relink::authorize(dry_run, consented) else {
+        return Err(crate::Error::Config(
+            "relationship relink not confirmed".into(),
+        ));
+    };
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    for edge in &plan.relink {
+        match relink_one(
+            &ok,
+            &permit,
+            (&object, &key, near_array),
+            (&far, &far_key, far_array),
+            edge,
+        )
+        .await
+        {
+            Ok(RelinkStep::Done) => out.relinked.push(edge.clone()),
+            Ok(RelinkStep::Unconfirmed) => out.unconfirmed.push(edge.clone()),
+            Ok(RelinkStep::Changed) => out.changed.push(edge.clone()),
+            Err(error) => {
+                // §5's batch rule: stop, and say what landed.
+                out.error = Some(error);
+                break;
+            }
+        }
+    }
+    finish_relink(&out, json)
+}
+
+async fn far_outcome(
+    tenant: &str,
+    far: &str,
+    far_key: &str,
+    far_array: bool,
+    link: &verify::Link,
+    near_collection: &str,
+) -> Result<verify::LinkOutcome> {
+    let far_record =
+        api::far_end(tenant, far, &link.to_id, far_key, far_array, &link.from_id).await?;
+    let far_links = far_record
+        .map(|record| verify::links_of(&record, far_key))
+        .transpose()
+        .map_err(crate::Error::Config)?;
+    Ok(verify::judge(link, near_collection, far_links.as_deref()))
+}
+
+enum RelinkStep {
+    Done,
+    Unconfirmed,
+    Changed,
+}
+
+/// Rechecks, rewrites and confirms one link. An `Err` is a message that
+/// already says whether the link was left removed.
+async fn relink_one(
+    ok: &WriteOk<'_>,
+    permit: &relink::RelinkPermit,
+    (object, key, near_array): (&str, &str, bool),
+    (far, far_key, far_array): (&str, &str, bool),
+    edge: &relink::Edge,
+) -> std::result::Result<RelinkStep, String> {
+    let label = format!(
+        "{object}/{}.{key} -> {}",
+        edge.link.from_id, edge.link.to_id
+    );
+    let read = |context: &'static str| {
+        let label = label.clone();
+        move |error: crate::Error| format!("{label}: {context}: {error}")
+    };
+    let current = api::record_with(ok.tenant, object, &edge.link.from_id, key)
+        .await
+        .map_err(read("recheck failed; nothing written"))?;
+    let current = match current {
+        Some(record) => relink::edges_of(&record, key)?,
+        None => Vec::new(),
+    };
+    if !relink::still_planned(&current, edge) {
+        return Ok(RelinkStep::Changed);
+    }
+    let [remove, create] = relink::writes(permit, object, key, near_array, edge)?;
+    api::send_relink(ok.tenant, &remove, ok.confirmed_prod)
+        .await
+        .map_err(read(
+            "removing the link failed; it may or may not be removed",
+        ))?;
+    if let Err(error) = api::send_relink(ok.tenant, &create, ok.confirmed_prod).await {
+        return Err(format!(
+            "{label}: the link was removed and re-creating it failed ({error}). Restore it with \
+             {} {} {}",
+            create.method,
+            create.path,
+            create.body.unwrap_or(Value::Null)
+        ));
+    }
+    let near_collection = format!("managed/{object}");
+    let after = api::record_with(ok.tenant, object, &edge.link.from_id, key)
+        .await
+        .map_err(read("re-created, but the confirming read failed"))?;
+    let after = match after {
+        Some(record) => relink::edges_of(&record, key)?,
+        None => Vec::new(),
+    };
+    let Some(new) = after.iter().find(|candidate| {
+        candidate.link.to_id == edge.link.to_id
+            && candidate.link.to_collection == edge.link.to_collection
+    }) else {
+        return Ok(RelinkStep::Unconfirmed);
+    };
+    let outcome = far_outcome(
+        ok.tenant,
+        far,
+        far_key,
+        far_array,
+        &new.link,
+        &near_collection,
+    )
+    .await
+    .map_err(read("re-created, but the far end could not be read"))?;
+    Ok(if outcome == verify::LinkOutcome::Resolved {
+        RelinkStep::Done
+    } else {
+        RelinkStep::Unconfirmed
+    })
+}
+
+fn finish_relink(out: &RelinkOutput<'_>, json: bool) -> Result<()> {
+    if json {
+        print_json(out)?;
+    } else {
+        for (label, edges) in [
+            ("relinked", &out.relinked),
+            ("unconfirmed", &out.unconfirmed),
+            ("changed since the plan, not written", &out.changed),
+        ] {
+            for edge in edges {
+                println!("{label}: {} -> {}", edge.link.from_id, edge.link.to_id);
+            }
+        }
+    }
+    if let Some(error) = &out.error {
+        return Err(crate::Error::Config(format!(
+            "relationship relink stopped after {} relinked: {error}",
+            out.relinked.len()
+        )));
+    }
+    if !out.unconfirmed.is_empty() || !out.changed.is_empty() {
+        return Err(crate::Error::Config(format!(
+            "relationship relink: {} unconfirmed, {} changed since the plan; re-run to check",
+            out.unconfirmed.len(),
+            out.changed.len()
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
