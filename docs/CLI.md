@@ -601,6 +601,18 @@ shape to diff against a repository copy
 is exact and case-sensitive; a near miss names the property you probably
 meant. It cannot be combined with `--fields` or `--schema-only`.
 
+After the JSON, `managed get` prints each relationship's **storage** to stderr
+— one line per pair, read from `config/repo.ds`: `generic`, `mapped
+(reference / reverseReference)`, `MIXED` (one end mapped, the other not — the
+measured broken state), `INCONSISTENT` for any other disagreement `verify`
+reports, and `STALE` for a `repo.ds` mapping on a property `config/managed` no
+longer declares. A pair in any of the last three names the `relationship
+verify` command to run. stdout stays the definition alone, so the diff above is
+unaffected. With `--property`, only that property's pair is shown. The TUI
+relationship editor shows the same line under its title. What neither can show
+is whether the running IDM has *picked up* a `repo.ds` change: `aic` knows of
+no endpoint that reports it, so the line describes configuration, not runtime.
+
 `--json` on a write prints what it changed, never the whole `config/managed`
 document: `object create`/`object rename`, `field …` and `hook add` print the
 one object they wrote; `relationship set`/`relationship delete` print
