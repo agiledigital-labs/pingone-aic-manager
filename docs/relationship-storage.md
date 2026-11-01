@@ -230,12 +230,27 @@ restore command and does not restore relationship records.
 
 ## Promotion: capture UAT's links, promote, restore UAT
 
-Promotion carries `repo.ds` according to the operator's statement; the API
-investigation measured a dry-run report that omitted its mapping change,
-not an actual promotion proving propagation. **Records are never promoted.**
-A promoted generic-to-mapped conversion is therefore expected to hide the
-upper environment's own generic links. That consequence is inferred from the
-measured storage switch. See [the promotion evidence](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01).
+> **Stop: this runbook did not complete on UAT (2026-11-02).** In a measured
+> run on throwaway types, the promotion delivered the mapping and hid UAT's
+> links, but UAT then could not search through the mapped column, so
+> `restore-links` refused (safely, writing nothing) and the links stayed
+> hidden. Do not run it on a real pair until
+> [Q18](api/99-quirks-and-open-questions.md) is resolved. Before any
+> promotion that carries a conversion, run the read-only check below on a
+> pair the console already mapped in that environment, and keep the capture
+> file: it is the only copy of the hidden links.
+>
+> ```sh
+> aic managed relationship verify <object>.<field> --tenant uat
+> ```
+
+Promotion carries `repo.ds` as a **whole document** (measured 2026-11-02):
+the upper environment ends up byte-equal to the lower one, and a mapping only
+the upper has is deleted. **Records are never promoted**, so a promoted
+generic-to-mapped conversion hides the upper environment's own generic links;
+measured on UAT the moment the mapping landed. The promotion report is no
+guide: it named `repo.ds` only when that was the sole change. See [the
+promotion evidence](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01).
 
 Use a separate capture of UAT's data. A dev capture is bound to dev and cannot
 be restored into UAT. Pause UAT link writers and follow the existing
@@ -286,9 +301,9 @@ links. Unsupported candidates refuse with their name and reason.
 
 **Mapped in both is safe to skip only when the bindings are equivalent.** A
 different column, owner, section or reverse binding refuses with both versions.
-An upper mapping absent in lower also refuses: whole-document promotion is
-expected to remove that binding and hide the upper's mapped links. This removal
-consequence is inference from the [storage/promotion mechanism](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01), not a measured promotion.
+An upper mapping absent in lower also refuses: whole-document promotion
+removes that binding (measured 2026-11-02) and would hide the upper's mapped
+links.
 Do not promote after either refusal. Inspect the printed bindings and bring
 the lower configuration into agreement with upper, or resolve the data
 migration separately before continuing. These commands convert generic data;
@@ -354,11 +369,8 @@ and contact the tenant administrator or Ping Support.
 
 The command reports which ends changed between the saved upper-before bindings
 and the upper-after read, with both bindings. Retain that output as promotion
-evidence. **An addition-only conversion measures propagation, not replacement
-versus merge**: both mechanisms can produce that result. Do not bypass the
-upper-only-mapping refusal to manufacture a replacement-versus-merge test.
-That behaviour remains unmeasured until an independently safe measurement is
-available.
+evidence. Replacement rather than merge was measured on 2026-11-02 with
+throwaway types; do not bypass the upper-only-mapping refusal to test it again.
 
 Once all bindings match, it restores and verifies the exact captured UAT set
 using the same engine as dev conversion. It writes **records only**, never
