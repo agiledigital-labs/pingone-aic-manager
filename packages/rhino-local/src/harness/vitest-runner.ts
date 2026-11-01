@@ -1,5 +1,5 @@
 /** Vitest worker transport. All final checks run outside test retry/skip/fails. */
-import { TestRunner, type RunnerTaskResultPack, type RunnerTaskEventPack, type RunnerTestFile, type RunnerTestSuite } from "vitest";
+import { TestRunner, type RunnerTaskResultPack, type RunnerTaskEventPack, type RunnerTestFile, type RunnerTestSuite, type RunnerTask } from "vitest";
 import { emulationAudit, emulationAuditDiagnostics, finishEmulationFile, setEmulationFile, attachEmulationAuditTransport, type EmulationAudit } from "../emulation.ts";
 
 export default class EmulationTestRunner extends TestRunner {
@@ -29,6 +29,24 @@ export default class EmulationTestRunner extends TestRunner {
     this.#publish();
   }
 
+  override onAfterRunTask(task: RunnerTask): void {
+    super.onAfterRunTask(task);
+    const audit = emulationAudit();
+    const failures = audit.failures.filter((entry) => entry.owner?.taskId === task.id);
+    this.#failTask(task, emulationAuditDiagnostics({ ...audit, failures, outstanding: [] }));
+  }
+
+  #failTask(task: RunnerTask, messages: string[]): void {
+    if (!messages.length) return;
+    task.result ??= { state: "fail" };
+    task.result.state = "fail";
+    const errors = task.result.errors ??= [];
+    const message = messages.join("\n");
+    if (!errors.some((error) => error.name === "EmulationFailureGuard" && error.message === message)) {
+      errors.push({ name: "EmulationFailureGuard", message });
+    }
+  }
+
   override async onAfterRunSuite(suite: RunnerTestSuite): Promise<void> {
     await super.onAfterRunSuite(suite);
     if ("filepath" in suite) this.#finishFile(suite as RunnerTestFile);
@@ -37,12 +55,9 @@ export default class EmulationTestRunner extends TestRunner {
   #finishFile(file: RunnerTestFile): void {
     finishEmulationFile(file.filepath);
     const audit = emulationAudit();
-    const unowned = audit.failures.filter((entry) => !entry.owner && (entry.file === file.filepath || !entry.file));
-    const messages = emulationAuditDiagnostics({ ...audit, failures: unowned, outstanding: [] });
-    if (messages.length && file.result) {
-      file.result.state = "fail";
-      (file.result.errors ??= []).push({ name: "EmulationFailureGuard", message: messages.join("\n") });
-    }
+    const failures = audit.failures.filter((entry) => entry.file === file.filepath || !entry.file);
+    const messages = emulationAuditDiagnostics({ ...audit, failures, outstanding: [] });
+    this.#failTask(file, messages);
     this.#publish();
   }
 
@@ -52,7 +67,7 @@ export default class EmulationTestRunner extends TestRunner {
     await Promise.all(this.#updates);
     super.onAfterRunFiles(files);
     if (this.#transportError) throw new Error("Emulation backstop audit transport failed", { cause: this.#transportError });
-    // A worker final check also fails closed if the reporter was overridden by CLI.
+    // Supplement persistent failed task states; this throw alone is not a verdict.
     const diagnostics = emulationAuditDiagnostics(emulationAudit());
     if (diagnostics.length) throw new Error(`Emulation run backstop:\n${diagnostics.join("\n")}`);
   }

@@ -41,6 +41,7 @@ export interface EmulationOwner {
   readonly id: string;
   readonly name: string;
   readonly kind: "test" | "suite";
+  readonly taskId?: string;
   readonly file?: string;
 }
 export interface RecordedEmulationFailure {
@@ -88,9 +89,9 @@ const registry = processGlobal[registryKey] ??= {
 const { ownership, owners, history, outstanding } = registry;
 
 export function currentEmulationOwner(): EmulationOwner | undefined { return ownership.getStore(); }
-export function createEmulationOwner(name: string, kind: EmulationOwner["kind"]): EmulationOwner {
+export function createEmulationOwner(name: string, kind: EmulationOwner["kind"], taskId?: string): EmulationOwner {
   const file = registry.location.getStore() ?? registry.file;
-  const owner = Object.freeze({ id: randomUUID(), name, kind, ...(file ? { file } : {}) });
+  const owner = Object.freeze({ id: randomUUID(), name, kind, ...(file ? { file } : {}), ...(taskId ? { taskId } : {}) });
   owners.set(owner.id, { owner, parent: ownership.getStore()?.id, expectations: [], closed: false, failed: false, late: [] });
   return owner;
 }

@@ -7,7 +7,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({ test: {
   include: process.env.R5_CASE === "late" ? ["test/fixtures/emulation-backstop/late-*.fixture.ts"] : ["test/fixtures/emulation-backstop/" + (["import", "unowned-outstanding", "fails", "retry", "skip"].includes(process.env.R5_CASE ?? "") ? "lifecycle" : "cause") + ".fixture.ts"],
   sequence: { sequencer: Ordered },
-  setupFiles: ["src/harness/vitest-setup.ts"],
+  setupFiles: [process.env.R6_LEGACY_SETUP === "true" ? "test/fixtures/emulation-backstop/legacy-setup.ts" : "src/harness/vitest-setup.ts"],
   pool: process.env.R5_POOL === "threads" ? "threads" : "forks",
   isolate: process.env.R5_ISOLATE !== "false",
   maxWorkers: 1,

@@ -1,11 +1,15 @@
 /** Main-process verdict: task inversion/retry/skip cannot change this exit status. */
-import type { Reporter, TestModule, RunnerTaskResultPack } from "vitest/node";
+import type { Reporter, Vitest, TestModule, RunnerTaskResultPack } from "vitest/node";
 import { emulationAuditDiagnostics, type EmulationAudit } from "../emulation.ts";
+
+import { EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION } from "./vitest-context.ts";
 
 export default class EmulationReporter implements Reporter {
   #audits = new Map<string, EmulationAudit>();
   #ended = false;
   #printed = new Set<string>();
+
+  onInit(vitest: Vitest): void { vitest.provide(EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION); }
 
   onTestRunStart(): void { this.#audits.clear(); this.#printed.clear(); this.#ended = false; }
   #accept(meta: object): void {
