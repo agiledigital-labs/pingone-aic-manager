@@ -1,3 +1,4 @@
+import { decodeProtocol, stringifyProtocol } from "./protocol-values.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EmulationFailure, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -53,7 +54,10 @@ export class HostCallError extends Error {
 function hostError(error: unknown): HostError {
   const record =
     typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
-  const fatal = emulationFailure(error);
+  const tenant = error instanceof HostCallError || (typeof record.class === "string" && typeof record.code === "number");
+  const fatal = emulationFailure(error) ?? (tenant ? undefined : {
+    kind: "internal" as const, message: typeof record.message === "string" ? record.message : String(error),
+  });
   const normalized: HostError = {
     class: typeof record.class === "string" ? record.class : "rhino.local.HostCallException",
     message: typeof record.message === "string" ? record.message : String(error),
@@ -63,7 +67,7 @@ function hostError(error: unknown): HostError {
     ...(fatal ? { emulation: fatal } : {}),
   };
   try {
-    return JSON.parse(JSON.stringify(normalized)) as HostError;
+    return decodeProtocol(JSON.parse(stringifyProtocol(normalized))) as HostError;
   } catch {
     return {
       class: "rhino.local.HostCallException",
@@ -249,7 +253,7 @@ class JvmProcess {
     }
     return new Promise<JobResponse>((resolve, reject) => {
       this.#pending.set(id, { resolve, reject, onCall });
-      const ok = this.#child.stdin.write(`${JSON.stringify(payload)}\n`);
+      const ok = this.#child.stdin.write(`${stringifyProtocol(payload)}\n`);
       if (!ok) {
         const onError = (error: Error): void => {
           this.#child.stdin.off("drain", onDrain);
@@ -330,7 +334,7 @@ class JvmProcess {
   #dispatch(line: string): void {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(line) as unknown;
+      parsed = decodeProtocol(JSON.parse(line) as unknown);
     } catch (error) {
       const first = this.#pending.entries().next().value;
       if (first) {
@@ -374,7 +378,7 @@ class JvmProcess {
         throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
       reply = await pending.onCall(call);
       // Validate serializability before writing, so a bad handler cannot strand a worker.
-      const line = JSON.stringify(reply);
+      const line = stringifyProtocol(reply);
       if (this.#pending.get(call.id) === pending && !this.#exit)
         this.#child.stdin.write(`${line}\n`);
       return;
@@ -387,7 +391,7 @@ class JvmProcess {
       };
     }
     if (this.#pending.get(call.id) === pending && !this.#exit) {
-      this.#child.stdin.write(`${JSON.stringify(reply)}\n`);
+      this.#child.stdin.write(`${stringifyProtocol(reply)}\n`);
     }
   }
 
@@ -514,6 +518,7 @@ export class RhinoRunner {
     if (job.resourceNameBindings !== undefined)
       payload.resourceNameBindings = job.resourceNameBindings;
     if (job.reportMissing !== undefined) payload.reportMissing = job.reportMissing;
+    if (job.internalValues !== undefined) payload.internalValues = job.internalValues;
     if (job.crestBindings !== undefined) payload.crestBindings = job.crestBindings;
     if (job.sourceName !== undefined) {
       payload.sourceName = job.sourceName;
@@ -558,7 +563,7 @@ export class RhinoRunner {
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: onCall must return a JSON value (use null)" });
         // Freeze the reply before handing control back to user code or the shadow.
         try {
-          reply = JSON.parse(JSON.stringify({ type: "reply", id, seq: entry.call.seq, result })) as HostReply;
+          reply = decodeProtocol(JSON.parse(stringifyProtocol({ type: "reply", id, seq: entry.call.seq, result }))) as HostReply;
         } catch {
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: host result is not JSON serializable" });
         }

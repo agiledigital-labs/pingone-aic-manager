@@ -5,6 +5,14 @@ import { fieldValue, pointerParts } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Document } from "./types.ts";
 
+export function own<T extends object, K extends keyof T>(value: T | undefined, key: K): T[K] | undefined {
+  return value !== undefined && Object.hasOwn(value, key) ? value[key] : undefined;
+}
+
+export function setOwn(object: Document, key: string, value: JsonValue): void {
+  Object.defineProperty(object, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
 export function isDocument(value: unknown): value is Document {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

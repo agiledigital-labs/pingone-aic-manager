@@ -20,6 +20,8 @@ export type JsonValue =
 export type JobOutcome = "ok" | "compile_error" | "runtime_error" | "timeout" | "protocol_error";
 
 export interface JobRequest {
+  /** Preserve internal completion/binding numbers separately from endpoint wire output. */
+  internalValues?: boolean;
   /** Correlates the response. Generated if omitted. */
   id?: string;
   source: string;
@@ -122,6 +124,7 @@ export interface ThrownValue {
 }
 
 export interface JobResponse {
+  internalValue?: JsonValue;
   /** Host sequences emitted but never consumed by the JVM worker. */
   unanswered?: number[];
   emulation?: EmulationFailureInfo;
@@ -173,6 +176,7 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
     ...(raw.logs === undefined ? {} : { logs: raw.logs as JobLog[] }),
     ...(raw.thrown === undefined ? {} : { thrown: raw.thrown as ThrownValue }),
     ...(raw.missing === undefined ? {} : { missing: raw.missing as string[] }),
+    ...(Object.hasOwn(raw, "internalValue") ? { internalValue: raw.internalValue as JsonValue } : {}),
     ...(raw.unanswered === undefined ? {} : { unanswered: raw.unanswered as number[] }),
     ...(raw.emulation === undefined ? {} : { emulation: raw.emulation as EmulationFailureInfo }),
     ...(raw.assumed === undefined ? {} : { assumed: raw.assumed as string[] }),

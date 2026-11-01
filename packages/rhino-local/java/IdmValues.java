@@ -15,15 +15,13 @@ import org.mozilla.javascript.Wrapper;
 
 /** Java-backed IDM values. Wire conversion and script wrappers share one backing graph. */
 final class IdmValues {
-  static final ThreadLocal<IdmValues> CURRENT = new ThreadLocal<IdmValues>();
   private final Scriptable scope;
   private final IdentityHashMap<Object, Scriptable> wrappers = new IdentityHashMap<Object, Scriptable>();
 
   IdmValues(Scriptable scope) { this.scope = scope; }
 
-  static Object wrapCurrent(Object value) { return CURRENT.get().wrap(value); }
 
-  Object wrap(Object value) {
+  synchronized Object wrap(Object value) {
     if (!(value instanceof Map) && !(value instanceof List)) return value;
     Scriptable cached = wrappers.get(value);
     if (cached != null) return cached;
@@ -54,16 +52,21 @@ final class IdmValues {
   }
 
   static Object javaValue(Object value) {
-    return javaValue(value, new IdentityHashMap<Object, Boolean>());
+    return javaValue(value, new IdentityHashMap<Object, Boolean>(), false);
   }
 
-  private static Object javaValue(Object value, IdentityHashMap<Object, Boolean> active) {
+  static Object internalValue(Object value) {
+    return javaValue(value, new IdentityHashMap<Object, Boolean>(), true);
+  }
+
+  private static Object javaValue(Object value, IdentityHashMap<Object, Boolean> active, boolean internal) {
     if (value == Scriptable.NOT_FOUND || Undefined.isUndefined(value)) return null;
     if (value instanceof Value) return ((Value) value).backing();
-    if (value instanceof Wrapper) return javaValue(((Wrapper) value).unwrap(), active);
+    if (value instanceof Wrapper) return javaValue(((Wrapper) value).unwrap(), active, internal);
     if (value instanceof CharSequence) return value.toString();
     if (value instanceof Number) {
       double n = ((Number) value).doubleValue();
+      if (internal && (!Double.isFinite(n) || Double.doubleToRawLongBits(n) == Double.doubleToRawLongBits(-0.0))) return Double.valueOf(n);
       if (Double.isNaN(n)) return Double.valueOf(n);
       if (n == Math.rint(n)) return Long.valueOf((long) n);
       return Double.valueOf(n);
@@ -75,14 +78,14 @@ final class IdmValues {
       if (value instanceof NativeArray) {
         List<Object> list = new ArrayList<Object>();
         long length = ((NativeArray) value).getLength();
-        for (int i = 0; i < length; i++) list.add(javaValue(scriptable.get(i, scriptable), active));
+        for (int i = 0; i < length; i++) list.add(javaValue(scriptable.get(i, scriptable), active, internal));
         return list;
       }
       Map<String, Object> map = new HashMap<String, Object>();
       for (Object id : scriptable.getIds()) {
         Object member = id instanceof Number ? scriptable.get(((Number) id).intValue(), scriptable)
             : scriptable.get(id.toString(), scriptable);
-        map.put(id.toString(), javaValue(member, active));
+        map.put(id.toString(), javaValue(member, active, internal));
       }
       return map;
     } finally {

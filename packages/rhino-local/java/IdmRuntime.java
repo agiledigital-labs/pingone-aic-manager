@@ -21,15 +21,15 @@ final class IdmRuntime {
   private final IdmValues values;
   private final HostCalls calls;
   private final List<Object> logs = new ArrayList<Object>();
-  private final List<String> missing = new ArrayList<String>();
+  private final java.util.Set<String> missing = new java.util.concurrent.ConcurrentSkipListSet<String>();
   private final Map<String, Object> bindings;
   private final Map<String, Object> properties;
-  private final List<String> assumed = new ArrayList<String>();
+  private final java.util.Set<String> assumed = new java.util.concurrent.ConcurrentSkipListSet<String>();
 
   private IdmRuntime(Context cx, HostCalls calls, Map<String, Object> job) {
     scope = IdmScope.create(cx);
     values = new IdmValues(scope);
-    IdmValues.CURRENT.set(values);
+    calls.values = values;
     this.calls = calls;
     properties = job.get("properties") == null ? new LinkedHashMap<String, Object>() : Json.asObject(job.get("properties"), "properties");
     bindings = job.get("bindings") == null ? new LinkedHashMap<String, Object>() : Json.asObject(job.get("bindings"), "bindings");
@@ -63,6 +63,7 @@ final class IdmRuntime {
     IdmRuntime runtime = null;
     Map<String, Object> response;
     boolean compiling = false;
+    Object internalResult = null;
     try {
       calls = new HostCalls(id, factory);
       runtime = new IdmRuntime(cx, calls, job);
@@ -80,6 +81,7 @@ final class IdmRuntime {
       Object result = script.exec(cx, runtime.scope);
       String resultGlobal = Json.optionalString(job, "resultGlobal");
       if (resultGlobal != null) result = ScriptableObject.getProperty(runtime.scope, resultGlobal);
+      if (Boolean.TRUE.equals(job.get("internalValues"))) internalResult = IdmValues.internalValue(result);
       response = Runner.response(id, "ok", JsValues.of(null), null);
       response.put("valueKind", result == Scriptable.NOT_FOUND ? "missing" : Undefined.isUndefined(result) ? "undefined"
           : result == null ? "null" : result instanceof Scriptable ? "object" : result instanceof CharSequence ? "string"
@@ -89,6 +91,8 @@ final class IdmRuntime {
       response = Runner.errorFromRhino(id, compiling ? "compile_error" : "runtime_error", e);
       response.put("thrown", thrown(e));
     } catch (Throwable e) {
+      if (runtime == null && calls != null) calls.fail(new EmulationFailure(
+          e instanceof IllegalArgumentException ? "protocol" : "internal", "IDM protocol setup: " + e.getMessage()));
       response = e instanceof Error && Runner.isInterrupt((Error) e) ? Runner.timeoutResponse(id)
           : Runner.errorResponse(id, "runtime_error", e, sourceName, -1, -1, null);
       Map<String, Object> thrown = new LinkedHashMap<String, Object>();
@@ -98,7 +102,6 @@ final class IdmRuntime {
       response.put("thrown", thrown);
     } finally {
       if (calls != null) calls.close();
-      IdmValues.CURRENT.remove();
       Context.exit();
     }
     if (calls != null && calls.failure != null) {
@@ -117,8 +120,13 @@ final class IdmRuntime {
       if (names != null) for (String name : names) if (!absent.contains(name)) absent.add(name);
     }
     if (Boolean.TRUE.equals(job.get("reportMissing")) || !absent.isEmpty()) response.put("missing", absent);
-    if (runtime != null && !runtime.assumed.isEmpty()) response.put("assumed", runtime.assumed);
-    return Json.asObject(IdmValues.wireValue(response), "response");
+    if (runtime != null && !runtime.assumed.isEmpty()) response.put("assumed", new ArrayList<String>(runtime.assumed));
+    Map<String, Object> serialized = Json.asObject(IdmValues.wireValue(response), "response");
+    if (Boolean.TRUE.equals(job.get("internalValues"))) {
+      if ("ok".equals(response.get("outcome"))) serialized.put("internalValue", internalResult);
+      serialized.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : runtime.bindings);
+    }
+    return serialized;
   }
 
   private static Map<String, Object> thrown(RhinoException e) {
@@ -210,7 +218,9 @@ final class IdmRuntime {
   private Object routed(String method, Object[] original) {
     Function callback = original.length > 0 && original[original.length - 1] instanceof Function ? (Function) original[original.length - 1] : null;
     List<Object> args = new ArrayList<Object>();
-    for (Object arg : original) if (!(arg instanceof Function)) args.add(IdmValues.javaValue(arg));
+    String assumption = "internal openidm special-number transport preserves numeric values; tenant behavior unmeasured";
+    if (!assumed.contains(assumption)) assumed.add(assumption);
+    for (Object arg : original) if (!(arg instanceof Function)) args.add(IdmValues.internalValue(arg));
     int min = "read".equals(method) ? 1 : "query".equals(method) || "delete".equals(method) ? 2 : 3;
     int max = "read".equals(method) || "query".equals(method) || "delete".equals(method) ? 3 : "update".equals(method) || "patch".equals(method) ? 4 : 5;
     boolean valid = args.size() >= min && args.size() <= max && args.get(0) instanceof String;
