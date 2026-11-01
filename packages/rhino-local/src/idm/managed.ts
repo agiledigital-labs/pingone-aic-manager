@@ -4,6 +4,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { HostCallError } from "../runner.ts";
 import type { JsonValue } from "../protocol.ts";
+import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
 import { fieldValue, matchesFilter, parseFilter } from "./filter.ts";
@@ -55,12 +56,7 @@ export class ManagedStore {
     const action = request.query?._action;
     const noneMatch = header(request, "If-None-Match");
     if (noneMatch !== undefined && noneMatch !== "*") missing(this.evidence, "If-None-Match other than star");
-    for (const [name, property] of Object.entries(type.schema.properties)) {
-      if (property.type === "relationship" ||
-        (property.type === "array" && (property.items as { type?: string } | undefined)?.type === "relationship")) {
-        missing(this.evidence, `managed relationship: ${type.name}/${name}`);
-      }
-    }
+    checkCapabilities(type, !["GET", "DELETE"].includes(request.method), this.evidence, this.policy !== undefined);
     this.evidence.measured("managed CRUD status and response shapes", "docs/api/10-managed-objects.md");
     if (request.method === "GET") {
       if (id !== undefined) return { status: 200, body: await this.read(type, id, op) };
