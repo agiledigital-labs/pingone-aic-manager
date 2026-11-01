@@ -52,7 +52,7 @@ export interface RecordedEmulationFailure {
 export interface EmulationFailureSource {
   readonly emulationFailures: readonly RecordedEmulationFailure[];
 }
-interface Expectation { name: string; match: (failure: EmulationFailureInfo) => boolean }
+interface Expectation { name: string; match: (cause: string) => boolean; cause?: string | undefined }
 interface OwnerState {
   owner: EmulationOwner;
   parent: string | undefined;
@@ -93,23 +93,45 @@ export function bindEmulationOwner<A extends unknown[], T>(action: (...args: A) 
   return (...args) => ownership.run(owner, () => action(...args));
 }
 
+/** A wrapper's provenance prefix does not introduce a second underlying cause. */
+function causes(failure: EmulationFailureInfo): string[] {
+  const missing = (failure.missing ?? []).map((name) => name.replace(/^runtime helper: /, ""));
+  return [...new Set(failure.kind === "missing" && missing.length ? missing : [...missing, failure.message])];
+}
+function coverage(owner: EmulationOwner | undefined): Map<string, string> {
+  const claims = owner ? owners.get(owner.id)?.expectations ?? [] : [];
+  const available = [...new Set(history.filter((entry) => entry.owner?.id === owner?.id).flatMap((entry) => causes(entry.failure)))];
+  const covered = new Map<string, string>();
+  for (const claim of claims) {
+    // Bind once: one declaration can cover repeated observations of ONE cause.
+    claim.cause ??= available.find((cause) => !covered.has(cause) && claim.match(cause));
+    if (claim.cause !== undefined) covered.set(claim.cause, claim.name);
+  }
+  return covered;
+}
+function unexpected(entry: RecordedEmulationFailure): string[] {
+  const covered = coverage(entry.owner);
+  return causes(entry.failure).filter((cause) => !covered.has(cause));
+}
 function snapshot(entry: Entry): RecordedEmulationFailure {
-  const expected = entry.owner && owners.get(entry.owner.id)?.expectations.find((claim) => claim.match(entry.failure));
+  const covered = coverage(entry.owner);
+  const names = causes(entry.failure).map((cause) => covered.get(cause));
   return structuredClone({ sequence: entry.sequence, context: entry.context, failure: entry.failure,
-    ...(entry.owner ? { owner: entry.owner } : {}), ...(expected ? { expected: expected.name } : {}) });
+    ...(entry.owner ? { owner: entry.owner } : {}), ...(names.every((name) => name !== undefined) ? { expected: [...new Set(names)].join(", ") } : {}) });
 }
 export function recordedEmulationFailures(): readonly RecordedEmulationFailure[] { return history.map(snapshot); }
 
-/** Explicit named expectations retain evidence; absence is checked at verdict time. */
+/** Each declaration covers one whole cause; regexes must match its entire name. */
 export function expectOwnedEmulationFailure(name: string | RegExp): void {
   const owner = ownership.getStore();
   const state = owner && owners.get(owner.id);
   if (!state || state.closed || owner?.kind !== "test") throw new Error("expectEmulationFailure requires the Vitest emulation setup and an active test");
-  const match = (failure: EmulationFailureInfo) => [failure.message, ...(failure.missing ?? [])].some((value) => {
-    if (typeof name === "string") return value === name;
+  const match = (cause: string) => {
+    if (typeof name === "string") return cause === name;
     name.lastIndex = 0;
-    return name.test(value);
-  });
+    const result = name.exec(cause);
+    return result?.index === 0 && result[0].length === cause.length;
+  };
   state.expectations.push({ name: String(name), match });
 }
 
@@ -142,9 +164,9 @@ export function verifyEmulationOwner(owner: EmulationOwner): void {
   const pending = [...outstanding].filter((work) => work.owner?.id === owner.id);
   for (const work of pending) work.journal.record({ kind: "protocol", message: `outstanding work at test end: ${work.context}` }, work.context, owner);
   const entries = history.filter((entry) => entry.owner?.id === owner.id);
-  const diagnostics = entries.filter((entry) => !state.expectations.some((claim) => claim.match(entry.failure)))
-    .map((entry) => `${entry.context}: ${entry.failure.kind}: ${entry.failure.message}`);
-  for (const claim of state.expectations) if (!entries.some((entry) => claim.match(entry.failure))) {
+  const diagnostics = entries.flatMap((entry) => unexpected(entry).map((cause) => `${entry.context}: ${entry.failure.kind}: ${cause}`));
+  coverage(owner);
+  for (const claim of state.expectations) if (claim.cause === undefined) {
     diagnostics.push(`expected emulation failure did not occur: ${claim.name}`);
   }
   // Outstanding work cannot be waived by an expected-failure declaration.

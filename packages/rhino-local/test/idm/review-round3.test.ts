@@ -100,7 +100,7 @@ it.each(["missing", "timeout", "protocol", "internal"] as const)("R3 #4 runner j
   await runner.eval({ engine: "idm", timeoutMs: 80, source }, kind === "internal" ? { onCall: () => { throw new Error("adapter broke"); } } : {});
   expect(runner.emulationFailures.slice(start)).toEqual(expect.arrayContaining([expect.objectContaining({ failure: expect.objectContaining({ kind }) })]));
   const count = runner.emulationFailures.length;
-  expectEmulationFailure(kind === "missing" ? /require/ : kind === "timeout" ? /IDM harness timeout/ : kind === "protocol" ? /onCall/ : /adapter broke/);
+  expectEmulationFailure(kind === "missing" ? /require/ : kind === "timeout" ? /IDM harness timeout/ : kind === "protocol" ? /rhino-local: no onCall handler for IDM job/ : /adapter broke/);
   await runner.eval({ engine: "idm", source: "throw {code:501,message:'tenant'};" });
   expect(runner.emulationFailures).toHaveLength(count);
 });
@@ -120,7 +120,7 @@ it.each(["duplicate", "closed"] as const)("R3 #4 runner journals %s job rejectio
         },
       });
     }
-    expectEmulationFailure(reason === "closed" ? /runner is closing/ : /duplicate active job id/);
+    expectEmulationFailure(reason === "closed" ? /rhino-local: runner is closing/ : /rhino-local: duplicate active job id: .+/);
     expect(owned.emulationFailures).toEqual(expect.arrayContaining([
       expect.objectContaining({ context: `job ${id}`, failure: expect.objectContaining({ kind: "protocol" }) }),
     ]));

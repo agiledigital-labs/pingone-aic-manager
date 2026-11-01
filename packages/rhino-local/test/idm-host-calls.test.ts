@@ -221,7 +221,7 @@ describe("IDM re-entrant host calls", () => {
   });
 
   it("rejects duplicate active job ids without replacing the pending handler", async () => {
-    expectEmulationFailure(/duplicate active job id/);
+    expectEmulationFailure(/rhino-local: duplicate active job id: .+/);
     const started = deferred<void>();
     const release = deferred<void>();
     const first = runner.eval(

@@ -95,7 +95,7 @@ describe("IDM primary/shadow replay on two real host JVMs", () => {
   ])(
     "raises LaneDivergenceError on %s even if the final response agrees",
     async (_label, source) => {
-    expectEmulationFailure(/host and container JVMs disagree/);
+    expectEmulationFailure(/LaneDivergenceError: rhino-local: host and container JVMs disagree[\s\S]*/);
       let effects = 0;
       await expect(
         runner.eval(
@@ -175,7 +175,7 @@ it("R2 #10/new4 uses JVM consumption when a synchronous handler blocks Node", as
 });
 
 it.each(["primary", "shadow"] as const)("R2 new3 %s-only saturation is an emulation failure", async (lane) => {
-    expectEmulationFailure(/concurrent job limit exceeded/);
+    expectEmulationFailure(/rhino-local: concurrent job limit exceeded \(\d+\)/);
   const limited = await RhinoRunner.spawn({ lane: "both", maxConcurrentJobs: 1 });
   let signal!: () => void;
   let release!: () => void;

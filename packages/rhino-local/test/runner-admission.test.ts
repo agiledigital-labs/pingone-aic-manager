@@ -70,7 +70,7 @@ it("#11 refuses excess concurrent jobs immediately and keeps accepted jobs alive
 });
 
 it("#11 re-entry at the admission limit refuses instead of queuing or deadlocking", async () => {
-    expectEmulationFailure(/concurrent job limit exceeded/);
+    expectEmulationFailure(/rhino-local: concurrent job limit exceeded \(\d+\)/);
   const runner = await RhinoRunner.spawn({ maxConcurrentJobs: 2 });
   const outcomes: string[] = [];
   const evaluate = async (): Promise<JsonValue> => {
