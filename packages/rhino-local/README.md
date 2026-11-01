@@ -795,19 +795,25 @@ replays snapshots of the primary replies, checking method, arguments and sequenc
 as well as the final response. Extra, missing or different calls raise
 `LaneDivergenceError`, even when the script catches the failure and returns the
 same final value. Nested evaluations use the same policy. The primary transcript
-is frozen when its response arrives; late handler replies cannot change shadow replay.
+is frozen when its response arrives. JVM responses name emitted host sequences
+whose replies the worker never consumed; replay withholds those replies even
+when a synchronous Node handler returned before Node read the timeout response.
 
 The stdin reader dispatches jobs to worker threads and routes replies to waiting
 calls; stdout writes are serialized. Jobs may complete in any order. IDs must
 be unique among active jobs; sequence numbers start at 1 for each job.
 Admission uses at most 128 job workers by default; excess jobs receive `protocol_error` immediately, including nested
 evaluations. There is no queue that can deadlock behind blocked parent jobs.
-`RhinoRunner.spawn({maxConcurrentJobs})` sets the limit. A primary admission
-refusal executes no script and is returned without admitting it on the shadow.
+`RhinoRunner.spawn({maxConcurrentJobs})` sets the limit. Capacity refusal on
+either lane is reported as an emulation failure, not a script divergence.
+A primary refusal is returned without admitting the job on the shadow.
 Shutdown stops admission, keeps routing replies, and waits up to 5 seconds for
 accepted jobs; remaining jobs receive `protocol_error` before the shutdown
 acknowledgement and process exit. `shutdownWaitMs` sets that bound; client
-close allows the JVM's bound to elapse before escalating termination.
+public `close()` first drains accepted evaluations, including shadow replay,
+while permitting their nested callbacks and replies. It then requests protocol
+shutdown instead of closing stdin. Each phase is bounded by `shutdownWaitMs`;
+process termination has one extra second of grace and a two-second SIGTERM bound.
 
 Existing job/response records remain untagged. The new records are:
 

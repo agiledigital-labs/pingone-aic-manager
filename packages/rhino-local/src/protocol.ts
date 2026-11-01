@@ -122,6 +122,8 @@ export interface ThrownValue {
 }
 
 export interface JobResponse {
+  /** Host sequences emitted but never consumed by the JVM worker. */
+  unanswered?: number[];
   emulation?: EmulationFailureInfo;
   id: string;
   outcome: JobOutcome;
@@ -171,6 +173,7 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
     ...(raw.logs === undefined ? {} : { logs: raw.logs as JobLog[] }),
     ...(raw.thrown === undefined ? {} : { thrown: raw.thrown as ThrownValue }),
     ...(raw.missing === undefined ? {} : { missing: raw.missing as string[] }),
+    ...(raw.unanswered === undefined ? {} : { unanswered: raw.unanswered as number[] }),
     ...(raw.emulation === undefined ? {} : { emulation: raw.emulation as EmulationFailureInfo }),
     ...(raw.assumed === undefined ? {} : { assumed: raw.assumed as string[] }),
   };

@@ -277,7 +277,7 @@ class JvmProcess {
     }
     this.#closed = true;
     try {
-      this.#child.stdin.end();
+      this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
     } catch {
       // already closed
     }
@@ -375,7 +375,7 @@ class JvmProcess {
       reply = await pending.onCall(call);
       // Validate serializability before writing, so a bad handler cannot strand a worker.
       const line = JSON.stringify(reply);
-      if (this.#pending.get(call.id) === pending && !this.#closed && !this.#exit)
+      if (this.#pending.get(call.id) === pending && !this.#exit)
         this.#child.stdin.write(`${line}\n`);
       return;
     } catch (error) {
@@ -386,7 +386,7 @@ class JvmProcess {
         error: hostError(error),
       };
     }
-    if (this.#pending.get(call.id) === pending && !this.#closed && !this.#exit) {
+    if (this.#pending.get(call.id) === pending && !this.#exit) {
       this.#child.stdin.write(`${JSON.stringify(reply)}\n`);
     }
   }
@@ -418,10 +418,15 @@ export class RhinoRunner {
   readonly lane: JvmLane;
   #primary: JvmProcess;
   #shadow: JvmProcess | undefined;
+  #closing = false;
+  #closePromise: Promise<void> | undefined;
+  #jobs = new Set<Promise<void>>();
+  readonly #shutdownWaitMs: number;
   #activeIds = new Set<string>();
   #callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
 
-  private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined) {
+  private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined, shutdownWaitMs: number) {
+    this.#shutdownWaitMs = shutdownWaitMs;
     this.lane = lane;
     this.#primary = primary;
     this.#shadow = shadow;
@@ -457,7 +462,7 @@ export class RhinoRunner {
     if (primary === undefined) {
       throw new Error("rhino-local: no runner lane selected");
     }
-    return new RhinoRunner(lane, primary, shadow);
+    return new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
   }
 
   /** What the (primary) JVM reported at startup. */
@@ -477,7 +482,11 @@ export class RhinoRunner {
       if (parent) parent.failure ??= failure;
       throw new EmulationFailure(failure);
     }
+    if (this.#closing && !this.#callScope.getStore()) throw new EmulationFailure({ kind: "protocol", message: "rhino-local: runner is closing" });
     this.#activeIds.add(id);
+    let finish!: () => void;
+    const done = new Promise<void>((resolve) => { finish = resolve; });
+    this.#jobs.add(done);
     try {
       const response = await this.#evalJob({ ...job, id }, options);
       const fatal = responseFailure(response);
@@ -490,6 +499,8 @@ export class RhinoRunner {
       throw error;
     } finally {
       this.#activeIds.delete(id);
+      this.#jobs.delete(done);
+      finish();
     }
   }
 
@@ -568,6 +579,8 @@ export class RhinoRunner {
         this.#primary.send(id, payload),
         this.#shadow.send(id, payload),
       ]);
+      if (host.outcome === "protocol_error") return host;
+      if (container.outcome === "protocol_error") return container;
       if (!isDeepStrictEqual(withoutId(host), withoutId(container))) {
         throw new LaneDivergenceError(job.sourceName ?? id, host, container);
       }
@@ -578,7 +591,7 @@ export class RhinoRunner {
     transcriptFrozen = true;
     // A harness admission refusal ran no script. Shadow replay must not admit work
     // that the primary refused while its ancestors occupied all workers.
-    if (host.outcome === "protocol_error" && host.error?.message?.startsWith("rhino-local: concurrent job limit exceeded")) return host;
+    if (host.outcome === "protocol_error") return host;
     const replay = structuredClone(transcript);
     let at = 0;
     let divergence: string | undefined;
@@ -600,8 +613,9 @@ export class RhinoRunner {
       }
       // Primary finished without a reply only when its worker timed out waiting.
       // Leave the shadow waiting too, so its own deadline produces the same outcome.
-      return recorded.reply ?? new Promise<HostReply>(() => {});
+      return !host.unanswered?.includes(call.seq) && recorded.reply ? recorded.reply : new Promise<HostReply>(() => {});
     });
+    if (container.outcome === "protocol_error") return container;
     if (divergence !== undefined || at !== replay.length) {
       throw new LaneDivergenceError(
         job.sourceName ?? id,
@@ -617,7 +631,13 @@ export class RhinoRunner {
   }
 
   async close(): Promise<void> {
-    await Promise.all(this.#processes().map((p) => p.close()));
+    this.#closePromise ??= (async () => {
+      this.#closing = true;
+      // Keep both lanes usable until accepted evaluations (including shadow replay) finish.
+      await Promise.race([Promise.all([...this.#jobs]), sleep(this.#shutdownWaitMs)]);
+      await Promise.all(this.#processes().map((p) => p.close()));
+    })();
+    await this.#closePromise;
   }
 
   /** Forcibly stop every JVM. Every pending eval rejects. Used by crash tests. */
