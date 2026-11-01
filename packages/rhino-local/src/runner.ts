@@ -124,6 +124,10 @@ export interface SpawnRunnerOptions {
   /** Jar and compiled-class cache. Default: `AIC_SCRIPT_TESTER_CACHE`, else `~/.cache/aic-script-tester`. */
   cache?: string;
   spawnTimeoutMs?: number;
+  /** Immediate protocol_error when all workers are occupied. Default 128; no queued jobs. */
+  maxConcurrentJobs?: number;
+  /** Accepted jobs finish or receive a refusal before exit. Default 5000ms. */
+  shutdownWaitMs?: number;
 }
 
 type Pending = {
@@ -141,12 +145,14 @@ class JvmProcess {
   #stdoutBuf = "";
   #stderrBuf = "";
   #closed = false;
+  readonly #shutdownWaitMs: number;
   #spawnError: Error | undefined;
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   #exitWaiters: Array<() => void> = [];
   environment: RunnerEnvironment | undefined;
 
-  constructor(lane: "host" | "container", launch: Launch) {
+  constructor(lane: "host" | "container", launch: Launch, shutdownWaitMs = 5000) {
+    this.#shutdownWaitMs = shutdownWaitMs;
     this.lane = lane;
     this.containerName = launch.containerName;
     const child = spawn(launch.command, launch.args, {
@@ -270,7 +276,7 @@ class JvmProcess {
     }
     const exited = await Promise.race([
       this.#waitForExit().then(() => true),
-      sleep(5_000).then(() => false),
+      sleep(this.#shutdownWaitMs + 1_000).then(() => false),
     ]);
     if (!exited) {
       this.#child.kill("SIGTERM");
@@ -419,13 +425,20 @@ export class RhinoRunner {
     const jar = await ensureRhinoJar(cache);
     const classes = await ensureRunnerClasses(jar, { cache });
     const spawnTimeoutMs = options.spawnTimeoutMs ?? 60_000;
+    const limits: string[] = [];
+    for (const [flag, value] of [["max-concurrent-jobs", options.maxConcurrentJobs], ["shutdown-wait-ms", options.shutdownWaitMs]] as const) {
+      if (value === undefined) continue;
+      if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`rhino-local: ${flag} must be a positive integer`);
+      limits.push(`--${flag}=${value}`);
+    }
+    const withLimits = (launch: Launch): Launch => ({ ...launch, args: [...launch.args, ...limits] });
     const processes: JvmProcess[] = [];
     try {
       if (lane === "host" || lane === "both") {
-        processes.push(new JvmProcess("host", hostLaunch(classes, jar)));
+        processes.push(new JvmProcess("host", withLimits(hostLaunch(classes, jar)), options.shutdownWaitMs));
       }
       if (lane === "container" || lane === "both") {
-        processes.push(new JvmProcess("container", containerLaunch(classes, jar)));
+        processes.push(new JvmProcess("container", withLimits(containerLaunch(classes, jar)), options.shutdownWaitMs));
       }
       await Promise.all(processes.map((p) => p.waitUntilReady(spawnTimeoutMs)));
     } catch (error) {
@@ -538,6 +551,9 @@ export class RhinoRunner {
     // Sequential shadow replay avoids duplicate effects and naturally supports nested evals.
     const host = await this.#primary.send(id, payload, primaryCall);
     transcriptFrozen = true;
+    // A harness admission refusal ran no script. Shadow replay must not admit work
+    // that the primary refused while its ancestors occupied all workers.
+    if (host.outcome === "protocol_error" && host.error?.message?.startsWith("rhino-local: concurrent job limit exceeded")) return host;
     const replay = structuredClone(transcript);
     let at = 0;
     let divergence: string | undefined;

@@ -794,8 +794,17 @@ is frozen when its response arrives; late handler replies cannot change shadow r
 
 The stdin reader dispatches jobs to worker threads and routes replies to waiting
 calls; stdout writes are serialized. Jobs may complete in any order. IDs must
-be unique among active jobs; sequence numbers start at 1 for each job. Existing
-job/response records remain untagged. The new records are:
+be unique among active jobs; sequence numbers start at 1 for each job.
+Admission uses at most 128 job workers by default; excess jobs receive `protocol_error` immediately, including nested
+evaluations. There is no queue that can deadlock behind blocked parent jobs.
+`RhinoRunner.spawn({maxConcurrentJobs})` sets the limit. A primary admission
+refusal executes no script and is returned without admitting it on the shadow.
+Shutdown stops admission, keeps routing replies, and waits up to 5 seconds for
+accepted jobs; remaining jobs receive `protocol_error` before the shutdown
+acknowledgement and process exit. `shutdownWaitMs` sets that bound; client
+close allows the JVM's bound to elapse before escalating termination.
+
+Existing job/response records remain untagged. The new records are:
 
 ```jsonl
 {"id":"outer","engine":"idm","source":"openidm.read('managed/example/1').label"}
