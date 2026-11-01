@@ -17,12 +17,7 @@ export type JsonValue =
  * - `timeout` — instruction observer fired (`Error("Interrupt.")`)
  * - `protocol_error` — the job itself was malformed
  */
-export type JobOutcome =
-  | "ok"
-  | "compile_error"
-  | "runtime_error"
-  | "timeout"
-  | "protocol_error";
+export type JobOutcome = "ok" | "compile_error" | "runtime_error" | "timeout" | "protocol_error";
 
 export interface JobRequest {
   /** Correlates the response. Generated if omitted. */
@@ -148,7 +143,9 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
     valueKind: raw.valueKind,
     value: raw.value as JsonValue,
     error: parseJobError(raw.error),
-    ...(raw.bindings === undefined ? {} : { bindings: raw.bindings as { [key: string]: JsonValue } }),
+    ...(raw.bindings === undefined
+      ? {}
+      : { bindings: raw.bindings as { [key: string]: JsonValue } }),
     ...(raw.logs === undefined ? {} : { logs: raw.logs as JobLog[] }),
     ...(raw.thrown === undefined ? {} : { thrown: raw.thrown as ThrownValue }),
   };
@@ -198,12 +195,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const HOST_METHODS: ReadonlySet<string> = new Set(["read", "create", "update", "patch", "delete", "query", "action"]);
+const HOST_METHODS: ReadonlySet<string> = new Set([
+  "read",
+  "create",
+  "update",
+  "patch",
+  "delete",
+  "query",
+  "action",
+]);
 
 export function parseHostCall(raw: unknown): HostCall | undefined {
   if (!isRecord(raw) || raw.type !== "call") return undefined;
-  if (typeof raw.id !== "string" || raw.id.length === 0 || !Number.isSafeInteger(raw.seq) ||
-      (raw.seq as number) < 1 || typeof raw.method !== "string" || !HOST_METHODS.has(raw.method) || !Array.isArray(raw.args)) {
+  if (
+    typeof raw.id !== "string" ||
+    raw.id.length === 0 ||
+    !Number.isSafeInteger(raw.seq) ||
+    (raw.seq as number) < 1 ||
+    typeof raw.method !== "string" ||
+    !HOST_METHODS.has(raw.method) ||
+    !Array.isArray(raw.args)
+  ) {
     throw new Error("rhino-local: malformed host call");
   }
   return raw as unknown as HostCall;

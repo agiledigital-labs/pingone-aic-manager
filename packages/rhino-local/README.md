@@ -4,7 +4,7 @@ Two jobs, one package:
 
 1. Generate the **scripted-decision mock binding surface** from the captured AM
    contexts metadata at `docs/api/bindings/scripted-decision-next.json`.
-2. Talk to the long-lived host-JVM runner so tests can eval scripts without
+2. Talk to the long-lived JVM runner so tests can eval AM or IDM scripts without
    starting a JVM per case.
 
 The generator emits presence, not behaviour: every method throws
@@ -697,14 +697,116 @@ Job shape (open enough to carry later mock bindings):
 
 - `source` / `sourceName` — author's script; `sourceName` is Rhino's source
   name, so a parse error names the author's file and line, not `<eval>`
-- `globals` — JSON values placed in ENGINE_SCOPE Bindings
+- `engine` — `"am"` (default) or `"idm"`
+- `globals` — AM JSON values placed in ENGINE_SCOPE Bindings
 - `preamble` — evaluated first so concatenating mocks into `source` is not
   needed (that would shift line numbers)
 - `timeoutMs` — per-job; AM's `Error("Interrupt.")` past the instruction
-  observer. Omit for the runner's 10s harness default; `0` is AM's no-timeout
+  observer. Omit for the runner's 10s harness default; `0` disables timeouts
 
 Outcomes are machine-readable and distinct: `ok`, `compile_error`,
 `runtime_error`, `timeout`.
+
+### IDM scripts and re-entrant host calls
+
+The IDM lane uses ES6 (200), compiled optimization level 9, the plain Rhino
+feature set, and a Context locale of `en`. AM retains its interpreter and
+`en-US` Context locale. `timeoutMs: 0` uses an actual plain `ContextFactory`
+and observer threshold 0, matching the measured IDM configuration. Positive
+timeouts enable instruction checks in compiled bytecode, including tight loops;
+they also bound waits for host replies. Java code called by a script is outside
+the instruction observer. Both engines run on the runner's Java 25 runtime;
+the measured tenant IDM runtime uses Java 21.
+
+Each IDM job has a fresh shell `Global` above a deferred binding scope. Named
+bindings resolve; enumerating the global with `for (p in this)` fails the job
+with an uncatchable Java `UnsupportedOperationException`. Fresh `Global`
+initialization measured about 0.063 ms after warmup, so globals and standard
+prototypes remain isolated per job.
+
+```ts
+import { HostCallError, RhinoRunner } from "@agiledigital/pingone-aic-script-tester/runner";
+
+const runner = await RhinoRunner.spawn();
+try {
+  const response = await runner.eval({
+    engine: "idm",
+    source: "object.label = openidm.read('managed/example/1').label; object",
+    bindings: { object: {}, resourceName: "managed/example/1" },
+    resourceNameBindings: ["resourceName"],
+  }, {
+    onCall: async (call) => {
+      // This may await runner.eval(...) to run a hook that itself calls out.
+      if (call.method === "read") return { label: "example" };
+      throw new HostCallError({
+        class: "org.forgerock.json.resource.NotSupportedException",
+        message: "example handler only supports read",
+        code: 405,
+        detail: {},
+      });
+    },
+  });
+  // response.value is JSON; response.bindings includes mutations to seeded maps/lists.
+} finally {
+  await runner.close();
+}
+```
+
+`bindings` supplies whichever top-level names the caller needs. Maps and lists
+are Java-backed replicas: map own-property names/descriptors are empty even
+though enumeration works, assigned objects become `HashMap`s, and lists pass
+`Array.isArray` while direct `JSON.stringify(list)` produces indexed objects.
+Map JSON serialization turns nested lists into arrays. `resourceNameBindings`
+marks string-valued bindings to wrap as Java resource-name objects.
+
+`openidm.read/create/update/patch/delete/query/action` emit host calls with
+converted JSON arguments. Function arguments are dropped; a final query callback
+runs on the JVM once per returned row, with `result` and `resultCount` removed
+from the query completion. Resource routing, missing-resource behavior, query
+validation, and storage policy belong to `onCall`. This slice supplies no store
+or endpoint dispatcher. A job without `onCall` receives a catchable failed call
+immediately. A handler must return a JSON value (use `null` for no result).
+Throw `HostCallError` to preserve a CREST class, message, numeric code and detail;
+the script receives a Rhino `JavaException` with `javaException.getCode()` and
+`getDetail()`. Ordinary handler errors become status-500 host failures.
+
+IDM responses add `bindings`, ordered `logs` (`surface`, `level`, `message`,
+`args`), and, on failure, `thrown`. `thrown.kind` distinguishes `object`, `error`,
+`string`, `primitive`, `javaException` and raw `java` failures; `value`, `class`,
+`code`, `message` and `detail` retain the information the emulator needs to apply
+its hook/endpoint HTTP policy. A string-valued `code` stays a string. AM's
+response shape is unchanged. IDM completion objects are returned as JSON;
+undefined completions have `valueKind: "undefined"` and `value: null`.
+
+`logger` and `console.log` append to `logs` without host calls. Shell `print`
+writes to stderr to protect the protocol. `identityServer.getProperty` returns
+its supplied default for missing properties. `require`, `parseFilter`, `hash`,
+`encrypt`, `isHashed`, `matches`, `decrypt`, and `isEncrypted` fail explicitly
+with `rhino-local: <name> is not emulated yet`.
+
+In the `both` lane, the primary runs first and invokes `onCall` once. The shadow
+replays snapshots of the primary replies, checking method, arguments and sequence
+as well as the final response. Extra, missing or different calls raise
+`LaneDivergenceError`, even when the script catches the failure and returns the
+same final value. Nested evaluations use the same policy.
+
+The stdin reader dispatches jobs to worker threads and routes replies to waiting
+calls; stdout writes are serialized. Jobs may complete in any order. IDs must
+be unique among active jobs; sequence numbers start at 1 for each job. Existing
+job/response records remain untagged. The new records are:
+
+```jsonl
+{"id":"outer","engine":"idm","source":"openidm.read('managed/example/1').label"}
+{"type":"call","id":"outer","seq":1,"method":"read","args":["managed/example/1"]}
+{"type":"reply","id":"outer","seq":1,"result":{"label":"example"}}
+{"id":"outer","outcome":"ok","valueKind":"string","value":"example","error":null,"logs":[],"bindings":{}}
+```
+
+A failed call uses an error reply instead of `result`:
+
+```jsonl
+{"type":"reply","id":"outer","seq":1,"error":{"class":"org.forgerock.json.resource.ForbiddenException","message":"denied","code":403,"detail":{"policy":"example"}}}
+```
 
 ## Artefacts
 

@@ -41,6 +41,9 @@ public final class Runner {
       new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8);
 
   public static void main(String[] args) throws Exception {
+    // Undefined caches an identity hash at class initialization. Initialize on
+    // the reader, before workers race: its diagnostic text must agree across JVMs.
+    Class.forName("org.mozilla.javascript.Undefined");
     final AmContextFactory factory = new AmContextFactory();
     ERR.println("rhino-local-runner ready " + Json.stringify(environment(factory)));
     final BufferedReader in =
