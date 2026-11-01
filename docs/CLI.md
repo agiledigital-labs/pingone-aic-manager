@@ -197,6 +197,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
+| `aic whoami --token --host <url-or-host>` | As `--token`, but refuses — no token printed, non-zero exit — unless the host is the context's own or one of its custom domains. |
 
 `aic ctx current` (or `aic ctx show`) answers "which tenant would a command
 run here hit?", not "what did I last `ctx use`?". stdout is the bare tenant
@@ -232,10 +233,26 @@ which onboarding does not request; without it the answer is
 a refusal says nothing about whether domains exist. Grant the scope to the
 service account in the console, then `aic ctx scopes --add` it.
 
-`aic` cannot warn when a token from `whoami --token` is sent to another
-context's host: once printed, the token leaves `aic`. Commands that both mint
-and send — `aic idm get`, `scripts/verify-endpoint.sh` — pair the host with
-the token themselves.
+Once printed, a token leaves `aic`, so `aic` cannot see where it is sent. A
+token sent to another tenant is rejected with a 401, which is confusing rather
+than harmful. To catch the mistake before the request, pass the URL the
+request will go to:
+
+```sh
+URL="https://<your-tenant>.forgeblocks.com/openidm/managed/alpha_user?_queryFilter=true&_pageSize=1"
+curl -H "Authorization: Bearer $(aic whoami --token --host "$URL")" "$URL"
+```
+
+`--host` takes a URL or a bare host and combines with `--tenant`. It compares
+the host only (case, port, userinfo and a trailing dot are ignored) against
+the context's base URL, and, only when that differs, against the tenant's
+custom domains. It refuses, prints no token and exits non-zero when neither
+matches, or when the custom domains cannot be read (the
+`fr:idc:custom-domain:*` scope, above). With `curl` the refusal leaves an
+empty bearer, so the request fails with a 401 rather than reaching the other
+tenant with a valid token. `--host` does not help with a token already held
+in a variable. Commands that both mint and send — `aic idm get`,
+`scripts/verify-endpoint.sh` — pair the host with the token themselves.
 
 The normal `whoami` output includes `operator: <name> on <host>`. When the name
 has not been saved yet, the line says it is unset and points to

@@ -1,5 +1,6 @@
 //! Tenant identity beyond the context name: the custom domains a tenant
-//! answers on.
+//! answers on, and the `whoami --token --host` check that a URL is this
+//! tenant's.
 //!
 //! Two contexts can both be called "sandbox" and both have a base URL that
 //! says so; the domain the operator actually types into a browser is what
@@ -99,6 +100,81 @@ pub(crate) fn host(base_url: &str) -> &str {
     rest.split(['/', '?', '#']).next().unwrap_or(rest)
 }
 
+/// The host a URL (or a bare host) names, normalised for comparison: no
+/// scheme, userinfo, port, path or trailing dot, and lower case.
+pub(crate) fn normalise_host(url_or_host: &str) -> String {
+    let authority = host(url_or_host.trim());
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let without_port = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    without_port.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Refuse unless `requested` names `tenant`'s own host or one of its custom
+/// domains. The domains are read only when the base host does not match, so
+/// the usual case costs no request; an unreadable list refuses, because it
+/// cannot show the host is this tenant's.
+pub(crate) async fn check_host<F, Fut>(
+    tenant: &str,
+    base_url: &str,
+    requested: &str,
+    contexts: &[(&str, &str)],
+    domains: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Domains>,
+{
+    let wanted = normalise_host(requested);
+    if wanted.is_empty() {
+        return Err(Error::Config(format!("--host {requested:?} names no host")));
+    }
+    let own = normalise_host(base_url);
+    if wanted == own {
+        return Ok(());
+    }
+    // Naming the context that does own the host turns the refusal into the fix.
+    let remedy = contexts
+        .iter()
+        .find(|(_, url)| normalise_host(url) == wanted)
+        .map_or_else(
+            || {
+                "pick the context that owns it with `--tenant <name>` (`aic ctx list` \
+                 shows each context's host)"
+                    .to_string()
+            },
+            |(name, _)| format!("it is context `{name}`'s host: use `--tenant {name}`"),
+        );
+    let refusal = |why: String| {
+        Error::Config(format!(
+            "--host {wanted} is not context `{tenant}`'s host ({own}), and {why}. No \
+             token was printed; {remedy}"
+        ))
+    };
+    match domains().await {
+        Domains::Listed(listed) => {
+            if listed.iter().any(|domain| normalise_host(domain) == wanted) {
+                Ok(())
+            } else if listed.is_empty() {
+                Err(refusal("the tenant has no custom domains".into()))
+            } else {
+                Err(refusal(format!(
+                    "not one of its custom domains ({})",
+                    listed.join(", ")
+                )))
+            }
+        }
+        other => Err(refusal(format!(
+            "its custom domains could not be read to check: {}",
+            other.describe()
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +237,108 @@ mod tests {
             ("bravo", Ok(json!({ "unexpected": true }))),
         ]);
         assert!(matches!(read, Domains::Unreadable(ref reason) if reason.starts_with("bravo")));
+    }
+
+    #[test]
+    fn normalise_host_reduces_every_spelling_to_the_host() {
+        for spelling in [
+            "https://tenant.example.com/am/json/realms/root?x=1",
+            "tenant.example.com",
+            "TENANT.example.com.",
+            "https://tenant.example.com:443/openidm",
+            "https://someone@tenant.example.com/",
+            " https://tenant.example.com ",
+        ] {
+            assert_eq!(normalise_host(spelling), "tenant.example.com", "{spelling}");
+        }
+        // userinfo that looks like a host must not win over the real one.
+        assert_eq!(
+            normalise_host("https://tenant.example.com@other.example.com/"),
+            "other.example.com"
+        );
+    }
+
+    fn no_domains_needed() -> std::future::Ready<Domains> {
+        panic!("custom domains must not be read when the base host matches")
+    }
+
+    #[tokio::test]
+    async fn the_tenant_host_passes_without_reading_domains() {
+        check_host(
+            "dev",
+            "https://tenant.example.com",
+            "https://tenant.example.com/openidm/managed/alpha_user",
+            &[],
+            no_domains_needed,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn another_tenants_host_is_refused() {
+        let error = check_host(
+            "dev",
+            "https://tenant.example.com",
+            "https://other.example.com/am",
+            &[
+                ("dev", "https://tenant.example.com"),
+                ("uat", "https://Other.example.com/"),
+            ],
+            || std::future::ready(Domains::Listed(vec![])),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("other.example.com"), "{error}");
+        assert!(error.contains("`dev`"), "{error}");
+        assert!(error.contains("No token was printed"), "{error}");
+        assert!(error.contains("use `--tenant uat`"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_custom_domain_of_the_tenant_passes() {
+        check_host(
+            "dev",
+            "https://tenant.example.com",
+            "https://login.example.com/am",
+            &[],
+            || std::future::ready(Domains::Listed(vec!["login.example.com".into()])),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unreadable_domains_refuse_rather_than_pass() {
+        let error = check_host(
+            "dev",
+            "https://tenant.example.com",
+            "https://login.example.com/am",
+            &[],
+            || std::future::ready(Domains::NoScope),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("could not be read to check"), "{error}");
+        assert!(error.contains("`aic ctx list`"), "{error}");
+        assert!(error.contains("fr:idc:custom-domain:*"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_host_is_refused() {
+        assert!(
+            check_host(
+                "dev",
+                "https://tenant.example.com",
+                "https://",
+                &[],
+                no_domains_needed
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[test]
