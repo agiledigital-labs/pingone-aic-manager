@@ -252,3 +252,20 @@ describe("IDM re-entrant host calls", () => {
     expect(response.logs?.map((log) => log.message)).toEqual(["before"]);
   });
 });
+
+
+it("#6 allocates distinct host sequences for simultaneous shell spawn calls", async () => {
+  for (let batch = 0; batch < 30; batch++) {
+    const sequences: number[] = [];
+    const response = await runner.eval({ engine: "idm", timeoutMs: 1500, source: `
+      var ready=new java.util.concurrent.CountDownLatch(32), start=new java.util.concurrent.CountDownLatch(1);
+      var threads=[];
+      for(var i=0;i<32;i++) threads.push(spawn(function(){ready.countDown();start.await();openidm.read('spawned');}));
+      ready.await(); start.countDown();
+      for(var j=0;j<threads.length;j++) threads[j].join(); 42;
+    ` }, { onCall: (call) => { sequences.push(call.seq); return 42; } });
+    expect(new Set(sequences).size, `batch ${batch}: ${sequences.join()}`).toBe(32);
+    expect([...sequences].sort((a,b) => a-b)).toEqual(Array.from({length:32}, (_,i) => i+1));
+    expect(response.outcome).toBe("ok");
+  }
+}, 60_000);

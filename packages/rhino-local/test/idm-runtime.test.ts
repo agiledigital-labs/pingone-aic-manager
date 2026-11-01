@@ -566,3 +566,16 @@ describe("IDM throw classification for emulator HTTP policy", () => {
     });
   });
 });
+
+
+it("#8 preserves numeric NaN on assignment and converts only at the wire boundary", async () => {
+  const response = await runner.eval({ engine: "idm", bindings: { r: {} }, source: `
+    r.w=NaN; r.zero=-0; r.inf=Infinity; r.nested={w:NaN};
+    ({nanType:typeof r.w,isNan:r.w!==r.w,nestedNan:r.nested.w!==r.nested.w,
+      positiveZero:1/r.zero===Infinity,clampedInfinity:r.inf===9223372036854775807,wire:r});
+  ` });
+  expect(response.outcome).toBe("ok");
+  expect(response.value).toEqual({ nanType: "number", isNan: true, nestedNan: true,
+    positiveZero: true, clampedInfinity: true, wire: { w: "NaN", zero: 0, inf: Number("9223372036854775807"), nested: { w: "NaN" } } });
+  expect(response.bindings?.r).toEqual({ w: "NaN", zero: 0, inf: Number("9223372036854775807"), nested: { w: "NaN" } });
+});

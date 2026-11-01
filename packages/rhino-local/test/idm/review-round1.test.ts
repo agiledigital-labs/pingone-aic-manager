@@ -116,3 +116,37 @@ describe("review round 1 core", () => {
     expect((await send(emu, { method: "GET", path: "managed/widget/one" })).text).toBe("fail");
   });
 });
+
+
+describe("review round 1 caller provenance", () => {
+  it("#1 standalone onCall cannot swallow missing and jobs remain isolated", async () => {
+    const emu = emulator(runner);
+    const source = "try { openidm.query('managed/widget',{_queryId:'unmeasured'}); } catch(e) {} 'passed'";
+    const [caught, clean] = await Promise.all([
+      runner.eval({ engine: "idm", source, reportMissing: true }, { onCall: emu.onCall }),
+      runner.eval({ engine: "idm", source: "'clean'", reportMissing: true }, { onCall: emu.onCall }),
+    ]);
+    expect(caught.missing).toContain("named _queryId: unmeasured");
+    expect(clean.missing).toEqual([]);
+    const noOptIn = await runner.eval({ engine: "idm", source }, { onCall: emu.onCall });
+    expect(noOptIn.missing).toContain("named _queryId: unmeasured");
+  });
+
+  it("#9 properties belong to the emulator, forks inherit them, absent names carry provenance", async () => {
+    const config = new IdmConfig({ managed: { objects: [] }, endpoints: {
+      example: js("({present:identityServer.getProperty('esv.feature','off'),absent:identityServer.getProperty('esv.absent',{fallback:true})});"),
+    } });
+    const properties = { "esv.feature": "on" };
+    const emu = new IdmEmulator(config, runner, { properties });
+    properties["esv.feature"] = "changed";
+    for (const instance of [emu, emu.fork()]) {
+      const result = await instance.request({ method: "GET", path: "endpoint/example" });
+      expect(result.body).toMatchObject({ present: "on", absent: { fallback: true } });
+      expect(result.provenance).toContainEqual({ kind: "assumed", behavior: "property esv.absent absent" });
+      expect(result.provenance.some((p) => p.behavior === "property esv.feature absent")).toBe(false);
+    }
+    const separate = await new IdmEmulator(config, runner).request({ method: "GET", path: "endpoint/example" });
+    expect(separate.body).toMatchObject({ present: "off" });
+    expect(separate.provenance).toContainEqual({ kind: "assumed", behavior: "property esv.feature absent" });
+  });
+});

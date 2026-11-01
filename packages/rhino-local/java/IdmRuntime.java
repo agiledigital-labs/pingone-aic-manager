@@ -23,12 +23,15 @@ final class IdmRuntime {
   private final List<Object> logs = new ArrayList<Object>();
   private final List<String> missing = new ArrayList<String>();
   private final Map<String, Object> bindings;
+  private final Map<String, Object> properties;
+  private final List<String> assumed = new ArrayList<String>();
 
   private IdmRuntime(Context cx, HostCalls calls, Map<String, Object> job) {
     scope = IdmScope.create(cx);
     values = new IdmValues(scope);
     IdmValues.CURRENT.set(values);
     this.calls = calls;
+    properties = job.get("properties") == null ? new LinkedHashMap<String, Object>() : Json.asObject(job.get("properties"), "properties");
     bindings = job.get("bindings") == null ? new LinkedHashMap<String, Object>() : Json.asObject(job.get("bindings"), "bindings");
     if (job.get("bindingAliases") != null) {
       for (Map.Entry<String, Object> alias : Json.asObject(job.get("bindingAliases"), "bindingAliases").entrySet()) {
@@ -100,10 +103,11 @@ final class IdmRuntime {
     }
     response.put("logs", runtime == null ? new ArrayList<Object>() : runtime.logs);
     response.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : runtime.bindings);
-    if (Boolean.TRUE.equals(job.get("reportMissing"))) {
-      response.put("missing", runtime == null ? new ArrayList<String>() : runtime.missing);
-    }
-    return response;
+    List<String> absent = runtime == null ? new ArrayList<String>() : new ArrayList<String>(runtime.missing);
+    if (calls != null) for (String name : calls.missing) if (!absent.contains(name)) absent.add(name);
+    if (Boolean.TRUE.equals(job.get("reportMissing")) || !absent.isEmpty()) response.put("missing", absent);
+    if (runtime != null && !runtime.assumed.isEmpty()) response.put("assumed", runtime.assumed);
+    return Json.asObject(IdmValues.wireValue(response), "response");
   }
 
   private static Map<String, Object> thrown(RhinoException e) {
@@ -179,6 +183,10 @@ final class IdmRuntime {
     identity.put("getProperty", function("getProperty", args -> {
       if (args.length < 1 || args.length > 3 || !(args[0] instanceof CharSequence)
           || (args.length == 3 && !(args[2] instanceof Boolean))) throw noMethod("getProperty", args);
+      String name = args[0].toString();
+      if (properties.containsKey(name)) return values.wrap(properties.get(name));
+      String assumption = "property " + name + " absent";
+      if (!assumed.contains(assumption)) assumed.add(assumption);
       return args.length > 1 ? values.wrap(IdmValues.javaValue(args[1])) : null;
     }));
     bind("identityServer", surface(identity));

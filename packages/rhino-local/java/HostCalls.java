@@ -16,6 +16,7 @@ public final class HostCalls {
   private final String id;
   private final IdmContextFactory factory;
   private int sequence;
+  final java.util.Set<String> missing = new java.util.concurrent.ConcurrentSkipListSet<String>();
 
   HostCalls(String id, IdmContextFactory factory) {
     this.id = id;
@@ -27,22 +28,28 @@ public final class HostCalls {
 
   Object call(String method, Object args) {
     if (inputClosed) throw new IllegalStateException("rhino-local: host input closed");
-    int seq = ++sequence;
+    final int seq;
     CompletableFuture<Map<String, Object>> future = new CompletableFuture<Map<String, Object>>();
-    waiting.put(seq, future);
-    if (inputClosed) future.completeExceptionally(new IllegalStateException("rhino-local: host input closed"));
-    Map<String, Object> line = new LinkedHashMap<String, Object>();
-    line.put("type", "call");
-    line.put("id", id);
-    line.put("seq", seq);
-    line.put("method", method);
-    line.put("args", args);
-    Runner.write(line);
+    // Allocation, registration and emission share one lock; never hold it while waiting.
+    synchronized (this) {
+      seq = ++sequence;
+      waiting.put(seq, future);
+      if (inputClosed) future.completeExceptionally(new IllegalStateException("rhino-local: host input closed"));
+      Map<String, Object> line = new LinkedHashMap<String, Object>();
+      line.put("type", "call");
+      line.put("id", id);
+      line.put("seq", seq);
+      line.put("method", method);
+      line.put("args", IdmValues.wireValue(args));
+      Runner.write(line);
+    }
     try {
       long remaining = factory.remainingMillis();
       Map<String, Object> reply = remaining == 0 ? future.get() : future.get(remaining, TimeUnit.MILLISECONDS);
       if (reply.get("error") != null) {
         Map<String, Object> error = Json.asObject(reply.get("error"), "host error");
+        java.util.List<String> absent = Json.optionalStringList(error, "missing");
+        if (absent != null) missing.addAll(absent);
         throw new WrappedException(new HostException(error));
       }
       return reply.get("result");

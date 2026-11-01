@@ -779,8 +779,9 @@ response shape is unchanged. IDM completion objects are returned as JSON;
 undefined completions have `valueKind: "undefined"` and `value: null`.
 
 `logger` and `console.log` append to `logs` without host calls. Shell `print`
-writes to stderr to protect the protocol. `identityServer.getProperty` returns
-its supplied default for missing properties. `require`, `parseFilter`, `hash`,
+writes to stderr to protect the protocol. `identityServer.getProperty` reads the
+job's optional `properties` map, returning the supplied default for missing names
+and recording `assumed: property <name> absent` in the response. `require`, `parseFilter`, `hash`,
 `encrypt`, `isHashed`, `matches`, `decrypt`, and `isEncrypted` fail explicitly
 with `rhino-local: <name> is not emulated yet`.
 
@@ -788,7 +789,8 @@ In the `both` lane, the primary runs first and invokes `onCall` once. The shadow
 replays snapshots of the primary replies, checking method, arguments and sequence
 as well as the final response. Extra, missing or different calls raise
 `LaneDivergenceError`, even when the script catches the failure and returns the
-same final value. Nested evaluations use the same policy.
+same final value. Nested evaluations use the same policy. The primary transcript
+is frozen when its response arrives; late handler replies cannot change shadow replay.
 
 The stdin reader dispatches jobs to worker threads and routes replies to waiting
 calls; stdout writes are serialized. Jobs may complete in any order. IDs must
@@ -848,8 +850,9 @@ Results add `provenance: {kind, behavior, source?}[]`, deduplicated per request.
 choices the measurements leave open. A reached `missing` entry fails the request
 with 501 and names the behavior. Nested calls share provenance, including a
 missing call caught by script code; concurrent requests use separate scopes.
-Some hooks can commit nested writes before a later failure, and post-hook
-failure durability is explicitly assumed. This is not a transactional clone of
+Some hooks can commit nested writes before a later failure. A post-hook failure
+after repository commit reports `assumed: post-hook failure after commit keeps
+the write`; successful post hooks do not add that failure label. This is not a transactional clone of
 DS. See [IDM-DONE.md](IDM-DONE.md) for the complete assumption/boundary inventory.
 
 The optional `rawBody` is authoritative when present and `body` is then null.
@@ -862,7 +865,23 @@ It maps all seven host operations into the same core, returns null for missing
 reads, and throws `HostCallError` with CREST class/code/detail otherwise.
 `idm.hostRequest(call)` exposes a standalone call's body/status/provenance when
 the host needs to retain its evidence; `onCall` returns only the script value.
-REST-driven scripts automatically aggregate all their nested evidence.
+REST-driven scripts automatically aggregate all their nested evidence. Missing
+host behavior also travels in error metadata to the outer JVM job: its response
+contains `missing` even when script code catches the error, without requiring
+`reportMissing`. Independent jobs retain separate diagnostics.
+
+Managed create applies declared property defaults to omitted keys before policy;
+explicit null is retained and updates never apply defaults. Placement before
+create hooks and generic JSON default handling are labeled assumptions.
+`onCreate` and `onUpdate` preserve the measured `object === newObject` alias.
+JSON pointers traverse own properties only; literal `__proto__`, `constructor`
+and `prototype` fields are ordinary data (assumed). Paging returns authenticated
+opaque continuation cookies and the measured count/policy envelope. Cookies
+re-evaluate offset pages; stability under concurrent data changes is assumed.
+
+Constructor options can supply `{properties: {"esv.feature": "on"}}`. Each
+emulator copies this map; forks inherit the snapshot. Property lookups missing
+from that map carry the absence assumption on the request's provenance.
 
 Policy is **not evaluated** by default: every validated create/update/changed
 patch reports `assumed: policy not evaluated`. The optional constructor
@@ -873,8 +892,8 @@ throw `HostCallError` to reject with a CREST status and detail; its provenance i
 
 Runner jobs can opt into `reportMissing: true`, which adds a `missing: string[]`
 diagnostic even for caught uses of unsupported runtime helpers. The emulator
-uses this to enforce its fidelity boundary; ordinary runner response shapes are
-unchanged. `crestBindings: true` supplies the measured request class tags and
+uses this to enforce its fidelity boundary. Reached missing behavior is always
+reported; the option also requests an empty diagnostic list on complete jobs. `crestBindings: true` supplies the measured request class tags and
 case-insensitive HTTP header maps. These optional wrappers and missing-use
 diagnostics are the slice's Java changes; the IDM engine itself is unchanged.
 

@@ -29,9 +29,11 @@ export interface JobRequest {
   bindings?: { [key: string]: JsonValue };
   /** IDM aliases resolved to the same backing object before script evaluation. */
   bindingAliases?: Record<string, string>;
+  /** IDM environment property snapshot (for identityServer.getProperty). */
+  properties?: Record<string, JsonValue>;
   /** Binding names to wrap as Java resource-name objects instead of JS strings. */
   resourceNameBindings?: string[];
-  /** Include unsupported IDM helper uses even when the script catches their errors. */
+  /** Also include an empty missing list when no unsupported IDM behavior was reached. */
   reportMissing?: boolean;
   /** Wrap request/context bindings with CREST request tags and HTTP header lookup. */
   crestBindings?: boolean;
@@ -83,6 +85,8 @@ export interface HostCall {
 }
 
 export interface HostError {
+  /** Fidelity failures remain visible even when the script catches this error. */
+  missing?: string[];
   class: string;
   message: string;
   code: number;
@@ -120,8 +124,10 @@ export interface JobResponse {
   bindings?: { [key: string]: JsonValue };
   logs?: JobLog[];
   thrown?: ThrownValue;
-  /** Opt-in diagnostic for emulator provenance; independent of job outcome. */
+  /** Reached fidelity failures survive script catches; independent of job outcome. */
   missing?: string[];
+  /** Assumptions reached by IDM runtime helpers. */
+  assumed?: string[];
 }
 
 const OUTCOMES: ReadonlySet<string> = new Set([
@@ -157,6 +163,7 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
     ...(raw.logs === undefined ? {} : { logs: raw.logs as JobLog[] }),
     ...(raw.thrown === undefined ? {} : { thrown: raw.thrown as ThrownValue }),
     ...(raw.missing === undefined ? {} : { missing: raw.missing as string[] }),
+    ...(raw.assumed === undefined ? {} : { assumed: raw.assumed as string[] }),
   };
 }
 
