@@ -292,6 +292,9 @@ pub enum RelationshipCommand {
         capture: Option<std::path::PathBuf>,
         #[arg(long)]
         dry_run: bool,
+        /// Acknowledge that the saved pending request has finished and cannot complete later.
+        #[arg(long)]
+        acknowledge_request_finished: bool,
         #[command(flatten)]
         force: OperationForce,
         #[arg(long)]
@@ -323,7 +326,7 @@ pub enum RelationshipCommand {
         #[arg(long)]
         tenant: Option<String>,
         #[command(flatten)]
-        options: super::conversion_cli::Options,
+        options: super::conversion_cli::RecoveryOptions,
     },
     /// Explicitly undo an in-place conversion; unavailable for promotion captures.
     RollbackMap {
@@ -331,7 +334,7 @@ pub enum RelationshipCommand {
         #[arg(long)]
         tenant: Option<String>,
         #[command(flatten)]
-        options: super::conversion_cli::Options,
+        options: super::conversion_cli::RecoveryOptions,
     },
     /// Remove a config/repo.ds relationship mapping that names no declared
     /// property — the leftover a relationship delete leaves, which makes a
@@ -1242,6 +1245,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             field,
             capture,
             dry_run,
+            acknowledge_request_finished,
             force,
             tenant,
             yes,
@@ -1253,6 +1257,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 tenant,
                 super::conversion_cli::Flags {
                     dry_run,
+                    acknowledge_request_finished,
                     force: force.operation(),
                     yes,
                     json,
@@ -4315,6 +4320,46 @@ mod tests {
                 entry("g.h", "error"),
             ]),
             ["c.d (no_records)", "e.f (timeout)", "g.h (error)"]
+        );
+    }
+    #[test]
+    fn request_finished_acknowledgment_parses_only_on_recovery_verbs() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        for (verb, operand) in [
+            ("map", "a.link"),
+            ("restore-links", "capture.json"),
+            ("rollback-map", "capture.json"),
+        ] {
+            assert!(
+                Cli::try_parse_from([
+                    "aic",
+                    "managed",
+                    "relationship",
+                    verb,
+                    operand,
+                    "--acknowledge-request-finished",
+                    "--dry-run"
+                ])
+                .is_ok(),
+                "{verb}"
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "aic",
+                "managed",
+                "relationship",
+                "capture-links",
+                "--lower",
+                "dev",
+                "--upper",
+                "uat",
+                "--output",
+                "capture.json",
+                "--acknowledge-request-finished"
+            ])
+            .is_err()
         );
     }
 }
