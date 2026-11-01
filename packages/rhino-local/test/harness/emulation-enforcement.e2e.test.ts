@@ -34,3 +34,13 @@ it.each(modes)("R6 #1 reporter rejects discarded worker verdict despite suppress
   expect(result.code, result.output + result.report).toBe(1);
   expect(result.output).toContain("Emulation run backstop: expected-fail cannot invert emulation");
 }, 30_000);
+
+it.each(["forks", "threads"])("R6 #1 late owned failure persists the original file without reporter in %s", async (pool) => {
+  const result = await runChild("late", pool, false, { R6_LEGACY_SETUP: "true" }, [...replace, "--reporter=json"]);
+  expect(result.code, result.output + result.report).toBe(1);
+  expect(result.output + result.report).toContain("original late owner");
+  const report = JSON.parse(result.report) as { testResults: Array<{ name: string; status: string; assertionResults: Array<{ status: string }> }> };
+  expect(report.testResults.find((file) => file.name.endsWith("late-a.fixture.ts"))?.status).toBe("failed");
+  expect(report.testResults.find((file) => file.name.endsWith("late-a.fixture.ts"))?.assertionResults[0]?.status).toBe("failed");
+  expect(report.testResults.find((file) => file.name.endsWith("late-b.fixture.ts"))?.status).toBe("passed");
+}, 30_000);
