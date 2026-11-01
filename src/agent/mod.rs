@@ -47,8 +47,9 @@ use crate::config::project_paths;
 pub use client::AgentClient;
 pub use protocol::{ApiCallRequest, CachedTokenInfo, Request, Response, StatusInfo};
 
-/// CLI-to-agent wire protocol version. Bump this for incompatible changes.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// CLI-to-agent wire protocol version. Bump this when ignoring a new field
+/// would be unsafe (v4 preserves pre-journaled transaction ids).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 pub fn socket_path() -> PathBuf {
     project_paths().agent_socket_path()

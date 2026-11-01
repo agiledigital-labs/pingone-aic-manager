@@ -1,4 +1,6 @@
 //! Verified HTTP wrappers for the IDM `managed` config document.
+//! Journaled conversion writes bypass router retries and forward their saved
+//! transaction id through ApiCall; relink_call assembles the tested wire shape.
 //! All HTTP goes through `aic::api` → agent. See `docs/api/10-managed-objects.md`.
 
 use crate::{Error, Result};
@@ -512,24 +514,40 @@ pub async fn send_relink(
     write: &crate::managed::relink::Write,
     confirmed_prod: bool,
 ) -> Result<Value> {
+    // A journaled id denotes one attempt. Reusing it across router retries
+    // would make an earlier terminal log ambiguous about the latest dispatch.
+    if write.transaction_id.is_some() {
+        return relink_call(tenant, write, confirmed_prod)?.send().await;
+    }
+    settled(object, || async {
+        relink_call(tenant, write, confirmed_prod)?.send().await
+    })
+    .await
+}
+
+fn relink_call<'a>(
+    tenant: &'a str,
+    write: &'a crate::managed::relink::Write,
+    confirmed_prod: bool,
+) -> Result<crate::aic::api::ApiCall<'a>> {
     if !matches!(write.method, "DELETE" | "POST" | "PATCH") {
         return Err(Error::Config(format!(
             "relink has no {} write",
             write.method
         )));
     }
-    settled(object, || {
-        let mut call = crate::aic::api::ApiCall::new(tenant, write.method, &write.path)
-            .confirmed_prod(confirmed_prod);
-        if let Some(body) = &write.body {
-            call = call.body(body.clone());
-        }
-        if let Some(revision) = &write.if_match {
-            call = call.if_match(revision);
-        }
-        call.send()
-    })
-    .await
+    let mut call = crate::aic::api::ApiCall::new(tenant, write.method, &write.path)
+        .confirmed_prod(confirmed_prod);
+    if let Some(id) = &write.transaction_id {
+        call = call.transaction_id(id);
+    }
+    if let Some(body) = &write.body {
+        call = call.body(body.clone());
+    }
+    if let Some(revision) = &write.if_match {
+        call = call.if_match(revision);
+    }
+    Ok(call)
 }
 
 /// Unconfirmed `PUT /openidm/config/managed` with the complete managed config
@@ -768,6 +786,35 @@ pub fn summarize(doc: &Value) -> Result<Vec<ObjectSummary>> {
 
 #[cfg(test)]
 mod tests {
+
+    // Regression: the id persisted by conversion must survive call assembly
+    // and the actual serialized client/agent envelope.
+    #[test]
+    fn conversion_transaction_id_reaches_agent_wire_for_every_record_method() {
+        use crate::managed::{conversion::tests::captured, relink};
+        let (capture, census) = captured(true);
+        let permit = relink::authorize(false, true).unwrap();
+        for array in [false, true] {
+            let mut writes =
+                relink::writes(&permit, "a", "link", array, &census.edges[0], Some("r1")).unwrap();
+            for write in &mut writes {
+                let id = crate::http::transaction_id();
+                write.transaction_id = Some(id.clone());
+                let envelope = relink_call(&capture.tenant, write, true)
+                    .unwrap()
+                    .envelope();
+                let wire =
+                    serde_json::to_value(crate::agent::protocol::WireRequest::current(envelope))
+                        .unwrap();
+                assert_eq!(wire["transaction_id"], id);
+                assert_eq!(wire["method"], write.method);
+                assert_eq!(
+                    wire["if_match"],
+                    serde_json::to_value(&write.if_match).unwrap()
+                );
+            }
+        }
+    }
 
     /// The control the first version lacked: a permanently missing property
     /// answers the same router 404, so it is retried only just after a

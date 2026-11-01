@@ -1,7 +1,8 @@
 //! Tenant and filesystem edge for relationship storage conversion. `map` and
 //! promotion capture/restore share conversion's census, journal and restore
 //! engine. Recovery consent scopes finished-request assertions to saved intents;
-//! captures/intents are checked before remote writes. All config writes still
+//! captures/intents and complete promotion binding snapshots are checked before
+//! remote writes. Saved request ids reach send_relink unchanged. All config writes still
 //! go through repair::apply_with. Upper
 //! restore writes records only. No promotion lifecycle code is changed.
 
@@ -394,6 +395,7 @@ async fn create(
     pair: &Pair,
     link: &Link,
     rev: Option<&str>,
+    transaction_id: &str,
 ) -> Result<Option<String>> {
     guard(ok.tenant, pair, storage::Mode::Mapped).await?;
     if !pair.forward.array && rev.is_none() {
@@ -422,7 +424,7 @@ async fn create(
             )));
         }
     }
-    let write = relink::create_link(
+    let mut write = relink::create_link(
         permit,
         &pair.forward.object,
         &pair.forward.key,
@@ -430,6 +432,7 @@ async fn create(
         &edge(link),
         rev,
     );
+    write.transaction_id = Some(transaction_id.to_owned());
     let response =
         api::send_relink(ok.tenant, &pair.forward.object, &write, ok.confirmed_prod).await?;
     Ok(relink::written_edge(
@@ -466,12 +469,24 @@ async fn ready(tenant: &str, pair: &Pair) -> Result<()> {
     conversion_records::ready(&TenantRead(tenant), pair).await
 }
 
+async fn report_binding_changes(tenant: &str, capture: &Capture) -> Result<()> {
+    let changes = conversion_records::restore_ready(&TenantRead(tenant), capture).await?;
+    if capture.origin == Origin::Promotion {
+        eprintln!(
+            "all relationship bindings match the captured lower expectation; upper-before -> upper-after changes: {}",
+            serde_json::to_string(&changes)?
+        );
+    }
+    Ok(())
+}
+
 async fn finish_restore(
     ok: &WriteOk<'_>,
     capture: &mut Capture,
     file: &mut FileSession,
     permit: &conversion::Permit,
 ) -> Result<()> {
+    report_binding_changes(ok.tenant, capture).await?;
     let relink_permit = relink::authorize(false, true)
         .ok_or_else(|| Error::Config("record write not authorized".into()))?;
     conversion::restore_with(
@@ -480,7 +495,9 @@ async fn finish_restore(
         async |pair| ready(ok.tenant, pair).await,
         async |pair, link| observe(ok.tenant, pair, link).await,
         async |capture| file.save(capture).await,
-        async |pair, link, rev| create(ok, &relink_permit, pair, link, rev).await,
+        async |pair, link, rev, transaction_id| {
+            create(ok, &relink_permit, pair, link, rev, transaction_id).await
+        },
         async |pair, link, edge| check_edge(ok.tenant, pair, link, edge).await,
     )
     .await?;
@@ -757,6 +774,10 @@ pub async fn capture_links(
     }
     let mut capture = Capture::new(upper.name.clone(), upper.base_url, Origin::Promotion, pairs);
     capture.new_pairs = new_pairs.iter().cloned().collect();
+    capture.promotion_bindings = Some(conversion::PromotionBindings::new(
+        &initial.lower_repo,
+        &initial.upper_repo,
+    ));
     capture.validate()?;
     plan(
         &capture,
@@ -803,9 +824,7 @@ pub async fn restore_links(
     }
     let configured = identity(&capture, tenant)?;
     // Refuse before consent too: a promotion has to land the mappings first.
-    for pair in &capture.pairs {
-        ready(&configured.name, pair).await?;
-    }
+    report_binding_changes(&configured.name, &capture).await?;
     if capture.origin == Origin::InPlace
         && matches!(capture.state, State::Captured | State::Switching)
     {
@@ -1012,6 +1031,46 @@ mod tests {
         .to_string();
         assert!(
             error.contains("captured by an earlier development build; re-capture"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Regression: earlier promotion files cannot certify excluded bindings.
+    // Refuse at load, before tenant selection or record/config calls.
+    #[tokio::test]
+    async fn promotion_capture_without_binding_snapshots_refuses_before_tenant_selection() {
+        let (mut capture, _) = captured(true);
+        capture.origin = Origin::Promotion;
+        let dir =
+            std::env::temp_dir().join(format!("aic-promotion-evidence-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("capture.json");
+        let mut value = serde_json::to_value(capture).unwrap();
+        value.as_object_mut().unwrap().remove("promotion_bindings");
+        std::fs::write(&path, serde_json::to_vec(&json!([value])).unwrap()).unwrap();
+        let error = restore_links(
+            path,
+            Some("must-not-select-this-tenant".into()),
+            RecoveryOptions {
+                options: Options {
+                    dry_run: true,
+                    force: OperationForce::default(),
+                    yes: false,
+                    json: false,
+                },
+                acknowledge_request_finished: false,
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("promotion capture has no complete binding snapshots"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Re-capture only before promotion"),
             "{error}"
         );
         std::fs::remove_dir_all(dir).unwrap();

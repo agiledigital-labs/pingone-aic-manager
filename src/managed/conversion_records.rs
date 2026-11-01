@@ -4,7 +4,8 @@
 //! Pending outcomes are checked before config proof; reconciliation uses the
 //! shared conversion rule and journals any explicit finished-request assertion.
 //! conversion_cli supplies reads, sends and durable persistence below those
-//! decisions.
+//! decisions. Promotion restore readiness validates all saved binding evidence
+//! before checking individual captured pairs.
 
 use serde_json::Value;
 
@@ -37,6 +38,24 @@ pub(super) async fn ready(io: &impl Read, pair: &Pair) -> Result<()> {
         io.activate(pair).await?;
     }
     Ok(())
+}
+
+/// The full promotion check precedes even per-pair readiness. Called before
+/// consent and again immediately before restore starts (including resumes).
+pub(super) async fn restore_ready(
+    io: &impl Read,
+    capture: &Capture,
+) -> Result<Vec<conversion::BindingChange>> {
+    let changes = if capture.origin == conversion::Origin::Promotion {
+        let (_, repo) = io.config().await?;
+        conversion::promotion_restored(capture, &repo)?
+    } else {
+        Vec::new()
+    };
+    for pair in &capture.pairs {
+        ready(io, pair).await?;
+    }
+    Ok(changes)
 }
 
 pub(super) trait Removal: Read {
@@ -194,7 +213,7 @@ async fn remove_links(
             let (managed, repo) = io.config().await?;
             repair::plan_rollback(&managed, &repo, &pair).map_err(Error::Config)?;
             let current = io.observe(&pair, link).await?;
-            let Some(write) = removal(capture, index, link_index, &current, permit)? else {
+            let Some(mut write) = removal(capture, index, link_index, &current, permit)? else {
                 continue;
             };
             removable(&managed, &pair)?;
@@ -204,7 +223,9 @@ async fn remove_links(
                 .find(|edge| link.matches(edge))
                 .ok_or_else(|| Error::Config("rollback observation changed".into()))?;
             io.check(&pair, link, edge).await?;
+            write.transaction_id = Some(crate::http::transaction_id());
             capture.pending = Some(conversion::Intent {
+                transaction_id: write.transaction_id.clone(),
                 pair: index,
                 link: link_index,
                 action: Action::Remove,
@@ -361,6 +382,8 @@ mod tests {
             let journal = self.journal.borrow();
             let pending = journal.last().unwrap().pending.as_ref().unwrap();
             assert_eq!(pending.action, Action::Remove);
+            assert!(pending.transaction_id.is_some());
+            assert_eq!(write.transaction_id, pending.transaction_id);
             assert_eq!(journal.last().unwrap().state, State::RollingBack);
             if pair.forward.array {
                 assert_eq!(write.method, "DELETE");
@@ -396,6 +419,122 @@ mod tests {
         }
     }
 
+    // Regression: rollback must give the operator the same evidence id saved
+    // before dispatch. Memory::send checks the durable intent against the write.
+    #[tokio::test]
+    async fn rollback_journals_transaction_id_before_unlink() {
+        for array in [false, true] {
+            let (io, mut capture) = Memory::new(array);
+            rollback(
+                &io,
+                &mut capture,
+                &conversion::authorize(false, true).unwrap(),
+                &relink::authorize(false, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            let journal = io.journal.borrow();
+            let intents = journal
+                .iter()
+                .filter_map(|capture| capture.pending.as_ref())
+                .collect::<Vec<_>>();
+            assert_eq!(intents.len(), 1);
+            let value = serde_json::to_value(intents[0]).unwrap();
+            assert!(
+                value["transaction_id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("aic-"))
+            );
+            assert_eq!(
+                *io.events.borrow(),
+                ["confirm config write", "unlink", "remove mapping"]
+            );
+        }
+    }
+
+    fn promotion_memory() -> (Memory, Capture, Value, Value) {
+        let (io, mut capture) = Memory::new(true);
+        let (_, mut upper, _, _) = fixture(true);
+        let stock = json!({"type":"reference", "ldapAttribute":"fr-idm-reference-8", "resourcePath":"managed/role", "isMultiValued":true});
+        upper["resourceMapping"]["explicitMapping"] =
+            json!({"managed/stock":{"properties":{"roles":stock}}});
+        io.repo.borrow_mut()["resourceMapping"]["explicitMapping"] =
+            upper["resourceMapping"]["explicitMapping"].clone();
+        let lower = io.repo.borrow().clone();
+        let selected = conversion::promotion_pairs(
+            &io.managed,
+            &lower,
+            &io.managed,
+            &upper,
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(selected.len(), 1); // stock is identical and excluded
+        capture.origin = conversion::Origin::Promotion;
+        capture.promotion_bindings = Some(conversion::PromotionBindings::new(&lower, &upper));
+        (io, capture, lower, upper)
+    }
+
+    // Regression: an excluded binding must not change unnoticed at promotion.
+    // Exercise production readiness beneath the real restore preflight.
+    #[tokio::test]
+    async fn promotion_restore_refuses_unexpected_changes_to_skipped_bindings() {
+        for change in ["column", "removed", "extra"] {
+            let (io, capture, _, _) = promotion_memory();
+            {
+                let properties = &mut io.repo.borrow_mut()["resourceMapping"]["explicitMapping"]["managed/stock"]
+                    ["properties"];
+                match change {
+                    "column" => properties["roles"]["ldapAttribute"] = json!("fr-idm-reference-9"),
+                    "removed" => {
+                        properties.as_object_mut().unwrap().remove("roles");
+                    }
+                    _ => properties["extra"] = properties["roles"].clone(),
+                }
+            }
+            let error = restore_ready(&io, &capture).await.unwrap_err().to_string();
+            assert!(
+                error.contains("managed/stock.")
+                    && error.contains("expected")
+                    && error.contains("actual"),
+                "{error}"
+            );
+            assert!(error.contains("Keep writers paused"), "{error}");
+            assert!(io.events.borrow().is_empty());
+            assert!(io.journal.borrow().is_empty());
+        }
+    }
+
+    // Control: saved lower/upper evidence survives serialization, and the
+    // intended promotion is accepted, reporting only the ends that changed.
+    #[tokio::test]
+    async fn promotion_restore_accepts_expected_change_and_reports_upper_differences() {
+        let (io, capture, lower, upper) = promotion_memory();
+        let encoded = serde_json::to_value(&capture).unwrap();
+        assert!(
+            encoded["promotion_bindings"]["lower"]
+                .as_array()
+                .unwrap()
+                .len()
+                > encoded["promotion_bindings"]["upper"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+        );
+        let capture: Capture = serde_json::from_value(encoded).unwrap();
+        capture.validate().unwrap();
+        let changes = restore_ready(&io, &capture).await.unwrap();
+        assert_eq!(
+            changes
+                .iter()
+                .map(|change| change.end.as_str())
+                .collect::<Vec<_>>(),
+            ["managed/a.link", "managed/b.back"]
+        );
+        assert_ne!(lower, upper);
+        assert!(io.events.borrow().is_empty());
+    }
+
     // Regression: the old test supplied the guard itself and could not catch
     // removal of the production ready guard. Only config/record reads vary here.
     #[tokio::test]
@@ -409,7 +548,7 @@ mod tests {
             async |pair| ready(&io, pair).await,
             async |pair, link| io.observe(pair, link).await,
             async |capture| io.save(capture).await,
-            async |_, _, _| {
+            async |_, _, _, _| {
                 *writes.borrow_mut() += 1;
                 Ok(None)
             },
@@ -523,7 +662,7 @@ mod tests {
             async |pair| ready(&io, pair).await,
             async |pair, link| io.observe(pair, link).await,
             async |capture| io.save(capture).await,
-            async |_, _, _| {
+            async |_, _, _, _| {
                 let (forward, reverse) = records(true);
                 *io.forward.borrow_mut() = forward;
                 *io.reverse.borrow_mut() = reverse;
@@ -550,6 +689,7 @@ mod tests {
             let (io, mut capture) = Memory::new(true);
             capture.state = State::RollingBack;
             capture.pending = Some(conversion::Intent {
+                transaction_id: None,
                 pair: 0,
                 link: 0,
                 action: Action::Remove,
@@ -566,7 +706,7 @@ mod tests {
                 async |pair| ready(&io, pair).await,
                 async |pair, link| io.observe(pair, link).await,
                 async |capture| io.save(capture).await,
-                async |_, _, _| panic!("unresolved unlink must never reach a create"),
+                async |_, _, _, _| panic!("unresolved unlink must never reach a create"),
                 async |pair, link, edge| io.check(pair, link, edge).await,
             )
             .await
@@ -597,6 +737,7 @@ mod tests {
             capture.restored.clear();
             if pending_create {
                 capture.pending = Some(conversion::Intent {
+                    transaction_id: None,
                     pair: 0,
                     link: 0,
                     action: Action::Create,
@@ -691,7 +832,7 @@ mod tests {
                 async |pair| ready(&self.io, pair).await,
                 async |pair, link| self.io.observe(pair, link).await,
                 async |capture| self.io.save(capture).await,
-                async |_, _, _| self.create().await,
+                async |_, _, _, _| self.create().await,
                 async |pair, link, edge| self.io.check(pair, link, edge).await,
             )
             .await
@@ -933,7 +1074,7 @@ mod tests {
             async |pair| ready(&io, pair).await,
             async |pair, link| io.observe(pair, link).await,
             async |capture| io.save(capture).await,
-            async |_, _, _| panic!("link still present; the finished removal did not land"),
+            async |_, _, _, _| panic!("link still present; the finished removal did not land"),
             async |pair, link, edge| io.check(pair, link, edge).await,
         )
         .await

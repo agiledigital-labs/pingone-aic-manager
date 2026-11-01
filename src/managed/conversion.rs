@@ -2,7 +2,8 @@
 //! rollback. Version-2 captures require recorded views from both ends.
 //! Pure indexed census, target/declaration footprints and shared pending-request
 //! decisions (with scoped, journaled operator acknowledgments) and sequencing live
-//! here; conversion_cli supplies tenant I/O. The capture is the recovery
+//! here; complete promotion binding snapshots guard uncaptured ends too.
+//! conversion_cli supplies tenant I/O. The capture is the recovery
 //! journal: intent is saved before requests and forgotten only after reads.
 //! API contract: docs/api/10-managed-objects.md; Q14 in 99-quirks.
 
@@ -123,6 +124,9 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Intent {
+    /// None only for requests saved by an earlier development build.
+    #[serde(default)]
+    pub transaction_id: Option<String>,
     pub pair: usize,
     pub link: usize,
     pub action: Action,
@@ -161,6 +165,9 @@ pub struct Capture {
     pub new_pairs: Vec<String>,
     #[serde(default)]
     pub acknowledged_requests: Vec<AcknowledgedRequest>,
+    /// Complete binding evidence, including pairs excluded from link capture.
+    #[serde(default)]
+    pub promotion_bindings: Option<PromotionBindings>,
 }
 
 impl Capture {
@@ -178,12 +185,16 @@ impl Capture {
             restored: Vec::new(),
             new_pairs: Vec::new(),
             acknowledged_requests: Vec::new(),
+            promotion_bindings: None,
         }
     }
     pub fn count(&self) -> usize {
         self.pairs.iter().map(|pair| pair.links.len()).sum()
     }
     pub fn validate(&self) -> Result<()> {
+        if self.origin == Origin::Promotion && self.promotion_bindings.is_none() {
+            return Err(Error::Config("promotion capture has no complete binding snapshots (earlier development build); keep the file and writers paused. Re-capture only before promotion; if promotion has landed contact the tenant administrator or Ping Support before restoring".into()));
+        }
         capture_version(Some(u64::from(self.version)))?;
         if self.pairs.iter().any(|pair| {
             pair.reverse.is_some()
@@ -556,12 +567,91 @@ pub fn guard(
 /// A raw binding includes every field and its section/location. Comparison
 /// precedes schema parsing: unchanged stock multi-target pairs are supported
 /// as exclusions even though conversion cannot safely recreate them.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct Binding {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Binding {
     section: String,
     resource: String,
     key: String,
     value: Value,
+}
+
+/// Expected post-promotion state and the upper baseline, recorded together
+/// with the links. An addition proves propagation, not replacement versus merge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromotionBindings {
+    lower: Vec<Binding>,
+    upper: Vec<Binding>,
+}
+
+impl PromotionBindings {
+    pub fn new(lower: &Value, upper: &Value) -> Self {
+        Self {
+            lower: all_bindings(lower),
+            upper: all_bindings(upper),
+        }
+    }
+}
+
+/// A relationship end's complete bindings in every section, before and after.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BindingChange {
+    pub end: String,
+    before: Vec<Binding>,
+    after: Vec<Binding>,
+}
+
+fn all_bindings(repo: &Value) -> Vec<Binding> {
+    let ends = verify::all_relationship_mappings(repo)
+        .into_iter()
+        .map(|entry| (entry.resource, entry.key))
+        .collect();
+    binding(repo, &ends)
+}
+
+fn binding_changes(before: &[Binding], after: &[Binding]) -> Vec<BindingChange> {
+    let ends = before
+        .iter()
+        .chain(after)
+        .map(|entry| (entry.resource.clone(), entry.key.clone()))
+        .collect::<BTreeSet<_>>();
+    ends.into_iter()
+        .filter_map(|(resource, key)| {
+            let for_end = |entries: &[Binding]| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.resource == resource && entry.key == key)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            let before = for_end(before);
+            let after = for_end(after);
+            (before != after).then(|| BindingChange {
+                end: format!("{resource}.{key}"),
+                before,
+                after,
+            })
+        })
+        .collect()
+}
+
+/// Fail closed on *all* post-promotion bindings, including uncaptured stock
+/// pairs. Return actual upper changes as evidence, never a replace/merge guess.
+pub fn promotion_restored(capture: &Capture, repo: &Value) -> Result<Vec<BindingChange>> {
+    if capture.origin != Origin::Promotion {
+        return Ok(Vec::new());
+    }
+    let saved = capture.promotion_bindings.as_ref().ok_or_else(|| Error::Config("promotion capture lacks complete binding snapshots; keep the file and writers paused, contact the tenant administrator or Ping Support".into()))?;
+    let actual = all_bindings(repo);
+    let changes = binding_changes(&saved.upper, &actual);
+    let unexpected = binding_changes(&saved.lower, &actual);
+    if !unexpected.is_empty() {
+        return Err(Error::Config(format!(
+            "post-promotion relationship bindings differ from the captured lower expectation (before = expected, after = actual): {}. Upper-before -> upper-after changes: {}. Keep writers paused; investigate the promotion before restoring any links",
+            serde_json::to_string(&unexpected)?,
+            serde_json::to_string(&changes)?
+        )));
+    }
+    Ok(changes)
 }
 
 type Endpoint = (String, String);
@@ -988,8 +1078,12 @@ pub(super) fn pending_outcome(capture: &Capture, permit: &Permit, present: bool)
         return Ok(());
     }
     Err(Error::Config(format!(
-        "pending {:?} request is unresolved: the link is {}. Its request may still complete; no retry, unlink or mapping removal is authorized. Keep writers paused and re-run after checking its outcome. Only after establishing that the original request has finished and cannot complete later, use --acknowledge-request-finished with this same capture; --force and elapsed time do not resolve it",
+        "pending {:?} request is unresolved (transaction id: {}): the link is {}. Its request may still complete; no retry, unlink or mapping removal is authorized. Keep the file and writers paused. Look up the idm-access terminal event with aic logs tx using this id (write correlation unmeasured); absent logs do not prove the request was never sent. Without terminal evidence contact the tenant administrator or Ping Support. Only after establishing that the original request has finished and cannot complete later, use --acknowledge-request-finished with this same capture; --force and elapsed time do not resolve it",
         intent.action,
+        intent
+            .transaction_id
+            .as_deref()
+            .unwrap_or("unavailable: earlier development build; contact tenant administrator"),
         if present { "present" } else { "absent" }
     )))
 }
@@ -1029,12 +1123,18 @@ pub struct Observation {
 /// A presence read cannot settle an in-flight unlink. Never reverse direction
 /// or clear Remove intent while its outcome can still land after restoration.
 pub(super) fn restore_allowed(capture: &Capture) -> Result<()> {
-    if capture
+    if let Some(intent) = capture
         .pending
         .as_ref()
-        .is_some_and(|intent| intent.action == Action::Remove)
+        .filter(|intent| intent.action == Action::Remove)
     {
-        return Err(Error::Config("pending Remove intent: cannot reverse rollback while an unlink outcome is unresolved. Keep writers paused and finish rollback-map with this same capture; observing a link present or absent does not settle a delayed request".into()));
+        return Err(Error::Config(format!(
+            "pending Remove intent (transaction id: {}): cannot reverse rollback while an unlink outcome is unresolved. Keep writers paused and finish rollback-map with this same capture; observing a link present or absent does not settle a delayed request. Look up the idm-access terminal event with aic logs tx; absent logs do not prove the request was never sent. Without terminal evidence keep the file and contact the tenant administrator or Ping Support",
+            intent
+                .transaction_id
+                .as_deref()
+                .unwrap_or("unavailable: earlier development build")
+        )));
     }
     if capture.state == State::RolledBack {
         return Err(Error::Config(
@@ -1052,7 +1152,7 @@ pub async fn restore_with(
     mut ready: impl AsyncFnMut(&Pair) -> Result<()>,
     mut read: impl AsyncFnMut(&Pair, &Link) -> Result<Observation>,
     mut save: impl AsyncFnMut(&Capture) -> Result<()>,
-    mut create: impl AsyncFnMut(&Pair, &Link, Option<&str>) -> Result<Option<String>>,
+    mut create: impl AsyncFnMut(&Pair, &Link, Option<&str>, &str) -> Result<Option<String>>,
     mut check: impl AsyncFnMut(&Pair, &Link, &relink::Edge) -> Result<()>,
 ) -> Result<()> {
     if capture.state == State::RolledBack || !permit.acknowledges(capture) {
@@ -1106,14 +1206,16 @@ pub async fn restore_with(
                 save(capture).await?;
             }
             capture.state = State::Restoring;
+            let transaction_id = crate::http::transaction_id();
             capture.pending = Some(Intent {
+                transaction_id: Some(transaction_id.clone()),
                 pair: index,
                 link: link_index,
                 action: Action::Create,
                 edge_id: None,
             });
             save(capture).await?;
-            let written = create(&pair, link, current.rev.as_deref()).await?;
+            let written = create(&pair, link, current.rev.as_deref(), &transaction_id).await?;
             if let Some(intent) = &mut capture.pending {
                 intent.edge_id = written.clone();
             }
@@ -1319,6 +1421,53 @@ pub(super) mod tests {
     use serde_json::json;
     use std::cell::RefCell;
 
+    // Regression: the operator needs an evidence id even if the process dies
+    // around dispatch. The create callback reads the actual fsynced journal.
+    #[tokio::test]
+    async fn restore_saves_transaction_id_durably_before_dispatch_and_prints_it_on_refusal() {
+        for array in [false, true] {
+            let (mut capture, _) = captured(array);
+            let dir = std::env::temp_dir().join(format!("aic-intent-id-{}", uuid::Uuid::new_v4()));
+            let path = dir.join("capture.json");
+            let mut file = FileSession::open(path.clone(), None).await.unwrap();
+            let permit = authorize(false, true).unwrap();
+            let sent = RefCell::new(None);
+            let error = restore_with(
+                &mut capture,
+                &permit,
+                async |_| Ok(()),
+                async |_, _| {
+                    Ok(Observation {
+                        edges: Vec::new(),
+                        rev: Some("r1".into()),
+                    })
+                },
+                async |capture| file.save(capture).await,
+                async |_, _, _, transaction_id| {
+                    let saved = load(&path).unwrap();
+                    let wire = serde_json::to_value(saved.pending.unwrap()).unwrap();
+                    assert_eq!(wire["transaction_id"], transaction_id);
+                    *sent.borrow_mut() = Some(transaction_id.to_owned());
+                    Err(Error::Config("interrupted around dispatch".into()))
+                },
+                async |_, _, _| Ok(()),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("interrupted"));
+            let refusal = pending_outcome(&capture, &permit, false)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refusal.contains(sent.borrow().as_ref().unwrap()),
+                "{refusal}"
+            );
+            assert!(refusal.contains("absent logs do not prove"));
+            drop(file);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     pub(crate) fn fixture(array: bool) -> (Value, Value, Value, Pair) {
         let link = json!({"type":"relationship", "resourceCollection":[{"path":"managed/b"}],
             "reverseRelationship":true,"reversePropertyName":"back"});
@@ -1474,7 +1623,7 @@ pub(super) mod tests {
                         saves.borrow_mut().push(capture.pending.clone());
                         Ok(())
                     },
-                    async |_, link, _| {
+                    async |_, link, _, _| {
                         assert!(saves.borrow().last().unwrap().is_some());
                         *writes.borrow_mut() += 1;
                         let mut written = originals
@@ -1516,6 +1665,7 @@ pub(super) mod tests {
         captured_second.reverse_properties = Some(second.properties.clone());
         capture.pairs[0].links.push(captured_second);
         capture.pending = Some(Intent {
+            transaction_id: None,
             pair: 0,
             link: 1,
             action: Action::Create,
@@ -1534,7 +1684,7 @@ pub(super) mod tests {
                 })
             },
             async |_| Ok(()),
-            async |_, _, _| panic!("nothing is missing"),
+            async |_, _, _, _| panic!("nothing is missing"),
             async |_, _, _| Ok(()),
         )
         .await
@@ -1686,6 +1836,7 @@ pub(super) mod tests {
         assert!(capture.validate().is_err());
         let (mut capture, _) = captured(true);
         capture.pending = Some(Intent {
+            transaction_id: None,
             pair: 0,
             link: 99,
             action: Action::Create,
@@ -1710,6 +1861,7 @@ pub(super) mod tests {
             edge_id: "old-counter".into(),
         });
         capture.pending = Some(Intent {
+            transaction_id: None,
             pair: 0,
             link: 0,
             action: Action::Create,
@@ -1728,7 +1880,7 @@ pub(super) mod tests {
                 })
             },
             async |_| Ok(()),
-            async |_, _, _| panic!("captured values already present"),
+            async |_, _, _, _| panic!("captured values already present"),
             async |_, _, _| Ok(()),
         )
         .await
@@ -1919,12 +2071,13 @@ pub(super) mod tests {
             promotion_pairs(&managed, &lower, &managed, &generic, &BTreeSet::new()).unwrap();
         assert_eq!(pairs.len(), 1);
         guard(&pairs[0], &managed, &lower, storage::Mode::Mapped).unwrap();
-        let capture = Capture::new(
+        let mut capture = Capture::new(
             "uat".into(),
             "https://tenant.example.com".into(),
             Origin::Promotion,
             pairs,
         );
+        capture.promotion_bindings = Some(PromotionBindings::new(&lower, &generic));
         capture.validate().unwrap();
         assert!(
             promotion_pairs(&managed, &lower, &managed, &lower, &BTreeSet::new())

@@ -248,6 +248,8 @@ pub fn authorize(dry_run: bool, consented: bool) -> Option<RelinkPermit> {
 /// One request a relink sends.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Write {
+    /// Set by durable conversion intent before dispatch; absent for ordinary relink.
+    pub transaction_id: Option<String>,
     pub method: &'static str,
     pub path: String,
     pub body: Option<Value>,
@@ -326,6 +328,7 @@ pub fn writes(
         let collection = format!("{record}/{}", crate::idmstore::api::path_segment(near_key));
         Ok([
             Write {
+                transaction_id: None,
                 method: "DELETE",
                 path: format!(
                     "{collection}/{}",
@@ -342,6 +345,7 @@ pub fn writes(
         let pointer = format!("/{near_key}");
         Ok([
             Write {
+                transaction_id: None,
                 method: "PATCH",
                 path: record.clone(),
                 body: Some(json!([{ "operation": "remove", "field": pointer }])),
@@ -367,6 +371,7 @@ pub fn create_link(
         "_refProperties": edge.properties});
     if array {
         Write {
+            transaction_id: None,
             method: "POST",
             path: format!(
                 "{record}/{}?_action=create",
@@ -377,6 +382,7 @@ pub fn create_link(
         }
     } else {
         Write {
+            transaction_id: None,
             method: "PATCH",
             path: format!("{record}?_fields={}", fields_query(key)),
             body: Some(
@@ -433,6 +439,7 @@ pub fn probe_link(
     let reference = json!({ "_ref": format!("managed/{far_object}/{far_id}") });
     if near_array {
         Write {
+            transaction_id: None,
             method: "POST",
             path: format!(
                 "{record}/{}?_action=create",
@@ -443,6 +450,7 @@ pub fn probe_link(
         }
     } else {
         Write {
+            transaction_id: None,
             method: "PATCH",
             path: format!("{record}?_fields={}", fields_query(near_key)),
             body: Some(
@@ -464,6 +472,7 @@ pub fn probe_unlink(
     let record = record_path(near_object, near_id);
     if near_array {
         Write {
+            transaction_id: None,
             method: "DELETE",
             path: format!(
                 "{record}/{}/{}",
@@ -475,6 +484,7 @@ pub fn probe_unlink(
         }
     } else {
         Write {
+            transaction_id: None,
             method: "PATCH",
             path: record,
             body: Some(json!([{ "operation": "remove", "field": format!("/{near_key}") }])),

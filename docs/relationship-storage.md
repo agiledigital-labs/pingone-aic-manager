@@ -138,8 +138,42 @@ A pending Remove still blocks changing back to restore by default.
 Keep writers paused, wait and inspect the original request's outcome, then
 repeat the same command with the same file. Neither elapsed time nor `--force`
 proves completion; there is no automatic retry after a fixed settle window.
-If you cannot establish that the original request has finished and cannot
-complete later, keep the request journaled and do not acknowledge it away.
+Each new Create/Remove intent saves a `transaction_id` before dispatch. The
+refusal prints that id; it is sent unchanged as `x-forgerock-transactionid`
+through the agent. Journaled writes make one dispatch attempt per id. An older
+in-place capture may have a pending request without an id; aic prints that
+limitation instead of inventing one. Keep that file and ask the tenant
+administrator for help identifying the original request.
+
+For a saved id, query **only `idm-access`** on the capture's tenant:
+
+```sh
+aic logs tx '<transaction_id printed by the refusal>' --tenant dev \
+  --source idm-access --wait --timeout 120 --output request-outcome.json
+```
+
+Inspect the JSON for the IDM `access` event for this request, its HTTP path and
+method, and `response.status` / `response.statusCode`. The lookup matches id
+prefixes, including child ids. An AM introspection outcome is not the IDM
+request's completion. If needed, repeat the same lookup later to allow for log
+lag; keep each result with the capture.
+
+**Write correlation is unmeasured.** The [IDM log evidence](api/08-logs.md#idm-transactions-verified-2026-10-31)
+measures a caller-chosen id on an IDM read and its terminal `access` event.
+Using the same header for these link writes is the intended evidence route,
+to be verified live. A correctly correlated terminal IDM event establishes
+that the request finished, with the reported HTTP result; it does not by itself
+prove the captured link set. aic still re-reads and verifies link values before
+clearing intent or completing restoration. Check the correlation and result
+before asserting that the saved request can no longer complete later.
+
+**Absence of a log is not proof the request was never sent.** A kill around
+dispatch can leave a never-sent request, a finished request without visible
+logs, or a request still executing indistinguishable. Without terminal evidence,
+keep the capture file, keep link writers paused, and contact whoever administers
+the tenant or Ping Support with the transaction id, capture time and request
+identity. Do not acknowledge the request away based on silence or a timeout.
+Some interruptions require that escalation; recovery is not always self-service.
 
 Only after establishing that the original request has finished, explicitly
 acknowledge that fact on the operation you want to continue:
@@ -306,8 +340,26 @@ aic idm get 'managed/new_widget?_queryFilter=/owner%20pr' --fields _id --tenant 
 Any record is unexpected data: stop and inspect it. Captured-set verification
 covers the captured pairs; it cannot certify an uncaptured pair's empty store.
 
-After promotion, `restore-links` refuses if the expected mappings have not
-landed. Once they match, it restores and verifies the exact captured UAT set
+When capture writes a file it also saves the complete lower and upper
+relationship bindings it compared, in every repo.ds section, including stock
+pairs excluded from link capture. Before consent and again before restoration,
+`restore-links` re-reads upper repo.ds and requires **every relationship binding**
+to match the saved lower state. A missing, extra or changed binding on any end
+refuses with expected and actual bindings, including uncaptured pairs. Keep
+writers paused and investigate the promotion; do not edit the capture to bypass
+this check. A promotion capture from an earlier build without these snapshots
+refuses. Re-capture only if promotion has not happened; otherwise keep the file
+and contact the tenant administrator or Ping Support.
+
+The command reports which ends changed between the saved upper-before bindings
+and the upper-after read, with both bindings. Retain that output as promotion
+evidence. **An addition-only conversion measures propagation, not replacement
+versus merge**: both mechanisms can produce that result. Do not bypass the
+upper-only-mapping refusal to manufacture a replacement-versus-merge test.
+That behaviour remains unmeasured until an independently safe measurement is
+available.
+
+Once all bindings match, it restores and verifies the exact captured UAT set
 using the same engine as dev conversion. It writes **records only**, never
 config, so it can run while upper-environment config is locked. Keep writers
 paused until its completion message. If it stops, repeat `restore-links` with

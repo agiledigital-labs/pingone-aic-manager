@@ -116,6 +116,9 @@ pub struct ApiCallRequest {
     /// write families. Most API calls leave this unset.
     #[serde(default)]
     pub if_match: Option<String>,
+    /// Caller-chosen id journaled before dispatch; never replaced by the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -211,11 +214,12 @@ mod tests {
             content_type: Some("application/json".into()),
             api_version: Some("resource=1.0".into()),
             if_match: Some("\"1\"".into()),
+            transaction_id: Some("aic-test-transaction".into()),
         }));
 
         let actual = serde_json::to_value(&wire).expect("serialise");
         let expected = serde_json::json!({
-            "protocol_version": 3,
+            "protocol_version": 4,
             "op": "api_call",
             "tenant": "sandbox",
             "method": "PUT",
@@ -225,6 +229,7 @@ mod tests {
             "content_type": "application/json",
             "api_version": "resource=1.0",
             "if_match": "\"1\"",
+            "transaction_id": "aic-test-transaction",
         });
         assert_eq!(actual, expected);
     }
@@ -243,11 +248,12 @@ mod tests {
             content_type: None,
             api_version: None,
             if_match: None,
+            transaction_id: None,
         }));
 
         let actual = serde_json::to_value(&wire).expect("serialise");
         let expected = serde_json::json!({
-            "protocol_version": 3,
+            "protocol_version": 4,
             "op": "api_call",
             "tenant": "sandbox",
             "method": "GET",
@@ -261,7 +267,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    /// An older CLI that omits the three `#[serde(default)]` fields (and
+    /// An older CLI that omits optional `#[serde(default)]` fields (and
     /// never heard of `if_match`) must still parse. Deserialises as
     /// `Request` — the same type the daemon matches on after peeling
     /// `WireRequest`.
@@ -289,6 +295,7 @@ mod tests {
                 content_type,
                 api_version,
                 if_match,
+                transaction_id,
             }) => {
                 assert_eq!(tenant, "sandbox");
                 assert_eq!(method, "GET");
@@ -298,6 +305,7 @@ mod tests {
                 assert!(content_type.is_none());
                 assert!(api_version.is_none());
                 assert!(if_match.is_none());
+                assert!(transaction_id.is_none());
             }
             other => panic!("expected an api_call, got {other:?}"),
         }

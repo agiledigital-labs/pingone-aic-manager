@@ -940,8 +940,10 @@ must be absent; existing ends, stale mappings and typos refuse. Acknowledgment
 precedes narrow validation, so genuinely new multi-target components can be
 excluded without pretending their existing links could be migrated. Do not
 use this to bypass possible Q14 loss.
-Acknowledgments are printed and saved with any capture. It writes only a local
-capture, never tenant config or records.
+Acknowledgments are printed and saved with any capture. The file also records
+the complete lower and upper relationship bindings compared, including all
+excluded pairs and every mapping section. It writes only a local capture,
+never tenant config or records.
 Even an empty selection gets a fresh declaration/binding recheck. A lower
 custom declaration missing where upper still declares it names suspected Q14.
 Equivalent bindings still refuse differing declaration footprints. Platform or
@@ -955,14 +957,31 @@ confirmation/dry-run/prod flag shapes as map.
 
 After the existing promotion workflow, `relationship restore-links FILE
 --tenant <destination>` first re-reads the destination mappings and refuses
-unless they landed exactly as captured. It writes **records only**, never
+unless **every relationship binding**, including skipped pairs, matches the
+saved lower snapshot. Any unexpected missing, extra or changed binding refuses
+with expected/actual details and instructions to keep writers paused. It reports
+all upper-before → upper-after binding changes; an addition alone proves
+propagation, not replace versus merge. Do not bypass the upper-only refusal
+to manufacture that measurement. Older promotion files without complete binding
+snapshots refuse; re-capture only before promotion, otherwise retain the file
+and escalate to the tenant administrator or Ping Support. It writes **records only**, never
 config, then performs the same resumable restoration and exact verification
 as map. Use the upper's own capture, not one from the lower environment.
 A pending Create found present is verified and skipped automatically. If it
 is absent, the request remains unresolved: restore refuses a duplicate send
 and rollback refuses mutation. Pending Remove uses the same outcome rule:
 absence confirms unlinking during rollback; presence refuses another unlink.
-Default pending-Remove reversal refusal remains.
+Default pending-Remove reversal refusal remains. New intents save their request's
+`transaction_id` durably before dispatch and send it unchanged in
+`x-forgerock-transactionid`; refusals print it. Look up that id with
+`aic logs tx <id> --tenant <capture-tenant> --source idm-access --wait --timeout 120`.
+IDM's terminal `access` event records completion and HTTP status for a measured
+read; correlation for these conversion writes is **unmeasured**. An AM
+introspection outcome is insufficient. Absence of a log is not proof the request
+was never sent. Without terminal evidence retain the file, keep writers paused,
+and contact the tenant administrator or Ping Support with the id. See the
+[lookup and escalation procedure](relationship-storage.md). Older in-place
+pending intents without an id require help identifying the original request.
 
 `map`, `restore-links` and `rollback-map` accept
 `--acknowledge-request-finished` only for an existing pending intent. Use it
