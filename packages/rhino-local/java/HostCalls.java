@@ -30,6 +30,7 @@ public final class HostCalls {
     int seq = ++sequence;
     CompletableFuture<Map<String, Object>> future = new CompletableFuture<Map<String, Object>>();
     waiting.put(seq, future);
+    if (inputClosed) future.completeExceptionally(new IllegalStateException("rhino-local: host input closed"));
     Map<String, Object> line = new LinkedHashMap<String, Object>();
     line.put("type", "call");
     line.put("id", id);
@@ -58,9 +59,12 @@ public final class HostCalls {
   }
 
   static void reply(Map<String, Object> line) {
-    HostCalls job = JOBS.get(Json.optionalString(line, "id"));
+    Object id = line.get("id");
+    Object seq = line.get("seq");
+    if (!(id instanceof String) || !(seq instanceof Number)) return;
+    HostCalls job = JOBS.get((String) id);
     if (job == null) return;
-    CompletableFuture<Map<String, Object>> future = job.waiting.get((int) Json.optionalLong(line, "seq", -1));
+    CompletableFuture<Map<String, Object>> future = job.waiting.get(((Number) seq).intValue());
     if (future != null) future.complete(line);
   }
 
