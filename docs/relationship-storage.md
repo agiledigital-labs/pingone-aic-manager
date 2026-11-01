@@ -73,7 +73,7 @@ aic managed relationship map custom_widget.owner --tenant dev \
   --capture .aic/relationship-captures/dev-widget.json --dry-run
 ```
 
-The preview says **planned capture; no file written** and holds no write
+The preview says **planned capture (not yet saved)** and holds no write
 permit. When mappings are already installed, a resume plan names the saved
 state, verifies existing links and re-creates only missing links; it does not
 propose another mapping switch. Inspect any refusal before continuing. Then run the same operation with confirmation:
@@ -158,10 +158,11 @@ prefixes, including child ids. An AM introspection outcome is not the IDM
 request's completion. If needed, repeat the same lookup later to allow for log
 lag; keep each result with the capture.
 
-**Write correlation is unmeasured.** The [IDM log evidence](api/08-logs.md#idm-transactions-verified-2026-10-31)
-measures a caller-chosen id on an IDM read and its terminal `access` event.
-Using the same header for these link writes is the intended evidence route,
-to be verified live. A correctly correlated terminal IDM event establishes
+**Write correlation was measured on 2026-11-01** for a link `PATCH` killed after
+dispatch: its saved id appeared as one `idm-access` `access` event, `<id>/0`,
+with method, path and `response.status` `SUCCESSFUL` / `statusCode` `200`
+([IDM log evidence](api/08-logs.md#writes-correlate-the-same-way-verified-2026-11-01)).
+A failed write's event was not measured. A correctly correlated terminal IDM event establishes
 that the request finished, with the reported HTTP result; it does not by itself
 prove the captured link set. aic still re-reads and verifies link values before
 clearing intent or completing restoration. Check the correlation and result

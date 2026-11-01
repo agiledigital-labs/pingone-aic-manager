@@ -266,6 +266,18 @@ All three lookups returned in 4–13s. A reported 180s timeout from
 A wide `logs range` or `logs grep` is the expensive shape — see the throughput
 note under `aic logs grep` in `docs/CLI.md`.
 
+### Writes correlate the same way (verified 2026-11-01)
+
+Measured on the sandbox with a relationship-restore write: `aic managed
+relationship map` sent `PATCH /openidm/managed/<obj>/<id>` carrying its saved
+`X-ForgeRock-TransactionId: aic-<uuid>` and was killed with `SIGKILL` after
+dispatch, before it recorded the result. About 40s later
+`aic logs tx aic-<uuid> --source idm-access --wait` returned **one** `access`
+event stored as `aic-<uuid>/0`, with `http.request.method` `PATCH`, the record's
+path, `response.status` `SUCCESSFUL` and `response.statusCode` `200`. So the
+terminal `access` event is the completion evidence for an IDM write as well as
+a read. Not measured: a write that failed, and how long the log lags under load.
+
 ## Transaction id matching is a prefix match
 
 Verified 2026-09-14 on the sandbox, against `am-access`.

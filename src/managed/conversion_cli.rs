@@ -108,7 +108,7 @@ fn default_path() -> PathBuf {
 
 fn request_evidence(capture: &Capture) -> String {
     capture.pending.as_ref().map_or_else(String::new, |intent| format!(
-        "Pending {:?} transaction id: {}. Look up its terminal IDM access event with aic logs tx --source idm-access; write correlation is unmeasured. Absent logs do not prove the request was never sent. Without terminal evidence keep this file and writers paused; contact the tenant administrator or Ping Support.",
+        "Pending {:?} transaction id: {}. Look up its terminal IDM access event with aic logs tx --source idm-access; its terminal event carries the HTTP result (measured for a successful link PATCH). Absent logs do not prove the request was never sent. Without terminal evidence keep this file and writers paused; contact the tenant administrator or Ping Support.",
         intent.action, intent.transaction_id.as_deref().unwrap_or("unavailable: earlier development build")))
 }
 
@@ -122,7 +122,7 @@ fn plan_text(capture: &Capture, path: &Path, operation: &str, saved: bool, switc
     lines.push(if saved {
         format!("  saved state: {:?}", capture.state)
     } else {
-        "  planned capture; no file written".into()
+        "  planned capture (not yet saved)".into()
     });
     for pair in &capture.pairs {
         lines.push(format!(
@@ -986,7 +986,7 @@ mod tests {
     fn planned_capture_output_never_claims_a_durable_save() {
         let (capture, _) = captured(true);
         let text = plan_text(&capture, Path::new("capture.json"), "map", false, true);
-        assert!(text.contains("planned capture; no file written"));
+        assert!(text.contains("planned capture (not yet saved)"));
         assert!(!text.contains("saved state"));
         assert!(text.contains("1 links are invisible"));
         assert!(text.contains("  map a.link:"));
