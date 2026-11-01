@@ -16,6 +16,7 @@ public final class HostCalls {
   private final String id;
   private final IdmContextFactory factory;
   private int sequence;
+  final java.util.Set<Integer> unanswered = new java.util.concurrent.ConcurrentSkipListSet<Integer>();
   volatile EmulationFailure failure;
   synchronized EmulationFailure fail(EmulationFailure error) {
     if (failure == null) failure = error;
@@ -39,6 +40,7 @@ public final class HostCalls {
     synchronized (this) {
       seq = ++sequence;
       waiting.put(seq, future);
+      unanswered.add(seq);
       if (inputClosed) future.completeExceptionally(new IllegalStateException("rhino-local: host input closed"));
       Map<String, Object> line = new LinkedHashMap<String, Object>();
       line.put("type", "call");
@@ -51,6 +53,7 @@ public final class HostCalls {
     try {
       long remaining = factory.remainingMillis();
       Map<String, Object> reply = remaining == 0 ? future.get() : future.get(remaining, TimeUnit.MILLISECONDS);
+      unanswered.remove(seq); // Authoritative: this worker consumed the reply, not merely received stdin.
       if (reply.get("error") != null) {
         Map<String, Object> error = Json.asObject(reply.get("error"), "host error");
         java.util.List<String> absent = Json.optionalStringList(error, "missing");

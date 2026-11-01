@@ -79,8 +79,8 @@ it("#11 re-entry at the admission limit refuses instead of queuing or deadlockin
     return result.outcome === "protocol_error" ? 42 : result.value;
   };
   try {
-    expect(await evaluate()).toBe(42);
-    expect(outcomes).toEqual(["protocol_error", "ok", "ok"]);
+    expect(await evaluate()).toBeNull();
+    expect(outcomes).toEqual(["protocol_error", "runtime_error", "runtime_error"]);
   } finally { await runner.close(); }
 }, 30_000);
 

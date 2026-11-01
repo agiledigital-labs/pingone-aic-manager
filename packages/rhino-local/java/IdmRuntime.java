@@ -107,6 +107,7 @@ final class IdmRuntime {
     } else if ("timeout".equals(response.get("outcome"))) {
       response.put("emulation", new EmulationFailure("timeout", "IDM harness timeout").info);
     }
+    if (calls != null && !calls.unanswered.isEmpty()) response.put("unanswered", new ArrayList<Integer>(calls.unanswered));
     response.put("logs", runtime == null ? new ArrayList<Object>() : runtime.logs);
     response.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : runtime.bindings);
     List<String> absent = runtime == null ? new ArrayList<String>() : new ArrayList<String>(runtime.missing);

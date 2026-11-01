@@ -269,3 +269,32 @@ it("#6 allocates distinct host sequences for simultaneous shell spawn calls", as
     expect(response.outcome).toBe("ok");
   }
 }, 60_000);
+
+
+it("R2 public close drains an accepted host call and preserves its response", async () => {
+  const closingRunner = await RhinoRunner.spawn();
+  const started = deferred<void>();
+  const release = deferred<void>();
+  const job = closingRunner.eval({ engine: "idm", source: "openidm.read('accepted')", timeoutMs: 0 }, {
+    onCall: async () => { started.resolve(); await release.promise; return 42; },
+  });
+  await started.promise;
+  const closing = closingRunner.close();
+  release.resolve();
+  expect(await job).toMatchObject({ outcome: "ok", value: 42 });
+  await closing;
+}, 30_000);
+
+it("R2 public close bounds a never-replied accepted call", async () => {
+  const closingRunner = await RhinoRunner.spawn({ shutdownWaitMs: 100 });
+  const started = deferred<void>();
+  const job = closingRunner.eval({ engine: "idm", source: "openidm.read('never')", timeoutMs: 0 }, {
+    onCall: () => { started.resolve(); return new Promise(() => {}); },
+  });
+  await started.promise;
+  const at = performance.now();
+  const closing = closingRunner.close();
+  expect(await job).toMatchObject({ outcome: "protocol_error", emulation: { kind: "protocol", message: expect.stringContaining("shutdown") } });
+  await closing;
+  expect(performance.now() - at).toBeLessThan(2000);
+}, 30_000);
