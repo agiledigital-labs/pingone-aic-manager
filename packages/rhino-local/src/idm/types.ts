@@ -61,7 +61,8 @@ export type RestResult = {
   rawBody?: string;
   provenance: readonly Provenance[];
 };
-/** Policy is deliberately a separate seam: plug in the tenant's policy.js later. */
+/** Policy is deliberately a separate seam: plug in the tenant's policy.js later.
+ * Throw the runner's HostCallError to reject a write with a CREST status/detail. */
 export type PolicyEvaluator = (input: {
   object: Document;
   schema: ManagedType["schema"];

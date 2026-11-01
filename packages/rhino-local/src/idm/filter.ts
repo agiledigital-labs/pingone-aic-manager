@@ -96,7 +96,10 @@ export function matchesFilter(filter: Filter, object: JsonValue): boolean {
     if (candidate === null || typeof candidate === "object") return false;
     const expected = filter.value;
     switch (filter.op) {
-      case "eq": return typeof candidate === "number" ? candidate === Number(expected) : candidate === expected;
+      case "eq":
+        // The measured DS filter accepts escaped quotes but never matches them.
+        if (typeof expected === "string" && expected.includes('"')) return false;
+        return typeof candidate === "number" && typeof expected !== "boolean" ? candidate === Number(expected) : candidate === expected;
       case "co": return typeof candidate === "string" && candidate.includes(String(expected));
       case "sw": return typeof candidate === "string" && candidate.startsWith(String(expected));
       case "gt": return candidate > expected;

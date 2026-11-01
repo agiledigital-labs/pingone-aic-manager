@@ -3,6 +3,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import org.mozilla.javascript.BaseFunction;
 import org.mozilla.javascript.Context;
 import org.mozilla.javascript.NativeArray;
@@ -28,6 +29,27 @@ final class IdmValues {
     Value result = value instanceof Map ? new MapValue(Json.asObject(value, "map")) : new ListValue((List<?>) value);
     wrappers.put(value, result);
     return result;
+  }
+
+  Object wrapRequest(Object value) {
+    Map<String, Object> map = Json.asObject(value, "request");
+    String method = Json.asString(map.get("method"), "request.method");
+    String tag = "Scriptable" + Character.toUpperCase(method.charAt(0)) + method.substring(1) + "Request";
+    MapValue result = new MapValue(map, tag);
+    wrappers.put(map, result);
+    return result;
+  }
+
+  static void prepareHttpHeaders(Object context) {
+    if (!(context instanceof Map)) return;
+    Object http = Json.asObject(context, "context").get("http");
+    if (!(http instanceof Map)) return;
+    Map<String, Object> httpMap = Json.asObject(http, "http");
+    Object headers = httpMap.get("headers");
+    if (!(headers instanceof Map)) return;
+    Map<String, Object> insensitive = new TreeMap<String, Object>(String.CASE_INSENSITIVE_ORDER);
+    insensitive.putAll(Json.asObject(headers, "headers"));
+    httpMap.put("headers", insensitive);
   }
 
   static Object javaValue(Object value) {
@@ -105,9 +127,14 @@ final class IdmValues {
   private final class MapValue extends Value {
     private final Map<String, Object> map;
     private final BaseFunction toJson;
+    private final String className;
     MapValue(Map<String, Object> map) {
+      this(map, "ScriptableMap");
+    }
+    MapValue(Map<String, Object> map, String className) {
       super(false);
       this.map = map;
+      this.className = className;
       toJson = new BaseFunction(scope, ScriptableObject.getFunctionPrototype(scope)) {
         @Override public Object call(Context cx, Scriptable s, Scriptable self, Object[] args) {
           return nativeValue(map);
@@ -115,7 +142,7 @@ final class IdmValues {
       };
     }
     @Override Object backing() { return map; }
-    @Override public String getClassName() { return "ScriptableMap"; }
+    @Override public String getClassName() { return className; }
     @Override public Object get(String name, Scriptable start) {
       if (map.containsKey(name)) return wrap(map.get(name));
       return "toJSON".equals(name) ? toJson : NOT_FOUND;

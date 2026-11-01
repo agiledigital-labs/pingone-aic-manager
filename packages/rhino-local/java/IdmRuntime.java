@@ -21,6 +21,7 @@ final class IdmRuntime {
   private final IdmValues values;
   private final HostCalls calls;
   private final List<Object> logs = new ArrayList<Object>();
+  private final List<String> missing = new ArrayList<String>();
   private final Map<String, Object> bindings;
 
   private IdmRuntime(Context cx, HostCalls calls, Map<String, Object> job) {
@@ -30,10 +31,12 @@ final class IdmRuntime {
     this.calls = calls;
     bindings = job.get("bindings") == null ? new LinkedHashMap<String, Object>() : Json.asObject(job.get("bindings"), "bindings");
     List<String> resourceNames = Json.optionalStringList(job, "resourceNameBindings");
+    boolean crestBindings = Boolean.TRUE.equals(job.get("crestBindings"));
     for (Map.Entry<String, Object> e : bindings.entrySet()) {
+      if (crestBindings && "context".equals(e.getKey())) IdmValues.prepareHttpHeaders(e.getValue());
       Object value = resourceNames != null && resourceNames.contains(e.getKey())
           ? new NativeJavaObject(scope, new ResourceName(Json.asString(e.getValue(), e.getKey())), ResourceName.class)
-          : values.wrap(e.getValue());
+          : crestBindings && "request".equals(e.getKey()) ? values.wrapRequest(e.getValue()) : values.wrap(e.getValue());
       ScriptableObject.putProperty(scope.getPrototype(), e.getKey(), value);
     }
     install();
@@ -90,6 +93,9 @@ final class IdmRuntime {
     }
     response.put("logs", runtime == null ? new ArrayList<Object>() : runtime.logs);
     response.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : runtime.bindings);
+    if (Boolean.TRUE.equals(job.get("reportMissing"))) {
+      response.put("missing", runtime == null ? new ArrayList<String>() : runtime.missing);
+    }
     return response;
   }
 
@@ -250,7 +256,11 @@ final class IdmRuntime {
     };
   }
 
-  private static RuntimeException missing(String name) { return Context.reportRuntimeError("rhino-local: " + name + " is not emulated yet"); }
+  private RuntimeException missing(String name) {
+    // A script catch must not conceal a fidelity boundary from the emulator.
+    if (!missing.contains(name)) missing.add(name);
+    return Context.reportRuntimeError("rhino-local: " + name + " is not emulated yet");
+  }
 
   private static WrappedException noMethod(String method, Object[] args) {
     List<String> types = new ArrayList<String>();

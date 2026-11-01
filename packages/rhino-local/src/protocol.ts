@@ -29,6 +29,10 @@ export interface JobRequest {
   bindings?: { [key: string]: JsonValue };
   /** Binding names to wrap as Java resource-name objects instead of JS strings. */
   resourceNameBindings?: string[];
+  /** Include unsupported IDM helper uses even when the script catches their errors. */
+  reportMissing?: boolean;
+  /** Wrap request/context bindings with CREST request tags and HTTP header lookup. */
+  crestBindings?: boolean;
   /** Author's file path; becomes Rhino's source name (not `<eval>`). */
   sourceName?: string;
   /** Rhino language version. Default 0 (`VERSION_DEFAULT`). */
@@ -114,6 +118,8 @@ export interface JobResponse {
   bindings?: { [key: string]: JsonValue };
   logs?: JobLog[];
   thrown?: ThrownValue;
+  /** Opt-in diagnostic for emulator provenance; independent of job outcome. */
+  missing?: string[];
 }
 
 const OUTCOMES: ReadonlySet<string> = new Set([
@@ -148,6 +154,7 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
       : { bindings: raw.bindings as { [key: string]: JsonValue } }),
     ...(raw.logs === undefined ? {} : { logs: raw.logs as JobLog[] }),
     ...(raw.thrown === undefined ? {} : { thrown: raw.thrown as ThrownValue }),
+    ...(raw.missing === undefined ? {} : { missing: raw.missing as string[] }),
   };
 }
 

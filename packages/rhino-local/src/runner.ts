@@ -463,6 +463,8 @@ export class RhinoRunner {
     if (job.bindings !== undefined) payload.bindings = job.bindings;
     if (job.resourceNameBindings !== undefined)
       payload.resourceNameBindings = job.resourceNameBindings;
+    if (job.reportMissing !== undefined) payload.reportMissing = job.reportMissing;
+    if (job.crestBindings !== undefined) payload.crestBindings = job.crestBindings;
     if (job.sourceName !== undefined) {
       payload.sourceName = job.sourceName;
     }
