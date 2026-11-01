@@ -123,7 +123,9 @@ export class ManagedStore {
   private materialize(type: ManagedType, object: Document): Document {
     this.evidence.assumed("generic scalar/array materialization follows measured user null/array shape");
     for (const [name, config] of Object.entries(type.schema.properties)) {
-      if (object[name] === undefined) object[name] = config.type === "array" ? [] : null;
+      if (!Object.hasOwn(object, name)) Object.defineProperty(object, name, {
+        value: config.type === "array" ? [] : null, writable: true, enumerable: true, configurable: true,
+      });
     }
     return object;
   }

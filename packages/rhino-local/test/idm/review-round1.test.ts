@@ -150,3 +150,21 @@ describe("review round 1 caller provenance", () => {
     expect(separate.provenance).toContainEqual({ kind: "assumed", behavior: "property esv.feature absent" });
   });
 });
+
+
+it.each(["__proto__", "constructor", "prototype"])("#5 stores a literal top-level %s field through a JVM hook", async (key) => {
+  const emu = emulator(runner, { ...simple,
+    schema: { properties: { ...simple.schema.properties, [key]: { type: "object" } } },
+    onCreate: js("object.text='hook ran';"),
+  });
+  const body = JSON.parse(`{"${key}":{"round1Marker":"data"}}`) as Document;
+  const created = await create(emu, body);
+  expect(Object.hasOwn(created, key)).toBe(true);
+  expect(created[key]).toEqual({ round1Marker: "data" });
+  const read = await send(emu, { method: "GET", path: "managed/widget/one" });
+  expect(read[key]).toEqual({ round1Marker: "data" });
+  expect(Object.hasOwn(Object.prototype, "round1Marker")).toBe(false);
+  const absent = await create(emu, {}, "empty");
+  expect(Object.hasOwn(absent, key)).toBe(true);
+  expect(absent[key]).toBeNull();
+});

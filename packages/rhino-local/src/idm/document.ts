@@ -14,6 +14,14 @@ export function document(value: JsonValue | undefined): Document {
   return structuredClone(value);
 }
 
+/** Copy own JSON members without invoking legacy prototype setters. */
+export function replaceDocument(target: Document, source: Document): void {
+  for (const key of Object.keys(target)) delete target[key];
+  for (const [key, value] of Object.entries(source)) {
+    Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+  }
+}
+
 export function fields(value: JsonValue | undefined): string[] {
   if (value === undefined) return [];
   if (typeof value === "string") return value.split(",");
