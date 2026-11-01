@@ -11,6 +11,12 @@ export class Evidence {
     return { value, provenance: entries };
   }
 
+  bind<A extends unknown[], T>(fn: (...args: A) => T): (...args: A) => T {
+    const entries = this.local.getStore();
+    if (!entries) throw new Error("IDM provenance scope is absent");
+    return (...args) => this.local.run(entries, () => fn(...args));
+  }
+
   add(kind: Provenance["kind"], behavior: string, source?: string): void {
     const entries = this.local.getStore();
     if (!entries) throw new Error("IDM provenance scope is absent");

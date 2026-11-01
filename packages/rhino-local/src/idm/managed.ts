@@ -1,3 +1,4 @@
+import { EmulationFailure, emulationFailure } from "../emulation.ts";
 /** Managed repository and measured lifecycle chains. Scripts own JVM execution only. */
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -173,6 +174,8 @@ export class ManagedStore {
       this.evidence.assumed("caller-supplied policy evaluator");
       try { await this.policy({ object, schema: type.schema, request: op.request, internal: op.internal }); }
       catch (error) {
+        const fatal = emulationFailure(error);
+        if (fatal) throw new EmulationFailure(fatal);
         if (error instanceof HostCallError) throw new IdmError(error.code, error.message, error.detail);
         throw error;
       }

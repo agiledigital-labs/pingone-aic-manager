@@ -16,6 +16,11 @@ public final class HostCalls {
   private final String id;
   private final IdmContextFactory factory;
   private int sequence;
+  volatile EmulationFailure failure;
+  synchronized EmulationFailure fail(EmulationFailure error) {
+    if (failure == null) failure = error;
+    return failure;
+  }
   final java.util.Set<String> missing = new java.util.concurrent.ConcurrentSkipListSet<String>();
 
   HostCalls(String id, IdmContextFactory factory) {
@@ -27,7 +32,7 @@ public final class HostCalls {
   }
 
   Object call(String method, Object args) {
-    if (inputClosed) throw new IllegalStateException("rhino-local: host input closed");
+    if (inputClosed) throw fail(new EmulationFailure("protocol", "rhino-local: host input closed"));
     final int seq;
     CompletableFuture<Map<String, Object>> future = new CompletableFuture<Map<String, Object>>();
     // Allocation, registration and emission share one lock; never hold it while waiting.
@@ -50,6 +55,12 @@ public final class HostCalls {
         Map<String, Object> error = Json.asObject(reply.get("error"), "host error");
         java.util.List<String> absent = Json.optionalStringList(error, "missing");
         if (absent != null) missing.addAll(absent);
+        if (error.get("emulation") instanceof Map) throw fail(new EmulationFailure(Json.asObject(error.get("emulation"), "emulation failure")));
+        if (absent != null && !absent.isEmpty()) {
+          EmulationFailure fatal = new EmulationFailure("missing", "Missing IDM behavior: " + String.join(", ", absent));
+          fatal.info.put("missing", absent);
+          throw fail(fatal);
+        }
         throw new WrappedException(new HostException(error));
       }
       return reply.get("result");
@@ -59,7 +70,7 @@ public final class HostCalls {
       Thread.currentThread().interrupt();
       throw new Error("Interrupt.");
     } catch (ExecutionException e) {
-      throw new WrappedException(e.getCause());
+      throw fail(new EmulationFailure("protocol", "rhino-local: host input closed"));
     } finally {
       waiting.remove(seq);
     }

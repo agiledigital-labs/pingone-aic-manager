@@ -1,0 +1,35 @@
+/** Harness/fidelity failures are never tenant CREST exceptions. */
+import type { EmulationFailureInfo, JobResponse } from "./protocol.ts";
+
+export class EmulationFailure extends Error {
+  readonly emulation: EmulationFailureInfo;
+  constructor(failure: EmulationFailureInfo) {
+    super(failure.message);
+    this.name = "EmulationFailure";
+    this.emulation = failure;
+  }
+}
+
+export function emulationFailure(error: unknown): EmulationFailureInfo | undefined {
+  if (error === null || typeof error !== "object") return undefined;
+  if ("emulation" in error && error.emulation) return error.emulation as EmulationFailureInfo;
+  if ("missing" in error && Array.isArray(error.missing) && error.missing.length > 0) {
+    const absent = error.missing as string[];
+    return { kind: "missing", message: `Missing IDM behavior: ${absent.join(", ")}`, missing: absent };
+  }
+  return undefined;
+}
+
+export function responseFailure(response: JobResponse): EmulationFailureInfo | undefined {
+  return emulationFailure(response) ?? (response.outcome === "timeout"
+    ? { kind: "timeout", message: "IDM harness timeout" }
+    : response.outcome === "protocol_error"
+      ? { kind: "protocol", message: response.error?.message ?? "IDM protocol failure" } : undefined);
+}
+
+export function failedResponse(id: string, failure: EmulationFailureInfo): JobResponse {
+  return { id, outcome: failure.kind === "timeout" ? "timeout" : failure.kind === "protocol" ? "protocol_error" : "runtime_error",
+    valueKind: "missing", value: null, error: { class: "rhino.local.EmulationFailure", message: failure.message,
+      sourceName: null, line: -1, column: -1, lineSource: null }, emulation: failure,
+    ...(failure.missing ? { missing: failure.missing } : {}) };
+}

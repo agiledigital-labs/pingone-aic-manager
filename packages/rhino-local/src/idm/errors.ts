@@ -1,3 +1,4 @@
+import { EmulationFailure, responseFailure } from "../emulation.ts";
 /** CREST response and host error projection; throw policy is context-dependent. */
 import type { JobResponse, JsonValue } from "../protocol.ts";
 import { HostCallError } from "../runner.ts";
@@ -61,10 +62,12 @@ export function invalidInput(message: string): IdmError {
 
 export function missing(evidence: Evidence, behavior: string): never {
   evidence.add("missing", behavior);
-  throw new IdmError(501, `Missing IDM behavior: ${behavior}`);
+  throw new EmulationFailure({ kind: "missing", message: `Missing IDM behavior: ${behavior}`, missing: [behavior] });
 }
 
 export function scriptError(response: JobResponse, context: string, evidence: Evidence): never {
+  const fatal = responseFailure(response);
+  if (fatal) throw new EmulationFailure(fatal);
   const thrown = response.thrown;
   const endpoint = context === "endpoint";
   const failure = (status: number, message: string, detail?: JsonValue, rawBody?: string) =>

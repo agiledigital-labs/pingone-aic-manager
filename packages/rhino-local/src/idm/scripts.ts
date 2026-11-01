@@ -1,7 +1,6 @@
 /** Hook binding graphs and IDM evaluations. Host calls re-enter the owning emulator. */
-import { AsyncLocalStorage } from "node:async_hooks";
 import type { EvalOptions, RhinoRunner } from "../runner.ts";
-import type { JsonValue, JobResponse } from "../protocol.ts";
+import type { HostCall, JsonValue, JobResponse } from "../protocol.ts";
 import { isDocument, replaceDocument } from "./document.ts";
 import { missing, scriptError } from "./errors.ts";
 import type { Evidence } from "./provenance.ts";
@@ -20,11 +19,11 @@ export class Scripts {
   private readonly runner: RhinoRunner;
   private readonly evidence: Evidence;
   private readonly environmentProperties: Record<string, JsonValue>;
-  private readonly onCall: NonNullable<EvalOptions["onCall"]>;
+  private readonly onCall: (call: HostCall, context: Document) => ReturnType<NonNullable<EvalOptions["onCall"]>>;
   constructor(
     runner: RhinoRunner,
     evidence: Evidence,
-    onCall: NonNullable<EvalOptions["onCall"]>,
+    onCall: (call: HostCall, context: Document) => ReturnType<NonNullable<EvalOptions["onCall"]>>,
     properties: Record<string, JsonValue>,
   ) {
     this.runner = runner;
@@ -45,7 +44,7 @@ export class Scripts {
       properties: this.environmentProperties,
       engine: "idm", source: script.source, sourceName: context,
       bindings: { ...script.globals, ...bindings }, resourceNameBindings: ["resourceName"], reportMissing: true, crestBindings: true,
-    }, { onCall: AsyncLocalStorage.bind(this.onCall) });
+    }, { onCall: this.evidence.bind((call) => this.onCall(call, isDocument(bindings.context) ? bindings.context : {})) });
     for (const assumption of response.assumed ?? []) this.evidence.assumed(assumption);
     for (const helper of response.missing ?? []) this.evidence.add("missing", `runtime helper: ${helper}`);
     const absent = this.evidence.firstMissing();

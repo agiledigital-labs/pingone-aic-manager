@@ -1,6 +1,7 @@
+import { EmulationFailure, emulationFailure } from "../emulation.ts";
 /** REST seam and script-facing host adapter. State belongs to an instance; config is shared. */
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { HostCall, JsonValue } from "../protocol.ts";
+import type { EmulationFailureInfo, HostCall, JsonValue } from "../protocol.ts";
 import { HostCallError, type RhinoRunner } from "../runner.ts";
 import { IdmConfig } from "./config.ts";
 import { document, isDocument } from "./document.ts";
@@ -28,7 +29,7 @@ export class IdmEmulator {
     this.policy = options.policy;
     this.properties = structuredClone(options.properties ?? {});
     this.records = new Map();
-    this.scripts = new Scripts(runner, this.evidence, (call) => this.host(call), this.properties);
+    this.scripts = new Scripts(runner, this.evidence, (call, context) => this.chain.run(context, () => this.host(call)), this.properties);
     this.managed = new ManagedStore(this.records, this.scripts, this.evidence, this.policy);
   }
 
@@ -37,6 +38,12 @@ export class IdmEmulator {
     const fork = new IdmEmulator(this.config, this.runner, { ...(this.policy ? { policy: this.policy } : {}), properties: this.properties });
     for (const [key, value] of this.records) fork.records.set(key, structuredClone(value));
     return fork;
+  }
+
+  private failure(fatal: EmulationFailureInfo): Omit<RestResult, "provenance"> {
+    for (const name of fatal.missing ?? []) this.evidence.add("missing", name);
+    const status = fatal.kind === "missing" ? 501 : 500;
+    return { status, body: new IdmError(status, fatal.message).body, emulation: fatal };
   }
 
   async request(request: RestRequest): Promise<RestResult> {
@@ -53,7 +60,9 @@ export class IdmEmulator {
         this.evidence.measured("HTTP header lookup is case insensitive with original key spelling", "docs/api/11-idm-endpoints.md");
         return await this.chain.run(context, () => this.route({ request, context, internal: false }));
       } catch (error) {
-        if (!(error instanceof IdmError)) throw error;
+        const fatal = emulationFailure(error);
+        if (fatal) return this.failure(fatal);
+        if (!(error instanceof IdmError)) return this.failure({ kind: "internal", message: String(error) });
         if (error.assumption) this.evidence.assumed(error.assumption);
         if (error.escapeHttp) this.evidence.measured("endpoint HTTP error strings are HTML escaped recursively", "docs/api/11-idm-endpoints.md");
         return { status: error.status, body: error.rawBody === undefined ? error.escapeHttp ? escapeError(error.body) : error.body : null,
@@ -75,6 +84,7 @@ export class IdmEmulator {
    * in the host error metadata and is retained by the outer JVM job even if caught. */
   readonly onCall = async (call: HostCall): Promise<JsonValue> => {
     const result = await this.hostRequest(call);
+    if (result.emulation) throw new EmulationFailure(result.emulation);
     const absent = result.provenance.filter((entry) => entry.kind === "missing").map((entry) => entry.behavior);
     if (result.status >= 400 || absent.length > 0) {
       const body = document(result.body);
@@ -89,6 +99,8 @@ export class IdmEmulator {
     const { value, provenance } = await this.evidence.run(async () => {
       try { return { status: 200, body: await this.host(call) }; }
       catch (error) {
+        const fatal = emulationFailure(error);
+        if (fatal) return this.failure(fatal);
         if (error instanceof IdmError) return { status: error.status, body: error.body };
         // host() projects errors for the JVM. Recover that shape for this REST result.
         if (isDocument(error) && typeof error.code === "number" && typeof error.message === "string") {
