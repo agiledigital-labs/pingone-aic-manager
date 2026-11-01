@@ -6,6 +6,17 @@ import org.mozilla.javascript.ContextFactory;
 final class IdmContextFactory extends ContextFactory {
   private final long timeoutMs;
   private final long started = System.nanoTime();
+  // One state for every context/thread executing this job, including shell spawn.
+  volatile EmulationFailure failure;
+
+  synchronized EmulationFailure fail(EmulationFailure error) {
+    if (failure == null) failure = error;
+    return failure;
+  }
+
+  EmulationFailure timeout() {
+    return fail(new EmulationFailure("timeout", "IDM harness timeout"));
+  }
 
   IdmContextFactory(long timeoutMs) {
     this.timeoutMs = timeoutMs;
@@ -40,7 +51,7 @@ final class IdmContextFactory extends ContextFactory {
   @Override
   protected void observeInstructionCount(Context cx, int count) {
     if (timeoutMs > 0 && (System.nanoTime() - started) / 1_000_000 > timeoutMs) {
-      throw new Error("Interrupt.");
+      throw timeout();
     }
   }
 }

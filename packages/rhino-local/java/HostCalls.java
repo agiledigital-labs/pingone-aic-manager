@@ -18,10 +18,8 @@ public final class HostCalls {
   IdmValues values;
   private int sequence;
   final java.util.Set<Integer> unanswered = new java.util.concurrent.ConcurrentSkipListSet<Integer>();
-  volatile EmulationFailure failure;
-  synchronized EmulationFailure fail(EmulationFailure error) {
-    if (failure == null) failure = error;
-    return failure;
+  EmulationFailure fail(EmulationFailure error) {
+    return factory.fail(error);
   }
   final java.util.Set<String> missing = new java.util.concurrent.ConcurrentSkipListSet<String>();
 
@@ -69,10 +67,10 @@ public final class HostCalls {
       }
       return reply.get("result");
     } catch (TimeoutException e) {
-      throw new Error("Interrupt.");
+      throw factory.timeout();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new Error("Interrupt.");
+      throw factory.timeout();
     } catch (ExecutionException e) {
       throw fail(new EmulationFailure("protocol", "rhino-local: host input closed"));
     } finally {
