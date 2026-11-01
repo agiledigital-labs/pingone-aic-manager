@@ -12,24 +12,41 @@ export default class EmulationTestRunner extends TestRunner {
   #files = fileTasks;
   #updates = new Set<Promise<unknown>>();
   #transportError: unknown;
-  #collectionReady: { promise: Promise<void>; resolve: () => void } | undefined;
+  #collectionReady: WeakMap<RunnerTestFile, { promise: Promise<void>; resolve: () => void }> | undefined;
+  #beforeCollectionFile: RunnerTestFile | undefined;
 
-  #resetCollectionReadiness(): void {
-    let resolve!: () => void;
-    const promise = new Promise<void>((ready) => { resolve = ready; });
-    this.#collectionReady = { promise, resolve };
+  #currentCollectionFile(): RunnerTestFile | undefined {
+    // The public collector is created only when collection first starts.
+    try { return TestRunner.getCurrentSuite().file; }
+    catch { return undefined; }
   }
 
-  // This public hook is awaited before collection. The later onCollectStart
-  // wrapper is NOT awaited by Vitest 5, so imports also wait for its completion.
+  #readinessFor(file: RunnerTestFile): { promise: Promise<void>; resolve: () => void } {
+    if (!this.#collectionReady) throw new Error("Emulation runner requires super.onBeforeCollect before imports");
+    let ready = this.#collectionReady.get(file);
+    if (!ready) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((signal) => { resolve = signal; });
+      ready = { promise, resolve };
+      this.#collectionReady.set(file, ready);
+    }
+    return ready;
+  }
+
+  // Vitest awaits the complete client hook before changing the collector's file.
+  // Its later onCollectStart wrapper is NOT awaited before framework imports.
   onBeforeCollect(_paths: string[]): void {
-    this.#resetCollectionReadiness();
+    this.#beforeCollectionFile = this.#currentCollectionFile();
+    this.#collectionReady = new WeakMap();
     attachEmulationAuditTransport(this.#publish);
   }
 
   override async importFile(filepath: string, source: Parameters<TestRunner["importFile"]>[1]): Promise<unknown> {
-    const ready = this.#collectionReady;
-    if (!ready) throw new Error("Emulation runner requires super.onBeforeCollect before imports");
+    const file = this.#currentCollectionFile();
+    // A client may import helpers while onBeforeCollect is still running. Wait
+    // only once Vitest has installed a new file, independent of kind or path.
+    if (!file || file === this.#beforeCollectionFile) return super.importFile(filepath, source);
+    const ready = this.#readinessFor(file);
     const timeoutMs = this.config.hookTimeout || 10_000;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -37,14 +54,7 @@ export default class EmulationTestRunner extends TestRunner {
         timeout = setTimeout(() => reject(new Error(`Emulation runner collection readiness timed out after ${timeoutMs}ms; preserve super.onCollectStart and await asynchronous reporter hooks`)), timeoutMs);
       })]);
     } finally { clearTimeout(timeout); }
-    try { return await super.importFile(filepath, source); }
-    catch (error) {
-      // A failed setup aborts this file before its collection import occurs.
-      if (source === "setup" && this.#collectionReady === ready) this.#resetCollectionReadiness();
-      throw error;
-    } finally {
-      if (source === "collect" && this.#collectionReady === ready) this.#resetCollectionReadiness();
-    }
+    return super.importFile(filepath, source);
   }
 
   // Vitest decorates this public runner hook with its worker-to-main RPC.
@@ -82,7 +92,7 @@ export default class EmulationTestRunner extends TestRunner {
     this.#files.set(file.filepath, file);
     setEmulationFile(file.filepath);
     this.#publish();
-    this.#collectionReady?.resolve();
+    this.#readinessFor(file).resolve();
   }
 
   override onAfterRunTask(task: RunnerTask): void {

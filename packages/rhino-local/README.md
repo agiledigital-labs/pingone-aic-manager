@@ -928,7 +928,8 @@ also occupy that single slot; port its hooks into this subclass.
 Other setup files and reporters coexist in their normal arrays. Append client
 setup files to `setupFiles` and client reporters to `reporters`, retaining the
 three package entries above. Asynchronous reporter hooks are supported:
-collection readiness is awaited before setup or test imports, with a timeout
+imports made before collection starts bypass readiness, while imports for each
+new collection file await its readiness, with a timeout
 bounded by `hookTimeout` (10 seconds when disabled). A client overriding a
 collection hook without its superclass call receives a readiness error.
 
@@ -961,6 +962,8 @@ setup refuses a missing reporter, including when CLI `--reporter` selection
 replaces the configured list. Keep the package reporter alongside other
 reporters, including on the CLI. The final worker throw is supplemental; the
 failed task states and independent main-process verdict enforce the result.
+Runners and reporters are trusted configuration; spoofing the presence handshake
+or forcing `process.exitCode = 0` from a reporter is out of scope.
 
 Direct use without this configuration remains possible. `useLease` and legacy
 helpers install the per-test guard only; they cannot install a main-process
