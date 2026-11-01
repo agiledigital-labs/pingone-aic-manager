@@ -45,7 +45,7 @@ it("R2 new1 policy mapping retains missing and prevents catch continuation", asy
 });
 
 it("R2 new2 admission refusal remains fatal through hook and endpoint mappings", async () => {
-    expectEmulationFailure(/concurrent job limit exceeded/);
+    expectEmulationFailure(/rhino-local: concurrent job limit exceeded \(\d+\)/);
   const limited = await RhinoRunner.spawn({ maxConcurrentJobs: 1 });
   try {
     const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ ...simple, onRetrieve: js("object.text='hook';") }] }, endpoints: {
@@ -76,7 +76,7 @@ it("R2 harness timeout remains fatal through hook and endpoint mappings", async 
 });
 
 it.each(["protocol", "timeout"] as const)("R2 nested %s failure cannot be ignored by an onCall adapter", async (kind) => {
-    expectEmulationFailure(kind === "timeout" ? /IDM harness timeout/ : /concurrent job limit exceeded/);
+    expectEmulationFailure(kind === "timeout" ? /IDM harness timeout/ : /rhino-local: concurrent job limit exceeded \(\d+\)/);
   const nestedRunner = await RhinoRunner.spawn({ maxConcurrentJobs: kind === "protocol" ? 1 : 2 });
   try {
     const result = await nestedRunner.eval({ engine: "idm", source: "try {openidm.read('outer');} catch(e) {} 'passed';" }, {
@@ -91,7 +91,7 @@ it.each(["protocol", "timeout"] as const)("R2 nested %s failure cannot be ignore
 }, 30_000);
 
 it("R2 an adapter cannot swallow a nested protocol rejection", async () => {
-    expectEmulationFailure(/duplicate active job id/);
+    expectEmulationFailure(/rhino-local: duplicate active job id: .+/);
   const result = await runner.eval({ id: "round2-duplicate", engine: "idm", source: "try{openidm.read('x')}catch(e){} 'passed'" }, {
     onCall: async () => {
       try { await runner.eval({ id: "round2-duplicate", source: "42" }); } catch { /* adapter swallowed it */ }
@@ -196,7 +196,7 @@ it("R2 new8 internal endpoint numbers survive while HTTP output stays measured",
 });
 
 it.each(["source", "bindings", "policy"] as const)("R2 error-conversion audit: %s failures cannot become tenant success", async (boundary) => {
-    expectEmulationFailure(boundary === "source" ? /source must be a string/ : boundary === "bindings" ? /unknown binding alias target/ : /policy adapter crashed/);
+    expectEmulationFailure(boundary === "source" ? /java.lang.IllegalArgumentException: source must be a string/ : boundary === "bindings" ? /IDM protocol setup: unknown binding alias target: absent/ : /Error: policy adapter crashed/);
   const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [simple] } }), runner, { policy: () => { throw new Error("policy adapter crashed"); } });
   const result = await runner.eval({ engine: "idm", source: "try{openidm.read('audit')}catch(e){} 'passed'" }, {
     onCall: async (call) => {

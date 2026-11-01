@@ -200,7 +200,7 @@ describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both l
   // comparison that silently stopped comparing would fail here. Not the Java
   // build — CI installs the image's exact build, so that one must agree.
   it("detects a lane-specific difference", async () => {
-    expectEmulationFailure(/host and container JVMs disagree/);
+    expectEmulationFailure(/LaneDivergenceError: rhino-local: host and container JVMs disagree[\s\S]*/);
     await expect(
       runner.eval({
         source: 'String(java.lang.System.getProperty("user.dir"))',
@@ -237,7 +237,7 @@ describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both l
 
 describe("RhinoRunner crash", () => {
   it("rejects every pending job when the JVM exits", async () => {
-    expectEmulationFailure(/JVM runner exited/);
+    expectEmulationFailure(/RhinoRunnerExitError: rhino-local: JVM runner exited[\s\S]*/);
     const runner = await RhinoRunner.spawn();
     try {
       const pending = runner.eval({
