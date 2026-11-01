@@ -1,6 +1,8 @@
 //! Record workflows shared by tenant transport and in-memory regression tests.
 //! Guards, rollback eligibility and unlink loops live here. Required/revision
 //! prerequisites apply only to actual unlinks, preflighted before mutation.
+//! Pending outcomes are checked before config proof; reconciliation uses the
+//! shared conversion rule and journals any explicit finished-request assertion.
 //! conversion_cli supplies reads, sends and durable persistence below those
 //! decisions.
 
@@ -853,6 +855,20 @@ mod tests {
                 .iter()
                 .any(|saved| saved.pending.is_none() && saved.acknowledged_requests.len() == 1)
         );
+        let directory =
+            std::env::temp_dir().join(format!("aic-ack-audit-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("capture.json");
+        let mut file = conversion::FileSession::open(path.clone(), None)
+            .await
+            .unwrap();
+        file.save(&capture).await.unwrap();
+        let loaded = tokio::task::spawn_blocking(move || conversion::load(&path))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, capture);
+        drop(file);
+        tokio::fs::remove_dir_all(directory).await.unwrap();
         let saves = delayed.io.journal.borrow().len();
         let error = delayed
             .restore(&mut capture, &acknowledged)

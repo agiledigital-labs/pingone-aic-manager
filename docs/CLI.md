@@ -582,10 +582,10 @@ aic managed relationship set custom_widget.owner --target alpha_user --forward o
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
-aic managed relationship map custom_widget.owner [--capture FILE] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship capture-links --lower dev --upper uat --output FILE [--new-pair object.key]... [--dry-run] [--force] [--yes] [--json]
-aic managed relationship restore-links FILE [--tenant uat] [--dry-run] [--force] [--yes] [--json]
-aic managed relationship rollback-map FILE [--tenant dev] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship restore-links FILE [--tenant uat] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship rollback-map FILE [--tenant dev] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
@@ -924,7 +924,8 @@ with upper links. Complete bindings (section, owner, column, target,
 cardinality and reverse entries) are compared across all mapping sections,
 including explicitMapping. Equal bindings skip only after comparing permissive
 declaration footprints (presence, relationship/scalar, target set, cardinality,
-reverse key) for every named end. Identical stock multi-target/internal shapes
+reverse key), managed target-object presence, and schema reverse endpoints
+even without mapping entries. Identical stock multi-target/internal shapes
 and identically absent platform declarations skip without narrow conversion
 validation; footprint differences refuse with both versions. Generic in both
 also skips.
@@ -957,6 +958,21 @@ After the existing promotion workflow, `relationship restore-links FILE
 unless they landed exactly as captured. It writes **records only**, never
 config, then performs the same resumable restoration and exact verification
 as map. Use the upper's own capture, not one from the lower environment.
+A pending Create found present is verified and skipped automatically. If it
+is absent, the request remains unresolved: restore refuses a duplicate send
+and rollback refuses mutation. Pending Remove uses the same outcome rule:
+absence confirms unlinking during rollback; presence refuses another unlink.
+Default pending-Remove reversal refusal remains.
+
+`map`, `restore-links` and `rollback-map` accept
+`--acknowledge-request-finished` only for an existing pending intent. Use it
+only after establishing that the original request has finished and cannot
+complete later; an absent read, elapsed time and --force are insufficient.
+The assertion is scoped to the exact capture/intent, journaled with observed
+presence and timestamp, and consumed before another request. It never grants
+permission for a later lost response. Normal confirmation/prod gates and
+schema/data guards still apply. Dry-run holds no permit and saves no audit.
+
 The existing `relationship restore` restores definition metadata and is
 separate. `--json` reports the capture path, link count and completion state.
 Capture format version 2 requires both recorded custom-property views for
@@ -977,12 +993,14 @@ data refuses. An interrupted rollback resumes with the same verb. While the
 exact captured mappings remain installed, explicitly running restore-links
 with a RollingBack capture instead restores removed links and reverses the
 interrupted rollback only when no Remove intent is pending. An unresolved
-Remove intent refuses direction change even when a link is visible; finish
-rollback-map with the same file, keeping writers paused. Once mappings are removed, finish rollback-map.
+Remove intent refuses direction change by default even when a link is visible;
+finish rollback-map with the same file, keeping writers paused, or explicitly
+acknowledge the original request is finished before reversing. No pending
+request is retried automatically on the strength of the opposite observation. Once mappings are removed, finish rollback-map.
 Promotion captures cannot authorize config writes; there is no upper-environment config
 rollback here. A required forward property must be explicitly adjusted only
-when mapped links actually need unlinking; an empty mapped store requires no
-schema change. No failure automatically rolls a conversion back.
+when mapped links actually need unlinking; an empty mapped store with no
+unresolved request requires no schema change. No failure automatically rolls a conversion back.
 
 Q14 can remove confirmed properties. Map re-reads both declarations immediately
 before switching and again before restoration; restore and rollback recur
