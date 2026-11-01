@@ -72,9 +72,11 @@ export class IdmEmulator {
     });
     // A script may catch a host exception, but cannot turn missing emulation into success.
     const absent = provenance.find((entry) => entry.kind === "missing");
-    if (absent) {
-      const failure = new IdmError(501, `Missing IDM behavior: ${absent.behavior}`);
-      return { status: failure.status, body: failure.body, provenance };
+    if (absent && !value.emulation) {
+      const missing = provenance.filter((entry) => entry.kind === "missing").map((entry) => entry.behavior);
+      const fatal: EmulationFailureInfo = { kind: "missing", message: `Missing IDM behavior: ${missing.join(", ")}`, missing };
+      const failure = new IdmError(501, fatal.message);
+      return { status: failure.status, body: failure.body, emulation: fatal, provenance };
     }
     return { ...value, provenance };
   }
