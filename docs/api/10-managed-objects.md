@@ -626,14 +626,35 @@ type falls under `genericMapping."managed/*"` (`dnTemplate
 `properties {}`) left an existing record and its generic link readable and new
 records creatable; mapping the pair then behaved as in the table.
 
-**Promotion.** A dry run with a probe pair mapped only in dev's `repo.ds`
-reported `IDMConfig / Managed Objects — 2 added` (the probe types) and no item
-naming `repo.ds`, so a report does not show a mapping change. That `repo.ds`
-is promoted is the operator's statement, not a measurement here: console-made
-mappings would otherwise never reach an upper environment. Links are records,
-not configuration, and are not promoted, so a promoted conversion is expected
-to hide each upper environment's existing links exactly as above — inferred
-from the mechanism, not observed through a real promotion.
+**Promotion (measured 2026-11-02, three real dev → UAT promotions of
+throwaway types).** `repo.ds` is promoted as a **whole document**: after each
+promotion UAT's `repo.ds` was byte-equal to dev's, including when the
+promotion *removed* a mapping and two per-type entries that by then existed
+only in UAT. So a mapping present only in the upper environment is deleted,
+not merged. Links are records and are not promoted: UAT's three generic links
+on the converted pair were hidden from the record field and the reverse end
+immediately after the mapping landed, exactly as in the table.
+
+The report is not a reliable signal for `repo.ds`. A promotion whose only
+change was the mapping listed `IDMConfig / Uncategorized — 1 modified:
+repo.ds`; one that also deleted the two probe types listed only `Managed
+Objects — 2 deleted`, and the 2026-11-01 dry run that added types and a
+mapping listed only `Managed Objects — 2 added`.
+
+**After the promotion, UAT did not behave as a mapped pair does on dev.** With
+`repo.ds` byte-equal on both tenants, a link written on UAT after the
+promotion was readable from the record field and the reverse end, but every
+search through the mapped column returned nothing: `_queryFilter=/probeTo pr`
+found no record, and the relationship collection's `/_ref eq` query found
+nothing for a link the record listed. On dev the same writes and queries
+found the link (`verify`: "mapped, confirmed"). UAT's relationship collection
+endpoint also still listed the three hidden pre-promotion edges, with their
+`_refProperties`, while the record field showed none. Repeated reads agreed
+and nothing changed over 15 minutes. Why is unmeasured: whether upper
+environments never index a custom `fr-idm-reference-<n>` column, or a
+promoted mapping is only partly loaded, was not separated. `aic managed
+relationship restore-links` refused on its runtime check and wrote nothing.
+Q18 in `99-quirks-and-open-questions.md`.
 
 **Renaming a mapped relationship through `config/managed` breaks it.** Measured
 by renaming `test_from.hasOnehOne` (mapped, reverse `test_to.hasOneHasOne`) to
@@ -2028,6 +2049,21 @@ on create, or when actually rotating it.
   unlocked, restored dev's `repo.ds` from the backup and deleted the probe
   types; both dev documents then compared equal to the backups. Nothing was
   promoted.
+
+- Date: 2026-11-02 — relationship mappings through real promotions, dev →
+  UAT, throwaway types `aicprobe_from`/`aicprobe_to` only (operator's
+  go-ahead). Backed up both tenants' `config/managed` and `repo.ds` (equal).
+  Promotion 1 carried the types with a generic pair; three links with a
+  custom `_refProperties.note` were created on UAT. The pair was mapped on dev
+  with `aic managed relationship map`, UAT captured with `capture-links`,
+  dry run (report read), promotion 2, then `restore-links` (refused), with
+  `relationship verify` and direct reads on both tenants, a fresh link on each
+  tenant as the control, and one read per minute on UAT for 15 minutes. All
+  records were deleted on both tenants, dev's `repo.ds` restored from the
+  backup and the types deleted; promotion 3 carried that. Each promotion's
+  report was read and both tenants' documents compared after each; after
+  promotion 3 all four equalled the backups. Promotion 1 also carried one
+  pending ESV secret-store mapping from dev.
 
 ## Source citations
 
