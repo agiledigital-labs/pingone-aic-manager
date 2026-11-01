@@ -1,6 +1,6 @@
 /** Scripted endpoint CREST request construction and measured completion envelopes. */
 import type { JsonValue } from "../protocol.ts";
-import { fields, isDocument } from "./document.ts";
+import { fields, isDocument, own } from "./document.ts";
 import { IdmError, missing } from "./errors.ts";
 import { header, integer, revision, type Operation, type Reply } from "./managed.ts";
 import type { Evidence } from "./provenance.ts";
@@ -10,7 +10,7 @@ import type { Document, EndpointConfig, Script } from "./types.ts";
 export async function endpoint(config: EndpointConfig, subpath: string, op: Operation, scripts: Scripts, evidence: Evidence, forcedMethod?: string): Promise<Reply> {
   const { request: rest } = op;
   const query = rest.query ?? {};
-  const isQuery = ["_queryFilter", "_queryId", "_queryExpression"].some((key) => query[key] !== undefined);
+  const isQuery = ["_queryFilter", "_queryId", "_queryExpression"].some((key) => own(query, key) !== undefined);
   const method = forcedMethod ?? (rest.method === "GET" ? isQuery ? "query" : "read" :
     rest.method === "POST" ? query._action !== undefined && query._action !== "create" ? "action" : "create" :
     rest.method === "PUT" ? header(rest, "If-Match") === undefined ? "create" : "update" :
@@ -35,9 +35,9 @@ export async function endpoint(config: EndpointConfig, subpath: string, op: Oper
     evidence.assumed("endpoint query defaults and sortKeys are plain JSON values");
   }
   evidence.measured("endpoint method request keys and resource paths");
-  const script = "script" in config ? config.script as Script : config as Script;
+  const script = Object.hasOwn(config, "script") ? (config as { script: Script }).script : config as Script;
   const response = await scripts.evaluate(script, { request, context: op.context, resourceName: resourcePath }, "endpoint");
-  const value = response.value;
+  const value = op.internal && Object.hasOwn(response, "internalValue") ? response.internalValue ?? null : response.value;
   if (method === "action") {
     evidence.measured("endpoint action returns completion without _id");
     return { status: 200, body: value };

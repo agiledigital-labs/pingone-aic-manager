@@ -15,6 +15,7 @@ public final class HostCalls {
   private static volatile boolean inputClosed;
   private final String id;
   private final IdmContextFactory factory;
+  IdmValues values;
   private int sequence;
   final java.util.Set<Integer> unanswered = new java.util.concurrent.ConcurrentSkipListSet<Integer>();
   volatile EmulationFailure failure;
@@ -47,7 +48,7 @@ public final class HostCalls {
       line.put("id", id);
       line.put("seq", seq);
       line.put("method", method);
-      line.put("args", IdmValues.wireValue(args));
+      line.put("args", args);
       Runner.write(line);
     }
     try {
@@ -64,7 +65,7 @@ public final class HostCalls {
           fatal.info.put("missing", absent);
           throw fail(fatal);
         }
-        throw new WrappedException(new HostException(error));
+        throw new WrappedException(new HostException(error, values));
       }
       return reply.get("result");
     } catch (TimeoutException e) {
@@ -104,12 +105,14 @@ public final class HostCalls {
 
   /** Public methods are intentionally visible through Rhino's JavaException wrapper. */
   public static final class HostException extends Exception {
+    private final IdmValues values;
     private final String exceptionClass;
     private final Object code;
     private final Object detail;
 
-    HostException(Map<String, Object> error) {
+    HostException(Map<String, Object> error, IdmValues values) {
       super(Json.optionalString(error, "message"));
+      this.values = values;
       exceptionClass = Json.optionalString(error, "class");
       code = error.get("code");
       detail = error.get("detail");
@@ -117,7 +120,7 @@ public final class HostCalls {
 
     public int getCode() { return code instanceof Number ? ((Number) code).intValue() : 500; }
     public Object getDetail() {
-      return IdmValues.wrapCurrent(detail);
+      return values.wrap(detail);
     }
     String exceptionClass() { return exceptionClass; }
     Object detail() { return detail; }

@@ -1,7 +1,7 @@
 /** Hook binding graphs and IDM evaluations. Host calls re-enter the owning emulator. */
 import type { EvalOptions, RhinoRunner } from "../runner.ts";
 import type { HostCall, JsonValue, JobResponse } from "../protocol.ts";
-import { isDocument, replaceDocument } from "./document.ts";
+import { isDocument, own, replaceDocument, setOwn } from "./document.ts";
 import { missing, scriptError } from "./errors.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Document, Hook, ManagedType, Script } from "./types.ts";
@@ -41,7 +41,7 @@ export class Scripts {
     this.evidence.assumed("Java long values use JavaScript number precision");
     const response = await this.runner.eval({
       ...(bindingAliases ? { bindingAliases } : {}),
-      properties: this.environmentProperties,
+      properties: this.environmentProperties, internalValues: true,
       engine: "idm", source: script.source, sourceName: context,
       bindings: { ...script.globals, ...bindings }, resourceNameBindings: ["resourceName"], reportMissing: true, crestBindings: true,
     }, { onCall: this.evidence.bind((call) => this.onCall(call, isDocument(bindings.context) ? bindings.context : {})) });
@@ -54,7 +54,7 @@ export class Scripts {
   }
 
   async hook(type: ManagedType, hook: Hook, invocation: Invocation): Promise<void> {
-    const script = type[hook];
+    const script = own(type, hook);
     if (!script) return;
     const { object, request, context, resourceName, oldObject, newObject } = invocation;
     const bindings: Document = { object, request, context, resourceName };
@@ -75,12 +75,12 @@ export class Scripts {
     const object = invocation.object;
     if (!object) return;
     for (const [name, config] of Object.entries(type.schema.properties)) {
-      const script = config[hook];
+      const script = own(config, hook);
       if (!script) continue;
       if (hook === "onRetrieve" && selectors.length > 0 && !selectors.includes("*") &&
         !selectors.some((field) => field.replace(/^\//, "").split("/")[0] === name)) continue;
       const bindings: Document = {
-        property: object[name] ?? null, request: invocation.request,
+        property: own(object, name) ?? null, request: invocation.request,
         context: invocation.context, resourceName: invocation.resourceName,
       };
       if (hook !== "onValidate") Object.assign(bindings, { object, propertyName: name });
@@ -89,7 +89,7 @@ export class Scripts {
         if (isDocument(response.bindings?.object)) {
           replaceDocument(object, response.bindings.object);
         }
-        object[name] = response.valueKind === "undefined" ? null : response.value as JsonValue;
+        setOwn(object, name, response.valueKind === "undefined" ? null : response.value as JsonValue);
       }
     }
   }

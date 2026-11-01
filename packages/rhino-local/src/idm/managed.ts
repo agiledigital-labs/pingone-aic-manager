@@ -4,7 +4,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { HostCallError } from "../runner.ts";
 import type { JsonValue } from "../protocol.ts";
-import { applyPatch, document, fields, project } from "./document.ts";
+import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
 import { fieldValue, matchesFilter, parseFilter } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
@@ -26,11 +26,11 @@ export function revision(request: RestRequest): string | undefined {
   const value = header(request, "If-Match");
   if (value !== undefined) return value.replace(/^"|"$/g, "");
   const body = request.body;
-  return body && !Array.isArray(body) && typeof body === "object" && typeof body._rev === "string" ? body._rev : undefined;
+  return body && !Array.isArray(body) && typeof body === "object" && typeof own(body, "_rev") === "string" ? own(body, "_rev") as string : undefined;
 }
 
 export class ManagedStore {
-  private readonly cookieKey = randomBytes(32);
+  private cookieKey = randomBytes(32);
   private readonly records: Map<string, Document>;
   private readonly scripts: Scripts;
   private readonly evidence: Evidence;
@@ -46,6 +46,9 @@ export class ManagedStore {
     this.evidence = evidence;
     this.policy = policy;
   }
+
+  /** Forks retain continuation credentials; offset cookies use each fork's current rows. */
+  inheritCookies(parent: ManagedStore): void { this.cookieKey = Buffer.from(parent.cookieKey); }
 
   async dispatch(type: ManagedType, id: string | undefined, op: Operation): Promise<Reply> {
     const { request } = op;
@@ -195,6 +198,7 @@ export class ManagedStore {
   private async commitCreate(type: ManagedType, id: string, op: Operation, object: Document): Promise<Reply> {
     this.evidence.measured("server-assigned managed ids are UUIDs", "docs/api/10-managed-objects.md");
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
+    this.evidence.assumed("recreated records restart revision at 0");
     const record = this.materialize(type, { ...object, _id: id, _rev: "0" });
     this.records.set(this.key(type, id), structuredClone(record));
     await this.afterWrite(type, id, op, record, null, "create");
@@ -202,10 +206,12 @@ export class ManagedStore {
   }
 
   private async update(type: ManagedType, id: string, op: Operation, skipRead: boolean): Promise<Reply> {
+    const original = this.records.get(this.key(type, id));
     const oldObject = this.stored(type, id);
     if (!skipRead) {
       await this.read(type, id, op, true, []);
       this.evidence.measured("write pre-read mutations are discarded");
+      if (this.records.get(this.key(type, id)) !== original) throw new IdmError(412, "Revision mismatch");
     }
     this.checkRevision(oldObject, op.request);
     if (op.request.method === "PATCH") {
@@ -216,7 +222,7 @@ export class ManagedStore {
       }
     } else this.evidence.assumed("equal-content PUT still runs the write chain");
     const object = await this.prepare(type, id, op, oldObject, "update");
-    if (this.records.get(this.key(type, id))?._rev !== oldObject._rev) {
+    if (this.records.get(this.key(type, id)) !== original || this.records.get(this.key(type, id))?._rev !== oldObject._rev) {
       this.evidence.assumed("concurrent writes are checked again after hooks");
       throw new IdmError(412, "Revision mismatch");
     }
@@ -244,10 +250,11 @@ export class ManagedStore {
     const object = this.stored(type, id);
     this.checkRevision(object, op.request);
     this.evidence.measured("managed delete hook order; postDelete and onSync object is null");
+    const original = this.records.get(this.key(type, id));
     const storedRevision = object._rev;
     const invocation = this.invocation(type, id, op, "delete", object, object, null);
     await this.scripts.hook(type, "onDelete", invocation);
-    if (this.records.get(this.key(type, id))?._rev !== storedRevision) {
+    if (this.records.get(this.key(type, id)) !== original || this.records.get(this.key(type, id))?._rev !== storedRevision) {
       this.evidence.assumed("concurrent writes are checked again after hooks");
       throw new IdmError(412, "Revision mismatch");
     }
@@ -269,7 +276,7 @@ export class ManagedStore {
       throw new IdmError(400, "Expecting String containing one of: patch triggerSyncCheck updateLastSync");
     }
     const name = op.request.query?._action;
-    const script = typeof name === "string" ? type.actions?.[name] : undefined;
+    const script = typeof name === "string" ? own(type.actions, name) : undefined;
     if (!script) missing(this.evidence, `managed object action: ${String(name)}`);
     const object = await this.read(type, id, op);
     this.evidence.measured("object action reads twice and discards script completion");
@@ -281,7 +288,7 @@ export class ManagedStore {
 
   private async query(type: ManagedType, op: Operation): Promise<Document> {
     const query = op.request.query ?? {};
-    const kinds = ["_queryId", "_queryExpression", "_queryFilter"].filter((key) => query[key] !== undefined);
+    const kinds = ["_queryId", "_queryExpression", "_queryFilter"].filter((key) => own(query, key) !== undefined);
     if (kinds.length !== 1) {
       this.evidence.measured("query requires exactly one query selector");
       throw new IdmError(400, "Only one of [_queryId, _queryExpression, _queryFilter] is supported; multiple detected");
@@ -321,8 +328,9 @@ export class ManagedStore {
     let offset = integer(query._pagedResultsOffset, 0);
     if (query._pagedResultsCookie !== undefined && query._pagedResultsCookie !== "") {
       if (typeof query._pagedResultsCookie !== "string") throw invalidInput("Invalid paging cookie");
-      const [encoded, signature] = query._pagedResultsCookie.split(".");
-      if (!encoded || signature !== sign(encoded)) throw invalidInput("Invalid paging cookie");
+      const parts = query._pagedResultsCookie.split(".");
+      const [encoded, signature] = parts;
+      if (parts.length !== 2 || !encoded || signature !== sign(encoded)) throw invalidInput("Invalid paging cookie");
       offset = integer(Buffer.from(encoded, "base64url").toString(), 0);
     }
     const size = integer(query._pageSize, 0);

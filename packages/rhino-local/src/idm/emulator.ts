@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { EmulationFailureInfo, HostCall, JsonValue } from "../protocol.ts";
 import { HostCallError, type RhinoRunner } from "../runner.ts";
 import { IdmConfig } from "./config.ts";
-import { document, isDocument } from "./document.ts";
+import { document, isDocument, own } from "./document.ts";
 import { endpoint } from "./endpoints.ts";
 import { escapeError, IdmError, invalidInput, missing } from "./errors.ts";
 import { ManagedStore, type Operation, type Reply } from "./managed.ts";
@@ -37,6 +37,7 @@ export class IdmEmulator {
   fork(): IdmEmulator {
     const fork = new IdmEmulator(this.config, this.runner, { ...(this.policy ? { policy: this.policy } : {}), properties: this.properties });
     for (const [key, value] of this.records) fork.records.set(key, structuredClone(value));
+    fork.managed.inheritCookies(this.managed);
     return fork;
   }
 
@@ -49,7 +50,7 @@ export class IdmEmulator {
   async request(request: RestRequest): Promise<RestResult> {
     const { value, provenance } = await this.evidence.run(async () => {
       try {
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = Object.create(null) as Record<string, string>;
         for (const [name, value] of Object.entries(request.headers ?? {})) {
           const existing = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase());
           headers[existing ?? name] = existing ? `${headers[existing]},${value}` : value;
@@ -106,7 +107,7 @@ export class IdmEmulator {
         if (isDocument(error) && typeof error.code === "number" && typeof error.message === "string") {
           return { status: error.code, body: new IdmError(error.code, error.message, error.detail).body };
         }
-        throw error;
+        return this.failure({ kind: "internal", message: String(error) });
       }
     });
     return { ...value, provenance };
@@ -126,7 +127,7 @@ export class IdmEmulator {
       this.evidence.assumed("config snapshot reads are immediately consistent");
       if (path === "config/managed") return { status: 200, body: structuredClone(this.config.managed) as unknown as JsonValue };
       if (parts[1] === "endpoint" && parts.length === 3) {
-        const config = this.config.endpoints[parts[2] ?? ""];
+        const config = own(this.config.endpoints, parts[2] ?? "");
         if (config) return { status: 200, body: structuredClone(config) as unknown as JsonValue };
       }
       throw new IdmError(404, "Not Found");
@@ -141,7 +142,7 @@ export class IdmEmulator {
       return this.managed.dispatch(type, parts[2], op);
     }
     if (parts[0] === "endpoint") {
-      const config = this.config.endpoints[parts[1] ?? ""];
+      const config = own(this.config.endpoints, parts[1] ?? "");
       if (!config) {
         this.evidence.assumed("unconfigured endpoint is a REST 404");
         throw new IdmError(404, "Not Found");

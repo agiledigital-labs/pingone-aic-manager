@@ -760,14 +760,22 @@ Map JSON serialization turns nested lists into arrays. `resourceNameBindings`
 marks string-valued bindings to wrap as Java resource-name objects.
 
 `openidm.read/create/update/patch/delete/query/action` emit host calls with
-converted JSON arguments. Function arguments are dropped; a final query callback
+converted JSON arguments. Numeric-path metadata outside the user value preserves
+NaN, infinities and negative zero in internal protocol frames, including nested
+endpoint arguments/results; literal data fields cannot collide with the metadata.
+This internal choice is labeled assumed because tenant special-number transfer
+has not been measured. Endpoint HTTP output retains its measured serializer.
+The emulator opts into `internalValues` for raw completions/bindings while the
+ordinary runner's `value` remains endpoint wire output. Function arguments are dropped; a final query callback
 runs on the JVM once per returned row, with `result` and `resultCount` removed
 from the query completion. Resource routing, missing-resource behavior, query
 validation, and storage policy belong to `onCall`; the experimental IDM core
 below provides that handler. A job without `onCall` fails with a protocol diagnostic. A handler must return a JSON value (use `null` for no result).
 Throw `HostCallError` to preserve a CREST class, message, numeric code and detail;
 the script receives a Rhino `JavaException` with `javaException.getCode()` and
-`getDetail()`. Ordinary handler errors become status-500 host failures.
+`getDetail()`, including in joined shell `spawn` threads. Ordinary handler errors
+are internal emulation failures; use an explicit CREST HostCallError for a
+catchable tenant failure.
 Emulation failures (missing behavior, admission/protocol failures and harness
 timeouts) carry structured `emulation` diagnostics and always fail the outer
 job/request. On the pinned Rhino, feature 13 is off and the Java `Error`
@@ -887,8 +895,8 @@ reads, and throws `HostCallError` with CREST class/code/detail otherwise.
 the host needs to retain its evidence; `onCall` returns only the script value.
 REST-driven scripts automatically aggregate all their nested evidence. Missing
 host behavior also travels in error metadata to the outer JVM job: its response
-contains `missing` even when script code catches the error, without requiring
-`reportMissing`. Independent jobs retain separate diagnostics.
+contains `missing` and a non-`ok` outcome without requiring `reportMissing`.
+Script catches cannot handle that failure as a tenant error. Independent jobs retain separate diagnostics.
 
 Managed create applies declared property defaults to omitted keys before policy;
 explicit null is retained and updates never apply defaults. Placement before
@@ -898,6 +906,14 @@ JSON pointers traverse own properties only; literal `__proto__`, `constructor`
 and `prototype` fields are ordinary data (assumed). Paging returns authenticated
 opaque continuation cookies and the measured count/policy envelope. Cookies
 re-evaluate offset pages; stability under concurrent data changes is assumed.
+Cookie parsing rejects trailing data. Forks copy the signing key: a parent cookie
+works on an unchanged fork, and after divergence it remains valid but re-evaluates
+the fork's own rows with the encoded offset. Updates and deletes guard the captured
+repository entry identity as well as revision, so deleting/recreating the same ID
+cannot satisfy a stale guard. Visible recreated revisions restart at `0`, assumed.
+Config snapshots have null prototypes; routes, actions, hook slots and document
+property lookups require own fields. Property-hook writeback defines own data
+properties, preserving literal prototype-named keys.
 
 Constructor options can supply `{properties: {"esv.feature": "on"}}`. Each
 emulator copies this map; forks inherit the snapshot. Property lookups missing

@@ -1,6 +1,6 @@
 /** Re-entrant integration tests: every eval goes through the live JVM reader/worker protocol. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { RhinoRunner, type HostCall } from "../src/runner.ts";
+import { HostCallError, RhinoRunner, type HostCall } from "../src/runner.ts";
 
 let runner: RhinoRunner;
 beforeAll(async () => {
@@ -148,7 +148,7 @@ describe("IDM re-entrant host calls", () => {
       {
         onCall: (call) => {
           calls.push(call);
-          if (call.seq === 2) throw new Error("handler failed");
+          if (call.seq === 2) throw new HostCallError({ class: "example.TenantException", code: 500, message: "handler failed", detail: {} });
           return call.seq === 1 ? 40 : 1;
         },
       }
@@ -298,3 +298,60 @@ it("R2 public close bounds a never-replied accepted call", async () => {
   await closing;
   expect(performance.now() - at).toBeLessThan(2000);
 }, 30_000);
+
+it("R2 new7 joined spawn can wrap tenant error detail on its own thread", async () => {
+  const result = await runner.eval({ engine: "idm", bindings: { state: {} }, source: `
+    var child=spawn(function(){
+      try{openidm.read('denied')}catch(e){
+        try{state.detail=e.javaException.getDetail().marker;}catch(wrapper){state.error=String(wrapper);}
+      }
+    }); child.join(); state;
+  ` }, { onCall: () => { throw new HostCallError({ class: "example.Forbidden", code: 403, message: "denied", detail: { marker: "wrapped" } }); } });
+  expect(result.outcome).toBe("ok");
+  expect(result.value).toEqual({ detail: "wrapped" });
+});
+
+it("R2 new8 internal host transport preserves non-finite arguments and replies", async () => {
+  const result = await runner.eval({ engine: "idm", source: `
+    var reply=openidm.action('endpoint/number','go',{n:NaN,inf:Infinity});
+    ({n:typeof reply.n==='number' && reply.n!==reply.n,inf:reply.inf===Infinity});
+  ` }, { onCall: (call) => {
+    expect(call.args[2]).toEqual({ n: NaN, inf: Infinity });
+    return { n: NaN, inf: Infinity };
+  } });
+  expect(result.outcome).toBe("ok");
+  expect(result.value).toEqual({ n: true, inf: true });
+});
+
+it("R2 #6 emits ordered sequences and routes distinct reverse-order replies", async () => {
+  // Scheduling of distinct shell threads is nondeterministic across JVMs. Test each
+  // waiter and protocol emission order on one real host, retaining the both-lane case above.
+  const concurrent = await RhinoRunner.spawn({ lane: "host" });
+  try {
+    for (let batch = 0; batch < 10; batch++) {
+      const sequences: number[] = [];
+      const pending: Array<{ call: HostCall; resolve: (value: { token: string; n: number }) => void }> = [];
+      const response = await concurrent.eval({ engine: "idm", source: `
+        var ready=new java.util.concurrent.CountDownLatch(32), start=new java.util.concurrent.CountDownLatch(1);
+        var threads=[], replies=new java.util.concurrent.ConcurrentHashMap();
+        for(var i=0;i<32;i++) threads.push(spawn(function(index){
+          ready.countDown();start.await();var r=openidm.read('spawn-'+index);
+          replies.put(String(index),r.token+':'+r.n);
+        },[i]));
+        ready.await();start.countDown();for(var j=0;j<threads.length;j++) threads[j].join();
+        var result=[];for(var k=0;k<32;k++)result.push(String(replies.get(String(k))));result;
+      ` }, { onCall: (call) => new Promise((resolve) => {
+        sequences.push(call.seq);
+        pending.push({ call, resolve });
+        if (pending.length === 32) for (const entry of [...pending].reverse()) {
+          const token = String(entry.call.args[0]);
+          entry.resolve({ token, n: Number(token.slice(6)) + 7 });
+        }
+      }) });
+      expect(response.outcome).toBe("ok");
+      expect(response.assumed?.filter((entry) => entry.startsWith("internal openidm special-number")).length).toBe(1);
+      expect(sequences).toEqual(Array.from({ length: 32 }, (_, index) => index + 1));
+      expect(response.value).toEqual(Array.from({ length: 32 }, (_, index) => `spawn-${index}:${index + 7}`));
+    }
+  } finally { await concurrent.close(); }
+}, 60_000);

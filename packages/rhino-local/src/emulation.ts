@@ -12,8 +12,8 @@ export class EmulationFailure extends Error {
 
 export function emulationFailure(error: unknown): EmulationFailureInfo | undefined {
   if (error === null || typeof error !== "object") return undefined;
-  if ("emulation" in error && error.emulation) return error.emulation as EmulationFailureInfo;
-  if ("missing" in error && Array.isArray(error.missing) && error.missing.length > 0) {
+  if (Object.hasOwn(error, "emulation") && "emulation" in error && error.emulation) return error.emulation as EmulationFailureInfo;
+  if (Object.hasOwn(error, "missing") && "missing" in error && Array.isArray(error.missing) && error.missing.length > 0) {
     const absent = error.missing as string[];
     return { kind: "missing", message: `Missing IDM behavior: ${absent.join(", ")}`, missing: absent };
   }

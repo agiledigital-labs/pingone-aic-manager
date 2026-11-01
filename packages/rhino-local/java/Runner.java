@@ -73,7 +73,7 @@ public final class Runner {
       final String input = line;
       final Object parsed;
       try {
-        parsed = Json.parse(input);
+        parsed = ProtocolValues.decode(Json.parse(input));
       } catch (RuntimeException e) {
         ERR.println("rhino-local-runner: skipping unparseable line: " + e.getMessage());
         continue;
@@ -163,7 +163,7 @@ public final class Runner {
   static void handleLine(AmContextFactory factory, String line) {
     final Object parsed;
     try {
-      parsed = Json.parse(line);
+      parsed = ProtocolValues.decode(Json.parse(line));
     } catch (RuntimeException e) {
       ERR.println("rhino-local-runner: skipping unparseable line: " + e.getMessage());
       return;
@@ -191,7 +191,9 @@ public final class Runner {
         respond(errorResponse(id, "protocol_error", new IllegalArgumentException("unknown engine: " + engine), null, -1, -1, null));
       }
     } catch (Throwable t) {
-      respond(errorResponse(id, "runtime_error", t, null, -1, -1, null));
+      Map<String, Object> failure = errorResponse(id, "runtime_error", t, null, -1, -1, null);
+      failure.put("emulation", new EmulationFailure("internal", t.toString()).info);
+      respond(failure);
     }
   }
 
@@ -370,6 +372,6 @@ public final class Runner {
   }
 
   static synchronized void write(Map<String, Object> rec) {
-    OUT.println(Json.stringify(rec));
+    OUT.println(Json.stringify(ProtocolValues.encode(rec)));
   }
 }
