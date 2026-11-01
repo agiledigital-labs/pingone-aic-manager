@@ -2,21 +2,77 @@
 import { TestRunner, type RunnerTaskResultPack, type RunnerTaskEventPack, type RunnerTestFile, type RunnerTestSuite, type RunnerTask } from "vitest";
 import { emulationAudit, emulationAuditDiagnostics, finishEmulationFile, setEmulationFile, attachEmulationAuditTransport, type EmulationAudit } from "../emulation.ts";
 
+// Keep file task handles across worker module graphs/batches, just as the core
+// keeps journal history. A late owned entry can still fail its original file.
+const fileTasksKey = Symbol.for("@agiledigital/pingone-aic-script-tester/vitest-file-tasks-v1");
+const workerGlobal = process as typeof process & { [fileTasksKey]?: Map<string, RunnerTestFile> };
+const fileTasks = workerGlobal[fileTasksKey] ??= new Map<string, RunnerTestFile>();
+
 export default class EmulationTestRunner extends TestRunner {
-  #files = new Map<string, RunnerTestFile>();
+  #files = fileTasks;
   #updates = new Set<Promise<unknown>>();
   #transportError: unknown;
-  #subscribed = false;
+  #collectionReady: { promise: Promise<void>; resolve: () => void } | undefined;
+
+  #resetCollectionReadiness(): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((ready) => { resolve = ready; });
+    this.#collectionReady = { promise, resolve };
+  }
+
+  // This public hook is awaited before collection. The later onCollectStart
+  // wrapper is NOT awaited by Vitest 5, so imports also wait for its completion.
+  onBeforeCollect(_paths: string[]): void {
+    this.#resetCollectionReadiness();
+    attachEmulationAuditTransport(this.#publish);
+  }
+
+  override async importFile(filepath: string, source: Parameters<TestRunner["importFile"]>[1]): Promise<unknown> {
+    const ready = this.#collectionReady;
+    if (!ready) throw new Error("Emulation runner requires super.onBeforeCollect before imports");
+    const timeoutMs = this.config.hookTimeout || 10_000;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([ready.promise, new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Emulation runner collection readiness timed out after ${timeoutMs}ms; preserve super.onCollectStart and await asynchronous reporter hooks`)), timeoutMs);
+      })]);
+    } finally { clearTimeout(timeout); }
+    try { return await super.importFile(filepath, source); }
+    catch (error) {
+      // A failed setup aborts this file before its collection import occurs.
+      if (source === "setup" && this.#collectionReady === ready) this.#resetCollectionReadiness();
+      throw error;
+    } finally {
+      if (source === "collect" && this.#collectionReady === ready) this.#resetCollectionReadiness();
+    }
+  }
 
   // Vitest decorates this public runner hook with its worker-to-main RPC.
   onTaskUpdate?: (packs: RunnerTaskResultPack[], events: RunnerTaskEventPack[]) => Promise<void>;
 
-  #publish = (): void => {
-    const file = [...this.#files.values()].at(-1);
+  #publish = (target?: RunnerTestFile): void => {
+    const file = target ?? [...this.#files.values()].at(-1);
     if (!file) return;
-    (file.meta as { rhinoEmulationAudit?: EmulationAudit }).rhinoEmulationAudit = emulationAudit();
+    const audit = emulationAudit();
+    const packs = new Map<string, RunnerTaskResultPack>();
+    const include = (task: RunnerTask) => {
+      (task.meta as { rhinoEmulationAudit?: EmulationAudit }).rhinoEmulationAudit = audit;
+      packs.set(task.id, [task.id, task.result, task.meta]);
+    };
+    include(file);
+    for (const completed of this.#files.values()) if (completed.result && completed.result.state !== "run") {
+      const failures = audit.failures.filter((entry) => entry.file === completed.filepath || !entry.file);
+      if (this.#failTask(completed, emulationAuditDiagnostics({ ...audit, failures, outstanding: [] }))) include(completed);
+      const updateOwner = (task: RunnerTask): void => {
+        if (task.type === "suite") { for (const child of task.tasks) updateOwner(child); return; }
+        if (!task.result || task.result.state === "run" || task.result.state === "skip") return;
+        const owned = failures.filter((entry) => entry.owner?.taskId === task.id);
+        if (this.#failTask(task, emulationAuditDiagnostics({ ...audit, failures: owned, outstanding: [] }))) include(task);
+      };
+      updateOwner(completed);
+    }
     if (!this.onTaskUpdate) return;
-    const update = this.onTaskUpdate([[file.id, file.result, file.meta]], []).catch((error: unknown) => { this.#transportError = error; });
+    const update = this.onTaskUpdate([...packs.values()], []).catch((error: unknown) => { this.#transportError = error; });
     this.#updates.add(update);
     void update.finally(() => { this.#updates.delete(update); });
   };
@@ -25,8 +81,8 @@ export default class EmulationTestRunner extends TestRunner {
     super.onCollectStart(file);
     this.#files.set(file.filepath, file);
     setEmulationFile(file.filepath);
-    if (!this.#subscribed) { attachEmulationAuditTransport(this.#publish); this.#subscribed = true; }
     this.#publish();
+    this.#collectionReady?.resolve();
   }
 
   override onAfterRunTask(task: RunnerTask): void {
@@ -36,15 +92,18 @@ export default class EmulationTestRunner extends TestRunner {
     this.#failTask(task, emulationAuditDiagnostics({ ...audit, failures, outstanding: [] }));
   }
 
-  #failTask(task: RunnerTask, messages: string[]): void {
-    if (!messages.length) return;
+  #failTask(task: RunnerTask, messages: string[]): boolean {
+    if (!messages.length) return false;
+    let changed = task.result?.state !== "fail";
     task.result ??= { state: "fail" };
     task.result.state = "fail";
     const errors = task.result.errors ??= [];
     const message = messages.join("\n");
     if (!errors.some((error) => error.name === "EmulationFailureGuard" && error.message === message)) {
       errors.push({ name: "EmulationFailureGuard", message });
+      changed = true;
     }
+    return changed;
   }
 
   override async onAfterRunSuite(suite: RunnerTestSuite): Promise<void> {
@@ -58,11 +117,11 @@ export default class EmulationTestRunner extends TestRunner {
     const failures = audit.failures.filter((entry) => entry.file === file.filepath || !entry.file);
     const messages = emulationAuditDiagnostics({ ...audit, failures, outstanding: [] });
     this.#failTask(file, messages);
-    this.#publish();
+    this.#publish(file);
   }
 
   override async onAfterRunFiles(files: RunnerTestFile[]): Promise<void> {
-    for (const file of files) this.#finishFile(file);
+    for (const file of this.#files.values()) this.#finishFile(file);
     this.#publish();
     await Promise.all(this.#updates);
     super.onAfterRunFiles(files);
