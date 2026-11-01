@@ -196,6 +196,11 @@ export class ManagedStore {
   }
 
   private async commitCreate(type: ManagedType, id: string, op: Operation, object: Document): Promise<Reply> {
+    if (["alpha_user", "bravo_user"].includes(type.name) && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      this.evidence.measured("alpha_user and bravo_user ids require UUID syntax", "orchestrator p21, 2026-11-02; docs/api/10-managed-objects.md");
+      this.evidence.assumed("invalid user id diagnostic substitutes realm placeholder and omits unmeasured suffix");
+      throw new IdmError(400, `Invalid Attribute Syntax: Entry "fr-idm-uuid=${id},ou=user,o=<realm>,o=root,ou=identities" contains a value "${id}"`);
+    }
     this.evidence.measured("server-assigned managed ids are UUIDs", "docs/api/10-managed-objects.md");
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
     this.evidence.assumed("recreated records restart revision at 0");
@@ -272,7 +277,9 @@ export class ManagedStore {
 
   private async action(type: ManagedType, id: string | undefined, op: Operation): Promise<Reply> {
     if (id === undefined) {
-      this.evidence.measured("managed collection action rejection");
+      const name = op.request.query?._action;
+      if (["patch", "triggerSyncCheck", "updateLastSync"].includes(String(name))) missing(this.evidence, `managed collection action: ${String(name)}`);
+      this.evidence.measured("unknown managed collection action rejection");
       throw new IdmError(400, "Expecting String containing one of: patch triggerSyncCheck updateLastSync");
     }
     const name = op.request.query?._action;

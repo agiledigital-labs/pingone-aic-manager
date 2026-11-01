@@ -140,7 +140,7 @@ export class IdmEmulator {
       if (key.startsWith("_") && !recognized.has(key)) missing(this.evidence, `request parameter: ${key}`);
     }
     if (parts[0] === "config") {
-      if (op.request.method !== "GET") missing(this.evidence, "config writes (config is read-only)");
+      if (op.request.method !== "GET") missing(this.evidence, `config writes (config is read-only): ${path}`);
       if (Object.keys(op.request.query ?? {}).length > 0) missing(this.evidence, "config read query parameters");
       this.evidence.assumed("config snapshot reads are immediately consistent");
       if (path === "config/managed") return { status: 200, body: structuredClone(this.config.managed) as unknown as JsonValue };
@@ -148,13 +148,12 @@ export class IdmEmulator {
         const config = own(this.config.endpoints, parts[2] ?? "");
         if (config) return { status: 200, body: structuredClone(config) as unknown as JsonValue };
       }
-      throw new IdmError(404, "Not Found");
+      missing(this.evidence, `resource route: ${path}`);
     }
     if (parts[0] === "managed") {
       const type = this.config.managedType(parts[1] ?? "");
       if (!type) {
-        this.evidence.assumed("unknown managed type is a REST 404");
-        throw new IdmError(404, "Not Found");
+        missing(this.evidence, `resource route: ${path}`);
       }
       if (parts.length > 3) missing(this.evidence, "managed subresource routing");
       return this.managed.dispatch(type, parts[2], op);
@@ -162,12 +161,10 @@ export class IdmEmulator {
     if (parts[0] === "endpoint") {
       const config = own(this.config.endpoints, parts[1] ?? "");
       if (!config) {
-        this.evidence.assumed("unconfigured endpoint is a REST 404");
-        throw new IdmError(404, "Not Found");
+        missing(this.evidence, `resource route: ${path}`);
       }
       return endpoint(config, parts.slice(2).join("/"), op, this.scripts, this.evidence, forcedMethod);
     }
-    if (op.request.method === "GET" && forcedMethod === "read") throw new IdmError(404, "Not Found");
     missing(this.evidence, `resource route: ${path}`);
   }
 
@@ -226,7 +223,7 @@ export class IdmEmulator {
       if (!(error instanceof IdmError)) throw error;
       if (error.assumption) this.evidence.assumed(error.assumption);
       if (call.method === "read" && error.status === 404) {
-        this.evidence.measured("openidm.read of missing or unrouted resource returns null");
+        this.evidence.measured("openidm.read of absent id in implemented collection returns null");
         return null;
       }
       throw error.host();

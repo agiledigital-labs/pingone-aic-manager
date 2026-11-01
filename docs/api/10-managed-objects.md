@@ -86,6 +86,15 @@ The maintainer measured two fixture-relevant differences on the sandbox on
   id `rl-fix-role-01`. Do not generalize the user constraint to every managed
   object type.
 
+The orchestrator's sandbox `script?_action=eval` probe **p21** on
+**2026-11-02** also rejected readable ids on both `alpha_user` and `bravo_user`
+with `org.forgerock.json.resource.BadRequestException: Invalid Attribute Syntax:
+Entry "fr-idm-uuid=<id>,ou=user,o=<realm>,o=root,ou=identities" contains a value
+"<id>…`. Nothing was created. The captured diagnostic was truncated at 200
+characters; its remaining suffix is not established. This is supplied tenant
+measurement, not a local emulator run. Other user-like type names remain
+unmeasured.
+
 Consequently, confirming a user create with GET can prove that the record and
 its readable fields landed, but cannot prove the submitted password value.
 Client-set user ids should be generated as UUIDs; readable labels belong in a

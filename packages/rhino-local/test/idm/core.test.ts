@@ -89,14 +89,14 @@ describe("nested hooks and host entry point", () => {
       try { openidm.update('managed/widget/one','stale',{text:'c'}); }
       catch(e) { error = {name:e.name,message:e.message,code:e.javaException.getCode()}; }
       openidm.delete('managed/widget/one',null);
-      ({record:record,query:q,missing:openidm.read('managed/widget/one'),unrouted:openidm.read('unrouted/path'),error:error});
+      ({record:record,query:q,missing:openidm.read('managed/widget/one'),error:error});
     ` }, { onCall: emu.onCall });
     expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
     const value = response.value as Document;
     expect(value.record).toMatchObject({ text: "b", count: 3 });
     expect(value.query).toMatchObject({ result: [{ _id: "one", _rev: "2" }], resultCount: 1 });
     expect((value.query as Document).remainingPagedResults).toBeUndefined();
-    expect(value).toMatchObject({ missing: null, unrouted: null, error: { name: "JavaException", code: 412 } });
+    expect(value).toMatchObject({ missing: null, error: { name: "JavaException", code: 412 } });
     expect((value.error as Document).message).toContain("org.forgerock.json.resource.PreconditionFailedException");
   });
 
