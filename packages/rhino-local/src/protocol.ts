@@ -14,7 +14,7 @@ export type JsonValue =
  * - `ok` — compiled and ran
  * - `compile_error` — failed to compile
  * - `runtime_error` — threw at runtime
- * - `timeout` — instruction observer fired (`Error("Interrupt.")`)
+ * - `timeout` — harness deadline expired (instruction observer or host wait)
  * - `protocol_error` — the job itself was malformed
  */
 export type JobOutcome = "ok" | "compile_error" | "runtime_error" | "timeout" | "protocol_error";

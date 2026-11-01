@@ -13,6 +13,7 @@ import type { TenantProvider } from "../aic/provider.ts";
 import { clearAicTrace, takeAicTrace } from "../aic/trace.ts";
 import { projectRoot } from "../project.ts";
 import { RhinoRunner } from "../runner.ts";
+import type { EmulationFailureSource } from "../emulation.ts";
 import { recordFailureIfAny } from "./failures.ts";
 import {
   Lease,
@@ -20,6 +21,43 @@ import {
   type LeaseOptions,
   type Suite,
 } from "./lease.ts";
+
+export type EmulationGuardSource = EmulationFailureSource | (() => EmulationFailureSource | undefined);
+
+/**
+ * Install at describe/file scope for every directly owned emulator and runner.
+ * Check journals independently of the test's HTTP/outcome assertions. Journals
+ * stay append-only: per-test sequence checkpoints exclude earlier test failures.
+ */
+export function useEmulationGuard(...inputs: EmulationGuardSource[]): void {
+  const sources = () => inputs.map((input) => typeof input === "function" ? input() : input)
+    .filter((source): source is EmulationFailureSource => source !== undefined);
+  const known = new Set<EmulationFailureSource>();
+  const starts = new Map<string, Map<EmulationFailureSource, number>>();
+  beforeEach(({ task }) => {
+    const checkpoint = new Map<EmulationFailureSource, number>();
+    for (const source of sources()) {
+      // Include setup failures on a source's first test as well.
+      checkpoint.set(source, known.has(source) ? source.emulationFailures.at(-1)?.sequence ?? 0 : 0);
+      known.add(source);
+    }
+    starts.set(task.id, checkpoint);
+  });
+  afterEach(({ task }) => {
+    const checkpoint = starts.get(task.id);
+    starts.delete(task.id);
+    const diagnostics: string[] = [];
+    for (const source of sources()) {
+      known.add(source);
+      for (const entry of source.emulationFailures) {
+        if (entry.sequence > (checkpoint?.get(source) ?? 0)) {
+          diagnostics.push(`${entry.context}: ${entry.failure.kind}: ${entry.failure.message}`);
+        }
+      }
+    }
+    if (diagnostics.length > 0) throw new Error(`Emulation failure guard:\n${diagnostics.join("\n")}`);
+  });
+}
 
 export interface UseLeaseAicOptions {
   id: string;
@@ -181,6 +219,9 @@ export function useLease<TSchema extends z.ZodType>(
       }
     });
   });
+
+  // Register before teardown: Vitest's default stack order checks after cleanup.
+  useEmulationGuard(() => runner);
 
   afterEach(async () => {
     await lease.endTest();

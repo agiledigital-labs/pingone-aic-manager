@@ -33,3 +33,30 @@ export function failedResponse(id: string, failure: EmulationFailureInfo): JobRe
       sourceName: null, line: -1, column: -1, lineSource: null }, emulation: failure,
     ...(failure.missing ? { missing: failure.missing } : {}) };
 }
+
+/** Framework-free evidence retained independently of any returned status. */
+export interface RecordedEmulationFailure {
+  readonly sequence: number;
+  readonly context: string;
+  readonly failure: EmulationFailureInfo;
+}
+
+export interface EmulationFailureSource {
+  readonly emulationFailures: readonly RecordedEmulationFailure[];
+  resetEmulationFailures(): void;
+}
+
+/** Append-only until explicitly reset; readers receive detached snapshots. */
+export class EmulationFailureJournal {
+  #entries: RecordedEmulationFailure[] = [];
+  #sequence = 0;
+
+  record(failure: EmulationFailureInfo, context: string): void {
+    this.#entries.push({ sequence: ++this.#sequence, context, failure: structuredClone(failure) });
+  }
+
+  get entries(): readonly RecordedEmulationFailure[] { return structuredClone(this.#entries); }
+
+  // Keep sequence monotonic across resets so lifecycle checkpoints remain valid.
+  reset(): void { this.#entries = []; }
+}

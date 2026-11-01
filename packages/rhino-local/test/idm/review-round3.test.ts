@@ -63,3 +63,58 @@ it("R3 #3 a second runner cannot hide a fatal nested result from the first", asy
     expect(independent).toMatchObject({ outcome: "ok", value: 7 });
   } finally { await second.close(); }
 }, 30_000);
+
+it("R3 #4 emulator journal survives ignored results, fork calls and snapshot edits", async () => {
+  const emu = emulator(runner);
+  const child = emu.fork();
+  await emu.request({ method: "GET", path: "managed/widget", query: { _queryId: "missing" } });
+  await child.hostRequest({ type: "call", id: "guard-host", seq: 1, method: "query", args: ["managed/widget", { _queryId: "missing" }] });
+  expect(emu.emulationFailures).toMatchObject([
+    { failure: { kind: "missing", missing: ["named _queryId: missing"] } },
+    { failure: { kind: "missing", missing: ["named _queryId: missing"] } },
+  ]);
+  expect(child.emulationFailures).toEqual(emu.emulationFailures);
+  const snapshot = emu.emulationFailures;
+  snapshot[0]!.failure.missing!.push("snapshot edit");
+  expect(child.emulationFailures[0]?.failure.missing).not.toContain("snapshot edit");
+  child.resetEmulationFailures();
+  expect(emu.emulationFailures).toEqual([]);
+  const independent = emulator(runner);
+  await child.request({ method: "GET", path: "managed/widget", query: { _queryId: "again" } });
+  expect(emu.emulationFailures).toHaveLength(1);
+  expect(independent.emulationFailures).toEqual([]);
+});
+
+it.each(["missing", "timeout", "protocol", "internal"] as const)("R3 #4 runner journals %s even when the result is ignored", async (kind) => {
+  // Optional reset allows the absence of the new API to fail on the journal
+  // assertion, not a TypeError, during the required unfixed-code run.
+  runner.resetEmulationFailures?.();
+  const source = kind === "missing" ? "require('unsupported');" : kind === "timeout" ? "while(true){}" : "openidm.read('probe');";
+  await runner.eval({ engine: "idm", timeoutMs: 80, source }, kind === "internal" ? { onCall: () => { throw new Error("adapter broke"); } } : {});
+  expect(runner.emulationFailures).toMatchObject([{ failure: { kind } }]);
+  runner.resetEmulationFailures();
+  expect(runner.emulationFailures).toEqual([]);
+  await runner.eval({ engine: "idm", source: "throw {code:501,message:'tenant'};" });
+  expect(runner.emulationFailures).toEqual([]);
+});
+
+it.each(["duplicate", "closed"] as const)("R3 #4 runner journals %s job rejection before returning", async (reason) => {
+  const owned = await RhinoRunner.spawn();
+  const id = `round3-journal-${reason}`;
+  try {
+    if (reason === "closed") {
+      await owned.close();
+      await expect(owned.eval({ id, source: "42" })).rejects.toThrow(/closing/);
+    } else {
+      await owned.eval({ id, engine: "idm", source: "openidm.read('outer');" }, {
+        onCall: async () => {
+          await expect(owned.eval({ id, source: "42" })).rejects.toThrow(/duplicate/);
+          return 42;
+        },
+      });
+    }
+    expect(owned.emulationFailures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ context: `job ${id}`, failure: expect.objectContaining({ kind: "protocol" }) }),
+    ]));
+  } finally { await owned.close(); }
+}, 30_000);

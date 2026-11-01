@@ -781,7 +781,10 @@ timeouts) carry structured `emulation` diagnostics and always fail the outer
 job/request. On the pinned Rhino, feature 13 is off and the Java `Error`
 used for these failures escapes script catches. Tenant CREST exceptions remain
 catchable. Nested runner failures survive adapters that ignore their response;
-policy and hook mappings preserve the same failure class.
+policy and hook mappings preserve the same failure class. The asynchronous fatal
+scope spans runner instances along a logical call chain. A job's sticky timeout
+state includes host waits and instruction observers on joined shell threads;
+`finally` returns and child-thread completion cannot erase a recorded failure.
 
 IDM responses add `bindings`, ordered `logs` (`surface`, `level`, `message`,
 `args`), and, on failure, `thrown`. `thrown.kind` distinguishes `object`, `error`,
@@ -878,6 +881,31 @@ Results add `provenance: {kind, behavior, source?}[]`, deduplicated per request.
 choices the measurements leave open. A reached `missing` entry fails the request
 with 501 and names the behavior. Nested calls share provenance, including a
 missing call caught by script code; concurrent requests use separate scopes.
+Both `IdmEmulator` and `RhinoRunner` expose detached `emulationFailures` snapshots
+with a sequence, context and failure cause. Records append independently of what
+the caller asserts or catches, and remain until `resetEmulationFailures()` is
+called. Emulator forks share their parent's journal, including reset, so a guard
+on the parent covers its descendants. Independent emulators and runners have
+separate journals; a nested runner failure also reaches its caller's journal.
+
+In Vitest, install the verdict guard at file/describe scope for directly owned
+emulators and runners (getters support creation in `beforeAll`):
+
+```ts
+import { useEmulationGuard } from "@agiledigital/pingone-aic-script-tester";
+useEmulationGuard(() => idm, () => runner);
+```
+
+Its `afterEach` fails on new emulation failures regardless of HTTP/status/error
+assertions, naming each cause. `useLease` installs it automatically for its runner.
+Sequence checkpoints separate tests without clearing the evidence; setup failures
+are included in the source's first test. Tests sharing a source should run
+sequentially; overlapping tests can both observe its failures. When deliberately
+checking unsupported behavior, inspect and explicitly reset the journal before
+the guard runs. Ordinary tenant failures, including tenant 501, are not recorded.
+The emulator's 501 response remains diagnostic data, not a substitute for this
+guard. Core users outside Vitest must check the journals in their verdict layer.
+
 Some hooks can commit nested writes before a later failure. A post-hook failure
 after repository commit reports `assumed: post-hook failure after commit keeps
 the write`; successful post hooks do not add that failure label. This is not a transactional clone of
