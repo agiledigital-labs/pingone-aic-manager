@@ -126,6 +126,43 @@ edge IDs rather than assuming their counter format is an allocation rule. Do
 not hand-edit the capture or run separate captures concurrently for the same
 pair.
 
+A pending **Create** found present with the captured values is verified and
+reconciled automatically, including a response lost after the write landed.
+An absent pending Create is **unresolved**, not evidence of failure: the
+server can finish after the client dies. Restore refuses another create and
+rollback refuses configuration/record writes over that uncertainty. For a
+pending **Remove**, absence confirms the unlink when continuing rollback;
+presence is unresolved and rollback will not send it again automatically.
+A pending Remove still blocks changing back to restore by default.
+
+Keep writers paused, wait and inspect the original request's outcome, then
+repeat the same command with the same file. Neither elapsed time nor `--force`
+proves completion; there is no automatic retry after a fixed settle window.
+If you cannot establish that the original request has finished and cannot
+complete later, keep the request journaled and do not acknowledge it away.
+
+Only after establishing that the original request has finished, explicitly
+acknowledge that fact on the operation you want to continue:
+
+```sh
+# Continue restoring, allowing a new create only if the finished one is absent.
+aic managed relationship restore-links .aic/relationship-captures/dev-widget.json \
+  --tenant dev --acknowledge-request-finished --force
+# Or finish the in-place rollback instead.
+aic managed relationship rollback-map .aic/relationship-captures/dev-widget.json \
+  --tenant dev --acknowledge-request-finished --force
+```
+
+`map --capture <same-file>` accepts the same flag. For an upper environment,
+use its own capture with `restore-links`; prod still requires `--yes`. This is
+an operator assertion, not an inference aic makes from an absent read. It is
+scoped to that capture's exact saved intent and recorded in
+`acknowledged_requests` with the observed state and timestamp before the
+intent is cleared/replaced. It does not authorize later requests, bypass
+schema/storage checks, overwrite conflicting data or replace confirmation.
+A new unresolved request requires another explicit decision. The flag refuses
+when no saved request exists; dry-run saves nothing and holds no permit.
+
 For an in-place conversion, repeat the original command with the **same**
 file. It switches if the first switch did not land, or resumes restoration if
 the mapping is already installed:
@@ -201,6 +238,9 @@ end, section, column (`ldapAttribute`), target (`resourcePath`), cardinality
 (`isMultiValued`), reverse entries and other mapping fields. Before skipping
 equivalent bindings, it compares every named end's declaration footprint:
 presence, relationship versus scalar, target set, cardinality and reverse key.
+It also compares managed target-object presence and includes schema-named
+reverse endpoints even when repo.ds has no entry for them. Presence is compared
+between environments, not required unconditionally for platform endpoints.
 Different footprints refuse with both versions, even when repo.ds is identical.
 Identical footprints (including identically absent platform declarations) skip.
 This comparison supports stock multi-target/internal targets without passing
@@ -311,7 +351,9 @@ Before removing any records it plans the complete mapping removal, refusing
 external reverse dependents. Whole-batch preflight checks required fields,
 link ownership, record revisions and runtime/far resolution for every actual
 planned unlink before the first mutation. A switch with no mapped links needs
-no record removal, so a required forward property does not block its rollback.
+no record removal, so a required forward property does not block its rollback
+when there is no unresolved request. An absent pending Create still blocks it
+until the request lands or its completion is explicitly acknowledged.
 A refusal leaves all records intact. It then submits the **unchanged** `repo.ds`
 through
 the backed-up, read-confirmed writer. A config write denial stops there, with
@@ -329,7 +371,7 @@ Unknown, extra or altered mapped links stop rollback for inspection. A
 required forward property cannot be cleared by the measured removal method;
 when mapped links actually need removal, explicitly adjust that policy before
 rollback and reinstate it afterwards. No schema change is needed when the
-mapped store is empty.
+mapped store is empty and no request remains unresolved.
 If rollback stops, keep writers paused and repeat **rollback-map** with the
 same file to finish; completed removals are skipped. If an external dependent
 caused the refusal, resolve that dependency first. A run killed after mapping
@@ -346,7 +388,11 @@ aic managed relationship restore-links .aic/relationship-captures/dev-widget.jso
 If the file has an unresolved `Remove` intent, direction change refuses before
 writing or clearing that intent. A link observed present (or absent) cannot
 rule out a delayed unlink. Keep writers paused and finish `rollback-map` with
-the same file; do not hand-edit away the intent.
+the same file; it also refuses resending while a pending Remove is still
+present. After independently establishing that the original request has
+finished and cannot land later, `--acknowledge-request-finished` can explicitly
+resolve either action for rollback or reversal, as described above. Do not
+hand-edit away the intent.
 
 With no outstanding removal, its plan names the saved `RollingBack` state and
 the change back to restoration.

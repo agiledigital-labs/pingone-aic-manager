@@ -1,7 +1,8 @@
 //! Tenant and filesystem edge for relationship storage conversion. `map` and
 //! promotion capture/restore share conversion's census, journal and restore
-//! engine. Capture format and pending-removal guards precede tenant selection;
-//! all config writes still go through repair::apply_with. Upper
+//! engine. Recovery consent scopes finished-request assertions to saved intents;
+//! captures/intents are checked before remote writes. All config writes still
+//! go through repair::apply_with. Upper
 //! restore writes records only. No promotion lifecycle code is changed.
 
 use std::collections::BTreeSet;
@@ -168,8 +169,12 @@ fn consent(
     if flags.acknowledge_request_finished {
         let intent = capture.pending.as_ref().ok_or_else(|| Error::Config("--acknowledge-request-finished requires a saved pending request; it cannot authorize future writes".into()))?;
         eprintln!(
-            "operator acknowledgment: {:?} request for capture {} pair {} link {} has finished and cannot complete later; this is not established by --force, elapsed time or an absent read",
-            intent.action, capture.id, intent.pair, intent.link
+            "{}operator acknowledgment: {:?} request for capture {} pair {} link {} has finished and cannot complete later; this is not established by --force, elapsed time or an absent read",
+            if flags.dry_run { "planned " } else { "" },
+            intent.action,
+            capture.id,
+            intent.pair,
+            intent.link
         );
     }
     if flags.dry_run {
@@ -1026,13 +1031,27 @@ mod tests {
     #[test]
     fn acknowledgment_consent_is_scoped_to_saved_intent_and_dry_run_has_no_permit() {
         let (mut capture, _) = captured(true);
-        let mut flags = Flags {
-            dry_run: false,
-            acknowledge_request_finished: true,
-            force: true,
-            yes: false,
-            json: false,
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "aic",
+            "managed",
+            "relationship",
+            "restore-links",
+            "capture.json",
+            "--acknowledge-request-finished",
+            "--force",
+        ])
+        .unwrap();
+        let Some(crate::cli::Command::Managed {
+            command:
+                super::super::cli::ManagedCommand::Relationship {
+                    command: super::super::cli::RelationshipCommand::RestoreLinks { options, .. },
+                },
+        }) = parsed.command
+        else {
+            panic!("recovery route");
         };
+        let mut flags = Flags::from(options);
         assert!(consent(&flags, "restore-links", &capture).is_err());
         capture.pending = Some(
             serde_json::from_value(json!({"pair":0,"link":0,"action":"create","edge_id":null}))

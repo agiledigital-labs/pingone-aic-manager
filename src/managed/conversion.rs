@@ -1,6 +1,7 @@
 //! Durable relationship conversions: capture -> switch -> restore, and explicit
 //! rollback. Version-2 captures require recorded views from both ends.
-//! Pure indexed census, permissive declaration/storage guards and sequencing live
+//! Pure indexed census, target/declaration footprints and shared pending-request
+//! decisions (with scoped, journaled operator acknowledgments) and sequencing live
 //! here; conversion_cli supplies tenant I/O. The capture is the recovery
 //! journal: intent is saved before requests and forgotten only after reads.
 //! API contract: docs/api/10-managed-objects.md; Q14 in 99-quirks.
