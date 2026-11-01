@@ -93,7 +93,7 @@ fn removal(
 }
 
 fn removable(managed: &Value, pair: &Pair) -> Result<()> {
-    if api::object_named(&managed, &pair.forward.object)?
+    if api::object_named(managed, &pair.forward.object)?
         .pointer("/schema/required")
         .and_then(Value::as_array)
         .is_some_and(|required| {

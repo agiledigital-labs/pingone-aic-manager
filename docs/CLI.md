@@ -909,15 +909,22 @@ column data. A finding leaves mapping and data intact and exits non-zero.
 Restoration waits for captured relationship endpoints to be live, using set's
 read-only activation wait, then uses the shared relink creation mechanics: has-many
 POST, has-one conditional PATCH. Final verification compares the **entire**
-captured set, including custom properties; an extra link or changed properties
-fails. Every link must resolve from the far end and the presence-query runtime
+captured set, including both ends' custom properties. Capture refuses
+asymmetric reverse values before any write; verification rejects an extra
+link or changed properties. Every link must resolve from the far end and the presence-query runtime
 judgement must confirm mapped storage on both ends (forward only for one-way).
 An empty pair remains runtime untested; no probe link is created.
 
 `relationship capture-links --lower <source> --upper <destination> --output
 FILE` prepares a promotion. It reads both tenants, selects declared lower
 reference pairs mapped there and generic in the upper, and captures those
-with upper links. Both-mapped and neither-mapped pairs are not selected.
+with upper links. Complete bindings (section, owner, column, target,
+cardinality and reverse entries) are compared across all mapping sections,
+including explicitMapping, before schema parsing. Equivalent bindings skip,
+including unsupported stock multi-target schemas; generic in both also skips.
+Different mapped bindings or an upper binding absent in lower refuse with both
+versions: do not promote until resolved. Removing an upper binding is inferred
+to hide its mapped links. No mapped-to-mapped migration is provided.
 Missing declarations, including possible Q14 loss, refuse rather than proving
 emptiness. For a mixed rollout, repeatable `--new-pair <lower-reference-end>`
 explicitly acknowledges genuinely new upper pairs whose ends have never existed
@@ -925,7 +932,12 @@ there. Both upper ends and their mapping entries must be absent; existing ends,
 stale mappings and typos refuse. Do not use this to bypass possible Q14 loss.
 Acknowledgments are printed and saved with any capture. It writes only a local
 capture, never tenant config or records.
-An empty selection explicitly reports no file written. The flags mirror the
+Even an empty selection gets a fresh declaration/binding recheck. A lower
+mapping without its declaration blocks with Q14 unless its binding equals the
+upper's; genuinely stale mappings need relationship repair first.
+An empty selection explicitly reports no file written. Restore only a file
+this run confirmed writing; otherwise check empty/new pairs after promotion,
+never reuse an older file at that path. The flags mirror the
 `--lower`/`--upper` direction of `promotion verify`; this command has the same
 confirmation/dry-run/prod flag shapes as map.
 
@@ -938,14 +950,18 @@ The existing `relationship restore` restores definition metadata and is
 separate. `--json` reports the capture path, link count and completion state.
 
 `relationship rollback-map FILE` is the explicit inverse for an **in-place**
-capture only. Before unlinking, an unchanged, backed-up/read-confirmed repo.ds
-PUT must be accepted; write denial stops before records are touched. Each
+capture only. Before any unlink, it plans full mapping removal (including
+external reverse dependents) and checks every removal prerequisite. An
+unchanged, backed-up/read-confirmed repo.ds PUT must be accepted; write denial stops before records are touched. Each
 unlink also confirms mapped runtime to protect the hidden generic store.
 It confirms removal of this conversion's mapped links before removing both
 mapping entries in one guarded PUT, preserves per-type metadata,
 then checks that the original generic set is visible again. Unknown or altered
-data refuses. An interrupted rollback resumes with the same verb. Promotion
-captures cannot authorize config writes; there is no upper-environment config
+data refuses. An interrupted rollback resumes with the same verb. While the
+exact captured mappings remain installed, explicitly running restore-links
+with a RollingBack capture instead restores any removed links and reverses
+the interrupted rollback. Once mappings are removed, finish rollback-map.
+Promotion captures cannot authorize config writes; there is no upper-environment config
 rollback here. A required forward property must be explicitly adjusted before
 unlinking. No failure automatically rolls a conversion back.
 

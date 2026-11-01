@@ -24,17 +24,20 @@ user and other CLI run that changes this pair's links paused until conversion
 and verification finish. There is no atomic server lock across the census,
 config write and record updates. Account for hooks that themselves write links.
 
-The plan prints the number of links that will be **invisible between the
-mapping switch and completion of restore**. Each missing link is re-created
+For a new conversion, the plan prints the number of links that will be
+**invisible between the mapping switch and completion of restore**. Each missing link is re-created
 with a record update: budget for `onUpdate`/`postUpdate` hooks, sync mappings
 and notifications per link. Their exact invocation counts were not measured
 in the API investigation; these are real writes, not a metadata-only change.
 Re-running a partial restore skips links already present with the captured
 values, so it does not deliberately repeat those writes.
 
-Capture preserves each forward record ID, target reference and custom
-`_refProperties`, excluding the edge's `_id` and `_rev`. It scans all records
-on both ends with cursor paging and projected fields. A `pr` query cannot
+Capture preserves each forward record ID, target reference and both ends'
+custom `_refProperties`, excluding each edge's `_id` and `_rev`. If the ends
+report different custom values (including a value missing on either end),
+the census lists the differences and refuses before any write. Restoring
+asymmetric values is unmeasured; resolve the inconsistency before converting.
+It scans all records on both ends with cursor paging and projected fields. A `pr` query cannot
 find generic links reliably; see [relationship querying](api/10-managed-objects.md#querying-a-relationship-collection-verified-2026-10-31).
 The census refuses and lists forward-only or reverse-only links. Resolve that
 pre-existing inconsistency first: converting them would change what an end
@@ -60,8 +63,10 @@ aic managed relationship map custom_widget.owner --tenant dev \
   --capture .aic/relationship-captures/dev-widget.json --dry-run
 ```
 
-The preview creates no capture and holds no write permit. Inspect any refusal
-before continuing. Then run the same operation with confirmation:
+The preview says **planned capture; no file written** and holds no write
+permit. When mappings are already installed, a resume plan names the saved
+state, verifies existing links and re-creates only missing links; it does not
+propose another mapping switch. Inspect any refusal before continuing. Then run the same operation with confirmation:
 
 ```sh
 aic managed relationship map custom_widget.owner --tenant dev \
@@ -82,8 +87,8 @@ conditional JSON-patch replace. No null replacement is used.
 
 Look for each pair's **exact captured set confirmed** message and **mapped
 runtime confirmed on each end**, followed by the capture's completion message.
-The final comparison includes forward record, target and custom properties;
-an extra link or changed properties fail verification. Every link must resolve
+The final comparison includes forward record, target and both ends' custom
+properties; an extra link or changed properties fail verification. Every link must resolve
 from the reverse end when one exists. Runtime confirmation uses the existing
 `verify` presence-query judgement on linked records, on both ends. A one-way
 pair checks its forward runtime and target records. An empty pair cannot prove
@@ -165,19 +170,51 @@ aic promotion dry-run --tenant uat --force
 # Inspect the promotion plan before continuing.
 aic promotion promote --tenant uat --force
 aic promotion unlock --tenant uat --force
+```
+
+If this run of `capture-links` confirmed **capture durable at** the exact path
+below, restore that file after promotion:
+
+```sh
 aic managed relationship restore-links .aic/relationship-captures/uat-widget.json \
   --tenant uat --force
 ```
 
-`capture-links` reads both tenants' live declarations and stored mappings. It
-selects declared pairs mapped in the lower environment and generic in the
-upper, visits the reference end once, and saves only pairs that have upper
-links. A pair mapped in both, or in neither, is not selected. It prints each
-pair and its count, then confirms the durable file. It writes no tenant
-configuration or records. If none need capture it explicitly says no file was
-written. Existing output files are preserved: choose a new path for another
-promotion rather than replacing an earlier recovery source.
+If it instead printed **no file written** (only empty or acknowledged new
+pairs), skip restore and perform the empty/new-pair checks below. Restore only
+the file this run confirmed writing. Never substitute an older file already
+at the same path; it describes another capture, even if its tenant matches.
 
+`capture-links` first compares complete storage bindings across every
+`resourceMapping` section, including `explicitMapping`: the owning reference
+end, section, column (`ldapAttribute`), target (`resourcePath`), cardinality
+(`isMultiValued`), reverse entries and other mapping fields. Equivalent
+bindings are skipped before schema validation, including stock multi-target
+relationships that conversion cannot recreate. Pairs generic in both are
+also skipped. For lower mapped / upper generic candidates, it validates the
+declared pair, visits the reference end once, and saves only pairs with upper
+links. Unsupported candidates refuse with their name and reason.
+
+**Mapped in both is safe to skip only when the bindings are equivalent.** A
+different column, owner, section or reverse binding refuses with both versions.
+An upper mapping absent in lower also refuses: whole-document promotion is
+expected to remove that binding and hide the upper's mapped links. This removal
+consequence is inference from the [storage/promotion mechanism](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01), not a measured promotion.
+Do not promote after either refusal. Inspect the printed bindings and bring
+the lower configuration into agreement with upper, or resolve the data
+migration separately before continuing. These commands convert generic data;
+they do not migrate between mapped columns or reference owners.
+
+The command prints each captured pair and count, then confirms the durable
+file. It writes no tenant configuration or records. If none need capture it
+explicitly says no file was written, after a fresh declaration/binding recheck.
+Existing output files are preserved: choose a new path for another promotion
+rather than replacing an earlier recovery source.
+
+A non-equivalent lower binding with a missing declaration is a blocking Q14
+inconsistency, even when the selection would otherwise be empty. Restore the
+declaration and re-read. If the mapping is genuinely stale, clean it with
+`relationship repair` before promotion; it is never silently skipped.
 A missing upper declaration is an error rather than proof of zero links:
 under Q14 it may have disappeared. A mixed rollout can also contain genuinely
 new pairs that have never existed in the upper environment. After checking
@@ -228,6 +265,8 @@ aic promotion dry-run --tenant prod --force --yes
 # Inspect the promotion plan before continuing.
 aic promotion promote --tenant prod --force --yes
 aic promotion unlock --tenant prod --force --yes
+# Run only if this capture-links run confirmed writing this exact file.
+# If no file was written, do the empty/new-pair checks instead.
 aic managed relationship restore-links .aic/relationship-captures/prod-widget.json \
   --tenant prod --force --yes
 ```
@@ -248,7 +287,10 @@ aic managed relationship rollback-map .aic/relationship-captures/dev-widget.json
   --tenant dev --force
 ```
 
-Before removing any records it submits the **unchanged** `repo.ds` through
+Before removing any records it plans the complete mapping removal, refusing
+external reverse dependents and checking required fields, link ownership,
+record revisions and runtime/far resolution for the whole captured set. A
+refusal leaves all records intact. It then submits the **unchanged** `repo.ds` through
 the backed-up, read-confirmed writer. A config write denial stops there, with
 all links intact; the capture's origin alone does not establish current write
 access. This preliminary PUT removes no mappings. The operation then removes
@@ -263,9 +305,24 @@ rollback workflow still needs operator verification.
 Unknown, extra or altered mapped links stop rollback for inspection. A
 required forward property cannot be cleared by the measured removal method;
 explicitly adjust that policy before rollback and reinstate it afterwards.
-If rollback stops, keep writers paused and repeat **rollback-map**, not
-restore-links. Completed removals are skipped. A run killed after mapping
+If rollback stops, keep writers paused and repeat **rollback-map** with the
+same file to finish; completed removals are skipped. If an external dependent
+caused the refusal, resolve that dependency first. A run killed after mapping
 removal checks the visible generic set on retry before marking success.
+
+To reverse an interrupted rollback instead, while the exact captured mappings
+are still installed, explicitly run:
+
+```sh
+aic managed relationship restore-links .aic/relationship-captures/dev-widget.json \
+  --tenant dev --force
+```
+
+Its plan names the saved `RollingBack` state and the change back to restoration.
+It verifies links still present, restores missing captured links and marks the
+capture complete after verification. This writes records only. Once the
+mapping has been removed, finish `rollback-map`; `restore-links` refuses a
+generic pair or a completed `RolledBack` capture.
 
 ## Q14: confirmed declarations can disappear
 
