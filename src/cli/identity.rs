@@ -114,6 +114,23 @@ pub(crate) fn normalise_host(url_or_host: &str) -> String {
     without_port.trim_end_matches('.').to_ascii_lowercase()
 }
 
+/// The one context whose base URL names `requested`'s host; `None` when no
+/// context does, or when several share it.
+pub(crate) fn context_for_host<'a>(
+    contexts: &[(&'a str, &str)],
+    requested: &str,
+) -> Option<&'a str> {
+    let wanted = normalise_host(requested);
+    let mut owners = contexts
+        .iter()
+        .filter(|(_, url)| normalise_host(url) == wanted)
+        .map(|(name, _)| *name);
+    match (owners.next(), owners.next()) {
+        (Some(name), None) => Some(name),
+        _ => None,
+    }
+}
+
 /// Refuse unless `requested` names `tenant`'s own host or one of its custom
 /// domains. The domains are read only when the base host does not match, so
 /// the usual case costs no request; an unreadable list refuses, because it
@@ -138,17 +155,14 @@ where
         return Ok(());
     }
     // Naming the context that does own the host turns the refusal into the fix.
-    let remedy = contexts
-        .iter()
-        .find(|(_, url)| normalise_host(url) == wanted)
-        .map_or_else(
-            || {
-                "pick the context that owns it with `--tenant <name>` (`aic ctx list` \
+    let remedy = context_for_host(contexts, &wanted).map_or_else(
+        || {
+            "pick the context that owns it with `--tenant <name>` (`aic ctx list` \
                  shows each context's host)"
-                    .to_string()
-            },
-            |(name, _)| format!("it is context `{name}`'s host: use `--tenant {name}`"),
-        );
+                .to_string()
+        },
+        |name| format!("it is context `{name}`'s host: use `--tenant {name}`"),
+    );
     let refusal = |why: String| {
         Error::Config(format!(
             "--host {wanted} is not context `{tenant}`'s host ({own}), and {why}. No \
@@ -339,6 +353,23 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_url_picks_its_one_context() {
+        let contexts = [
+            ("dev", "https://dev.example.com"),
+            ("uat", "https://UAT.example.com/"),
+            ("uat-copy", "https://shared.example.com"),
+            ("uat-twin", "https://shared.example.com"),
+        ];
+        assert_eq!(
+            context_for_host(&contexts, "https://uat.example.com/openidm/x"),
+            Some("uat")
+        );
+        assert_eq!(context_for_host(&contexts, "login.example.com"), None);
+        // Two contexts on one host: ambiguous, so the caller must name one.
+        assert_eq!(context_for_host(&contexts, "shared.example.com"), None);
     }
 
     #[test]

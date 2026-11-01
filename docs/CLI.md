@@ -197,7 +197,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
-| `aic whoami --token --host <url-or-host>` | As `--token`, but refuses — no token printed, non-zero exit — unless the host is the context's own or one of its custom domains. |
+| `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
 
 `aic ctx current` (or `aic ctx show`) answers "which tenant would a command
 run here hit?", not "what did I last `ctx use`?". stdout is the bare tenant
@@ -243,10 +243,13 @@ URL="https://<your-tenant>.forgeblocks.com/openidm/managed/alpha_user?_queryFilt
 curl -H "Authorization: Bearer $(aic whoami --token --host "$URL")" "$URL"
 ```
 
-`--host` takes a URL or a bare host and combines with `--tenant`. It compares
-the host only (case, port, userinfo and a trailing dot are ignored) against
-the context's base URL, and, only when that differs, against the tenant's
-custom domains. It refuses, prints no token and exits non-zero when neither
+`--host` takes a URL or a bare host. Without `--tenant`, the URL chooses the
+context: the one whose base URL names that host, so one command works for
+every tenant `aic` holds. A host no context's base URL names (a custom domain,
+say) is checked against the current context; two contexts on one host need
+`--tenant`. The comparison is of the host only (case, port, userinfo and a
+trailing dot are ignored), against the context's base URL and, only when that
+differs, against the tenant's custom domains. It refuses, prints no token and exits non-zero when neither
 matches, or when the custom domains cannot be read (the
 `fr:idc:custom-domain:*` scope, above). With `curl` the refusal leaves an
 empty bearer, so the request fails with a 401 rather than reaching the other
