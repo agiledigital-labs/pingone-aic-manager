@@ -2,7 +2,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { EvalOptions, RhinoRunner } from "../runner.ts";
 import type { JsonValue, JobResponse } from "../protocol.ts";
-import { isDocument } from "./document.ts";
+import { isDocument, replaceDocument } from "./document.ts";
 import { missing, scriptError } from "./errors.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Document, Hook, ManagedType, Script } from "./types.ts";
@@ -68,9 +68,7 @@ export class Scripts {
     }
     const response = await this.evaluate(script, bindings, hook, aliases);
     if (object !== null && isDocument(response.bindings?.object)) {
-      const changed = response.bindings.object;
-      for (const key of Object.keys(object)) delete object[key];
-      Object.assign(object, changed);
+      replaceDocument(object, response.bindings.object);
     }
   }
 
@@ -90,9 +88,7 @@ export class Scripts {
       const response = await this.evaluate(script, bindings, `property ${hook}`);
       if (hook !== "onValidate") {
         if (isDocument(response.bindings?.object)) {
-          const changed = response.bindings.object;
-          for (const key of Object.keys(object)) delete object[key];
-          Object.assign(object, changed);
+          replaceDocument(object, response.bindings.object);
         }
         object[name] = response.valueKind === "undefined" ? null : response.value as JsonValue;
       }
