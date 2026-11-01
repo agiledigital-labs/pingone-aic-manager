@@ -18,7 +18,8 @@
 //!   ends and keeps its custom `_refProperties`.
 //!
 //! Tenant-free: the decisions live here so tests drive the real ones, and
-//! `cli.rs` does the reads and writes.
+//! `cli.rs` does the reads and writes. `create_link` is also the creation
+//! half used by conversion, so has-one/has-many write shapes stay shared.
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -795,5 +796,20 @@ mod tests {
         // The record's own `_id` is not the edge's.
         assert_eq!(written_edge(&json!({"_id": "a1"}), "owner", false), None);
         assert_eq!(written_edge(&json!({}), "owner", true), None);
+    }
+    #[test]
+    fn conversion_creation_uses_the_shared_one_and_many_write_mechanics() {
+        let permit = authorize(false, true).unwrap();
+        let edge = &edges_of(&record(), "owner").unwrap()[0];
+        let many = create_link(&permit, "a", "owner", true, edge, None);
+        assert_eq!(many.method, "POST");
+        assert_eq!(many.body.unwrap()["_refProperties"]["note"], "keep");
+        let one = create_link(&permit, "a", "owner", false, edge, Some("r1"));
+        assert_eq!(one.method, "PATCH");
+        assert_eq!(one.if_match.as_deref(), Some("r1"));
+        assert_eq!(
+            one.body.unwrap()[0]["value"]["_refProperties"]["note"],
+            "keep"
+        );
     }
 }

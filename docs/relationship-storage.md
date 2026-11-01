@@ -1,144 +1,295 @@
-# Relationship storage
+# Relationship storage and conversion
 
 IDM relationships have two storage modes. In **generic** mode neither end
-has a relationship entry in `config/repo.ds`. Links appear to live in IDM's
-generic relationships table; that location is inferred because the service
-account cannot read the table. In **mapped** mode a `reference` entry stores
-links in a numbered `fr-idm-reference-<n>` column on the forward record, and a
-`reverseReference` reads through it from the reverse end. A one-way
-relationship needs only the reference. Both modes resolve links, provided the
-pair's declarations and mappings agree. See the measured
-[storage contract](api/10-managed-objects.md#relationship-storage-and-repods-mappings).
+has a relationship mapping in `config/repo.ds`; the links appear to live in
+IDM's generic relationships table (the location is inferred, because the
+service account cannot read that table). In **mapped** mode a `reference`
+stores links in a numbered `fr-idm-reference-<n>` column on the forward
+record, and a `reverseReference` reads through it from the other end. A one-way
+relationship has only the reference.
 
-## Why saving in the console can hide links
+Saving a generic relationship in the console added mappings in the measured
+case and hid its existing links. Removing those mappings made the generic
+links visible again; links created while mapped became hidden instead. The
+switch chooses a store; it does not move or delete links. A pair with one end
+mapped and the other generic can read and write through different stores.
+See the [storage contract](api/10-managed-objects.md#relationship-storage-and-repods-mappings)
+and [conversion measurements](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01).
 
-The console's measured save added a forward reference and reverse reference.
-Existing generic links then disappeared from reads through both ends. Removing
-the mapping made them reappear; links written while mapped became hidden
-instead. The switch chooses a store; it does not migrate or delete the links.
-A pair with just one end mapped can read and write through different stores.
-The [conversion measurements](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01)
-explain both effects. Do not save a linked generic relationship in the console
-as a repair.
+## Before you start
 
-## What aic creates
+Use tenant names from your local `aic` configuration. The examples use `dev`,
+`uat` and `prod`; substitute your names. Keep every application, job, console
+user and other CLI run that changes this pair's links paused until conversion
+and verification finish. There is no atomic server lock across the census,
+config write and record updates. Account for hooks that themselves write links.
 
-`aic managed relationship set` creates a mapped pair by first writing both
-schema ends to `config/managed`, then adding the mapping entries in one
-whole-document `config/repo.ds?waitForCompletion=true` PUT. The intermediate
-state is a consistent generic pair. Editing an existing relationship preserves
-its storage mode. There is no `--generic` opt-out.
+The plan prints the number of links that will be **invisible between the
+mapping switch and completion of restore**. Each missing link is re-created
+with a record update: budget for `onUpdate`/`postUpdate` hooks, sync mappings
+and notifications per link. Their exact invocation counts were not measured
+in the API investigation; these are real writes, not a metadata-only change.
+Re-running a partial restore skips links already present with the captured
+values, so it does not deliberately repeat those writes.
 
-The end named on the command line holds the reference. Which end the console
-would choose when saving from the other side is unmeasured. The reverse's
-`isMultiValued`, like the forward's, follows its own schema: an array is true.
-For a same-object pair, both distinct keys are added to one per-type entry,
-using one reference column; a key naming itself as its reverse is refused.
-Types without a per-type mapping receive the
-[measured per-type entry](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01)
-in the same PUT. Existing per-type metadata is preserved.
+Capture preserves each forward record ID, target reference and custom
+`_refProperties`, excluding the edge's `_id` and `_rev`. It scans all records
+on both ends with cursor paging and projected fields. A `pr` query cannot
+find generic links reliably; see [relationship querying](api/10-managed-objects.md#querying-a-relationship-collection-verified-2026-10-31).
+The census refuses and lists forward-only or reverse-only links. Resolve that
+pre-existing inconsistency first: converting them would change what an end
+reports. Duplicate forward/target edges are also refused because a retry could
+not safely identify which one to re-create.
 
-If mapping fails before its PUT, the managed declaration remains a consistent
-generic pair unless another writer changed it. Finish with `relationship map`
-before writing links. A failed PUT response or failed read-back leaves storage
-uncertain: run `relationship verify` first, then map only if the pair is still
-generic and empty. No automatic rollback or mapping undo is attempted. The
-printed `repo.ds` backup preserves the document before the mapping write;
-schema undo can leave mappings behind, just as relationship delete does.
+Captures are local files containing relationship data. The default location
+is `.aic/relationship-captures/<uuid>.json`; the command prints it before the
+switch. New files are owner-readable/writable. For a predictable recovery
+command, choose an explicit path as below. Keep the file and its sidecars
+available on the same machine while a run is active. The capture is never
+automatically deleted or overwritten with a different capture. It is marked
+complete only after the final checks. A run lock prevents two processes using
+the same capture simultaneously; it does not lock other clients of the tenant.
 
-New schema ends still receive the existing activation wait. Use `set --check`
-if a script will write links next: it fails unless every end was confirmed
-live. No-record types cannot be probed and remain unverified. The mapping
-operation itself writes no records or test links. Its read-only `verify` checks
-stored configuration and samples links, but **cannot confirm runtime storage
-mode without a link**. After activation, an operator can separately use
-`relationship verify --probe` where appropriate; it writes and removes a test
-link on existing records and refuses required ends.
+## Convert a generic pair in dev
 
-## Map a link-free generic pair
-
-Pause every writer of links on this pair for the entire operation, including
-console users, jobs and applications. The service offers no atomic lock across
-link reads and a config write. aic scans all records on both ends, using
-`_fields=_id,<key>` and cursor paging; it counts distinct edge IDs and refuses
-malformed responses. It repeats the scan before the PUT. This also detects
-one-sided links, but cannot prevent a writer racing after the scan. A `pr`
-query cannot serve as the generic-link census: it misses generic links. See
-[querying relationships](api/10-managed-objects.md#querying-a-relationship-collection-verified-2026-10-31).
+First pause link writers. Preview the column allocation, any per-type entry,
+both mappings, link count and visibility window:
 
 ```sh
-aic managed relationship map custom_widget.owner --dry-run
-aic managed relationship map custom_widget.owner --force
+aic managed relationship map custom_widget.owner --tenant dev \
+  --capture .aic/relationship-captures/dev-widget.json --dry-run
 ```
 
-The plan prints the column, both entries, and each per-type entry being added.
-The command refuses mapped pairs, mixed pairs, undeclared objects, incomplete
-or nonreciprocal schemas, multiple targets, linked pairs (with their count),
-and exhausted columns. Fix the named problem before retrying. An already
-mapped pair can be checked with `relationship verify`.
+The preview creates no capture and holds no write permit. Inspect any refusal
+before continuing. Then run the same operation with confirmation:
 
-Without `--force`, a terminal confirmation is required. Noninteractive use
-needs `--force`; production-themed tenants also require `--yes`. `--dry-run`
-has no write permit. After consent aic rechecks both documents, refuses drift,
-backs up the current `repo.ds`, sends one PUT, and confirms by re-read. It then
-queries the forward type with `_queryFilter=/<key> pr` to detect exposed
-orphaned values and runs the existing read-only relationship verification.
-`--json` includes the plan, write confirmation and verification result.
+```sh
+aic managed relationship map custom_widget.owner --tenant dev \
+  --capture .aic/relationship-captures/dev-widget.json --force
+```
 
-## Ten columns per object and orphaned values
+Without `--force` the command asks at a terminal; noninteractive use requires
+it. Production-themed tenants additionally require `--yes`.
 
-Only `fr-idm-reference-1` through `-10` work. A PUT naming `-11` was accepted,
-but link writes failed with `objectClassViolation`. Columns belong to each
-object type, not the tenant. aic accounts for all property mappings on that
-object, including `explicitMapping`, stale entries and scalar mappings. It
-prefers max-in-use + 1; above 10 it takes the lowest free column. If all ten
-are occupied it refuses and names their holders. Reverse references consume
-no column on the reverse object.
+The command durably saves the links before any tenant write, repeats the
+census, checks the fresh declarations, backs up `repo.ds`, and writes both
+mapping entries in one whole-document PUT with `waitForCompletion=true`.
+Missing per-type entries go in that same PUT. It confirms the stored document
+by re-read and checks the newly assigned column for exposed orphaned data.
+It then restores each missing link through the forward end, preserving custom
+properties. Has-many uses relationship collection create; has-one uses a
+conditional JSON-patch replace. No null replacement is used.
 
-Ping warns that reusing a deleted relationship's column can expose orphaned
-values. After installing a mapping, aic requires the forward presence query
-to return no records. Any match is reported as **ORPHANED DATA**, with the
-column and a record sample, and exits non-zero. A failed query also exits
-non-zero. The mapping stays installed and no records are cleaned: this keeps
-the evidence inspectable and avoids overwriting concurrent config with an
-automatic compensating PUT. Keep writers paused, inspect the data and backup,
-and arrange recovery before using the pair. The
-[column measurements and Ping warning](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01)
-are the evidence; reuse itself has not been measured.
+Look for each pair's **exact captured set confirmed** message and **mapped
+runtime confirmed on each end**, followed by the capture's completion message.
+The final comparison includes forward record, target and custom properties;
+an extra link or changed properties fail verification. Every link must resolve
+from the reverse end when one exists. Runtime confirmation uses the existing
+`verify` presence-query judgement on linked records, on both ends. A one-way
+pair checks its forward runtime and target records. An empty pair cannot prove
+runtime storage mode and is reported untested; no probe link is written.
 
-## Why aic writes repo.ds directly
+You can inspect the pair independently before resuming writers:
 
-Ping says to manage relationships only through the console or Schema API,
-and warns other methods may cause data to de-sync. The measured console
-Schema API route returns 403 to the service account. The measured direct
-whole-document repo.ds PUT returns 200, re-reads identically, and new links
-resolve from both ends with runtime checks confirming mapped storage. This
-is the reason for the direct route, not a claim of vendor support. aic uses
-that measured shape with backups and read-back checks; see the
-[API evidence and warning](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01).
+```sh
+aic managed relationship verify custom_widget.owner --tenant dev
+```
 
-## Converting a pair that has links — not yet supported (slice 2)
+`map` also works on a link-free generic pair using the same flow. A pair
+already mapped requires its existing capture for resume, rather than a new
+capture of a store whose generic links are now hidden.
 
-`relationship map` refuses a pair with links because the switch would hide
-them. Converting it requires durable capture **before** switching, recreation
-in the mapped store, and verification. This slice implements none of those
-migration steps. Keep linked pairs generic until that workflow is available;
-`relationship relink` repairs one-sided links in the current store and is not
-a storage migration tool.
+## If conversion or restore stops
 
-## Promotion
+Keep writers paused and preserve the printed capture. Each request records
+its intent before it is sent. A response lost after the write landed leaves
+that intent for a later run to reconcile. The live store determines what is
+missing; progress flags do not authorize duplicate writes. Response edge IDs
+and read-confirmed receipts record the conversion's work. Logical link identity
+is the captured record, target and custom properties; rollback reads current
+edge IDs rather than assuming their counter format is an allocation rule. Do not hand-edit the capture or run separate captures concurrently
+for the same pair.
 
-The operator states that promotion carries `repo.ds`; the API investigation
-measured a dry-run report that did **not** name its mapping change, not an
-actual promotion proving that statement. Links are records, never promoted
-configuration. It follows that promoting a generic-to-mapped conversion is
-expected to hide pre-existing generic links in each upper environment, even
-if the pair was empty in the source. That consequence is inferred from the
-measured storage switch, not observed through a real promotion. See
-[Promotion in the conversion evidence](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01).
+For an in-place conversion, repeat the original command with the **same**
+file. It switches if the first switch did not land, or resumes restoration if
+the mapping is already installed:
 
-Before promoting mappings, assess the pair independently in every destination.
-A linked destination needs capture before promotion and restore afterwards;
-that split workflow belongs to slice 2 and is not yet supported. Do not use a
-source environment's empty-pair check as permission to convert a linked upper
-environment.
+```sh
+aic managed relationship map custom_widget.owner --tenant dev \
+  --capture .aic/relationship-captures/dev-widget.json --force
+```
+
+Once the mapping is installed, the record-only continuation is:
+
+```sh
+aic managed relationship restore-links .aic/relationship-captures/dev-widget.json \
+  --tenant dev --force
+```
+
+The command first re-reads `repo.ds` and refuses unless the captured mappings
+are present and match. It checks the declarations again before writing records.
+Already restored links are verified and skipped. It refuses an occupied
+has-one, different custom properties or an extra mapped link; it never overwrites those to make the comparison pass.
+Correct the reported problem and retry. A failed send or read-back leaves the
+outcome unknown, not automatically undone. If the mapping disappeared after
+restoration began, inspect the environment before remapping.
+
+`relationship restore` without `-links` is the older definition-metadata
+restore command and does not restore relationship records.
+
+## Promotion: capture UAT's links, promote, restore UAT
+
+Promotion carries `repo.ds` according to the operator's statement; the API
+investigation measured a dry-run report that omitted its mapping change,
+not an actual promotion proving propagation. **Records are never promoted.**
+A promoted generic-to-mapped conversion is therefore expected to hide the
+upper environment's own generic links. That consequence is inferred from the
+measured storage switch. See [the promotion evidence](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01).
+
+Use a separate capture of UAT's data. A dev capture is bound to dev and cannot
+be restored into UAT. Pause UAT link writers and follow the existing
+[promotion checks](CLI.md#aic-promotion--promotion-lock-state-status-reports-and-the-write-cycle) for your tenant.
+The following shows the order; inspect the dry-run result before `promote`:
+
+```sh
+aic promotion lock --tenant uat --force
+aic managed relationship capture-links --lower dev --upper uat \
+  --output .aic/relationship-captures/uat-widget.json --dry-run
+aic managed relationship capture-links --lower dev --upper uat \
+  --output .aic/relationship-captures/uat-widget.json --force
+aic promotion dry-run --tenant uat --force
+# Inspect the promotion plan before continuing.
+aic promotion promote --tenant uat --force
+aic promotion unlock --tenant uat --force
+aic managed relationship restore-links .aic/relationship-captures/uat-widget.json \
+  --tenant uat --force
+```
+
+`capture-links` reads both tenants' live declarations and stored mappings. It
+selects declared pairs mapped in the lower environment and generic in the
+upper, visits the reference end once, and saves only pairs that have upper
+links. A pair mapped in both, or in neither, is not selected. It prints each
+pair and its count, then confirms the durable file. It writes no tenant
+configuration or records. If none need capture it explicitly says no file was
+written. Existing output files are preserved: choose a new path for another
+promotion rather than replacing an earlier recovery source.
+
+A missing upper declaration is an error rather than proof of zero links:
+under Q14 it may have disappeared. Assess genuinely new undeclared upper
+pairs separately; do not treat a failed census as an empty capture.
+
+After promotion, `restore-links` refuses if the expected mappings have not
+landed. Once they match, it restores and verifies the exact captured UAT set
+using the same engine as dev conversion. It writes **records only**, never
+config, so it can run while upper-environment config is locked. Keep writers
+paused until its completion message. If it stops, repeat `restore-links` with
+that UAT file; do not capture again after the switch, when generic links are
+hidden. The promotion verbs themselves are unchanged.
+
+For prod, repeat the entire process with **UAT as lower and prod as upper**,
+and capture prod's own links to a new file. For example:
+
+```sh
+aic promotion lock --tenant prod --force --yes
+aic managed relationship capture-links --lower uat --upper prod \
+  --output .aic/relationship-captures/prod-widget.json --force --yes
+aic promotion dry-run --tenant prod --force --yes
+# Inspect the promotion plan before continuing.
+aic promotion promote --tenant prod --force --yes
+aic promotion unlock --tenant prod --force --yes
+aic managed relationship restore-links .aic/relationship-captures/prod-widget.json \
+  --tenant prod --force --yes
+```
+
+The lower environment being empty says nothing about destination links.
+`--lower` and `--upper` have the same direction as `promotion verify`.
+
+## Explicit rollback in dev
+
+Rollback is available only with an **in-place** capture bound to the same
+tenant. A promotion capture cannot authorize a config write on UAT or prod.
+There is no automatic rollback after an error.
+
+```sh
+aic managed relationship rollback-map .aic/relationship-captures/dev-widget.json \
+  --tenant dev --dry-run
+aic managed relationship rollback-map .aic/relationship-captures/dev-widget.json \
+  --tenant dev --force
+```
+
+It removes this conversion's restored links from the mapped store, confirming
+each removal, then removes both captured mappings in one backed-up,
+read-confirmed PUT. It keeps unrelated mappings and per-type metadata: dropping
+a per-type entry could hide records created under that entry. Finally it
+checks that the original captured generic set is visible again and marks the
+capture rolled back. That visibility mechanism was measured; this automated
+rollback workflow still needs operator verification.
+
+Unknown, extra or altered mapped links stop rollback for inspection. A
+required forward property cannot be cleared by the measured removal method;
+explicitly adjust that policy before rollback and reinstate it afterwards.
+If rollback stops, keep writers paused and repeat **rollback-map**, not
+restore-links. Completed removals are skipped. A run killed after mapping
+removal checks the visible generic set on retry before marking success.
+
+## Q14: confirmed declarations can disappear
+
+[Q14](api/99-quirks-and-open-questions.md#q14-configmanaged-reads-appeared-to-go-backwards-2026-08-05) describes reads going backwards
+and properties vanishing after confirmed writes, without another client write.
+Before switching, aic re-reads both ends' declarations; before restoring, it
+reads them again. Missing ends or changed cardinality/targets refuse with a
+Q14/schema diagnostic. The checks recur during a long restore and rollback.
+A stale or missing declaration is never read as an empty link set.
+
+If this happens, keep the capture and writers paused. Inspect both ends:
+
+```sh
+aic managed get custom_widget --property owner --tenant dev
+aic managed get alpha_user --property widgets --tenant dev
+```
+
+Substitute the actual reverse object/key and destination tenant. Resolve the
+tenant's declaration problem through its configuration workflow before retrying.
+On a locked upper environment that may require a corrected promotion. These
+checks narrow the risk; they cannot lock the tenant's config store or prevent
+another Q14 rollback after the last read.
+
+## New relationships, columns and orphaned values
+
+`relationship set` creates new pairs mapped by default: confirm the managed
+schema first, then add mappings. Edits preserve existing storage mode; there
+is no `--generic` opt-out. A new unmapped declaration remains a consistent
+generic pair if mapping fails before its PUT, unless another writer changed
+it. Use `map` with a capture to finish. A failed send is reported unknown.
+Matching leftover mappings on a recreated key are preserved.
+
+The named end holds the reference. Which end the console chooses when saved
+from the other side is unmeasured. Each end's `isMultiValued` follows its own
+schema array shape. Same-object pairs use two distinct keys in one per-type
+entry and consume one column; a key naming itself as reverse is refused.
+`set` retains its activation wait and `--check`; use `--check` before a script
+writes links. An object without records cannot be probed. Conversion itself
+never writes a test/probe link.
+
+Only `fr-idm-reference-1` through `-10` work, per object type. A PUT naming
+`-11` succeeded in the API investigation but link writes failed with
+`objectClassViolation`. aic counts all property mentions, including
+`explicitMapping`, prefers max-in-use + 1, then the lowest free column when
+max+1 exceeds ten. If all are occupied it refuses and names the holders.
+Reverse references consume no reverse-side column.
+
+Ping warns a reused column can expose orphaned values. Immediately after an
+in-place switch and before restoration, the forward `/<key> pr` query must be
+empty. Matches are reported as **ORPHANED DATA** and exit non-zero. Mapping
+stays installed, evidence stays visible, and no records are cleaned; an
+automatic compensating PUT could overwrite concurrent config. A retry cannot
+silently bypass that failed check. Inspect the values and backup before any
+recovery decision. See the [column measurements and warning](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01).
+
+Ping recommends managing relationships only through the console or Schema
+API and warns other methods may de-sync data. The measured service-account
+Schema API request returns 403; the direct whole-document repo.ds PUT returns
+200, reads back identically, and new links resolve from both ends with runtime
+mapped confirmation. That measured route explains aic's implementation, not
+vendor support. The [API evidence](api/10-managed-objects.md#converting-a-pair-between-storage-modes-measured-2026-11-01)
+is the contract behind it; no new live measurements are claimed here.

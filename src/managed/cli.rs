@@ -283,10 +283,13 @@ pub enum RelationshipCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Map an existing generic relationship with no links. Adds both ends in
-    /// one config/repo.ds PUT, backs up the document and confirms by re-read.
+    /// Convert a generic relationship to mapped storage: durably capture links,
+    /// add both mappings in one PUT, restore and verify the exact captured set.
     Map {
         field: String,
+        /// Durable capture path; an existing in-place capture resumes this pair.
+        #[arg(long)]
+        capture: Option<std::path::PathBuf>,
         #[arg(long)]
         dry_run: bool,
         #[command(flatten)]
@@ -298,6 +301,33 @@ pub enum RelationshipCommand {
         yes: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Capture upper-environment links before promoting newly mapped pairs.
+    CaptureLinks {
+        #[arg(long)]
+        lower: String,
+        #[arg(long)]
+        upper: String,
+        #[arg(long)]
+        output: std::path::PathBuf,
+        #[command(flatten)]
+        options: super::conversion_cli::Options,
+    },
+    /// Restore links after map or promotion, using the durable capture.
+    RestoreLinks {
+        file: std::path::PathBuf,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[command(flatten)]
+        options: super::conversion_cli::Options,
+    },
+    /// Explicitly undo an in-place conversion; unavailable for promotion captures.
+    RollbackMap {
+        file: std::path::PathBuf,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[command(flatten)]
+        options: super::conversion_cli::Options,
     },
     /// Remove a config/repo.ds relationship mapping that names no declared
     /// property — the leftover a relationship delete leaves, which makes a
@@ -1206,12 +1236,42 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
         } => relationship_relink(field, dry_run, force.operation(), tenant, yes, json).await,
         RelationshipCommand::Map {
             field,
+            capture,
             dry_run,
             force,
             tenant,
             yes,
             json,
-        } => relationship_map(field, dry_run, force.operation(), tenant, yes, json).await,
+        } => {
+            super::conversion_cli::map(
+                field,
+                capture,
+                tenant,
+                super::conversion_cli::Flags {
+                    dry_run,
+                    force: force.operation(),
+                    yes,
+                    json,
+                },
+            )
+            .await
+        }
+        RelationshipCommand::CaptureLinks {
+            lower,
+            upper,
+            output,
+            options,
+        } => super::conversion_cli::capture_links(lower, upper, output, options).await,
+        RelationshipCommand::RestoreLinks {
+            file,
+            tenant,
+            options,
+        } => super::conversion_cli::restore_links(file, tenant, options).await,
+        RelationshipCommand::RollbackMap {
+            file,
+            tenant,
+            options,
+        } => super::conversion_cli::rollback_map(file, tenant, options).await,
         RelationshipCommand::Repair {
             field,
             dry_run,
@@ -1772,57 +1832,6 @@ fn print_mapping_plan(plan: &repair::Plan) {
     }
 }
 
-async fn relationship_map(
-    field: String,
-    dry_run: bool,
-    force: bool,
-    tenant: Option<String>,
-    yes: bool,
-    json: bool,
-) -> Result<()> {
-    let (object, key) = parse_object_key(&field)?;
-    let tenant = tenant_for(tenant)?;
-    let managed = api::get_managed(&tenant).await?;
-    let repo = api::get_repo_ds(&tenant).await?;
-    let plan = repair::plan_add(&managed, &repo, &object, &key).map_err(crate::Error::Config)?;
-    if let Some(addition) = plan.addition() {
-        mapping_empty(&tenant, &addition.pair).await?;
-    }
-    print_mapping_plan(&plan);
-    if dry_run {
-        return output(
-            json,
-            &serde_json::json!({"plan": plan.addition(), "dry_run": true}),
-        );
-    }
-    let consented = force
-        || crate::cli::confirm_destructive(
-            "relationship map",
-            &format!(
-                "Map {field}? Pause link writers first. Replaces config/repo.ds after a local backup"
-            ),
-            "--force",
-        )?;
-    let Some(permit) = repair::authorize(dry_run, consented) else {
-        return Err(crate::Error::Config(
-            "relationship map not confirmed".into(),
-        ));
-    };
-    let ok = ensure_prod_confirmed(&tenant, yes)?;
-    let applied = apply_mapping(&ok, &plan, &permit).await?;
-    // No probe writes: runtime storage mode requires a link and will be
-    // honestly untested on an empty pair. The operator can probe later.
-    let verification = collect_verification(field, 5, 200, None, Some(tenant)).await?;
-    if json {
-        print_json(
-            &serde_json::json!({"plan": plan.addition(), "applied": applied, "verification": verification}),
-        )?;
-    } else {
-        print_verify(&verification.pairs, &verification.stale, 5);
-    }
-    verification_check(&verification)
-}
-
 /// The second half of a new `set`. A failure before the repo.ds write leaves
 /// the consistent generic declaration available for `map` to finish.
 async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<VerificationOutput> {
@@ -1883,7 +1892,7 @@ async fn apply_mapping(
             "mapping {field} was not written: {error}. This command sent no mapping PUT. \
              If no other writer changed it, the pair remains consistent and generic. \
              Verify its current state, then finish with `aic managed relationship map {field} --force` \
-             only once the pair is link-free"),
+             after pausing all link writers"),
         repair::Failure::SendFailed { error, backup } => format!(
             "mapping {field} PUT failed ({error}); whether it landed is unknown. \
              config/managed remains declared. Run `aic managed relationship verify {field}` \
@@ -3369,7 +3378,7 @@ fn record_config_undo(
     Ok(())
 }
 
-fn parse_object_key(value: &str) -> Result<(String, String)> {
+pub(super) fn parse_object_key(value: &str) -> Result<(String, String)> {
     let mut parts = value.split('.');
     let (Some(object), Some(key), None) = (parts.next(), parts.next(), parts.next()) else {
         return Err(crate::Error::Config(format!(
@@ -3659,6 +3668,75 @@ mod tests {
                 "relationship",
                 "map",
                 "a.link",
+                "--force=syntax-check"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn relationship_conversion_verbs_parse_with_distinct_metadata_restore() {
+        for args in [
+            vec![
+                "aic",
+                "managed",
+                "relationship",
+                "capture-links",
+                "--lower",
+                "dev",
+                "--upper",
+                "uat",
+                "--output",
+                "capture.json",
+                "--dry-run",
+            ],
+            vec![
+                "aic",
+                "managed",
+                "relationship",
+                "restore-links",
+                "capture.json",
+                "--tenant",
+                "uat",
+                "--force",
+                "--yes",
+            ],
+            vec![
+                "aic",
+                "managed",
+                "relationship",
+                "rollback-map",
+                "capture.json",
+                "--force",
+            ],
+            vec![
+                "aic",
+                "managed",
+                "relationship",
+                "map",
+                "a.link",
+                "--capture",
+                "capture.json",
+                "--force",
+            ],
+            vec![
+                "aic",
+                "managed",
+                "relationship",
+                "restore",
+                "definition.json",
+                "--dry-run",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args.clone()).is_ok(), "{args:?}");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "aic",
+                "managed",
+                "relationship",
+                "restore-links",
+                "capture.json",
                 "--force=syntax-check"
             ])
             .is_err()
