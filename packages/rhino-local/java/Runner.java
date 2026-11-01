@@ -10,8 +10,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import javax.script.ScriptContext;
 import javax.script.SimpleScriptContext;
 import org.mozilla.javascript.Context;
@@ -40,7 +43,17 @@ public final class Runner {
   static final PrintStream ERR =
       new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8);
 
+  private static final Map<String, Boolean> ACTIVE = new ConcurrentHashMap<String, Boolean>();
+
   public static void main(String[] args) throws Exception {
+    int maxJobs = 128;
+    long shutdownWaitMs = 5000;
+    for (String arg : args) {
+      if (arg.startsWith("--max-concurrent-jobs=")) maxJobs = Integer.parseInt(arg.substring(arg.indexOf('=') + 1));
+      else if (arg.startsWith("--shutdown-wait-ms=")) shutdownWaitMs = Long.parseLong(arg.substring(arg.indexOf('=') + 1));
+      else throw new IllegalArgumentException("unknown runner option: " + arg);
+    }
+    if (maxJobs <= 0 || shutdownWaitMs <= 0) throw new IllegalArgumentException("runner limits must be positive");
     // Undefined caches an identity hash at class initialization. Initialize on
     // the reader, before workers race: its diagnostic text must agree across JVMs.
     Class.forName("org.mozilla.javascript.Undefined");
@@ -48,7 +61,10 @@ public final class Runner {
     ERR.println("rhino-local-runner ready " + Json.stringify(environment(factory)));
     final BufferedReader in =
         new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-    final ExecutorService workers = Executors.newCachedThreadPool();
+    // No queue: nested callers get a response instead of waiting behind blocked parents.
+    final ThreadPoolExecutor workers = new ThreadPoolExecutor(0, maxJobs, 30, TimeUnit.SECONDS,
+        new SynchronousQueue<Runnable>());
+    boolean shuttingDown = false;
     String line;
     while ((line = in.readLine()) != null) {
       if (line.isEmpty()) {
@@ -64,12 +80,61 @@ public final class Runner {
       }
       if (parsed instanceof Map && "reply".equals(((Map<?, ?>) parsed).get("type"))) {
         HostCalls.reply(Json.asObject(parsed, "reply"));
+      } else if (parsed instanceof Map) {
+        Map<String, Object> job = Json.asObject(parsed, "job");
+        Object rawId = job.get("id");
+        if (!(rawId instanceof String) || ((String) rawId).isEmpty()) {
+          ERR.println("rhino-local-runner: skipping job with no string id");
+          continue;
+        }
+        String id = (String) rawId;
+        if (shuttingDown) {
+          write(refusal(id, "rhino-local: runner is shutting down"));
+        } else if (Boolean.TRUE.equals(job.get("shutdown")) || "shutdown".equals(job.get("op"))) {
+          shuttingDown = true;
+          shutdown(workers, shutdownWaitMs, id);
+        } else if (ACTIVE.putIfAbsent(id, Boolean.TRUE) != null) {
+          write(refusal(id, "rhino-local: duplicate active job id"));
+        } else {
+          try { workers.execute(() -> handleLine(factory, input)); }
+          catch (RejectedExecutionException e) {
+            respond(refusal(id, "rhino-local: concurrent job limit exceeded (" + maxJobs + ")"));
+          }
+        }
       } else {
-        workers.submit(() -> handleLine(factory, input));
+        ERR.println("rhino-local-runner: skipping non-object job");
       }
     }
     HostCalls.endInput();
+    if (!shuttingDown) shutdown(workers, shutdownWaitMs, null);
+  }
+
+  private static Map<String, Object> refusal(String id, String message) {
+    return errorResponse(id, "protocol_error", new IllegalStateException(message), null, -1, -1, null);
+  }
+
+  /** Exactly one job response, including jobs that exceed the shutdown deadline. */
+  private static synchronized void respond(Map<String, Object> response) {
+    if (ACTIVE.remove(response.get("id")) != null) write(response);
+  }
+
+  private static void shutdown(ThreadPoolExecutor workers, long waitMs, String id) {
     workers.shutdown();
+    Thread drain = new Thread(() -> {
+      boolean finished = false;
+      try { finished = workers.awaitTermination(waitMs, TimeUnit.MILLISECONDS); }
+      catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+      synchronized (Runner.class) {
+        if (!finished) {
+          // Respond before interrupting workers, so the bound has a deterministic reason.
+          for (String activeId : ACTIVE.keySet()) respond(refusal(activeId, "rhino-local: shutdown wait exceeded"));
+          workers.shutdownNow();
+        }
+        if (id != null) write(response(id, "ok", JsValues.of(Scriptable.NOT_FOUND), null));
+      }
+      System.exit(0);
+    }, "rhino-local-shutdown");
+    drain.start();
   }
 
   /**
@@ -117,23 +182,16 @@ public final class Runner {
     }
     final String id = (String) idRaw;
     try {
-      if (Json.optionalBoolean(job, "shutdown", false)
-          || "shutdown".equals(Json.optionalString(job, "op"))) {
-        write(response(id, "ok", JsValues.of(Scriptable.NOT_FOUND), null));
-        OUT.flush();
-        System.exit(0);
-        return;
-      }
       Object engine = job.get("engine");
       if (engine == null || "am".equals(engine)) {
-        write(evalJob(factory, id, job));
+        respond(evalJob(factory, id, job));
       } else if ("idm".equals(engine)) {
-        write(IdmRuntime.eval(id, job));
+        respond(IdmRuntime.eval(id, job));
       } else {
-        write(errorResponse(id, "protocol_error", new IllegalArgumentException("unknown engine: " + engine), null, -1, -1, null));
+        respond(errorResponse(id, "protocol_error", new IllegalArgumentException("unknown engine: " + engine), null, -1, -1, null));
       }
     } catch (Throwable t) {
-      write(errorResponse(id, "runtime_error", t, null, -1, -1, null));
+      respond(errorResponse(id, "runtime_error", t, null, -1, -1, null));
     }
   }
 
