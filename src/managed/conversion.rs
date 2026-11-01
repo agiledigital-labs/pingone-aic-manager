@@ -156,7 +156,7 @@ pub struct Capture {
 impl Capture {
     pub fn new(tenant: String, base_url: String, origin: Origin, pairs: Vec<Pair>) -> Self {
         Self {
-            version: 1,
+            version: 2,
             id: uuid::Uuid::new_v4().to_string(),
             tenant,
             base_url,
@@ -173,7 +173,17 @@ impl Capture {
         self.pairs.iter().map(|pair| pair.links.len()).sum()
     }
     pub fn validate(&self) -> Result<()> {
-        if self.version != 1 || self.id.is_empty() || self.pairs.is_empty() {
+        capture_version(Some(u64::from(self.version)))?;
+        if self.pairs.iter().any(|pair| {
+            pair.reverse.is_some()
+                && pair
+                    .links
+                    .iter()
+                    .any(|link| link.reverse_properties.is_none())
+        }) {
+            return Err(earlier_capture());
+        }
+        if self.id.is_empty() || self.pairs.is_empty() {
             return Err(Error::Config(
                 "invalid or unsupported relationship capture".into(),
             ));
@@ -330,23 +340,22 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
         .iter()
         .filter(|edge| edge.link.to_collection == source)
         .filter_map(|edge| {
-            edge.link
-                .edge_id
-                .as_deref()
-                .map(|id| (id, edge.link.to_id.as_str(), edge.link.from_id.as_str()))
+            edge.link.edge_id.as_deref().map(|id| {
+                (
+                    (id, edge.link.to_id.as_str(), edge.link.from_id.as_str()),
+                    edge,
+                )
+            })
         })
-        .collect::<BTreeSet<_>>();
+        .collect::<BTreeMap<_, _>>();
     for edge in &edges {
         let mut link = Link::of(edge);
-        if let Some(far) = reverse.iter().find(|far| {
-            far.link.to_collection == source
-                && far.link.from_id == edge.link.to_id
-                && far.link.to_id == edge.link.from_id
-                && far.link.edge_id == edge.link.edge_id
+        if let Some(far) = edge.link.edge_id.as_deref().and_then(|id| {
+            reverse_index.get(&(id, edge.link.from_id.as_str(), edge.link.to_id.as_str()))
         }) {
             link.reverse_properties = Some(far.properties.clone());
             if far.properties != edge.properties {
-                problems.push(format!("{} (edge {:?}): asymmetric custom _refProperties: forward {}; reverse {}. Restoring asymmetric values is unmeasured", link.label(), edge.link.edge_id, Value::Object(edge.properties.clone()), Value::Object(far.properties.clone())));
+                problems.push(format!("{} (edge {:?}): asymmetric custom _refProperties: forward {}; reverse {}. aic does not support restoring asymmetric values; preserve the data and investigate a supported migration before converting", link.label(), edge.link.edge_id, Value::Object(edge.properties.clone()), Value::Object(far.properties.clone())));
             }
         }
         links.push(link);
@@ -359,7 +368,11 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
             ));
         } else if pair.reverse.is_some()
             && !edge.link.edge_id.as_deref().is_some_and(|id| {
-                reverse_index.contains(&(id, edge.link.from_id.as_str(), edge.link.to_id.as_str()))
+                reverse_index.contains_key(&(
+                    id,
+                    edge.link.from_id.as_str(),
+                    edge.link.to_id.as_str(),
+                ))
             })
         {
             problems.push(format!(
@@ -384,7 +397,7 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
     }
     if !problems.is_empty() {
         return Err(Error::Config(format!(
-            "refusing inconsistent relationship census:\n  {}\nResolve these links before converting",
+            "relationship capture cannot proceed:\n  {}\nPreserve the data and investigate the listed cases before converting",
             problems.join("\n  ")
         )));
     }
@@ -434,23 +447,8 @@ fn unique(links: &[Link]) -> Result<()> {
     Ok(())
 }
 
-fn expected_links(pair: &Pair) -> Vec<Link> {
-    pair.links
-        .iter()
-        .cloned()
-        .map(|mut link| {
-            // Older captures recorded only forward values. They may resume only
-            // against symmetric reverse values, the sole supported restore shape.
-            if pair.reverse.is_some() && link.reverse_properties.is_none() {
-                link.reverse_properties = Some(link.properties.clone());
-            }
-            link
-        })
-        .collect()
-}
-
 pub fn subset(pair: &Pair, current: &Census) -> Result<()> {
-    let expected = expected_links(pair);
+    let expected = &pair.links;
     let wanted = expected
         .iter()
         .map(|link| (identity(link), link))
@@ -468,7 +466,7 @@ pub fn subset(pair: &Pair, current: &Census) -> Result<()> {
 }
 
 pub fn exact(pair: &Pair, current: &Census) -> Result<()> {
-    let mut wanted = expected_links(pair);
+    let mut wanted = pair.links.clone();
     sort(&mut wanted);
     if wanted != current.links {
         let wanted_index = wanted
@@ -605,6 +603,68 @@ fn binding(repo: &Value, ends: &BTreeSet<Endpoint>) -> Vec<Binding> {
     entries
 }
 
+#[derive(Debug, PartialEq, Serialize)]
+struct Declaration {
+    resource: String,
+    key: String,
+    shape: Option<verify::Shape>,
+}
+
+fn declarations(managed: &Value, ends: &BTreeSet<Endpoint>) -> Vec<Declaration> {
+    ends.iter()
+        .map(|(resource, key)| Declaration {
+            resource: resource.clone(),
+            key: key.clone(),
+            shape: verify::declaration_shape(managed, resource, key),
+        })
+        .collect()
+}
+
+pub(super) fn config_detail(error: Error) -> String {
+    match error {
+        Error::Config(detail) => detail,
+        other => other.to_string(),
+    }
+}
+
+fn config_context(context: impl std::fmt::Display, error: Error) -> Error {
+    Error::Config(format!("{context}: {}", config_detail(error)))
+}
+
+fn acknowledge_new(
+    label: &str,
+    ends: &BTreeSet<Endpoint>,
+    lower_managed: &Value,
+    upper_managed: &Value,
+    upper_repo: &Value,
+) -> Result<()> {
+    let mut declared_ends = ends.clone();
+    // A missing mapping must not conceal an existing upper reverse declaration.
+    for end in declarations(lower_managed, ends) {
+        if let Some(shape) = end.shape
+            && let Some(reverse) = shape.reverse
+        {
+            for target in shape.targets {
+                declared_ends.insert((target, reverse.clone()));
+            }
+        }
+    }
+    for (resource, key) in &declared_ends {
+        if verify::declaration_shape(upper_managed, resource, key).is_some()
+            || !binding(
+                upper_repo,
+                &BTreeSet::from([(resource.clone(), key.clone())]),
+            )
+            .is_empty()
+        {
+            return Err(Error::Config(format!(
+                "{resource}.{key} already has an upper declaration or mapping; remove --new-pair {label} and capture it normally"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Compare connected bindings in both directions. Promotion replaces repo.ds;
 /// a removed upper binding is unsafe too (inferred from storage selection).
 pub fn promotion_pairs(
@@ -630,21 +690,51 @@ pub fn promotion_pairs(
         let lower_binding = binding(lower_repo, &ends);
         let upper_binding = binding(upper_repo, &ends);
         if lower_binding == upper_binding {
+            let lower_footprint = declarations(lower_managed, &ends);
+            let upper_footprint = declarations(upper_managed, &ends);
+            if lower_footprint != upper_footprint {
+                return Err(Error::Config(format!(
+                    "promotion would change declarations for {} despite equivalent bindings: lower {}; upper {}. Missing declarations may be Q14; investigate and do not promote until resolved",
+                    located.label(),
+                    serde_json::to_string(&lower_footprint)?,
+                    serde_json::to_string(&upper_footprint)?
+                )));
+            }
             continue;
         }
         let reference = lower_binding
             .iter()
             .find(|entry| entry.value["type"] == "reference");
-        // A changed lower binding with a missing declaration is an inconsistent
-        // read, even when upper also has a mapping. Never label it stale/skip.
         for entry in &lower_binding {
             if let Some(object) = entry.resource.strip_prefix("managed/")
-                && !verify::properties(lower_managed, object)
-                    .is_some_and(|props| props.contains_key(&entry.key))
+                && verify::declaration_shape(lower_managed, &entry.resource, &entry.key).is_none()
             {
+                let upper_custom =
+                    super::api::object_named(upper_managed, object).is_ok_and(|definition| {
+                        !super::state::is_standard_object(definition)
+                            && !super::state::is_ping_shipped_object(definition)
+                    });
+                if upper_custom
+                    && verify::declaration_shape(upper_managed, &entry.resource, &entry.key)
+                        .is_some()
+                    && !verify::SYSTEM_RELATIONSHIPS.contains(&entry.key.as_str())
+                {
+                    let advice = if entry.section == "genericMapping" {
+                        "Restore the declaration and re-read; if confirmed stale, review dependencies and clean it with relationship repair before promotion"
+                    } else {
+                        "Restore the declaration or investigate this binding with the tenant administrator; do not promote until resolved"
+                    };
+                    return Err(Error::Config(format!(
+                        "suspected declaration loss (Q14): lower {object}.{} in {} has a mapping without its declaration. {advice}",
+                        entry.key, entry.section
+                    )));
+                }
                 return Err(Error::Config(format!(
-                    "Q14: lower {object}.{} has a mapping without a declaration. Restore the declaration and re-read; if genuinely stale, clean it with relationship repair before promotion",
-                    entry.key
+                    "unsupported binding difference on platform/undeclared end {object}.{} in {}: lower {}; upper {}. Investigate the declarations and storage bindings with the tenant administrator; do not promote until resolved",
+                    entry.key,
+                    entry.section,
+                    serde_json::to_string(&lower_binding)?,
+                    serde_json::to_string(&upper_binding)?
                 )));
             }
         }
@@ -656,14 +746,19 @@ pub fn promotion_pairs(
                 serde_json::to_string(&upper_binding)?
             )));
         }
-        let reference = reference.ok_or_else(|| Error::Config(format!("lower {} has an incomplete binding without a reference; repair it before promotion", located.label())))?;
+        let reference = reference.ok_or_else(|| Error::Config(format!("lower {} has an incomplete binding without a reference; investigate its mappings and do not promote until resolved", located.label())))?;
         let object = reference.resource.strip_prefix("managed/").ok_or_else(|| {
             Error::Config(format!(
-                "unsupported conversion candidate {}.{} in {}: reference owner is not managed",
+                "unsupported conversion candidate {}.{} in {}: reference owner is not managed. Investigate the binding with the tenant administrator; do not promote until resolved",
                 reference.resource, reference.key, reference.section
             ))
         })?;
         let label = format!("{object}.{}", reference.key);
+        if new_pairs.contains(&label) {
+            acknowledge_new(&label, &ends, lower_managed, upper_managed, upper_repo)?;
+            acknowledged.insert(label);
+            continue;
+        }
         let lower =
             storage::pair(lower_managed, lower_repo, object, &reference.key).map_err(|reason| {
                 Error::Config(format!(
@@ -674,21 +769,6 @@ pub fn promotion_pairs(
             return Err(Error::Config(format!(
                 "lower {label} is mixed; repair before promotion"
             )));
-        }
-        if new_pairs.contains(&label) {
-            for end in std::iter::once(&lower.forward).chain(lower.reverse.iter()) {
-                if verify::properties(upper_managed, &end.object)
-                    .is_some_and(|props| props.contains_key(&end.key))
-                    || !verify::sections_mapping(upper_repo, &end.object, &end.key).is_empty()
-                {
-                    return Err(Error::Config(format!(
-                        "{}.{} already has an upper declaration or mapping; remove --new-pair {label} and capture it normally",
-                        end.object, end.key
-                    )));
-                }
-            }
-            acknowledged.insert(label);
-            continue;
         }
         let mappings = std::iter::once(&lower.forward)
             .chain(lower.reverse.iter())
@@ -714,12 +794,13 @@ pub fn promotion_pairs(
             .collect::<Result<Vec<_>>>()?;
         let pair = Pair::of(&lower, mappings)?;
         validate_pair(&pair).map_err(|reason| {
-            Error::Config(format!(
-                "unsupported lower conversion candidate {label}: {reason}"
-            ))
+            config_context(
+                format!("unsupported lower conversion candidate {label}"),
+                reason,
+            )
         })?;
         guard(&pair, upper_managed, upper_repo, storage::Mode::Generic)
-            .map_err(|reason| Error::Config(format!("upper declaration cannot be trusted (possible Q14): {reason}. Only if both ends have never existed in upper, explicitly acknowledge --new-pair {label} after checking their history")))?;
+            .map_err(|reason| config_context(format!("upper declaration cannot be trusted (possible Q14); only if all ends have never existed in upper, acknowledge --new-pair {label} after checking their history"), reason))?;
         selected.push(pair);
     }
     if &acknowledged != new_pairs {
@@ -820,6 +901,24 @@ pub struct Observation {
     pub rev: Option<String>,
 }
 
+/// A presence read cannot settle an in-flight unlink. Never reverse direction
+/// or clear Remove intent while its outcome can still land after restoration.
+pub(super) fn restore_allowed(capture: &Capture) -> Result<()> {
+    if capture
+        .pending
+        .as_ref()
+        .is_some_and(|intent| intent.action == Action::Remove)
+    {
+        return Err(Error::Config("pending Remove intent: cannot reverse rollback while an unlink outcome is unresolved. Keep writers paused and finish rollback-map with this same capture; observing a link present or absent does not settle a delayed request".into()));
+    }
+    if capture.state == State::RolledBack {
+        return Err(Error::Config(
+            "capture is rolled back; use a new capture for a new conversion".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Semantic reads determine idempotence, never the journal's progress flags.
 /// `check` confirms far resolution and mapped runtime before clearing intent.
 pub async fn restore_with(
@@ -831,11 +930,7 @@ pub async fn restore_with(
     mut create: impl AsyncFnMut(&Pair, &Link, Option<&str>) -> Result<Option<String>>,
     mut check: impl AsyncFnMut(&Pair, &Link, &relink::Edge) -> Result<()>,
 ) -> Result<()> {
-    if capture.state == State::RolledBack {
-        return Err(Error::Config(
-            "capture is rolled back; use a new capture for a new conversion".into(),
-        ));
-    }
+    restore_allowed(capture)?;
     capture.state = State::Restoring;
     let pending = capture.pending.clone();
     for index in ordered(
@@ -969,15 +1064,30 @@ fn unreadable(path: &Path, error: &serde_json::Error) -> Error {
     ))
 }
 
+fn earlier_capture() -> Error {
+    Error::Config("relationship data was captured by an earlier development build; re-capture before converting. Keep the old file for inspection; do not re-capture generic links after they have been hidden by a switch".into())
+}
+
+fn capture_version(version: Option<u64>) -> Result<()> {
+    match version {
+        Some(2) => Ok(()),
+        None | Some(0 | 1) => Err(earlier_capture()),
+        Some(_) => Err(Error::Config("unsupported relationship capture format; inspect the file with the build that created it".into())),
+    }
+}
+
 pub fn load(path: &Path) -> Result<Capture> {
-    let mut entries = statefile::load::<Capture>(path, &DESCRIBE)?;
+    let mut entries = statefile::load::<Value>(path, &DESCRIBE)?;
     if entries.len() != 1 {
         return Err(Error::Config(format!(
             "{} must contain exactly one capture bundle; do not overwrite it",
             path.display()
         )));
     }
-    let capture = entries.remove(0);
+    let value = entries.remove(0);
+    capture_version(value.get("version").and_then(Value::as_u64))?;
+    let capture: Capture =
+        serde_json::from_value(value).map_err(|error| unreadable(path, &error))?;
     capture.validate()?;
     Ok(capture)
 }
@@ -1192,7 +1302,9 @@ pub(super) mod tests {
                 let mut second = originals[0].clone();
                 second.link.to_id = "b2".into();
                 second.link.edge_id = Some("e2".into());
-                capture.pairs[0].links.push(Link::of(&second));
+                let mut captured_second = Link::of(&second);
+                captured_second.reverse_properties = Some(second.properties.clone());
+                capture.pairs[0].links.push(captured_second);
                 originals.push(second);
             }
             let existing = RefCell::new(Vec::<relink::Edge>::new());
@@ -1252,7 +1364,9 @@ pub(super) mod tests {
         let mut second = first.clone();
         second.link.to_id = "b2".into();
         second.link.edge_id = Some("e2".into());
-        capture.pairs[0].links.push(Link::of(&second));
+        let mut captured_second = Link::of(&second);
+        captured_second.reverse_properties = Some(second.properties.clone());
+        capture.pairs[0].links.push(captured_second);
         capture.pending = Some(Intent {
             pair: 0,
             link: 1,
@@ -1701,11 +1815,12 @@ pub(super) mod tests {
     #[test]
     fn promotion_lower_mapping_without_declaration_blocks_q14_instead_of_skipping() {
         let (mut managed, generic, mapped, _) = fixture(true);
+        let upper = managed.clone();
         managed["objects"][0]["schema"]["properties"]
             .as_object_mut()
             .unwrap()
             .remove("link");
-        let error = promotion_pairs(&managed, &mapped, &managed, &generic, &BTreeSet::new())
+        let error = promotion_pairs(&managed, &mapped, &upper, &generic, &BTreeSet::new())
             .unwrap_err()
             .to_string();
         assert!(
@@ -1723,9 +1838,9 @@ pub(super) mod tests {
             .unwrap()
             .remove("link");
         let initial = PromotionRead {
-            lower_managed: missing,
+            lower_managed: missing.clone(),
             lower_repo: mapped.clone(),
-            upper_managed: managed.clone(),
+            upper_managed: missing,
             upper_repo: mapped.clone(),
         };
         let reads = RefCell::new(0);
@@ -1821,5 +1936,209 @@ pub(super) mod tests {
                 "{field}: {error}"
             );
         }
+    } // Regression: equal repo documents can still promote a lost declaration.
+    #[test]
+    fn equal_bindings_refuse_lower_declaration_loss_on_either_end() {
+        let (upper, _, repo, _) = fixture(true);
+        for (index, key) in [(0, "link"), (1, "back")] {
+            let mut lower = upper.clone();
+            lower["objects"][index]["schema"]["properties"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            let error = promotion_pairs(&lower, &repo, &upper, &repo, &BTreeSet::new())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("change declarations")
+                    && error.contains("lower")
+                    && error.contains("upper"),
+                "{error}"
+            );
+            assert!(error.contains("do not promote"), "{error}");
+        }
+    }
+
+    // Regression: binding equality does not imply declaration compatibility.
+    #[test]
+    fn equal_bindings_refuse_target_cardinality_kind_and_reverse_changes() {
+        let (upper, _, repo, _) = fixture(true);
+        for change in 0..4 {
+            let mut lower = upper.clone();
+            let property = &mut lower["objects"][0]["schema"]["properties"]["link"];
+            match change {
+                0 => property["items"]["resourceCollection"][0]["path"] = json!("managed/other"),
+                1 => *property = property["items"].clone(),
+                2 => *property = json!({"type":"string"}),
+                _ => property["items"]["reversePropertyName"] = json!("other"),
+            }
+            let error = promotion_pairs(&lower, &repo, &upper, &repo, &BTreeSet::new())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("change declarations") && error.contains("a.link"),
+                "{error}"
+            );
+            assert!(error.contains("shape"), "{error}");
+        }
+    }
+
+    #[test]
+    fn equivalent_stock_footprints_ignore_target_order_and_unrelated_fields() {
+        let (upper, repo) = stock_multi_target();
+        let mut lower = upper.clone();
+        lower["objects"][0]["schema"]["properties"]["authzRoles"]["items"]["resourceCollection"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        lower["objects"][0]["schema"]["properties"]["authzRoles"]["title"] =
+            json!("new display title");
+        assert!(
+            promotion_pairs(&lower, &repo, &upper, &repo, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            promotion_pairs(&json!({}), &repo, &json!({}), &repo, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn new_pair_acknowledges_unsupported_multi_target_component_before_narrow_validation() {
+        let (lower, repo) = stock_multi_target();
+        let flags = BTreeSet::from(["alpha_user.authzRoles".into()]);
+        assert!(
+            promotion_pairs(&lower, &repo, &json!({}), &json!({}), &flags)
+                .unwrap()
+                .is_empty()
+        );
+        let mut existing_upper = json!({"objects":[{"name":"role","schema":{"properties":{"authzMembers":{"type":"string"}}}}]});
+        let error = promotion_pairs(&lower, &repo, &existing_upper, &json!({}), &flags)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("already has an upper declaration or mapping"),
+            "{error}"
+        );
+        // Even a schema reverse end absent from repo.ds must be checked.
+        let mut no_reverse_mapping = repo.clone();
+        no_reverse_mapping["resourceMapping"]["genericMapping"]["managed/role"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .clear();
+        no_reverse_mapping["resourceMapping"]["explicitMapping"]["internal/role"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .clear();
+        existing_upper["objects"][0]["schema"]["properties"]["authzMembers"] =
+            json!({"type":"array"});
+        assert!(
+            promotion_pairs(
+                &lower,
+                &no_reverse_mapping,
+                &existing_upper,
+                &json!({}),
+                &flags
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("already has an upper declaration")
+        );
+    }
+
+    #[test]
+    fn undeclared_platform_binding_difference_gives_executable_advice() {
+        for section in ["genericMapping", "explicitMapping"] {
+            let lower = json!({"resourceMapping":{section:{"managed/platform":{"properties":{"roles":{
+                "type":"reference","ldapAttribute":"fr-idm-reference-1","resourcePath":"internal/role","isMultiValued":true}}}}}});
+            let error =
+                promotion_pairs(&json!({}), &lower, &json!({}), &json!({}), &BTreeSet::new())
+                    .unwrap_err()
+                    .to_string();
+            assert!(
+                error.contains("unsupported binding difference")
+                    && error.contains("platform.roles"),
+                "{error}"
+            );
+            assert!(
+                error.contains("do not promote") && error.contains("Investigate"),
+                "{error}"
+            );
+            assert!(
+                !error.contains("Q14") && !error.contains("relationship repair"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_mapping_declaration_loss_does_not_suggest_unavailable_repair() {
+        let (upper, generic, mut repo, _) = fixture(true);
+        let resources = repo["resourceMapping"]
+            .as_object_mut()
+            .unwrap()
+            .remove("genericMapping")
+            .unwrap();
+        repo["resourceMapping"]["explicitMapping"] = resources;
+        let mut lower = upper.clone();
+        lower["objects"][0]["schema"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("link");
+        let error = promotion_pairs(&lower, &repo, &upper, &generic, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Q14") && error.contains("explicitMapping"),
+            "{error}"
+        );
+        assert!(!error.contains("relationship repair"), "{error}");
+        assert!(error.contains("do not promote"), "{error}");
+    }
+
+    #[test]
+    fn upper_q14_refusal_has_one_config_error_prefix() {
+        let (managed, generic, mapped, _) = fixture(true);
+        let error = promotion_pairs(&managed, &mapped, &json!({}), &generic, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Q14"), "{error}");
+        assert_eq!(error.matches("Config error:").count(), 1, "{error}");
+    }
+
+    #[test]
+    fn capture_requires_both_recorded_views_without_synthesizing_reverse_values() {
+        let (mut capture, _) = captured(true);
+        capture.pairs[0].links[0].reverse_properties = None;
+        let error = capture.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("captured by an earlier development build; re-capture"),
+            "{error}"
+        );
+    }
+
+    // Exercise the production index on enough edges to expose the old nested
+    // reverse scan. This is workload coverage, not a wall-clock assertion.
+    #[test]
+    fn census_indexes_eight_thousand_reverse_edges_with_custom_properties() {
+        let (_, _, _, pair) = fixture(true);
+        let mut forward = Vec::new();
+        let mut reverse = Vec::new();
+        for index in 0..8000 {
+            let properties = json!({"_id":format!("e{index}"),"note":format!("note {index}")});
+            forward.push(json!({"_id":format!("a{index}"),"link":[{"_refResourceCollection":"managed/b","_refResourceId":format!("b{index}"),"_refProperties":properties}]}));
+            reverse.push(json!({"_id":format!("b{index}"),"back":[{"_refResourceCollection":"managed/a","_refResourceId":format!("a{index}"),"_refProperties":properties}]}));
+        }
+        reverse.reverse();
+        let current = census(&pair, &forward, &reverse).unwrap();
+        assert_eq!(current.links.len(), 8000);
+        assert!(
+            current
+                .links
+                .iter()
+                .all(|link| link.reverse_properties.as_ref() == Some(&link.properties))
+        );
     }
 }

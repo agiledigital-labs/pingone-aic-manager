@@ -158,7 +158,6 @@ pub fn allocate(repo: &Value, object: &str) -> Result<u8, String> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
-    #[serde(default = "generic_section")]
     pub section: String,
     pub object: String,
     pub key: String,

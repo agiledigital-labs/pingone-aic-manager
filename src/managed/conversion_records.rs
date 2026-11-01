@@ -121,11 +121,11 @@ async fn preflight(
     let (managed, repo) = io.config().await?;
     for (index, pair) in capture.pairs.iter().enumerate() {
         repair::plan_rollback(&managed, &repo, pair).map_err(Error::Config)?;
-        removable(&managed, pair)?;
         ready(io, pair).await?;
         for (link_index, link) in pair.links.iter().enumerate() {
             let observation = io.observe(pair, link).await?;
             if removal(capture, index, link_index, &observation, permit)?.is_some() {
+                removable(&managed, pair)?;
                 let edge = observation
                     .edges
                     .iter()
@@ -169,11 +169,11 @@ async fn remove_links(
             // Retain the fresh config/removal guards at every request too.
             let (managed, repo) = io.config().await?;
             repair::plan_rollback(&managed, &repo, &pair).map_err(Error::Config)?;
-            removable(&managed, &pair)?;
             let current = io.observe(&pair, link).await?;
             let Some(write) = removal(capture, index, link_index, &current, permit)? else {
                 continue;
             };
+            removable(&managed, &pair)?;
             let edge = current
                 .edges
                 .iter()
@@ -489,12 +489,6 @@ mod tests {
     async fn rolling_back_capture_can_resume_record_only_restore() {
         let (io, mut capture) = Memory::new(true);
         capture.state = State::RollingBack;
-        capture.pending = Some(conversion::Intent {
-            pair: 0,
-            link: 0,
-            action: Action::Remove,
-            edge_id: Some("e1".into()),
-        });
         io.forward.borrow_mut()[0]["link"] = json!([]);
         io.reverse.borrow_mut()[0]["back"] = json!([]);
         let writes = RefCell::new(0);
@@ -524,5 +518,83 @@ mod tests {
         assert!(capture.pending.is_none());
         assert_eq!(capture.state, State::Restoring);
         assert!(io.events.borrow().is_empty()); // records only; no config write
+    } // Regression: an observed present link must never erase an in-flight unlink.
+    #[tokio::test]
+    async fn pending_remove_refuses_direction_change_even_if_link_is_present_or_absent() {
+        for present in [true, false] {
+            let (io, mut capture) = Memory::new(true);
+            capture.state = State::RollingBack;
+            capture.pending = Some(conversion::Intent {
+                pair: 0,
+                link: 0,
+                action: Action::Remove,
+                edge_id: Some("e1".into()),
+            });
+            if !present {
+                io.forward.borrow_mut()[0]["link"] = json!([]);
+                io.reverse.borrow_mut()[0]["back"] = json!([]);
+            }
+            let before = capture.clone();
+            let error = conversion::restore_with(
+                &mut capture,
+                &conversion::authorize(false, true).unwrap(),
+                async |pair| ready(&io, pair).await,
+                async |pair, link| io.observe(pair, link).await,
+                async |capture| io.save(capture).await,
+                async |_, _, _| panic!("unresolved unlink must never reach a create"),
+                async |pair, link, edge| io.check(pair, link, edge).await,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("pending Remove intent") && error.contains("finish rollback-map"),
+                "{error}"
+            );
+            assert_eq!(capture, before);
+            assert!(io.journal.borrow().is_empty() && io.events.borrow().is_empty());
+        }
+    }
+
+    // Regression: a required property is irrelevant when no unlink is planned,
+    // including a switch stopped before any restoration request landed.
+    #[tokio::test]
+    async fn required_forward_with_zero_mapped_links_rolls_back_without_record_writes() {
+        for pending_create in [false, true] {
+            let (mut io, mut capture) = Memory::new(false);
+            io.managed["objects"][0]["schema"]["required"] = json!(["link"]);
+            io.forward.borrow_mut()[0]
+                .as_object_mut()
+                .unwrap()
+                .remove("link");
+            io.reverse.borrow_mut()[0]["back"] = json!([]);
+            capture.state = State::Switching;
+            capture.restored.clear();
+            if pending_create {
+                capture.pending = Some(conversion::Intent {
+                    pair: 0,
+                    link: 0,
+                    action: Action::Create,
+                    edge_id: None,
+                });
+            }
+            rollback(
+                &io,
+                &mut capture,
+                &conversion::authorize(false, true).unwrap(),
+                &relink::authorize(false, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                *io.events.borrow(),
+                ["confirm config write", "remove mapping"]
+            );
+            assert!(capture.pending.is_none());
+            assert_eq!(
+                storage::mode(&storage::pair(&io.managed, &io.repo.borrow(), "a", "link").unwrap()),
+                storage::Mode::Generic
+            );
+        }
     }
 }

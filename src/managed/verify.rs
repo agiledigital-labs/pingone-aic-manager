@@ -904,12 +904,35 @@ fn describe_ends(ends: &[String]) -> String {
 }
 
 /// The facts about a property that its `repo.ds` mapping depends on.
-#[derive(Debug, PartialEq, Eq)]
-struct Shape {
-    relationship: bool,
-    targets: Vec<String>,
-    reverse: Option<String>,
-    array: bool,
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+pub(super) struct Shape {
+    pub relationship: bool,
+    pub targets: Vec<String>,
+    pub reverse: Option<String>,
+    pub array: bool,
+}
+
+fn shape(property: &Value) -> Shape {
+    Shape {
+        relationship: crate::managed::state::is_relationship_property(property),
+        targets: crate::managed::ops::relationship_targets(property)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        reverse: declared_reverse_key(property).map(str::to_string),
+        array: property.get("type").and_then(Value::as_str) == Some("array"),
+    }
+}
+
+/// Permissive shape/presence for promotion comparison, including multi-target
+/// and internal targets. Undeclared platform ends have no managed footprint.
+/// Target order has no meaning for this comparison.
+pub(super) fn declaration_shape(doc: &Value, resource: &str, key: &str) -> Option<Shape> {
+    let property = properties(doc, resource.strip_prefix("managed/")?)?.get(key)?;
+    let mut shape = shape(property);
+    shape.targets.sort();
+    shape.targets.dedup();
+    Some(shape)
 }
 
 fn shapes(doc: &Value) -> Vec<((String, String), Shape)> {
@@ -925,24 +948,7 @@ fn shapes(doc: &Value) -> Vec<((String, String), Shape)> {
             .into_iter()
             .flatten()
         {
-            let relationship = crate::managed::state::is_relationship_property(property);
-            let node = property.get("items").unwrap_or(property);
-            out.push((
-                (name.to_string(), key.clone()),
-                Shape {
-                    relationship,
-                    targets: node
-                        .get("resourceCollection")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|entry| entry.get("path").and_then(Value::as_str))
-                        .map(str::to_string)
-                        .collect(),
-                    reverse: declared_reverse_key(property).map(str::to_string),
-                    array: property.get("type").and_then(Value::as_str) == Some("array"),
-                },
-            ));
+            out.push(((name.to_string(), key.clone()), shape(property)));
         }
     }
     out
