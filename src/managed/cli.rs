@@ -870,7 +870,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 format!("Revert relationship {source_object}.{key}"),
             )?;
             let expect = relationship_expectations(&doc, &updated)?;
-            storage::set_with(
+            let mapping = storage::set_with(
                 property.is_none(),
                 async || put_managed(&ok, &doc, updated.clone(), &expect).await,
                 async || map_created_pair(&ok, &source_object, &key).await,
@@ -892,6 +892,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     "activation": activation,
                     "activation_verified": unverified.is_empty(),
                     "one_sided": one_sided,
+                    "mapping_verification": mapping,
                 }),
             )?;
             if check {
@@ -1024,7 +1025,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             if let Some(permit) = &permit {
                 for (index, plan) in removals.iter().enumerate() {
                     let label = plan.label();
-                    let outcome = match send_repair(&ok, plan, permit).await {
+                    let outcome = match send_repo_change(&ok, plan, permit).await {
                         Ok(applied) => {
                             repair_readback(&label, &plan.object, &applied).map(|()| applied)
                         }
@@ -1755,16 +1756,14 @@ async fn mapping_empty(tenant: &str, pair: &verify::PairReport) -> Result<()> {
 }
 
 fn print_mapping_plan(plan: &repair::Plan) {
-    if let Some(addition) = &plan.addition {
+    if let Some(addition) = plan.addition() {
         eprintln!(
             "map {}: forward reference uses {}",
             plan.label(),
             addition.column
         );
-        for object in &addition.added_types {
-            eprintln!(
-                "  add per-type genericMapping managed/{object} (DN, object classes, JSON attributes)"
-            );
+        for (object, entry) in &addition.added_types {
+            eprintln!("  add per-type genericMapping managed/{object}: {entry}");
         }
         for entry in &addition.entries {
             eprintln!("  add {}.{}: {}", entry.object, entry.key, entry.value);
@@ -1786,14 +1785,14 @@ async fn relationship_map(
     let managed = api::get_managed(&tenant).await?;
     let repo = api::get_repo_ds(&tenant).await?;
     let plan = repair::plan_add(&managed, &repo, &object, &key).map_err(crate::Error::Config)?;
-    if let Some(addition) = &plan.addition {
+    if let Some(addition) = plan.addition() {
         mapping_empty(&tenant, &addition.pair).await?;
     }
     print_mapping_plan(&plan);
     if dry_run {
         return output(
             json,
-            &serde_json::json!({"plan": plan.addition, "dry_run": true}),
+            &serde_json::json!({"plan": plan.addition(), "dry_run": true}),
         );
     }
     let consented = force
@@ -1811,18 +1810,24 @@ async fn relationship_map(
     };
     let ok = ensure_prod_confirmed(&tenant, yes)?;
     let applied = apply_mapping(&ok, &plan, &permit).await?;
-    if json {
-        print_json(&serde_json::json!({"plan": plan.addition, "applied": applied}))?;
-    }
     // No probe writes: runtime storage mode requires a link and will be
     // honestly untested on an empty pair. The operator can probe later.
-    relationship_verify(field, 5, 200, None, Some(tenant), false).await
+    let verification = collect_verification(field, 5, 200, None, Some(tenant)).await?;
+    if json {
+        print_json(
+            &serde_json::json!({"plan": plan.addition(), "applied": applied, "verification": verification}),
+        )?;
+    } else {
+        print_verify(&verification.pairs, &verification.stale, 5);
+    }
+    verification_check(&verification)
 }
 
 /// The second half of a new `set`. A failure before the repo.ds write leaves
 /// the consistent generic declaration available for `map` to finish.
-async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<()> {
+async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<VerificationOutput> {
     let field = format!("{object}.{key}");
+    let mut generic = false;
     let prepared = async {
         let managed = api::get_managed(ok.tenant).await?;
         let repo = api::get_repo_ds(ok.tenant).await?;
@@ -1833,6 +1838,7 @@ async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<(
             eprintln!("{field} already has matching mappings; checking for orphaned values");
             return Ok(None);
         }
+        generic = true;
         let plan = repair::plan_add(&managed, &repo, object, key).map_err(crate::Error::Config)?;
         print_mapping_plan(&plan);
         Ok::<_, crate::Error>(Some(plan))
@@ -1840,9 +1846,14 @@ async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<(
     .await
     .map_err(|error| {
         crate::Error::Config(format!(
-            "config/managed was written, but mapping {field} was not attempted: {error}. \
-         Run `aic managed relationship verify {field}`; if generic, finish with \
-         `aic managed relationship map {field} --force` before writing links"
+            "config/managed was written, but mapping {field} was not attempted: {error}. {} \
+             Run `aic managed relationship verify {field}`; if generic, finish with \
+             `aic managed relationship map {field} --force` before writing links",
+            if generic {
+                "The pair remains a consistent generic pair unless another writer changed it."
+            } else {
+                "Storage could not be established from the current documents."
+            }
         ))
     })?;
     if let Some(plan) = prepared {
@@ -1852,7 +1863,13 @@ async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<(
     } else {
         check_orphans(ok.tenant, object, key, "existing mapping").await?;
     }
-    relationship_verify(field, 5, 200, None, Some(ok.tenant.to_string()), false).await
+    let verification =
+        collect_verification(field, 5, 200, None, Some(ok.tenant.to_string())).await?;
+    verification_check(&verification)?;
+    eprintln!(
+        "mapping configuration verified; runtime storage mode is untested without links (run verify --probe later if appropriate)"
+    );
+    Ok(verification)
 }
 
 async fn apply_mapping(
@@ -1861,10 +1878,12 @@ async fn apply_mapping(
     permit: &repair::WritePermit,
 ) -> Result<repair::Applied> {
     let field = plan.label();
-    let applied = send_repair(ok, plan, permit).await.map_err(|failure| crate::Error::Config(match failure {
+    let applied = send_repo_change(ok, plan, permit).await.map_err(|failure| crate::Error::Config(match failure {
         repair::Failure::NotWritten(error) => format!(
-            "mapping {field} was not written: {error}. The pair remains a consistent generic pair. \
-             Finish with `aic managed relationship map {field} --force` before writing links"),
+            "mapping {field} was not written: {error}. This command sent no mapping PUT. \
+             If no other writer changed it, the pair remains consistent and generic. \
+             Verify its current state, then finish with `aic managed relationship map {field} --force` \
+             only once the pair is link-free"),
         repair::Failure::SendFailed { error, backup } => format!(
             "mapping {field} PUT failed ({error}); whether it landed is unknown. \
              config/managed remains declared. Run `aic managed relationship verify {field}` \
@@ -1880,8 +1899,7 @@ async fn apply_mapping(
         )));
     }
     let column = plan
-        .addition
-        .as_ref()
+        .addition()
         .map_or("unknown column", |addition| addition.column.as_str());
     check_orphans(ok.tenant, &plan.object, &plan.key, column).await?;
     eprintln!("mapped {field} (config confirmed by re-read; no orphaned values found)");
@@ -1897,14 +1915,7 @@ async fn check_orphans(tenant: &str, object: &str, key: &str, column: &str) -> R
          Keep link writers paused and query /{key} pr before using it"
             ))
         })?;
-    if !records.is_empty() {
-        return Err(crate::Error::Config(format!(
-            "ORPHANED DATA: mapping {object}.{key} exposes existing values in {column} \
-             (record sample: {records:?}). Mapping remains installed; nothing was cleaned. \
-             Keep link writers paused and inspect the column and repo.ds backup before using it"
-        )));
-    }
-    Ok(())
+    storage::no_orphans(object, key, column, &records).map_err(crate::Error::Config)
 }
 
 async fn relationship_repair(
@@ -1947,7 +1958,7 @@ async fn relationship_repair(
         ));
     };
     let ok = ensure_prod_confirmed(&tenant, yes)?;
-    match send_repair(&ok, &plan, &permit).await {
+    match send_repo_change(&ok, &plan, &permit).await {
         Err(failure) => Err(repair_failure(&field, &object, failure)),
         Ok(applied) => {
             eprintln!("  backup: {}", applied.backup.display());
@@ -1962,9 +1973,9 @@ async fn relationship_repair(
     }
 }
 
-/// One repair's write: `repair::apply_with` over the tenant, polling the
+/// One guarded mapping addition/removal over the tenant, polling the
 /// read-back for 30 s.
-async fn send_repair(
+async fn send_repo_change(
     ok: &crate::cli::WriteOk<'_>,
     plan: &repair::Plan,
     permit: &repair::WritePermit,
@@ -1974,11 +1985,12 @@ async fn send_repair(
         plan,
         permit,
         async || {
-            let managed = api::get_managed(ok.tenant).await?;
-            if let Some(addition) = &plan.addition {
+            if let Some(addition) = plan.addition() {
                 mapping_empty(ok.tenant, &addition.pair).await?;
             }
-            Ok(managed)
+            // The census may be long: re-read schema after it, immediately
+            // beside the repo.ds recheck rather than before the scan.
+            api::get_managed(ok.tenant).await
         },
         async || api::get_repo_ds(ok.tenant).await,
         |document| {
@@ -2999,14 +3011,13 @@ struct ProbeRequest {
     yes: bool,
 }
 
-async fn relationship_verify(
+async fn collect_verification(
     target: String,
     sample: usize,
     scan: usize,
     probe: Option<ProbeRequest>,
     tenant: Option<String>,
-    json: bool,
-) -> Result<()> {
+) -> Result<VerificationOutput> {
     let (object, key) = match target.split_once('.') {
         Some(_) => {
             let (object, key) = parse_object_key(&target)?;
@@ -3106,22 +3117,47 @@ async fn relationship_verify(
                     + usize::from(pair.probe.as_ref().is_some_and(ProbeOutput::is_failure))
             })
             .sum::<usize>();
-    if json {
-        print_json(&serde_json::json!({
-            "pairs": pairs,
-            "stale": report.stale,
-            "recovery": attention,
-            "failures": failures,
-        }))?;
-    } else {
-        print_verify(&pairs, &report.stale, sample);
-    }
-    if failures > 0 {
+    Ok(VerificationOutput {
+        pairs,
+        stale: report.stale,
+        recovery: attention,
+        failures,
+    })
+}
+
+#[derive(Serialize)]
+struct VerificationOutput {
+    pairs: Vec<PairOutput>,
+    stale: Vec<verify::Problem>,
+    recovery: Vec<String>,
+    failures: usize,
+}
+
+fn verification_check(report: &VerificationOutput) -> Result<()> {
+    if report.failures > 0 {
         return Err(crate::Error::Config(format!(
-            "relationship verify found {failures} problem(s)"
+            "relationship verify found {} problem(s)",
+            report.failures
         )));
     }
     Ok(())
+}
+
+async fn relationship_verify(
+    target: String,
+    sample: usize,
+    scan: usize,
+    probe: Option<ProbeRequest>,
+    tenant: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let report = collect_verification(target, sample, scan, probe, tenant).await?;
+    if json {
+        print_json(&report)?;
+    } else {
+        print_verify(&report.pairs, &report.stale, sample);
+    }
+    verification_check(&report)
 }
 
 /// The end a direction's links start from.
@@ -3588,6 +3624,46 @@ mod tests {
     use super::*;
     use crate::cli::Cli;
     use clap::Parser;
+
+    #[test]
+    fn relationship_map_accepts_the_operation_gates_and_rejects_other_force_kinds() {
+        let cli = Cli::try_parse_from([
+            "aic",
+            "managed",
+            "relationship",
+            "map",
+            "a.link",
+            "--dry-run",
+            "--force",
+            "--yes",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(crate::cli::Command::Managed {
+                command: ManagedCommand::Relationship {
+                    command: RelationshipCommand::Map {
+                        dry_run: true,
+                        yes: true,
+                        json: true,
+                        ..
+                    }
+                }
+            })
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "aic",
+                "managed",
+                "relationship",
+                "map",
+                "a.link",
+                "--force=syntax-check"
+            ])
+            .is_err()
+        );
+    }
 
     /// A multi-object verb's `--json` names only what it changed: not an
     /// untouched object, and not one that exists on one side only (a created

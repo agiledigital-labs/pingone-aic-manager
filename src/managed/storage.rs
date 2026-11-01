@@ -38,6 +38,14 @@ pub fn pair(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Pa
             "object '{object}' is not declared in config/managed"
         ));
     }
+    if !verify::properties(managed, object)
+        .and_then(|props| props.get(key))
+        .is_some_and(super::state::is_relationship_property)
+    {
+        return Err(format!(
+            "{object}.{key} is not a declared relationship; declare it with relationship set first"
+        ));
+    }
     let mut pairs = verify::pairs(managed, repo, object, key);
     if pairs.len() != 1 {
         return Err(format!(
@@ -65,6 +73,25 @@ pub fn pair(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Pa
     {
         return Err(format!(
             "{object}.{key} cannot be its own reverse: use two distinct keys"
+        ));
+    }
+    if let Some(reverse) = &pair.reverse
+        && (reverse.reverse_key.as_deref() != Some(key)
+            || reverse.targets != [format!("managed/{object}")])
+    {
+        return Err(format!(
+            "{}.{} must declare a reciprocal relationship only to {object}.{key}; fix the schema before mapping",
+            reverse.object, reverse.key
+        ));
+    }
+    if mode(&pair) == Mode::Mixed {
+        return Err(format!(
+            "mixed pair {object}.{key}: {}; inspect declarations and mappings before retrying",
+            pair.problems
+                .iter()
+                .map(verify::Problem::message)
+                .collect::<Vec<_>>()
+                .join("; ")
         ));
     }
     if !pair.problems.is_empty() {
@@ -140,7 +167,7 @@ pub struct Addition {
     pub pair: PairReport,
     pub column: String,
     pub entries: Vec<Entry>,
-    pub added_types: Vec<String>,
+    pub added_types: BTreeMap<String, Value>,
     #[serde(skip)]
     pub after: Value,
 }
@@ -185,7 +212,7 @@ pub fn plan(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Ad
         .ok_or(
             "config/repo.ds has no genericMapping object; inspect the document before retrying",
         )?;
-    let mut added_types = Vec::new();
+    let mut added_types = BTreeMap::new();
     for entry in &entries {
         if !verify::sections_mapping(repo, &entry.object, &entry.key).is_empty() {
             return Err(format!(
@@ -201,7 +228,7 @@ pub fn plan(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Ad
                 "jsonAttribute": "fr-idm-json", "jsonQueryEqualityMatchingRule": "caseIgnoreJsonQueryMatch",
                 "properties": {}
             }));
-            added_types.push(entry.object.clone());
+            added_types.insert(entry.object.clone(), generic[&path].clone());
         }
         let properties = generic
             .get_mut(&path)
@@ -252,18 +279,31 @@ pub fn require_empty(count: usize) -> Result<(), String> {
     ))
 }
 
+/// A newly assigned column must expose no data. Leave it installed on a
+/// finding: preserve evidence and avoid an unguarded compensating PUT.
+pub fn no_orphans(object: &str, key: &str, column: &str, records: &[String]) -> Result<(), String> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "ORPHANED DATA: mapping {object}.{key} exposes existing values in {column} \
+         (record sample: {records:?}). Mapping remains installed; nothing was cleaned. \
+         Keep link writers paused and inspect the column and repo.ds backup before using it"
+    ))
+}
+
 /// The CLI's real write sequence. Editing never changes storage mode.
 /// Managed confirmation precedes even planning/writing the mapping.
-pub async fn set_with(
+pub async fn set_with<T>(
     creating: bool,
     managed: impl AsyncFnOnce() -> crate::Result<()>,
-    mapping: impl AsyncFnOnce() -> crate::Result<()>,
-) -> crate::Result<()> {
+    mapping: impl AsyncFnOnce() -> crate::Result<T>,
+) -> crate::Result<Option<T>> {
     managed().await?;
     if creating {
-        mapping().await?;
+        return mapping().await.map(Some);
     }
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -329,7 +369,22 @@ mod tests {
         let existing = json!({"custom": true, "properties": {"name": {"type": "string"}}});
         repo["resourceMapping"]["genericMapping"]["managed/a"] = existing.clone();
         let result = plan(&doc, &repo, "a", "link").unwrap();
-        assert_eq!(result.added_types, ["b"]);
+        assert_eq!(
+            result
+                .added_types
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["b"]
+        );
+        assert_eq!(
+            result.entries[0].value,
+            json!({"type": "reference", "ldapAttribute": "fr-idm-reference-1", "primaryKey": "uid", "resourcePath": "managed/b", "isMultiValued": true})
+        );
+        assert_eq!(
+            result.entries[1].value,
+            json!({"type": "reverseReference", "resourcePath": "managed/a", "propertyName": "link", "isMultiValued": false})
+        );
         let generic = &result.after["resourceMapping"]["genericMapping"];
         assert_eq!(generic["managed/a"]["custom"], true);
         assert_eq!(
@@ -386,7 +441,14 @@ mod tests {
         let result = plan(&doc, &repo(), "a", "link").unwrap();
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].value["type"], "reference");
-        assert_eq!(result.added_types, ["a"]);
+        assert_eq!(
+            result
+                .added_types
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
     }
 
     #[test]
@@ -447,7 +509,14 @@ mod tests {
         doc["objects"][0]["schema"]["properties"]["link"]["items"]["resourceCollection"][0]["path"] =
             json!("managed/a");
         let result = plan(&doc, &repo(), "a", "link").unwrap();
-        assert_eq!(result.added_types, ["a"]);
+        assert_eq!(
+            result
+                .added_types
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
         assert_eq!(result.entries.len(), 2);
         assert_eq!(allocate(&result.after, "a"), Ok(2));
     }
@@ -509,5 +578,64 @@ mod tests {
             .is_err()
         );
         assert!(!*called.borrow());
+    }
+    #[test]
+    fn malformed_or_nonreciprocal_and_self_same_key_pairs_are_refused() {
+        let mut doc = managed();
+        doc["objects"][1]["schema"]["properties"]["back"]["reverseRelationship"] = json!(false);
+        doc["objects"][1]["schema"]["properties"]["back"]
+            .as_object_mut()
+            .unwrap()
+            .remove("reversePropertyName");
+        assert!(
+            plan(&doc, &repo(), "a", "link")
+                .unwrap_err()
+                .contains("reciprocal")
+        );
+        doc["objects"][0]["schema"]["properties"]["link"]["items"]["resourceCollection"][0]["path"] =
+            json!("managed/a");
+        doc["objects"][0]["schema"]["properties"]["link"]["items"]["reversePropertyName"] =
+            json!("link");
+        assert!(
+            plan(&doc, &repo(), "a", "link")
+                .unwrap_err()
+                .contains("own reverse")
+        );
+        assert!(
+            plan(&doc, &repo(), "a", "missing")
+                .unwrap_err()
+                .contains("not a declared relationship")
+        );
+    }
+
+    #[test]
+    fn an_existing_type_entry_is_unchanged_except_for_the_new_property() {
+        let doc = managed();
+        let before = occupied(&[1, 2, 3]);
+        let mut result = plan(&doc, &before, "a", "link").unwrap().after;
+        result["resourceMapping"]["genericMapping"]["managed/a"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("link");
+        assert_eq!(
+            result["resourceMapping"]["genericMapping"]["managed/a"],
+            before["resourceMapping"]["genericMapping"]["managed/a"]
+        );
+    }
+    #[test]
+    fn orphaned_values_fail_loudly_with_the_column_and_record() {
+        assert!(no_orphans("a", "link", "fr-idm-reference-4", &[]).is_ok());
+        let error =
+            no_orphans("a", "link", "fr-idm-reference-4", &["record-1".into()]).unwrap_err();
+        for detail in [
+            "ORPHANED DATA",
+            "a.link",
+            "fr-idm-reference-4",
+            "record-1",
+            "remains installed",
+            "nothing was cleaned",
+        ] {
+            assert!(error.contains(detail), "{error}");
+        }
     }
 }
