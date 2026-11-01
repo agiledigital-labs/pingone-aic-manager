@@ -145,6 +145,15 @@ pub enum Command {
                     unless the cached one still has most of its life left)"
         )]
         token: bool,
+        #[arg(
+            long,
+            value_name = "URL-OR-HOST",
+            help = "Refuse, printing no token, unless this URL or host is the \
+                    tenant's own host or one of its custom domains. Pass the URL \
+                    your request will go to: `curl -H \"Authorization: Bearer \
+                    $(aic whoami --token --host \"$URL\")\" \"$URL\"`"
+        )]
+        host: Option<String>,
     },
     /// ESV operations (variables, secrets).
     Esv {
@@ -423,7 +432,11 @@ pub(crate) async fn dispatch(
         Some(Command::Session { command }) => session(command).await,
         Some(Command::Ctx { command }) => ctx(command).await,
         Some(Command::Settings { command }) => settings(command).await,
-        Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
+        Some(Command::Whoami {
+            tenant,
+            token,
+            host,
+        }) => whoami(tenant, token, host).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
@@ -1588,7 +1601,11 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
 /// more life, because a token is below its own issue TTL the instant it exists.
 const SCRIPTED_TOKEN_MIN_TTL: u32 = 840;
 
-async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
+async fn whoami(
+    tenant_arg: Option<String>,
+    token_only: bool,
+    host_arg: Option<String>,
+) -> Result<()> {
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let tenant = resolve_tenant(tenant_arg, &cfg)?;
@@ -1597,6 +1614,19 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
         .tenants
         .iter()
         .find(|candidate| candidate.name == tenant);
+    // Checked before anything is minted, so a refusal never prints a token.
+    if let Some(requested) = host_arg.as_deref() {
+        let base_url = tenant_config.map_or("", |config| config.base_url.as_str());
+        let contexts: Vec<(&str, &str)> = cfg
+            .tenants
+            .iter()
+            .map(|config| (config.name.as_str(), config.base_url.as_str()))
+            .collect();
+        identity::check_host(&tenant, base_url, requested, &contexts, || {
+            identity::custom_domains(&tenant)
+        })
+        .await?;
+    }
     let operator = operator::resolve(&settings, tenant_config, NetworkAccess::Skip).await;
 
     let client = AgentClient::connect_or_spawn().await?;
