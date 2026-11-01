@@ -538,6 +538,103 @@ service-account bearer. It serves the object's schema on `GET`, but
 501. Those five forms are all that was tried; a write route needing another
 shape, version or credential is not ruled out.
 
+**Superseded 2026-11-01** for the route itself, not for the service account:
+the console maps a pair through `PUT …/properties/<p>` with
+`Accept-API-Version: resource=2.0` and a quoted `If-Match: "*"`, and the
+service account is refused that form too. See "Converting a pair between
+storage modes" below.
+
+#### Converting a pair between storage modes (measured 2026-11-01)
+
+Measured on the sandbox's test objects, from an operator's console HAR, and
+with one dry-run promotion on a dev → UAT pair (undone; see "Verified
+against").
+
+**The console's route.** Saving an existing relationship in the console sent
+one request: `PUT /openidm/schema/managed/<obj>/properties/<key>` with
+`Accept-API-Version: resource=2.0` and `If-Match: "*"`, a body equal to the
+property as `GET` returns it plus `"notifySelf": false`, and the operator's
+user session. It returned 200. Comparing the console's own `repo.ds` reads
+before and after, it added exactly two entries: the forward end as a
+`reference` on `fr-idm-reference-8`, and the reverse as a `reverseReference`.
+**The server chose the column**; the request named none. A second console save,
+of another pair, took `-9`. The console's source (`platform-ui`,
+`SchemaApi.saveSchemaProperty`) adds `?waitForCompletion=true`, which the same
+source describes elsewhere as waiting "for the config change to propagate
+before resolving"; the console build captured did not send it.
+
+**The service account cannot use that route.** The same `PUT`, with or without
+`waitForCompletion=true`, is `403 "Access denied"` — including a byte-for-byte
+`PUT` of an already-mapped property's own `GET` body. Nothing changed on a 403:
+`repo.ds` was byte-identical and existing links still resolved. IDM's
+`/openidm/info/login` names the service account's roles as
+`internal/role/openidm-svcacct` and `internal/role/openidm-authorized`, and no
+`config/access` rule grants either `update` on `schema/*` (the account's
+`config/*` writes are evidently authorised outside `config/access`). An empty
+body is `400 Invalid relationship schema`, so validation runs before the access
+check. fr-config-manager v1.9.0 `fr-config-push` replays pulled schemas through
+this same route with a service account's `fr:idm:*` scope; from its source it
+should meet the same 403 — not run.
+
+**The service account can write the mapping into `repo.ds` itself.** A
+whole-document `PUT config/repo.ds?waitForCompletion=true` adding the same two
+entries (forward `{"type": "reference", "ldapAttribute":
+"fr-idm-reference-<n>", "primaryKey": "uid", "resourcePath":
+"managed/<target>", "isMultiValued": <bool>}`, reverse `{"type":
+"reverseReference", "resourcePath": "managed/<source>", "propertyName":
+"<forward>", "isMultiValued": <bool>}`) was 200, re-read identical, and a link
+written afterwards resolved from both ends; `aic managed relationship verify`
+confirmed both ends mapped at runtime. Ping's own page says to manage
+relationships "only [with] the admin console or the Schema API" and that
+"other methods might cause your data to de-sync"; nothing measured here showed
+a de-sync, but this is the "other method".
+
+**Converting a pair hides its existing links; it does not delete them.**
+Measured both ways round on generic pairs with links:
+
+| Step | Existing generic link | Link written while mapped |
+| ---- | --------------------- | ------------------------- |
+| Console save (pair becomes mapped)           | `null` on the forward end, absent from the reverse collection | — |
+| `aic`-style `repo.ds` write (becomes mapped) | `null` forward, absent reverse                                  | resolves from both ends |
+| Mapping removed again (back to generic)      | **back**, resolving from both ends                              | `null` — now the hidden one |
+
+So each store keeps its own links and `repo.ds` only chooses which one IDM
+reads. A hidden generic link cannot be read back (`/openidm/repo/relationships`
+is 403 to the service account), so anything that converts a pair with links
+must read them **before** the switch and write them again after it. This is
+the operator-reported "re-saving a relationship in the console breaks its
+existing links". A JSON-patch `replace` with `"value": null` is
+`400 … not a valid JSON patch`; `remove` unlinks a has-one end.
+
+**Columns are `fr-idm-reference-1` to `-10`, numbered per object.** A
+`repo.ds` naming `fr-idm-reference-11` was accepted (200) and the first link
+write through it was `400 … objectClassViolation … prohibitedAttribute
+fr-idm-reference-11`, which matches Ping's "objects are limited to 10 custom
+relationships". `managed/test_obj2` and `managed/test_from` each hold a
+`fr-idm-reference-1`, so the column is per object, not per tenant. Ping's page
+also warns that a deleted relationship's attribute can be reused and its
+orphaned values "unpredictably reappear"; reusing a freed column was not
+measured.
+
+**A new object type has no `repo.ds` entry of its own.** Creating two types and
+a pair between them through `config/managed` left `repo.ds` unchanged; such a
+type falls under `genericMapping."managed/*"` (`dnTemplate
+"ou=managed,dc=openidm,dc=example,dc=com"`). Adding a per-type entry
+(`dnTemplate "ou=<obj>,ou=managed,dc=openidm,dc=example,dc=com"`,
+`objectClasses ["uidObject", "fr-idm-generic-obj"]`, `jsonAttribute
+"fr-idm-json"`, `jsonQueryEqualityMatchingRule "caseIgnoreJsonQueryMatch"`,
+`properties {}`) left an existing record and its generic link readable and new
+records creatable; mapping the pair then behaved as in the table.
+
+**Promotion.** A dry run with a probe pair mapped only in dev's `repo.ds`
+reported `IDMConfig / Managed Objects — 2 added` (the probe types) and no item
+naming `repo.ds`, so a report does not show a mapping change. That `repo.ds`
+is promoted is the operator's statement, not a measurement here: console-made
+mappings would otherwise never reach an upper environment. Links are records,
+not configuration, and are not promoted, so a promoted conversion is expected
+to hide each upper environment's existing links exactly as above — inferred
+from the mechanism, not observed through a real promotion.
+
 **Renaming a mapped relationship through `config/managed` breaks it.** Measured
 by renaming `test_from.hasOnehOne` (mapped, reverse `test_to.hasOneHasOne`) to
 `hasOneRen` and repointing the reverse's `reversePropertyName`; the `PUT` was a
@@ -1911,6 +2008,26 @@ on create, or when actually rotating it.
   `GET …?_queryFilter=/_id ne "asdf"&_pageSize=1` (400);
   `GET …?_queryFilter=/_id in ["asdf"]&_pageSize=1` (400);
   `GET …?_queryFilter=/_id eq ["asdf"]&_pageSize=1` (400).
+
+- Date: 2026-11-01 — relationship storage conversion. Sandbox, test objects
+  only (`test_from`/`test_to` and throwaway types): read an operator's console
+  HAR of one relationship save; replayed its schema `PUT` with the service
+  account (403, `repo.ds` and links re-read unchanged), with and without
+  `waitForCompletion=true`, and on two already-mapped properties; read
+  `/openidm/info/login` and `config/access`. Created generic pairs with
+  `aic managed relationship set`, linked them, then switched them to mapped by
+  console save and by `PUT config/repo.ds`, reading every link from both ends
+  and through `verify` after each step; removed the mapping again and re-read.
+  Mapped a pair on `fr-idm-reference-11` and wrote a link (400). Created two
+  types, added per-type entries, then a mapping, with records and links read
+  after each step. Every document was restored from backups taken first and
+  compared equal; links were removed from both stores first. Dev → UAT: backed
+  up both tenants' `config/managed` and `repo.ds` (identical), created two
+  probe types and a pair on dev, wrote a mapped entry into dev's `repo.ds`,
+  locked UAT, ran one dry run (report read with `aic promotion report`),
+  unlocked, restored dev's `repo.ds` from the backup and deleted the probe
+  types; both dev documents then compared equal to the backups. Nothing was
+  promoted.
 
 ## Source citations
 

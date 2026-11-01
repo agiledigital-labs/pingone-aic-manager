@@ -6,6 +6,25 @@ new things are learned.
 
 ---
 
+## 2026-11-01 — the schema route works, but not for the service account
+
+The 2026-10-26 entry below says the `/openidm/schema` API "refused all five
+write forms tried". That was the service account with `resource=1.0` and an
+unquoted `If-Match`. A console HAR shows the console mapping a relationship
+through `PUT /openidm/schema/managed/<obj>/properties/<key>` with
+`resource=2.0` and `If-Match: "*"`, and the server allocates the
+`fr-idm-reference-<n>` column itself. The service account is `403` on that
+exact request, so `aic` writes the same two `repo.ds` entries directly.
+
+Converting a pair this way — console or `repo.ds` — **hides** its existing
+links rather than deleting them: removing the mapping again brought them back.
+That is the mechanism behind the operator-reported "re-saving a relationship
+breaks it", and why a conversion must capture links before the switch.
+Measured, with the table, in `10-managed-objects.md` ("Converting a pair
+between storage modes").
+
+---
+
 ## 2026-10-26 — relationships carry `repo.ds` mappings after all
 
 `10-managed-objects.md` said generic custom objects need no `repo.ds`
