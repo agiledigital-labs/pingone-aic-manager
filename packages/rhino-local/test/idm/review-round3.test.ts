@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { HostCallError, RhinoRunner } from "../../src/runner.ts";
 
+import { expectEmulationFailure } from "../../src/harness/vitest.ts";
 import { EmulationFailure } from "../../src/emulation.ts";
 import { emulator } from "./fixtures.ts";
 
@@ -14,17 +15,21 @@ it.each([
   ["spawn host wait", "spawn(function(){openidm.read('wait')}).join();42"],
   ["spawn instruction observer", "spawn(function(){while(true){}}).join();42"],
 ])("R3 #1 %s cannot swallow a harness timeout", async (_name, source) => {
-  const result = await runner.eval({ engine: "idm", timeoutMs: 80, source }, {
-    onCall: () => new Promise<never>(() => {}),
-  });
+  let release!: () => void;
+  const gate = new Promise<null>((resolve) => { release = () => resolve(null); });
+  const result = await runner.eval({ engine: "idm", timeoutMs: 80, source }, { onCall: () => gate });
+  release();
+  await gate;
   expect(result.outcome).toBe("timeout");
   expect(result.emulation).toMatchObject({ kind: "timeout", message: "IDM harness timeout" });
+  expectEmulationFailure("IDM harness timeout");
 });
 
 it("R3 #1 AM timeout does not claim to be IDM", async () => {
   const result = await runner.eval({ timeoutMs: 80, source: "while(true){}" });
   expect(result.outcome).toBe("timeout");
   expect(result.emulation?.message).toBe("Rhino harness timeout");
+  expectEmulationFailure("Rhino harness timeout");
 });
 
 it("R3 #2 REST adapter preserves missing as fatal rather than tenant 501", async () => {
@@ -42,6 +47,7 @@ it("R3 #2 REST adapter preserves missing as fatal rather than tenant 501", async
   expect(result.outcome).not.toBe("ok");
   expect(result.emulation?.kind).toBe("missing");
   expect(result.missing).toContain("named _queryId: missing");
+  expectEmulationFailure("named _queryId: missing");
 });
 
 it("R3 #3 a second runner cannot hide a fatal nested result from the first", async () => {
@@ -60,6 +66,7 @@ it("R3 #3 a second runner cannot hide a fatal nested result from the first", asy
     expect(outer.outcome).not.toBe("ok");
     expect(outer.emulation?.kind).toBe("missing");
     expect(outer.missing).toContain("require");
+    expectEmulationFailure(/require/);
     expect(independent).toMatchObject({ outcome: "ok", value: 7 });
   } finally { await second.close(); }
 }, 30_000);
@@ -77,25 +84,25 @@ it("R3 #4 emulator journal survives ignored results, fork calls and snapshot edi
   const snapshot = emu.emulationFailures;
   snapshot[0]!.failure.missing!.push("snapshot edit");
   expect(child.emulationFailures[0]?.failure.missing).not.toContain("snapshot edit");
-  child.resetEmulationFailures();
-  expect(emu.emulationFailures).toEqual([]);
+  expect("resetEmulationFailures" in child).toBe(false);
+  expect(emu.emulationFailures).toHaveLength(2);
   const independent = emulator(runner);
   await child.request({ method: "GET", path: "managed/widget", query: { _queryId: "again" } });
-  expect(emu.emulationFailures).toHaveLength(1);
+  expect(emu.emulationFailures).toHaveLength(3);
   expect(independent.emulationFailures).toEqual([]);
+  expectEmulationFailure("named _queryId: missing");
+  expectEmulationFailure("named _queryId: again");
 });
 
 it.each(["missing", "timeout", "protocol", "internal"] as const)("R3 #4 runner journals %s even when the result is ignored", async (kind) => {
-  // Optional reset allows the absence of the new API to fail on the journal
-  // assertion, not a TypeError, during the required unfixed-code run.
-  runner.resetEmulationFailures?.();
+  const start = runner.emulationFailures.length;
   const source = kind === "missing" ? "require('unsupported');" : kind === "timeout" ? "while(true){}" : "openidm.read('probe');";
   await runner.eval({ engine: "idm", timeoutMs: 80, source }, kind === "internal" ? { onCall: () => { throw new Error("adapter broke"); } } : {});
-  expect(runner.emulationFailures).toMatchObject([{ failure: { kind } }]);
-  runner.resetEmulationFailures();
-  expect(runner.emulationFailures).toEqual([]);
+  expect(runner.emulationFailures.slice(start)).toEqual(expect.arrayContaining([expect.objectContaining({ failure: expect.objectContaining({ kind }) })]));
+  const count = runner.emulationFailures.length;
+  expectEmulationFailure(kind === "missing" ? /require/ : kind === "timeout" ? /IDM harness timeout/ : kind === "protocol" ? /onCall/ : /adapter broke/);
   await runner.eval({ engine: "idm", source: "throw {code:501,message:'tenant'};" });
-  expect(runner.emulationFailures).toEqual([]);
+  expect(runner.emulationFailures).toHaveLength(count);
 });
 
 it.each(["duplicate", "closed"] as const)("R3 #4 runner journals %s job rejection before returning", async (reason) => {
@@ -113,6 +120,7 @@ it.each(["duplicate", "closed"] as const)("R3 #4 runner journals %s job rejectio
         },
       });
     }
+    expectEmulationFailure(reason === "closed" ? /runner is closing/ : /duplicate active job id/);
     expect(owned.emulationFailures).toEqual(expect.arrayContaining([
       expect.objectContaining({ context: `job ${id}`, failure: expect.objectContaining({ kind: "protocol" }) }),
     ]));

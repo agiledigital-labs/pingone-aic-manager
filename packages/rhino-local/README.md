@@ -882,29 +882,57 @@ choices the measurements leave open. A reached `missing` entry fails the request
 with 501 and names the behavior. Nested calls share provenance, including a
 missing call caught by script code; concurrent requests use separate scopes.
 Both `IdmEmulator` and `RhinoRunner` expose detached `emulationFailures` snapshots
-with a sequence, context and failure cause. Records append independently of what
-the caller asserts or catches, and remain until `resetEmulationFailures()` is
-called. Emulator forks share their parent's journal, including reset, so a guard
-on the parent covers its descendants. Independent emulators and runners have
-separate journals; a nested runner failure also reaches its caller's journal.
+with a sequence, context, owning test and failure cause. Entries go to one
+process-wide registry and cannot be deleted. Forks share a family journal for
+inspection; verdicts belong to the test that started each request or evaluation,
+including when callbacks finish during a later test. Replacing or clearing a
+fixture variable does not remove its evidence.
 
-In Vitest, install the verdict guard at file/describe scope for directly owned
-emulators and runners (getters support creation in `beforeAll`):
+The supported Vitest integration is the package's setup file:
 
 ```ts
-import { useEmulationGuard } from "@agiledigital/pingone-aic-script-tester";
-useEmulationGuard(() => idm, () => runner);
+// vitest.config.ts
+export default defineConfig({
+  test: { setupFiles: ["@agiledigital/pingone-aic-script-tester/vitest-setup"] },
+});
 ```
 
-Its `afterEach` fails on new emulation failures regardless of HTTP/status/error
-assertions, naming each cause. `useLease` installs it automatically for its runner.
-Sequence checkpoints separate tests without clearing the evidence; setup failures
-are included in the source's first test. Tests sharing a source should run
-sequentially; overlapping tests can both observe its failures. When deliberately
-checking unsupported behavior, inspect and explicitly reset the journal before
-the guard runs. Ordinary tenant failures, including tenant 501, are not recorded.
-The emulator's 501 response remains diagnostic data, not a substitute for this
-guard. Core users outside Vitest must check the journals in their verdict layer.
+The setup wraps each test and its hooks in an async ownership context, then checks
+the global registry after cleanup. It covers every runner and emulator without
+naming sources. Vitest 5's `aroundEach` preserves separate contexts for concurrent
+tests, including sibling forks; a clean sibling does not inherit another test's
+failures. `useLease` also installs ownership guarding automatically. Legacy
+`useEmulationGuard()` calls remain supported; their source arguments are ignored.
+Direct use without the setup or a guard remains possible and has no automatic
+Vitest verdict enforcement. Core users in another framework must enforce their
+own verdicts over the registry.
+
+An unfinished request, evaluation or accepted host callback fails immediately as `outstanding work at
+test end`. The guard does not wait for a gate that only later hooks might release.
+Late completion keeps the original owner. A shell `spawn` child still alive when
+its job finishes reports `missing: spawned thread outlived its job` before the
+result is published; detached-thread tenant semantics are unmeasured. Joined or
+already completed children remain supported. Detached cleanup has a 100 ms total
+bound and interrupts script observers / Java waits; daemon children cannot hold
+JVM shutdown open. A deadline-disabled parent's measured plain context is retained;
+child contexts use lifetime observers to stop script execution after job closure.
+
+Tests deliberately exercising an unsupported feature declare its named cause:
+
+```ts
+import { expectEmulationFailure } from "@agiledigital/pingone-aic-script-tester";
+expectEmulationFailure("named _queryId: intentionally-unsupported");
+await idm.request({ method: "GET", path: "managed/widget",
+  query: { _queryId: "intentionally-unsupported" } });
+```
+
+The declaration matches an exact failure message or missing behavior name; a
+regular expression can name a cause across nested mappings. It applies only to
+that test, retains the entries with an `expected` annotation, and fails the test
+if no matching failure occurs. It cannot waive outstanding work. There is no reset
+API. Ordinary tenant failures, including tenant 501, are not recorded. The
+emulator's diagnostic 501 response alone is insufficient to validate a negative
+test; the setup enforces the independent verdict.
 
 Some hooks can commit nested writes before a later failure. A post-hook failure
 after repository commit reports `assumed: post-hook failure after commit keeps

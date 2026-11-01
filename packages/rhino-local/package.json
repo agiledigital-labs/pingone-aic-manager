@@ -17,6 +17,10 @@
       "types": "./dist/src/harness/index.d.ts",
       "default": "./dist/src/harness/index.js"
     },
+    "./vitest-setup": {
+      "types": "./dist/src/harness/vitest-setup.d.ts",
+      "default": "./dist/src/harness/vitest-setup.js"
+    },
     "./case": {
       "types": "./dist/src/case/index.d.ts",
       "default": "./dist/src/case/index.js"

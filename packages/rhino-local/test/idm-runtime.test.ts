@@ -1,3 +1,4 @@
+import { expectEmulationFailure } from "../src/harness/emulation-guard.ts";
 /** Measured IDM behavior, exercised through the real compiled JVM lane. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HostCallError, RhinoRunner, type HostCall, type JsonValue } from "../src/runner.ts";
@@ -73,6 +74,7 @@ describe("IDM engine configuration", () => {
   });
 
   it("compiled observer interrupts a runaway loop even inside try/catch and keeps serving", async () => {
+    expectEmulationFailure("IDM harness timeout");
     const response = await runner.eval({
       engine: "idm",
       timeoutMs: 100,
@@ -457,6 +459,7 @@ describe("IDM Java host surfaces", () => {
   it.each(["parseFilter", "hash", "encrypt", "isHashed", "matches", "decrypt", "isEncrypted"])(
     "openidm.%s fails as missing",
     async (method) => {
+    expectEmulationFailure(`openidm.${method}`);
       const response = await runner.eval({
         engine: "idm",
         source: `openidm.${method}('x')`,
@@ -468,6 +471,7 @@ describe("IDM Java host surfaces", () => {
     }
   );
   it("require fails explicitly as missing", async () => {
+    expectEmulationFailure("require");
     const response = await runner.eval({
       engine: "idm",
       source: "require('lib/lodash')",

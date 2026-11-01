@@ -1,6 +1,6 @@
 import { decodeProtocol, stringifyProtocol } from "./protocol-values.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { EmulationFailure, EmulationFailureJournal, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
+import { EmulationFailure, EmulationFailureJournal, bindEmulationOwner, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual, promisify } from "node:util";
@@ -484,9 +484,14 @@ export class RhinoRunner {
 
   /** Detached, append-only diagnostic snapshots; independent of caller assertions. */
   get emulationFailures() { return this.#failures.entries; }
-  resetEmulationFailures(): void { this.#failures.reset(); }
 
-  async eval(job: JobRequest, options: EvalOptions = {}): Promise<JobResponse> {
+  eval(job: JobRequest, options: EvalOptions = {}): Promise<JobResponse> {
+    const id = job.id ?? randomUUID();
+    const owned = options.onCall ? { ...options, onCall: bindEmulationOwner(options.onCall) } : options;
+    return this.#failures.run(`eval ${id}`, () => this.#evaluate({ ...job, id }, owned));
+  }
+
+  async #evaluate(job: JobRequest, options: EvalOptions): Promise<JobResponse> {
     const id = job.id ?? randomUUID();
     if (this.#activeIds.has(id)) {
       const failure = { kind: "protocol" as const, message: `rhino-local: duplicate active job id: ${id}` };
@@ -562,7 +567,8 @@ export class RhinoRunner {
     }
     const transcript: Array<{ call: HostCall; reply: HostReply | undefined }> = [];
     let transcriptFrozen = false;
-    const primaryCall = async (call: HostCall): Promise<HostReply> => {
+    const primaryCall = bindEmulationOwner((call: HostCall): Promise<HostReply> => this.#failures.run(
+      `host callback ${id}#${call.seq}`, async () => {
       const entry = {
         call: structuredClone(call),
         reply: undefined as HostReply | undefined,
@@ -591,9 +597,11 @@ export class RhinoRunner {
           error: hostError(scope.failure ? new EmulationFailure(scope.failure) : error),
         };
       }
+      const fatal = "error" in reply ? emulationFailure(reply.error) : undefined;
+      if (fatal) this.#failures.record(fatal, `host callback ${id}#${call.seq}`);
       if (!transcriptFrozen) entry.reply = reply;
       return reply;
-    };
+    }));
     if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall);
     if (job.engine !== "idm") {
       const [host, container] = await Promise.all([

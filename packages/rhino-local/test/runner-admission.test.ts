@@ -1,3 +1,4 @@
+import { expectEmulationFailure } from "../src/harness/emulation-guard.ts";
 /** Resource and shutdown checks on the actual JVM stdin/stdout protocol. */
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -69,6 +70,7 @@ it("#11 refuses excess concurrent jobs immediately and keeps accepted jobs alive
 });
 
 it("#11 re-entry at the admission limit refuses instead of queuing or deadlocking", async () => {
+    expectEmulationFailure(/concurrent job limit exceeded/);
   const runner = await RhinoRunner.spawn({ maxConcurrentJobs: 2 });
   const outcomes: string[] = [];
   const evaluate = async (): Promise<JsonValue> => {
