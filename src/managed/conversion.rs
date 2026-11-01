@@ -609,22 +609,21 @@ fn all_bindings(repo: &Value) -> Vec<Binding> {
 }
 
 fn binding_changes(before: &[Binding], after: &[Binding]) -> Vec<BindingChange> {
-    let ends = before
-        .iter()
-        .chain(after)
-        .map(|entry| (entry.resource.clone(), entry.key.clone()))
-        .collect::<BTreeSet<_>>();
+    let mut ends = BTreeMap::<Endpoint, (Vec<Binding>, Vec<Binding>)>::new();
+    for entry in before {
+        ends.entry((entry.resource.clone(), entry.key.clone()))
+            .or_default()
+            .0
+            .push(entry.clone());
+    }
+    for entry in after {
+        ends.entry((entry.resource.clone(), entry.key.clone()))
+            .or_default()
+            .1
+            .push(entry.clone());
+    }
     ends.into_iter()
-        .filter_map(|(resource, key)| {
-            let for_end = |entries: &[Binding]| {
-                entries
-                    .iter()
-                    .filter(|entry| entry.resource == resource && entry.key == key)
-                    .cloned()
-                    .collect::<Vec<_>>()
-            };
-            let before = for_end(before);
-            let after = for_end(after);
+        .filter_map(|((resource, key), (before, after))| {
             (before != after).then(|| BindingChange {
                 end: format!("{resource}.{key}"),
                 before,

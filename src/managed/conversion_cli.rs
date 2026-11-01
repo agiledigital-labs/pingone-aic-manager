@@ -106,6 +106,12 @@ fn default_path() -> PathBuf {
         .join(format!("{}.json", uuid::Uuid::new_v4()))
 }
 
+fn request_evidence(capture: &Capture) -> String {
+    capture.pending.as_ref().map_or_else(String::new, |intent| format!(
+        "Pending {:?} transaction id: {}. Look up its terminal IDM access event with aic logs tx --source idm-access; write correlation is unmeasured. Absent logs do not prove the request was never sent. Without terminal evidence keep this file and writers paused; contact the tenant administrator or Ping Support.",
+        intent.action, intent.transaction_id.as_deref().unwrap_or("unavailable: earlier development build")))
+}
+
 fn plan_text(capture: &Capture, path: &Path, operation: &str, saved: bool, switch: bool) -> String {
     let mut lines = vec![format!(
         "{operation}: {} pair(s), {} captured link(s); capture {}",
@@ -167,6 +173,9 @@ fn consent(
     operation: &str,
     capture: &Capture,
 ) -> Result<Option<conversion::Permit>> {
+    if capture.pending.is_some() {
+        eprintln!("{}", request_evidence(capture));
+    }
     if flags.acknowledge_request_finished {
         let intent = capture.pending.as_ref().ok_or_else(|| Error::Config("--acknowledge-request-finished requires a saved pending request; it cannot authorize future writes".into()))?;
         eprintln!(
@@ -217,8 +226,9 @@ fn stopped(path: &Path, capture: &Capture, error: Error) -> Error {
         Origin::Promotion => format!("restore-links {} --force", path.display()),
     };
     let reason = conversion::config_detail(error);
+    let evidence = request_evidence(capture);
     Error::Config(format!(
-        "{reason}\nCapture retained at {}. Keep link writers paused. Correct the reported problem and re-run `aic managed relationship {resume}`; an in-place conversion can instead use rollback-map. No automatic rollback was attempted",
+        "{reason}\n{evidence}\nCapture retained at {}. Keep link writers paused. Correct the reported problem and re-run `aic managed relationship {resume}`; an in-place conversion can instead use rollback-map. No automatic rollback was attempted",
         path.display()
     ))
 }
@@ -962,7 +972,7 @@ pub async fn rollback_map(
         Ok(())
     }
     .await;
-    result.map_err(|error: Error| Error::Config(format!("rollback stopped: {}. Keep writers paused and re-run rollback-map {} to finish. If exact captured mappings remain and no Remove intent is outstanding, restore-links can reverse the interrupted rollback; capture retained", conversion::config_detail(error), path.display())))?;
+    result.map_err(|error: Error| Error::Config(format!("rollback stopped: {}. {} Keep writers paused and re-run rollback-map {} to finish. If exact captured mappings remain and no Remove intent is outstanding, restore-links can reverse the interrupted rollback; capture retained", conversion::config_detail(error), request_evidence(&capture), path.display())))?;
     output(&flags, &json!({"capture":path,"rolled_back":true}))
 }
 
@@ -1078,7 +1088,14 @@ mod tests {
 
     #[test]
     fn stopped_q14_error_does_not_double_config_prefix() {
-        let (capture, _) = captured(true);
+        let (mut capture, _) = captured(true);
+        capture.pending = Some(conversion::Intent {
+            pair: 0,
+            link: 0,
+            action: conversion::Action::Create,
+            edge_id: None,
+            transaction_id: Some("aic-evidence-test".into()),
+        });
         let error = stopped(
             Path::new("capture.json"),
             &capture,
@@ -1086,6 +1103,8 @@ mod tests {
         )
         .to_string();
         assert_eq!(error.matches("Config error:").count(), 1, "{error}");
+        assert!(error.contains("aic-evidence-test"), "{error}");
+        assert!(error.contains("Absent logs do not prove"), "{error}");
     }
     #[test]
     fn acknowledgment_consent_is_scoped_to_saved_intent_and_dry_run_has_no_permit() {
