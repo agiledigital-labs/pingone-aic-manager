@@ -1,6 +1,7 @@
 //! Tenant and filesystem edge for relationship storage conversion. `map` and
 //! promotion capture/restore share conversion's census, journal and restore
-//! engine; all config writes still go through repair::apply_with. Upper
+//! engine. Capture format and pending-removal guards precede tenant selection;
+//! all config writes still go through repair::apply_with. Upper
 //! restore writes records only. No promotion lifecycle code is changed.
 
 use std::collections::BTreeSet;
@@ -927,6 +928,8 @@ mod tests {
             assert!(!text.contains("  map a.link:"));
         }
     }
+    // Project paths intentionally remain uninstalled: reaching tenant selection
+    // would fail this test before any network access, as well as the assertion.
     #[tokio::test]
     async fn old_format_refuses_restore_before_tenant_selection_or_calls() {
         let (capture, _) = captured(true);

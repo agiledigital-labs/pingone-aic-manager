@@ -910,7 +910,9 @@ Restoration waits for captured relationship endpoints to be live, using set's
 read-only activation wait, then uses the shared relink creation mechanics: has-many
 POST, has-one conditional PATCH. Final verification compares the **entire**
 captured set, including both ends' custom properties. Capture refuses
-asymmetric reverse values before any write; verification rejects an extra
+asymmetric reverse values before any write because preserving them is not yet
+supported; differing per-side data can be legitimate and must not be equalised
+to bypass this limitation. Verification rejects an extra
 link or changed properties. Every link must resolve from the far end and the presence-query runtime
 judgement must confirm mapped storage on both ends (forward only for one-way).
 An empty pair remains runtime untested; no probe link is created.
@@ -920,21 +922,30 @@ FILE` prepares a promotion. It reads both tenants, selects declared lower
 reference pairs mapped there and generic in the upper, and captures those
 with upper links. Complete bindings (section, owner, column, target,
 cardinality and reverse entries) are compared across all mapping sections,
-including explicitMapping, before schema parsing. Equivalent bindings skip,
-including unsupported stock multi-target schemas; generic in both also skips.
+including explicitMapping. Equal bindings skip only after comparing permissive
+declaration footprints (presence, relationship/scalar, target set, cardinality,
+reverse key) for every named end. Identical stock multi-target/internal shapes
+and identically absent platform declarations skip without narrow conversion
+validation; footprint differences refuse with both versions. Generic in both
+also skips.
 Different mapped bindings or an upper binding absent in lower refuse with both
 versions: do not promote until resolved. Removing an upper binding is inferred
 to hide its mapped links. No mapped-to-mapped migration is provided.
 Missing declarations, including possible Q14 loss, refuse rather than proving
 emptiness. For a mixed rollout, repeatable `--new-pair <lower-reference-end>`
 explicitly acknowledges genuinely new upper pairs whose ends have never existed
-there. Both upper ends and their mapping entries must be absent; existing ends,
-stale mappings and typos refuse. Do not use this to bypass possible Q14 loss.
+there. Every bound and schema-named reverse end's upper declaration/mapping
+must be absent; existing ends, stale mappings and typos refuse. Acknowledgment
+precedes narrow validation, so genuinely new multi-target components can be
+excluded without pretending their existing links could be migrated. Do not
+use this to bypass possible Q14 loss.
 Acknowledgments are printed and saved with any capture. It writes only a local
 capture, never tenant config or records.
 Even an empty selection gets a fresh declaration/binding recheck. A lower
-mapping without its declaration blocks with Q14 unless its binding equals the
-upper's; genuinely stale mappings need relationship repair first.
+custom declaration missing where upper still declares it names suspected Q14.
+Equivalent bindings still refuse differing declaration footprints. Platform or
+undeclared binding differences require investigation before promotion; repair
+advice is limited to supported genericMapping cleanup, never explicitMapping.
 An empty selection explicitly reports no file written. Restore only a file
 this run confirmed writing; otherwise check empty/new pairs after promotion,
 never reuse an older file at that path. The flags mirror the
@@ -948,6 +959,11 @@ config, then performs the same resumable restoration and exact verification
 as map. Use the upper's own capture, not one from the lower environment.
 The existing `relationship restore` restores definition metadata and is
 separate. `--json` reports the capture path, link count and completion state.
+Capture format version 2 requires both recorded custom-property views for
+bidirectional links. Earlier development files refuse before tenant selection
+with “captured by an earlier development build; re-capture”. No reverse values
+are synthesised; capture original generic links before the switch, never after
+they are hidden.
 
 `relationship rollback-map FILE` is the explicit inverse for an **in-place**
 capture only. Before any unlink, it plans full mapping removal (including
@@ -959,11 +975,14 @@ mapping entries in one guarded PUT, preserves per-type metadata,
 then checks that the original generic set is visible again. Unknown or altered
 data refuses. An interrupted rollback resumes with the same verb. While the
 exact captured mappings remain installed, explicitly running restore-links
-with a RollingBack capture instead restores any removed links and reverses
-the interrupted rollback. Once mappings are removed, finish rollback-map.
+with a RollingBack capture instead restores removed links and reverses the
+interrupted rollback only when no Remove intent is pending. An unresolved
+Remove intent refuses direction change even when a link is visible; finish
+rollback-map with the same file, keeping writers paused. Once mappings are removed, finish rollback-map.
 Promotion captures cannot authorize config writes; there is no upper-environment config
-rollback here. A required forward property must be explicitly adjusted before
-unlinking. No failure automatically rolls a conversion back.
+rollback here. A required forward property must be explicitly adjusted only
+when mapped links actually need unlinking; an empty mapped store requires no
+schema change. No failure automatically rolls a conversion back.
 
 Q14 can remove confirmed properties. Map re-reads both declarations immediately
 before switching and again before restoration; restore and rollback recur

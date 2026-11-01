@@ -311,7 +311,7 @@ pub enum RelationshipCommand {
         #[arg(long)]
         output: std::path::PathBuf,
         /// Explicitly acknowledge an upper pair that has never existed there.
-        /// Both upper ends and mappings must be absent; never use to bypass Q14.
+        /// All bound and schema reverse ends must be absent in upper; never bypass Q14.
         #[arg(long = "new-pair")]
         new_pairs: Vec<String>,
         #[command(flatten)]

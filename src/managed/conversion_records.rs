@@ -1,6 +1,8 @@
 //! Record workflows shared by tenant transport and in-memory regression tests.
-//! Guards, rollback eligibility and unlink loops live here; conversion_cli
-//! supplies reads, sends and durable persistence below those decisions.
+//! Guards, rollback eligibility and unlink loops live here. Required/revision
+//! prerequisites apply only to actual unlinks, preflighted before mutation.
+//! conversion_cli supplies reads, sends and durable persistence below those
+//! decisions.
 
 use serde_json::Value;
 
