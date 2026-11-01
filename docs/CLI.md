@@ -976,7 +976,8 @@ Default pending-Remove reversal refusal remains. New intents save their request'
 `x-forgerock-transactionid`; refusals print it. Look up that id with
 `aic logs tx <id> --tenant <capture-tenant> --source idm-access --wait --timeout 120`.
 IDM's terminal `access` event records completion and HTTP status for a measured
-read; correlation for these conversion writes is **unmeasured**. An AM
+read and for a successful conversion link `PATCH` (measured 2026-11-01); a
+failed write's event is unmeasured. An AM
 introspection outcome is insufficient. Absence of a log is not proof the request
 was never sent. Without terminal evidence retain the file, keep writers paused,
 and contact the tenant administrator or Ping Support with the id. See the

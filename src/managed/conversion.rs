@@ -1077,7 +1077,7 @@ pub(super) fn pending_outcome(capture: &Capture, permit: &Permit, present: bool)
         return Ok(());
     }
     Err(Error::Config(format!(
-        "pending {:?} request is unresolved (transaction id: {}): the link is {}. Its request may still complete; no retry, unlink or mapping removal is authorized. Keep the file and writers paused. Look up the idm-access terminal event with aic logs tx using this id (write correlation unmeasured); absent logs do not prove the request was never sent. Without terminal evidence contact the tenant administrator or Ping Support. Only after establishing that the original request has finished and cannot complete later, use --acknowledge-request-finished with this same capture; --force and elapsed time do not resolve it",
+        "pending {:?} request is unresolved (transaction id: {}): the link is {}. Its request may still complete; no retry, unlink or mapping removal is authorized. Keep the file and writers paused. Look up the idm-access terminal event with aic logs tx using this id (its terminal event carries the HTTP result; measured for a successful link PATCH); absent logs do not prove the request was never sent. Without terminal evidence contact the tenant administrator or Ping Support. Only after establishing that the original request has finished and cannot complete later, use --acknowledge-request-finished with this same capture; --force and elapsed time do not resolve it",
         intent.action,
         intent
             .transaction_id
