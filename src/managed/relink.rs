@@ -315,10 +315,7 @@ pub fn writes(
     rev: Option<&str>,
 ) -> Result<[Write; 2], String> {
     let record = record_path(near_object, &edge.link.from_id);
-    let reference = json!({
-        "_ref": format!("{}/{}", edge.link.to_collection, edge.link.to_id),
-        "_refProperties": Value::Object(edge.properties.clone()),
-    });
+    let create = create_link(_permit, near_object, near_key, near_array, edge, None);
     if near_array {
         let edge_id = edge
             .link
@@ -336,12 +333,7 @@ pub fn writes(
                 body: None,
                 if_match: None,
             },
-            Write {
-                method: "POST",
-                path: format!("{collection}?_action=create"),
-                body: Some(reference),
-                if_match: None,
-            },
+            create,
         ])
     } else {
         // `replace` with null is a 400 ("not a valid JSON patch"), so the
@@ -354,15 +346,43 @@ pub fn writes(
                 body: Some(json!([{ "operation": "remove", "field": pointer }])),
                 if_match: rev.map(str::to_string),
             },
-            Write {
-                method: "PATCH",
-                path: format!("{record}?_fields={}", fields_query(near_key)),
-                body: Some(
-                    json!([{ "operation": "replace", "field": pointer, "value": reference }]),
-                ),
-                if_match: None,
-            },
+            create,
         ])
+    }
+}
+
+/// The creation half shared by relink and storage conversion. An absent
+/// has-one property is assigned by replace; it is never assigned null.
+pub fn create_link(
+    _permit: &RelinkPermit,
+    object: &str,
+    key: &str,
+    array: bool,
+    edge: &Edge,
+    rev: Option<&str>,
+) -> Write {
+    let record = record_path(object, &edge.link.from_id);
+    let reference = json!({"_ref": format!("{}/{}", edge.link.to_collection, edge.link.to_id),
+        "_refProperties": edge.properties});
+    if array {
+        Write {
+            method: "POST",
+            path: format!(
+                "{record}/{}?_action=create",
+                crate::idmstore::api::path_segment(key)
+            ),
+            body: Some(reference),
+            if_match: None,
+        }
+    } else {
+        Write {
+            method: "PATCH",
+            path: format!("{record}?_fields={}", fields_query(key)),
+            body: Some(
+                json!([{"operation":"replace","field":format!("/{key}"),"value":reference}]),
+            ),
+            if_match: rev.map(str::to_string),
+        }
     }
 }
 

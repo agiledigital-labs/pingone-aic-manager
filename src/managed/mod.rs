@@ -36,6 +36,7 @@
 
 pub mod api;
 pub mod cli;
+pub mod conversion;
 pub mod diff;
 mod keys;
 pub mod ops;
