@@ -80,6 +80,15 @@ cat >"$consumer/tsconfig.json" <<'JSON'
   "include": ["test/**/*.ts"]
 }
 JSON
+# Exercise the shipped worker/reporter entries as well as the setup module.
+cat >"$consumer/vitest.config.ts" <<TS
+import { defineConfig } from "vitest/config";
+export default defineConfig({ test: {
+  setupFiles: ["$name/vitest-setup"],
+  runner: "$name/vitest-runner",
+  reporters: ["default", "$name/vitest-reporter"],
+} });
+TS
 cat >"$consumer/test/smoke.test.ts" <<TS
 import { describe, expect, it } from "vitest";
 import { z } from "zod";

@@ -888,12 +888,16 @@ inspection; verdicts belong to the test that started each request or evaluation,
 including when callbacks finish during a later test. Replacing or clearing a
 fixture variable does not remove its evidence.
 
-The supported Vitest integration is the package's setup file:
+The supported Vitest integration uses all three package entries (Vitest 5):
 
 ```ts
 // vitest.config.ts
 export default defineConfig({
-  test: { setupFiles: ["@agiledigital/pingone-aic-script-tester/vitest-setup"] },
+  test: {
+    setupFiles: ["@agiledigital/pingone-aic-script-tester/vitest-setup"],
+    runner: "@agiledigital/pingone-aic-script-tester/vitest-runner",
+    reporters: ["default", "@agiledigital/pingone-aic-script-tester/vitest-reporter"],
+  },
 });
 ```
 
@@ -903,9 +907,27 @@ naming sources. Vitest 5's `aroundEach` preserves separate contexts for concurre
 tests, including sibling forks; a clean sibling does not inherit another test's
 failures. `useLease` also installs ownership guarding automatically. Legacy
 `useEmulationGuard()` calls remain supported; their source arguments are ignored.
-Direct use without the setup or a guard remains possible and has no automatic
-Vitest verdict enforcement. Core users in another framework must enforce their
-own verdicts over the registry.
+The custom runner publishes audit snapshots in task metadata through Vitest's
+`onTaskUpdate` hook. Its `onAfterRunFiles` check runs outside test control flow;
+the reporter checks the snapshots in the main process at `onTestRunEnd` and
+sets a non-zero exit status, naming every unexpected cause and its original
+owner. It also handles updates received after that final check. This backstop
+works in the `forks` and `threads` pools with either isolation setting. Import-time
+records and outstanding work fail their file when attributable; unowned evidence
+always fails the run. Late callbacks retain the file and owner where their work
+started, even if those checks have already finished.
+
+Vitest controls the per-test statuses of `it.fails`, retries and dynamic skips:
+the per-test exception can still be inverted or discarded. The independent run
+verdict rejects unexpected emulation failures from every attempt, even when the
+JSON test report says passed/skipped. Named expectations still allow intentional
+failures. Keep the reporter when adding other reporters; the worker final check
+also fails closed if CLI reporter options replace it.
+
+Direct use without this configuration remains possible. `useLease` and legacy
+helpers install the per-test guard only; they cannot install a main-process
+reporter from inside a worker. The setup refuses to run without the custom runner. Core users
+in another framework must enforce their own run verdict over the registry.
 
 An unfinished request, evaluation or accepted host callback fails immediately as `outstanding work at
 test end`. The guard does not wait for a gate that only later hooks might release.
@@ -926,10 +948,15 @@ await idm.request({ method: "GET", path: "managed/widget",
   query: { _queryId: "intentionally-unsupported" } });
 ```
 
-The declaration matches an exact failure message or missing behavior name; a
-regular expression can name a cause across nested mappings. It applies only to
-that test, retains the entries with an `expected` annotation, and fails the test
-if no matching failure occurs. It cannot waive outstanding work. There is no reset
+Each declaration covers exactly one cause: an exact missing behavior name, or
+an exact failure message for other failure kinds. A regular expression must
+match the entire cause name and binds to one cause, even if it matches several.
+Declare every cause in an aggregated result separately. Repeated observations
+of the same cause through nested mappings need only one declaration; the
+`runtime helper: ` provenance prefix is normalized to that underlying cause.
+Declarations apply only to the current test, retain the entries with an
+`expected` annotation once all their causes are covered, and fail the test if
+the declared cause never occurs. It cannot waive outstanding work. There is no reset
 API. Ordinary tenant failures, including tenant 501, are not recorded. The
 emulator's diagnostic 501 response alone is insufficient to validate a negative
 test; the setup enforces the independent verdict.
