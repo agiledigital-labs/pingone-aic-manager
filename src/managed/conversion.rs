@@ -4,7 +4,7 @@
 //! journal: intent is saved before requests and forgotten only after reads.
 //! API contract: docs/api/10-managed-objects.md; Q14 in 99-quirks.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -119,6 +119,15 @@ pub struct Intent {
     pub pair: usize,
     pub link: usize,
     pub action: Action,
+    #[serde(default)]
+    pub edge_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Receipt {
+    pub pair: usize,
+    pub link: usize,
+    pub edge_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,6 +141,8 @@ pub struct Capture {
     pub state: State,
     pub pending: Option<Intent>,
     pub pairs: Vec<Pair>,
+    #[serde(default)]
+    pub restored: Vec<Receipt>,
 }
 
 impl Capture {
@@ -146,6 +157,7 @@ impl Capture {
             state: State::Captured,
             pending: None,
             pairs,
+            restored: Vec::new(),
         }
     }
     pub fn count(&self) -> usize {
@@ -157,7 +169,32 @@ impl Capture {
                 "invalid or unsupported relationship capture".into(),
             ));
         }
+        let valid_index = |pair: usize, link: usize| {
+            self.pairs
+                .get(pair)
+                .is_some_and(|pair| link < pair.links.len())
+        };
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|intent| !valid_index(intent.pair, intent.link))
+            || self.restored.iter().any(|receipt| {
+                !valid_index(receipt.pair, receipt.link) || receipt.edge_id.is_empty()
+            })
+        {
+            return Err(Error::Config(
+                "capture has an invalid journal index; inspect it before continuing".into(),
+            ));
+        }
+        let mut ends = BTreeSet::new();
         for pair in &self.pairs {
+            for end in std::iter::once(&pair.forward).chain(pair.reverse.iter()) {
+                if !ends.insert(end.label()) {
+                    return Err(Error::Config(
+                        "capture repeats a relationship end; inspect it before continuing".into(),
+                    ));
+                }
+            }
             if pair.links.iter().any(|link| {
                 link.properties.contains_key("_id") || link.properties.contains_key("_rev")
             }) {
@@ -166,9 +203,68 @@ impl Capture {
                 ));
             }
             unique(&pair.links)?;
+            validate_pair(pair)?;
         }
         Ok(())
     }
+}
+
+fn validate_pair(pair: &Pair) -> Result<()> {
+    use serde_json::json;
+    let invalid = || {
+        Error::Config(format!(
+            "invalid capture pair {}; inspect the file before continuing",
+            pair.forward.label()
+        ))
+    };
+    for end in std::iter::once(&pair.forward).chain(pair.reverse.iter()) {
+        super::state::validate_property_key(&end.object).map_err(Error::Config)?;
+        super::state::validate_property_key(&end.key).map_err(Error::Config)?;
+        if !end.target.starts_with("managed/") {
+            return Err(invalid());
+        }
+    }
+    if pair.links.iter().any(|link| {
+        link.from_id.is_empty()
+            || link.to_id.is_empty()
+            || link.to_collection != pair.forward.target
+    }) {
+        return Err(invalid());
+    }
+    let mut expected = Vec::new();
+    let forward = pair.mappings.first().ok_or_else(invalid)?;
+    let column = forward
+        .value
+        .get("ldapAttribute")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?;
+    if !column
+        .strip_prefix("fr-idm-reference-")
+        .and_then(|number| number.parse::<u8>().ok())
+        .is_some_and(|number| (1..=10).contains(&number))
+    {
+        return Err(invalid());
+    }
+    expected.push(storage::Entry { object: pair.forward.object.clone(), key: pair.forward.key.clone(),
+        value: json!({"type":"reference","ldapAttribute":column,"primaryKey":"uid","resourcePath":pair.forward.target,"isMultiValued":pair.forward.array}) });
+    if let Some(reverse) = &pair.reverse {
+        if pair.forward.reverse_key.as_deref() != Some(&reverse.key)
+            || reverse.reverse_key.as_deref() != Some(&pair.forward.key)
+            || pair.forward.target != format!("managed/{}", reverse.object)
+            || reverse.target != format!("managed/{}", pair.forward.object)
+            || pair.forward.object == reverse.object && pair.forward.key == reverse.key
+        {
+            return Err(invalid());
+        }
+        expected.push(storage::Entry { object: reverse.object.clone(), key: reverse.key.clone(),
+            value: json!({"type":"reverseReference","resourcePath":reverse.target,"propertyName":pair.forward.key,"isMultiValued":reverse.array}) });
+    } else if pair.forward.reverse_key.is_some() {
+        return Err(invalid());
+    }
+    if pair.mappings != expected {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 /// Full census, including reverse-only links. No one-sided edge is silently
@@ -180,14 +276,7 @@ pub struct Census {
 }
 
 pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census> {
-    let edges = forward
-        .iter()
-        .map(|record| relink::edges_of(record, &pair.forward.key))
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Error::Config)?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    let edges = decode_edges(forward, &pair.forward.key)?;
     let target_ids: BTreeSet<&str> = target
         .iter()
         .filter_map(|record| record.get("_id").and_then(Value::as_str))
@@ -198,24 +287,30 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
         ));
     }
     let reverse = match &pair.reverse {
-        Some(end) => target
-            .iter()
-            .map(|record| relink::edges_of(record, &end.key))
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Error::Config)?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>(),
+        Some(end) => decode_edges(target, &end.key)?,
         None => Vec::new(),
     };
     let mut problems = Vec::new();
-    let reciprocal = |a: &relink::Edge, b: &relink::Edge| {
-        a.link.edge_id.is_some()
-            && a.link.edge_id == b.link.edge_id
-            && a.link.from_id == b.link.to_id
-            && a.link.to_id == b.link.from_id
-            && b.link.to_collection == format!("managed/{}", pair.forward.object)
-    };
+    let source = format!("managed/{}", pair.forward.object);
+    let forward_index = edges
+        .iter()
+        .filter_map(|edge| {
+            edge.link
+                .edge_id
+                .as_deref()
+                .map(|id| (id, edge.link.from_id.as_str(), edge.link.to_id.as_str()))
+        })
+        .collect::<BTreeSet<_>>();
+    let reverse_index = reverse
+        .iter()
+        .filter(|edge| edge.link.to_collection == source)
+        .filter_map(|edge| {
+            edge.link
+                .edge_id
+                .as_deref()
+                .map(|id| (id, edge.link.to_id.as_str(), edge.link.from_id.as_str()))
+        })
+        .collect::<BTreeSet<_>>();
     for edge in &edges {
         if edge.link.to_collection != pair.forward.target
             || !target_ids.contains(edge.link.to_id.as_str())
@@ -224,7 +319,11 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
                 "{}: target record absent or outside the declared target",
                 Link::of(edge).label()
             ));
-        } else if pair.reverse.is_some() && !reverse.iter().any(|back| reciprocal(edge, back)) {
+        } else if pair.reverse.is_some()
+            && !edge.link.edge_id.as_deref().is_some_and(|id| {
+                reverse_index.contains(&(id, edge.link.from_id.as_str(), edge.link.to_id.as_str()))
+            })
+        {
             problems.push(format!(
                 "{} (edge {:?}): forward-only link",
                 Link::of(edge).label(),
@@ -233,7 +332,11 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
         }
     }
     for edge in &reverse {
-        if !edges.iter().any(|forward| reciprocal(forward, edge)) {
+        if edge.link.to_collection != source
+            || !edge.link.edge_id.as_deref().is_some_and(|id| {
+                forward_index.contains(&(id, edge.link.to_id.as_str(), edge.link.from_id.as_str()))
+            })
+        {
             problems.push(format!(
                 "{} (edge {:?}): reverse-only link",
                 Link::of(edge).label(),
@@ -251,6 +354,28 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
     unique(&links)?;
     sort(&mut links);
     Ok(Census { links, edges })
+}
+
+fn decode_edges(records: &[Value], key: &str) -> Result<Vec<relink::Edge>> {
+    let mut edges = Vec::new();
+    for record in records {
+        let entries = match record.get(key) {
+            Some(Value::Array(entries)) => entries.iter().collect::<Vec<_>>(),
+            Some(entry @ Value::Object(_)) => vec![entry],
+            _ => Vec::new(),
+        };
+        if entries.iter().any(|entry| {
+            entry
+                .get("_refProperties")
+                .is_some_and(|properties| !properties.is_object())
+        }) {
+            return Err(Error::Config(format!(
+                "{key} has malformed _refProperties; refuse to discard values during capture"
+            )));
+        }
+        edges.extend(relink::edges_of(record, key).map_err(Error::Config)?);
+    }
+    Ok(edges)
 }
 
 fn identity(link: &Link) -> (&str, &str, &str) {
@@ -272,19 +397,46 @@ fn unique(links: &[Link]) -> Result<()> {
     Ok(())
 }
 
+pub fn subset(pair: &Pair, current: &Census) -> Result<()> {
+    let wanted = pair
+        .links
+        .iter()
+        .map(|link| (identity(link), link))
+        .collect::<BTreeMap<_, _>>();
+    for link in &current.links {
+        if wanted.get(&identity(link)).copied() != Some(link) {
+            return Err(Error::Config(format!(
+                "{} has an extra/altered mapped link {}; inspect before restoring",
+                pair.forward.label(),
+                link.label()
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn exact(pair: &Pair, current: &Census) -> Result<()> {
     let mut wanted = pair.links.clone();
     sort(&mut wanted);
     if wanted != current.links {
+        let wanted_index = wanted
+            .iter()
+            .map(|link| (identity(link), link))
+            .collect::<BTreeMap<_, _>>();
+        let current_index = current
+            .links
+            .iter()
+            .map(|link| (identity(link), link))
+            .collect::<BTreeMap<_, _>>();
         let missing = wanted
             .iter()
-            .filter(|link| !current.links.contains(link))
+            .filter(|link| current_index.get(&identity(link)).copied() != Some(*link))
             .map(Link::label)
             .collect::<Vec<_>>();
         let extra = current
             .links
             .iter()
-            .filter(|link| !wanted.contains(link))
+            .filter(|link| wanted_index.get(&identity(link)).copied() != Some(*link))
             .map(Link::label)
             .collect::<Vec<_>>();
         return Err(Error::Config(format!(
@@ -364,7 +516,7 @@ pub fn promotion_pairs(
             return Err(Error::Config(format!("lower {} is mixed", located.label())));
         }
         let upper = storage::pair(upper_managed, upper_repo, object, &located.key)
-            .map_err(Error::Config)?;
+            .map_err(|reason| Error::Config(format!("upper declaration cannot be trusted (possible Q14): {reason}; assess new undeclared pairs separately")))?;
         if storage::mode(&upper) == storage::Mode::Mapped {
             continue;
         }
@@ -418,7 +570,7 @@ pub async fn restore_with(
     mut ready: impl AsyncFnMut(&Pair) -> Result<()>,
     mut read: impl AsyncFnMut(&Pair, &Link) -> Result<Observation>,
     mut save: impl AsyncFnMut(&Capture) -> Result<()>,
-    mut create: impl AsyncFnMut(&Pair, &Link, Option<&str>) -> Result<()>,
+    mut create: impl AsyncFnMut(&Pair, &Link, Option<&str>) -> Result<Option<String>>,
     mut check: impl AsyncFnMut(&Pair, &Link, &relink::Edge) -> Result<()>,
 ) -> Result<()> {
     if matches!(capture.state, State::RollingBack | State::RolledBack) {
@@ -428,14 +580,24 @@ pub async fn restore_with(
         ));
     }
     capture.state = State::Restoring;
-    for index in 0..capture.pairs.len() {
+    let pending = capture.pending.clone();
+    for index in ordered(
+        capture.pairs.len(),
+        pending.as_ref().map(|intent| intent.pair),
+    ) {
         let pair = capture.pairs[index].clone();
         ready(&pair).await?;
-        for (link_index, link) in pair.links.iter().enumerate() {
+        let first = pending
+            .as_ref()
+            .filter(|intent| intent.pair == index)
+            .map(|intent| intent.link);
+        for link_index in ordered(pair.links.len(), first) {
+            let link = &pair.links[link_index];
             let current = read(&pair, link).await?;
             let matching = current.edges.iter().find(|edge| link.matches(edge));
             if let Some(edge) = matching {
                 check(&pair, link, edge).await?;
+                receipt(capture, index, link_index, edge)?;
                 capture.pending = None;
                 save(capture).await?;
                 continue;
@@ -454,14 +616,24 @@ pub async fn restore_with(
                 pair: index,
                 link: link_index,
                 action: Action::Create,
+                edge_id: None,
             });
             save(capture).await?;
-            create(&pair, link, current.rev.as_deref()).await?;
+            let written = create(&pair, link, current.rev.as_deref()).await?;
+            if let Some(intent) = &mut capture.pending {
+                intent.edge_id = written.clone();
+            }
+            save(capture).await?;
             let after = read(&pair, link).await?;
             let edge = after
                 .edges
                 .iter()
-                .find(|edge| link.matches(edge))
+                .find(|edge| {
+                    link.matches(edge)
+                        && written
+                            .as_deref()
+                            .is_none_or(|id| edge.link.edge_id.as_deref() == Some(id))
+                })
                 .ok_or_else(|| {
                     Error::Config(format!(
                         "{} creation not confirmed; re-run restore-links with this capture",
@@ -469,10 +641,40 @@ pub async fn restore_with(
                     ))
                 })?;
             check(&pair, link, edge).await?;
+            receipt(capture, index, link_index, edge)?;
             capture.pending = None;
             save(capture).await?;
         }
     }
+    Ok(())
+}
+
+fn ordered(len: usize, first: Option<usize>) -> Vec<usize> {
+    first
+        .into_iter()
+        .chain((0..len).filter(|index| Some(*index) != first))
+        .collect()
+}
+
+/// A restore may have landed without a response; unknown progress is handled
+/// first so no unrelated link can erase that intent.
+pub(super) fn receipt(
+    capture: &mut Capture,
+    pair: usize,
+    link: usize,
+    edge: &relink::Edge,
+) -> Result<()> {
+    let edge_id = edge.link.edge_id.clone().ok_or_else(|| {
+        Error::Config("restored edge has no ID; keep its intent and inspect before retrying".into())
+    })?;
+    capture
+        .restored
+        .retain(|receipt| receipt.pair != pair || receipt.link != link);
+    capture.restored.push(Receipt {
+        pair,
+        link,
+        edge_id,
+    });
     Ok(())
 }
 
@@ -569,6 +771,7 @@ impl FileSession {
         .map_err(|error| Error::Config(error.to_string()))?
     }
     pub async fn save(&mut self, capture: &Capture) -> Result<()> {
+        capture.validate()?;
         let (path, before, capture) = (self.path.clone(), self.before.clone(), capture.clone());
         let saved = capture.clone();
         tokio::task::spawn_blocking(move || {
@@ -663,6 +866,8 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -719,13 +924,20 @@ mod tests {
     async fn restore_after_partial_run_recreates_only_missing_for_one_and_many() {
         for array in [false, true] {
             let (mut capture, census) = captured(array);
-            let original = census.edges[0].clone();
+            let mut originals = census.edges;
+            if array {
+                let mut second = originals[0].clone();
+                second.link.to_id = "b2".into();
+                second.link.edge_id = Some("e2".into());
+                capture.pairs[0].links.push(Link::of(&second));
+                originals.push(second);
+            }
             let existing = RefCell::new(Vec::<relink::Edge>::new());
             let writes = RefCell::new(0);
             let saves = RefCell::new(Vec::new());
             let permit = authorize(false, true).unwrap();
-            for _ in 0..2 {
-                restore_with(
+            for attempt in 0..3 {
+                let result = restore_with(
                     &mut capture,
                     &permit,
                     async |_| Ok(()),
@@ -739,20 +951,71 @@ mod tests {
                         saves.borrow_mut().push(capture.pending.clone());
                         Ok(())
                     },
-                    async |_, _, _| {
+                    async |_, link, _| {
                         assert!(saves.borrow().last().unwrap().is_some());
                         *writes.borrow_mut() += 1;
-                        existing.borrow_mut().push(original.clone());
-                        Ok(())
+                        let mut written = originals
+                            .iter()
+                            .find(|edge| link.matches(edge))
+                            .unwrap()
+                            .clone();
+                        written.link.edge_id = Some(format!("mapped-{}", link.to_id));
+                        existing.borrow_mut().push(written);
+                        if attempt == 0 {
+                            return Err(Error::Config("response lost after request landed".into()));
+                        }
+                        Ok(None)
                     },
                     async |_, _, _| Ok(()),
                 )
-                .await
-                .unwrap();
+                .await;
+                if attempt == 0 {
+                    assert!(result.is_err());
+                    assert!(capture.pending.is_some());
+                } else {
+                    result.unwrap();
+                }
             }
-            assert_eq!(*writes.borrow(), 1);
+            assert_eq!(*writes.borrow(), if array { 2 } else { 1 });
             assert!(capture.pending.is_none());
+            assert_eq!(capture.restored.len(), capture.count());
         }
+    }
+
+    #[tokio::test]
+    async fn pending_later_link_is_reconciled_before_any_other_intent_is_forgotten() {
+        let (mut capture, census) = captured(true);
+        let first = census.edges[0].clone();
+        let mut second = first.clone();
+        second.link.to_id = "b2".into();
+        second.link.edge_id = Some("e2".into());
+        capture.pairs[0].links.push(Link::of(&second));
+        capture.pending = Some(Intent {
+            pair: 0,
+            link: 1,
+            action: Action::Create,
+            edge_id: None,
+        });
+        let reads = RefCell::new(Vec::new());
+        restore_with(
+            &mut capture,
+            &authorize(false, true).unwrap(),
+            async |_| Ok(()),
+            async |_, link| {
+                reads.borrow_mut().push(link.to_id.clone());
+                Ok(Observation {
+                    edges: vec![first.clone(), second.clone()],
+                    rev: None,
+                })
+            },
+            async |_| Ok(()),
+            async |_, _, _| panic!("nothing is missing"),
+            async |_, _, _| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(*reads.borrow(), ["b2", "b1"]);
+        assert!(capture.pending.is_none());
     }
 
     #[tokio::test]
@@ -773,7 +1036,7 @@ mod tests {
             async |_| Ok(()),
             async |_, _, _| {
                 *writes.borrow_mut() += 1;
-                Ok(())
+                Ok(None)
             },
             async |_, _, _| Ok(()),
         )
@@ -881,5 +1144,145 @@ mod tests {
         let error = census(&pair, &forward, &back).unwrap_err().to_string();
         assert!(error.contains("forward-only"));
         assert!(error.contains("reverse-only"));
+    }
+    #[tokio::test]
+    async fn rollback_writer_removes_both_ends_in_one_put_and_keeps_type_metadata() {
+        let (managed, _, mapped, pair) = fixture(true);
+        let plan = super::super::repair::plan_rollback(&managed, &mapped, &pair).unwrap();
+        let reads = RefCell::new(vec![plan.after().clone(), mapped.clone()]);
+        let sends = RefCell::new(0);
+        let permit = super::super::repair::authorize(false, true).unwrap();
+        let applied = super::super::repair::apply_with(
+            &plan,
+            &permit,
+            async || Ok(managed.clone()),
+            async || Ok(reads.borrow_mut().pop().unwrap()),
+            |_| Ok(PathBuf::from("backup.json")),
+            async |body| {
+                *sends.borrow_mut() += 1;
+                assert!(verify::mapped(body, "a", "link").is_none());
+                assert!(verify::mapped(body, "b", "back").is_none());
+                assert_eq!(
+                    body["resourceMapping"]["genericMapping"]["managed/a"]["dnTemplate"],
+                    mapped["resourceMapping"]["genericMapping"]["managed/a"]["dnTemplate"]
+                );
+                Ok(())
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+        assert_eq!(*sends.borrow(), 1);
+        assert_eq!(applied.readback, super::super::repair::Readback::Confirmed);
+    }
+
+    #[tokio::test]
+    async fn rollback_failure_in_link_removal_never_reaches_mapping_writer() {
+        let (mut capture, _) = captured(true);
+        let sent = RefCell::new(false);
+        let result = rollback_with(
+            &mut capture,
+            &authorize(false, true).unwrap(),
+            async |_| Ok(()),
+            async |_| Err(Error::Config("removal not confirmed".into())),
+            async || {
+                *sent.borrow_mut() = true;
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!*sent.borrow());
+    }
+
+    #[tokio::test]
+    async fn capture_run_lock_and_manual_edit_guard_preserve_existing_data() {
+        let (capture, _) = captured(true);
+        let dir = std::env::temp_dir().join(format!("aic-capture-lock-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("capture.json");
+        let mut file = FileSession::open(path.clone(), None).await.unwrap();
+        file.save(&capture).await.unwrap();
+        assert!(
+            FileSession::open(path.clone(), Some(capture.clone()))
+                .await
+                .is_err()
+        );
+        let mut changed = capture.clone();
+        changed.id = "manual-edit".into();
+        statefile::update(&path, &DESCRIBE, |entries: &mut Vec<Capture>| {
+            *entries = vec![changed.clone()]
+        })
+        .unwrap();
+        assert!(file.save(&capture).await.is_err());
+        assert_eq!(load(&path).unwrap().id, "manual-edit");
+        drop(file);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn malformed_attributes_and_capture_mapping_are_refused_without_silent_loss() {
+        let (_, _, _, pair) = fixture(true);
+        let (mut forward, back) = records(true);
+        forward[0]["link"][0]["_refProperties"] = json!("must not discard");
+        assert!(
+            census(&pair, &forward, &back)
+                .unwrap_err()
+                .to_string()
+                .contains("malformed _refProperties")
+        );
+        let (mut capture, _) = captured(true);
+        capture.pairs[0].mappings.clear();
+        assert!(capture.validate().is_err());
+        let (mut capture, _) = captured(true);
+        capture.pending = Some(Intent {
+            pair: 0,
+            link: 99,
+            action: Action::Create,
+            edge_id: None,
+        });
+        assert!(capture.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn dry_run_does_not_mint_conversion_write_permit() {
+        assert!(authorize(true, true).is_none());
+        assert!(authorize(true, false).is_none());
+        // Both remote engines require &Permit; the CLI returns its preview
+        // before opening FileSession, so no local journal is written either.
+    }
+    #[tokio::test]
+    async fn resume_uses_captured_values_even_if_a_confirmed_edge_id_changed() {
+        let (mut capture, census) = captured(true);
+        capture.restored.push(Receipt {
+            pair: 0,
+            link: 0,
+            edge_id: "old-counter".into(),
+        });
+        capture.pending = Some(Intent {
+            pair: 0,
+            link: 0,
+            action: Action::Create,
+            edge_id: Some("old-counter".into()),
+        });
+        let mut current = census.edges[0].clone();
+        current.link.edge_id = Some("current-counter".into());
+        restore_with(
+            &mut capture,
+            &authorize(false, true).unwrap(),
+            async |_| Ok(()),
+            async |_, _| {
+                Ok(Observation {
+                    edges: vec![current.clone()],
+                    rev: None,
+                })
+            },
+            async |_| Ok(()),
+            async |_, _, _| panic!("captured values already present"),
+            async |_, _, _| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(capture.restored[0].edge_id, "current-counter");
+        assert!(capture.pending.is_none());
     }
 }

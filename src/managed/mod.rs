@@ -15,6 +15,9 @@
 //!   sampled links, for `aic managed relationship verify`; tenant-free.
 //! - [`storage`] plans relationship mappings and allocates columns;
 //!   [`repair`] owns the single permit-gated repo.ds addition/removal writer.
+//! - [`conversion`] owns durable link capture, exact-set checks, Q14 guards
+//!   and resumable migration; `conversion_cli` supplies map, promotion
+//!   capture-links, record-only restore-links and explicit rollback-map.
 //! - [`state`], [`screen`], and [`view`] implement the TUI browser and field
 //!   attribute editor.
 //!
@@ -37,6 +40,7 @@
 pub mod api;
 pub mod cli;
 pub mod conversion;
+mod conversion_cli;
 pub mod diff;
 mod keys;
 pub mod ops;

@@ -275,7 +275,7 @@ pub fn require_empty(count: usize) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "pair has {count} link(s); mapping would hide them. Converting a linked pair requires capture/restore (slice 2, not yet supported). Keep this pair generic"
+        "pair has {count} link(s); mapping would hide them. Pause link writers and use relationship map to capture and restore it safely"
     ))
 }
 

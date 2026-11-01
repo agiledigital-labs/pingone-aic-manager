@@ -23,7 +23,8 @@
 //!
 //! So every such file has **three** names for
 //! `ProjectConfig::gitignore_content` to carry: the document, `.lock` and
-//! `.new`.
+//! `.new`. New temporary files are private (0600); relationship captures can
+//! contain custom edge properties as well as IDs.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};

@@ -1,5 +1,6 @@
 //! The single `config/repo.ds` write workflow: stale-mapping removal for
-//! `relationship repair`, and atomic pair addition for `map` / new `set`.
+//! `relationship repair`, atomic pair addition for `map` / new `set`, and
+//! explicit in-place conversion rollback (both ends removed in one PUT).
 //! Addition decisions and allocation live in `storage`; both use the same
 //! recheck, backup, whole-document PUT and read-back machinery below.
 //!
@@ -426,7 +427,9 @@ pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), Stri
             "config/repo.ds changed since it was read for {}; nothing was written. Run {} \
              again to plan against the current document",
             plan.label(),
-            if plan.addition.is_some() {
+            if plan.rollback.is_some() {
+                "rollback-map"
+            } else if plan.addition.is_some() {
                 "map"
             } else {
                 "repair"

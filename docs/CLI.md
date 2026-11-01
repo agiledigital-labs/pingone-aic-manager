@@ -582,7 +582,10 @@ aic managed relationship set custom_widget.owner --target alpha_user --forward o
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
-aic managed relationship map custom_widget.owner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship map custom_widget.owner [--capture FILE] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship capture-links --lower dev --upper uat --output FILE [--dry-run] [--force] [--yes] [--json]
+aic managed relationship restore-links FILE [--tenant uat] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship rollback-map FILE [--tenant dev] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
@@ -877,30 +880,77 @@ failed delete write itself says that no mapping was touched. `--json` adds
 has-one pair: both entries removed in order, every other byte of `repo.ds`
 unchanged.
 
-`relationship map <object>.<key>` converts an existing **link-free generic**
-pair to mapped storage. Pause all link writers first. It scans every record on
-both ends with projected fields (never a `pr` filter), counts unique edges,
-and refuses linked pairs with their count: converting those requires slice 2,
-which is not yet supported. It also refuses mapped or mixed pairs,
-undeclared objects, incomplete/nonreciprocal or multi-target declarations,
-and full reference columns. The plan prints its column, both mapping entries,
-and any measured per-type entries being added. The named end holds the
-reference, including on a same-object pair with two distinct keys.
+`relationship map <object>.<key>` converts a generic pair to mapped storage:
+**capture → switch → restore → verify**. The plan names the column, both
+entries, missing per-type entries, link count and the window when links will
+be invisible. Pause all link writers. Recreating links updates records: budget
+for hooks, sync mappings and notifications per link; exact firing counts are
+unmeasured. One-sided links in either direction and duplicate forward/target
+edges refuse with a list, rather than silently changing their reports.
 
-`map --dry-run` writes nothing and holds no permit. Otherwise it confirms
-(or takes `--force`; required without a terminal), passes the prod `--yes`
-gate, repeats the empty-link scan and rechecks the documents, backs up
-`repo.ds`, PUTs the whole document with `waitForCompletion=true`, and confirms
-by re-read. Columns are 1–10 per object: prefer max-in-use + 1, otherwise the
-lowest free column; `explicitMapping` usage counts too. Both ends and any
-per-type entries go in one PUT. The forward `/<key> pr` query must then find
-no records; exposed orphaned column values are reported loudly with non-zero
-exit, leaving the mapping installed and data untouched for inspection. No
-rollback or automatic cleanup is attempted. The existing read-only `verify`
-runs afterwards; runtime mode remains untested on an empty pair, as it needs
-a link. `--json` returns plan, applied result and verification together.
-See [Relationship storage](relationship-storage.md), especially its promotion
-warning: source emptiness does not establish destination emptiness.
+`--capture FILE` chooses the durable capture path and resumes an existing
+in-place capture for that pair; otherwise a unique path under
+`.aic/relationship-captures/` is printed. The file preserves forward IDs,
+targets and custom `_refProperties` without `_id`/`_rev`. Full projected cursor
+scans find generic links; `pr` does not. The capture is durably written before
+any tenant write and never automatically deleted. Each request journals intent;
+lost responses are reconciled from live data before further writes. Already
+restored links are skipped, never duplicated deliberately. Captures bind both
+tenant name and base URL. Keep their sidecars alongside them during recovery.
+
+`map --dry-run` saves nothing and holds no permit. Otherwise it confirms
+(or accepts `--force`, required without a terminal), passes the prod `--yes`
+gate, repeats the census, rechecks declarations, backs up `repo.ds`, PUTs both
+ends and any per-type entries in one document with `waitForCompletion=true`,
+and confirms by re-read. Columns remain 1–10 per object, including
+`explicitMapping` usage. Before restoring, `/<key> pr` must find no orphaned
+column data. A finding leaves mapping and data intact and exits non-zero.
+
+Restoration uses the forward end's shared relink creation mechanics: has-many
+POST, has-one conditional PATCH. Final verification compares the **entire**
+captured set, including custom properties; an extra link or changed properties
+fails. Every link must resolve from the far end and the presence-query runtime
+judgement must confirm mapped storage on both ends (forward only for one-way).
+An empty pair remains runtime untested; no probe link is created.
+
+`relationship capture-links --lower <source> --upper <destination> --output
+FILE` prepares a promotion. It reads both tenants, selects declared lower
+reference pairs mapped there and generic in the upper, and captures those
+with upper links. Both-mapped and neither-mapped pairs are not selected.
+Missing declarations, including possible Q14 loss, refuse rather than proving
+emptiness. It writes only a local capture, never tenant config or records.
+An empty selection explicitly reports no file written. The flags mirror the
+`--lower`/`--upper` direction of `promotion verify`; this command has the same
+confirmation/dry-run/prod flag shapes as map.
+
+After the existing promotion workflow, `relationship restore-links FILE
+--tenant <destination>` first re-reads the destination mappings and refuses
+unless they landed exactly as captured. It writes **records only**, never
+config, then performs the same resumable restoration and exact verification
+as map. Use the upper's own capture, not one from the lower environment.
+The existing `relationship restore` restores definition metadata and is
+separate. `--json` reports the capture path, link count and completion state.
+
+`relationship rollback-map FILE` is the explicit inverse for an **in-place**
+capture only. It confirms removal of this conversion's mapped links before
+removing both mapping entries in one guarded PUT, preserves per-type metadata,
+then checks that the original generic set is visible again. Unknown or altered
+data refuses. An interrupted rollback resumes with the same verb. Promotion
+captures cannot authorize config writes; there is no upper-environment config
+rollback here. A required forward property must be explicitly adjusted before
+unlinking. No failure automatically rolls a conversion back.
+
+Q14 can remove confirmed properties. Map re-reads both declarations immediately
+before switching and again before restoration; restore and rollback recur
+these guards during record work. Missing/changed ends stop with a Q14/schema
+diagnostic. Preserve the capture, correct the tenant's schema problem and
+retry. These reads cannot prevent a later tenant-side rollback.
+
+The [operator runbook](relationship-storage.md) gives ordered dev conversion,
+UAT/prod capture → promote → restore, resume and rollback commands. Promotion
+carries repo.ds according to the operator's statement; records are never
+promoted, and hidden upper-environment generic links follow by inference from
+the measured switch. Source emptiness does not establish destination emptiness.
 
 `relationship repair <object>.<key>` removes one `config/repo.ds`
 relationship mapping (`reference` or `reverseReference`) that names a

@@ -11,7 +11,9 @@
 //!
 //! Like the SAML rotation journal this is not a transaction log: what is true
 //! is read from the tenant ([`judge`]); the file only says what to look for.
-//! It lives under `.aic/` as `managed-links.json`, with the two sidecars every
+//! Storage conversion instead keeps its intent and receipts with the durable
+//! capture (`conversion`), because that capture must also survive promotion.
+//! This journal lives under `.aic/` as `managed-links.json`, with the two sidecars every
 //! [`crate::statefile`] file has. It names records and edges, not values.
 
 use std::path::{Path, PathBuf};
