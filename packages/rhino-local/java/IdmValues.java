@@ -2,6 +2,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
 import org.mozilla.javascript.BaseFunction;
@@ -63,7 +64,7 @@ final class IdmValues {
     if (value instanceof CharSequence) return value.toString();
     if (value instanceof Number) {
       double n = ((Number) value).doubleValue();
-      if (Double.isNaN(n)) return "NaN";
+      if (Double.isNaN(n)) return Double.valueOf(n);
       if (n == Math.rint(n)) return Long.valueOf((long) n);
       return Double.valueOf(n);
     }
@@ -87,6 +88,23 @@ final class IdmValues {
     } finally {
       active.remove(value);
     }
+  }
+
+  /** Endpoint/protocol conversion must not alter numeric values already stored in maps. */
+  static Object wireValue(Object value) {
+    value = javaValue(value);
+    if (value instanceof Number && Double.isNaN(((Number) value).doubleValue())) return "NaN";
+    if (value instanceof Map) {
+      Map<String, Object> result = new LinkedHashMap<String, Object>();
+      for (Map.Entry<String, Object> e : Json.asObject(value, "map").entrySet()) result.put(e.getKey(), wireValue(e.getValue()));
+      return result;
+    }
+    if (value instanceof List) {
+      List<Object> result = new ArrayList<Object>();
+      for (Object item : (List<?>) value) result.add(wireValue(item));
+      return result;
+    }
+    return value;
   }
 
   private Object nativeValue(Object value) {
@@ -204,7 +222,7 @@ final class IdmValues {
   }
 
   static String pretty(Object value) {
-    String json = Json.stringify(value);
+    String json = Json.stringify(wireValue(value));
     StringBuilder out = new StringBuilder();
     int depth = 0;
     boolean quoted = false;

@@ -35,12 +35,14 @@ export class HostCallError extends Error {
   readonly class: string;
   readonly code: number;
   readonly detail: JsonValue;
+  readonly missing: string[] | undefined;
   constructor(error: HostError) {
     super(error.message);
     this.name = "HostCallError";
     this.class = error.class;
     this.code = error.code;
     this.detail = error.detail;
+    this.missing = error.missing;
   }
 }
 
@@ -52,6 +54,7 @@ function hostError(error: unknown): HostError {
     message: typeof record.message === "string" ? record.message : String(error),
     code: typeof record.code === "number" ? record.code : 500,
     detail: (record.detail ?? {}) as JsonValue,
+    ...(error instanceof HostCallError && error.missing ? { missing: error.missing } : {}),
   };
   try {
     return JSON.parse(JSON.stringify(normalized)) as HostError;
@@ -461,6 +464,7 @@ export class RhinoRunner {
     const payload: Record<string, unknown> = { id, source: job.source };
     if (job.engine !== undefined) payload.engine = job.engine;
     if (job.bindings !== undefined) payload.bindings = job.bindings;
+    if (job.properties !== undefined) payload.properties = job.properties;
     if (job.bindingAliases !== undefined) payload.bindingAliases = job.bindingAliases;
     if (job.resourceNameBindings !== undefined)
       payload.resourceNameBindings = job.resourceNameBindings;
@@ -491,6 +495,7 @@ export class RhinoRunner {
       payload.resultGlobal = job.resultGlobal;
     }
     const transcript: Array<{ call: HostCall; reply: HostReply | undefined }> = [];
+    let transcriptFrozen = false;
     const primaryCall = async (call: HostCall): Promise<HostReply> => {
       const entry = {
         call: structuredClone(call),
@@ -516,7 +521,7 @@ export class RhinoRunner {
           error: hostError(error),
         };
       }
-      entry.reply = reply;
+      if (!transcriptFrozen) entry.reply = reply;
       return reply;
     };
     if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall);
@@ -532,10 +537,12 @@ export class RhinoRunner {
     }
     // Sequential shadow replay avoids duplicate effects and naturally supports nested evals.
     const host = await this.#primary.send(id, payload, primaryCall);
+    transcriptFrozen = true;
+    const replay = structuredClone(transcript);
     let at = 0;
     let divergence: string | undefined;
     const container = await this.#shadow.send(id, payload, async (call) => {
-      const recorded = transcript[at++];
+      const recorded = replay[at++];
       if (recorded === undefined || !isDeepStrictEqual(recorded.call, call)) {
         divergence ??= `expected ${JSON.stringify(recorded?.call)}, received ${JSON.stringify(call)}`;
         return {
@@ -554,12 +561,12 @@ export class RhinoRunner {
       // Leave the shadow waiting too, so its own deadline produces the same outcome.
       return recorded.reply ?? new Promise<HostReply>(() => {});
     });
-    if (divergence !== undefined || at !== transcript.length) {
+    if (divergence !== undefined || at !== replay.length) {
       throw new LaneDivergenceError(
         job.sourceName ?? id,
         host,
         container,
-        divergence ?? `expected ${transcript.length} calls, received ${at}`
+        divergence ?? `expected ${replay.length} calls, received ${at}`
       );
     }
     if (!isDeepStrictEqual(withoutId(host), withoutId(container))) {

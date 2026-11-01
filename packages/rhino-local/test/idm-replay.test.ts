@@ -1,6 +1,25 @@
 /** Both-lane orchestration using TWO REAL HOST JVMs; Docker image compatibility is a separate gate. */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+// Delay delivery of one shadow job until the primary handler has replied late.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: ((...args: Parameters<typeof actual.spawn>) => {
+    const child = actual.spawn(...args);
+    if (Array.isArray(args[1]) && args[1].includes("-Drhino.local.replayShadow=true")) {
+      const input = child.stdin!;
+      const write = input.write.bind(input);
+      input.write = ((chunk: string) => {
+        if (chunk.includes('"id":"review-late-reply"') && !chunk.includes('"type":"reply"')) {
+          setTimeout(() => write(chunk), 250);
+          return true;
+        }
+        return write(chunk);
+      }) as typeof input.write;
+    }
+    return child;
+  }) as typeof actual.spawn };
+});
 vi.mock("../src/jvm.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/jvm.ts")>();
   return {
@@ -119,4 +138,12 @@ describe("IDM primary/shadow replay on two real host JVMs", () => {
     );
     expect(response).toMatchObject({ outcome: "ok", value: 42 });
   });
+});
+
+
+it("#10 freezes an unanswered call before a delayed shadow sees a late reply", async () => {
+  const response = await runner.eval({ id: "review-late-reply", engine: "idm", source: "openidm.read('late')", timeoutMs: 100 }, {
+    onCall: async () => { await new Promise((resolve) => setTimeout(resolve, 200)); return 42; },
+  });
+  expect(response.outcome).toBe("timeout");
 });

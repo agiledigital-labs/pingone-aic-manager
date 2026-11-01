@@ -1,7 +1,7 @@
 /** REST seam and script-facing host adapter. State belongs to an instance; config is shared. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { HostCall, JsonValue } from "../protocol.ts";
-import type { RhinoRunner } from "../runner.ts";
+import { HostCallError, type RhinoRunner } from "../runner.ts";
 import { IdmConfig } from "./config.ts";
 import { document, isDocument } from "./document.ts";
 import { endpoint } from "./endpoints.ts";
@@ -14,6 +14,7 @@ import type { Document, PolicyEvaluator, RestRequest, RestResult } from "./types
 export class IdmEmulator {
   readonly config: IdmConfig;
   private readonly runner: RhinoRunner;
+  private readonly properties: Record<string, JsonValue>;
   private readonly policy: PolicyEvaluator | undefined;
   private readonly records: Map<string, Document>;
   private readonly evidence = new Evidence();
@@ -21,18 +22,19 @@ export class IdmEmulator {
   private readonly scripts: Scripts;
   private readonly managed: ManagedStore;
 
-  constructor(config: IdmConfig, runner: RhinoRunner, options: { policy?: PolicyEvaluator } = {}) {
+  constructor(config: IdmConfig, runner: RhinoRunner, options: { policy?: PolicyEvaluator; properties?: Record<string, JsonValue> } = {}) {
     this.config = config;
     this.runner = runner;
     this.policy = options.policy;
+    this.properties = structuredClone(options.properties ?? {});
     this.records = new Map();
-    this.scripts = new Scripts(runner, this.evidence, (call) => this.host(call));
+    this.scripts = new Scripts(runner, this.evidence, (call) => this.host(call), this.properties);
     this.managed = new ManagedStore(this.records, this.scripts, this.evidence, this.policy);
   }
 
   /** Shares frozen config and runner; copies all records, including nested JSON values. */
   fork(): IdmEmulator {
-    const fork = new IdmEmulator(this.config, this.runner, this.policy ? { policy: this.policy } : {});
+    const fork = new IdmEmulator(this.config, this.runner, { ...(this.policy ? { policy: this.policy } : {}), properties: this.properties });
     for (const [key, value] of this.records) fork.records.set(key, structuredClone(value));
     return fork;
   }
@@ -69,12 +71,16 @@ export class IdmEmulator {
 
   /** Attach directly to runner.eval(..., { onCall: emulator.onCall }).
    * REST calls collect nested provenance on their result. Independent script
-   * hosts can use hostRequest to also collect provenance. */
+   * hosts can use hostRequest to also collect provenance. Missing evidence travels
+   * in the host error metadata and is retained by the outer JVM job even if caught. */
   readonly onCall = async (call: HostCall): Promise<JsonValue> => {
     const result = await this.hostRequest(call);
-    if (result.status >= 400) {
+    const absent = result.provenance.filter((entry) => entry.kind === "missing").map((entry) => entry.behavior);
+    if (result.status >= 400 || absent.length > 0) {
       const body = document(result.body);
-      throw new IdmError(result.status, String(body.message), body.detail).host();
+      const error = new IdmError(absent.length > 0 ? 501 : result.status, String(body.message), body.detail).host();
+      throw new HostCallError({ class: error.class, code: error.code, message: error.message, detail: error.detail,
+        ...(absent.length > 0 ? { missing: absent } : {}) });
     }
     return result.body;
   };

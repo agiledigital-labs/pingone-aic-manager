@@ -19,15 +19,18 @@ export type Invocation = {
 export class Scripts {
   private readonly runner: RhinoRunner;
   private readonly evidence: Evidence;
+  private readonly environmentProperties: Record<string, JsonValue>;
   private readonly onCall: NonNullable<EvalOptions["onCall"]>;
   constructor(
     runner: RhinoRunner,
     evidence: Evidence,
     onCall: NonNullable<EvalOptions["onCall"]>,
+    properties: Record<string, JsonValue>,
   ) {
     this.runner = runner;
     this.evidence = evidence;
     this.onCall = onCall;
+    this.environmentProperties = properties;
   }
 
   async evaluate(script: Script, bindings: Document, context: string, bindingAliases?: Record<string, string>): Promise<JobResponse> {
@@ -39,9 +42,11 @@ export class Scripts {
     this.evidence.assumed("Java long values use JavaScript number precision");
     const response = await this.runner.eval({
       ...(bindingAliases ? { bindingAliases } : {}),
+      properties: this.environmentProperties,
       engine: "idm", source: script.source, sourceName: context,
       bindings: { ...script.globals, ...bindings }, resourceNameBindings: ["resourceName"], reportMissing: true, crestBindings: true,
     }, { onCall: AsyncLocalStorage.bind(this.onCall) });
+    for (const assumption of response.assumed ?? []) this.evidence.assumed(assumption);
     for (const helper of response.missing ?? []) this.evidence.add("missing", `runtime helper: ${helper}`);
     const absent = this.evidence.firstMissing();
     if (absent) missing(this.evidence, absent.behavior);
