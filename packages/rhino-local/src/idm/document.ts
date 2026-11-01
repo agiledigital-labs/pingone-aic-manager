@@ -32,15 +32,22 @@ export function project(object: Document, selectors: string[], evidence: Evidenc
   for (const selector of selectors) {
     if (selector.startsWith(" ")) continue;
     const parts = pointerParts(selector);
+    if (parts.some((part) => ["__proto__", "constructor", "prototype"].includes(part))) {
+      evidence.assumed("prototype-named pointer segments are ordinary own data fields");
+    }
     if (parts.includes("*")) missing(evidence, "nested wildcard field projection");
     if (parts.length > 1) evidence.assumed("nested field projection on ordinary JSON objects");
     let target = result;
     for (let i = 0; i < parts.length; i++) {
       const key = parts[i];
       if (key === undefined) continue;
-      if (i === parts.length - 1) target[key] = structuredClone(fieldValue(object, selector) ?? null);
+      if (i === parts.length - 1) Object.defineProperty(target, key, {
+        value: structuredClone(fieldValue(object, selector) ?? null), writable: true, enumerable: true, configurable: true,
+      });
       else {
-        if (!isDocument(target[key])) target[key] = {};
+        if (!Object.hasOwn(target, key) || !isDocument(target[key])) Object.defineProperty(target, key, {
+          value: {}, writable: true, enumerable: true, configurable: true,
+        });
         target = target[key] as Document;
       }
     }
@@ -60,10 +67,13 @@ export function applyPatch(object: Document, operations: JsonValue | undefined, 
       throw invalidInput("Patch field must be a non-empty JSON pointer");
     }
     const parts = pointerParts(op.field);
+    if (parts.some((part) => ["__proto__", "constructor", "prototype"].includes(part))) {
+      evidence.assumed("prototype-named pointer segments are ordinary own data fields");
+    }
     if (parts[0] === "_id" || parts[0] === "_rev") missing(evidence, "patching managed identity fields");
     let parent: Document | JsonValue[] = result;
     for (const part of parts.slice(0, -1)) {
-      const next: JsonValue | undefined = (parent as Document)[part];
+      const next: JsonValue | undefined = Object.hasOwn(parent, part) ? (parent as Document)[part] : undefined;
       if (!isDocument(next) && !Array.isArray(next)) throw invalidInput(`Patch parent does not exist: ${op.field}`);
       parent = next;
     }
