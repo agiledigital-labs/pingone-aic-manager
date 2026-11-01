@@ -764,11 +764,16 @@ converted JSON arguments. Function arguments are dropped; a final query callback
 runs on the JVM once per returned row, with `result` and `resultCount` removed
 from the query completion. Resource routing, missing-resource behavior, query
 validation, and storage policy belong to `onCall`; the experimental IDM core
-below provides that handler. A job without `onCall` receives a catchable failed call
-immediately. A handler must return a JSON value (use `null` for no result).
+below provides that handler. A job without `onCall` fails with a protocol diagnostic. A handler must return a JSON value (use `null` for no result).
 Throw `HostCallError` to preserve a CREST class, message, numeric code and detail;
 the script receives a Rhino `JavaException` with `javaException.getCode()` and
 `getDetail()`. Ordinary handler errors become status-500 host failures.
+Emulation failures (missing behavior, admission/protocol failures and harness
+timeouts) carry structured `emulation` diagnostics and always fail the outer
+job/request. On the pinned Rhino, feature 13 is off and the Java `Error`
+used for these failures escapes script catches. Tenant CREST exceptions remain
+catchable. Nested runner failures survive adapters that ignore their response;
+policy and hook mappings preserve the same failure class.
 
 IDM responses add `bindings`, ordered `logs` (`surface`, `level`, `message`,
 `args`), and, on failure, `thrown`. `thrown.kind` distinguishes `object`, `error`,

@@ -184,8 +184,8 @@ describe("IDM re-entrant host calls", () => {
       source: "openidm.read('x')",
     });
     expect(response.outcome).toBe("runtime_error");
-    expect(response.thrown).toMatchObject({
-      kind: "javaException",
+    expect(response.emulation).toMatchObject({
+      kind: "protocol",
       message: "rhino-local: no onCall handler for IDM job",
     });
   });

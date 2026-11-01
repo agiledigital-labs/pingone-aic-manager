@@ -126,9 +126,11 @@ describe("review round 1 caller provenance", () => {
       runner.eval({ engine: "idm", source, reportMissing: true }, { onCall: emu.onCall }),
       runner.eval({ engine: "idm", source: "'clean'", reportMissing: true }, { onCall: emu.onCall }),
     ]);
+    expect(caught.outcome).not.toBe("ok");
     expect(caught.missing).toContain("named _queryId: unmeasured");
     expect(clean.missing).toEqual([]);
     const noOptIn = await runner.eval({ engine: "idm", source }, { onCall: emu.onCall });
+    expect(noOptIn.outcome).not.toBe("ok");
     expect(noOptIn.missing).toContain("named _queryId: unmeasured");
   });
 

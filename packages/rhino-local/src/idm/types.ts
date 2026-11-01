@@ -1,5 +1,5 @@
 /** REST and config contracts for the IDM core. No test framework or transport types. */
-import type { JsonValue } from "../protocol.ts";
+import type { EmulationFailureInfo, JsonValue } from "../protocol.ts";
 
 export type Document = { [key: string]: JsonValue };
 export type Script = {
@@ -54,6 +54,7 @@ export type Provenance = {
   source?: string;
 };
 export type RestResult = {
+  emulation?: EmulationFailureInfo;
   status: number;
   body: JsonValue;
   /** Exact UTF-8 response bytes when the tenant produced non-JSON/empty output.

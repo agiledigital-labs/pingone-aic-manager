@@ -84,7 +84,14 @@ export interface HostCall {
   args: JsonValue[];
 }
 
+export interface EmulationFailureInfo {
+  kind: "missing" | "protocol" | "timeout" | "internal";
+  message: string;
+  missing?: string[];
+}
+
 export interface HostError {
+  emulation?: EmulationFailureInfo;
   /** Fidelity failures remain visible even when the script catches this error. */
   missing?: string[];
   class: string;
@@ -115,6 +122,7 @@ export interface ThrownValue {
 }
 
 export interface JobResponse {
+  emulation?: EmulationFailureInfo;
   id: string;
   outcome: JobOutcome;
   valueKind: string;
@@ -163,6 +171,7 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
     ...(raw.logs === undefined ? {} : { logs: raw.logs as JobLog[] }),
     ...(raw.thrown === undefined ? {} : { thrown: raw.thrown as ThrownValue }),
     ...(raw.missing === undefined ? {} : { missing: raw.missing as string[] }),
+    ...(raw.emulation === undefined ? {} : { emulation: raw.emulation as EmulationFailureInfo }),
     ...(raw.assumed === undefined ? {} : { assumed: raw.assumed as string[] }),
   };
 }

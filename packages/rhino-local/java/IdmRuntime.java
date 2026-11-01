@@ -101,10 +101,20 @@ final class IdmRuntime {
       IdmValues.CURRENT.remove();
       Context.exit();
     }
+    if (calls != null && calls.failure != null) {
+      response = Runner.errorResponse(id, "runtime_error", calls.failure, sourceName, -1, -1, null);
+      response.put("emulation", calls.failure.info);
+    } else if ("timeout".equals(response.get("outcome"))) {
+      response.put("emulation", new EmulationFailure("timeout", "IDM harness timeout").info);
+    }
     response.put("logs", runtime == null ? new ArrayList<Object>() : runtime.logs);
     response.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : runtime.bindings);
     List<String> absent = runtime == null ? new ArrayList<String>() : new ArrayList<String>(runtime.missing);
     if (calls != null) for (String name : calls.missing) if (!absent.contains(name)) absent.add(name);
+    if (calls != null && calls.failure != null) {
+      List<String> names = Json.optionalStringList(calls.failure.info, "missing");
+      if (names != null) for (String name : names) if (!absent.contains(name)) absent.add(name);
+    }
     if (Boolean.TRUE.equals(job.get("reportMissing")) || !absent.isEmpty()) response.put("missing", absent);
     if (runtime != null && !runtime.assumed.isEmpty()) response.put("assumed", runtime.assumed);
     return Json.asObject(IdmValues.wireValue(response), "response");
@@ -271,10 +281,12 @@ final class IdmRuntime {
     };
   }
 
-  private RuntimeException missing(String name) {
+  private EmulationFailure missing(String name) {
     // A script catch must not conceal a fidelity boundary from the emulator.
     if (!missing.contains(name)) missing.add(name);
-    return Context.reportRuntimeError("rhino-local: " + name + " is not emulated yet");
+    EmulationFailure error = new EmulationFailure("missing", "rhino-local: " + name + " is not emulated yet");
+    error.info.put("missing", java.util.Collections.singletonList(name));
+    return calls.fail(error);
   }
 
   private static WrappedException noMethod(String method, Object[] args) {

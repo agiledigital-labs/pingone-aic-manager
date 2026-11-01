@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { EmulationFailure, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual, promisify } from "node:util";
@@ -35,6 +37,7 @@ export class HostCallError extends Error {
   readonly class: string;
   readonly code: number;
   readonly detail: JsonValue;
+  readonly emulation: HostError["emulation"];
   readonly missing: string[] | undefined;
   constructor(error: HostError) {
     super(error.message);
@@ -43,18 +46,21 @@ export class HostCallError extends Error {
     this.code = error.code;
     this.detail = error.detail;
     this.missing = error.missing;
+    this.emulation = error.emulation;
   }
 }
 
 function hostError(error: unknown): HostError {
   const record =
     typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+  const fatal = emulationFailure(error);
   const normalized: HostError = {
     class: typeof record.class === "string" ? record.class : "rhino.local.HostCallException",
     message: typeof record.message === "string" ? record.message : String(error),
     code: typeof record.code === "number" ? record.code : 500,
     detail: (record.detail ?? {}) as JsonValue,
     ...(error instanceof HostCallError && error.missing ? { missing: error.missing } : {}),
+    ...(fatal ? { emulation: fatal } : {}),
   };
   try {
     return JSON.parse(JSON.stringify(normalized)) as HostError;
@@ -64,6 +70,7 @@ function hostError(error: unknown): HostError {
       message: "rhino-local: host error is not JSON serializable",
       code: 500,
       detail: {},
+      emulation: { kind: "protocol", message: "rhino-local: host error is not JSON serializable" },
     };
   }
 }
@@ -364,7 +371,7 @@ class JvmProcess {
     let reply: HostReply;
     try {
       if (pending.onCall === undefined)
-        throw new Error("rhino-local: no onCall handler for IDM job");
+        throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
       reply = await pending.onCall(call);
       // Validate serializability before writing, so a bad handler cannot strand a worker.
       const line = JSON.stringify(reply);
@@ -412,6 +419,7 @@ export class RhinoRunner {
   #primary: JvmProcess;
   #shadow: JvmProcess | undefined;
   #activeIds = new Set<string>();
+  #callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
 
   private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined) {
     this.lane = lane;
@@ -463,10 +471,23 @@ export class RhinoRunner {
 
   async eval(job: JobRequest, options: EvalOptions = {}): Promise<JobResponse> {
     const id = job.id ?? randomUUID();
-    if (this.#activeIds.has(id)) throw new Error(`rhino-local: duplicate active job id: ${id}`);
+    if (this.#activeIds.has(id)) {
+      const failure = { kind: "protocol" as const, message: `rhino-local: duplicate active job id: ${id}` };
+      const parent = this.#callScope.getStore();
+      if (parent) parent.failure ??= failure;
+      throw new EmulationFailure(failure);
+    }
     this.#activeIds.add(id);
     try {
-      return await this.#evalJob({ ...job, id }, options);
+      const response = await this.#evalJob({ ...job, id }, options);
+      const fatal = responseFailure(response);
+      const parent = this.#callScope.getStore();
+      if (fatal && parent) parent.failure ??= fatal;
+      return fatal ? { ...response, ...(response.outcome === "ok" ? failedResponse(id, fatal) : { emulation: fatal }) } : response;
+    } catch (error) {
+      const parent = this.#callScope.getStore();
+      if (parent) parent.failure ??= emulationFailure(error) ?? { kind: "internal", message: String(error) };
+      throw error;
     } finally {
       this.#activeIds.delete(id);
     }
@@ -516,22 +537,26 @@ export class RhinoRunner {
       };
       transcript.push(entry);
       let reply: HostReply;
+      const scope: { failure?: NonNullable<HostError["emulation"]> } = {};
       try {
         if (options.onCall === undefined)
-          throw new Error("rhino-local: no onCall handler for IDM job");
-        const result = await options.onCall(call);
+          throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
+        const result = await this.#callScope.run(scope, () => options.onCall!(call));
+        if (scope.failure) throw new EmulationFailure(scope.failure);
         if (result === undefined)
-          throw new Error("rhino-local: onCall must return a JSON value (use null)");
+          throw new EmulationFailure({ kind: "protocol", message: "rhino-local: onCall must return a JSON value (use null)" });
         // Freeze the reply before handing control back to user code or the shadow.
-        reply = JSON.parse(
-          JSON.stringify({ type: "reply", id, seq: entry.call.seq, result })
-        ) as HostReply;
+        try {
+          reply = JSON.parse(JSON.stringify({ type: "reply", id, seq: entry.call.seq, result })) as HostReply;
+        } catch {
+          throw new EmulationFailure({ kind: "protocol", message: "rhino-local: host result is not JSON serializable" });
+        }
       } catch (error) {
         reply = {
           type: "reply",
           id,
           seq: entry.call.seq,
-          error: hostError(error),
+          error: hostError(scope.failure ? new EmulationFailure(scope.failure) : error),
         };
       }
       if (!transcriptFrozen) entry.reply = reply;
