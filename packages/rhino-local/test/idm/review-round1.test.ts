@@ -168,3 +168,12 @@ it.each(["__proto__", "constructor", "prototype"])("#5 stores a literal top-leve
   expect(Object.hasOwn(absent, key)).toBe(true);
   expect(absent[key]).toBeNull();
 });
+
+
+it("#7 compares the stored revision snapshot even if onDelete mutates its object", async () => {
+  const emu = emulator(runner, { ...simple, onDelete: js("object._rev='hook-local';") });
+  await create(emu);
+  const result = await emu.request({ method: "DELETE", path: "managed/widget/one", headers: { "If-Match": "0" } });
+  expect(result.status).toBe(200);
+  await send(emu, { method: "GET", path: "managed/widget/one" }, 404);
+});
