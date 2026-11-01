@@ -1,5 +1,7 @@
-//! `aic managed relationship repair` — remove a `config/repo.ds` relationship
-//! mapping that names no declared property.
+//! The single `config/repo.ds` write workflow: stale-mapping removal for
+//! `relationship repair`, and atomic pair addition for `map` / new `set`.
+//! Addition decisions and allocation live in `storage`; both use the same
+//! recheck, backup, whole-document PUT and read-back machinery below.
 //!
 //! A relationship delete leaves its `repo.ds` mappings behind, and a leftover
 //! makes the next `relationship set` that reuses the key, or reads through it,
@@ -24,7 +26,8 @@
 //! that another mapping reads through, removing the last mapped property of
 //! an object, and anything on an object `config/managed` does not declare.
 //!
-//! Remove only. It never adds or edits a mapping.
+//! Additions use the measured 2026-11-01 shape and waitForCompletion=true.
+//! A WritePermit proves consent outside dry-run; callers also gate production.
 //!
 //! Nothing here performs I/O except through the closures [`apply_with`] is
 //! handed, so a test drives the real order of reads and writes.
@@ -50,6 +53,8 @@ pub struct Plan {
     /// the tenant no longer holds exactly this.
     #[serde(skip)]
     before: Value,
+    #[serde(skip)]
+    pub addition: Option<super::storage::Addition>,
     /// `before` minus the one entry: the whole document that is `PUT`.
     #[serde(skip)]
     after: Value,
@@ -69,13 +74,13 @@ impl Plan {
     }
 }
 
-/// Proof that the operator consented to a non-dry-run repair. The field is
+/// Proof that the operator consented to a non-dry-run mapping write. The field is
 /// private, so [`authorize`] is the only place one is made, and
 /// [`apply_with`] requires one: a dry run cannot reach the write.
-pub struct RepairPermit(());
+pub struct WritePermit(());
 
-pub fn authorize(dry_run: bool, consented: bool) -> Option<RepairPermit> {
-    (!dry_run && consented).then_some(RepairPermit(()))
+pub fn authorize(dry_run: bool, consented: bool) -> Option<WritePermit> {
+    (!dry_run && consented).then_some(WritePermit(()))
 }
 
 /// The plan for removing `object.key`'s mapping, or why it is refused.
@@ -225,8 +230,26 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
         key: key.to_string(),
         mapping,
         notes,
+        addition: None,
         before: repo_ds.clone(),
         after,
+    })
+}
+
+/// Plan an atomic addition; the writer treats this like a removal except for
+/// its pure recheck. Link emptiness is checked by the caller before applying.
+pub fn plan_add(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Plan, String> {
+    let addition = super::storage::plan(managed, repo, object, key)?;
+    let mapping = verify::mapped(&addition.after, object, key)
+        .ok_or("internal: addition did not produce a reference")?;
+    Ok(Plan {
+        object: object.into(),
+        key: key.into(),
+        mapping,
+        notes: Vec::new(),
+        before: repo.clone(),
+        after: addition.after.clone(),
+        addition: Some(addition),
     })
 }
 
@@ -349,7 +372,17 @@ pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), Stri
             plan.label()
         ));
     }
-    self::plan(managed, repo_ds, &plan.object, &plan.key).map(|_| ())
+    let fresh = if plan.addition.is_some() {
+        plan_add(managed, repo_ds, &plan.object, &plan.key)?
+    } else {
+        self::plan(managed, repo_ds, &plan.object, &plan.key)?
+    };
+    if fresh.after != plan.after {
+        return Err(
+            "relationship schema changed since planning; nothing written. Plan again".into(),
+        );
+    }
+    Ok(())
 }
 
 /// How the read-back left things.
@@ -406,7 +439,7 @@ pub struct Applied {
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_with(
     plan: &Plan,
-    _permit: &RepairPermit,
+    _permit: &WritePermit,
     mut read_managed: impl AsyncFnMut() -> crate::Result<Value>,
     mut read_repo_ds: impl AsyncFnMut() -> crate::Result<Value>,
     backup: impl FnOnce(&Value) -> crate::Result<PathBuf>,

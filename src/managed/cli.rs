@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::Result;
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, print_table, tenant_for};
-use crate::managed::{api, diff, ops, recovery, relink, repair, spec, state, verify};
+use crate::managed::{api, diff, ops, recovery, relink, repair, spec, state, storage, verify};
 use crate::undo::{DiskLog, UndoLog};
 
 #[derive(Subcommand, Debug)]
@@ -273,6 +273,22 @@ pub enum RelationshipCommand {
         #[arg(long)]
         dry_run: bool,
         /// Skip the confirmation prompt.
+        #[command(flatten)]
+        force: OperationForce,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Map an existing generic relationship with no links. Adds both ends in
+    /// one config/repo.ds PUT, backs up the document and confirms by re-read.
+    Map {
+        field: String,
+        #[arg(long)]
+        dry_run: bool,
         #[command(flatten)]
         force: OperationForce,
         #[arg(long)]
@@ -854,7 +870,12 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 format!("Revert relationship {source_object}.{key}"),
             )?;
             let expect = relationship_expectations(&doc, &updated)?;
-            put_managed(&ok, &doc, updated.clone(), &expect).await?;
+            storage::set_with(
+                property.is_none(),
+                async || put_managed(&ok, &doc, updated.clone(), &expect).await,
+                async || map_created_pair(&ok, &source_object, &key).await,
+            )
+            .await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
             let activation = wait_for_ends(&tenant, ends).await;
             let one_sided = match relink::reverse_added(&doc, &updated, &source_object, &key) {
@@ -1182,6 +1203,14 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             yes,
             json,
         } => relationship_relink(field, dry_run, force.operation(), tenant, yes, json).await,
+        RelationshipCommand::Map {
+            field,
+            dry_run,
+            force,
+            tenant,
+            yes,
+            json,
+        } => relationship_map(field, dry_run, force.operation(), tenant, yes, json).await,
         RelationshipCommand::Repair {
             field,
             dry_run,
@@ -1710,6 +1739,174 @@ async fn reconcile(tenant: &str, managed: &Value, field: Option<&str>) -> Result
     Ok(out)
 }
 
+/// A complete projected scan, on both ends: `pr` cannot see generic links.
+async fn mapping_empty(tenant: &str, pair: &verify::PairReport) -> Result<()> {
+    let forward = api::all_records_with(tenant, &pair.forward.object, &pair.forward.key).await?;
+    let reverse = match &pair.reverse {
+        Some(end) => api::all_records_with(tenant, &end.object, &end.key).await?,
+        None => Vec::new(),
+    };
+    let mut ends = vec![(pair.forward.key.as_str(), forward.as_slice())];
+    if let Some(end) = &pair.reverse {
+        ends.push((end.key.as_str(), reverse.as_slice()));
+    }
+    let count = storage::link_count(&ends).map_err(crate::Error::Config)?;
+    storage::require_empty(count).map_err(crate::Error::Config)
+}
+
+fn print_mapping_plan(plan: &repair::Plan) {
+    if let Some(addition) = &plan.addition {
+        eprintln!(
+            "map {}: forward reference uses {}",
+            plan.label(),
+            addition.column
+        );
+        for object in &addition.added_types {
+            eprintln!(
+                "  add per-type genericMapping managed/{object} (DN, object classes, JSON attributes)"
+            );
+        }
+        for entry in &addition.entries {
+            eprintln!("  add {}.{}: {}", entry.object, entry.key, entry.value);
+        }
+        eprintln!("  both ends go in one PUT; pause all link writers until this command finishes");
+    }
+}
+
+async fn relationship_map(
+    field: String,
+    dry_run: bool,
+    force: bool,
+    tenant: Option<String>,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
+    let (object, key) = parse_object_key(&field)?;
+    let tenant = tenant_for(tenant)?;
+    let managed = api::get_managed(&tenant).await?;
+    let repo = api::get_repo_ds(&tenant).await?;
+    let plan = repair::plan_add(&managed, &repo, &object, &key).map_err(crate::Error::Config)?;
+    if let Some(addition) = &plan.addition {
+        mapping_empty(&tenant, &addition.pair).await?;
+    }
+    print_mapping_plan(&plan);
+    if dry_run {
+        return output(
+            json,
+            &serde_json::json!({"plan": plan.addition, "dry_run": true}),
+        );
+    }
+    let consented = force
+        || crate::cli::confirm_destructive(
+            "relationship map",
+            &format!(
+                "Map {field}? Pause link writers first. Replaces config/repo.ds after a local backup"
+            ),
+            "--force",
+        )?;
+    let Some(permit) = repair::authorize(dry_run, consented) else {
+        return Err(crate::Error::Config(
+            "relationship map not confirmed".into(),
+        ));
+    };
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    let applied = apply_mapping(&ok, &plan, &permit).await?;
+    if json {
+        print_json(&serde_json::json!({"plan": plan.addition, "applied": applied}))?;
+    }
+    // No probe writes: runtime storage mode requires a link and will be
+    // honestly untested on an empty pair. The operator can probe later.
+    relationship_verify(field, 5, 200, None, Some(tenant), false).await
+}
+
+/// The second half of a new `set`. A failure before the repo.ds write leaves
+/// the consistent generic declaration available for `map` to finish.
+async fn map_created_pair(ok: &WriteOk<'_>, object: &str, key: &str) -> Result<()> {
+    let field = format!("{object}.{key}");
+    let prepared = async {
+        let managed = api::get_managed(ok.tenant).await?;
+        let repo = api::get_repo_ds(ok.tenant).await?;
+        // Recreating a property over its matching leftover mapping is an
+        // existing supported path. Do not change that pair's storage.
+        let pair = storage::pair(&managed, &repo, object, key).map_err(crate::Error::Config)?;
+        if storage::mode(&pair) == storage::Mode::Mapped {
+            eprintln!("{field} already has matching mappings; checking for orphaned values");
+            return Ok(None);
+        }
+        let plan = repair::plan_add(&managed, &repo, object, key).map_err(crate::Error::Config)?;
+        print_mapping_plan(&plan);
+        Ok::<_, crate::Error>(Some(plan))
+    }
+    .await
+    .map_err(|error| {
+        crate::Error::Config(format!(
+            "config/managed was written, but mapping {field} was not attempted: {error}. \
+         Run `aic managed relationship verify {field}`; if generic, finish with \
+         `aic managed relationship map {field} --force` before writing links"
+        ))
+    })?;
+    if let Some(plan) = prepared {
+        let permit = repair::authorize(false, true)
+            .ok_or_else(|| crate::Error::Config("mapping authorization failed".into()))?;
+        apply_mapping(ok, &plan, &permit).await?;
+    } else {
+        check_orphans(ok.tenant, object, key, "existing mapping").await?;
+    }
+    relationship_verify(field, 5, 200, None, Some(ok.tenant.to_string()), false).await
+}
+
+async fn apply_mapping(
+    ok: &WriteOk<'_>,
+    plan: &repair::Plan,
+    permit: &repair::WritePermit,
+) -> Result<repair::Applied> {
+    let field = plan.label();
+    let applied = send_repair(ok, plan, permit).await.map_err(|failure| crate::Error::Config(match failure {
+        repair::Failure::NotWritten(error) => format!(
+            "mapping {field} was not written: {error}. The pair remains a consistent generic pair. \
+             Finish with `aic managed relationship map {field} --force` before writing links"),
+        repair::Failure::SendFailed { error, backup } => format!(
+            "mapping {field} PUT failed ({error}); whether it landed is unknown. \
+             config/managed remains declared. Run `aic managed relationship verify {field}` \
+             before retrying `relationship map`; backup: {}", backup.display()),
+    }))?;
+    eprintln!("  repo.ds backup: {}", applied.backup.display());
+    if applied.readback != repair::Readback::Confirmed {
+        return Err(crate::Error::Config(format!(
+            "mapping {field} was not confirmed ({:?}); storage is uncertain. Run \
+             `aic managed relationship verify {field}` before retrying map; backup: {}",
+            applied.readback,
+            applied.backup.display()
+        )));
+    }
+    let column = plan
+        .addition
+        .as_ref()
+        .map_or("unknown column", |addition| addition.column.as_str());
+    check_orphans(ok.tenant, &plan.object, &plan.key, column).await?;
+    eprintln!("mapped {field} (config confirmed by re-read; no orphaned values found)");
+    Ok(applied)
+}
+
+async fn check_orphans(tenant: &str, object: &str, key: &str, column: &str) -> Result<()> {
+    let records = api::present_records(tenant, object, key)
+        .await
+        .map_err(|error| {
+            crate::Error::Config(format!(
+                "mapping {object}.{key} is installed, but orphan checking failed: {error}. \
+         Keep link writers paused and query /{key} pr before using it"
+            ))
+        })?;
+    if !records.is_empty() {
+        return Err(crate::Error::Config(format!(
+            "ORPHANED DATA: mapping {object}.{key} exposes existing values in {column} \
+             (record sample: {records:?}). Mapping remains installed; nothing was cleaned. \
+             Keep link writers paused and inspect the column and repo.ds backup before using it"
+        )));
+    }
+    Ok(())
+}
+
 async fn relationship_repair(
     field: String,
     dry_run: bool,
@@ -1770,13 +1967,19 @@ async fn relationship_repair(
 async fn send_repair(
     ok: &crate::cli::WriteOk<'_>,
     plan: &repair::Plan,
-    permit: &repair::RepairPermit,
+    permit: &repair::WritePermit,
 ) -> std::result::Result<repair::Applied, repair::Failure> {
     let delays = [std::time::Duration::from_secs(3); 10];
     repair::apply_with(
         plan,
         permit,
-        async || api::get_managed(ok.tenant).await,
+        async || {
+            let managed = api::get_managed(ok.tenant).await?;
+            if let Some(addition) = &plan.addition {
+                mapping_empty(ok.tenant, &addition.pair).await?;
+            }
+            Ok(managed)
+        },
         async || api::get_repo_ds(ok.tenant).await,
         |document| {
             crate::access::ops::backup_config_document(

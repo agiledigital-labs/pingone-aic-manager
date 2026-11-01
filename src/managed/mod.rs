@@ -43,5 +43,6 @@ pub mod repair;
 pub mod screen;
 pub mod spec;
 pub mod state;
+pub mod storage;
 pub mod verify;
 pub mod view;

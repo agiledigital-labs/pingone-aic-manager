@@ -96,20 +96,20 @@ pub async fn get_repo_ds(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, "/openidm/config/repo.ds").await
 }
 
-/// `PUT /openidm/config/repo.ds` — the whole document. Its one caller is
-/// `relationship repair`, which removes a stale mapping and holds a
-/// [`RepairPermit`](crate::managed::repair::RepairPermit) to get here. A JSON
+/// `PUT /openidm/config/repo.ds?waitForCompletion=true` — the whole document.
+/// The single workflow is `repair::apply_with`, for removals and additions; a
+/// [`WritePermit`](crate::managed::repair::WritePermit) is required to get here. A JSON
 /// `PATCH` on this document was measured to return 200 and change nothing,
 /// which is why there is no patch wrapper.
 pub async fn put_repo_ds(
     tenant: &str,
-    _permit: &crate::managed::repair::RepairPermit,
+    _permit: &crate::managed::repair::WritePermit,
     document: &Value,
     confirmed_prod: bool,
 ) -> Result<()> {
     crate::aic::api::put(
         tenant,
-        "/openidm/config/repo.ds",
+        "/openidm/config/repo.ds?waitForCompletion=true",
         document.clone(),
         confirmed_prod,
     )
@@ -286,6 +286,36 @@ pub async fn present_filter_finds(tenant: &str, object: &str, id: &str, key: &st
     Ok(result
         .iter()
         .any(|entry| entry.get("_id").and_then(Value::as_str) == Some(id)))
+}
+
+/// Finds evidence of orphaned values after assigning a reference column.
+/// A single match is enough to fail: this is not a generic-link census.
+pub async fn present_records(tenant: &str, object: &str, key: &str) -> Result<Vec<String>> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("_queryFilter", &format!("/{key} pr"))
+        .append_pair("_fields", "_id")
+        .append_pair("_pageSize", "1");
+    let path = format!(
+        "/openidm/managed/{}?{}",
+        crate::idmstore::api::path_segment(object),
+        query.finish()
+    );
+    let body = get_settled(tenant, object, &path).await?;
+    let records = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Config(format!("orphan query returned no result array: {body}")))?;
+    records
+        .iter()
+        .map(|record| {
+            record
+                .get("_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| Error::Config("orphan query returned a record without _id".into()))
+        })
+        .collect()
 }
 
 /// One activation probe of `object.key` through record `id`:
