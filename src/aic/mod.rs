@@ -28,6 +28,29 @@ pub(crate) struct AicClient {
     jwk: serde_json::Value,
 }
 
+/// Optional headers on a JSON write. Journaled calls choose their id before
+/// dispatch; ordinary calls still receive a fresh id in this transport.
+#[derive(Default)]
+pub(crate) struct WriteHeaders<'a> {
+    pub api_version: Option<&'a str>,
+    pub if_match: Option<&'a str>,
+    pub transaction_id: Option<&'a str>,
+}
+
+impl<'a> WriteHeaders<'a> {
+    pub(crate) fn new(
+        api_version: Option<&'a str>,
+        if_match: Option<&'a str>,
+        transaction_id: Option<&'a str>,
+    ) -> Self {
+        Self {
+            api_version,
+            if_match,
+            transaction_id,
+        }
+    }
+}
+
 impl AicClient {
     pub fn new(tenant: Tenant, jwk: serde_json::Value) -> Self {
         // A connect timeout, because callers are not free to cancel: `script
@@ -183,13 +206,12 @@ impl AicClient {
         path: &str,
         body: serde_json::Value,
         confirmed_prod: bool,
-        api_version: Option<&str>,
-        if_match: Option<&str>,
+        headers: WriteHeaders<'_>,
     ) -> Result<serde_json::Value> {
         self.ensure_write_allowed(confirmed_prod)?;
         let token = self.bearer().await?;
         let resp = self
-            .json_request(method, path, body, &token, api_version, if_match)
+            .json_request(method, path, body, &token, headers)
             .send()
             .await?;
         self.check_response(resp).await
@@ -201,19 +223,27 @@ impl AicClient {
         path: &str,
         body: serde_json::Value,
         token: &str,
-        api_version: Option<&str>,
-        if_match: Option<&str>,
+        headers: WriteHeaders<'_>,
     ) -> reqwest::RequestBuilder {
         let request = self
             .http
             .request(method, self.url(path))
             .header("Authorization", format!("Bearer {token}"))
-            .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
+            .header(
+                "Accept-API-Version",
+                headers.api_version.unwrap_or("resource=1.0"),
+            )
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .aic_transaction_id()
+            .header(
+                crate::http::TRANSACTION_ID_HEADER,
+                headers
+                    .transaction_id
+                    .map(str::to_owned)
+                    .unwrap_or_else(crate::http::transaction_id),
+            )
             .json(&body);
-        match if_match {
+        match headers.if_match {
             Some(revision) => request.header("If-Match", revision),
             None => request,
         }
@@ -560,8 +590,10 @@ mod tests {
                 "/resource",
                 serde_json::json!({}),
                 "token",
-                Some("resource=1.0"),
-                None,
+                WriteHeaders {
+                    api_version: Some("resource=1.0"),
+                    ..Default::default()
+                },
             )
             .build()
             .unwrap();
@@ -571,14 +603,75 @@ mod tests {
                 "/resource",
                 serde_json::json!({}),
                 "token",
-                Some("resource=1.0"),
-                Some("revision-1"),
+                WriteHeaders {
+                    api_version: Some("resource=1.0"),
+                    if_match: Some("revision-1"),
+                    ..Default::default()
+                },
             )
             .build()
             .unwrap();
 
         assert!(plain.headers().get("if-match").is_none());
         assert_eq!(conditional.headers()["if-match"], "revision-1");
+    }
+
+    // Regression: do not regenerate the id after the intent was saved. This
+    // drives the request builder actually used by the agent, without sending.
+    #[test]
+    fn journaled_transaction_id_reaches_the_single_outbound_idm_header() {
+        use crate::agent::{ApiCallRequest, Request};
+        let id = crate::http::transaction_id();
+        let envelope = api::ApiCall::new(
+            "sandbox",
+            "POST",
+            "/openidm/managed/a/a1/link?_action=create",
+        )
+        .transaction_id(&id)
+        .body(serde_json::json!({"_ref":"managed/b/b1"}))
+        .envelope();
+        let wire = serde_json::to_value(envelope).unwrap();
+        let Request::ApiCall(call): Request = serde_json::from_value(wire).unwrap() else {
+            panic!("API call")
+        };
+        let ApiCallRequest {
+            transaction_id,
+            api_version,
+            if_match,
+            body,
+            ..
+        } = call;
+        let client = AicClient::new(
+            tenant("https://tenant.example".into()),
+            serde_json::Value::Null,
+        );
+        for method in [
+            reqwest::Method::POST,
+            reqwest::Method::PATCH,
+            reqwest::Method::DELETE,
+        ] {
+            let request = client
+                .json_request(
+                    method,
+                    "/openidm/managed/a/a1/link",
+                    body.clone().unwrap(),
+                    "token",
+                    WriteHeaders::new(
+                        api_version.as_deref(),
+                        if_match.as_deref(),
+                        transaction_id.as_deref(),
+                    ),
+                )
+                .build()
+                .unwrap();
+            let values = request
+                .headers()
+                .get_all(crate::http::TRANSACTION_ID_HEADER)
+                .iter()
+                .collect::<Vec<_>>();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0].to_str().unwrap(), id);
+        }
     }
 
     #[test]
