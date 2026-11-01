@@ -241,9 +241,10 @@ export class ManagedStore {
     const object = this.stored(type, id);
     this.checkRevision(object, op.request);
     this.evidence.measured("managed delete hook order; postDelete and onSync object is null");
+    const storedRevision = object._rev;
     const invocation = this.invocation(type, id, op, "delete", object, object, null);
     await this.scripts.hook(type, "onDelete", invocation);
-    if (this.records.get(this.key(type, id))?._rev !== object._rev) {
+    if (this.records.get(this.key(type, id))?._rev !== storedRevision) {
       this.evidence.assumed("concurrent writes are checked again after hooks");
       throw new IdmError(412, "Revision mismatch");
     }
