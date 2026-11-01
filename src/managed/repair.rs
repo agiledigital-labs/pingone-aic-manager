@@ -289,7 +289,8 @@ pub fn plan_rollback(
                     == Some(format!("managed/{}", entry.object).as_str())
                 && dependent.mapping.property_name.as_deref() == Some(entry.key.as_str())
                 && !pair.mappings.iter().any(|own| {
-                    dependent.generic_object() == Some(own.object.as_str())
+                    dependent.resource == format!("managed/{}", own.object)
+                        && dependent.section == own.section
                         && dependent.key == own.key
                 })
             {
@@ -301,8 +302,10 @@ pub fn plan_rollback(
                 ));
             }
         }
-        after["resourceMapping"]["genericMapping"][format!("managed/{}", entry.object)]["properties"]
-            .as_object_mut().ok_or("mapping properties vanished")?.remove(&entry.key);
+        after["resourceMapping"][&entry.section][format!("managed/{}", entry.object)]["properties"]
+            .as_object_mut()
+            .ok_or("mapping properties vanished")?
+            .remove(&entry.key);
     }
     let mapping = verify::mapped(repo, &pair.forward.object, &pair.forward.key)
         .ok_or("reference vanished")?;

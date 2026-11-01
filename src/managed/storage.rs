@@ -157,9 +157,15 @@ pub fn allocate(repo: &Value, object: &str) -> Result<u8, String> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
+    #[serde(default = "generic_section")]
+    pub section: String,
     pub object: String,
     pub key: String,
     pub value: Value,
+}
+
+pub fn generic_section() -> String {
+    "genericMapping".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -191,6 +197,7 @@ pub fn plan(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Ad
     }
     let column = format!("fr-idm-reference-{}", allocate(repo, object)?);
     let mut entries = vec![Entry {
+        section: generic_section(),
         object: object.to_string(),
         key: key.to_string(),
         value: json!({"type": "reference", "ldapAttribute": column,
@@ -199,6 +206,7 @@ pub fn plan(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Ad
     }];
     if let Some(reverse) = &pair.reverse {
         entries.push(Entry {
+            section: generic_section(),
             object: reverse.object.clone(),
             key: reverse.key.clone(),
             value: json!({"type": "reverseReference", "resourcePath": format!("managed/{object}"),
