@@ -876,6 +876,25 @@ Managed schemas retain object hooks, property hooks and custom `actions`.
 and script `file` references fail as missing behavior. The caller owns the
 runner and closes it after every emulator/fork using it has finished.
 
+Unimplemented routes fail as `missing`, including unknown managed types,
+endpoints and config snapshots; only an absent id in an implemented collection
+reads as null. The built-in collection actions `patch`, `triggerSyncCheck` and
+`updateLastSync` are explicit missing boundaries. Readable ids remain supported
+except on measured `alpha_user` and `bravo_user`, which require UUID syntax.
+
+Schema capability checks fail closed before repository work. Writes with
+`encryption` or `secureHash`, and reads/writes with `isVirtual`,
+`returnByDefault`, `viewable`, `userEditable`, `scope` or unknown declarations
+are missing until implemented and measured. Checks include nested properties and
+array items; they conservatively refuse the declared capability even if that
+request supplies no value. Relationships remain missing. `searchable` is the
+measured UI/schema setting, not an index declaration. Display metadata, defaults
+and hooks are supported. Declared `enum`, `required` and `policies` require the
+explicit policy evaluator on writes; without one they are missing rather than
+silently accepted. The generic policy omission assumption remains for schemas
+without such declarations. `alpha_user.password` is omitted on read/query;
+no other type's password semantics are inferred.
+
 Results add `provenance: {kind, behavior, source?}[]`, deduplicated per request.
 `measured` entries cite the verified API docs; `assumed` entries identify the
 choices the measurements leave open. A reached `missing` entry fails the request
