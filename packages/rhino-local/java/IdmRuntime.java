@@ -26,8 +26,8 @@ final class IdmRuntime {
   private final Map<String, Object> properties;
   private final java.util.Set<String> assumed = new java.util.concurrent.ConcurrentSkipListSet<String>();
 
-  private IdmRuntime(Context cx, HostCalls calls, Map<String, Object> job) {
-    scope = IdmScope.create(cx);
+  private IdmRuntime(Context cx, HostCalls calls, Map<String, Object> job, IdmContextFactory factory) {
+    scope = IdmScope.create(cx, factory);
     values = new IdmValues(scope);
     calls.values = values;
     this.calls = calls;
@@ -66,7 +66,7 @@ final class IdmRuntime {
     Object internalResult = null;
     try {
       calls = new HostCalls(id, factory);
-      runtime = new IdmRuntime(cx, calls, job);
+      runtime = new IdmRuntime(cx, calls, job, factory);
       String preamble = Json.optionalString(job, "preamble");
       if (preamble != null) {
         compiling = true;
@@ -101,6 +101,7 @@ final class IdmRuntime {
       thrown.put("message", e.getMessage());
       response.put("thrown", thrown);
     } finally {
+      factory.finish();
       if (calls != null) calls.close();
       Context.exit();
     }
