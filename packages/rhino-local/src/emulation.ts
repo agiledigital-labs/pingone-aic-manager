@@ -22,7 +22,7 @@ export function emulationFailure(error: unknown): EmulationFailureInfo | undefin
 
 export function responseFailure(response: JobResponse): EmulationFailureInfo | undefined {
   return emulationFailure(response) ?? (response.outcome === "timeout"
-    ? { kind: "timeout", message: "IDM harness timeout" }
+    ? { kind: "timeout", message: "Rhino harness timeout" }
     : response.outcome === "protocol_error"
       ? { kind: "protocol", message: response.error?.message ?? "IDM protocol failure" } : undefined);
 }
