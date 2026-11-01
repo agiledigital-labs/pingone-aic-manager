@@ -310,6 +310,10 @@ pub enum RelationshipCommand {
         upper: String,
         #[arg(long)]
         output: std::path::PathBuf,
+        /// Explicitly acknowledge an upper pair that has never existed there.
+        /// Both upper ends and mappings must be absent; never use to bypass Q14.
+        #[arg(long = "new-pair")]
+        new_pairs: Vec<String>,
         #[command(flatten)]
         options: super::conversion_cli::Options,
     },
@@ -1260,8 +1264,9 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             lower,
             upper,
             output,
+            new_pairs,
             options,
-        } => super::conversion_cli::capture_links(lower, upper, output, options).await,
+        } => super::conversion_cli::capture_links(lower, upper, output, new_pairs, options).await,
         RelationshipCommand::RestoreLinks {
             file,
             tenant,
@@ -1464,6 +1469,20 @@ fn activation_check(object: &str, key: &str, unverified: &[String], written: boo
         },
         unverified.join(", ")
     )))
+}
+
+/// Conversion uses the same read-only activation wait as set. A capture can
+/// survive a later declaration repair, whose routes may not yet be live.
+pub(super) async fn require_live_ends(tenant: &str, ends: Vec<relink::NewEnd>) -> Result<()> {
+    let activation = wait_for_ends(tenant, ends).await;
+    let unverified = unverified_ends(&activation);
+    if !unverified.is_empty() {
+        return Err(crate::Error::Config(format!(
+            "refusing record writes: relationship ends not confirmed live: {}; keep the capture and retry once the declarations are live",
+            unverified.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 async fn wait_for_ends(tenant: &str, ends: Vec<relink::NewEnd>) -> Vec<ActivationOutput> {
@@ -3688,6 +3707,8 @@ mod tests {
                 "uat",
                 "--output",
                 "capture.json",
+                "--new-pair",
+                "new_widget.owner",
                 "--dry-run",
             ],
             vec![

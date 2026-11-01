@@ -143,6 +143,8 @@ pub struct Capture {
     pub pairs: Vec<Pair>,
     #[serde(default)]
     pub restored: Vec<Receipt>,
+    #[serde(default)]
+    pub new_pairs: Vec<String>,
 }
 
 impl Capture {
@@ -158,6 +160,7 @@ impl Capture {
             pending: None,
             pairs,
             restored: Vec::new(),
+            new_pairs: Vec::new(),
         }
     }
     pub fn count(&self) -> usize {
@@ -495,8 +498,10 @@ pub fn promotion_pairs(
     lower_repo: &Value,
     upper_managed: &Value,
     upper_repo: &Value,
+    new_pairs: &BTreeSet<String>,
 ) -> Result<Vec<Pair>> {
     let mut selected = Vec::new();
+    let mut acknowledged = BTreeSet::new();
     for located in verify::all_relationship_mappings(lower_repo) {
         let Some(object) = located.generic_object() else {
             continue;
@@ -515,8 +520,25 @@ pub fn promotion_pairs(
         if storage::mode(&lower) != storage::Mode::Mapped {
             return Err(Error::Config(format!("lower {} is mixed", located.label())));
         }
+        if new_pairs.contains(&located.label()) {
+            for end in std::iter::once(&lower.forward).chain(lower.reverse.iter()) {
+                if verify::properties(upper_managed, &end.object)
+                    .is_some_and(|props| props.contains_key(&end.key))
+                    || !verify::sections_mapping(upper_repo, &end.object, &end.key).is_empty()
+                {
+                    return Err(Error::Config(format!(
+                        "{}.{} already has an upper declaration or mapping; remove --new-pair {} and capture it normally",
+                        end.object,
+                        end.key,
+                        located.label()
+                    )));
+                }
+            }
+            acknowledged.insert(located.label());
+            continue;
+        }
         let upper = storage::pair(upper_managed, upper_repo, object, &located.key)
-            .map_err(|reason| Error::Config(format!("upper declaration cannot be trusted (possible Q14): {reason}; assess new undeclared pairs separately")))?;
+            .map_err(|reason| Error::Config(format!("upper declaration cannot be trusted (possible Q14): {reason}. Only if both ends have never existed in upper, explicitly acknowledge --new-pair {} after checking their history", located.label())))?;
         if storage::mode(&upper) == storage::Mode::Mapped {
             continue;
         }
@@ -533,6 +555,12 @@ pub fn promotion_pairs(
         let pair = Pair::of(&lower, mappings)?;
         guard(&pair, upper_managed, upper_repo, storage::Mode::Generic)?;
         selected.push(pair);
+    }
+    if &acknowledged != new_pairs {
+        return Err(Error::Config(format!(
+            "--new-pair did not name lower mapped reference ends: {:?}",
+            new_pairs.difference(&acknowledged).collect::<Vec<_>>()
+        )));
     }
     Ok(selected)
 }
@@ -683,6 +711,7 @@ pub(super) fn receipt(
 pub async fn rollback_with(
     capture: &mut Capture,
     _permit: &Permit,
+    confirm_config_write: impl AsyncFnOnce() -> Result<()>,
     mut save: impl AsyncFnMut(&Capture) -> Result<()>,
     remove_links: impl AsyncFnOnce(&mut Capture) -> Result<()>,
     remove_mapping: impl AsyncFnOnce() -> Result<()>,
@@ -690,6 +719,7 @@ pub async fn rollback_with(
     if capture.origin != Origin::InPlace {
         return Err(Error::Config("rollback-map is only available for an in-place capture; it cannot write upper-environment config".into()));
     }
+    confirm_config_write().await?;
     capture.state = State::RollingBack;
     save(capture).await?;
     remove_links(capture).await?;
@@ -1071,23 +1101,23 @@ mod tests {
     fn promotion_selection_exactly_lower_mapped_upper_generic() {
         let (managed, generic, mapped, _) = fixture(true);
         assert_eq!(
-            promotion_pairs(&managed, &mapped, &managed, &generic)
+            promotion_pairs(&managed, &mapped, &managed, &generic, &BTreeSet::new())
                 .unwrap()
                 .len(),
             1
         );
         assert!(
-            promotion_pairs(&managed, &mapped, &managed, &mapped)
+            promotion_pairs(&managed, &mapped, &managed, &mapped, &BTreeSet::new())
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            promotion_pairs(&managed, &generic, &managed, &generic)
+            promotion_pairs(&managed, &generic, &managed, &generic, &BTreeSet::new())
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            promotion_pairs(&managed, &generic, &managed, &mapped)
+            promotion_pairs(&managed, &generic, &managed, &mapped, &BTreeSet::new())
                 .unwrap()
                 .is_empty()
         );
@@ -1101,6 +1131,10 @@ mod tests {
         rollback_with(
             &mut capture,
             &permit,
+            async || {
+                log.borrow_mut().push("confirm config write");
+                Ok(())
+            },
             async |_| {
                 log.borrow_mut().push("intent");
                 Ok(())
@@ -1118,7 +1152,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             *log.borrow(),
-            ["intent", "remove links and confirm empty", "remove mapping"]
+            [
+                "confirm config write",
+                "intent",
+                "remove links and confirm empty",
+                "remove mapping"
+            ]
         );
         capture.origin = Origin::Promotion;
         log.borrow_mut().clear();
@@ -1126,6 +1165,7 @@ mod tests {
             rollback_with(
                 &mut capture,
                 &permit,
+                async || Ok(()),
                 async |_| Ok(()),
                 async |_| Ok(()),
                 async || Ok(())
@@ -1183,6 +1223,7 @@ mod tests {
         let result = rollback_with(
             &mut capture,
             &authorize(false, true).unwrap(),
+            async || Ok(()),
             async |_| Ok(()),
             async |_| Err(Error::Config("removal not confirmed".into())),
             async || {
@@ -1284,5 +1325,91 @@ mod tests {
         .unwrap();
         assert_eq!(capture.restored[0].edge_id, "current-counter");
         assert!(capture.pending.is_none());
+    }
+    #[test]
+    fn promotion_missing_upper_requires_scoped_new_pair_acknowledgment() {
+        let (managed, generic, mapped, _) = fixture(true);
+        let absent = serde_json::json!({"objects":[]});
+        let error = promotion_pairs(&managed, &mapped, &absent, &generic, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Q14"));
+        assert!(error.contains("--new-pair a.link"));
+        let acknowledged = BTreeSet::from(["a.link".into()]);
+        assert!(
+            promotion_pairs(&managed, &mapped, &absent, &generic, &acknowledged)
+                .unwrap()
+                .is_empty()
+        );
+        let unknown = BTreeSet::from(["a.unknown".into()]);
+        assert!(promotion_pairs(&managed, &mapped, &managed, &generic, &unknown).is_err());
+
+        // A new lower pair must not prevent capture of an existing upper pair.
+        let mut lower = managed.clone();
+        let mut extra = managed["objects"].as_array().unwrap().clone();
+        extra[0]["name"] = json!("c");
+        extra[0]["schema"]["properties"]["link"]["items"]["resourceCollection"][0]["path"] =
+            json!("managed/d");
+        extra[1]["name"] = json!("d");
+        extra[1]["schema"]["properties"]["back"]["items"]["resourceCollection"][0]["path"] =
+            json!("managed/c");
+        lower["objects"].as_array_mut().unwrap().extend(extra);
+        let both = storage::plan(&lower, &mapped, "c", "link").unwrap().after;
+        let selected = promotion_pairs(
+            &lower,
+            &both,
+            &managed,
+            &generic,
+            &BTreeSet::from(["c.link".into()]),
+        )
+        .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].forward.label(), "a.link");
+    }
+
+    #[test]
+    fn new_pair_acknowledgment_cannot_skip_an_existing_upper_end() {
+        let (managed, generic, mapped, _) = fixture(true);
+        let acknowledged = BTreeSet::from(["a.link".into()]);
+        assert!(promotion_pairs(&managed, &mapped, &managed, &generic, &acknowledged).is_err());
+        let mut partial = managed.clone();
+        partial["objects"][0]["schema"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("link");
+        assert!(promotion_pairs(&managed, &mapped, &partial, &generic, &acknowledged).is_err());
+        let absent = json!({"objects":[]});
+        assert!(promotion_pairs(&managed, &mapped, &absent, &mapped, &acknowledged).is_err());
+    }
+    #[tokio::test]
+    async fn rollback_config_denial_happens_before_any_link_removal() {
+        let (mut capture, _) = captured(true);
+        let removed = RefCell::new(false);
+        let error = rollback_with(
+            &mut capture,
+            &authorize(false, true).unwrap(),
+            async || Err(Error::Config("config write denied".into())),
+            async |_| Ok(()),
+            async |_| {
+                *removed.borrow_mut() = true;
+                Ok(())
+            },
+            async || panic!("mapping removal cannot be reached"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("denied"));
+        assert!(!*removed.borrow());
+        assert_ne!(capture.state, State::RollingBack);
+    }
+
+    #[test]
+    fn rollback_authority_plan_keeps_the_entire_mapping_document_unchanged() {
+        let (managed, _, mapped, pair) = fixture(true);
+        let plan = super::super::repair::plan_confirm(&managed, &mapped, &pair).unwrap();
+        assert_eq!(plan.before(), plan.after());
+        assert!(verify::mapped(plan.after(), "a", "link").is_some());
+        assert!(verify::mapped(plan.after(), "b", "back").is_some());
+        super::super::repair::recheck(&plan, &managed, &mapped).unwrap();
     }
 }

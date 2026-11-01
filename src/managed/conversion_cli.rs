@@ -3,6 +3,7 @@
 //! engine; all config writes still go through repair::apply_with. Upper
 //! restore writes records only. No promotion lifecycle code is changed.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -106,6 +107,9 @@ fn plan(capture: &Capture, path: &Path, operation: &str) {
             "  each re-create is a record update: budget for onUpdate/postUpdate hooks, sync mappings and notifications per link (exact firing counts are unmeasured)"
         );
     } else {
+        eprintln!(
+            "  first submit the unchanged repo.ds with backup/readback; a config write denial stops before records are removed"
+        );
         eprintln!(
             "  remove captured mapped links first, then remove both mapping entries; original generic links become visible again"
         );
@@ -364,7 +368,18 @@ async fn ready(tenant: &str, pair: &Pair) -> Result<()> {
     guard(tenant, pair, storage::Mode::Mapped).await?;
     let current = census(tenant, pair).await?;
     // Restoring a subset is fine; extra or altered data is never overwritten.
-    conversion::subset(pair, &current)
+    conversion::subset(pair, &current)?;
+    if !pair.links.is_empty() {
+        let ends = std::iter::once(&pair.forward)
+            .chain(pair.reverse.iter())
+            .map(|end| relink::NewEnd {
+                object: end.object.clone(),
+                key: end.key.clone(),
+            })
+            .collect();
+        super::cli::require_live_ends(tenant, ends).await?;
+    }
+    Ok(())
 }
 
 async fn finish_restore(
@@ -577,6 +592,7 @@ pub async fn capture_links(
     lower: String,
     upper: String,
     output_path: PathBuf,
+    new_pairs: Vec<String>,
     options: Options,
 ) -> Result<()> {
     let flags = Flags::from(options);
@@ -595,8 +611,25 @@ pub async fn capture_links(
     let lower_repo = api::get_repo_ds(&lower.name).await?;
     let upper_managed = api::get_managed(&upper.name).await?;
     let upper_repo = api::get_repo_ds(&upper.name).await?;
-    let mut pairs =
-        conversion::promotion_pairs(&lower_managed, &lower_repo, &upper_managed, &upper_repo)?;
+    let new_pairs = new_pairs.into_iter().collect::<BTreeSet<_>>();
+    let selection = conversion::promotion_pairs(
+        &lower_managed,
+        &lower_repo,
+        &upper_managed,
+        &upper_repo,
+        &new_pairs,
+    )?;
+    for field in &new_pairs {
+        eprintln!(
+            "explicitly acknowledged new upper pair {field}: no capture; operator confirmed it has never existed there"
+        );
+    }
+    if !new_pairs.is_empty() {
+        eprintln!(
+            "after promotion, check uncaptured new ends for orphaned column values before resuming writers"
+        );
+    }
+    let mut pairs = selection.clone();
     for pair in &mut pairs {
         pair.links = generic_snapshot(&upper.name, pair).await?.links;
     }
@@ -606,15 +639,19 @@ pub async fn capture_links(
             "no linked generic pairs need capture on {}; no file written",
             upper.name
         );
-        return output(&flags, &json!({"capture":null,"pairs":0}));
+        return output(
+            &flags,
+            &json!({"capture":null,"pairs":0,"new_pairs":new_pairs,"dry_run":flags.dry_run}),
+        );
     }
-    let capture = Capture::new(upper.name.clone(), upper.base_url, Origin::Promotion, pairs);
+    let mut capture = Capture::new(upper.name.clone(), upper.base_url, Origin::Promotion, pairs);
+    capture.new_pairs = new_pairs.iter().cloned().collect();
     capture.validate()?;
     plan(&capture, &output_path, "capture-links before promotion");
     let Some(_permit) = consent(&flags, "capture-links", &capture)? else {
         return output(
             &flags,
-            &json!({"capture":output_path,"links":capture.count(),"pairs":capture.pairs.len(),"dry_run":true}),
+            &json!({"capture":output_path,"links":capture.count(),"pairs":capture.pairs.len(),"new_pairs":capture.new_pairs,"dry_run":true}),
         );
     };
     let _ok = ensure_prod_confirmed(&upper.name, flags.yes)?;
@@ -624,10 +661,21 @@ pub async fn capture_links(
         guard(&upper.name, pair, storage::Mode::Generic).await?;
         guard(&lower.name, pair, storage::Mode::Mapped).await?;
     }
-    if api::get_repo_ds(&lower.name).await? != lower_repo
-        || api::get_repo_ds(&upper.name).await? != upper_repo
+    let fresh_lower = api::get_managed(&lower.name).await?;
+    let fresh_upper = api::get_managed(&upper.name).await?;
+    let fresh_lower_repo = api::get_repo_ds(&lower.name).await?;
+    let fresh_upper_repo = api::get_repo_ds(&upper.name).await?;
+    if fresh_lower_repo != lower_repo
+        || fresh_upper_repo != upper_repo
+        || conversion::promotion_pairs(
+            &fresh_lower,
+            &fresh_lower_repo,
+            &fresh_upper,
+            &fresh_upper_repo,
+            &new_pairs,
+        )? != selection
     {
-        return Err(Error::Config("repo.ds changed during promotion capture; re-run against the stable locked configuration before promoting".into()));
+        return Err(Error::Config("declarations or repo.ds changed during promotion capture (possible Q14); re-run against the stable locked configuration before promoting".into()));
     }
     file.save(&capture).await?;
     eprintln!(
@@ -637,7 +685,7 @@ pub async fn capture_links(
     );
     output(
         &flags,
-        &json!({"capture":output_path,"links":capture.count(),"pairs":capture.pairs.len()}),
+        &json!({"capture":output_path,"links":capture.count(),"pairs":capture.pairs.len(),"new_pairs":capture.new_pairs}),
     )
 }
 
@@ -769,6 +817,7 @@ async fn rollback_links(
                     pair.forward.label()
                 )));
             }
+            check_edge(ok.tenant, &pair, link, edge).await?;
             capture.pending = Some(conversion::Intent {
                 pair: index,
                 link: link_index,
@@ -839,6 +888,13 @@ pub async fn rollback_map(path: PathBuf, tenant: Option<String>, options: Option
             conversion::rollback_with(
                 &mut capture,
                 &permit,
+                async || {
+                    let managed = api::get_managed(ok.tenant).await?;
+                    let repo = api::get_repo_ds(ok.tenant).await?;
+                    let check =
+                        repair::plan_confirm(&managed, &repo, &pair).map_err(Error::Config)?;
+                    write_plan(&ok, &pair, &check, storage::Mode::Mapped).await
+                },
                 async |capture| file.lock().await.save(capture).await,
                 async |capture| rollback_links(&ok, capture, &file, &relink_permit).await,
                 async || {
