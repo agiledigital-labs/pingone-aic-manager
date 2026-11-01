@@ -1,5 +1,5 @@
 /** Managed repository and measured lifecycle chains. Scripts own JVM execution only. */
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { HostCallError } from "../runner.ts";
 import type { JsonValue } from "../protocol.ts";
@@ -29,6 +29,7 @@ export function revision(request: RestRequest): string | undefined {
 }
 
 export class ManagedStore {
+  private readonly cookieKey = randomBytes(32);
   private readonly records: Map<string, Document>;
   private readonly scripts: Scripts;
   private readonly evidence: Evidence;
@@ -151,6 +152,16 @@ export class ManagedStore {
       this.evidence.measured("undeclared request attributes are rejected", "docs/api/10-managed-objects.md");
       throw new IdmError(400, `Request content includes undeclared attributes: ${JSON.stringify(undeclared)}`);
     }
+    if (method === "create") {
+      this.evidence.measured("declared defaults apply on create before policy", "docs/api/10-managed-objects.md");
+      this.evidence.assumed("defaults apply before create hooks; non-scalar defaults use cloned JSON values");
+      for (const [name, config] of Object.entries(type.schema.properties)) {
+        if (!Object.hasOwn(object, name) && Object.hasOwn(config, "default")) {
+          Object.defineProperty(object, name, { value: structuredClone(config.default) as JsonValue,
+            writable: true, enumerable: true, configurable: true });
+        }
+      }
+    }
     this.evidence.measured(`managed ${method} hook order and bindings`);
     const invocation = this.invocation(type, id, op, op.request.method === "PATCH" ? "patch" : method, object, oldObject, object);
     await this.scripts.hook(type, method === "create" ? "onCreate" : "onUpdate", invocation);
@@ -214,9 +225,14 @@ export class ManagedStore {
 
   private async afterWrite(type: ManagedType, id: string, op: Operation, record: Document, oldObject: Document | null, method: "create" | "update"): Promise<void> {
     const invocation = this.invocation(type, id, op, op.request.method === "PATCH" ? "patch" : method, record, oldObject, record);
-    this.evidence.assumed("post-hook mutations affect responses only; post-hook failures retain committed writes");
-    await this.scripts.hook(type, method === "create" ? "postCreate" : "postUpdate", invocation);
-    await this.scripts.hook(type, "onSync", { ...invocation, object: null });
+    this.evidence.assumed("post-hook mutations affect responses only");
+    try {
+      await this.scripts.hook(type, method === "create" ? "postCreate" : "postUpdate", invocation);
+      await this.scripts.hook(type, "onSync", { ...invocation, object: null });
+    } catch (error) {
+      this.evidence.assumed("post-hook failure after commit keeps the write");
+      throw error;
+    }
   }
 
   private async delete(type: ManagedType, id: string, op: Operation): Promise<Reply> {
@@ -225,10 +241,19 @@ export class ManagedStore {
     this.evidence.measured("managed delete hook order; postDelete and onSync object is null");
     const invocation = this.invocation(type, id, op, "delete", object, object, null);
     await this.scripts.hook(type, "onDelete", invocation);
+    if (this.records.get(this.key(type, id))?._rev !== object._rev) {
+      this.evidence.assumed("concurrent writes are checked again after hooks");
+      throw new IdmError(412, "Revision mismatch");
+    }
     this.records.delete(this.key(type, id));
-    this.evidence.assumed("post-hook mutations affect responses only; post-hook failures retain committed writes");
-    await this.scripts.hook(type, "postDelete", { ...invocation, object: null });
-    await this.scripts.hook(type, "onSync", { ...invocation, object: null });
+    this.evidence.assumed("post-hook mutations affect responses only");
+    try {
+      await this.scripts.hook(type, "postDelete", { ...invocation, object: null });
+      await this.scripts.hook(type, "onSync", { ...invocation, object: null });
+    } catch (error) {
+      this.evidence.assumed("post-hook failure after commit keeps the write");
+      throw error;
+    }
     return { status: 200, body: project(object, fields(op.request.query?._fields), this.evidence) };
   }
 
@@ -285,10 +310,22 @@ export class ManagedStore {
       this.evidence.measured("explicit null paging cookie yields 500", "docs/api/10-managed-objects.md");
       throw new IdmError(500, "/_pagedResultsCookie: Expecting a value");
     }
-    if (query._pagedResultsCookie !== undefined) missing(this.evidence, "query paging cookies");
-    const offset = integer(query._pagedResultsOffset, 0);
+    const sign = (offset: string): string => createHmac("sha256", this.cookieKey)
+      .update(JSON.stringify([type.name, query._queryFilter, query._sortKeys, offset])).digest("base64url");
+    let offset = integer(query._pagedResultsOffset, 0);
+    if (query._pagedResultsCookie !== undefined && query._pagedResultsCookie !== "") {
+      if (typeof query._pagedResultsCookie !== "string") throw invalidInput("Invalid paging cookie");
+      const [encoded, signature] = query._pagedResultsCookie.split(".");
+      if (!encoded || signature !== sign(encoded)) throw invalidInput("Invalid paging cookie");
+      offset = integer(Buffer.from(encoded, "base64url").toString(), 0);
+    }
     const size = integer(query._pageSize, 0);
-    this.evidence.assumed("offset paging with zero page size unbounded and null result cookie");
+    this.evidence.measured("paging continuation cookies and query envelope", "docs/api/10-managed-objects.md");
+    this.evidence.assumed("opaque signed offset cookies re-evaluate the query; concurrent query mutation stability is not modeled");
+    this.evidence.assumed("zero page size is unbounded");
+    const nextOffset = offset + size;
+    const encoded = Buffer.from(String(nextOffset)).toString("base64url");
+    const cookie = size > 0 && nextOffset < rows.length ? `${encoded}.${sign(encoded)}` : null;
     rows = rows.slice(offset, size > 0 ? offset + size : undefined);
     const selectors = fields(query._fields);
     if (String(query.executeOnRetrieve) === "true") {
@@ -302,7 +339,7 @@ export class ManagedStore {
         return project(row, selectors, this.evidence);
       });
     }
-    const result: Document = { result: rows, resultCount: rows.length, pagedResultsCookie: null,
+    const result: Document = { result: rows, resultCount: rows.length, pagedResultsCookie: cookie,
       totalPagedResults: -1, totalPagedResultsPolicy: "NONE" };
     this.evidence.measured("query counts and internal omission of remainingPagedResults", "docs/api/10-managed-objects.md");
     if (!op.internal) result.remainingPagedResults = -1;

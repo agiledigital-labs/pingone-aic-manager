@@ -27,6 +27,8 @@ export interface JobRequest {
   engine?: "am" | "idm";
   /** IDM top-level bindings, wrapped as Java-backed maps/lists. */
   bindings?: { [key: string]: JsonValue };
+  /** IDM aliases resolved to the same backing object before script evaluation. */
+  bindingAliases?: Record<string, string>;
   /** Binding names to wrap as Java resource-name objects instead of JS strings. */
   resourceNameBindings?: string[];
   /** Include unsupported IDM helper uses even when the script catches their errors. */

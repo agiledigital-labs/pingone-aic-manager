@@ -461,6 +461,7 @@ export class RhinoRunner {
     const payload: Record<string, unknown> = { id, source: job.source };
     if (job.engine !== undefined) payload.engine = job.engine;
     if (job.bindings !== undefined) payload.bindings = job.bindings;
+    if (job.bindingAliases !== undefined) payload.bindingAliases = job.bindingAliases;
     if (job.resourceNameBindings !== undefined)
       payload.resourceNameBindings = job.resourceNameBindings;
     if (job.reportMissing !== undefined) payload.reportMissing = job.reportMissing;

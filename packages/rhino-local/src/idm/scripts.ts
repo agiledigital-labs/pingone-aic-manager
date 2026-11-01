@@ -30,7 +30,7 @@ export class Scripts {
     this.onCall = onCall;
   }
 
-  async evaluate(script: Script, bindings: Document, context: string): Promise<JobResponse> {
+  async evaluate(script: Script, bindings: Document, context: string, bindingAliases?: Record<string, string>): Promise<JobResponse> {
     if (script.file !== undefined) missing(this.evidence, `script file reference: ${script.file}`);
     if (script.type !== "text/javascript") missing(this.evidence, `script type: ${script.type}`);
     if (script.source === undefined) missing(this.evidence, "script without inline source");
@@ -38,6 +38,7 @@ export class Scripts {
     this.evidence.measured("request uses a CREST method request wrapper");
     this.evidence.assumed("Java long values use JavaScript number precision");
     const response = await this.runner.eval({
+      ...(bindingAliases ? { bindingAliases } : {}),
       engine: "idm", source: script.source, sourceName: context,
       bindings: { ...script.globals, ...bindings }, resourceNameBindings: ["resourceName"], reportMissing: true, crestBindings: true,
     }, { onCall: AsyncLocalStorage.bind(this.onCall) });
@@ -56,8 +57,11 @@ export class Scripts {
     if (hook === "onValidate" || hook === "onStore") bindings.value = object;
     else Object.assign(bindings, { oldObject, newObject });
     if (hook === "onValidate" || hook === "onStore") this.evidence.assumed("object validation/store value binding uses the current object snapshot");
-    if (object !== null && (oldObject !== null || newObject !== null)) this.evidence.assumed("sibling object bindings cross the runner as independent JSON snapshots");
-    const response = await this.evaluate(script, bindings, hook);
+    const aliases: Record<string, string> = {};
+    if ((hook === "onCreate" || hook === "onUpdate") && object !== null && newObject === object) {
+      aliases.newObject = "object";
+    }
+    const response = await this.evaluate(script, bindings, hook, aliases);
     if (object !== null && isDocument(response.bindings?.object)) {
       const changed = response.bindings.object;
       for (const key of Object.keys(object)) delete object[key];

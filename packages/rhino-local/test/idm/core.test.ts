@@ -43,7 +43,7 @@ describe("repository and REST seam", () => {
     const emu = emulator(runner);
     for (const [id, count] of [["a", 3], ["b", 1], ["c", 2]] as const) await create(emu, { count, nested: { rank: count }, text: id }, id);
     const body = await send(emu, { method: "GET", path: "managed/widget", query: { _queryFilter: "count ge 1", _sortKeys: "-nested/rank,_id", _pageSize: "1", _pagedResultsOffset: "1", _fields: "text" } });
-    expect(body).toEqual({ result: [{ _id: "c", _rev: "0", text: "c" }], resultCount: 1, pagedResultsCookie: null, remainingPagedResults: -1, totalPagedResults: -1, totalPagedResultsPolicy: "NONE" });
+    expect(body).toEqual({ result: [{ _id: "c", _rev: "0", text: "c" }], resultCount: 1, pagedResultsCookie: expect.any(String), remainingPagedResults: -1, totalPagedResults: -1, totalPagedResultsPolicy: "NONE" });
   });
 
   it("forks share immutable config but isolate nested state and subsequent writes", async () => {

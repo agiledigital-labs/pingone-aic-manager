@@ -30,6 +30,13 @@ final class IdmRuntime {
     IdmValues.CURRENT.set(values);
     this.calls = calls;
     bindings = job.get("bindings") == null ? new LinkedHashMap<String, Object>() : Json.asObject(job.get("bindings"), "bindings");
+    if (job.get("bindingAliases") != null) {
+      for (Map.Entry<String, Object> alias : Json.asObject(job.get("bindingAliases"), "bindingAliases").entrySet()) {
+        String target = Json.asString(alias.getValue(), "binding alias");
+        if (!bindings.containsKey(target)) throw new IllegalArgumentException("unknown binding alias target: " + target);
+        bindings.put(alias.getKey(), bindings.get(target));
+      }
+    }
     List<String> resourceNames = Json.optionalStringList(job, "resourceNameBindings");
     boolean crestBindings = Boolean.TRUE.equals(job.get("crestBindings"));
     for (Map.Entry<String, Object> e : bindings.entrySet()) {
