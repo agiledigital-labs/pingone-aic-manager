@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use super::conversion::{
     self, Capture, Census, FileSession, Link, Observation, Origin, Pair, State,
 };
-use super::{api, relink, repair, storage, verify};
+use super::{api, conversion_records, relink, repair, storage, verify};
 use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, tenant_config_for};
 use crate::config::ProjectConfig;
@@ -84,39 +84,60 @@ fn default_path() -> PathBuf {
         .join(format!("{}.json", uuid::Uuid::new_v4()))
 }
 
-fn plan(capture: &Capture, path: &Path, operation: &str) {
-    eprintln!(
+fn plan_text(capture: &Capture, path: &Path, operation: &str, saved: bool, switch: bool) -> String {
+    let mut lines = vec![format!(
         "{operation}: {} pair(s), {} captured link(s); capture {}",
         capture.pairs.len(),
         capture.count(),
         path.display()
-    );
-    eprintln!("  saved state: {:?}", capture.state);
-    for pair in &capture.pairs {
-        eprintln!("  {}: {} links", pair.forward.label(), pair.links.len());
-    }
-    eprintln!(
-        "  pause all link writers; no atomic lock exists across link reads and configuration"
-    );
-    if operation != "rollback-map" {
-        eprintln!(
-            "  {} links are invisible from the mapping switch/promotion until restore finishes",
-            capture.count()
-        );
-        eprintln!(
-            "  each re-create is a record update: budget for onUpdate/postUpdate hooks, sync mappings and notifications per link (exact firing counts are unmeasured)"
-        );
+    )];
+    lines.push(if saved {
+        format!("  saved state: {:?}", capture.state)
     } else {
-        eprintln!(
-            "  first submit the unchanged repo.ds with backup/readback; a config write denial stops before records are removed"
-        );
-        eprintln!(
-            "  remove captured mapped links first, then remove both mapping entries; original generic links become visible again"
-        );
-        eprintln!(
-            "  each removal is a record update and can invoke hooks, sync mappings and notifications"
-        );
+        "  planned capture; no file written".into()
+    });
+    for pair in &capture.pairs {
+        lines.push(format!(
+            "  {}: {} links",
+            pair.forward.label(),
+            pair.links.len()
+        ));
     }
+    lines.push(
+        "  pause all link writers; no atomic lock exists across link reads and configuration"
+            .into(),
+    );
+    if operation == "rollback-map" {
+        lines.push("  preflight all mapping dependencies and removal prerequisites before any unlink; then submit unchanged repo.ds with backup/readback to prove config write access".into());
+        lines.push("  remove captured mapped links first, then remove both mapping entries; original generic links become visible again".into());
+        lines.push("  each removal is a record update and can invoke hooks, sync mappings and notifications".into());
+    } else {
+        if switch || operation == "capture-links before promotion" {
+            lines.push(format!(
+                "  {} links are invisible from the mapping switch/promotion until restore finishes",
+                capture.count()
+            ));
+        } else {
+            lines.push("  no mapping switch is planned; verify captured links already present and re-create only missing links".into());
+        }
+        if capture.state == State::RollingBack {
+            lines.push("  resume restoration to reverse the interrupted rollback; the exact captured mappings must still be installed".into());
+        }
+        lines.push("  each re-create is a record update: budget for onUpdate/postUpdate hooks, sync mappings and notifications per link (exact firing counts are unmeasured)".into());
+    }
+    if switch && operation == "map" {
+        for entry in &capture.pairs[0].mappings {
+            lines.push(format!(
+                "  map {}.{}: {}",
+                entry.object, entry.key, entry.value
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn plan(capture: &Capture, path: &Path, operation: &str, saved: bool, switch: bool) {
+    eprintln!("{}", plan_text(capture, path, operation, saved, switch));
 }
 
 fn consent(
@@ -287,6 +308,24 @@ async fn check_edge(tenant: &str, pair: &Pair, link: &Link, edge: &relink::Edge)
                 link.label()
             )));
         }
+        let far_edges = record
+            .as_ref()
+            .map(|record| relink::edges_of(record, &reverse.key))
+            .transpose()
+            .map_err(Error::Config)?
+            .unwrap_or_default();
+        if !far_edges.iter().any(|far_edge| {
+            far_edge.link.edge_id == edge.link.edge_id
+                && far_edge.link.to_collection == format!("managed/{}", pair.forward.object)
+                && far_edge.link.to_id == link.from_id
+                && far_edge.properties
+                    == *link.reverse_properties.as_ref().unwrap_or(&link.properties)
+        }) {
+            return Err(Error::Config(format!(
+                "{} reverse custom _refProperties differ from capture; intent retained",
+                link.label()
+            )));
+        }
         let found =
             api::present_filter_finds(tenant, &reverse.object, &link.to_id, &reverse.key).await?;
         if verify::Runtime::judge(far, found) != verify::Runtime::MappedConfirmed {
@@ -364,12 +403,18 @@ async fn create(
     ))
 }
 
-async fn ready(tenant: &str, pair: &Pair) -> Result<()> {
-    guard(tenant, pair, storage::Mode::Mapped).await?;
-    let current = census(tenant, pair).await?;
-    // Restoring a subset is fine; extra or altered data is never overwritten.
-    conversion::subset(pair, &current)?;
-    if !pair.links.is_empty() {
+struct TenantRead<'a>(&'a str);
+impl conversion_records::Read for TenantRead<'_> {
+    async fn config(&self) -> Result<(Value, Value)> {
+        Ok((
+            api::get_managed(self.0).await?,
+            api::get_repo_ds(self.0).await?,
+        ))
+    }
+    async fn scan(&self, object: &str, key: &str) -> Result<Vec<Value>> {
+        api::all_records_with(self.0, object, key).await
+    }
+    async fn activate(&self, pair: &Pair) -> Result<()> {
         let ends = std::iter::once(&pair.forward)
             .chain(pair.reverse.iter())
             .map(|end| relink::NewEnd {
@@ -377,9 +422,12 @@ async fn ready(tenant: &str, pair: &Pair) -> Result<()> {
                 key: end.key.clone(),
             })
             .collect();
-        super::cli::require_live_ends(tenant, ends).await?;
+        super::cli::require_live_ends(self.0, ends).await
     }
-    Ok(())
+}
+
+async fn ready(tenant: &str, pair: &Pair) -> Result<()> {
+    conversion_records::ready(&TenantRead(tenant), pair).await
 }
 
 async fn finish_restore(
@@ -535,10 +583,13 @@ pub async fn map(
             eprintln!("  add per-type managed/{object}: {entry}");
         }
     }
-    plan(&capture, &path, "map");
-    for entry in &capture.pairs[0].mappings {
-        eprintln!("  map {}.{}: {}", entry.object, entry.key, entry.value);
-    }
+    plan(
+        &capture,
+        &path,
+        "map",
+        previous.is_some(),
+        storage::mode(&report) == storage::Mode::Generic,
+    );
     let Some(permit) = consent(&flags, "map", &capture)? else {
         return output(
             &flags,
@@ -588,6 +639,24 @@ pub async fn map(
     )
 }
 
+async fn recheck_selection(
+    initial: &conversion::PromotionRead,
+    selection: &[Pair],
+    new_pairs: &BTreeSet<String>,
+    lower: &str,
+    upper: &str,
+) -> Result<()> {
+    conversion::recheck_promotion(initial, selection, new_pairs, async || {
+        Ok(conversion::PromotionRead {
+            lower_managed: api::get_managed(lower).await?,
+            lower_repo: api::get_repo_ds(lower).await?,
+            upper_managed: api::get_managed(upper).await?,
+            upper_repo: api::get_repo_ds(upper).await?,
+        })
+    })
+    .await
+}
+
 pub async fn capture_links(
     lower: String,
     upper: String,
@@ -611,6 +680,12 @@ pub async fn capture_links(
     let lower_repo = api::get_repo_ds(&lower.name).await?;
     let upper_managed = api::get_managed(&upper.name).await?;
     let upper_repo = api::get_repo_ds(&upper.name).await?;
+    let initial = conversion::PromotionRead {
+        lower_managed: lower_managed.clone(),
+        lower_repo: lower_repo.clone(),
+        upper_managed: upper_managed.clone(),
+        upper_repo: upper_repo.clone(),
+    };
     let new_pairs = new_pairs.into_iter().collect::<BTreeSet<_>>();
     let selection = conversion::promotion_pairs(
         &lower_managed,
@@ -635,6 +710,7 @@ pub async fn capture_links(
     }
     pairs.retain(|pair| !pair.links.is_empty());
     if pairs.is_empty() {
+        recheck_selection(&initial, &selection, &new_pairs, &lower.name, &upper.name).await?;
         eprintln!(
             "no linked generic pairs need capture on {}; no file written",
             upper.name
@@ -647,7 +723,13 @@ pub async fn capture_links(
     let mut capture = Capture::new(upper.name.clone(), upper.base_url, Origin::Promotion, pairs);
     capture.new_pairs = new_pairs.iter().cloned().collect();
     capture.validate()?;
-    plan(&capture, &output_path, "capture-links before promotion");
+    plan(
+        &capture,
+        &output_path,
+        "capture-links before promotion",
+        false,
+        false,
+    );
     let Some(_permit) = consent(&flags, "capture-links", &capture)? else {
         return output(
             &flags,
@@ -661,22 +743,7 @@ pub async fn capture_links(
         guard(&upper.name, pair, storage::Mode::Generic).await?;
         guard(&lower.name, pair, storage::Mode::Mapped).await?;
     }
-    let fresh_lower = api::get_managed(&lower.name).await?;
-    let fresh_upper = api::get_managed(&upper.name).await?;
-    let fresh_lower_repo = api::get_repo_ds(&lower.name).await?;
-    let fresh_upper_repo = api::get_repo_ds(&upper.name).await?;
-    if fresh_lower_repo != lower_repo
-        || fresh_upper_repo != upper_repo
-        || conversion::promotion_pairs(
-            &fresh_lower,
-            &fresh_lower_repo,
-            &fresh_upper,
-            &fresh_upper_repo,
-            &new_pairs,
-        )? != selection
-    {
-        return Err(Error::Config("declarations or repo.ds changed during promotion capture (possible Q14); re-run against the stable locked configuration before promoting".into()));
-    }
+    recheck_selection(&initial, &selection, &new_pairs, &lower.name, &upper.name).await?;
     file.save(&capture).await?;
     eprintln!(
         "capture durable at {}. Keep writers paused through promotion; then run restore-links on {}",
@@ -713,7 +780,7 @@ pub async fn restore_links(path: PathBuf, tenant: Option<String>, options: Optio
             .map_err(Error::Config)?;
         }
     }
-    plan(&capture, &path, "restore-links");
+    plan(&capture, &path, "restore-links", true, false);
     let Some(permit) = consent(&flags, "restore-links", &capture)? else {
         return output(
             &flags,
@@ -731,132 +798,53 @@ pub async fn restore_links(path: PathBuf, tenant: Option<String>, options: Optio
     )
 }
 
-async fn rollback_links(
-    ok: &WriteOk<'_>,
-    capture: &mut Capture,
-    file: &tokio::sync::Mutex<FileSession>,
-    permit: &relink::RelinkPermit,
-) -> Result<()> {
-    if let Some(intent) = capture
-        .pending
-        .clone()
-        .filter(|intent| intent.action == conversion::Action::Create)
-    {
-        let pair = capture.pairs[intent.pair].clone();
-        let link = &pair.links[intent.link];
-        let current = observe(ok.tenant, &pair, link).await?;
-        if let Some(edge) = current.edges.iter().find(|edge| link.matches(edge)) {
-            let found = api::present_filter_finds(
-                ok.tenant,
-                &pair.forward.object,
-                &link.from_id,
-                &pair.forward.key,
-            )
-            .await?;
-            if !found {
-                return Err(Error::Config(
-                    "pending link is not proven in mapped storage; inspect before rollback".into(),
-                ));
-            }
-            conversion::receipt(capture, intent.pair, intent.link, edge)?;
-        }
-        capture.pending = None;
-        file.lock().await.save(capture).await?;
+struct TenantRemoval<'a, 'b> {
+    ok: &'a WriteOk<'b>,
+    file: &'a tokio::sync::Mutex<FileSession>,
+}
+impl conversion_records::Read for TenantRemoval<'_, '_> {
+    async fn config(&self) -> Result<(Value, Value)> {
+        conversion_records::Read::config(&TenantRead(self.ok.tenant)).await
     }
-    for index in 0..capture.pairs.len() {
-        let pair = capture.pairs[index].clone();
-        ready(ok.tenant, &pair).await?;
-        for (link_index, link) in pair.links.iter().enumerate() {
-            let current = observe(ok.tenant, &pair, link).await?;
-            let Some(edge) = current.edges.iter().find(|edge| link.matches(edge)) else {
-                continue;
-            };
-            let edge_id = edge.link.edge_id.as_deref().ok_or_else(|| {
-                Error::Config("mapped link has no edge ID; cannot remove it safely".into())
-            })?;
-            let owned = capture
-                .restored
-                .iter()
-                .any(|receipt| receipt.pair == index && receipt.link == link_index);
-            let pending_create = capture.pending.as_ref().is_some_and(|intent| {
-                intent.pair == index
-                    && intent.link == link_index
-                    && intent.action == conversion::Action::Create
-            });
-            let pending_remove = capture.pending.as_ref().is_some_and(|intent| {
-                intent.pair == index
-                    && intent.link == link_index
-                    && intent.action == conversion::Action::Remove
-            });
-            if !owned && !pending_create && !pending_remove {
-                return Err(Error::Config(format!(
-                    "{} was not recorded as restored by this conversion; inspect it before rollback",
-                    link.label()
-                )));
-            }
-            // Required has-one removal is refused by IDM. Do not discover
-            // that after removing earlier links from the batch.
-            let managed = api::get_managed(ok.tenant).await?;
-            conversion::guard(
-                &pair,
-                &managed,
-                &api::get_repo_ds(ok.tenant).await?,
-                storage::Mode::Mapped,
-            )?;
-            if api::object_named(&managed, &pair.forward.object)?
-                .pointer("/schema/required")
-                .and_then(Value::as_array)
-                .is_some_and(|required| {
-                    required
-                        .iter()
-                        .any(|key| key.as_str() == Some(&pair.forward.key))
-                })
-            {
-                return Err(Error::Config(format!(
-                    "{} is required; explicitly clear required before rollback, then reinstate it afterwards",
-                    pair.forward.label()
-                )));
-            }
-            check_edge(ok.tenant, &pair, link, edge).await?;
-            capture.pending = Some(conversion::Intent {
-                pair: index,
-                link: link_index,
-                action: conversion::Action::Remove,
-                edge_id: Some(edge_id.to_string()),
-            });
-            file.lock().await.save(capture).await?;
-            let [remove, _] = relink::writes(
-                permit,
-                &pair.forward.object,
-                &pair.forward.key,
-                pair.forward.array,
-                edge,
-                current.rev.as_deref(),
-            )
-            .map_err(Error::Config)?;
-            if !pair.forward.array && remove.if_match.is_none() {
-                return Err(Error::Config(
-                    "rollback requires a record _rev for has-one removal".into(),
-                ));
-            }
-            api::send_relink(ok.tenant, &pair.forward.object, &remove, ok.confirmed_prod).await?;
-            let after = observe(ok.tenant, &pair, link).await?;
-            if after.edges.iter().any(|edge| link.matches(edge)) {
-                return Err(Error::Config(format!(
-                    "{} removal not confirmed; re-run rollback-map",
-                    link.label()
-                )));
-            }
-            capture.pending = None;
-            file.lock().await.save(capture).await?;
-        }
-        if !census(ok.tenant, &pair).await?.links.is_empty() {
-            return Err(Error::Config(
-                "mapped links remain; mappings were not removed".into(),
-            ));
-        }
+    async fn scan(&self, object: &str, key: &str) -> Result<Vec<Value>> {
+        conversion_records::Read::scan(&TenantRead(self.ok.tenant), object, key).await
     }
-    Ok(())
+    async fn activate(&self, pair: &Pair) -> Result<()> {
+        conversion_records::Read::activate(&TenantRead(self.ok.tenant), pair).await
+    }
+}
+impl conversion_records::Removal for TenantRemoval<'_, '_> {
+    async fn observe(&self, pair: &Pair, link: &Link) -> Result<Observation> {
+        observe(self.ok.tenant, pair, link).await
+    }
+    async fn check(&self, pair: &Pair, link: &Link, edge: &relink::Edge) -> Result<()> {
+        check_edge(self.ok.tenant, pair, link, edge).await
+    }
+    async fn present(&self, pair: &Pair, link: &Link) -> Result<bool> {
+        api::present_filter_finds(
+            self.ok.tenant,
+            &pair.forward.object,
+            &link.from_id,
+            &pair.forward.key,
+        )
+        .await
+    }
+    async fn save(&self, capture: &Capture) -> Result<()> {
+        self.file.lock().await.save(capture).await
+    }
+    async fn send(&self, pair: &Pair, write: &relink::Write) -> Result<()> {
+        api::send_relink(
+            self.ok.tenant,
+            &pair.forward.object,
+            write,
+            self.ok.confirmed_prod,
+        )
+        .await
+        .map(|_| ())
+    }
+    async fn write_config(&self, pair: &Pair, plan: &repair::Plan) -> Result<()> {
+        write_plan(self.ok, pair, plan, storage::Mode::Mapped).await
+    }
 }
 
 pub async fn rollback_map(path: PathBuf, tenant: Option<String>, options: Options) -> Result<()> {
@@ -866,7 +854,7 @@ pub async fn rollback_map(path: PathBuf, tenant: Option<String>, options: Option
     if capture.origin != Origin::InPlace || capture.pairs.len() != 1 {
         return Err(Error::Config("rollback-map requires an in-place capture; upper-environment restore never grants config-write authority".into()));
     }
-    plan(&capture, &path, "rollback-map");
+    plan(&capture, &path, "rollback-map", true, false);
     let Some(permit) = consent(&flags, "rollback-map", &capture)? else {
         return output(
             &flags,
@@ -885,30 +873,14 @@ pub async fn rollback_map(path: PathBuf, tenant: Option<String>, options: Option
         if storage::mode(&report) == storage::Mode::Mapped {
             let relink_permit = relink::authorize(false, true)
                 .ok_or_else(|| Error::Config("rollback record writes not authorized".into()))?;
-            conversion::rollback_with(
+            conversion_records::rollback(
+                &TenantRemoval {
+                    ok: &ok,
+                    file: &file,
+                },
                 &mut capture,
                 &permit,
-                async || {
-                    let managed = api::get_managed(ok.tenant).await?;
-                    let repo = api::get_repo_ds(ok.tenant).await?;
-                    let check =
-                        repair::plan_confirm(&managed, &repo, &pair).map_err(Error::Config)?;
-                    write_plan(&ok, &pair, &check, storage::Mode::Mapped).await
-                },
-                async |capture| file.lock().await.save(capture).await,
-                async |capture| rollback_links(&ok, capture, &file, &relink_permit).await,
-                async || {
-                    if !census(ok.tenant, &pair).await?.links.is_empty() {
-                        return Err(Error::Config(
-                            "mapped store is not empty; refusing to remove mappings".into(),
-                        ));
-                    }
-                    let managed = api::get_managed(ok.tenant).await?;
-                    let repo = api::get_repo_ds(ok.tenant).await?;
-                    let plan =
-                        repair::plan_rollback(&managed, &repo, &pair).map_err(Error::Config)?;
-                    write_plan(&ok, &pair, &plan, storage::Mode::Mapped).await
-                },
+                &relink_permit,
             )
             .await?;
         }
@@ -924,6 +896,37 @@ pub async fn rollback_map(path: PathBuf, tenant: Option<String>, options: Option
         Ok(())
     }
     .await;
-    result.map_err(|error: Error| Error::Config(format!("rollback stopped: {error}. Keep writers paused and re-run rollback-map {}; capture retained", path.display())))?;
+    result.map_err(|error: Error| Error::Config(format!("rollback stopped: {error}. Keep writers paused and re-run rollback-map {} to finish. If the captured mappings are still installed, restore-links with this same file explicitly reverses the interrupted rollback; capture retained", path.display())))?;
     output(&flags, &json!({"capture":path,"rolled_back":true}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::managed::conversion::tests::captured;
+
+    // Regression: dry-run previously claimed a saved state without any file.
+    #[test]
+    fn planned_capture_output_never_claims_a_durable_save() {
+        let (capture, _) = captured(true);
+        let text = plan_text(&capture, Path::new("capture.json"), "map", false, true);
+        assert!(text.contains("planned capture; no file written"));
+        assert!(!text.contains("saved state"));
+        assert!(text.contains("1 links are invisible"));
+        assert!(text.contains("  map a.link:"));
+    }
+
+    // Regression: an existing mapped capture must not print a second switch.
+    #[test]
+    fn restoring_and_complete_plans_describe_resume_without_mapping_writes() {
+        let (mut capture, _) = captured(true);
+        for state in [State::Restoring, State::Complete, State::Captured] {
+            capture.state = state;
+            let text = plan_text(&capture, Path::new("capture.json"), "map", true, false);
+            assert!(text.contains(&format!("saved state: {state:?}")));
+            assert!(text.contains("no mapping switch is planned"));
+            assert!(!text.contains("links are invisible"));
+            assert!(!text.contains("  map a.link:"));
+        }
+    }
 }

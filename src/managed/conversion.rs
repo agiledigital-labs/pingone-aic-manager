@@ -51,6 +51,8 @@ pub struct Link {
     pub to_collection: String,
     pub to_id: String,
     pub properties: Map<String, Value>,
+    #[serde(default)]
+    pub reverse_properties: Option<Map<String, Value>>,
 }
 
 impl Link {
@@ -60,10 +62,14 @@ impl Link {
             to_collection: edge.link.to_collection.clone(),
             to_id: edge.link.to_id.clone(),
             properties: edge.properties.clone(),
+            reverse_properties: None,
         }
     }
     pub fn matches(&self, edge: &relink::Edge) -> bool {
-        self == &Self::of(edge)
+        self.from_id == edge.link.from_id
+            && self.to_collection == edge.link.to_collection
+            && self.to_id == edge.link.to_id
+            && self.properties == edge.properties
     }
     pub fn label(&self) -> String {
         format!("{} -> {}/{}", self.from_id, self.to_collection, self.to_id)
@@ -199,7 +205,11 @@ impl Capture {
                 }
             }
             if pair.links.iter().any(|link| {
-                link.properties.contains_key("_id") || link.properties.contains_key("_rev")
+                std::iter::once(&link.properties)
+                    .chain(link.reverse_properties.iter())
+                    .any(|properties| {
+                        properties.contains_key("_id") || properties.contains_key("_rev")
+                    })
             }) {
                 return Err(Error::Config(
                     "capture contains reserved edge properties; inspect the file".into(),
@@ -234,6 +244,17 @@ fn validate_pair(pair: &Pair) -> Result<()> {
     }) {
         return Err(invalid());
     }
+    if pair
+        .links
+        .iter()
+        .any(|link| match (&pair.reverse, &link.reverse_properties) {
+            (None, Some(_)) => true,
+            (Some(_), Some(reverse)) => reverse != &link.properties,
+            _ => false,
+        })
+    {
+        return Err(invalid());
+    }
     let mut expected = Vec::new();
     let forward = pair.mappings.first().ok_or_else(invalid)?;
     let column = forward
@@ -248,7 +269,7 @@ fn validate_pair(pair: &Pair) -> Result<()> {
     {
         return Err(invalid());
     }
-    expected.push(storage::Entry { object: pair.forward.object.clone(), key: pair.forward.key.clone(),
+    expected.push(storage::Entry { section: forward.section.clone(), object: pair.forward.object.clone(), key: pair.forward.key.clone(),
         value: json!({"type":"reference","ldapAttribute":column,"primaryKey":"uid","resourcePath":pair.forward.target,"isMultiValued":pair.forward.array}) });
     if let Some(reverse) = &pair.reverse {
         if pair.forward.reverse_key.as_deref() != Some(&reverse.key)
@@ -259,7 +280,7 @@ fn validate_pair(pair: &Pair) -> Result<()> {
         {
             return Err(invalid());
         }
-        expected.push(storage::Entry { object: reverse.object.clone(), key: reverse.key.clone(),
+        expected.push(storage::Entry { section: pair.mappings.get(1).ok_or_else(invalid)?.section.clone(), object: reverse.object.clone(), key: reverse.key.clone(),
             value: json!({"type":"reverseReference","resourcePath":reverse.target,"propertyName":pair.forward.key,"isMultiValued":reverse.array}) });
     } else if pair.forward.reverse_key.is_some() {
         return Err(invalid());
@@ -294,6 +315,7 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
         None => Vec::new(),
     };
     let mut problems = Vec::new();
+    let mut links = Vec::new();
     let source = format!("managed/{}", pair.forward.object);
     let forward_index = edges
         .iter()
@@ -315,6 +337,19 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
         })
         .collect::<BTreeSet<_>>();
     for edge in &edges {
+        let mut link = Link::of(edge);
+        if let Some(far) = reverse.iter().find(|far| {
+            far.link.to_collection == source
+                && far.link.from_id == edge.link.to_id
+                && far.link.to_id == edge.link.from_id
+                && far.link.edge_id == edge.link.edge_id
+        }) {
+            link.reverse_properties = Some(far.properties.clone());
+            if far.properties != edge.properties {
+                problems.push(format!("{} (edge {:?}): asymmetric custom _refProperties: forward {}; reverse {}. Restoring asymmetric values is unmeasured", link.label(), edge.link.edge_id, Value::Object(edge.properties.clone()), Value::Object(far.properties.clone())));
+            }
+        }
+        links.push(link);
         if edge.link.to_collection != pair.forward.target
             || !target_ids.contains(edge.link.to_id.as_str())
         {
@@ -353,7 +388,6 @@ pub fn census(pair: &Pair, forward: &[Value], target: &[Value]) -> Result<Census
             problems.join("\n  ")
         )));
     }
-    let mut links = edges.iter().map(Link::of).collect::<Vec<_>>();
     unique(&links)?;
     sort(&mut links);
     Ok(Census { links, edges })
@@ -400,9 +434,24 @@ fn unique(links: &[Link]) -> Result<()> {
     Ok(())
 }
 
+fn expected_links(pair: &Pair) -> Vec<Link> {
+    pair.links
+        .iter()
+        .cloned()
+        .map(|mut link| {
+            // Older captures recorded only forward values. They may resume only
+            // against symmetric reverse values, the sole supported restore shape.
+            if pair.reverse.is_some() && link.reverse_properties.is_none() {
+                link.reverse_properties = Some(link.properties.clone());
+            }
+            link
+        })
+        .collect()
+}
+
 pub fn subset(pair: &Pair, current: &Census) -> Result<()> {
-    let wanted = pair
-        .links
+    let expected = expected_links(pair);
+    let wanted = expected
         .iter()
         .map(|link| (identity(link), link))
         .collect::<BTreeMap<_, _>>();
@@ -419,7 +468,7 @@ pub fn subset(pair: &Pair, current: &Census) -> Result<()> {
 }
 
 pub fn exact(pair: &Pair, current: &Census) -> Result<()> {
-    let mut wanted = pair.links.clone();
+    let mut wanted = expected_links(pair);
     sort(&mut wanted);
     if wanted != current.links {
         let wanted_index = wanted
@@ -476,8 +525,8 @@ pub fn guard(
     }
     if expected == storage::Mode::Mapped {
         for entry in &pair.mappings {
-            if verify::sections_mapping(repo, &entry.object, &entry.key) != ["genericMapping"]
-                || repo["resourceMapping"]["genericMapping"][format!("managed/{}", entry.object)]["properties"]
+            if verify::sections_mapping(repo, &entry.object, &entry.key) != [entry.section.as_str()]
+                || repo["resourceMapping"][&entry.section][format!("managed/{}", entry.object)]["properties"]
                     [&entry.key]
                     != entry.value
             {
@@ -491,8 +540,62 @@ pub fn guard(
     Ok(report)
 }
 
-/// Select reference ends only, avoiding a second visit from the reverse.
-/// No report is consulted: selection compares live stored mappings.
+/// A raw binding includes every field and its section/location. Comparison
+/// precedes schema parsing: unchanged stock multi-target pairs are supported
+/// as exclusions even though conversion cannot safely recreate them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct Binding {
+    section: String,
+    resource: String,
+    key: String,
+    value: Value,
+}
+
+type Endpoint = (String, String);
+
+fn connected(seed: Endpoint, mappings: &[verify::Located]) -> BTreeSet<Endpoint> {
+    let mut ends = BTreeSet::from([seed]);
+    loop {
+        let before = ends.len();
+        for entry in mappings {
+            if entry.mapping.kind != "reverseReference" {
+                continue;
+            }
+            let (Some(resource), Some(key)) =
+                (&entry.mapping.resource_path, &entry.mapping.property_name)
+            else {
+                continue;
+            };
+            let owner = (entry.resource.clone(), entry.key.clone());
+            let reference = (resource.clone(), key.clone());
+            if ends.contains(&owner) || ends.contains(&reference) {
+                ends.insert(owner);
+                ends.insert(reference);
+            }
+        }
+        if ends.len() == before {
+            return ends;
+        }
+    }
+}
+
+fn binding(repo: &Value, ends: &BTreeSet<Endpoint>) -> Vec<Binding> {
+    verify::all_relationship_mappings(repo)
+        .into_iter()
+        .filter(|entry| ends.contains(&(entry.resource.clone(), entry.key.clone())))
+        .map(|entry| Binding {
+            value: repo["resourceMapping"][&entry.section][&entry.resource]["properties"]
+                [&entry.key]
+                .clone(),
+            section: entry.section,
+            resource: entry.resource,
+            key: entry.key,
+        })
+        .collect()
+}
+
+/// Compare connected bindings in both directions. Promotion replaces repo.ds;
+/// a removed upper binding is unsafe too (inferred from storage selection).
 pub fn promotion_pairs(
     lower_managed: &Value,
     lower_repo: &Value,
@@ -500,60 +603,113 @@ pub fn promotion_pairs(
     upper_repo: &Value,
     new_pairs: &BTreeSet<String>,
 ) -> Result<Vec<Pair>> {
+    let lower_entries = verify::all_relationship_mappings(lower_repo);
+    let mut all = lower_entries.clone();
+    all.extend(verify::all_relationship_mappings(upper_repo));
+    let mut visited = BTreeSet::new();
     let mut selected = Vec::new();
     let mut acknowledged = BTreeSet::new();
-    for located in verify::all_relationship_mappings(lower_repo) {
-        let Some(object) = located.generic_object() else {
-            continue;
-        };
-        if located.mapping.kind != "reference" {
+    for located in &all {
+        let endpoint = (located.resource.clone(), located.key.clone());
+        if visited.contains(&endpoint) {
             continue;
         }
-        // Stale lower mappings are not relationship pairs to migrate.
-        if !verify::properties(lower_managed, object)
-            .is_some_and(|props| props.contains_key(&located.key))
-        {
+        let ends = connected(endpoint, &all);
+        visited.extend(ends.iter().cloned());
+        let lower_binding = binding(lower_repo, &ends);
+        let upper_binding = binding(upper_repo, &ends);
+        if lower_binding == upper_binding {
             continue;
         }
-        let lower = storage::pair(lower_managed, lower_repo, object, &located.key)
-            .map_err(Error::Config)?;
+        let reference = lower_binding
+            .iter()
+            .find(|entry| entry.value["type"] == "reference");
+        // A changed lower binding with a missing declaration is an inconsistent
+        // read, even when upper also has a mapping. Never label it stale/skip.
+        for entry in &lower_binding {
+            if let Some(object) = entry.resource.strip_prefix("managed/") {
+                if !verify::properties(lower_managed, object)
+                    .is_some_and(|props| props.contains_key(&entry.key))
+                {
+                    return Err(Error::Config(format!(
+                        "Q14: lower {object}.{} has a mapping without a declaration. Restore the declaration and re-read; if genuinely stale, clean it with relationship repair before promotion",
+                        entry.key
+                    )));
+                }
+            }
+        }
+        if !upper_binding.is_empty() {
+            return Err(Error::Config(format!(
+                "promotion would change/remove relationship binding for {}: lower {}; upper {}. Do not promote until the bindings are resolved; capture-links cannot migrate between mapped stores",
+                located.label(),
+                serde_json::to_string(&lower_binding)?,
+                serde_json::to_string(&upper_binding)?
+            )));
+        }
+        let reference = reference.ok_or_else(|| Error::Config(format!("lower {} has an incomplete binding without a reference; repair it before promotion", located.label())))?;
+        let object = reference.resource.strip_prefix("managed/").ok_or_else(|| {
+            Error::Config(format!(
+                "unsupported conversion candidate {}.{} in {}: reference owner is not managed",
+                reference.resource, reference.key, reference.section
+            ))
+        })?;
+        let label = format!("{object}.{}", reference.key);
+        let lower =
+            storage::pair(lower_managed, lower_repo, object, &reference.key).map_err(|reason| {
+                Error::Config(format!(
+                    "unsupported lower conversion candidate {label}: {reason}"
+                ))
+            })?;
         if storage::mode(&lower) != storage::Mode::Mapped {
-            return Err(Error::Config(format!("lower {} is mixed", located.label())));
+            return Err(Error::Config(format!(
+                "lower {label} is mixed; repair before promotion"
+            )));
         }
-        if new_pairs.contains(&located.label()) {
+        if new_pairs.contains(&label) {
             for end in std::iter::once(&lower.forward).chain(lower.reverse.iter()) {
                 if verify::properties(upper_managed, &end.object)
                     .is_some_and(|props| props.contains_key(&end.key))
                     || !verify::sections_mapping(upper_repo, &end.object, &end.key).is_empty()
                 {
                     return Err(Error::Config(format!(
-                        "{}.{} already has an upper declaration or mapping; remove --new-pair {} and capture it normally",
-                        end.object,
-                        end.key,
-                        located.label()
+                        "{}.{} already has an upper declaration or mapping; remove --new-pair {label} and capture it normally",
+                        end.object, end.key
                     )));
                 }
             }
-            acknowledged.insert(located.label());
+            acknowledged.insert(label);
             continue;
         }
-        let upper = storage::pair(upper_managed, upper_repo, object, &located.key)
-            .map_err(|reason| Error::Config(format!("upper declaration cannot be trusted (possible Q14): {reason}. Only if both ends have never existed in upper, explicitly acknowledge --new-pair {} after checking their history", located.label())))?;
-        if storage::mode(&upper) == storage::Mode::Mapped {
-            continue;
-        }
-        let mut mappings = Vec::new();
-        for end in std::iter::once(&lower.forward).chain(lower.reverse.iter()) {
-            mappings.push(storage::Entry {
-                object: end.object.clone(),
-                key: end.key.clone(),
-                value: lower_repo["resourceMapping"]["genericMapping"]
-                    [format!("managed/{}", end.object)]["properties"][&end.key]
-                    .clone(),
-            });
-        }
+        let mappings = std::iter::once(&lower.forward)
+            .chain(lower.reverse.iter())
+            .map(|end| {
+                let matches = lower_binding
+                    .iter()
+                    .filter(|entry| {
+                        entry.resource == format!("managed/{}", end.object) && entry.key == end.key
+                    })
+                    .collect::<Vec<_>>();
+                let [entry] = matches.as_slice() else {
+                    return Err(Error::Config(format!(
+                        "{label} has ambiguous storage entries; repair before conversion"
+                    )));
+                };
+                Ok(storage::Entry {
+                    section: entry.section.clone(),
+                    object: end.object.clone(),
+                    key: end.key.clone(),
+                    value: entry.value.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let pair = Pair::of(&lower, mappings)?;
-        guard(&pair, upper_managed, upper_repo, storage::Mode::Generic)?;
+        validate_pair(&pair).map_err(|reason| {
+            Error::Config(format!(
+                "unsupported lower conversion candidate {label}: {reason}"
+            ))
+        })?;
+        guard(&pair, upper_managed, upper_repo, storage::Mode::Generic)
+            .map_err(|reason| Error::Config(format!("upper declaration cannot be trusted (possible Q14): {reason}. Only if both ends have never existed in upper, explicitly acknowledge --new-pair {label} after checking their history")))?;
         selected.push(pair);
     }
     if &acknowledged != new_pairs {
@@ -563,6 +719,42 @@ pub fn promotion_pairs(
         )));
     }
     Ok(selected)
+}
+
+/// The four live documents used for promotion eligibility. Even an empty
+/// selection gets a second read: Q14 can invalidate a seemingly empty plan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromotionRead {
+    pub lower_managed: Value,
+    pub lower_repo: Value,
+    pub upper_managed: Value,
+    pub upper_repo: Value,
+}
+
+impl PromotionRead {
+    pub fn select(&self, new_pairs: &BTreeSet<String>) -> Result<Vec<Pair>> {
+        promotion_pairs(
+            &self.lower_managed,
+            &self.lower_repo,
+            &self.upper_managed,
+            &self.upper_repo,
+            new_pairs,
+        )
+    }
+}
+
+pub async fn recheck_promotion(
+    initial: &PromotionRead,
+    selection: &[Pair],
+    new_pairs: &BTreeSet<String>,
+    read: impl AsyncFnOnce() -> Result<PromotionRead>,
+) -> Result<()> {
+    let fresh = read().await?;
+    let current = fresh.select(new_pairs)?;
+    if &fresh != initial || current != selection {
+        return Err(Error::Config("declarations or repo.ds changed during promotion capture (possible Q14); re-run against the stable locked configuration before promoting".into()));
+    }
+    Ok(())
 }
 
 pub struct Permit(());
@@ -601,10 +793,9 @@ pub async fn restore_with(
     mut create: impl AsyncFnMut(&Pair, &Link, Option<&str>) -> Result<Option<String>>,
     mut check: impl AsyncFnMut(&Pair, &Link, &relink::Edge) -> Result<()>,
 ) -> Result<()> {
-    if matches!(capture.state, State::RollingBack | State::RolledBack) {
+    if capture.state == State::RolledBack {
         return Err(Error::Config(
-            "capture is rolling back or rolled back; finish rollback before a new conversion"
-                .into(),
+            "capture is rolled back; use a new capture for a new conversion".into(),
         ));
     }
     capture.state = State::Restoring;
@@ -827,12 +1018,12 @@ impl FileSession {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use serde_json::json;
     use std::cell::RefCell;
 
-    pub(super) fn fixture(array: bool) -> (Value, Value, Value, Pair) {
+    pub(crate) fn fixture(array: bool) -> (Value, Value, Value, Pair) {
         let link = json!({"type":"relationship", "resourceCollection":[{"path":"managed/b"}],
             "reverseRelationship":true,"reversePropertyName":"back"});
         let managed = json!({"objects":[
@@ -847,18 +1038,18 @@ mod tests {
         (managed, generic, addition.after, pair)
     }
 
-    fn records(array: bool) -> (Vec<Value>, Vec<Value>) {
+    pub(crate) fn records(array: bool) -> (Vec<Value>, Vec<Value>) {
         let edge = json!({"_ref":"managed/b/b1","_refResourceCollection":"managed/b","_refResourceId":"b1",
             "_refProperties":{"_id":"e1","_rev":"r1","note":"keep","nested":{"enabled":true}}});
         (
             vec![json!({"_id":"a1","link":if array {json!([edge])} else {edge}})],
             vec![
                 json!({"_id":"b1","back":[{"_refResourceCollection":"managed/a","_refResourceId":"a1",
-             "_refProperties":{"_id":"e1"}}]}),
+             "_refProperties":{"_id":"e1","note":"keep","nested":{"enabled":true}}}]}),
             ],
         )
     }
-    fn captured(array: bool) -> (Capture, Census) {
+    pub(crate) fn captured(array: bool) -> (Capture, Census) {
         let (_, _, _, mut pair) = fixture(array);
         let (forward, back) = records(array);
         let census = census(&pair, &forward, &back).unwrap();
@@ -877,6 +1068,10 @@ mod tests {
     #[tokio::test]
     async fn capture_round_trip_preserves_custom_properties_drops_id_rev() {
         let (capture, _) = captured(true);
+        assert_eq!(
+            capture.pairs[0].links[0].reverse_properties.as_ref(),
+            Some(&capture.pairs[0].links[0].properties)
+        );
         let dir = std::env::temp_dir().join(format!("aic-capture-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("capture.json");
@@ -1048,34 +1243,6 @@ mod tests {
         assert!(capture.pending.is_none());
     }
 
-    #[tokio::test]
-    async fn restore_refuses_unmapped_upper_before_any_record_write() {
-        let (mut capture, _) = captured(true);
-        let (managed, repo, _, _) = fixture(true);
-        let writes = RefCell::new(0);
-        let error = restore_with(
-            &mut capture,
-            &authorize(false, true).unwrap(),
-            async |pair| guard(pair, &managed, &repo, storage::Mode::Mapped).map(|_| ()),
-            async |_, _| {
-                Ok(Observation {
-                    edges: Vec::new(),
-                    rev: None,
-                })
-            },
-            async |_| Ok(()),
-            async |_, _, _| {
-                *writes.borrow_mut() += 1;
-                Ok(None)
-            },
-            async |_, _, _| Ok(()),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("Mapped"));
-        assert_eq!(*writes.borrow(), 0);
-    }
-
     #[test]
     fn verify_rejects_extra_link_and_different_custom_properties() {
         let (capture, mut census) = captured(true);
@@ -1116,64 +1283,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert!(
-            promotion_pairs(&managed, &generic, &managed, &mapped, &BTreeSet::new())
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn rollback_removes_restored_links_before_mapping_and_rejects_promotion() {
-        let (mut capture, _) = captured(true);
-        let log = RefCell::new(Vec::new());
-        let permit = authorize(false, true).unwrap();
-        rollback_with(
-            &mut capture,
-            &permit,
-            async || {
-                log.borrow_mut().push("confirm config write");
-                Ok(())
-            },
-            async |_| {
-                log.borrow_mut().push("intent");
-                Ok(())
-            },
-            async |_| {
-                log.borrow_mut().push("remove links and confirm empty");
-                Ok(())
-            },
-            async || {
-                log.borrow_mut().push("remove mapping");
-                Ok(())
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            *log.borrow(),
-            [
-                "confirm config write",
-                "intent",
-                "remove links and confirm empty",
-                "remove mapping"
-            ]
-        );
-        capture.origin = Origin::Promotion;
-        log.borrow_mut().clear();
-        assert!(
-            rollback_with(
-                &mut capture,
-                &permit,
-                async || Ok(()),
-                async |_| Ok(()),
-                async |_| Ok(()),
-                async || Ok(())
-            )
-            .await
-            .is_err()
-        );
-        assert!(authorize(true, true).is_none());
+        assert!(promotion_pairs(&managed, &generic, &managed, &mapped, &BTreeSet::new()).is_err());
     }
 
     #[test]
@@ -1411,5 +1521,232 @@ mod tests {
         assert!(verify::mapped(plan.after(), "a", "link").is_some());
         assert!(verify::mapped(plan.after(), "b", "back").is_some());
         super::super::repair::recheck(&plan, &managed, &mapped).unwrap();
+    } // Regression: equivalent stock multi-target mappings must be excluded before
+    // conversion's deliberately narrower schema validation.
+    fn stock_multi_target() -> (Value, Value) {
+        let managed = json!({"objects":[
+            {"name":"alpha_user","schema":{"properties":{"authzRoles":{"type":"array","items":{
+                "type":"relationship","resourceCollection":[{"path":"internal/role"},{"path":"managed/role"}],
+                "reverseRelationship":true,"reversePropertyName":"authzMembers"}}}}},
+            {"name":"role","schema":{"properties":{"authzMembers":{"type":"array","items":{
+                "type":"relationship","resourceCollection":[{"path":"managed/alpha_user"}],
+                "reverseRelationship":true,"reversePropertyName":"authzRoles"}}}}}
+        ]});
+        let repo = json!({"resourceMapping":{
+            "genericMapping":{"managed/alpha_user":{"properties":{"authzRoles":{
+                "type":"reference","ldapAttribute":"fr-idm-reference-1","primaryKey":"uid",
+                "resourcePath":"managed/role","isMultiValued":true}}},
+                "managed/role":{"properties":{"authzMembers":{"type":"reverseReference",
+                    "resourcePath":"managed/alpha_user","propertyName":"authzRoles","isMultiValued":true}}}},
+            "explicitMapping":{"internal/role":{"properties":{"authzMembers":{"type":"reverseReference",
+                "resourcePath":"managed/alpha_user","propertyName":"authzRoles","isMultiValued":true}}}}
+        }});
+        (managed, repo)
+    }
+
+    #[test]
+    fn promotion_skips_identical_stock_multi_target_bindings_before_schema_validation() {
+        let (managed, repo) = stock_multi_target();
+        assert!(storage::pair(&managed, &repo, "alpha_user", "authzRoles").is_err());
+        assert!(
+            promotion_pairs(&managed, &repo, &managed, &repo, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+        // Equivalent bindings remain safe exclusions even during a missing declaration read.
+        assert!(
+            promotion_pairs(&json!({}), &repo, &json!({}), &repo, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn promotion_refuses_unsupported_multi_target_conversion_candidate_by_name() {
+        let (managed, repo) = stock_multi_target();
+        let error = promotion_pairs(&managed, &repo, &managed, &json!({}), &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("alpha_user.authzRoles"), "{error}");
+        assert!(
+            error.contains("unsupported lower conversion candidate"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn promotion_refuses_different_column_bindings() {
+        let (managed, _, lower, _) = fixture(true);
+        let mut upper = lower.clone();
+        upper["resourceMapping"]["genericMapping"]["managed/a"]["properties"]["link"]["ldapAttribute"] =
+            json!("fr-idm-reference-8");
+        let error = promotion_pairs(&managed, &lower, &managed, &upper, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("fr-idm-reference-1") && error.contains("fr-idm-reference-8"),
+            "{error}"
+        );
+        assert!(error.contains("Do not promote"));
+    }
+
+    #[test]
+    fn promotion_refuses_opposite_reference_owner() {
+        let (managed, _, lower, _) = fixture(true);
+        let mut upper = lower.clone();
+        upper["resourceMapping"]["genericMapping"]["managed/b"]["properties"]["back"] = json!({"type":"reference","resourcePath":"managed/a","ldapAttribute":"fr-idm-reference-1","primaryKey":"uid","isMultiValued":true});
+        upper["resourceMapping"]["genericMapping"]["managed/a"]["properties"]["link"] = json!({"type":"reverseReference","resourcePath":"managed/b","propertyName":"back","isMultiValued":true});
+        let error = promotion_pairs(&managed, &lower, &managed, &upper, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("change/remove relationship binding"),
+            "{error}"
+        );
+        assert!(error.contains("managed/a") && error.contains("managed/b"));
+    }
+
+    #[test]
+    fn promotion_checks_explicit_mapping_bindings_and_captures_generic_upper() {
+        let (managed, generic, mut lower, _) = fixture(true);
+        let entries = lower["resourceMapping"]
+            .as_object_mut()
+            .unwrap()
+            .remove("genericMapping")
+            .unwrap();
+        lower["resourceMapping"]["explicitMapping"] = entries;
+        let pairs =
+            promotion_pairs(&managed, &lower, &managed, &generic, &BTreeSet::new()).unwrap();
+        assert_eq!(pairs.len(), 1);
+        guard(&pairs[0], &managed, &lower, storage::Mode::Mapped).unwrap();
+        let capture = Capture::new(
+            "uat".into(),
+            "https://tenant.example.com".into(),
+            Origin::Promotion,
+            pairs,
+        );
+        capture.validate().unwrap();
+        assert!(
+            promotion_pairs(&managed, &lower, &managed, &lower, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+        let (_, _, upper_generic_section, _) = fixture(true);
+        let error = promotion_pairs(
+            &managed,
+            &lower,
+            &managed,
+            &upper_generic_section,
+            &BTreeSet::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("explicitMapping") && error.contains("genericMapping"));
+    }
+
+    #[test]
+    fn promotion_refuses_upper_mapped_lower_generic() {
+        let (managed, lower, upper, _) = fixture(true);
+        let error = promotion_pairs(&managed, &lower, &managed, &upper, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("change/remove relationship binding"),
+            "{error}"
+        );
+        assert!(
+            error.contains("lower []") && error.contains("upper [{"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn promotion_lower_mapping_without_declaration_blocks_q14_instead_of_skipping() {
+        let (mut managed, generic, mapped, _) = fixture(true);
+        managed["objects"][0]["schema"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("link");
+        let error = promotion_pairs(&managed, &mapped, &managed, &generic, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Q14") && error.contains("a.link") && error.contains("repair"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn promotion_empty_selection_rechecks_missing_then_reappearing_declaration() {
+        let (managed, _, mapped, _) = fixture(true);
+        let mut missing = managed.clone();
+        missing["objects"][0]["schema"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("link");
+        let initial = PromotionRead {
+            lower_managed: missing,
+            lower_repo: mapped.clone(),
+            upper_managed: managed.clone(),
+            upper_repo: mapped.clone(),
+        };
+        let selection = initial.select(&BTreeSet::new()).unwrap();
+        assert!(selection.is_empty());
+        let reads = RefCell::new(0);
+        let error = recheck_promotion(&initial, &selection, &BTreeSet::new(), async || {
+            *reads.borrow_mut() += 1;
+            Ok(PromotionRead {
+                lower_managed: managed.clone(),
+                ..initial.clone()
+            })
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+        assert_eq!(*reads.borrow(), 1);
+        assert!(error.contains("Q14"), "{error}");
+        recheck_promotion(&initial, &selection, &BTreeSet::new(), async || {
+            Ok(initial.clone())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn census_refuses_matching_edge_ids_with_distinct_or_missing_reverse_custom_values() {
+        let (_, _, _, pair) = fixture(true);
+        for note in [Some(json!("different")), None] {
+            let (forward, mut reverse) = records(true);
+            let properties = reverse[0]["back"][0]["_refProperties"]
+                .as_object_mut()
+                .unwrap();
+            properties.remove("note");
+            if let Some(note) = note {
+                properties.insert("note".into(), note);
+            }
+            let error = census(&pair, &forward, &reverse).unwrap_err().to_string();
+            assert!(
+                error.contains("asymmetric custom _refProperties")
+                    && error.contains("a1 -> managed/b/b1"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_verification_checks_captured_reverse_custom_values() {
+        let (mut capture, census) = captured(true);
+        capture.pairs[0].links[0]
+            .reverse_properties
+            .as_mut()
+            .unwrap()
+            .insert("note".into(), json!("different"));
+        assert!(
+            exact(&capture.pairs[0], &census)
+                .unwrap_err()
+                .to_string()
+                .contains("_refProperties")
+        );
+        assert!(capture.validate().is_err());
     }
 }

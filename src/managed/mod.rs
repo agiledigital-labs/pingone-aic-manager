@@ -41,6 +41,7 @@ pub mod api;
 pub mod cli;
 pub mod conversion;
 mod conversion_cli;
+mod conversion_records;
 pub mod diff;
 mod keys;
 pub mod ops;
