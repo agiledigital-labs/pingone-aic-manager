@@ -34,8 +34,18 @@ pub struct Options {
     pub json: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct RecoveryOptions {
+    #[command(flatten)]
+    pub options: Options,
+    /// Acknowledge that the saved pending request has finished and cannot complete later.
+    #[arg(long)]
+    pub acknowledge_request_finished: bool,
+}
+
 pub struct Flags {
     pub dry_run: bool,
+    pub acknowledge_request_finished: bool,
     pub force: bool,
     pub yes: bool,
     pub json: bool,
@@ -44,10 +54,19 @@ impl From<Options> for Flags {
     fn from(options: Options) -> Self {
         Self {
             dry_run: options.dry_run,
+            acknowledge_request_finished: false,
             force: options.force.operation(),
             yes: options.yes,
             json: options.json,
         }
+    }
+}
+
+impl From<RecoveryOptions> for Flags {
+    fn from(options: RecoveryOptions) -> Self {
+        let mut flags = Self::from(options.options);
+        flags.acknowledge_request_finished = options.acknowledge_request_finished;
+        flags
     }
 }
 
@@ -146,6 +165,13 @@ fn consent(
     operation: &str,
     capture: &Capture,
 ) -> Result<Option<conversion::Permit>> {
+    if flags.acknowledge_request_finished {
+        let intent = capture.pending.as_ref().ok_or_else(|| Error::Config("--acknowledge-request-finished requires a saved pending request; it cannot authorize future writes".into()))?;
+        eprintln!(
+            "operator acknowledgment: {:?} request for capture {} pair {} link {} has finished and cannot complete later; this is not established by --force, elapsed time or an absent read",
+            intent.action, capture.id, intent.pair, intent.link
+        );
+    }
     if flags.dry_run {
         return Ok(None);
     }
@@ -159,9 +185,13 @@ fn consent(
             ),
             "--force",
         )?;
-    conversion::authorize(flags.dry_run, consented)
-        .map(Some)
-        .ok_or_else(|| Error::Config(format!("{operation} not confirmed")))
+    let permit = conversion::authorize(flags.dry_run, consented)
+        .ok_or_else(|| Error::Config(format!("{operation} not confirmed")))?;
+    Ok(Some(if flags.acknowledge_request_finished {
+        permit.acknowledge_finished(capture)?
+    } else {
+        permit
+    }))
 }
 
 fn output(flags: &Flags, value: &Value) -> Result<()> {
@@ -548,7 +578,9 @@ pub async fn map(
     };
     let mut capture = match &previous {
         Some(capture) => {
-            conversion::restore_allowed(capture)?;
+            if !flags.acknowledge_request_finished {
+                conversion::restore_allowed(capture)?;
+            }
             identity(capture, Some(configured.name.clone()))?;
             if capture.origin != Origin::InPlace
                 || capture.pairs.len() != 1
@@ -754,10 +786,16 @@ pub async fn capture_links(
     )
 }
 
-pub async fn restore_links(path: PathBuf, tenant: Option<String>, options: Options) -> Result<()> {
+pub async fn restore_links(
+    path: PathBuf,
+    tenant: Option<String>,
+    options: RecoveryOptions,
+) -> Result<()> {
     let flags = Flags::from(options);
     let mut capture = load(&path).await?;
-    conversion::restore_allowed(&capture)?;
+    if !flags.acknowledge_request_finished {
+        conversion::restore_allowed(&capture)?;
+    }
     let configured = identity(&capture, tenant)?;
     // Refuse before consent too: a promotion has to land the mappings first.
     for pair in &capture.pairs {
@@ -846,7 +884,11 @@ impl conversion_records::Removal for TenantRemoval<'_, '_> {
     }
 }
 
-pub async fn rollback_map(path: PathBuf, tenant: Option<String>, options: Options) -> Result<()> {
+pub async fn rollback_map(
+    path: PathBuf,
+    tenant: Option<String>,
+    options: RecoveryOptions,
+) -> Result<()> {
     let flags = Flags::from(options);
     let mut capture = load(&path).await?;
     let configured = identity(&capture, tenant)?;
@@ -883,6 +925,7 @@ pub async fn rollback_map(path: PathBuf, tenant: Option<String>, options: Option
             )
             .await?;
         }
+        if capture.pending.is_some() { return Err(Error::Config("saved request remains unresolved while mappings are absent; inspect the capture and restore the expected mapping before resolving that request".into())); }
         guard(ok.tenant, &pair, storage::Mode::Generic).await?;
         conversion::exact(&pair, &census(ok.tenant, &pair).await?)?;
         capture.pending = None;
@@ -949,11 +992,14 @@ mod tests {
         let error = restore_links(
             path.clone(),
             Some("must-not-select-this-tenant".into()),
-            Options {
-                dry_run: true,
-                force: OperationForce::default(),
-                yes: false,
-                json: false,
+            RecoveryOptions {
+                options: Options {
+                    dry_run: true,
+                    force: OperationForce::default(),
+                    yes: false,
+                    json: false,
+                },
+                acknowledge_request_finished: false,
             },
         )
         .await
@@ -976,5 +1022,36 @@ mod tests {
         )
         .to_string();
         assert_eq!(error.matches("Config error:").count(), 1, "{error}");
+    }
+    #[test]
+    fn acknowledgment_consent_is_scoped_to_saved_intent_and_dry_run_has_no_permit() {
+        let (mut capture, _) = captured(true);
+        let mut flags = Flags {
+            dry_run: false,
+            acknowledge_request_finished: true,
+            force: true,
+            yes: false,
+            json: false,
+        };
+        assert!(consent(&flags, "restore-links", &capture).is_err());
+        capture.pending = Some(
+            serde_json::from_value(json!({"pair":0,"link":0,"action":"create","edge_id":null}))
+                .unwrap(),
+        );
+        let permit = consent(&flags, "restore-links", &capture).unwrap().unwrap();
+        assert!(permit.acknowledges(&capture));
+        let mut different = capture.clone();
+        different.id = "another-capture".into();
+        assert!(!permit.acknowledges(&different));
+        different = capture.clone();
+        different.pending.as_mut().unwrap().action = conversion::Action::Remove;
+        assert!(!permit.acknowledges(&different));
+        flags.dry_run = true;
+        assert!(
+            consent(&flags, "restore-links", &capture)
+                .unwrap()
+                .is_none()
+        );
+        assert!(capture.acknowledged_requests.is_empty());
     }
 }

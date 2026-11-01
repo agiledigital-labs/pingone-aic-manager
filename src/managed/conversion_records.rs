@@ -119,6 +119,7 @@ async fn preflight(
     io: &impl Removal,
     capture: &Capture,
     permit: &relink::RelinkPermit,
+    conversion_permit: &conversion::Permit,
 ) -> Result<()> {
     let (managed, repo) = io.config().await?;
     for (index, pair) in capture.pairs.iter().enumerate() {
@@ -126,6 +127,17 @@ async fn preflight(
         ready(io, pair).await?;
         for (link_index, link) in pair.links.iter().enumerate() {
             let observation = io.observe(pair, link).await?;
+            if capture
+                .pending
+                .as_ref()
+                .is_some_and(|intent| intent.pair == index && intent.link == link_index)
+            {
+                conversion::pending_outcome(
+                    capture,
+                    conversion_permit,
+                    observation.edges.iter().any(|edge| link.matches(edge)),
+                )?;
+            }
             if removal(capture, index, link_index, &observation, permit)?.is_some() {
                 removable(&managed, pair)?;
                 let edge = observation
@@ -140,30 +152,38 @@ async fn preflight(
     Ok(())
 }
 
+async fn reconcile_pending(
+    io: &impl Removal,
+    capture: &mut Capture,
+    permit: &conversion::Permit,
+) -> Result<()> {
+    let Some(intent) = capture.pending.clone() else {
+        return Ok(());
+    };
+    let pair = &capture.pairs[intent.pair];
+    let link = &pair.links[intent.link];
+    let current = io.observe(pair, link).await?;
+    let edge = current.edges.iter().find(|edge| link.matches(edge));
+    conversion::pending_outcome(capture, permit, edge.is_some())?;
+    if let Some(edge) = edge {
+        if !io.present(pair, link).await? {
+            return Err(Error::Config(
+                "pending link is not proven in mapped storage; inspect before rollback".into(),
+            ));
+        }
+        io.check(pair, link, edge).await?;
+        conversion::receipt(capture, intent.pair, intent.link, edge)?;
+    }
+    conversion::record_acknowledgment(capture, permit, edge.is_some());
+    capture.pending = None;
+    io.save(capture).await
+}
+
 async fn remove_links(
     io: &impl Removal,
     capture: &mut Capture,
     permit: &relink::RelinkPermit,
 ) -> Result<()> {
-    if let Some(intent) = capture
-        .pending
-        .clone()
-        .filter(|intent| intent.action == Action::Create)
-    {
-        let pair = &capture.pairs[intent.pair];
-        let link = &pair.links[intent.link];
-        let current = io.observe(pair, link).await?;
-        if let Some(edge) = current.edges.iter().find(|edge| link.matches(edge)) {
-            if !io.present(pair, link).await? {
-                return Err(Error::Config(
-                    "pending link is not proven in mapped storage; inspect before rollback".into(),
-                ));
-            }
-            conversion::receipt(capture, intent.pair, intent.link, edge)?;
-        }
-        capture.pending = None;
-        io.save(capture).await?;
-    }
     for index in 0..capture.pairs.len() {
         let pair = capture.pairs[index].clone();
         ready(io, &pair).await?;
@@ -226,7 +246,8 @@ pub(super) async fn rollback(
         ));
     }
     let pair = capture.pairs[0].clone();
-    preflight(io, capture, record_permit).await?;
+    preflight(io, capture, record_permit, permit).await?;
+    reconcile_pending(io, capture, permit).await?;
     conversion::rollback_with(
         capture,
         permit,
@@ -580,6 +601,25 @@ mod tests {
                     edge_id: None,
                 });
             }
+            if pending_create {
+                let before = capture.clone();
+                let error = rollback(
+                    &io,
+                    &mut capture,
+                    &conversion::authorize(false, true).unwrap(),
+                    &relink::authorize(false, true).unwrap(),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+                assert!(
+                    error.contains("pending Create request is unresolved"),
+                    "{error}"
+                );
+                assert_eq!(capture, before);
+                assert!(io.events.borrow().is_empty() && io.journal.borrow().is_empty());
+                continue;
+            }
             rollback(
                 &io,
                 &mut capture,
@@ -598,5 +638,297 @@ mod tests {
                 storage::Mode::Generic
             );
         }
+    }
+    struct DelayedCreate {
+        io: Memory,
+        array: bool,
+        scheduled: std::cell::Cell<bool>,
+        create_sends: std::cell::Cell<usize>,
+    }
+    impl DelayedCreate {
+        fn new(array: bool) -> (Self, Capture) {
+            let (io, mut capture) = Memory::new(array);
+            if array {
+                io.forward.borrow_mut()[0]["link"] = json!([]);
+            } else {
+                io.forward.borrow_mut()[0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("link");
+            }
+            io.reverse.borrow_mut()[0]["back"] = json!([]);
+            capture.state = State::Restoring;
+            capture.restored.clear();
+            (
+                Self {
+                    io,
+                    array,
+                    scheduled: std::cell::Cell::new(false),
+                    create_sends: std::cell::Cell::new(0),
+                },
+                capture,
+            )
+        }
+        async fn create(&self) -> Result<Option<String>> {
+            self.create_sends.set(self.create_sends.get() + 1);
+            self.scheduled.set(true);
+            Err(Error::Config(
+                "connection lost; server request still in flight".into(),
+            ))
+        }
+        fn complete(&self) {
+            assert!(self.scheduled.replace(false));
+            let (forward, reverse) = records(self.array);
+            *self.io.forward.borrow_mut() = forward;
+            *self.io.reverse.borrow_mut() = reverse;
+        }
+        async fn restore(&self, capture: &mut Capture, permit: &conversion::Permit) -> Result<()> {
+            conversion::restore_with(
+                capture,
+                permit,
+                async |pair| ready(&self.io, pair).await,
+                async |pair, link| self.io.observe(pair, link).await,
+                async |capture| self.io.save(capture).await,
+                async |_, _, _| self.create().await,
+                async |pair, link, edge| self.io.check(pair, link, edge).await,
+            )
+            .await
+        }
+    }
+
+    // Regression: an absent read must not re-POST while the original Create
+    // can still complete. Exercise real restore sequencing and readiness.
+    #[tokio::test]
+    async fn restore_refuses_delayed_create_without_resending_then_recovers_landed_request() {
+        for array in [false, true] {
+            let (delayed, mut capture) = DelayedCreate::new(array);
+            let permit = conversion::authorize(false, true).unwrap();
+            assert!(delayed.restore(&mut capture, &permit).await.is_err());
+            let before = capture.clone();
+            let saves = delayed.io.journal.borrow().len();
+            let error = delayed
+                .restore(&mut capture, &permit)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("pending Create request is unresolved"),
+                "{error}"
+            );
+            assert_eq!(delayed.create_sends.get(), 1);
+            assert_eq!(capture, before);
+            assert_eq!(delayed.io.journal.borrow().len(), saves);
+            delayed.complete();
+            delayed.restore(&mut capture, &permit).await.unwrap();
+            assert_eq!(delayed.create_sends.get(), 1);
+            assert!(capture.pending.is_none());
+            conversion::exact(
+                &capture.pairs[0],
+                &census(&delayed.io, &capture.pairs[0]).await.unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    // Regression: rollback may not switch stores over an unresolved Create,
+    // even with an empty mapped store. Late completion is then reconciled.
+    #[tokio::test]
+    async fn rollback_refuses_delayed_create_before_mutations_then_removes_landed_request() {
+        for array in [false, true] {
+            let (delayed, mut capture) = DelayedCreate::new(array);
+            let permit = conversion::authorize(false, true).unwrap();
+            assert!(delayed.restore(&mut capture, &permit).await.is_err());
+            let before = capture.clone();
+            let saves = delayed.io.journal.borrow().len();
+            let error = rollback(
+                &delayed.io,
+                &mut capture,
+                &permit,
+                &relink::authorize(false, true).unwrap(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("pending Create request is unresolved"),
+                "{error}"
+            );
+            assert!(delayed.io.events.borrow().is_empty());
+            assert_eq!(delayed.io.journal.borrow().len(), saves);
+            assert_eq!(capture, before);
+            delayed.complete();
+            rollback(
+                &delayed.io,
+                &mut capture,
+                &permit,
+                &relink::authorize(false, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                *delayed.io.events.borrow(),
+                ["confirm config write", "unlink", "remove mapping"]
+            );
+            assert!(capture.pending.is_none());
+            assert_eq!(delayed.create_sends.get(), 1);
+            assert_eq!(
+                storage::mode(
+                    &storage::pair(&delayed.io.managed, &delayed.io.repo.borrow(), "a", "link")
+                        .unwrap()
+                ),
+                storage::Mode::Generic
+            );
+        }
+    }
+
+    // The same outcome rule protects retrying a pending Remove in its own
+    // direction, as well as the already-covered reversal refusal.
+    #[tokio::test]
+    async fn rollback_does_not_resend_pending_remove_while_original_unlink_is_in_flight() {
+        let (io, mut capture) = Memory::new(true);
+        capture.state = State::RollingBack;
+        capture.pending = Some(
+            serde_json::from_value(json!({"pair":0,"link":0,"action":"remove","edge_id":"e1"}))
+                .unwrap(),
+        );
+        let before = capture.clone();
+        let permit = conversion::authorize(false, true).unwrap();
+        let error = rollback(
+            &io,
+            &mut capture,
+            &permit,
+            &relink::authorize(false, true).unwrap(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("pending Remove request is unresolved"),
+            "{error}"
+        );
+        assert_eq!(capture, before);
+        assert!(io.events.borrow().is_empty() && io.journal.borrow().is_empty());
+        // The server finishes the original request after the refused run.
+        io.forward.borrow_mut()[0]["link"] = json!([]);
+        io.reverse.borrow_mut()[0]["back"] = json!([]);
+        rollback(
+            &io,
+            &mut capture,
+            &permit,
+            &relink::authorize(false, true).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *io.events.borrow(),
+            ["confirm config write", "remove mapping"]
+        );
+        assert!(capture.pending.is_none());
+    }
+    #[tokio::test]
+    async fn finished_request_acknowledgment_is_audited_and_cannot_authorize_a_later_attempt() {
+        let (delayed, mut capture) = DelayedCreate::new(true);
+        let ordinary = conversion::authorize(false, true).unwrap();
+        assert!(delayed.restore(&mut capture, &ordinary).await.is_err());
+        // The transport confirms cancellation; the operator can now assert
+        // that this original request cannot still complete.
+        assert!(delayed.scheduled.replace(false));
+        let acknowledged = conversion::authorize(false, true)
+            .unwrap()
+            .acknowledge_finished(&capture)
+            .unwrap();
+        assert!(delayed.restore(&mut capture, &acknowledged).await.is_err());
+        assert_eq!(delayed.create_sends.get(), 2);
+        assert_eq!(capture.acknowledged_requests.len(), 1);
+        assert!(!capture.acknowledged_requests[0].observed_present);
+        assert_eq!(
+            capture.acknowledged_requests[0].intent.action,
+            Action::Create
+        );
+        assert!(
+            delayed
+                .io
+                .journal
+                .borrow()
+                .iter()
+                .any(|saved| saved.pending.is_none() && saved.acknowledged_requests.len() == 1)
+        );
+        let saves = delayed.io.journal.borrow().len();
+        let error = delayed
+            .restore(&mut capture, &acknowledged)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("pending Create request is unresolved"),
+            "{error}"
+        );
+        assert_eq!(delayed.create_sends.get(), 2);
+        assert_eq!(delayed.io.journal.borrow().len(), saves);
+        delayed.complete();
+        delayed.restore(&mut capture, &ordinary).await.unwrap();
+        assert!(capture.pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn required_empty_store_can_roll_back_after_explicit_finished_create_acknowledgment() {
+        let (mut delayed, mut capture) = DelayedCreate::new(false);
+        delayed.io.managed["objects"][0]["schema"]["required"] = json!(["link"]);
+        let ordinary = conversion::authorize(false, true).unwrap();
+        assert!(delayed.restore(&mut capture, &ordinary).await.is_err());
+        assert!(delayed.scheduled.replace(false));
+        let acknowledged = conversion::authorize(false, true)
+            .unwrap()
+            .acknowledge_finished(&capture)
+            .unwrap();
+        rollback(
+            &delayed.io,
+            &mut capture,
+            &acknowledged,
+            &relink::authorize(false, true).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *delayed.io.events.borrow(),
+            ["confirm config write", "remove mapping"]
+        );
+        assert_eq!(capture.acknowledged_requests.len(), 1);
+        assert!(capture.pending.is_none());
+        assert_eq!(delayed.create_sends.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn finished_remove_acknowledgment_allows_explicit_reversal_without_erasing_unknown_work()
+    {
+        let (io, mut capture) = Memory::new(true);
+        capture.state = State::RollingBack;
+        capture.pending = Some(
+            serde_json::from_value(json!({"pair":0,"link":0,"action":"remove","edge_id":"e1"}))
+                .unwrap(),
+        );
+        let acknowledged = conversion::authorize(false, true)
+            .unwrap()
+            .acknowledge_finished(&capture)
+            .unwrap();
+        conversion::restore_with(
+            &mut capture,
+            &acknowledged,
+            async |pair| ready(&io, pair).await,
+            async |pair, link| io.observe(pair, link).await,
+            async |capture| io.save(capture).await,
+            async |_, _, _| panic!("link still present; the finished removal did not land"),
+            async |pair, link, edge| io.check(pair, link, edge).await,
+        )
+        .await
+        .unwrap();
+        assert!(capture.pending.is_none());
+        assert_eq!(capture.acknowledged_requests.len(), 1);
+        assert!(capture.acknowledged_requests[0].observed_present);
+        assert_eq!(
+            capture.acknowledged_requests[0].intent.action,
+            Action::Remove
+        );
+        assert!(io.events.borrow().is_empty());
     }
 }

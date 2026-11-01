@@ -136,6 +136,13 @@ pub struct Receipt {
     pub edge_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcknowledgedRequest {
+    pub intent: Intent,
+    pub observed_present: bool,
+    pub acknowledged_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Capture {
     pub version: u8,
@@ -151,6 +158,8 @@ pub struct Capture {
     pub restored: Vec<Receipt>,
     #[serde(default)]
     pub new_pairs: Vec<String>,
+    #[serde(default)]
+    pub acknowledged_requests: Vec<AcknowledgedRequest>,
 }
 
 impl Capture {
@@ -167,6 +176,7 @@ impl Capture {
             pairs,
             restored: Vec::new(),
             new_pairs: Vec::new(),
+            acknowledged_requests: Vec::new(),
         }
     }
     pub fn count(&self) -> usize {
@@ -200,6 +210,10 @@ impl Capture {
             || self.restored.iter().any(|receipt| {
                 !valid_index(receipt.pair, receipt.link) || receipt.edge_id.is_empty()
             })
+            || self
+                .acknowledged_requests
+                .iter()
+                .any(|ack| !valid_index(ack.intent.pair, ack.intent.link))
         {
             return Err(Error::Config(
                 "capture has an invalid journal index; inspect it before continuing".into(),
@@ -620,6 +634,65 @@ fn declarations(managed: &Value, ends: &BTreeSet<Endpoint>) -> Vec<Declaration> 
         .collect()
 }
 
+/// Follow schema reverse names as well as stored reverse mappings, without
+/// requiring any target or platform endpoint to be declared.
+fn schema_ends(managed: &Value, initial: &BTreeSet<Endpoint>) -> BTreeSet<Endpoint> {
+    let mut ends = initial.clone();
+    loop {
+        let before = ends.len();
+        for end in declarations(managed, &ends) {
+            if let Some(shape) = end.shape
+                && let Some(reverse) = shape.reverse
+            {
+                for target in shape.targets {
+                    ends.insert((target, reverse.clone()));
+                }
+            }
+        }
+        if ends.len() == before {
+            return ends;
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+struct Footprint {
+    declarations: Vec<Declaration>,
+    managed_objects: BTreeMap<String, bool>,
+}
+
+fn footprint(managed: &Value, ends: &BTreeSet<Endpoint>, bindings: &[Binding]) -> Footprint {
+    let declarations = declarations(managed, ends);
+    let resources = ends
+        .iter()
+        .map(|(resource, _)| resource.as_str())
+        .chain(
+            bindings
+                .iter()
+                .filter_map(|entry| entry.value.get("resourcePath").and_then(Value::as_str)),
+        )
+        .chain(
+            declarations
+                .iter()
+                .filter_map(|end| end.shape.as_ref())
+                .flat_map(|shape| shape.targets.iter().map(String::as_str)),
+        );
+    let managed_objects = resources
+        .filter_map(|resource| {
+            resource.strip_prefix("managed/").map(|object| {
+                (
+                    resource.to_string(),
+                    super::api::object_named(managed, object).is_ok(),
+                )
+            })
+        })
+        .collect();
+    Footprint {
+        declarations,
+        managed_objects,
+    }
+}
+
 pub(super) fn config_detail(error: Error) -> String {
     match error {
         Error::Config(detail) => detail,
@@ -638,17 +711,7 @@ fn acknowledge_new(
     upper_managed: &Value,
     upper_repo: &Value,
 ) -> Result<()> {
-    let mut declared_ends = ends.clone();
-    // A missing mapping must not conceal an existing upper reverse declaration.
-    for end in declarations(lower_managed, ends) {
-        if let Some(shape) = end.shape
-            && let Some(reverse) = shape.reverse
-        {
-            for target in shape.targets {
-                declared_ends.insert((target, reverse.clone()));
-            }
-        }
-    }
+    let declared_ends = schema_ends(lower_managed, ends);
     for (resource, key) in &declared_ends {
         if verify::declaration_shape(upper_managed, resource, key).is_some()
             || !binding(
@@ -690,8 +753,10 @@ pub fn promotion_pairs(
         let lower_binding = binding(lower_repo, &ends);
         let upper_binding = binding(upper_repo, &ends);
         if lower_binding == upper_binding {
-            let lower_footprint = declarations(lower_managed, &ends);
-            let upper_footprint = declarations(upper_managed, &ends);
+            let mut footprint_ends = schema_ends(lower_managed, &ends);
+            footprint_ends.extend(schema_ends(upper_managed, &ends));
+            let lower_footprint = footprint(lower_managed, &footprint_ends, &lower_binding);
+            let upper_footprint = footprint(upper_managed, &footprint_ends, &upper_binding);
             if lower_footprint != upper_footprint {
                 return Err(Error::Config(format!(
                     "promotion would change declarations for {} despite equivalent bindings: lower {}; upper {}. Missing declarations may be Q14; investigate and do not promote until resolved",
@@ -876,9 +941,68 @@ pub async fn recheck_promotion(
     Ok(())
 }
 
-pub struct Permit(());
+pub struct Permit {
+    finished_request: Option<(String, Intent, usize)>,
+}
 pub fn authorize(dry_run: bool, consented: bool) -> Option<Permit> {
-    (!dry_run && consented).then_some(Permit(()))
+    (!dry_run && consented).then_some(Permit {
+        finished_request: None,
+    })
+}
+impl Permit {
+    /// The operator asserts this exact saved request cannot still complete.
+    /// This is not evidence supplied by a delay, --force or an absent read.
+    pub(super) fn acknowledge_finished(mut self, capture: &Capture) -> Result<Self> {
+        let intent = capture.pending.clone().ok_or_else(|| Error::Config("--acknowledge-request-finished requires a saved pending request; it cannot authorize future writes".into()))?;
+        self.finished_request = Some((
+            capture.id.clone(),
+            intent,
+            capture.acknowledged_requests.len(),
+        ));
+        Ok(self)
+    }
+    pub(super) fn acknowledges(&self, capture: &Capture) -> bool {
+        self.finished_request
+            .as_ref()
+            .is_some_and(|(id, intent, epoch)| {
+                id == &capture.id
+                    && capture.pending.as_ref() == Some(intent)
+                    && *epoch == capture.acknowledged_requests.len()
+            })
+    }
+}
+
+/// One outcome rule for both actions: Create needs presence; Remove needs
+/// absence. The opposite observation is unresolved, never permission to retry.
+/// An explicit operator assertion is the only override and is scoped to intent.
+pub(super) fn pending_outcome(capture: &Capture, permit: &Permit, present: bool) -> Result<()> {
+    let Some(intent) = &capture.pending else {
+        return Ok(());
+    };
+    let confirmed = match intent.action {
+        Action::Create => present,
+        Action::Remove => !present,
+    };
+    if confirmed || permit.acknowledges(capture) {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "pending {:?} request is unresolved: the link is {}. Its request may still complete; no retry, unlink or mapping removal is authorized. Keep writers paused and re-run after checking its outcome. Only after establishing that the original request has finished and cannot complete later, use --acknowledge-request-finished with this same capture; --force and elapsed time do not resolve it",
+        intent.action,
+        if present { "present" } else { "absent" }
+    )))
+}
+
+pub(super) fn record_acknowledgment(capture: &mut Capture, permit: &Permit, present: bool) {
+    if permit.acknowledges(capture)
+        && let Some(intent) = capture.pending.clone()
+    {
+        capture.acknowledged_requests.push(AcknowledgedRequest {
+            intent,
+            observed_present: present,
+            acknowledged_at: chrono::Utc::now().to_rfc3339(),
+        });
+    }
 }
 
 /// Persist the original links before any switch request. A failed Q14 read
@@ -923,15 +1047,16 @@ pub(super) fn restore_allowed(capture: &Capture) -> Result<()> {
 /// `check` confirms far resolution and mapped runtime before clearing intent.
 pub async fn restore_with(
     capture: &mut Capture,
-    _permit: &Permit,
+    permit: &Permit,
     mut ready: impl AsyncFnMut(&Pair) -> Result<()>,
     mut read: impl AsyncFnMut(&Pair, &Link) -> Result<Observation>,
     mut save: impl AsyncFnMut(&Capture) -> Result<()>,
     mut create: impl AsyncFnMut(&Pair, &Link, Option<&str>) -> Result<Option<String>>,
     mut check: impl AsyncFnMut(&Pair, &Link, &relink::Edge) -> Result<()>,
 ) -> Result<()> {
-    restore_allowed(capture)?;
-    capture.state = State::Restoring;
+    if capture.state == State::RolledBack || !permit.acknowledges(capture) {
+        restore_allowed(capture)?;
+    }
     let pending = capture.pending.clone();
     for index in ordered(
         capture.pairs.len(),
@@ -947,9 +1072,19 @@ pub async fn restore_with(
             let link = &pair.links[link_index];
             let current = read(&pair, link).await?;
             let matching = current.edges.iter().find(|edge| link.matches(edge));
+            let reconciles_pending = pending
+                .as_ref()
+                .is_some_and(|intent| intent.pair == index && intent.link == link_index);
+            if reconciles_pending {
+                pending_outcome(capture, permit, matching.is_some())?;
+            }
             if let Some(edge) = matching {
                 check(&pair, link, edge).await?;
                 receipt(capture, index, link_index, edge)?;
+                if reconciles_pending {
+                    record_acknowledgment(capture, permit, true);
+                }
+                capture.state = State::Restoring;
                 capture.pending = None;
                 save(capture).await?;
                 continue;
@@ -964,6 +1099,12 @@ pub async fn restore_with(
                     link.label()
                 )));
             }
+            if reconciles_pending {
+                record_acknowledgment(capture, permit, false);
+                capture.pending = None;
+                save(capture).await?;
+            }
+            capture.state = State::Restoring;
             capture.pending = Some(Intent {
                 pair: index,
                 link: link_index,
@@ -998,6 +1139,7 @@ pub async fn restore_with(
             save(capture).await?;
         }
     }
+    capture.state = State::Restoring;
     Ok(())
 }
 
@@ -1047,6 +1189,11 @@ pub async fn rollback_with(
     capture.state = State::RollingBack;
     save(capture).await?;
     remove_links(capture).await?;
+    if capture.pending.is_some() {
+        return Err(Error::Config(
+            "unresolved request remains; mapping removal refused".into(),
+        ));
+    }
     remove_mapping().await?;
     // Generic-store read-back and completeness are checked by the caller
     // before marking RolledBack; config acceptance alone is insufficient.
@@ -2157,6 +2304,81 @@ pub(super) mod tests {
                 .links
                 .iter()
                 .all(|link| link.reverse_properties.as_ref() == Some(&link.properties))
+        );
+    } // Regression: a one-way target contributes no mapped reverse endpoint,
+    // but losing the target object must still block an equal-binding promotion.
+    #[test]
+    fn identical_one_way_bindings_refuse_managed_target_object_loss() {
+        let (mut upper, generic, _, _) = fixture(false);
+        let node = &mut upper["objects"][0]["schema"]["properties"]["link"];
+        node["reverseRelationship"] = json!(false);
+        node.as_object_mut().unwrap().remove("reversePropertyName");
+        upper["objects"][1]["schema"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .clear();
+        let repo = storage::plan(&upper, &generic, "a", "link").unwrap().after;
+        let mut lower = upper.clone();
+        lower["objects"].as_array_mut().unwrap().pop();
+        let error = promotion_pairs(&lower, &repo, &upper, &repo, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("change declarations") && error.contains("managed/b"),
+            "{error}"
+        );
+        assert!(
+            error.contains("managed_objects") && error.contains("false") && error.contains("true"),
+            "{error}"
+        );
+        assert!(error.contains("Q14"), "{error}");
+        assert!(
+            promotion_pairs(&upper, &repo, &upper, &repo, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            promotion_pairs(&lower, &repo, &lower, &repo, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn equal_bindings_compare_schema_reverse_end_without_mapping_entry() {
+        let (upper, _, mut repo, _) = fixture(true);
+        repo["resourceMapping"]["genericMapping"]["managed/b"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("back");
+        let mut lower = upper.clone();
+        lower["objects"][1]["schema"]["properties"]["back"]["items"]["reversePropertyName"] =
+            json!("other");
+        let error = promotion_pairs(&lower, &repo, &upper, &repo, &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("change declarations")
+                && error.contains("back")
+                && error.contains("other"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn expanded_stock_footprints_tolerate_identically_undeclared_platform_targets() {
+        let (mut managed, mut repo) = stock_multi_target();
+        // A stock-managed target can have no managed declaration in either
+        // environment. Compare presence; never demand that the target exist.
+        managed["objects"].as_array_mut().unwrap().pop();
+        repo["resourceMapping"]["genericMapping"]["managed/role"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .clear();
+        assert!(
+            promotion_pairs(&managed, &repo, &managed, &repo, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
         );
     }
 }
