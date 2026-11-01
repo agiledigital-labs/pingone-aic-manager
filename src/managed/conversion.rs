@@ -1,5 +1,6 @@
 //! Durable relationship conversions: capture -> switch -> restore, and explicit
-//! rollback. Pure census, schema/storage guards and injected sequencing live
+//! rollback. Version-2 captures require recorded views from both ends.
+//! Pure indexed census, permissive declaration/storage guards and sequencing live
 //! here; conversion_cli supplies tenant I/O. The capture is the recovery
 //! journal: intent is saved before requests and forgotten only after reads.
 //! API contract: docs/api/10-managed-objects.md; Q14 in 99-quirks.
@@ -51,7 +52,6 @@ pub struct Link {
     pub to_collection: String,
     pub to_id: String,
     pub properties: Map<String, Value>,
-    #[serde(default)]
     pub reverse_properties: Option<Map<String, Value>>,
 }
 
@@ -767,7 +767,7 @@ pub fn promotion_pairs(
             })?;
         if storage::mode(&lower) != storage::Mode::Mapped {
             return Err(Error::Config(format!(
-                "lower {label} is mixed; repair before promotion"
+                "lower {label} has a mixed binding; investigate both ends and do not promote until resolved"
             )));
         }
         let mappings = std::iter::once(&lower.forward)
@@ -781,7 +781,7 @@ pub fn promotion_pairs(
                     .collect::<Vec<_>>();
                 let [entry] = matches.as_slice() else {
                     return Err(Error::Config(format!(
-                        "{label} has ambiguous storage entries; repair before conversion"
+                        "{label} has ambiguous storage entries; investigate its mapping sections and do not promote until resolved"
                     )));
                 };
                 Ok(storage::Entry {
@@ -2117,6 +2117,24 @@ pub(super) mod tests {
             error.contains("captured by an earlier development build; re-capture"),
             "{error}"
         );
+        let dir = std::env::temp_dir().join(format!("aic-missing-view-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("capture.json");
+        std::fs::write(&path, serde_json::to_vec(&vec![&capture]).unwrap()).unwrap();
+        assert!(
+            load(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("captured by an earlier development build; re-capture")
+        );
+        // One-way relationships have no far view to capture; keep that supported.
+        capture.pairs[0].reverse = None;
+        capture.pairs[0].forward.reverse_key = None;
+        capture.pairs[0].mappings.truncate(1);
+        capture.validate().unwrap();
+        std::fs::write(&path, serde_json::to_vec(&vec![&capture]).unwrap()).unwrap();
+        assert_eq!(load(&path).unwrap(), capture);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // Exercise the production index on enough edges to expose the old nested

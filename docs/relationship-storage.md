@@ -35,8 +35,10 @@ values, so it does not deliberately repeat those writes.
 Capture preserves each forward record ID, target reference and both ends'
 custom `_refProperties`, excluding each edge's `_id` and `_rev`. If the ends
 report different custom values (including a value missing on either end),
-the census lists the differences and refuses before any write. Restoring
-asymmetric values is unmeasured; resolve the inconsistency before converting.
+the census lists the differences and refuses before any write. Different
+per-side values can be legitimate data: this is an aic support limitation,
+not proof of an inconsistency. Preserve those values and arrange a supported
+migration; do not equalise them just to make conversion proceed.
 It scans all records on both ends with cursor paging and projected fields. A `pr` query cannot
 find generic links reliably; see [relationship querying](api/10-managed-objects.md#querying-a-relationship-collection-verified-2026-10-31).
 The census refuses and lists forward-only or reverse-only links. Resolve that
@@ -44,9 +46,17 @@ pre-existing inconsistency first: converting them would change what an end
 reports. Duplicate forward/target edges are also refused because a retry could
 not safely identify which one to re-create.
 
-Captures are local files containing relationship data. The default location
-is `.aic/relationship-captures/<uuid>.json`; the command prints it before the
-switch. New files are owner-readable/writable. For a predictable recovery
+Captures are local files containing relationship data. The current format is
+version 2 and requires both recorded custom-property views for a two-way link.
+Files from earlier development builds refuse to load with “captured by an
+earlier development build; re-capture”; there is no silent upgrade and no
+inferred reverse data. Use a fresh capture before a new conversion, while the
+generic links are visible. If a switch has already hidden them, preserve the
+old file and inspect the environment instead of capturing the mapped store
+as though it were the original generic data.
+
+The default capture location is `.aic/relationship-captures/<uuid>.json`;
+the command prints it before the switch. New files are owner-readable/writable. For a predictable recovery
 command, choose an explicit path as below. Keep the file and its sidecars
 available on the same machine while a run is active. The capture is never
 automatically deleted or overwritten with a different capture. It is marked
@@ -188,9 +198,13 @@ at the same path; it describes another capture, even if its tenant matches.
 `capture-links` first compares complete storage bindings across every
 `resourceMapping` section, including `explicitMapping`: the owning reference
 end, section, column (`ldapAttribute`), target (`resourcePath`), cardinality
-(`isMultiValued`), reverse entries and other mapping fields. Equivalent
-bindings are skipped before schema validation, including stock multi-target
-relationships that conversion cannot recreate. Pairs generic in both are
+(`isMultiValued`), reverse entries and other mapping fields. Before skipping
+equivalent bindings, it compares every named end's declaration footprint:
+presence, relationship versus scalar, target set, cardinality and reverse key.
+Different footprints refuse with both versions, even when repo.ds is identical.
+Identical footprints (including identically absent platform declarations) skip.
+This comparison supports stock multi-target/internal targets without passing
+them through the narrower conversion validator. Pairs generic in both are
 also skipped. For lower mapped / upper generic candidates, it validates the
 declared pair, visits the reference end once, and saves only pairs with upper
 links. Unsupported candidates refuse with their name and reason.
@@ -211,10 +225,13 @@ explicitly says no file was written, after a fresh declaration/binding recheck.
 Existing output files are preserved: choose a new path for another promotion
 rather than replacing an earlier recovery source.
 
-A non-equivalent lower binding with a missing declaration is a blocking Q14
-inconsistency, even when the selection would otherwise be empty. Restore the
-declaration and re-read. If the mapping is genuinely stale, clean it with
-`relationship repair` before promotion; it is never silently skipped.
+A missing lower custom declaration that upper still declares is suspected
+Q14 loss: restore the declaration and re-read. A confirmed stale genericMapping
+entry can be reviewed for cleanup with `relationship repair`. That verb cannot
+remove explicitMapping entries or undeclared platform mappings; differences
+there require investigation with the tenant administrator. The diagnostic
+names the binding and says not to promote until resolved, rather than
+suggesting an unavailable repair. None of these differences is silently skipped.
 A missing upper declaration is an error rather than proof of zero links:
 under Q14 it may have disappeared. A mixed rollout can also contain genuinely
 new pairs that have never existed in the upper environment. After checking
@@ -227,8 +244,11 @@ aic managed relationship capture-links --lower dev --upper uat \
   --new-pair new_widget.owner --force
 ```
 
-Both ends' upper declarations and mapping entries must be absent; a typo,
-existing end, or stale mapping refuses this acknowledgment. The command prints
+Every bound end and schema-named reverse end must have no upper declaration
+or mapping entry; a typo, existing end, or stale mapping refuses the acknowledgment.
+This check precedes the narrow conversion validator, so a genuinely new
+multi-target component can be acknowledged even though aic cannot migrate its
+links. It does not bypass a missing lower custom declaration. The command prints
 the exclusions and records them in any capture it creates. This lets it capture
 other existing linked pairs in the same rollout. Never use `--new-pair` to
 bypass a possible Q14 loss: it is the operator's assertion that there have
@@ -288,9 +308,12 @@ aic managed relationship rollback-map .aic/relationship-captures/dev-widget.json
 ```
 
 Before removing any records it plans the complete mapping removal, refusing
-external reverse dependents and checking required fields, link ownership,
-record revisions and runtime/far resolution for the whole captured set. A
-refusal leaves all records intact. It then submits the **unchanged** `repo.ds` through
+external reverse dependents. Whole-batch preflight checks required fields,
+link ownership, record revisions and runtime/far resolution for every actual
+planned unlink before the first mutation. A switch with no mapped links needs
+no record removal, so a required forward property does not block its rollback.
+A refusal leaves all records intact. It then submits the **unchanged** `repo.ds`
+through
 the backed-up, read-confirmed writer. A config write denial stops there, with
 all links intact; the capture's origin alone does not establish current write
 access. This preliminary PUT removes no mappings. The operation then removes
@@ -299,26 +322,34 @@ removal and mapped runtime, and removes both captured mappings in one
 backed-up, read-confirmed PUT. It keeps unrelated mappings and per-type metadata: dropping
 a per-type entry could hide records created under that entry. Finally it
 checks that the original captured generic set is visible again and marks the
-capture rolled back. That visibility mechanism was measured; this automated
-rollback workflow still needs operator verification.
+capture rolled back. Check the restored generic links and their notes from
+both ends before resuming writers.
 
 Unknown, extra or altered mapped links stop rollback for inspection. A
 required forward property cannot be cleared by the measured removal method;
-explicitly adjust that policy before rollback and reinstate it afterwards.
+when mapped links actually need removal, explicitly adjust that policy before
+rollback and reinstate it afterwards. No schema change is needed when the
+mapped store is empty.
 If rollback stops, keep writers paused and repeat **rollback-map** with the
 same file to finish; completed removals are skipped. If an external dependent
 caused the refusal, resolve that dependency first. A run killed after mapping
 removal checks the visible generic set on retry before marking success.
 
 To reverse an interrupted rollback instead, while the exact captured mappings
-are still installed, explicitly run:
+are still installed and **no Remove intent is pending**, explicitly run:
 
 ```sh
 aic managed relationship restore-links .aic/relationship-captures/dev-widget.json \
   --tenant dev --force
 ```
 
-Its plan names the saved `RollingBack` state and the change back to restoration.
+If the file has an unresolved `Remove` intent, direction change refuses before
+writing or clearing that intent. A link observed present (or absent) cannot
+rule out a delayed unlink. Keep writers paused and finish `rollback-map` with
+the same file; do not hand-edit away the intent.
+
+With no outstanding removal, its plan names the saved `RollingBack` state and
+the change back to restoration.
 It verifies links still present, restores missing captured links and marks the
 capture complete after verification. This writes records only. Once the
 mapping has been removed, finish `rollback-map`; `restore-links` refuses a
