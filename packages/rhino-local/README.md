@@ -901,6 +901,37 @@ export default defineConfig({
 });
 ```
 
+Vitest has one `test.runner` slot. To retain a client's runner behavior, adapt
+that behavior into a subclass of the package runner and select that subclass:
+
+```ts
+// test/client-runner.ts
+import EmulationRunner from "@agiledigital/pingone-aic-script-tester/vitest-runner";
+import type { RunnerTask } from "vitest";
+
+export default class ClientRunner extends EmulationRunner {
+  override onAfterRunTask(task: RunnerTask): void {
+    // Perform the client's task bookkeeping here.
+    super.onAfterRunTask(task); // Preserve the final emulation verdict.
+  }
+}
+// vitest.config.ts: test.runner = "./test/client-runner.ts"
+```
+
+When overriding them, preserve calls to `super.onBeforeCollect`,
+`super.importFile`, `super.onCollectStart`, `super.onAfterRunTask`,
+`super.onAfterRunSuite` and `super.onAfterRunFiles`. Await superclass imports and
+async hooks; retain final verdict hooks after any client result changes.
+Leave the `onTaskUpdate` transport hook to Vitest. An unrelated runner cannot
+also occupy that single slot; port its hooks into this subclass.
+
+Other setup files and reporters coexist in their normal arrays. Append client
+setup files to `setupFiles` and client reporters to `reporters`, retaining the
+three package entries above. Asynchronous reporter hooks are supported:
+collection readiness is awaited before setup or test imports, with a timeout
+bounded by `hookTimeout` (10 seconds when disabled). A client overriding a
+collection hook without its superclass call receives a readiness error.
+
 The setup wraps each test and its hooks in an async ownership context, then checks
 the global registry after cleanup. It covers every runner and emulator without
 naming sources. Vitest 5's `aroundEach` preserves separate contexts for concurrent

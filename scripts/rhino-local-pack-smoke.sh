@@ -80,12 +80,21 @@ cat >"$consumer/tsconfig.json" <<'JSON'
   "include": ["test/**/*.ts"]
 }
 JSON
-# Exercise the shipped worker/reporter entries as well as the setup module.
+# Exercise the shipped worker/reporter entries and documented runner subclass.
+cat >"$consumer/test/client-runner.ts" <<TS
+import EmulationRunner from "$name/vitest-runner";
+import type { RunnerTask } from "vitest";
+export default class ClientRunner extends EmulationRunner {
+  override onAfterRunTask(task: RunnerTask): void {
+    super.onAfterRunTask(task);
+  }
+}
+TS
 cat >"$consumer/vitest.config.ts" <<TS
 import { defineConfig } from "vitest/config";
 export default defineConfig({ test: {
   setupFiles: ["$name/vitest-setup"],
-  runner: "$name/vitest-runner",
+  runner: "./test/client-runner.ts",
   reporters: ["default", "$name/vitest-reporter"],
 } });
 TS
