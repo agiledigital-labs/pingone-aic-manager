@@ -280,7 +280,7 @@ pub fn plan_rollback(
     pair: &super::conversion::Pair,
 ) -> Result<Plan, String> {
     super::conversion::guard(pair, managed, repo, super::storage::Mode::Mapped)
-        .map_err(|error| error.to_string())?;
+        .map_err(super::conversion::config_detail)?;
     let mut after = repo.clone();
     for entry in &pair.mappings {
         // Another mapping reading the forward must not be stranded. The
@@ -331,7 +331,7 @@ pub fn plan_confirm(
     pair: &super::conversion::Pair,
 ) -> Result<Plan, String> {
     super::conversion::guard(pair, managed, repo, super::storage::Mode::Mapped)
-        .map_err(|error| error.to_string())?;
+        .map_err(super::conversion::config_detail)?;
     let mapping = verify::mapped(repo, &pair.forward.object, &pair.forward.key)
         .ok_or("reference vanished")?;
     Ok(Plan {
@@ -544,7 +544,8 @@ pub async fn apply_with(
     mut send: impl AsyncFnMut(&Value) -> crate::Result<()>,
     delays: &[Duration],
 ) -> Result<Applied, Failure> {
-    let not_written = |error: crate::Error| Failure::NotWritten(error.to_string());
+    let not_written =
+        |error: crate::Error| Failure::NotWritten(super::conversion::config_detail(error));
     let managed = read_managed().await.map_err(not_written)?;
     let repo_ds = read_repo_ds().await.map_err(not_written)?;
     recheck(plan, &managed, &repo_ds).map_err(Failure::NotWritten)?;

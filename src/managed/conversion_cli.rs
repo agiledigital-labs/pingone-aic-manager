@@ -179,8 +179,9 @@ fn stopped(path: &Path, capture: &Capture, error: Error) -> Error {
         ),
         Origin::Promotion => format!("restore-links {} --force", path.display()),
     };
+    let reason = conversion::config_detail(error);
     Error::Config(format!(
-        "{error}\nCapture retained at {}. Keep link writers paused. Correct the reported problem and re-run `aic managed relationship {resume}`; an in-place conversion can instead use rollback-map. No automatic rollback was attempted",
+        "{reason}\nCapture retained at {}. Keep link writers paused. Correct the reported problem and re-run `aic managed relationship {resume}`; an in-place conversion can instead use rollback-map. No automatic rollback was attempted",
         path.display()
     ))
 }
@@ -318,8 +319,7 @@ async fn check_edge(tenant: &str, pair: &Pair, link: &Link, edge: &relink::Edge)
             far_edge.link.edge_id == edge.link.edge_id
                 && far_edge.link.to_collection == format!("managed/{}", pair.forward.object)
                 && far_edge.link.to_id == link.from_id
-                && far_edge.properties
-                    == *link.reverse_properties.as_ref().unwrap_or(&link.properties)
+                && link.reverse_properties.as_ref() == Some(&far_edge.properties)
         }) {
             return Err(Error::Config(format!(
                 "{} reverse custom _refProperties differ from capture; intent retained",
@@ -453,7 +453,12 @@ async fn finish_restore(
         let current = census(ok.tenant, pair).await?;
         conversion::exact(pair, &current)?;
         if let Some(edge) = current.edges.first() {
-            check_edge(ok.tenant, pair, &Link::of(edge), edge).await?;
+            let link = pair
+                .links
+                .iter()
+                .find(|link| link.matches(edge))
+                .ok_or_else(|| Error::Config("verified edge absent from capture".into()))?;
+            check_edge(ok.tenant, pair, link, edge).await?;
         }
         eprintln!(
             "{}: exact captured set confirmed, {} links; {}",
@@ -542,6 +547,7 @@ pub async fn map(
     };
     let mut capture = match &previous {
         Some(capture) => {
+            conversion::restore_allowed(capture)?;
             identity(capture, Some(configured.name.clone()))?;
             if capture.origin != Origin::InPlace
                 || capture.pairs.len() != 1
@@ -750,6 +756,7 @@ pub async fn capture_links(
 pub async fn restore_links(path: PathBuf, tenant: Option<String>, options: Options) -> Result<()> {
     let flags = Flags::from(options);
     let mut capture = load(&path).await?;
+    conversion::restore_allowed(&capture)?;
     let configured = identity(&capture, tenant)?;
     // Refuse before consent too: a promotion has to land the mappings first.
     for pair in &capture.pairs {
@@ -887,7 +894,7 @@ pub async fn rollback_map(path: PathBuf, tenant: Option<String>, options: Option
         Ok(())
     }
     .await;
-    result.map_err(|error: Error| Error::Config(format!("rollback stopped: {error}. Keep writers paused and re-run rollback-map {} to finish. If the captured mappings are still installed, restore-links with this same file explicitly reverses the interrupted rollback; capture retained", path.display())))?;
+    result.map_err(|error: Error| Error::Config(format!("rollback stopped: {}. Keep writers paused and re-run rollback-map {} to finish. If exact captured mappings remain and no Remove intent is outstanding, restore-links can reverse the interrupted rollback; capture retained", conversion::config_detail(error), path.display())))?;
     output(&flags, &json!({"capture":path,"rolled_back":true}))
 }
 
@@ -919,5 +926,52 @@ mod tests {
             assert!(!text.contains("links are invisible"));
             assert!(!text.contains("  map a.link:"));
         }
+    }
+    #[tokio::test]
+    async fn old_format_refuses_restore_before_tenant_selection_or_calls() {
+        let (capture, _) = captured(true);
+        let mut value = serde_json::to_value(capture).unwrap();
+        value["version"] = json!(1);
+        value["pairs"][0]["links"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("reverse_properties");
+        for entry in value["pairs"][0]["mappings"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("section");
+        }
+        let dir = std::env::temp_dir().join(format!("aic-old-capture-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("capture.json");
+        std::fs::write(&path, serde_json::to_vec(&json!([value])).unwrap()).unwrap();
+        let error = restore_links(
+            path.clone(),
+            Some("must-not-select-this-tenant".into()),
+            Options {
+                dry_run: true,
+                force: OperationForce::default(),
+                yes: false,
+                json: false,
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("captured by an earlier development build; re-capture"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stopped_q14_error_does_not_double_config_prefix() {
+        let (capture, _) = captured(true);
+        let error = stopped(
+            Path::new("capture.json"),
+            &capture,
+            Error::Config("Q14: declaration disappeared".into()),
+        )
+        .to_string();
+        assert_eq!(error.matches("Config error:").count(), 1, "{error}");
     }
 }
