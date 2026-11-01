@@ -148,9 +148,10 @@ pub enum Command {
         #[arg(
             long,
             value_name = "URL-OR-HOST",
-            help = "Refuse, printing no token, unless this URL or host is the \
-                    tenant's own host or one of its custom domains. Pass the URL \
-                    your request will go to: `curl -H \"Authorization: Bearer \
+            help = "Mint the token for the context whose host this URL names \
+                    (without --tenant), and refuse, printing no token, unless it \
+                    is the tenant's own host or one of its custom domains. Pass the \
+                    URL your request will go to: `curl -H \"Authorization: Bearer \
                     $(aic whoami --token --host \"$URL\")\" \"$URL\"`"
         )]
         host: Option<String>,
@@ -966,6 +967,15 @@ fn capture_invocation(
     }
 }
 
+/// Whether this invocation's `--tenant` was typed rather than filled in from
+/// the parse-time default. With no capture (a library caller) a passed tenant
+/// counts as typed.
+fn tenant_flag_typed() -> bool {
+    INVOCATION_TENANT.get().is_none_or(|captured| {
+        matches!(&captured.resolution, Ok(Some(resolution)) if resolution.source == TenantSource::Flag)
+    })
+}
+
 /// Where the tenant a command targets came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TenantSource {
@@ -1608,6 +1618,22 @@ async fn whoami(
 ) -> Result<()> {
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
+    let contexts: Vec<(&str, &str)> = cfg
+        .tenants
+        .iter()
+        .map(|config| (config.name.as_str(), config.base_url.as_str()))
+        .collect();
+    // Without `--tenant` the URL chooses the context, so the token is minted
+    // for the tenant the request goes to. A host no context's base URL names
+    // (a custom domain) falls through to the current context's check below.
+    // `tenant_arg` arrives holding the parse-time default, so ask whether the
+    // flag was actually typed.
+    let tenant_arg = match host_arg.as_deref() {
+        Some(requested) if !tenant_flag_typed() => identity::context_for_host(&contexts, requested)
+            .map(str::to_string)
+            .or(tenant_arg),
+        _ => tenant_arg,
+    };
     let tenant = resolve_tenant(tenant_arg, &cfg)?;
     let settings = config::Settings::load()?.unwrap_or_default();
     let tenant_config = cfg
@@ -1617,11 +1643,6 @@ async fn whoami(
     // Checked before anything is minted, so a refusal never prints a token.
     if let Some(requested) = host_arg.as_deref() {
         let base_url = tenant_config.map_or("", |config| config.base_url.as_str());
-        let contexts: Vec<(&str, &str)> = cfg
-            .tenants
-            .iter()
-            .map(|config| (config.name.as_str(), config.base_url.as_str()))
-            .collect();
         identity::check_host(&tenant, base_url, requested, &contexts, || {
             identity::custom_domains(&tenant)
         })
