@@ -54,6 +54,8 @@ pub struct Plan {
     before: Value,
     #[serde(skip)]
     addition: Option<super::storage::Addition>,
+    #[serde(skip)]
+    rollback: Option<super::conversion::Pair>,
     /// The whole transformed document that is `PUT`.
     #[serde(skip)]
     after: Value,
@@ -234,6 +236,7 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
         mapping,
         notes,
         addition: None,
+        rollback: None,
         before: repo_ds.clone(),
         after,
     })
@@ -253,6 +256,56 @@ pub fn plan_add(managed: &Value, repo: &Value, object: &str, key: &str) -> Resul
         before: repo.clone(),
         after: addition.after.clone(),
         addition: Some(addition),
+        rollback: None,
+    })
+}
+
+/// Explicit rollback removes both captured mapping entries atomically. It
+/// keeps per-type metadata: removing that entry could hide newer records.
+/// The caller must first prove the mapped link store empty.
+pub fn plan_rollback(
+    managed: &Value,
+    repo: &Value,
+    pair: &super::conversion::Pair,
+) -> Result<Plan, String> {
+    super::conversion::guard(pair, managed, repo, super::storage::Mode::Mapped)
+        .map_err(|error| error.to_string())?;
+    let mut after = repo.clone();
+    for entry in &pair.mappings {
+        // Another mapping reading the forward must not be stranded. The
+        // pair's own reverse is removed in this same document.
+        for dependent in verify::all_relationship_mappings(repo) {
+            if dependent.mapping.kind == "reverseReference"
+                && dependent.mapping.resource_path.as_deref()
+                    == Some(format!("managed/{}", entry.object).as_str())
+                && dependent.mapping.property_name.as_deref() == Some(entry.key.as_str())
+                && !pair.mappings.iter().any(|own| {
+                    dependent.generic_object() == Some(own.object.as_str())
+                        && dependent.key == own.key
+                })
+            {
+                return Err(format!(
+                    "rollback refused: {} also reads through {}.{}",
+                    dependent.label(),
+                    entry.object,
+                    entry.key
+                ));
+            }
+        }
+        after["resourceMapping"]["genericMapping"][format!("managed/{}", entry.object)]["properties"]
+            .as_object_mut().ok_or("mapping properties vanished")?.remove(&entry.key);
+    }
+    let mapping = verify::mapped(repo, &pair.forward.object, &pair.forward.key)
+        .ok_or("reference vanished")?;
+    Ok(Plan {
+        object: pair.forward.object.clone(),
+        key: pair.forward.key.clone(),
+        mapping,
+        notes: Vec::new(),
+        before: repo.clone(),
+        after,
+        addition: None,
+        rollback: Some(pair.clone()),
     })
 }
 
@@ -380,7 +433,9 @@ pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), Stri
             }
         ));
     }
-    let fresh = if plan.addition.is_some() {
+    let fresh = if let Some(pair) = &plan.rollback {
+        plan_rollback(managed, repo_ds, pair)?
+    } else if plan.addition.is_some() {
         plan_add(managed, repo_ds, &plan.object, &plan.key)?
     } else {
         self::plan(managed, repo_ds, &plan.object, &plan.key)?

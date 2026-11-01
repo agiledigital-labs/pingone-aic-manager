@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::verify::{self, PairReport};
@@ -155,7 +155,7 @@ pub fn allocate(repo: &Value, object: &str) -> Result<u8, String> {
     ))
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub object: String,
     pub key: String,
