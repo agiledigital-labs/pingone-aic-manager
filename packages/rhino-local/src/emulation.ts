@@ -41,12 +41,14 @@ export interface EmulationOwner {
   readonly id: string;
   readonly name: string;
   readonly kind: "test" | "suite";
+  readonly file?: string;
 }
 export interface RecordedEmulationFailure {
   readonly sequence: number;
   readonly context: string;
   readonly failure: EmulationFailureInfo;
   readonly owner?: EmulationOwner;
+  readonly file?: string;
   readonly expected?: string;
 }
 export interface EmulationFailureSource {
@@ -62,9 +64,14 @@ interface OwnerState {
   late: RecordedEmulationFailure[];
 }
 interface Entry extends RecordedEmulationFailure { journal: number }
-interface Work { journal: EmulationFailureJournal; owner: EmulationOwner | undefined; context: string }
+interface Work { journal: EmulationFailureJournal; owner: EmulationOwner | undefined; context: string; file: string | undefined; reported?: boolean }
 interface Registry {
   ownership: AsyncLocalStorage<EmulationOwner | undefined>;
+  location: AsyncLocalStorage<string | undefined>;
+  file: string | undefined;
+  id: string;
+  revision: number;
+  transport: (() => void) | undefined;
   owners: Map<string, OwnerState>;
   history: Entry[];
   outstanding: Set<Work>;
@@ -72,16 +79,18 @@ interface Registry {
 }
 // Share across module graphs too (e.g. a setup file and a separately loaded core).
 const registryKey = Symbol.for("@agiledigital/pingone-aic-script-tester/emulation-registry-v1");
-const processGlobal = globalThis as typeof globalThis & { [registryKey]?: Registry };
+const processGlobal = process as typeof process & { [registryKey]?: Registry };
 const registry = processGlobal[registryKey] ??= {
-  ownership: new AsyncLocalStorage<EmulationOwner | undefined>(), owners: new Map(),
+  ownership: new AsyncLocalStorage<EmulationOwner | undefined>(), location: new AsyncLocalStorage<string | undefined>(),
+  file: undefined, id: randomUUID(), revision: 0, transport: undefined, owners: new Map(),
   history: [], outstanding: new Set(), nextJournal: 0,
 };
 const { ownership, owners, history, outstanding } = registry;
 
 export function currentEmulationOwner(): EmulationOwner | undefined { return ownership.getStore(); }
 export function createEmulationOwner(name: string, kind: EmulationOwner["kind"]): EmulationOwner {
-  const owner = Object.freeze({ id: randomUUID(), name, kind });
+  const file = registry.location.getStore() ?? registry.file;
+  const owner = Object.freeze({ id: randomUUID(), name, kind, ...(file ? { file } : {}) });
   owners.set(owner.id, { owner, parent: ownership.getStore()?.id, expectations: [], closed: false, failed: false, late: [] });
   return owner;
 }
@@ -90,7 +99,8 @@ export function withEmulationOwner<T>(owner: EmulationOwner, action: () => T): T
 /** Event-driven host callbacks must retain the owner captured when eval began. */
 export function bindEmulationOwner<A extends unknown[], T>(action: (...args: A) => T): (...args: A) => T {
   const owner = ownership.getStore();
-  return (...args) => ownership.run(owner, () => action(...args));
+  const file = owner?.file ?? registry.location.getStore() ?? registry.file;
+  return (...args) => ownership.run(owner, () => registry.location.run(file, () => action(...args)));
 }
 
 /** A wrapper's provenance prefix does not introduce a second underlying cause. */
@@ -100,7 +110,7 @@ function causes(failure: EmulationFailureInfo): string[] {
 }
 function coverage(owner: EmulationOwner | undefined): Map<string, string> {
   const claims = owner ? owners.get(owner.id)?.expectations ?? [] : [];
-  const available = [...new Set(history.filter((entry) => entry.owner?.id === owner?.id).flatMap((entry) => causes(entry.failure)))];
+  const available = [...new Set(history.filter((entry) => entry.owner?.id === owner?.id && !entry.failure.message.startsWith("outstanding work at ")).flatMap((entry) => causes(entry.failure)))];
   const covered = new Map<string, string>();
   for (const claim of claims) {
     // Bind once: one declaration can cover repeated observations of ONE cause.
@@ -110,14 +120,14 @@ function coverage(owner: EmulationOwner | undefined): Map<string, string> {
   return covered;
 }
 function unexpected(entry: RecordedEmulationFailure): string[] {
-  const covered = coverage(entry.owner);
+  const covered = entry.failure.message.startsWith("outstanding work at ") ? new Map<string, string>() : coverage(entry.owner);
   return causes(entry.failure).filter((cause) => !covered.has(cause));
 }
 function snapshot(entry: Entry): RecordedEmulationFailure {
   const covered = coverage(entry.owner);
   const names = causes(entry.failure).map((cause) => covered.get(cause));
   return structuredClone({ sequence: entry.sequence, context: entry.context, failure: entry.failure,
-    ...(entry.owner ? { owner: entry.owner } : {}), ...(names.every((name) => name !== undefined) ? { expected: [...new Set(names)].join(", ") } : {}) });
+    ...(entry.owner ? { owner: entry.owner } : {}), ...(entry.file ? { file: entry.file } : {}), ...(names.every((name) => name !== undefined) ? { expected: [...new Set(names)].join(", ") } : {}) });
 }
 export function recordedEmulationFailures(): readonly RecordedEmulationFailure[] { return history.map(snapshot); }
 
@@ -133,27 +143,31 @@ export function expectOwnedEmulationFailure(name: string | RegExp): void {
     return result?.index === 0 && result[0].length === cause.length;
   };
   state.expectations.push({ name: String(name), match });
+  changed();
 }
 
 /** No deletion API: source replacement and fork reuse cannot erase audit entries. */
 export class EmulationFailureJournal {
   readonly #id = ++registry.nextJournal;
 
-  record(failure: EmulationFailureInfo, context: string, owner = ownership.getStore()): void {
+  record(failure: EmulationFailureInfo, context: string, owner = ownership.getStore(), file = owner?.file ?? registry.location.getStore() ?? registry.file): void {
     const entry: Entry = { sequence: history.length + 1, journal: this.#id, context, failure: structuredClone(failure),
-      ...(owner ? { owner } : {}) };
+      ...(owner ? { owner } : {}), ...(file ? { file } : {}) };
     history.push(entry);
     const state = owner && owners.get(owner.id);
     if (state?.closed) state.late.push(snapshot(entry));
+    changed();
   }
   get entries(): readonly RecordedEmulationFailure[] { return history.filter((entry) => entry.journal === this.#id).map(snapshot); }
 
   /** Capture ownership synchronously at API entry, never at eventual completion. */
   async run<T>(context: string, action: () => Promise<T>): Promise<T> {
-    const work = { journal: this, owner: ownership.getStore(), context };
+    const owner = ownership.getStore();
+    const work: Work = { journal: this, owner, context, file: owner?.file ?? registry.location.getStore() ?? registry.file };
     outstanding.add(work);
-    try { return await action(); }
-    finally { outstanding.delete(work); }
+    changed();
+    try { return await registry.location.run(work.file, action); }
+    finally { outstanding.delete(work); changed(); }
   }
 }
 
@@ -162,9 +176,9 @@ export function verifyEmulationOwner(owner: EmulationOwner): void {
   const state = owners.get(owner.id)!;
   if (state.closed) throw new Error("Emulation owner verdict already closed");
   const pending = [...outstanding].filter((work) => work.owner?.id === owner.id);
-  for (const work of pending) work.journal.record({ kind: "protocol", message: `outstanding work at test end: ${work.context}` }, work.context, owner);
+  for (const work of pending) recordOutstanding(work, "test");
   const entries = history.filter((entry) => entry.owner?.id === owner.id);
-  const diagnostics = entries.flatMap((entry) => unexpected(entry).map((cause) => `${entry.context}: ${entry.failure.kind}: ${cause}`));
+  const diagnostics = entries.flatMap((entry) => unexpected(entry).map((cause) => `${entry.context}: ${entry.failure.kind}: ${entry.failure.message}${entry.failure.message === cause ? "" : ` (unexpected cause: ${cause})`}`));
   coverage(owner);
   for (const claim of state.expectations) if (claim.cause === undefined) {
     diagnostics.push(`expected emulation failure did not occur: ${claim.name}`);
@@ -180,4 +194,46 @@ export function verifyEmulationOwner(owner: EmulationOwner): void {
   state.closed = true;
   state.failed = diagnostics.length > 0;
   if (diagnostics.length > 0) throw new Error(`Emulation failure guard (${owner.name}):\n${diagnostics.join("\n")}`);
+}
+
+/** Serializable worker-to-main audit, independent of Vitest task result/status. */
+export interface EmulationAudit {
+  id: string;
+  revision: number;
+  failures: Array<{ sequence: number; context: string; owner?: EmulationOwner; file?: string; causes: string[] }>;
+  outstanding: Array<{ context: string; owner?: EmulationOwner; file?: string }>;
+}
+function changed(): void {
+  registry.revision++;
+  registry.transport?.();
+}
+export function emulationAudit(): EmulationAudit {
+  return { id: registry.id, revision: registry.revision,
+    failures: history.map((entry) => ({ sequence: entry.sequence, context: entry.context,
+      ...(entry.owner ? { owner: entry.owner } : {}), ...(entry.file ? { file: entry.file } : {}), causes: unexpected(entry) })),
+    outstanding: [...outstanding].map((work) => ({ context: work.context,
+      ...(work.owner ? { owner: work.owner } : {}), ...(work.file ? { file: work.file } : {}) })),
+  };
+}
+export function hasEmulationAuditTransport(): boolean { return registry.transport !== undefined; }
+/** The current worker runner replaces the previous transport. The shared history
+ * still includes earlier files and owners; old runner closures need not survive. */
+export function attachEmulationAuditTransport(transport: () => void): void { registry.transport = transport; }
+/** Collection starts before any test/suite ownership context exists. */
+export function setEmulationFile(file: string): void { registry.file = file; }
+function recordOutstanding(work: Work, boundary: string): void {
+  if (work.reported) return;
+  work.reported = true;
+  work.journal.record({ kind: "protocol", message: `outstanding work at ${boundary} end: ${work.context}` }, work.context, work.owner, work.file);
+}
+/** File/run boundaries include unowned work and work started after owner teardown. */
+export function finishEmulationFile(file: string): void {
+  for (const work of outstanding) if (work.file === file || work.file === undefined) recordOutstanding(work, "file");
+}
+export function emulationAuditDiagnostics(audit: EmulationAudit): string[] {
+  const location = (item: { owner?: EmulationOwner; file?: string }) => `${item.owner?.name ?? "unowned"}${item.file ? ` (${item.file})` : ""}`;
+  return [
+    ...audit.failures.flatMap((entry) => entry.causes.map((cause) => `${location(entry)}: ${entry.context}: ${cause}`)),
+    ...audit.outstanding.map((work) => `${location(work)}: outstanding work at run end: ${work.context}`),
+  ];
 }

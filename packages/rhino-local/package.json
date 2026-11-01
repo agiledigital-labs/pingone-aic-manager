@@ -45,7 +45,15 @@
       "types": "./dist/src/diagnostics.d.ts",
       "default": "./dist/src/diagnostics.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./vitest-runner": {
+      "types": "./dist/src/harness/vitest-runner.d.ts",
+      "default": "./dist/src/harness/vitest-runner.js"
+    },
+    "./vitest-reporter": {
+      "types": "./dist/src/harness/vitest-reporter.d.ts",
+      "default": "./dist/src/harness/vitest-reporter.js"
+    }
   },
   "bin": {
     "aic-script-tester-show-log": "dist/bin/show-log.js",
