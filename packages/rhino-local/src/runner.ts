@@ -1,6 +1,6 @@
 import { decodeProtocol, stringifyProtocol } from "./protocol-values.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { EmulationFailure, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
+import { EmulationFailure, EmulationFailureJournal, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual, promisify } from "node:util";
@@ -424,6 +424,7 @@ const callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emula
 
 export class RhinoRunner {
   readonly lane: JvmLane;
+  readonly #failures = new EmulationFailureJournal();
   #primary: JvmProcess;
   #shadow: JvmProcess | undefined;
   #closing = false;
@@ -481,15 +482,24 @@ export class RhinoRunner {
     return env;
   }
 
+  /** Detached, append-only diagnostic snapshots; independent of caller assertions. */
+  get emulationFailures() { return this.#failures.entries; }
+  resetEmulationFailures(): void { this.#failures.reset(); }
+
   async eval(job: JobRequest, options: EvalOptions = {}): Promise<JobResponse> {
     const id = job.id ?? randomUUID();
     if (this.#activeIds.has(id)) {
       const failure = { kind: "protocol" as const, message: `rhino-local: duplicate active job id: ${id}` };
+      this.#failures.record(failure, `job ${id}`);
       const parent = callScope.getStore();
       if (parent) parent.failure ??= failure;
       throw new EmulationFailure(failure);
     }
-    if (this.#closing && !callScope.getStore()) throw new EmulationFailure({ kind: "protocol", message: "rhino-local: runner is closing" });
+    if (this.#closing && !callScope.getStore()) {
+      const failure = { kind: "protocol" as const, message: "rhino-local: runner is closing" };
+      this.#failures.record(failure, `job ${id}`);
+      throw new EmulationFailure(failure);
+    }
     this.#activeIds.add(id);
     let finish!: () => void;
     const done = new Promise<void>((resolve) => { finish = resolve; });
@@ -497,12 +507,15 @@ export class RhinoRunner {
     try {
       const response = await this.#evalJob({ ...job, id }, options);
       const fatal = responseFailure(response);
+      if (fatal) this.#failures.record(fatal, `job ${id}`);
       const parent = callScope.getStore();
       if (fatal && parent) parent.failure ??= fatal;
       return fatal ? { ...response, ...(response.outcome === "ok" ? failedResponse(id, fatal) : { emulation: fatal }) } : response;
     } catch (error) {
+      const failure = emulationFailure(error) ?? { kind: "internal" as const, message: String(error) };
+      this.#failures.record(failure, `job ${id}`);
       const parent = callScope.getStore();
-      if (parent) parent.failure ??= emulationFailure(error) ?? { kind: "internal", message: String(error) };
+      if (parent) parent.failure ??= failure;
       throw error;
     } finally {
       this.#activeIds.delete(id);

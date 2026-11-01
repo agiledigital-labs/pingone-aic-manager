@@ -1,4 +1,4 @@
-import { EmulationFailure, emulationFailure } from "../emulation.ts";
+import { EmulationFailure, EmulationFailureJournal, emulationFailure } from "../emulation.ts";
 /** REST seam and script-facing host adapter. State belongs to an instance; config is shared. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { EmulationFailureInfo, HostCall, JsonValue } from "../protocol.ts";
@@ -19,6 +19,7 @@ export class IdmEmulator {
   private readonly policy: PolicyEvaluator | undefined;
   private readonly records: Map<string, Document>;
   private readonly evidence = new Evidence();
+  private failures = new EmulationFailureJournal();
   private readonly chain = new AsyncLocalStorage<Document>();
   private readonly scripts: Scripts;
   private readonly managed: ManagedStore;
@@ -38,8 +39,13 @@ export class IdmEmulator {
     const fork = new IdmEmulator(this.config, this.runner, { ...(this.policy ? { policy: this.policy } : {}), properties: this.properties });
     for (const [key, value] of this.records) fork.records.set(key, structuredClone(value));
     fork.managed.inheritCookies(this.managed);
+    fork.failures = this.failures;
     return fork;
   }
+
+  /** Forks share this journal so a guard on their parent covers all descendants. */
+  get emulationFailures() { return this.failures.entries; }
+  resetEmulationFailures(): void { this.failures.reset(); }
 
   private failure(fatal: EmulationFailureInfo): Omit<RestResult, "provenance"> {
     for (const name of fatal.missing ?? []) this.evidence.add("missing", name);
@@ -48,7 +54,7 @@ export class IdmEmulator {
   }
 
   async request(request: RestRequest): Promise<RestResult> {
-    const { value, provenance } = await this.evidence.run(async () => {
+    const { value, provenance } = await this.evidence.run<Omit<RestResult, "provenance">>(async () => {
       try {
         const headers: Record<string, string> = Object.create(null) as Record<string, string>;
         for (const [name, value] of Object.entries(request.headers ?? {})) {
@@ -76,8 +82,10 @@ export class IdmEmulator {
       const missing = provenance.filter((entry) => entry.kind === "missing").map((entry) => entry.behavior);
       const fatal: EmulationFailureInfo = { kind: "missing", message: `Missing IDM behavior: ${missing.join(", ")}`, missing };
       const failure = new IdmError(501, fatal.message);
+      this.failures.record(fatal, `${request.method} ${request.path}`);
       return { status: failure.status, body: failure.body, emulation: fatal, provenance };
     }
+    if (value.emulation) this.failures.record(value.emulation, `${request.method} ${request.path}`);
     return { ...value, provenance };
   }
 
@@ -99,7 +107,7 @@ export class IdmEmulator {
   };
 
   async hostRequest(call: HostCall): Promise<RestResult> {
-    const { value, provenance } = await this.evidence.run(async () => {
+    const { value, provenance } = await this.evidence.run<Omit<RestResult, "provenance">>(async () => {
       try { return { status: 200, body: await this.host(call) }; }
       catch (error) {
         const fatal = emulationFailure(error);
@@ -112,6 +120,7 @@ export class IdmEmulator {
         return this.failure({ kind: "internal", message: String(error) });
       }
     });
+    if ("emulation" in value && value.emulation) this.failures.record(value.emulation, `host ${call.method} ${String(call.args[0])}`);
     return { ...value, provenance };
   }
 
