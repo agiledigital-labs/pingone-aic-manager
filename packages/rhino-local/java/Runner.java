@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.script.ScriptContext;
 import javax.script.SimpleScriptContext;
 import org.mozilla.javascript.Context;
@@ -43,13 +45,28 @@ public final class Runner {
     ERR.println("rhino-local-runner ready " + Json.stringify(environment(factory)));
     final BufferedReader in =
         new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+    final ExecutorService workers = Executors.newCachedThreadPool();
     String line;
     while ((line = in.readLine()) != null) {
       if (line.isEmpty()) {
         continue;
       }
-      handleLine(factory, line);
+      final String input = line;
+      final Object parsed;
+      try {
+        parsed = Json.parse(input);
+      } catch (RuntimeException e) {
+        ERR.println("rhino-local-runner: skipping unparseable line: " + e.getMessage());
+        continue;
+      }
+      if (parsed instanceof Map && "reply".equals(((Map<?, ?>) parsed).get("type"))) {
+        HostCalls.reply(Json.asObject(parsed, "reply"));
+      } else {
+        workers.submit(() -> handleLine(factory, input));
+      }
     }
+    HostCalls.endInput();
+    workers.shutdown();
   }
 
   /**
@@ -104,7 +121,14 @@ public final class Runner {
         System.exit(0);
         return;
       }
-      write(evalJob(factory, id, job));
+      Object engine = job.get("engine");
+      if (engine == null || "am".equals(engine)) {
+        write(evalJob(factory, id, job));
+      } else if ("idm".equals(engine)) {
+        write(IdmRuntime.eval(id, job));
+      } else {
+        write(errorResponse(id, "protocol_error", new IllegalArgumentException("unknown engine: " + engine), null, -1, -1, null));
+      }
     } catch (Throwable t) {
       write(errorResponse(id, "runtime_error", t, null, -1, -1, null));
     }
@@ -156,6 +180,7 @@ public final class Runner {
     final Context cx = factory.enterContext();
     try {
       cx.setLanguageVersion(languageVersion);
+      cx.setLocale(Locale.US);
       // No list means no shutter, which is the pre-shutter behaviour: every
       // Java name resolves. Callers that mean to reproduce a script context
       // pass that context's allowLists.
@@ -283,7 +308,7 @@ public final class Runner {
     return rec;
   }
 
-  static void write(Map<String, Object> rec) {
+  static synchronized void write(Map<String, Object> rec) {
     OUT.println(Json.stringify(rec));
   }
 }

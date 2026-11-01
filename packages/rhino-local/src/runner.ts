@@ -14,7 +14,39 @@ import {
   type Launch,
   type RunnerEnvironment,
 } from "./jvm.ts";
-import { parseJobResponse, type JobRequest, type JobResponse } from "./protocol.ts";
+import {
+  parseHostCall, parseJobResponse, type HostCall, type HostError, type HostReply,
+  type JobRequest, type JobResponse, type JsonValue,
+} from "./protocol.ts";
+export type { HostCall, HostError, JobRequest, JobResponse, JsonValue } from "./protocol.ts";
+
+export interface EvalOptions {
+  onCall?: (call: HostCall) => JsonValue | Promise<JsonValue>;
+}
+
+/** Throw from onCall to expose a CREST-shaped failure to the IDM script. */
+export class HostCallError extends Error {
+  readonly class: string;
+  readonly code: number;
+  readonly detail: JsonValue;
+  constructor(error: HostError) {
+    super(error.message);
+    this.name = "HostCallError";
+    this.class = error.class;
+    this.code = error.code;
+    this.detail = error.detail;
+  }
+}
+
+function hostError(error: unknown): HostError {
+  const record = typeof error === "object" && error !== null ? error as Record<string, unknown> : {};
+  return {
+    class: typeof record.class === "string" ? record.class : "rhino.local.HostCallException",
+    message: typeof record.message === "string" ? record.message : String(error),
+    code: typeof record.code === "number" ? record.code : 500,
+    detail: (record.detail ?? {}) as JsonValue,
+  };
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -76,6 +108,7 @@ export interface SpawnRunnerOptions {
 type Pending = {
   resolve: (response: JobResponse) => void;
   reject: (error: Error) => void;
+  onCall: ((call: HostCall) => Promise<HostReply>) | undefined;
 };
 
 /** One JVM speaking the line protocol. {@link RhinoRunner} holds one or two. */
@@ -165,7 +198,7 @@ class JvmProcess {
     }
   }
 
-  send(id: string, payload: Record<string, unknown>): Promise<JobResponse> {
+  send(id: string, payload: Record<string, unknown>, onCall?: Pending["onCall"]): Promise<JobResponse> {
     if (this.#closed || this.#exit) {
       return Promise.reject(
         this.#exit
@@ -173,8 +206,11 @@ class JvmProcess {
           : new Error("rhino-local: runner is closed")
       );
     }
+    if (this.#pending.has(id)) {
+      return Promise.reject(new Error(`rhino-local: duplicate active job id: ${id}`));
+    }
     return new Promise<JobResponse>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      this.#pending.set(id, { resolve, reject, onCall });
       const ok = this.#child.stdin.write(`${JSON.stringify(payload)}\n`);
       if (!ok) {
         const onError = (error: Error): void => {
@@ -269,6 +305,11 @@ class JvmProcess {
     }
     let response: JobResponse;
     try {
+      const call = parseHostCall(parsed);
+      if (call !== undefined) {
+        void this.#answerCall(call);
+        return;
+      }
       response = parseJobResponse(parsed, line);
     } catch (error) {
       const first = this.#pending.entries().next().value;
@@ -284,6 +325,25 @@ class JvmProcess {
     }
     this.#pending.delete(response.id);
     pending.resolve(response);
+  }
+
+  async #answerCall(call: HostCall): Promise<void> {
+    const pending = this.#pending.get(call.id);
+    if (pending === undefined) return;
+    let reply: HostReply;
+    try {
+      if (pending.onCall === undefined) throw new Error("rhino-local: no onCall handler for IDM job");
+      reply = await pending.onCall(call);
+      // Validate serializability before writing, so a bad handler cannot strand a worker.
+      const line = JSON.stringify(reply);
+      if (this.#pending.get(call.id) === pending && !this.#closed && !this.#exit) this.#child.stdin.write(`${line}\n`);
+      return;
+    } catch (error) {
+      reply = { type: "reply", id: call.id, seq: call.seq, error: hostError(error) };
+    }
+    if (this.#pending.get(call.id) === pending && !this.#closed && !this.#exit) {
+      this.#child.stdin.write(`${JSON.stringify(reply)}\n`);
+    }
   }
 
   #waitForExit(): Promise<void> {
@@ -353,9 +413,12 @@ export class RhinoRunner {
     return env;
   }
 
-  async eval(job: JobRequest): Promise<JobResponse> {
+  async eval(job: JobRequest, options: EvalOptions = {}): Promise<JobResponse> {
     const id = job.id ?? randomUUID();
     const payload: Record<string, unknown> = { id, source: job.source };
+    if (job.engine !== undefined) payload.engine = job.engine;
+    if (job.bindings !== undefined) payload.bindings = job.bindings;
+    if (job.resourceNameBindings !== undefined) payload.resourceNameBindings = job.resourceNameBindings;
     if (job.sourceName !== undefined) {
       payload.sourceName = job.sourceName;
     }
@@ -380,13 +443,47 @@ export class RhinoRunner {
     if (job.resultGlobal !== undefined) {
       payload.resultGlobal = job.resultGlobal;
     }
-    if (this.#shadow === undefined) {
-      return this.#primary.send(id, payload);
+    const transcript: Array<{ call: HostCall; reply: HostReply }> = [];
+    const primaryCall = async (call: HostCall): Promise<HostReply> => {
+      let reply: HostReply;
+      try {
+        if (options.onCall === undefined) throw new Error("rhino-local: no onCall handler for IDM job");
+        const result = await options.onCall(call);
+        if (result === undefined) throw new Error("rhino-local: onCall must return a JSON value (use null)");
+        // Freeze the reply before handing control back to user code or the shadow.
+        reply = JSON.parse(JSON.stringify({ type: "reply", id, seq: call.seq, result })) as HostReply;
+      } catch (error) {
+        reply = { type: "reply", id, seq: call.seq, error: hostError(error) };
+      }
+      transcript.push({ call, reply });
+      return reply;
+    };
+    if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall);
+    if (job.engine !== "idm") {
+      const [host, container] = await Promise.all([
+        this.#primary.send(id, payload), this.#shadow.send(id, payload),
+      ]);
+      if (!isDeepStrictEqual(withoutId(host), withoutId(container))) {
+        throw new LaneDivergenceError(job.sourceName ?? id, host, container);
+      }
+      return host;
     }
-    const [host, container] = await Promise.all([
-      this.#primary.send(id, payload),
-      this.#shadow.send(id, payload),
-    ]);
+    // Sequential shadow replay avoids duplicate effects and naturally supports nested evals.
+    const host = await this.#primary.send(id, payload, primaryCall);
+    let at = 0;
+    let diverged = false;
+    const container = await this.#shadow.send(id, payload, async (call) => {
+      const recorded = transcript[at++];
+      if (recorded === undefined || !isDeepStrictEqual(recorded.call, call)) {
+        diverged = true;
+        return { type: "reply", id, seq: call.seq, error: {
+          class: "rhino.local.LaneDivergenceException", message: "rhino-local: shadow host call sequence differs",
+          code: 500, detail: {},
+        } };
+      }
+      return recorded.reply;
+    });
+    if (diverged || at !== transcript.length) throw new LaneDivergenceError(job.sourceName ?? id, host, container);
     if (!isDeepStrictEqual(withoutId(host), withoutId(container))) {
       throw new LaneDivergenceError(job.sourceName ?? id, host, container);
     }

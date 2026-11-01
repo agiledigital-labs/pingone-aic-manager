@@ -28,6 +28,12 @@ export interface JobRequest {
   /** Correlates the response. Generated if omitted. */
   id?: string;
   source: string;
+  /** AM is the default; IDM uses the measured compiled engine and Java bindings. */
+  engine?: "am" | "idm";
+  /** IDM top-level bindings, wrapped as Java-backed maps/lists. */
+  bindings?: { [key: string]: JsonValue };
+  /** Binding names to wrap as Java resource-name objects instead of JS strings. */
+  resourceNameBindings?: string[];
   /** Author's file path; becomes Rhino's source name (not `<eval>`). */
   sourceName?: string;
   /** Rhino language version. Default 0 (`VERSION_DEFAULT`). */
@@ -63,12 +69,56 @@ export interface JobError {
   lineSource: string | null;
 }
 
+export type HostMethod = "read" | "create" | "update" | "patch" | "delete" | "query" | "action";
+
+export interface HostCall {
+  type: "call";
+  id: string;
+  /** One-based, per job. */
+  seq: number;
+  method: HostMethod;
+  /** Functions are removed; a trailing query callback executes on the JVM. */
+  args: JsonValue[];
+}
+
+export interface HostError {
+  class: string;
+  message: string;
+  code: number;
+  detail: JsonValue;
+}
+
+export type HostReply =
+  | { type: "reply"; id: string; seq: number; result: JsonValue }
+  | { type: "reply"; id: string; seq: number; error: HostError };
+
+export interface JobLog {
+  surface: "logger" | "console";
+  level: string;
+  message: string;
+  args: JsonValue[];
+}
+
+/** Raw throw classification; the emulator applies hook/endpoint-specific HTTP policy. */
+export interface ThrownValue {
+  kind: "object" | "error" | "string" | "primitive" | "javaException" | "java";
+  class?: string;
+  value?: JsonValue;
+  code?: JsonValue;
+  message?: JsonValue;
+  detail?: JsonValue;
+}
+
 export interface JobResponse {
   id: string;
   outcome: JobOutcome;
   valueKind: string;
   value: JsonValue;
   error: JobError | null;
+  /** Present only on IDM responses. Includes mutations to the supplied binding graph. */
+  bindings?: { [key: string]: JsonValue };
+  logs?: JobLog[];
+  thrown?: ThrownValue;
 }
 
 const OUTCOMES: ReadonlySet<string> = new Set([
@@ -98,6 +148,9 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
     valueKind: raw.valueKind,
     value: raw.value as JsonValue,
     error: parseJobError(raw.error),
+    ...(raw.bindings === undefined ? {} : { bindings: raw.bindings as { [key: string]: JsonValue } }),
+    ...(raw.logs === undefined ? {} : { logs: raw.logs as JobLog[] }),
+    ...(raw.thrown === undefined ? {} : { thrown: raw.thrown as ThrownValue }),
   };
 }
 
@@ -143,4 +196,15 @@ function optionalNumber(raw: unknown, fallback: number): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const HOST_METHODS: ReadonlySet<string> = new Set(["read", "create", "update", "patch", "delete", "query", "action"]);
+
+export function parseHostCall(raw: unknown): HostCall | undefined {
+  if (!isRecord(raw) || raw.type !== "call") return undefined;
+  if (typeof raw.id !== "string" || raw.id.length === 0 || !Number.isSafeInteger(raw.seq) ||
+      (raw.seq as number) < 1 || typeof raw.method !== "string" || !HOST_METHODS.has(raw.method) || !Array.isArray(raw.args)) {
+    throw new Error("rhino-local: malformed host call");
+  }
+  return raw as unknown as HostCall;
 }
