@@ -26,4 +26,8 @@ export class Evidence {
   assumed(behavior: string): void {
     this.add("assumed", behavior);
   }
+
+  firstMissing(): Provenance | undefined {
+    return this.local.getStore()?.find((entry) => entry.kind === "missing");
+  }
 }

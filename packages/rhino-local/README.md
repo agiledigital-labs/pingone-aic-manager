@@ -763,8 +763,8 @@ marks string-valued bindings to wrap as Java resource-name objects.
 converted JSON arguments. Function arguments are dropped; a final query callback
 runs on the JVM once per returned row, with `result` and `resultCount` removed
 from the query completion. Resource routing, missing-resource behavior, query
-validation, and storage policy belong to `onCall`. This slice supplies no store
-or endpoint dispatcher. A job without `onCall` receives a catchable failed call
+validation, and storage policy belong to `onCall`; the experimental IDM core
+below provides that handler. A job without `onCall` receives a catchable failed call
 immediately. A handler must return a JSON value (use `null` for no result).
 Throw `HostCallError` to preserve a CREST class, message, numeric code and detail;
 the script receives a Rhino `JavaException` with `javaException.getCode()` and
@@ -807,6 +807,76 @@ A failed call uses an error reply instead of `result`:
 ```jsonl
 {"type":"reply","id":"outer","seq":1,"error":{"class":"org.forgerock.json.resource.ForbiddenException","message":"denied","code":403,"detail":{"policy":"example"}}}
 ```
+
+## Experimental IDM emulator core
+
+`src/idm/index.ts` exposes `IdmConfig`, `IdmEmulator` and their REST/config types
+inside the workspace. There is deliberately no new npm export yet: cross-tenant
+conformance should settle this contract before it becomes a package entry point.
+The core has no dependency on a test framework.
+
+```ts
+import { IdmConfig, IdmEmulator } from "./src/idm/index.ts";
+
+const config = new IdmConfig({
+  managed: { _id: "managed", objects: [{
+    name: "widget",
+    schema: { properties: { label: { type: "string" } } },
+    onCreate: { type: "text/javascript", source: "object.label += '-created';" },
+  }] },
+  endpoints: { example: { type: "text/javascript", source: "({ok:true});" } },
+});
+const idm = new IdmEmulator(config, runner);
+const result = await idm.request({
+  method: "POST", path: "managed/widget", query: { _action: "create" },
+  body: { label: "sample" },
+});
+// result: {status:201, body:{_id, _rev, label:"sample-created"}, provenance:[...]}
+const isolated = idm.fork(); // shares frozen config and runner; deep-copies state
+```
+
+Paths can have a leading `/openidm/` or use resource names directly. Query values
+are already decoded. Inline scripts use the tenant's `{type, source, globals?}`
+shape; endpoint configs can instead wrap one in `{type:"scripted", script}`.
+Managed schemas retain object hooks, property hooks and custom `actions`.
+`config/managed` and `config/endpoint/<name>` are readable snapshots; config writes
+and script `file` references fail as missing behavior. The caller owns the
+runner and closes it after every emulator/fork using it has finished.
+
+Results add `provenance: {kind, behavior, source?}[]`, deduplicated per request.
+`measured` entries cite the verified API docs; `assumed` entries identify the
+choices the measurements leave open. A reached `missing` entry fails the request
+with 501 and names the behavior. Nested calls share provenance, including a
+missing call caught by script code; concurrent requests use separate scopes.
+Some hooks can commit nested writes before a later failure, and post-hook
+failure durability is explicitly assumed. This is not a transactional clone of
+DS. See [IDM-DONE.md](IDM-DONE.md) for the complete assumption/boundary inventory.
+
+The optional `rawBody` is authoritative when present and `body` is then null.
+This preserves both the measured invalid JSON bytes (`{"_id":""`) for scalar/
+array endpoint reads and the empty-body 500 for a string-valued thrown `code`.
+A transport must send those bytes verbatim, including the missing closing brace.
+
+Attach `idm.onCall` to `runner.eval(..., {onCall})` for standalone script callers.
+It maps all seven host operations into the same core, returns null for missing
+reads, and throws `HostCallError` with CREST class/code/detail otherwise.
+`idm.hostRequest(call)` exposes a standalone call's body/status/provenance when
+the host needs to retain its evidence; `onCall` returns only the script value.
+REST-driven scripts automatically aggregate all their nested evidence.
+
+Policy is **not evaluated** by default: every validated create/update/changed
+patch reports `assumed: policy not evaluated`. The optional constructor
+`{policy: evaluator}` seam runs between validation hooks and store hooks. It can
+throw `HostCallError` to reject with a CREST status and detail; its provenance is
+`assumed: caller-supplied policy evaluator`. It is intended for the real
+`policy.js`, not a TypeScript reconstruction of it.
+
+Runner jobs can opt into `reportMissing: true`, which adds a `missing: string[]`
+diagnostic even for caught uses of unsupported runtime helpers. The emulator
+uses this to enforce its fidelity boundary; ordinary runner response shapes are
+unchanged. `crestBindings: true` supplies the measured request class tags and
+case-insensitive HTTP header maps. These optional wrappers and missing-use
+diagnostics are the slice's Java changes; the IDM engine itself is unchanged.
 
 ## Artefacts
 
