@@ -628,6 +628,7 @@ mod tests {
             "/openidm/managed/a/a1/link?_action=create",
         )
         .transaction_id(&id)
+        .if_match("revision-1")
         .body(serde_json::json!({"_ref":"managed/b/b1"}))
         .envelope();
         let wire = serde_json::to_value(envelope).unwrap();
@@ -671,6 +672,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(values.len(), 1);
             assert_eq!(values[0].to_str().unwrap(), id);
+            assert_eq!(request.headers()["if-match"], "revision-1");
         }
     }
 
