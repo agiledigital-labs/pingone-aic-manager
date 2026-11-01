@@ -1,6 +1,7 @@
 //! Tenant-free relationship storage planning for `relationship map` and new
 //! `relationship set` pairs. `repair` alone applies these document changes.
-//! Slice 2 can reuse the pair judgement, allocator and atomic pair transform.
+//! `conversion` reuses pair judgement and section-aware entries for capture;
+//! mapping creation still allocates under genericMapping.
 //! Ground truth: docs/api/10-managed-objects.md, conversion measured 2026-11-01.
 
 use std::collections::{BTreeMap, BTreeSet};

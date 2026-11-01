@@ -639,6 +639,15 @@ pub async fn map(
     )
 }
 
+async fn read_promotion(lower: &str, upper: &str) -> Result<conversion::PromotionRead> {
+    Ok(conversion::PromotionRead {
+        lower_managed: api::get_managed(lower).await?,
+        lower_repo: api::get_repo_ds(lower).await?,
+        upper_managed: api::get_managed(upper).await?,
+        upper_repo: api::get_repo_ds(upper).await?,
+    })
+}
+
 async fn recheck_selection(
     initial: &conversion::PromotionRead,
     selection: &[Pair],
@@ -647,12 +656,7 @@ async fn recheck_selection(
     upper: &str,
 ) -> Result<()> {
     conversion::recheck_promotion(initial, selection, new_pairs, async || {
-        Ok(conversion::PromotionRead {
-            lower_managed: api::get_managed(lower).await?,
-            lower_repo: api::get_repo_ds(lower).await?,
-            upper_managed: api::get_managed(upper).await?,
-            upper_repo: api::get_repo_ds(upper).await?,
-        })
+        read_promotion(lower, upper).await
     })
     .await
 }
@@ -676,24 +680,17 @@ pub async fn capture_links(
             "lower and upper must be different environments".into(),
         ));
     }
-    let lower_managed = api::get_managed(&lower.name).await?;
-    let lower_repo = api::get_repo_ds(&lower.name).await?;
-    let upper_managed = api::get_managed(&upper.name).await?;
-    let upper_repo = api::get_repo_ds(&upper.name).await?;
-    let initial = conversion::PromotionRead {
-        lower_managed: lower_managed.clone(),
-        lower_repo: lower_repo.clone(),
-        upper_managed: upper_managed.clone(),
-        upper_repo: upper_repo.clone(),
-    };
     let new_pairs = new_pairs.into_iter().collect::<BTreeSet<_>>();
-    let selection = conversion::promotion_pairs(
-        &lower_managed,
-        &lower_repo,
-        &upper_managed,
-        &upper_repo,
+    let conversion::PromotionPlan {
+        initial,
+        selection,
+        linked: pairs,
+    } = conversion::prepare_promotion(
         &new_pairs,
-    )?;
+        async || read_promotion(&lower.name, &upper.name).await,
+        async |pair| Ok(generic_snapshot(&upper.name, pair).await?.links),
+    )
+    .await?;
     for field in &new_pairs {
         eprintln!(
             "explicitly acknowledged new upper pair {field}: no capture; operator confirmed it has never existed there"
@@ -704,13 +701,7 @@ pub async fn capture_links(
             "after promotion, check uncaptured new ends for orphaned column values before resuming writers"
         );
     }
-    let mut pairs = selection.clone();
-    for pair in &mut pairs {
-        pair.links = generic_snapshot(&upper.name, pair).await?.links;
-    }
-    pairs.retain(|pair| !pair.links.is_empty());
     if pairs.is_empty() {
-        recheck_selection(&initial, &selection, &new_pairs, &lower.name, &upper.name).await?;
         eprintln!(
             "no linked generic pairs need capture on {}; no file written",
             upper.name

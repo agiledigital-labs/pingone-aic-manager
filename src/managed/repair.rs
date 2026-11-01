@@ -2,6 +2,8 @@
 //! `relationship repair`, atomic pair addition for `map` / new `set`, and
 //! explicit in-place conversion rollback (both ends removed in one PUT), and
 //! its preliminary unchanged-document write check before records are touched.
+//! `conversion_records` plans full rollback eligibility before any unlink;
+//! this writer independently replans against fresh documents at the final PUT.
 //! Addition decisions and allocation live in `storage`; both use the same
 //! recheck, backup, whole-document PUT and read-back machinery below.
 //!

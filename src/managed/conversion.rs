@@ -580,18 +580,29 @@ fn connected(seed: Endpoint, mappings: &[verify::Located]) -> BTreeSet<Endpoint>
 }
 
 fn binding(repo: &Value, ends: &BTreeSet<Endpoint>) -> Vec<Binding> {
-    verify::all_relationship_mappings(repo)
+    let mut entries = Vec::new();
+    for (section, resources) in repo
+        .get("resourceMapping")
+        .and_then(Value::as_object)
         .into_iter()
-        .filter(|entry| ends.contains(&(entry.resource.clone(), entry.key.clone())))
-        .map(|entry| Binding {
-            value: repo["resourceMapping"][&entry.section][&entry.resource]["properties"]
-                [&entry.key]
-                .clone(),
-            section: entry.section,
-            resource: entry.resource,
-            key: entry.key,
-        })
-        .collect()
+        .flatten()
+    {
+        for (resource, key) in ends {
+            if let Some(value) = resources
+                .get(resource)
+                .and_then(|entry| entry.get("properties"))
+                .and_then(|properties| properties.get(key))
+            {
+                entries.push(Binding {
+                    section: section.clone(),
+                    resource: resource.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                });
+            }
+        }
+    }
+    entries
 }
 
 /// Compare connected bindings in both directions. Promotion replaces repo.ds;
@@ -627,15 +638,14 @@ pub fn promotion_pairs(
         // A changed lower binding with a missing declaration is an inconsistent
         // read, even when upper also has a mapping. Never label it stale/skip.
         for entry in &lower_binding {
-            if let Some(object) = entry.resource.strip_prefix("managed/") {
-                if !verify::properties(lower_managed, object)
+            if let Some(object) = entry.resource.strip_prefix("managed/")
+                && !verify::properties(lower_managed, object)
                     .is_some_and(|props| props.contains_key(&entry.key))
-                {
-                    return Err(Error::Config(format!(
-                        "Q14: lower {object}.{} has a mapping without a declaration. Restore the declaration and re-read; if genuinely stale, clean it with relationship repair before promotion",
-                        entry.key
-                    )));
-                }
+            {
+                return Err(Error::Config(format!(
+                    "Q14: lower {object}.{} has a mapping without a declaration. Restore the declaration and re-read; if genuinely stale, clean it with relationship repair before promotion",
+                    entry.key
+                )));
             }
         }
         if !upper_binding.is_empty() {
@@ -741,6 +751,34 @@ impl PromotionRead {
             new_pairs,
         )
     }
+}
+
+pub struct PromotionPlan {
+    pub initial: PromotionRead,
+    pub selection: Vec<Pair>,
+    pub linked: Vec<Pair>,
+}
+
+/// Shared planning sequence; the empty/no-file branch is reached only after
+/// the fresh read. Inject reads beneath selection, never a preselected result.
+pub async fn prepare_promotion(
+    new_pairs: &BTreeSet<String>,
+    mut read: impl AsyncFnMut() -> Result<PromotionRead>,
+    mut links: impl AsyncFnMut(&Pair) -> Result<Vec<Link>>,
+) -> Result<PromotionPlan> {
+    let initial = read().await?;
+    let selection = initial.select(new_pairs)?;
+    let mut linked = selection.clone();
+    for pair in &mut linked {
+        pair.links = links(pair).await?;
+    }
+    linked.retain(|pair| !pair.links.is_empty());
+    recheck_promotion(&initial, &selection, new_pairs, async || read().await).await?;
+    Ok(PromotionPlan {
+        initial,
+        selection,
+        linked,
+    })
 }
 
 pub async fn recheck_promotion(
@@ -1690,26 +1728,37 @@ pub(super) mod tests {
             upper_managed: managed.clone(),
             upper_repo: mapped.clone(),
         };
-        let selection = initial.select(&BTreeSet::new()).unwrap();
-        assert!(selection.is_empty());
         let reads = RefCell::new(0);
-        let error = recheck_promotion(&initial, &selection, &BTreeSet::new(), async || {
-            *reads.borrow_mut() += 1;
-            Ok(PromotionRead {
-                lower_managed: managed.clone(),
-                ..initial.clone()
-            })
-        })
+        let error = prepare_promotion(
+            &BTreeSet::new(),
+            async || {
+                let index = *reads.borrow();
+                *reads.borrow_mut() += 1;
+                Ok(if index == 0 {
+                    initial.clone()
+                } else {
+                    PromotionRead {
+                        lower_managed: managed.clone(),
+                        ..initial.clone()
+                    }
+                })
+            },
+            async |_| panic!("equivalent bindings must never be scanned"),
+        )
         .await
-        .unwrap_err()
+        .err()
+        .unwrap()
         .to_string();
-        assert_eq!(*reads.borrow(), 1);
+        assert_eq!(*reads.borrow(), 2);
         assert!(error.contains("Q14"), "{error}");
-        recheck_promotion(&initial, &selection, &BTreeSet::new(), async || {
-            Ok(initial.clone())
-        })
+        let stable = prepare_promotion(
+            &BTreeSet::new(),
+            async || Ok(initial.clone()),
+            async |_| panic!("equivalent bindings must never be scanned"),
+        )
         .await
         .unwrap();
+        assert!(stable.selection.is_empty() && stable.linked.is_empty());
     }
 
     #[test]
@@ -1748,5 +1797,29 @@ pub(super) mod tests {
                 .contains("_refProperties")
         );
         assert!(capture.validate().is_err());
+    }
+    // Regression: mode equality used to conceal changes to target, shape and
+    // reverse binding as well as the reference's LDAP column.
+    #[test]
+    fn promotion_comparison_checks_target_cardinality_and_reverse_fields() {
+        let (managed, _, lower, _) = fixture(true);
+        for (object, key, field, value) in [
+            ("managed/a", "link", "resourcePath", json!("managed/other")),
+            ("managed/a", "link", "isMultiValued", json!(false)),
+            ("managed/a", "link", "primaryKey", json!("other")),
+            ("managed/b", "back", "propertyName", json!("other")),
+            ("managed/b", "back", "isMultiValued", json!(false)),
+            ("managed/b", "back", "type", json!("simple")),
+        ] {
+            let mut upper = lower.clone();
+            upper["resourceMapping"]["genericMapping"][object]["properties"][key][field] = value;
+            let error = promotion_pairs(&managed, &lower, &managed, &upper, &BTreeSet::new())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("change/remove relationship binding"),
+                "{field}: {error}"
+            );
+        }
     }
 }
