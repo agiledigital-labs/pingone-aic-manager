@@ -418,6 +418,10 @@ class JvmProcess {
   }
 }
 
+// The logical host-call chain can cross runner instances; independent async
+// chains still have separate stores. A nested runner must mark its caller's scope.
+const callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
+
 export class RhinoRunner {
   readonly lane: JvmLane;
   #primary: JvmProcess;
@@ -427,7 +431,6 @@ export class RhinoRunner {
   #jobs = new Set<Promise<void>>();
   readonly #shutdownWaitMs: number;
   #activeIds = new Set<string>();
-  #callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
 
   private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined, shutdownWaitMs: number) {
     this.#shutdownWaitMs = shutdownWaitMs;
@@ -482,11 +485,11 @@ export class RhinoRunner {
     const id = job.id ?? randomUUID();
     if (this.#activeIds.has(id)) {
       const failure = { kind: "protocol" as const, message: `rhino-local: duplicate active job id: ${id}` };
-      const parent = this.#callScope.getStore();
+      const parent = callScope.getStore();
       if (parent) parent.failure ??= failure;
       throw new EmulationFailure(failure);
     }
-    if (this.#closing && !this.#callScope.getStore()) throw new EmulationFailure({ kind: "protocol", message: "rhino-local: runner is closing" });
+    if (this.#closing && !callScope.getStore()) throw new EmulationFailure({ kind: "protocol", message: "rhino-local: runner is closing" });
     this.#activeIds.add(id);
     let finish!: () => void;
     const done = new Promise<void>((resolve) => { finish = resolve; });
@@ -494,11 +497,11 @@ export class RhinoRunner {
     try {
       const response = await this.#evalJob({ ...job, id }, options);
       const fatal = responseFailure(response);
-      const parent = this.#callScope.getStore();
+      const parent = callScope.getStore();
       if (fatal && parent) parent.failure ??= fatal;
       return fatal ? { ...response, ...(response.outcome === "ok" ? failedResponse(id, fatal) : { emulation: fatal }) } : response;
     } catch (error) {
-      const parent = this.#callScope.getStore();
+      const parent = callScope.getStore();
       if (parent) parent.failure ??= emulationFailure(error) ?? { kind: "internal", message: String(error) };
       throw error;
     } finally {
@@ -557,7 +560,7 @@ export class RhinoRunner {
       try {
         if (options.onCall === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
-        const result = await this.#callScope.run(scope, () => options.onCall!(call));
+        const result = await callScope.run(scope, () => options.onCall!(call));
         if (scope.failure) throw new EmulationFailure(scope.failure);
         if (result === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: onCall must return a JSON value (use null)" });
