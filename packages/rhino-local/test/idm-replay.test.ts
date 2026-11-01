@@ -1,3 +1,4 @@
+import { expectEmulationFailure } from "../src/harness/emulation-guard.ts";
 /** Both-lane orchestration using TWO REAL HOST JVMs; Docker image compatibility is a separate gate. */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -94,6 +95,7 @@ describe("IDM primary/shadow replay on two real host JVMs", () => {
   ])(
     "raises LaneDivergenceError on %s even if the final response agrees",
     async (_label, source) => {
+    expectEmulationFailure(/host and container JVMs disagree/);
       let effects = 0;
       await expect(
         runner.eval(
@@ -111,17 +113,22 @@ describe("IDM primary/shadow replay on two real host JVMs", () => {
   );
 
   it("replays a host wait that times out without ever receiving a reply", async () => {
+    expectEmulationFailure("IDM harness timeout");
+    let release!: () => void;
+    const gate = new Promise<null>((resolve) => { release = () => resolve(null); });
     let effects = 0;
     const response = await runner.eval(
       { engine: "idm", source: "openidm.read('wait')", timeoutMs: 100 },
       {
         onCall: () => {
           effects++;
-          return new Promise(() => {});
+          return gate;
         },
       }
     );
     expect(response.outcome).toBe("timeout");
+    release();
+    await gate;
     expect(effects).toBe(1);
   });
 
@@ -146,6 +153,7 @@ describe("IDM primary/shadow replay on two real host JVMs", () => {
 
 
 it("#10 freezes an unanswered call before a delayed shadow sees a late reply", async () => {
+    expectEmulationFailure("IDM harness timeout");
   const response = await runner.eval({ id: "review-late-reply", engine: "idm", source: "openidm.read('late')", timeoutMs: 100 }, {
     onCall: async () => { await new Promise((resolve) => setTimeout(resolve, 200)); return 42; },
   });
@@ -154,6 +162,7 @@ it("#10 freezes an unanswered call before a delayed shadow sees a late reply", a
 
 
 it("R2 #10/new4 uses JVM consumption when a synchronous handler blocks Node", async () => {
+    expectEmulationFailure("IDM harness timeout");
   const result = await runner.eval({ engine: "idm", source: "openidm.read('blocked-loop')", timeoutMs: 80 }, {
     onCall: () => {
       const until = performance.now() + 180;
@@ -166,6 +175,7 @@ it("R2 #10/new4 uses JVM consumption when a synchronous handler blocks Node", as
 });
 
 it.each(["primary", "shadow"] as const)("R2 new3 %s-only saturation is an emulation failure", async (lane) => {
+    expectEmulationFailure(/concurrent job limit exceeded/);
   const limited = await RhinoRunner.spawn({ lane: "both", maxConcurrentJobs: 1 });
   let signal!: () => void;
   let release!: () => void;

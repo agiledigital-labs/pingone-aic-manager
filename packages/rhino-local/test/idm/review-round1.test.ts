@@ -1,3 +1,4 @@
+import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 /** Reviewer regressions through the real emulator and JVM. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
@@ -120,6 +121,7 @@ describe("review round 1 core", () => {
 
 describe("review round 1 caller provenance", () => {
   it("#1 standalone onCall cannot swallow missing and jobs remain isolated", async () => {
+    expectEmulationFailure("named _queryId: unmeasured");
     const emu = emulator(runner);
     const source = "try { openidm.query('managed/widget',{_queryId:'unmeasured'}); } catch(e) {} 'passed'";
     const [caught, clean] = await Promise.all([

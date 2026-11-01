@@ -1,3 +1,4 @@
+import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 /** CREST grammar evaluated by querying the emulator, including a real script caller. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
@@ -59,6 +60,7 @@ describe("queryFilter grammar", () => {
   });
 
   it("query expressions return the measured DS refusal; named query ids fail as missing", async () => {
+    expectEmulationFailure("named _queryId: query-all-ids");
     const expression = await send(seeded, { method: "GET", path: "managed/widget", query: { _queryExpression: "select *" } }, 405);
     expect(expression.message).toBe("Query Expressions are not supported when using DS as the repo");
     const result = await seeded.request({ method: "GET", path: "managed/widget", query: { _queryId: "query-all-ids" } });

@@ -1,3 +1,4 @@
+import { expectEmulationFailure } from "../src/harness/emulation-guard.ts";
 /** Re-entrant integration tests: every eval goes through the live JVM reader/worker protocol. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HostCallError, RhinoRunner, type HostCall } from "../src/runner.ts";
@@ -178,6 +179,7 @@ describe("IDM re-entrant host calls", () => {
   });
 
   it("a job without onCall fails the call immediately instead of hanging", async () => {
+    expectEmulationFailure("rhino-local: no onCall handler for IDM job");
     const response = await runner.eval({
       engine: "idm",
       timeoutMs: 0,
@@ -191,6 +193,7 @@ describe("IDM re-entrant host calls", () => {
   });
 
   it("times out a blocked host call and ignores its late reply while other jobs survive", async () => {
+    expectEmulationFailure("IDM harness timeout");
     const started = deferred<void>();
     const release = deferred<void>();
     const blocked = runner.eval(
@@ -218,6 +221,7 @@ describe("IDM re-entrant host calls", () => {
   });
 
   it("rejects duplicate active job ids without replacing the pending handler", async () => {
+    expectEmulationFailure(/duplicate active job id/);
     const started = deferred<void>();
     const release = deferred<void>();
     const first = runner.eval(
@@ -286,10 +290,12 @@ it("R2 public close drains an accepted host call and preserves its response", as
 }, 30_000);
 
 it("R2 public close bounds a never-replied accepted call", async () => {
+    expectEmulationFailure("rhino-local: shutdown wait exceeded");
   const closingRunner = await RhinoRunner.spawn({ shutdownWaitMs: 100 });
   const started = deferred<void>();
+  const gate = deferred<null>();
   const job = closingRunner.eval({ engine: "idm", source: "openidm.read('never')", timeoutMs: 0 }, {
-    onCall: () => { started.resolve(); return new Promise(() => {}); },
+    onCall: () => { started.resolve(); return gate.promise; },
   });
   await started.promise;
   const at = performance.now();
@@ -297,6 +303,8 @@ it("R2 public close bounds a never-replied accepted call", async () => {
   expect(await job).toMatchObject({ outcome: "protocol_error", emulation: { kind: "protocol", message: expect.stringContaining("shutdown") } });
   await closing;
   expect(performance.now() - at).toBeLessThan(2000);
+  gate.resolve(null);
+  await gate.promise;
 }, 30_000);
 
 it("R2 new7 joined spawn can wrap tenant error detail on its own thread", async () => {

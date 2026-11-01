@@ -43,9 +43,8 @@ export class IdmEmulator {
     return fork;
   }
 
-  /** Forks share this journal so a guard on their parent covers all descendants. */
+  /** Forks share the audit view; verdict ownership belongs to each operation. */
   get emulationFailures() { return this.failures.entries; }
-  resetEmulationFailures(): void { this.failures.reset(); }
 
   private failure(fatal: EmulationFailureInfo): Omit<RestResult, "provenance"> {
     for (const name of fatal.missing ?? []) this.evidence.add("missing", name);
@@ -53,7 +52,11 @@ export class IdmEmulator {
     return { status, body: new IdmError(status, fatal.message).body, emulation: fatal };
   }
 
-  async request(request: RestRequest): Promise<RestResult> {
+  request(request: RestRequest): Promise<RestResult> {
+    return this.failures.run(`request ${request.method} ${request.path}`, () => this.requestOwned(request));
+  }
+
+  private async requestOwned(request: RestRequest): Promise<RestResult> {
     const { value, provenance } = await this.evidence.run<Omit<RestResult, "provenance">>(async () => {
       try {
         const headers: Record<string, string> = Object.create(null) as Record<string, string>;
@@ -106,7 +109,11 @@ export class IdmEmulator {
     return result.body;
   };
 
-  async hostRequest(call: HostCall): Promise<RestResult> {
+  hostRequest(call: HostCall): Promise<RestResult> {
+    return this.failures.run(`host ${call.method} ${String(call.args[0])}`, () => this.hostRequestOwned(call));
+  }
+
+  private async hostRequestOwned(call: HostCall): Promise<RestResult> {
     const { value, provenance } = await this.evidence.run<Omit<RestResult, "provenance">>(async () => {
       try { return { status: 200, body: await this.host(call) }; }
       catch (error) {

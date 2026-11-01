@@ -1,3 +1,4 @@
+import { expectEmulationFailure } from "../src/harness/emulation-guard.ts";
 import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -143,6 +144,7 @@ describe("RhinoRunner", () => {
   });
 
   it("times out a runaway loop per-job and keeps serving", async () => {
+    expectEmulationFailure("Rhino harness timeout");
     const timed = await runner.eval({
       id: "loop",
       source: "while (true) {}",
@@ -198,6 +200,7 @@ describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both l
   // comparison that silently stopped comparing would fail here. Not the Java
   // build — CI installs the image's exact build, so that one must agree.
   it("detects a lane-specific difference", async () => {
+    expectEmulationFailure(/host and container JVMs disagree/);
     await expect(
       runner.eval({
         source: 'String(java.lang.System.getProperty("user.dir"))',
@@ -234,6 +237,7 @@ describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both l
 
 describe("RhinoRunner crash", () => {
   it("rejects every pending job when the JVM exits", async () => {
+    expectEmulationFailure(/JVM runner exited/);
     const runner = await RhinoRunner.spawn();
     try {
       const pending = runner.eval({

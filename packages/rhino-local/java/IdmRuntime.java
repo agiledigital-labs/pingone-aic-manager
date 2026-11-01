@@ -107,7 +107,9 @@ final class IdmRuntime {
     }
     if (factory.failure != null) {
       response = Runner.errorResponse(id, "timeout".equals(factory.failure.info.get("kind")) ? "timeout" : "runtime_error", factory.failure, sourceName, -1, -1, null);
-      response.put("emulation", factory.failure.info);
+      Map<String, Object> fatal = new LinkedHashMap<String, Object>(factory.failure.info);
+      if (!factory.missing.isEmpty()) fatal.put("missing", new ArrayList<String>(factory.missing));
+      response.put("emulation", fatal);
     } else if ("timeout".equals(response.get("outcome"))) {
       response.put("emulation", new EmulationFailure("timeout", "IDM harness timeout").info);
     }
@@ -116,6 +118,7 @@ final class IdmRuntime {
     response.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : runtime.bindings);
     List<String> absent = runtime == null ? new ArrayList<String>() : new ArrayList<String>(runtime.missing);
     if (calls != null) for (String name : calls.missing) if (!absent.contains(name)) absent.add(name);
+    for (String name : factory.missing) if (!absent.contains(name)) absent.add(name);
     if (factory.failure != null) {
       List<String> names = Json.optionalStringList(factory.failure.info, "missing");
       if (names != null) for (String name : names) if (!absent.contains(name)) absent.add(name);

@@ -1,3 +1,4 @@
+import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 /** Store, provenance, host errors and nested execution exercised via the JVM. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IdmConfig, IdmEmulator, type Document, type ManagedType } from "../../src/idm/index.ts";
@@ -143,6 +144,7 @@ describe("provenance and explicit boundaries", () => {
   });
 
   it.each(["increment", "move", "copy", "transform"])("unsupported patch %s fails loudly", async (operation) => {
+    expectEmulationFailure(`patch operation ${operation}`);
     const emu = emulator(runner);
     await create(emu);
     const result = await emu.request({ method: "PATCH", path: "managed/widget/one", body: [{ operation, field: "/text", value: 1 }] });
@@ -152,6 +154,7 @@ describe("provenance and explicit boundaries", () => {
   });
 
   it("script file references fail on use with their filename", async () => {
+    expectEmulationFailure("script file reference: scripts/widget-create.js");
     const emu = emulator(runner, { ...simple, onCreate: { type: "text/javascript", file: "scripts/widget-create.js" } });
     const result = await emu.request({ method: "POST", path: "managed/widget", query: { _action: "create" }, body: {} });
     expect(result.status).toBe(501);
@@ -159,6 +162,7 @@ describe("provenance and explicit boundaries", () => {
   });
 
   it("missing behavior in a nested call cannot be hidden by a script catch", async () => {
+    expectEmulationFailure("named _queryId: all");
     const type = { ...simple, onCreate: js("try { openidm.action('managed/widget','unknown',{}); } catch(e) {} try { openidm.query('managed/widget',{_queryId:'all'}); } catch(e) {}") };
     const emu = emulator(runner, type);
     const result = await emu.request({ method: "POST", path: "managed/widget", query: { _action: "create" }, body: {} });
@@ -168,6 +172,7 @@ describe("provenance and explicit boundaries", () => {
   });
 
   it("concurrent request provenance does not leak between jobs", async () => {
+    expectEmulationFailure("named _queryId: unmeasured");
     const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [simple] }, endpoints: {
       missing: js("try { openidm.query('managed/widget',{_queryId:'unmeasured'}); } catch(e) {} ({});"),
       normal: js("({ok:true});"),
@@ -182,6 +187,7 @@ describe("provenance and explicit boundaries", () => {
   });
 
   it.each(["require('lib/lodash')", "openidm.hash('x','SHA-256')"])("caught unsupported %s still reports missing", async (call) => {
+    expectEmulationFailure(call.startsWith("require") ? /require/ : /openidm\.hash/);
     const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {
       example: js(`try { ${call}; } catch(e) {} ({});`),
     } }), runner);

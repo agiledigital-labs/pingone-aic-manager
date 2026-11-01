@@ -12,6 +12,7 @@ final class IdmContextFactory extends ContextFactory {
   private final long started = System.nanoTime();
   // One state for every context/thread executing this job, including shell spawn.
   volatile EmulationFailure failure;
+  final java.util.Set<String> missing = new java.util.concurrent.ConcurrentSkipListSet<String>();
   private volatile boolean finished;
   private final java.util.List<Thread> spawned = new java.util.ArrayList<Thread>();
 
@@ -65,6 +66,8 @@ final class IdmContextFactory extends ContextFactory {
   }
 
   synchronized EmulationFailure fail(EmulationFailure error) {
+    java.util.List<String> names = Json.optionalStringList(error.info, "missing");
+    if (names != null) missing.addAll(names);
     if (failure == null) failure = error;
     return failure;
   }
