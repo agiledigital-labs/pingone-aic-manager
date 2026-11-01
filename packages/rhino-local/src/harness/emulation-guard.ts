@@ -19,7 +19,7 @@ export function useEmulationGuard(..._inputs: EmulationGuardSource[]): void {
   aroundEach(async (runTest, { task }) => {
     // Global setup and useLease/legacy helpers can coexist without nested owners.
     if (currentEmulationOwner()?.kind === "test") return runTest();
-    const owner = createEmulationOwner(task.name, "test");
+    const owner = createEmulationOwner(task.name, "test", task.id);
     await withEmulationOwner(owner, async () => {
       try { await runTest(); } finally { verifyEmulationOwner(owner); }
     });

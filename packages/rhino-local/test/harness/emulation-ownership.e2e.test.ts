@@ -12,7 +12,7 @@ beforeAll(async () => {
   const directory = await mkdtemp(join(tmpdir(), "rhino-owner-guard-"));
   const report = join(directory, "report.json");
   try {
-    await promisify(execFile)(process.execPath, [fileURLToPath(new URL("vitest.mjs", import.meta.resolve("vitest/package.json"))), "run", "--reporter=json", `--outputFile=${report}`, "--config", "test/fixtures/emulation-ownership/config.ts"], {
+    await promisify(execFile)(process.execPath, [fileURLToPath(new URL("vitest.mjs", import.meta.resolve("vitest/package.json"))), "run", "--reporter=json", "--reporter=src/harness/vitest-reporter.ts", `--outputFile=${report}`, "--config", "test/fixtures/emulation-ownership/config.ts"], {
       cwd: process.cwd(), timeout: 60_000, env: { ...childEnv, AIC_SCRIPT_TESTER_JVM: "host", NO_COLOR: "1" },
     }).catch((error: { code: number }) => { expect(error.code).toBe(1); });
     const result = JSON.parse(await readFile(report, "utf8")) as { testResults: Array<{ assertionResults: typeof assertions }> };

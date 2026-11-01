@@ -917,17 +917,24 @@ records and outstanding work fail their file when attributable; unowned evidence
 always fails the run. Late callbacks retain the file and owner where their work
 started, even if those checks have already finished.
 
-Vitest controls the per-test statuses of `it.fails`, retries and dynamic skips:
-the per-test exception can still be inverted or discarded. The independent run
-verdict rejects unexpected emulation failures from every attempt, even when the
-JSON test report says passed/skipped. Named expectations still allow intentional
-failures. Keep the reporter when adding other reporters; the worker final check
-also fails closed if CLI reporter options replace it.
+The runner marks an owning test failed after Vitest's expected-failure inversion
+and retry handling, and always marks its file failed when it contains unexpected
+emulation failures. Dynamic skips can remain displayed as skipped; their file
+still fails. These are persistent task results, so
+`dangerouslyIgnoreUnhandledErrors` cannot suppress them. Named expectations
+continue to allow intentional failures.
+
+The setup requires both the custom runner and the main-process reporter. The
+reporter announces its presence with Vitest's public `provide`/`inject` context;
+setup refuses a missing reporter, including when CLI `--reporter` selection
+replaces the configured list. Keep the package reporter alongside other
+reporters, including on the CLI. The final worker throw is supplemental; the
+failed task states and independent main-process verdict enforce the result.
 
 Direct use without this configuration remains possible. `useLease` and legacy
 helpers install the per-test guard only; they cannot install a main-process
-reporter from inside a worker. The setup refuses to run without the custom runner. Core users
-in another framework must enforce their own run verdict over the registry.
+reporter from inside a worker. Core users in another framework must enforce
+their own run verdict over the registry.
 
 An unfinished request, evaluation or accepted host callback fails immediately as `outstanding work at
 test end`. The guard does not wait for a gate that only later hooks might release.
