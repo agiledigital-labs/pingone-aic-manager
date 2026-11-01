@@ -40,8 +40,7 @@ use serde_json::Value;
 
 use crate::managed::verify::{self, Mapping};
 
-/// What removing one stale mapping will do, computed from one read of each
-/// document.
+/// A removal or atomic addition computed from one read of each document.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Plan {
     pub object: String,
@@ -54,13 +53,17 @@ pub struct Plan {
     #[serde(skip)]
     before: Value,
     #[serde(skip)]
-    pub addition: Option<super::storage::Addition>,
-    /// `before` minus the one entry: the whole document that is `PUT`.
+    addition: Option<super::storage::Addition>,
+    /// The whole transformed document that is `PUT`.
     #[serde(skip)]
     after: Value,
 }
 
 impl Plan {
+    pub fn addition(&self) -> Option<&super::storage::Addition> {
+        self.addition.as_ref()
+    }
+
     pub fn before(&self) -> &Value {
         &self.before
     }
@@ -367,9 +370,14 @@ pub fn plan_sequence(
 pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), String> {
     if repo_ds != &plan.before {
         return Err(format!(
-            "config/repo.ds changed since it was read for {}; nothing was written. Run repair \
+            "config/repo.ds changed since it was read for {}; nothing was written. Run {} \
              again to plan against the current document",
-            plan.label()
+            plan.label(),
+            if plan.addition.is_some() {
+                "map"
+            } else {
+                "repair"
+            }
         ));
     }
     let fresh = if plan.addition.is_some() {
@@ -1146,5 +1154,66 @@ mod tests {
             *tenant.log.borrow(),
             ["read managed", "read repo.ds", "backup"]
         );
+    }
+    #[tokio::test]
+    async fn an_addition_uses_the_same_recheck_backup_send_readback_sequence() {
+        let before = json!({"resourceMapping": {"genericMapping": {}}});
+        let plan = plan_add(&managed(), &before, "a", "live").unwrap();
+        let tenant = Tenant::new(
+            managed(),
+            vec![Ok(before), Ok(plan.after().clone())],
+            Ok(()),
+        );
+        assert_eq!(
+            tenant.run(&plan, 0).await.unwrap().readback,
+            Readback::Confirmed
+        );
+        assert_eq!(
+            *tenant.log.borrow(),
+            [
+                "read managed",
+                "read repo.ds",
+                "backup",
+                "send",
+                "read repo.ds"
+            ]
+        );
+        assert!(verify::mapped(plan.after(), "a", "live").is_some());
+        assert!(verify::mapped(plan.after(), "b", "back").is_some());
+    }
+
+    #[tokio::test]
+    async fn addition_schema_or_repo_drift_cannot_send_a_partial_pair() {
+        let before = json!({"resourceMapping": {"genericMapping": {}}});
+        let plan = plan_add(&managed(), &before, "a", "live").unwrap();
+        let mut changed = managed();
+        let live = changed["objects"][0]["schema"]["properties"]["live"].take();
+        changed["objects"][0]["schema"]["properties"]["live"] =
+            json!({"type": "array", "items": live});
+        let tenant = Tenant::new(changed, vec![Ok(before.clone())], Ok(()));
+        assert!(matches!(
+            tenant.run(&plan, 0).await,
+            Err(Failure::NotWritten(_))
+        ));
+        assert_eq!(*tenant.log.borrow(), ["read managed", "read repo.ds"]);
+        let mut mixed = before;
+        mixed["resourceMapping"]["genericMapping"]["managed/a"] =
+            json!({"properties": {"live": reference("b")}});
+        let tenant = Tenant::new(managed(), vec![Ok(mixed)], Ok(()));
+        assert!(matches!(
+            tenant.run(&plan, 0).await,
+            Err(Failure::NotWritten(_))
+        ));
+        assert_eq!(*tenant.log.borrow(), ["read managed", "read repo.ds"]);
+    }
+
+    #[test]
+    fn addition_planning_never_authorizes_a_dry_run() {
+        let before = json!({"resourceMapping": {"genericMapping": {}}});
+        let plan = plan_add(&managed(), &before, "a", "live").unwrap();
+        assert!(plan.addition().is_some());
+        assert!(authorize(true, true).is_none());
+        assert!(authorize(true, false).is_none());
+        // apply_with and the HTTP wrapper both require the opaque permit.
     }
 }

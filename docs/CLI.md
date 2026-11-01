@@ -582,6 +582,7 @@ aic managed relationship set custom_widget.owner --target alpha_user --forward o
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship map custom_widget.owner [--dry-run] [--force] [--yes] [--json]
 aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
@@ -704,6 +705,19 @@ then 404 again. `relationship verify`, `relink` and the waits below retry that
 404 for up to 30 s and say on stderr how long they waited, so a `verify` run
 straight after a `delete` no longer fails on it. A record that does not exist
 answers a different 404 and is never retried.
+
+`relationship set` now creates mapped pairs: it confirms the `config/managed`
+write first, then adds the named end's `reference` and its partner's
+`reverseReference` in one `repo.ds` PUT. One-way relationships get only a
+reference. Editing an existing relationship preserves its storage mode; no
+`--generic` flag is offered. A failure before the mapping PUT leaves a
+consistent generic pair (unless another writer changed it): finish with
+`relationship map` before adding links. An uncertain PUT/read-back requires
+`relationship verify` before retrying. Matching leftover mappings on a
+recreated key are kept and checked for exposed orphaned values. With `--json`,
+`mapping_verification` contains the read-only verification on create.
+See [Relationship storage](relationship-storage.md) for storage, recovery,
+column reuse and promotion implications.
 
 A relationship end that a write declares is not live when the write returns:
 a link written through it in the first second or so answers `200` and is
@@ -862,6 +876,31 @@ failed delete write itself says that no mapping was touched. `--json` adds
 `"mappings_removed"`. Measured on the sandbox (2026-11-01) on a mapped
 has-one pair: both entries removed in order, every other byte of `repo.ds`
 unchanged.
+
+`relationship map <object>.<key>` converts an existing **link-free generic**
+pair to mapped storage. Pause all link writers first. It scans every record on
+both ends with projected fields (never a `pr` filter), counts unique edges,
+and refuses linked pairs with their count: converting those requires slice 2,
+which is not yet supported. It also refuses mapped or mixed pairs,
+undeclared objects, incomplete/nonreciprocal or multi-target declarations,
+and full reference columns. The plan prints its column, both mapping entries,
+and any measured per-type entries being added. The named end holds the
+reference, including on a same-object pair with two distinct keys.
+
+`map --dry-run` writes nothing and holds no permit. Otherwise it confirms
+(or takes `--force`; required without a terminal), passes the prod `--yes`
+gate, repeats the empty-link scan and rechecks the documents, backs up
+`repo.ds`, PUTs the whole document with `waitForCompletion=true`, and confirms
+by re-read. Columns are 1–10 per object: prefer max-in-use + 1, otherwise the
+lowest free column; `explicitMapping` usage counts too. Both ends and any
+per-type entries go in one PUT. The forward `/<key> pr` query must then find
+no records; exposed orphaned column values are reported loudly with non-zero
+exit, leaving the mapping installed and data untouched for inspection. No
+rollback or automatic cleanup is attempted. The existing read-only `verify`
+runs afterwards; runtime mode remains untested on an empty pair, as it needs
+a link. `--json` returns plan, applied result and verification together.
+See [Relationship storage](relationship-storage.md), especially its promotion
+warning: source emptiness does not establish destination emptiness.
 
 `relationship repair <object>.<key>` removes one `config/repo.ds`
 relationship mapping (`reference` or `reverseReference`) that names a
