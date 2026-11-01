@@ -45,7 +45,7 @@ final class IdmRuntime {
     String sourceName = Json.optionalString(job, "sourceName");
     if (sourceName == null || sourceName.isEmpty()) sourceName = id;
     IdmContextFactory factory = new IdmContextFactory(Json.optionalLong(job, "timeoutMs", Runner.DEFAULT_TIMEOUT_MS));
-    Context cx = factory.enterContext();
+    Context cx = factory.enterIdmContext();
     HostCalls calls = null;
     IdmRuntime runtime = null;
     Map<String, Object> response;
@@ -236,9 +236,7 @@ final class IdmRuntime {
   private void bind(String name, Object value) { ScriptableObject.putProperty(scope.getPrototype(), name, value); }
 
   private Scriptable surface(Map<String, Object> methods) {
-    Scriptable result = Context.getCurrentContext().newObject(scope);
-    for (Map.Entry<String, Object> e : methods.entrySet()) ScriptableObject.putProperty(result, e.getKey(), e.getValue());
-    return result;
+    return (Scriptable) values.wrap(methods);
   }
 
   private interface Body { Object call(Object[] args); }

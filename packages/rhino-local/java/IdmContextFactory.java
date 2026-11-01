@@ -14,12 +14,23 @@ final class IdmContextFactory extends ContextFactory {
   @Override
   protected Context makeContext() {
     Context cx = super.makeContext();
+    configure(cx, timeoutMs);
+    return cx;
+  }
+
+  Context enterIdmContext() {
+    if (timeoutMs > 0) return enterContext();
+    Context cx = new ContextFactory().enterContext();
+    configure(cx, 0);
+    return cx;
+  }
+
+  private static void configure(Context cx, long timeoutMs) {
     cx.setLanguageVersion(200);
     cx.setOptimizationLevel(9);
     cx.setLocale(Locale.ENGLISH);
     // Rhino emits observer checks into JVM bytecode when this is nonzero.
     cx.setInstructionObserverThreshold(timeoutMs > 0 ? 1000 : 0);
-    return cx;
   }
 
   long remainingMillis() {
