@@ -107,8 +107,9 @@ that intent for a later run to reconcile. The live store determines what is
 missing; progress flags do not authorize duplicate writes. Response edge IDs
 and read-confirmed receipts record the conversion's work. Logical link identity
 is the captured record, target and custom properties; rollback reads current
-edge IDs rather than assuming their counter format is an allocation rule. Do not hand-edit the capture or run separate captures concurrently
-for the same pair.
+edge IDs rather than assuming their counter format is an allocation rule. Do
+not hand-edit the capture or run separate captures concurrently for the same
+pair.
 
 For an in-place conversion, repeat the original command with the **same**
 file. It switches if the first switch did not land, or resumes restoration if
@@ -128,8 +129,11 @@ aic managed relationship restore-links .aic/relationship-captures/dev-widget.jso
 
 The command first re-reads `repo.ds` and refuses unless the captured mappings
 are present and match. It checks the declarations again before writing records.
-Already restored links are verified and skipped. It refuses an occupied
-has-one, different custom properties or an extra mapped link; it never overwrites those to make the comparison pass.
+For pairs with captured links, it also uses set's read-only activation wait
+before permitting record writes; an endpoint must be live, including after a
+schema repair. Already restored links are verified and skipped. It refuses an
+occupied has-one, different custom properties or an extra mapped link; it never
+overwrites those to make the comparison pass.
 Correct the reported problem and retry. A failed send or read-back leaves the
 outcome unknown, not automatically undone. If the mapping disappeared after
 restoration began, inspect the environment before remapping.
@@ -175,8 +179,35 @@ written. Existing output files are preserved: choose a new path for another
 promotion rather than replacing an earlier recovery source.
 
 A missing upper declaration is an error rather than proof of zero links:
-under Q14 it may have disappeared. Assess genuinely new undeclared upper
-pairs separately; do not treat a failed census as an empty capture.
+under Q14 it may have disappeared. A mixed rollout can also contain genuinely
+new pairs that have never existed in the upper environment. After checking
+that history, explicitly identify each such lower **reference** end with
+repeatable `--new-pair` flags:
+
+```sh
+aic managed relationship capture-links --lower dev --upper uat \
+  --output .aic/relationship-captures/uat-widget.json \
+  --new-pair new_widget.owner --force
+```
+
+Both ends' upper declarations and mapping entries must be absent; a typo,
+existing end, or stale mapping refuses this acknowledgment. The command prints
+the exclusions and records them in any capture it creates. This lets it capture
+other existing linked pairs in the same rollout. Never use `--new-pair` to
+bypass a possible Q14 loss: it is the operator's assertion that there have
+never been upper links on these ends, not a conclusion a missing API property
+can establish. The complete selection and mappings are rechecked before save.
+
+After promotion, check acknowledged new ends and other pairs that had no
+captured links for exposed orphaned column data before resuming writers. For
+example, the presence query below must have an empty result for a new pair:
+
+```sh
+aic idm get 'managed/new_widget?_queryFilter=/owner%20pr' --fields _id --tenant uat
+```
+
+Any record is unexpected data: stop and inspect it. Captured-set verification
+covers the captured pairs; it cannot certify an uncaptured pair's empty store.
 
 After promotion, `restore-links` refuses if the expected mappings have not
 landed. Once they match, it restores and verifies the exact captured UAT set
@@ -217,9 +248,13 @@ aic managed relationship rollback-map .aic/relationship-captures/dev-widget.json
   --tenant dev --force
 ```
 
-It removes this conversion's restored links from the mapped store, confirming
-each removal, then removes both captured mappings in one backed-up,
-read-confirmed PUT. It keeps unrelated mappings and per-type metadata: dropping
+Before removing any records it submits the **unchanged** `repo.ds` through
+the backed-up, read-confirmed writer. A config write denial stops there, with
+all links intact; the capture's origin alone does not establish current write
+access. This preliminary PUT removes no mappings. The operation then removes
+this conversion's restored links from the mapped store, confirming each
+removal and mapped runtime, and removes both captured mappings in one
+backed-up, read-confirmed PUT. It keeps unrelated mappings and per-type metadata: dropping
 a per-type entry could hide records created under that entry. Finally it
 checks that the original captured generic set is visible again and marks the
 capture rolled back. That visibility mechanism was measured; this automated

@@ -583,7 +583,7 @@ aic managed relationship delete custom_widget.owner [--remove-mapping [--force]]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
 aic managed relationship map custom_widget.owner [--capture FILE] [--dry-run] [--force] [--yes] [--json]
-aic managed relationship capture-links --lower dev --upper uat --output FILE [--dry-run] [--force] [--yes] [--json]
+aic managed relationship capture-links --lower dev --upper uat --output FILE [--new-pair object.key]... [--dry-run] [--force] [--yes] [--json]
 aic managed relationship restore-links FILE [--tenant uat] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship rollback-map FILE [--tenant dev] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
@@ -906,7 +906,8 @@ and confirms by re-read. Columns remain 1–10 per object, including
 `explicitMapping` usage. Before restoring, `/<key> pr` must find no orphaned
 column data. A finding leaves mapping and data intact and exits non-zero.
 
-Restoration uses the forward end's shared relink creation mechanics: has-many
+Restoration waits for captured relationship endpoints to be live, using set's
+read-only activation wait, then uses the shared relink creation mechanics: has-many
 POST, has-one conditional PATCH. Final verification compares the **entire**
 captured set, including custom properties; an extra link or changed properties
 fails. Every link must resolve from the far end and the presence-query runtime
@@ -918,7 +919,12 @@ FILE` prepares a promotion. It reads both tenants, selects declared lower
 reference pairs mapped there and generic in the upper, and captures those
 with upper links. Both-mapped and neither-mapped pairs are not selected.
 Missing declarations, including possible Q14 loss, refuse rather than proving
-emptiness. It writes only a local capture, never tenant config or records.
+emptiness. For a mixed rollout, repeatable `--new-pair <lower-reference-end>`
+explicitly acknowledges genuinely new upper pairs whose ends have never existed
+there. Both upper ends and their mapping entries must be absent; existing ends,
+stale mappings and typos refuse. Do not use this to bypass possible Q14 loss.
+Acknowledgments are printed and saved with any capture. It writes only a local
+capture, never tenant config or records.
 An empty selection explicitly reports no file written. The flags mirror the
 `--lower`/`--upper` direction of `promotion verify`; this command has the same
 confirmation/dry-run/prod flag shapes as map.
@@ -932,8 +938,11 @@ The existing `relationship restore` restores definition metadata and is
 separate. `--json` reports the capture path, link count and completion state.
 
 `relationship rollback-map FILE` is the explicit inverse for an **in-place**
-capture only. It confirms removal of this conversion's mapped links before
-removing both mapping entries in one guarded PUT, preserves per-type metadata,
+capture only. Before unlinking, an unchanged, backed-up/read-confirmed repo.ds
+PUT must be accepted; write denial stops before records are touched. Each
+unlink also confirms mapped runtime to protect the hidden generic store.
+It confirms removal of this conversion's mapped links before removing both
+mapping entries in one guarded PUT, preserves per-type metadata,
 then checks that the original generic set is visible again. Unknown or altered
 data refuses. An interrupted rollback resumes with the same verb. Promotion
 captures cannot authorize config writes; there is no upper-environment config

@@ -1,6 +1,7 @@
 //! The single `config/repo.ds` write workflow: stale-mapping removal for
 //! `relationship repair`, atomic pair addition for `map` / new `set`, and
-//! explicit in-place conversion rollback (both ends removed in one PUT).
+//! explicit in-place conversion rollback (both ends removed in one PUT), and
+//! its preliminary unchanged-document write check before records are touched.
 //! Addition decisions and allocation live in `storage`; both use the same
 //! recheck, backup, whole-document PUT and read-back machinery below.
 //!
@@ -41,6 +42,14 @@ use serde_json::Value;
 
 use crate::managed::verify::{self, Mapping};
 
+#[derive(Debug, Clone, PartialEq)]
+enum Operation {
+    Remove,
+    Add(Box<super::storage::Addition>),
+    Rollback(super::conversion::Pair),
+    Confirm(super::conversion::Pair),
+}
+
 /// A removal or atomic addition computed from one read of each document.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Plan {
@@ -54,9 +63,7 @@ pub struct Plan {
     #[serde(skip)]
     before: Value,
     #[serde(skip)]
-    addition: Option<super::storage::Addition>,
-    #[serde(skip)]
-    rollback: Option<super::conversion::Pair>,
+    operation: Operation,
     /// The whole transformed document that is `PUT`.
     #[serde(skip)]
     after: Value,
@@ -64,7 +71,10 @@ pub struct Plan {
 
 impl Plan {
     pub fn addition(&self) -> Option<&super::storage::Addition> {
-        self.addition.as_ref()
+        match &self.operation {
+            Operation::Add(addition) => Some(addition),
+            _ => None,
+        }
     }
 
     pub fn before(&self) -> &Value {
@@ -236,8 +246,7 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
         key: key.to_string(),
         mapping,
         notes,
-        addition: None,
-        rollback: None,
+        operation: Operation::Remove,
         before: repo_ds.clone(),
         after,
     })
@@ -256,8 +265,7 @@ pub fn plan_add(managed: &Value, repo: &Value, object: &str, key: &str) -> Resul
         notes: Vec::new(),
         before: repo.clone(),
         after: addition.after.clone(),
-        addition: Some(addition),
-        rollback: None,
+        operation: Operation::Add(Box::new(addition)),
     })
 }
 
@@ -305,8 +313,30 @@ pub fn plan_rollback(
         notes: Vec::new(),
         before: repo.clone(),
         after,
-        addition: None,
-        rollback: Some(pair.clone()),
+        operation: Operation::Rollback(pair.clone()),
+    })
+}
+
+/// Submit the unchanged document before rollback removes records. A write
+/// denial stops the operation before any unlink; this does not lock access
+/// against changes during the later record work.
+pub fn plan_confirm(
+    managed: &Value,
+    repo: &Value,
+    pair: &super::conversion::Pair,
+) -> Result<Plan, String> {
+    super::conversion::guard(pair, managed, repo, super::storage::Mode::Mapped)
+        .map_err(|error| error.to_string())?;
+    let mapping = verify::mapped(repo, &pair.forward.object, &pair.forward.key)
+        .ok_or("reference vanished")?;
+    Ok(Plan {
+        object: pair.forward.object.clone(),
+        key: pair.forward.key.clone(),
+        mapping,
+        notes: Vec::new(),
+        before: repo.clone(),
+        after: repo.clone(),
+        operation: Operation::Confirm(pair.clone()),
     })
 }
 
@@ -427,21 +457,18 @@ pub fn recheck(plan: &Plan, managed: &Value, repo_ds: &Value) -> Result<(), Stri
             "config/repo.ds changed since it was read for {}; nothing was written. Run {} \
              again to plan against the current document",
             plan.label(),
-            if plan.rollback.is_some() {
-                "rollback-map"
-            } else if plan.addition.is_some() {
-                "map"
-            } else {
-                "repair"
+            match plan.operation {
+                Operation::Rollback(_) | Operation::Confirm(_) => "rollback-map",
+                Operation::Add(_) => "map",
+                Operation::Remove => "repair",
             }
         ));
     }
-    let fresh = if let Some(pair) = &plan.rollback {
-        plan_rollback(managed, repo_ds, pair)?
-    } else if plan.addition.is_some() {
-        plan_add(managed, repo_ds, &plan.object, &plan.key)?
-    } else {
-        self::plan(managed, repo_ds, &plan.object, &plan.key)?
+    let fresh = match &plan.operation {
+        Operation::Rollback(pair) => plan_rollback(managed, repo_ds, pair)?,
+        Operation::Confirm(pair) => plan_confirm(managed, repo_ds, pair)?,
+        Operation::Add(_) => plan_add(managed, repo_ds, &plan.object, &plan.key)?,
+        Operation::Remove => self::plan(managed, repo_ds, &plan.object, &plan.key)?,
     };
     if fresh.after != plan.after {
         return Err(
