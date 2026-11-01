@@ -43,3 +43,23 @@ it("R3 #2 REST adapter preserves missing as fatal rather than tenant 501", async
   expect(result.emulation?.kind).toBe("missing");
   expect(result.missing).toContain("named _queryId: missing");
 });
+
+it("R3 #3 a second runner cannot hide a fatal nested result from the first", async () => {
+  const second = await RhinoRunner.spawn();
+  try {
+    const [outer, independent] = await Promise.all([
+      runner.eval({ engine: "idm", source: "try{openidm.read('outer')}catch(e){} 'passed';" }, {
+        onCall: async () => {
+          const nested = await second.eval({ engine: "idm", source: "require('unsupported');" });
+          expect(nested.emulation?.kind).toBe("missing");
+          return 42; // Adapter deliberately ignores the nested verdict.
+        },
+      }),
+      second.eval({ engine: "idm", source: "openidm.read('independent');" }, { onCall: () => 7 }),
+    ]);
+    expect(outer.outcome).not.toBe("ok");
+    expect(outer.emulation?.kind).toBe("missing");
+    expect(outer.missing).toContain("require");
+    expect(independent).toMatchObject({ outcome: "ok", value: 7 });
+  } finally { await second.close(); }
+}, 30_000);
