@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { EmulationFailureInfo, HostCall, JsonValue } from "../protocol.ts";
 import { HostCallError, type RhinoRunner } from "../runner.ts";
 import { IdmConfig } from "./config.ts";
+import { validateDeclarations } from "./declarations.ts";
 import { document, isDocument, own } from "./document.ts";
 import { endpoint } from "./endpoints.ts";
 import { escapeError, IdmError, invalidInput, missing } from "./errors.ts";
@@ -132,6 +133,7 @@ export class IdmEmulator {
   }
 
   private async route(op: Operation, forcedMethod?: string): Promise<Reply> {
+    validateDeclarations(this.config, this.evidence);
     const path = op.request.path.replace(/^\/?(?:openidm\/)?/, "").replace(/\/$/, "");
     const parts = path.split("/");
     const recognized = new Set(["_action", "_fields", "_queryFilter", "_queryId", "_queryExpression",
