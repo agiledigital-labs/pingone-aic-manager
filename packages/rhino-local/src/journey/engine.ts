@@ -198,6 +198,7 @@ export class JourneyEmulator {
       if (result.callbacks.length) {
         if (inner) this.missing("inner tree callbacks");
         this.measured("queued callbacks supersede goTo; node re-executes on resume with shared state preserved");
+        this.evidence.assumed("basic callback wire envelopes reuse binding effect fields; input defaults use empty strings except HiddenValue id and TextInput defaultText");
         const callbacks = toWire(result.callbacks, (name) => this.missing(name));
         state.pending = callbacks;
         return { status: 200, body: { authId: this.snapshot(state), callbacks } };
@@ -215,34 +216,35 @@ export class JourneyEmulator {
   }
   private async scripted(config: NodeDocument, state: State, frame: Frame, submitted: CallbackEffect[], request: AuthenticateRequest): Promise<NodeResult> {
     const currentTree = this.tree(frame.tree), inner = state.frames.length > 1;
-        for (const key of ["inputs", "outputs"]) {
-          const selectors = config[key];
-          if (selectors !== undefined && (!Array.isArray(selectors) || selectors.length !== 1 || selectors[0] !== "*")) this.missing(`ScriptedDecisionNode ${key} filtering`);
-        }
-        const script = typeof config.script === "string" ? this.config.script(config.script) : undefined;
-        if (!script) this.missing(`script configuration: ${String(config.script)}`);
-        if (script.evaluatorVersion !== "2.0") this.missing(`script evaluatorVersion: ${script.evaluatorVersion}`);
-        if (script.language && script.language !== "JAVASCRIPT") this.missing(`script language: ${script.language}`);
-        if (typeof script.script !== "string" || Buffer.from(script.script, "base64").toString("base64") !== script.script) this.missing("script base64 encoding");
-        this.evidence.assumed("AM binding facsimiles reuse rhino-local's measured overlay; Java collection wrappers remain local approximations");
-        this.measured("next-gen nodeState has no getShared/getTransient; callback-free boundaries retain transient state");
-        this.measured("action withErrorMessage works in either call order; withLockoutMessage has no visible failure-message effect");
-        const response = await this.runner.eval({ engine: "am", hostCalls: true, timeoutMs: this.options.timeoutMs ?? 10000, source: Buffer.from(script.script, "base64").toString("utf8") + JOURNEY_HARVEST,
-          sourceName: script.name ?? config.script ?? "script", classAllowList: decisionNodeClassAllowList(),
-          preamble: journeyPreamble({ shared: state.shared, transient: frame.transient, callbacks: submitted, tree: frame.tree, inner, identityResource: currentTree.identityResource ?? `managed/${this.config.realm}_user`, realm: this.config.realm, scriptName: script.name ?? config.script ?? "script", scriptId: config.script ?? "script", ...(state.existingSession ? { existingSession: state.existingSession } : {}), ...(request.headers ? { headers: { ...request.headers } } : {}), ...(request.cookies ? { cookies: { ...request.cookies } } : {}), parameters: Object.fromEntries(Object.entries(request.query).map(([key, value]) => [key, typeof value === "string" ? [value] : [...value]])) }),
-        }, { onCall: this.evidence.bind((call) => this.host(call)) });
-        for (const entry of response.provenance ?? []) this.evidence.add(entry.kind, entry.behavior, entry.source);
-        const fatal = responseFailure(response); if (fatal) throw new EmulationFailure(fatal);
-        if (response.outcome === "compile_error") this.missing("journey script compilation failure");
-        if (response.outcome !== "ok") {
-          if (inner) this.missing("inner tree script exception");
-          this.measured("thrown scripted decision error returns 401 Login failure");
-          return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
-        }
-        if (typeof response.value !== "string") this.missing("journey harvest serialization");
-        const result = JSON.parse(response.value) as { effects: { sharedState: { final: Document }; transientState: { final: Document }; callbacks: CallbackEffect[]; outcome: string | null }; errorMessage: string | null };
-        state.shared = result.effects.sharedState.final; frame.transient = result.effects.transientState.final;
-        if (result.errorMessage !== null) state.errorMessage = result.errorMessage;
+    for (const key of ["inputs", "outputs"]) {
+      const selectors = config[key];
+      if (selectors !== undefined && (!Array.isArray(selectors) || selectors.length !== 1 || selectors[0] !== "*")) this.missing(`ScriptedDecisionNode ${key} filtering`);
+    }
+    const script = typeof config.script === "string" ? this.config.script(config.script) : undefined;
+    if (!script) this.missing(`script configuration: ${String(config.script)}`);
+    if (script.evaluatorVersion !== "2.0") this.missing(`script evaluatorVersion: ${script.evaluatorVersion}`);
+    if (script.language && script.language !== "JAVASCRIPT") this.missing(`script language: ${script.language}`);
+    if (typeof script.script !== "string" || Buffer.from(script.script, "base64").toString("base64") !== script.script) this.missing("script base64 encoding");
+    this.evidence.assumed("AM binding facsimiles reuse rhino-local's measured overlay; Java collection wrappers remain local approximations");
+    this.evidence.assumed("nodeState transient-first whole-value shadowing generalizes measured objectAttributes behavior to other keys");
+    this.measured("next-gen nodeState has no getShared/getTransient; callback-free boundaries retain transient state");
+    this.measured("action withErrorMessage works in either call order; withLockoutMessage has no visible failure-message effect");
+    const response = await this.runner.eval({ engine: "am", hostCalls: true, timeoutMs: this.options.timeoutMs ?? 10000, source: Buffer.from(script.script, "base64").toString("utf8") + JOURNEY_HARVEST,
+      sourceName: script.name ?? config.script ?? "script", classAllowList: decisionNodeClassAllowList(),
+      preamble: journeyPreamble({ shared: state.shared, transient: frame.transient, callbacks: submitted, tree: frame.tree, inner, identityResource: currentTree.identityResource ?? `managed/${this.config.realm}_user`, realm: this.config.realm, scriptName: script.name ?? config.script ?? "script", scriptId: config.script ?? "script", ...(state.existingSession ? { existingSession: state.existingSession } : {}), ...(request.headers ? { headers: { ...request.headers } } : {}), ...(request.cookies ? { cookies: { ...request.cookies } } : {}), parameters: Object.fromEntries(Object.entries(request.query).map(([key, value]) => [key, typeof value === "string" ? [value] : [...value]])) }),
+    }, { onCall: this.evidence.bind((call) => this.host(call)) });
+    for (const entry of response.provenance ?? []) this.evidence.add(entry.kind, entry.behavior, entry.source);
+    const fatal = responseFailure(response); if (fatal) throw new EmulationFailure(fatal);
+    if (response.outcome === "compile_error") this.missing("journey script compilation failure");
+    if (response.outcome !== "ok") {
+      if (inner) this.missing("inner tree script exception");
+      this.measured("thrown scripted decision error returns 401 Login failure");
+      return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
+    }
+    if (typeof response.value !== "string") this.missing("journey harvest serialization");
+    const result = JSON.parse(response.value) as { effects: { sharedState: { final: Document }; transientState: { final: Document }; callbacks: CallbackEffect[]; outcome: string | null }; errorMessage: string | null };
+    state.shared = result.effects.sharedState.final; frame.transient = result.effects.transientState.final;
+    if (result.errorMessage !== null) state.errorMessage = result.errorMessage;
     return { outcome: result.effects.outcome, callbacks: result.effects.callbacks };
   }
   private async execute(type: string, id: string, config: NodeDocument, state: State, frame: Frame, submitted: CallbackEffect[], request: AuthenticateRequest): Promise<NodeResult> {
@@ -280,6 +282,7 @@ export class JourneyEmulator {
     }
     this.measured("PageNode children run in order with only their own callbacks; last child supplies the outcome");
     if (!previous) {
+      if (!collected.length) this.missing("PageNode without callbacks");
       state.page = { counts };
       state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
       this.evidence.assumed("pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured");
