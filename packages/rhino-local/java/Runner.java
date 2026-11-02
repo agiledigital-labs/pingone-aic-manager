@@ -325,6 +325,8 @@ public final class Runner {
         }
         throw e;
       }
+      // Harvest outside the author try: its failures are emulation failures, not script errors.
+      if (bridge != null) return response(id, "ok", JsValues.of(bridge.harvest(cx)), null);
       final String resultGlobal = Json.optionalString(job, "resultGlobal");
       final Object result = resultGlobal == null
           ? completion

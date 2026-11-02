@@ -10,7 +10,7 @@ import {
 import type { IdmEmulator } from "../idm/emulator.ts";
 import { isDocument } from "../idm/document.ts";
 import { Evidence } from "../idm/provenance.ts";
-import type { Document } from "../idm/types.ts";
+import type { Document, Provenance } from "../idm/types.ts";
 import type { HostCall, JsonValue } from "../protocol.ts";
 import { HostCallError, type RhinoRunner } from "../runner.ts";
 import { decisionNodeClassAllowList } from "../bindings/allowlist.ts";
@@ -18,7 +18,7 @@ import { SUCCESS_NODE_ID, FAILURE_NODE_ID } from "../aic/constants.ts";
 import { fromWire, toWire, type WireCallback } from "./callbacks.ts";
 import { JourneyNodes, EMULATED, type NodeResult } from "./nodes.ts";
 import { JourneyConfig } from "./config.ts";
-import { journeyPreamble, JOURNEY_HARVEST } from "./script.ts";
+import { journeyPreamble } from "./script.ts";
 import type {
   AuthenticateRequest,
   AuthenticateResult,
@@ -35,7 +35,11 @@ type State = {
   pending?: WireCallback[];
   page?: { counts: number[] };
   existingSession?: Record<string, string>;
+  /** Evidence gathered before a round trip; the eventual result depends on it too. */
+  provenance?: Provenance[];
 };
+/** Where a scripted node's host calls go; Page discovery runs against a fork with no HTTP. */
+type Route = { idm: IdmEmulator; http: boolean };
 export type JourneyOptions = {
   /** Outcomes by node id, for otherwise unimplemented node types only. */
   declaredOutcomes?: Readonly<Record<string, string>>;
@@ -56,6 +60,41 @@ const OUTCOMES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   CreateObjectNode: ["CREATED", "FAILURE"],
   PatchObjectNode: ["PATCHED", "FAILURE"],
 });
+const PAGE_CHILDREN: readonly string[] = [
+  "ScriptedDecisionNode",
+  "UsernameCollectorNode",
+  "PasswordCollectorNode",
+  "AttributeCollectorNode",
+  "ValidatedUsernameNode",
+  "ValidatedPasswordNode",
+];
+const PAGE_SPECULATION =
+  "PageNode discovery classifies a scripted child by an isolated run (copied state, forked IDM, no HTTP); only a child that queues callbacks is then executed";
+/**
+ * A node's stored outcome vocabulary, as doc 25's listOutcomes table reports it;
+ * undefined for a type the table does not cover.
+ */
+export function listOutcomes(
+  config: JourneyConfig,
+  type: string,
+  node: NodeDocument,
+  missing: (name: string) => never,
+): readonly string[] | undefined {
+  if (type === "ScriptedDecisionNode") return node.outcomes ?? [];
+  if (type === "InnerTreeEvaluatorNode")
+    return node.displayErrorOutcome ? ["true", "false", "error"] : ["true", "false"];
+  if (type === "PageNode") {
+    if (!Array.isArray(node.nodes) || node.nodes.length === 0) return [];
+    const last = node.nodes.at(-1);
+    if (!isDocument(last) || typeof last._id !== "string" || typeof last.nodeType !== "string")
+      missing("PageNode declared outcome child reference");
+    if (last.nodeType === "PageNode") missing("nested PageNode outcome declaration");
+    const child = config.node(last.nodeType, last._id);
+    if (!child) missing(`PageNode declared outcome child configuration: ${last._id}`);
+    return listOutcomes(config, last.nodeType, child, missing);
+  }
+  return Object.hasOwn(OUTCOMES, type) ? OUTCOMES[type] : undefined;
+}
 export class JourneyEmulator {
   readonly config: JourneyConfig;
   readonly idm: IdmEmulator;
@@ -160,14 +199,14 @@ export class JourneyEmulator {
   }
   private snapshot(state: State): string {
     const id = randomUUID();
-    const stored = structuredClone(state);
-    for (const frame of stored.frames) frame.transient = {};
-    this.snapshots.set(id, stored);
     if (state.errorMessage !== null)
       this.evidence.assumed("action error message persists across node and callback boundaries");
     this.evidence.assumed(
       "authId uses a random snapshot id and HMAC-SHA256; forks copy snapshots and share signing credentials",
     );
+    const stored = structuredClone({ ...state, provenance: this.evidence.entries() });
+    for (const frame of stored.frames) frame.transient = {};
+    this.snapshots.set(id, stored);
     return `${id}.${createHmac("sha256", this.key).update(id).digest("base64url")}`;
   }
   private restore(token: string): State | undefined {
@@ -226,6 +265,9 @@ export class JourneyEmulator {
         return this.error(400, "Authentication Error: Invalid AuthId Signature");
       if (this.completed.has(body.authId)) this.missing("authId replay after session success");
       state = restored;
+      for (const entry of restored.provenance ?? [])
+        this.evidence.add(entry.kind, entry.behavior, entry.source);
+      delete state.provenance;
       this.measured(
         "stale callback authId replay is accepted; shared state survives and transient is dropped",
       );
@@ -375,6 +417,7 @@ export class JourneyEmulator {
     frame: Frame,
     submitted: CallbackEffect[],
     request: AuthenticateRequest,
+    route: Route = { idm: this.idm, http: true },
   ): Promise<NodeResult> {
     const currentTree = this.tree(frame.tree),
       inner = state.frames.length > 1;
@@ -415,7 +458,7 @@ export class JourneyEmulator {
         engine: "am",
         hostCalls: true,
         timeoutMs: this.options.timeoutMs ?? 10000,
-        source: Buffer.from(script.script, "base64").toString("utf8") + JOURNEY_HARVEST,
+        source: Buffer.from(script.script, "base64").toString("utf8"),
         sourceName: script.name ?? config.script ?? "script",
         classAllowList: decisionNodeClassAllowList(),
         preamble: journeyPreamble({
@@ -439,7 +482,7 @@ export class JourneyEmulator {
           ),
         }),
       },
-      { onCall: this.evidence.bind((call) => this.host(call)) },
+      { onCall: this.evidence.bind((call) => this.host(call, route)) },
     );
     for (const entry of response.provenance ?? [])
       this.evidence.add(entry.kind, entry.behavior, entry.source);
@@ -451,6 +494,7 @@ export class JourneyEmulator {
       this.measured("thrown scripted decision error returns 401 Login failure");
       return { outcome: null, callbacks: [], abort: this.error(401, "Login failure") };
     }
+    // The runner's bridge serializes the harvest in Java and fails it as an emulation failure.
     if (typeof response.value !== "string") this.missing("journey harvest serialization");
     const result = JSON.parse(response.value) as {
       effects: {
@@ -514,16 +558,33 @@ export class JourneyEmulator {
     const counts: number[] = [],
       collected: CallbackEffect[] = [];
     let offset = 0,
-      outcome: string | null = null;
+      outcome: string | null = null,
+      scriptRan = false,
+      speculated = false,
+      scriptQueued = false;
     for (const [index, child] of config.nodes.entries()) {
       if (!isDocument(child) || typeof child._id !== "string" || typeof child.nodeType !== "string")
         this.missing("PageNode child reference");
       if (child.nodeType === "PageNode") this.missing("nested PageNode");
+      // Doc 25 measured collectors and scripted decisions only; any other child is unmeasured.
+      if (!PAGE_CHILDREN.includes(child.nodeType))
+        this.missing(`PageNode child type: ${child.nodeType}`);
       const childConfig = this.config.node(child.nodeType, child._id);
       if (!childConfig) this.missing(`PageNode child configuration: ${child._id}`);
       const count = previous?.counts[index] ?? 0;
       const own = previous ? submitted.slice(offset, offset + count) : [];
       offset += count;
+      if (child.nodeType === "ScriptedDecisionNode") {
+        if (!previous) speculated = true;
+        if (!previous && !(await this.queuesCallbacks(childConfig, state, frame, request))) {
+          // Doc 25: a callback-free script is not shown on the first response and
+          // runs once, on submission. It is not executed here at all.
+          counts.push(0);
+          continue;
+        }
+        if (previous) scriptRan = true;
+        else scriptQueued = true;
+      }
       const result = await this.execute(
         child.nodeType,
         child._id,
@@ -533,7 +594,13 @@ export class JourneyEmulator {
         own,
         request,
       );
-      if (result.abort) return result;
+      if (result.abort) {
+        if (!previous && child.nodeType === "ScriptedDecisionNode")
+          this.missing("PageNode scripted child discovery is not reproducible");
+        return result;
+      }
+      if (!previous && child.nodeType === "ScriptedDecisionNode" && !result.callbacks.length)
+        this.missing("PageNode scripted child discovery is not reproducible");
       counts.push(result.callbacks.length);
       collected.push(...result.callbacks);
       outcome = result.outcome;
@@ -548,12 +615,17 @@ export class JourneyEmulator {
       this.evidence.assumed(
         "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured",
       );
-      this.evidence.assumed(
-        "PageNode callback discovery executes scripts once and retains their state effects",
-      );
+      if (speculated) this.evidence.assumed(PAGE_SPECULATION);
+      if (scriptQueued)
+        this.evidence.assumed(
+          "PageNode discovery executes callback-emitting script children once and retains their state effects",
+        );
       return { outcome: null, callbacks: collected };
     }
     if (collected.length) {
+      // Doc 25 measured a re-send only for collectors; what a script's effects do
+      // across a re-sent page is unmeasured.
+      if (scriptRan) this.missing("PageNode re-sent after a scripted child ran on submission");
       // A rejected collector re-sends the entire page, including siblings' answers.
       const retry = submitted.map((cb) => ({ ...cb }));
       let start = 0;
@@ -577,21 +649,33 @@ export class JourneyEmulator {
     }
     return { outcome, callbacks: [] };
   }
+  /**
+   * Whether a Page's scripted child would queue callbacks on discovery. AM knows
+   * without running it (doc 25: a callback-free script is not run on the first
+   * response); the emulator finds out by an isolated run whose effects are all
+   * discarded: copied state, a forked IDM, HTTP refused, provenance dropped. A
+   * child whose answer would need HTTP, or that throws, is undecidable.
+   */
+  private async queuesCallbacks(
+    config: NodeDocument,
+    state: State,
+    frame: Frame,
+    request: AuthenticateRequest,
+  ): Promise<boolean> {
+    const copy = structuredClone(state);
+    const copyFrame = copy.frames.at(-1);
+    if (!copyFrame || copyFrame.node !== frame.node)
+      throw new Error("page speculation frame invariant");
+    copyFrame.transient = structuredClone(frame.transient);
+    const { value } = await this.evidence.run(() =>
+      this.scripted(config, copy, copyFrame, [], request, { idm: this.idm.fork(), http: false }),
+    );
+    if (value.abort)
+      this.missing("PageNode scripted child that throws before its callbacks are known");
+    return value.callbacks.length > 0;
+  }
   private outcomes(type: string, config: NodeDocument): readonly string[] | undefined {
-    if (type === "ScriptedDecisionNode") return config.outcomes ?? [];
-    if (type === "InnerTreeEvaluatorNode")
-      return config.displayErrorOutcome ? ["true", "false", "error"] : ["true", "false"];
-    if (type === "PageNode") {
-      if (!Array.isArray(config.nodes) || config.nodes.length === 0) return [];
-      const last = config.nodes.at(-1);
-      if (!isDocument(last) || typeof last._id !== "string" || typeof last.nodeType !== "string")
-        this.missing("PageNode declared outcome child reference");
-      if (last.nodeType === "PageNode") this.missing("nested PageNode outcome declaration");
-      const child = this.config.node(last.nodeType, last._id);
-      if (!child) this.missing(`PageNode declared outcome child configuration: ${last._id}`);
-      return this.outcomes(last.nodeType, child);
-    }
-    return Object.hasOwn(OUTCOMES, type) ? OUTCOMES[type] : undefined;
+    return listOutcomes(this.config, type, config, (name) => this.missing(name));
   }
   private advance(
     state: State,
@@ -628,10 +712,10 @@ export class JourneyEmulator {
     }
   }
 
-  private async host(call: HostCall): Promise<JsonValue> {
+  private async host(call: HostCall, route: Route): Promise<JsonValue> {
     if (call.method !== "http") {
       try {
-        const result = await this.idm.onCall(call);
+        const result = await route.idm.onCall(call);
         this.checkHostValue(result);
         return result;
       } catch (error) {
@@ -642,6 +726,8 @@ export class JourneyEmulator {
         throw error;
       }
     }
+    if (!route.http)
+      this.missing("PageNode scripted child httpClient.send before its callbacks are known");
     const [url, options] = call.args;
     if (typeof url !== "string" || !isDocument(options)) this.missing("httpClient request shape");
     if (!this.options.http) this.missing(`unmocked httpClient.send: ${url}`);

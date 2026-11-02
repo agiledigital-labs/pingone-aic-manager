@@ -22,7 +22,8 @@ export class Evidence {
     const entries = this.local.getStore();
     if (!entries) throw new Error("IDM provenance scope is absent");
     const entry: Provenance = { kind, behavior, ...(source ? { source } : {}) };
-    if (!entries.some((entry) => entry.kind === kind && entry.behavior === behavior)) entries.push(entry);
+    if (!entries.some((entry) => entry.kind === kind && entry.behavior === behavior))
+      entries.push(entry);
     // Publish even if this request's list already had it: a nested evaluation
     // may be collecting the same behavior in a different host callback.
     reportHostEvidence([entry]);
@@ -34,6 +35,11 @@ export class Evidence {
 
   assumed(behavior: string): void {
     this.add("assumed", behavior);
+  }
+
+  /** A copy of this request's entries so far, e.g. to carry across a client round trip. */
+  entries(): Provenance[] {
+    return structuredClone(this.local.getStore() ?? []);
   }
 
   firstMissing(): Provenance | undefined {
