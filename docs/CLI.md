@@ -197,6 +197,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
+| `aic whoami --token --host <url-or-host>` | As `--token`, for the context whose host the URL names (unless `--tenant` is given); refuses — no token printed, non-zero exit — unless the host is that context's own or one of its custom domains. |
 
 `aic ctx current` (or `aic ctx show`) answers "which tenant would a command
 run here hit?", not "what did I last `ctx use`?". stdout is the bare tenant
@@ -232,10 +233,29 @@ which onboarding does not request; without it the answer is
 a refusal says nothing about whether domains exist. Grant the scope to the
 service account in the console, then `aic ctx scopes --add` it.
 
-`aic` cannot warn when a token from `whoami --token` is sent to another
-context's host: once printed, the token leaves `aic`. Commands that both mint
-and send — `aic idm get`, `scripts/verify-endpoint.sh` — pair the host with
-the token themselves.
+Once printed, a token leaves `aic`, so `aic` cannot see where it is sent. A
+token sent to another tenant is rejected with a 401, which is confusing rather
+than harmful. To catch the mistake before the request, pass the URL the
+request will go to:
+
+```sh
+URL="https://<your-tenant>.forgeblocks.com/openidm/managed/alpha_user?_queryFilter=true&_pageSize=1"
+curl -H "Authorization: Bearer $(aic whoami --token --host "$URL")" "$URL"
+```
+
+`--host` takes a URL or a bare host. Without `--tenant`, the URL chooses the
+context: the one whose base URL names that host, so one command works for
+every tenant `aic` holds. A host no context's base URL names (a custom domain,
+say) is checked against the current context; two contexts on one host need
+`--tenant`. The comparison is of the host only (case, port, userinfo and a
+trailing dot are ignored), against the context's base URL and, only when that
+differs, against the tenant's custom domains. It refuses, prints no token and exits non-zero when neither
+matches, or when the custom domains cannot be read (the
+`fr:idc:custom-domain:*` scope, above). With `curl` the refusal leaves an
+empty bearer, so the request fails with a 401 rather than reaching the other
+tenant with a valid token. `--host` does not help with a token already held
+in a variable. Commands that both mint and send — `aic idm get`,
+`scripts/verify-endpoint.sh` — pair the host with the token themselves.
 
 The normal `whoami` output includes `operator: <name> on <host>`. When the name
 has not been saved yet, the line says it is unset and points to
@@ -578,10 +598,14 @@ aic managed field edit custom_widget.code --searchable true [--enum value[:Title
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
-aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--yes] [--json]
-aic managed relationship delete custom_widget.owner [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--yes] [--json]
+aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
 aic managed relationship relink custom_widget.owner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship map custom_widget.owner [--capture FILE] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship capture-links --lower dev --upper uat --output FILE [--new-pair object.key]... [--dry-run] [--force] [--yes] [--json]
+aic managed relationship restore-links FILE [--tenant uat] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
+aic managed relationship rollback-map FILE [--tenant dev] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
@@ -705,6 +729,19 @@ then 404 again. `relationship verify`, `relink` and the waits below retry that
 straight after a `delete` no longer fails on it. A record that does not exist
 answers a different 404 and is never retried.
 
+`relationship set` now creates mapped pairs: it confirms the `config/managed`
+write first, then adds the named end's `reference` and its partner's
+`reverseReference` in one `repo.ds` PUT. One-way relationships get only a
+reference. Editing an existing relationship preserves its storage mode; no
+`--generic` flag is offered. A failure before the mapping PUT leaves a
+consistent generic pair (unless another writer changed it): finish with
+`relationship map` before adding links. An uncertain PUT/read-back requires
+`relationship verify` before retrying. Matching leftover mappings on a
+recreated key are kept and checked for exposed orphaned values. With `--json`,
+`mapping_verification` contains the read-only verification on create.
+See [Relationship storage](relationship-storage.md) for storage, recovery,
+column reuse and promotion implications.
+
 A relationship end that a write declares is not live when the write returns:
 a link written through it in the first second or so answers `200` and is
 lost. `relationship set` therefore waits, after its write, until each end it
@@ -712,7 +749,16 @@ added answers a read through one of its object's records (up to 60 s), and
 prints how long that took. When the object has no records, or the wait runs
 out, it says so on stderr instead; the command still succeeds, because the
 schema write has landed. `--json` adds `"activation"`, one entry per new end
-with `outcome` `live`, `timeout`, `no_records` or `error`.
+with `outcome` `live`, `timeout`, `no_records` or `error`, and
+`"activation_verified"`, true only when every probed end was `live`. `--check`
+makes anything else exit non-zero — after the write, which has landed either
+way — for a script that writes links straight afterwards. With `--check`
+both ends of the relationship are probed, not only new ones, and a re-run
+that has nothing to write still probes them: so re-running after a failed
+`--check` on a type that still has no records fails again rather than
+passing. No schema-level
+wait exists for a type with no records: nothing measured so far tells a live
+end from a pending one without a record to read through.
 
 Adding a reverse to a relationship that already has links leaves every one of
 them one-sided: IDM does not migrate them, so the new reverse end does not list
@@ -811,12 +857,202 @@ named with the request that removes it. Each probe is recorded in
 confirmed; the next `--probe` run reports any entry still there (`"recovery"`
 in `--json`) and counts it as a finding. A has-one probe re-reads the
 property before its cleanup and removes it only if it still holds the probe's
-edge. `--sample 0` checks configuration only. It exits
+edge. A pair with an end its object lists in `schema.required` is not probed
+and is reported untested: IDM's policy check refuses removing the test link
+through a required end, so the probe could write its link but not clean it up.
+
+The configuration lines describe what `config/repo.ds` **stores** ("stored
+mapping … runtime unconfirmed"), which is not proof the running IDM has loaded
+it. For one resolved link per direction, and for both ends of a resolved probe
+link, `verify` also asks the running IDM with
+`_queryFilter=_id eq "<id>" and <key> pr`, which was measured to find a linked
+record on a mapped end and never on a generic one. Each such check prints a
+`runtime:` line and appears in `--json` as `runtime` (on a direction) or as
+`runtime: [{end, runtime}]` (on a probe): `mapped_confirmed` and
+`generic_confirmed` agree with the stored config; `mapped_not_live` (stored
+mapped, IDM answers as generic) and `live_not_stored` (the reverse) are
+findings. A `pr` miss counts only while the record still holds the link, so a
+miss is followed by a re-read that must still list the same edge; a link gone
+or replaced by then (another writer) leaves the runtime unknown rather than
+judged. An end with no resolved link is not
+checked at runtime. The pair header labels each end `stored mapping, <kind>`
+or `stored generic`, for the same reason.
+`--sample 0` checks configuration only. It exits
 non-zero on any finding or any link that does not resolve. A `STALE` finding —
 a mapping naming no declared property — is what `relationship repair`
 removes. For the other findings neither the console's repair nor
 delete-and-recreate has been tested (`docs/api/10-managed-objects.md`,
 "Checking a pair").
+
+`relationship delete --remove-mapping` does the delete and then the repairs
+its leftovers need, in one command. Before writing anything it plans every
+removal against the document the delete will leave, in an order each
+`repair` would allow on its own — so a `reverseReference` comes out before
+the `reference` it reads through — and refuses outright, deleting nothing, if
+any of them would be refused. It asks once (or takes `--force`), deletes,
+then runs each removal exactly as `repair` does: re-read and recheck, backup,
+whole-document replace, confirm by re-read. If one fails after the delete has
+landed, it says what was deleted and unmapped, which removal failed (its own
+error says whether it may have landed), and which were not attempted, and
+points at `verify` to read what is mapped now before running `repair`. A
+failed delete write itself says that no mapping was touched. `--json` adds
+`"mappings_removed"`. Measured on the sandbox (2026-11-01) on a mapped
+has-one pair: both entries removed in order, every other byte of `repo.ds`
+unchanged.
+
+`relationship map <object>.<key>` converts a generic pair to mapped storage:
+**capture → switch → restore → verify**. The plan names the column, both
+entries, missing per-type entries, link count and the window when links will
+be invisible. Pause all link writers. Recreating links updates records: budget
+for hooks, sync mappings and notifications per link; exact firing counts are
+unmeasured. One-sided links in either direction and duplicate forward/target
+edges refuse with a list, rather than silently changing their reports.
+
+`--capture FILE` chooses the durable capture path and resumes an existing
+in-place capture for that pair; otherwise a unique path under
+`.aic/relationship-captures/` is printed. The file preserves forward IDs,
+targets and custom `_refProperties` without `_id`/`_rev`. Full projected cursor
+scans find generic links; `pr` does not. The capture is durably written before
+any tenant write and never automatically deleted. Each request journals intent;
+lost responses are reconciled from live data before further writes. Already
+restored links are skipped, never duplicated deliberately. Captures bind both
+tenant name and base URL. Keep their sidecars alongside them during recovery.
+
+`map --dry-run` saves nothing and holds no permit. Otherwise it confirms
+(or accepts `--force`, required without a terminal), passes the prod `--yes`
+gate, repeats the census, rechecks declarations, backs up `repo.ds`, PUTs both
+ends and any per-type entries in one document with `waitForCompletion=true`,
+and confirms by re-read. Columns remain 1–10 per object, including
+`explicitMapping` usage. Before restoring, `/<key> pr` must find no orphaned
+column data. A finding leaves mapping and data intact and exits non-zero.
+
+Restoration waits for captured relationship endpoints to be live, using set's
+read-only activation wait, then uses the shared relink creation mechanics: has-many
+POST, has-one conditional PATCH. Final verification compares the **entire**
+captured set, including both ends' custom properties. Capture refuses
+asymmetric reverse values before any write because preserving them is not yet
+supported; differing per-side data can be legitimate and must not be equalised
+to bypass this limitation. Verification rejects an extra
+link or changed properties. Every link must resolve from the far end and the presence-query runtime
+judgement must confirm mapped storage on both ends (forward only for one-way).
+An empty pair remains runtime untested; no probe link is created.
+
+`relationship capture-links --lower <source> --upper <destination> --output
+FILE` prepares a promotion. It reads both tenants, selects declared lower
+reference pairs mapped there and generic in the upper, and captures those
+with upper links. Complete bindings (section, owner, column, target,
+cardinality and reverse entries) are compared across all mapping sections,
+including explicitMapping. Equal bindings skip only after comparing permissive
+declaration footprints (presence, relationship/scalar, target set, cardinality,
+reverse key), managed target-object presence, and schema reverse endpoints
+even without mapping entries. Identical stock multi-target/internal shapes
+and identically absent platform declarations skip without narrow conversion
+validation; footprint differences refuse with both versions. Generic in both
+also skips.
+Different mapped bindings or an upper binding absent in lower refuse with both
+versions: do not promote until resolved. Removing an upper binding is inferred
+to hide its mapped links. No mapped-to-mapped migration is provided.
+Missing declarations, including possible Q14 loss, refuse rather than proving
+emptiness. For a mixed rollout, repeatable `--new-pair <lower-reference-end>`
+explicitly acknowledges genuinely new upper pairs whose ends have never existed
+there. Every bound and schema-named reverse end's upper declaration/mapping
+must be absent; existing ends, stale mappings and typos refuse. Acknowledgment
+precedes narrow validation, so genuinely new multi-target components can be
+excluded without pretending their existing links could be migrated. Do not
+use this to bypass possible Q14 loss.
+Acknowledgments are printed and saved with any capture. The file also records
+the complete lower and upper relationship bindings compared, including all
+excluded pairs and every mapping section. It writes only a local capture,
+never tenant config or records.
+Even an empty selection gets a fresh declaration/binding recheck. A lower
+custom declaration missing where upper still declares it names suspected Q14.
+Equivalent bindings still refuse differing declaration footprints. Platform or
+undeclared binding differences require investigation before promotion; repair
+advice is limited to supported genericMapping cleanup, never explicitMapping.
+An empty selection explicitly reports no file written. Restore only a file
+this run confirmed writing; otherwise check empty/new pairs after promotion,
+never reuse an older file at that path. The flags mirror the
+`--lower`/`--upper` direction of `promotion verify`; this command has the same
+confirmation/dry-run/prod flag shapes as map.
+
+After the existing promotion workflow, `relationship restore-links FILE
+--tenant <destination>` first re-reads the destination mappings and refuses
+unless **every relationship binding**, including skipped pairs, matches the
+saved lower snapshot. Any unexpected missing, extra or changed binding refuses
+with expected/actual details and instructions to keep writers paused. It reports
+all upper-before → upper-after binding changes; an addition alone proves
+propagation, not replace versus merge. Do not bypass the upper-only refusal
+to manufacture that measurement. Older promotion files without complete binding
+snapshots refuse; re-capture only before promotion, otherwise retain the file
+and escalate to the tenant administrator or Ping Support. It writes **records only**, never
+config, then performs the same resumable restoration and exact verification
+as map. Use the upper's own capture, not one from the lower environment.
+A pending Create found present is verified and skipped automatically. If it
+is absent, the request remains unresolved: restore refuses a duplicate send
+and rollback refuses mutation. Pending Remove uses the same outcome rule:
+absence confirms unlinking during rollback; presence refuses another unlink.
+Default pending-Remove reversal refusal remains. New intents save their request's
+`transaction_id` durably before dispatch and send it unchanged in
+`x-forgerock-transactionid`; refusals print it. Look up that id with
+`aic logs tx <id> --tenant <capture-tenant> --source idm-access --wait --timeout 120`.
+IDM's terminal `access` event records completion and HTTP status for a measured
+read and for a successful conversion link `PATCH` (measured 2026-11-01); a
+failed write's event is unmeasured. An AM
+introspection outcome is insufficient. Absence of a log is not proof the request
+was never sent. Without terminal evidence retain the file, keep writers paused,
+and contact the tenant administrator or Ping Support with the id. See the
+[lookup and escalation procedure](relationship-storage.md). Older in-place
+pending intents without an id require help identifying the original request.
+
+`map`, `restore-links` and `rollback-map` accept
+`--acknowledge-request-finished` only for an existing pending intent. Use it
+only after establishing that the original request has finished and cannot
+complete later; an absent read, elapsed time and --force are insufficient.
+The assertion is scoped to the exact capture/intent, journaled with observed
+presence and timestamp, and consumed before another request. It never grants
+permission for a later lost response. Normal confirmation/prod gates and
+schema/data guards still apply. Dry-run holds no permit and saves no audit.
+
+The existing `relationship restore` restores definition metadata and is
+separate. `--json` reports the capture path, link count and completion state.
+Capture format version 2 requires both recorded custom-property views for
+bidirectional links. Earlier development files refuse before tenant selection
+with “captured by an earlier development build; re-capture”. No reverse values
+are synthesised; capture original generic links before the switch, never after
+they are hidden.
+
+`relationship rollback-map FILE` is the explicit inverse for an **in-place**
+capture only. Before any unlink, it plans full mapping removal (including
+external reverse dependents) and checks every removal prerequisite. An
+unchanged, backed-up/read-confirmed repo.ds PUT must be accepted; write denial stops before records are touched. Each
+unlink also confirms mapped runtime to protect the hidden generic store.
+It confirms removal of this conversion's mapped links before removing both
+mapping entries in one guarded PUT, preserves per-type metadata,
+then checks that the original generic set is visible again. Unknown or altered
+data refuses. An interrupted rollback resumes with the same verb. While the
+exact captured mappings remain installed, explicitly running restore-links
+with a RollingBack capture instead restores removed links and reverses the
+interrupted rollback only when no Remove intent is pending. An unresolved
+Remove intent refuses direction change by default even when a link is visible;
+finish rollback-map with the same file, keeping writers paused, or explicitly
+acknowledge the original request is finished before reversing. No pending
+request is retried automatically on the strength of the opposite observation. Once mappings are removed, finish rollback-map.
+Promotion captures cannot authorize config writes; there is no upper-environment config
+rollback here. A required forward property must be explicitly adjusted only
+when mapped links actually need unlinking; an empty mapped store with no
+unresolved request requires no schema change. No failure automatically rolls a conversion back.
+
+Q14 can remove confirmed properties. Map re-reads both declarations immediately
+before switching and again before restoration; restore and rollback recur
+these guards during record work. Missing/changed ends stop with a Q14/schema
+diagnostic. Preserve the capture, correct the tenant's schema problem and
+retry. These reads cannot prevent a later tenant-side rollback.
+
+The [operator runbook](relationship-storage.md) gives ordered dev conversion,
+UAT/prod capture → promote → restore, resume and rollback commands. Promotion
+carries repo.ds according to the operator's statement; records are never
+promoted, and hidden upper-environment generic links follow by inference from
+the measured switch. Source emptiness does not establish destination emptiness.
 
 `relationship repair <object>.<key>` removes one `config/repo.ds`
 relationship mapping (`reference` or `reverseReference`) that names a
@@ -2645,10 +2881,15 @@ your editor gets full IntelliSense on script bodies.
 ```bash
 aic workspace init                            # scaffold the tenant tree (both realms + idm + typescript)
 aic workspace update                          # refresh bundled types/config to the latest
+aic workspace update --dry-run [--tenant T]     # preview versions and file changes; write nothing
 ```
 
-Both commands also regenerate the tenant-derived types: ambient
-`idm/types/managed/*.d.ts` for the `.cjs` scripts, and the module-form
+`update --dry-run` lists files it would create, change, or remove, plus seed
+drift and managed/sync-mapping type staleness. It writes nothing, including sync
+state and generated types. Schema fetch failures only warn.
+
+Without `--dry-run`, both commands also regenerate the tenant-derived types:
+ambient `idm/types/managed/*.d.ts` for the `.cjs` scripts, and the module-form
 `typescript/src/generated/managed.ts` for the TypeScript endpoint project.
 
 Each names any **dangling reverse** it finds — a relationship whose
@@ -2731,7 +2972,7 @@ aic script ids <DIR> [--realm REALM] [--tenant TENANT] [--json] # repo vs tenant
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--unmodified-only] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
-aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes] # prompts on remote deletion
+aic script sync [<ref>] [--resolve local|remote --force] [--remove-local] [--force=syntax-check] [--tenant TENANT] [--yes] # prompts on remote deletion
 aic script watch [--tenant TENANT] [--yes] [--force=syntax-check] # auto-push each .cjs you save (Ctrl-C to stop)
 aic script status [<ref>] [--against FILE] [--check] [--json] # in sync / modified / remote / conflict / converged / deleted on remote
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote | --find-in-git REPO]
@@ -2745,6 +2986,13 @@ id; `--resolve remote` forgets the record for missing resources. Embedded
 managed-hook and sync-mapping scripts cannot be re-created by this prompt; the
 prompt names the owning config or missing local file when re-create is unavailable.
 Skipped entries are listed and make the command exit non-zero.
+`--remove-local` makes forgetting also remove the local file, but only one
+that still holds the last-synced bytes (and a LIBRARY script's generated
+wrapper with it, when that is a plain file holding exactly the generated
+bytes); an edited file, a symlink, or a file under a symlinked folder is kept
+and named. The record is
+forgotten either way. It cannot be combined with `--resolve local`, which
+never forgets.
 
 - `status` with a full `<namespace>/<name>` selects exactly that script,
   case-sensitively, and prints the SHA-256 of the local file and of the

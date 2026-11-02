@@ -538,6 +538,109 @@ service-account bearer. It serves the object's schema on `GET`, but
 501. Those five forms are all that was tried; a write route needing another
 shape, version or credential is not ruled out.
 
+**Superseded 2026-11-01** for the route itself, not for the service account:
+the console maps a pair through `PUT …/properties/<p>` with
+`Accept-API-Version: resource=2.0` and a quoted `If-Match: "*"`, and the
+service account is refused that form too. See "Converting a pair between
+storage modes" below.
+
+#### Converting a pair between storage modes (measured 2026-11-01)
+
+Measured on the sandbox's test objects, from an operator's console HAR, and
+with one dry-run promotion on a dev → UAT pair (undone; see "Verified
+against").
+
+**The console's route.** Saving an existing relationship in the console sent
+one request: `PUT /openidm/schema/managed/<obj>/properties/<key>` with
+`Accept-API-Version: resource=2.0` and `If-Match: "*"`, a body equal to the
+property as `GET` returns it plus `"notifySelf": false`, and the operator's
+user session. It returned 200. Comparing the console's own `repo.ds` reads
+before and after, it added exactly two entries: the forward end as a
+`reference` on `fr-idm-reference-8`, and the reverse as a `reverseReference`.
+**The server chose the column**; the request named none. A second console save,
+of another pair, took `-9`. The console's source (`platform-ui`,
+`SchemaApi.saveSchemaProperty`) adds `?waitForCompletion=true`, which the same
+source describes elsewhere as waiting "for the config change to propagate
+before resolving"; the console build captured did not send it.
+
+**The service account cannot use that route.** The same `PUT`, with or without
+`waitForCompletion=true`, is `403 "Access denied"` — including a byte-for-byte
+`PUT` of an already-mapped property's own `GET` body. Nothing changed on a 403:
+`repo.ds` was byte-identical and existing links still resolved. IDM's
+`/openidm/info/login` names the service account's roles as
+`internal/role/openidm-svcacct` and `internal/role/openidm-authorized`, and no
+`config/access` rule grants either `update` on `schema/*` (the account's
+`config/*` writes are evidently authorised outside `config/access`). An empty
+body is `400 Invalid relationship schema`, so validation runs before the access
+check. fr-config-manager v1.9.0 `fr-config-push` replays pulled schemas through
+this same route with a service account's `fr:idm:*` scope; from its source it
+should meet the same 403 — not run.
+
+**The service account can write the mapping into `repo.ds` itself.** A
+whole-document `PUT config/repo.ds?waitForCompletion=true` adding the same two
+entries (forward `{"type": "reference", "ldapAttribute":
+"fr-idm-reference-<n>", "primaryKey": "uid", "resourcePath":
+"managed/<target>", "isMultiValued": <bool>}`, reverse `{"type":
+"reverseReference", "resourcePath": "managed/<source>", "propertyName":
+"<forward>", "isMultiValued": <bool>}`) was 200, re-read identical, and a link
+written afterwards resolved from both ends; `aic managed relationship verify`
+confirmed both ends mapped at runtime. Ping's own page says to manage
+relationships "only [with] the admin console or the Schema API" and that
+"other methods might cause your data to de-sync"; nothing measured here showed
+a de-sync, but this is the "other method".
+
+**Converting a pair hides its existing links; it does not delete them.**
+Measured both ways round on generic pairs with links:
+
+| Step | Existing generic link | Link written while mapped |
+| ---- | --------------------- | ------------------------- |
+| Console save (pair becomes mapped)           | `null` on the forward end, absent from the reverse collection | — |
+| `aic`-style `repo.ds` write (becomes mapped) | `null` forward, absent reverse                                  | resolves from both ends |
+| Mapping removed again (back to generic)      | **back**, resolving from both ends                              | `null` — now the hidden one |
+
+So each store keeps its own links and `repo.ds` only chooses which one IDM
+reads. A hidden generic link cannot be read back (`/openidm/repo/relationships`
+is 403 to the service account), so anything that converts a pair with links
+must read them **before** the switch and write them again after it. This is
+the operator-reported "re-saving a relationship in the console breaks its
+existing links". A JSON-patch `replace` with `"value": null` is
+`400 … not a valid JSON patch`; `remove` unlinks a has-one end.
+
+**Columns are `fr-idm-reference-1` to `-10`, numbered per object.** A
+`repo.ds` naming `fr-idm-reference-11` was accepted (200) and the first link
+write through it was `400 … objectClassViolation … prohibitedAttribute
+fr-idm-reference-11`, which matches Ping's "objects are limited to 10 custom
+relationships". `managed/test_obj2` and `managed/test_from` each hold a
+`fr-idm-reference-1`, so the column is per object, not per tenant. Ping's page
+also warns that a deleted relationship's attribute can be reused and its
+orphaned values "unpredictably reappear"; reusing a freed column was not
+measured.
+
+**A new object type has no `repo.ds` entry of its own.** Creating two types and
+a pair between them through `config/managed` left `repo.ds` unchanged; such a
+type falls under `genericMapping."managed/*"` (`dnTemplate
+"ou=managed,dc=openidm,dc=example,dc=com"`). Adding a per-type entry
+(`dnTemplate "ou=<obj>,ou=managed,dc=openidm,dc=example,dc=com"`,
+`objectClasses ["uidObject", "fr-idm-generic-obj"]`, `jsonAttribute
+"fr-idm-json"`, `jsonQueryEqualityMatchingRule "caseIgnoreJsonQueryMatch"`,
+`properties {}`) left an existing record and its generic link readable and new
+records creatable; mapping the pair then behaved as in the table.
+
+**Promotion (measured 2026-11-02, three real dev → UAT promotions of
+throwaway types).** `repo.ds` is promoted as a **whole document**: after each
+promotion UAT's `repo.ds` was byte-equal to dev's, including when the
+promotion *removed* a mapping and two per-type entries that by then existed
+only in UAT. So a mapping present only in the upper environment is deleted,
+not merged. Links are records and are not promoted: UAT's three generic links
+on the converted pair were hidden from the record field and the reverse end
+immediately after the mapping landed, exactly as in the table.
+
+The report is not a reliable signal for `repo.ds`. A promotion whose only
+change was the mapping listed `IDMConfig / Uncategorized — 1 modified:
+repo.ds`; one that also deleted the two probe types listed only `Managed
+Objects — 2 deleted`, and the 2026-11-01 dry run that added types and a
+mapping listed only `Managed Objects — 2 added`.
+
 **Renaming a mapped relationship through `config/managed` breaks it.** Measured
 by renaming `test_from.hasOnehOne` (mapped, reverse `test_to.hasOneHasOne`) to
 `hasOneRen` and repointing the reverse's `reversePropertyName`; the `PUT` was a
@@ -670,6 +773,15 @@ property of an object, and an object `config/managed` does not declare.
 Whether links written while a key was mapped reappear if the key is
 recreated after a repair was not measured.
 
+`aic managed relationship delete <object>.<key> --remove-mapping` chains the
+two (measured 2026-11-01 on `test_from.hasOnehOne` ↔ `test_to.hasOneHasOne`,
+both mapped): one `config/managed` write removing both ends, then
+`test_to.hasOneHasOne`'s `reverseReference` and `test_from.hasOnehOne`'s
+`reference` removed in that order, each confirmed by re-read. The resulting
+`repo.ds` equalled the document before it minus exactly those two entries.
+Both documents were restored from copies taken first, and four re-reads over
+a minute matched them.
+
 #### Checking a pair (`aic managed relationship verify`, measured 2026-10-26)
 
 `verify` reads `config/managed` and `config/repo.ds` and reports a pair whose
@@ -693,6 +805,30 @@ reported **untested**, not healthy. Measured shapes it relies on:
 
 So links are found by paging records with `_fields=_id,<key>`, never by `pr`,
 and a singular far end is read with `_fields` on the record.
+
+**The `pr` asymmetry is how `verify` tells the stored config from the running
+one** (measured 2026-11-01, sandbox). `repo.ds` is stored configuration, and
+nothing else says whether IDM has loaded it. With a link in place,
+`managed/<obj>?_queryFilter=_id eq "<id>" and <key> pr` found the record on
+every mapped end tried — `test_from.hasOnehOne`, `test_from.hasOneHasMany`,
+`test_from.hasOneHasNone` (references) and `test_to.hasManyHasOne` (a
+`reverseReference`) — and found nothing on the generic pair `test_from.aicRel` ↔
+`test_to.revAicRel` with a link present on both ends. `verify` runs that query
+for one resolved link per direction and for both ends of a `--probe` link, and
+reports a stored mapping the query does not see (or the reverse) as a finding.
+Only the agreeing cases have been observed; the two disagreements are
+reported, not explained.
+
+**A required has-one cannot be emptied from its own side** (measured
+2026-11-01, sandbox). `test_from.aicRel` is listed in `schema.required`. A
+`--probe` through it wrote its test link, and the cleanup `PATCH` removing the
+property was refused `403 Failed policy validation` (`REQUIRED`), stranding the
+link. `DELETE managed/test_to/<id>/revAicRel/<edgeId>` — the same edge through
+the generic has-many reverse collection — returned 200 and emptied
+`test_from.aicRel` with no policy complaint, and was used to clean up. So the
+policy check runs on a write to the record holding the required property, not
+on the edge. `verify --probe` now refuses to probe a pair with a required end
+rather than rely on that.
 
 Positive and negative control, sandbox: with one link on each of the mapped
 pairs `hasOnehOne` ↔ `hasOneHasOne` and `hasManyHasMany` ↔ `hasManyhasMany`,
@@ -1878,6 +2014,40 @@ on create, or when actually rotating it.
   `GET …?_queryFilter=/_id ne "asdf"&_pageSize=1` (400);
   `GET …?_queryFilter=/_id in ["asdf"]&_pageSize=1` (400);
   `GET …?_queryFilter=/_id eq ["asdf"]&_pageSize=1` (400).
+
+- Date: 2026-11-01 — relationship storage conversion. Sandbox, test objects
+  only (`test_from`/`test_to` and throwaway types): read an operator's console
+  HAR of one relationship save; replayed its schema `PUT` with the service
+  account (403, `repo.ds` and links re-read unchanged), with and without
+  `waitForCompletion=true`, and on two already-mapped properties; read
+  `/openidm/info/login` and `config/access`. Created generic pairs with
+  `aic managed relationship set`, linked them, then switched them to mapped by
+  console save and by `PUT config/repo.ds`, reading every link from both ends
+  and through `verify` after each step; removed the mapping again and re-read.
+  Mapped a pair on `fr-idm-reference-11` and wrote a link (400). Created two
+  types, added per-type entries, then a mapping, with records and links read
+  after each step. Every document was restored from backups taken first and
+  compared equal; links were removed from both stores first. Dev → UAT: backed
+  up both tenants' `config/managed` and `repo.ds` (identical), created two
+  probe types and a pair on dev, wrote a mapped entry into dev's `repo.ds`,
+  locked UAT, ran one dry run (report read with `aic promotion report`),
+  unlocked, restored dev's `repo.ds` from the backup and deleted the probe
+  types; both dev documents then compared equal to the backups. Nothing was
+  promoted.
+
+- Date: 2026-11-02 — relationship mappings through real promotions, dev →
+  UAT, throwaway types `aicprobe_from`/`aicprobe_to` only (operator's
+  go-ahead). Backed up both tenants' `config/managed` and `repo.ds` (equal).
+  Promotion 1 carried the types with a generic pair; three links with a
+  custom `_refProperties.note` were created on UAT. The pair was mapped on dev
+  with `aic managed relationship map`, UAT captured with `capture-links`,
+  dry run (report read), promotion 2, with `relationship verify` and direct
+  reads on both tenants and a fresh link on each tenant as the control. All
+  records were deleted on both tenants, dev's `repo.ds` restored from the
+  backup and the types deleted; promotion 3 carried that. Each promotion's
+  report was read and both tenants' documents compared after each; after
+  promotion 3 all four equalled the backups. Promotion 1 also carried one
+  pending ESV secret-store mapping from dev.
 
 ## Source citations
 

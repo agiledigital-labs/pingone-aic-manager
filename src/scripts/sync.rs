@@ -2805,6 +2805,127 @@ pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
     store.remove(kind, name, realm)
 }
 
+/// What happened to the local file when [`forget_removing_local`] forgot a
+/// script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalDisposition {
+    /// It held exactly the last-synced bytes, so it was removed.
+    Removed,
+    /// Nothing was there to remove.
+    Absent,
+    /// Kept: it differs from the last sync — unsynced work, §5 — or it is not
+    /// a plain file (a symlink is never removed through).
+    Kept(&'static str),
+}
+
+/// [`forget`], then remove the local file — but only one that still holds the
+/// last-synced bytes. The record goes first: a removal that then fails leaves
+/// an untracked file, which is harmless, where the other order would leave a
+/// tracked script with no file.
+pub fn forget_removing_local(
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+) -> Result<LocalDisposition> {
+    forget_removing_local_in(
+        &SnapshotStore::open(tenant),
+        &ProjectConfig::workspace_tree(tenant),
+        realm,
+        kind,
+        name,
+    )
+}
+
+fn forget_removing_local_in(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+) -> Result<LocalDisposition> {
+    let entry = store.lookup(kind, name, realm)?;
+    let snapshot = match &entry {
+        Some(e) => match store.load_config(&e.reference, realm)? {
+            Some(cfg) => Some(kind.decode_source(&cfg)?),
+            None => None,
+        },
+        None => None,
+    };
+    store.remove(kind, name, realm)?;
+    let Some(entry) = entry else {
+        return Ok(LocalDisposition::Kept("it was not tracked"));
+    };
+    let Some(snapshot) = snapshot else {
+        return Ok(LocalDisposition::Kept(
+            "there is no last-synced copy to compare it with",
+        ));
+    };
+    let path = workspace_file_in(workspace_tree, realm, &entry.reference);
+    // `symlink_metadata` refuses a link at the last component only; a
+    // linked folder above it would put the file outside the workspace.
+    if !confined(workspace_tree, &path)? {
+        return Ok(LocalDisposition::Kept(
+            "its path leaves the workspace or passes through a symlink",
+        ));
+    }
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LocalDisposition::Absent),
+        Err(e) => return Err(e.into()),
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Ok(LocalDisposition::Kept("it is not a plain file"));
+        }
+        Ok(_) => {}
+    }
+    if read_local(&path)?.as_deref() != Some(snapshot.as_slice()) {
+        return Ok(LocalDisposition::Kept("it differs from the last sync"));
+    }
+    std::fs::remove_file(&path)?;
+    // A LIBRARY script's generated ES-module wrapper would import a file that
+    // is gone. Only the exact bytes `extra_files` writes are ours to remove.
+    // `extra_files` writes one for LIBRARY only, and never as a link, so
+    // anything else at that path is the operator's whatever it holds.
+    let wrapper = path.with_extension("js");
+    if kind == Kind::Am
+        && entry.reference.context.as_deref() == Some("LIBRARY")
+        && std::fs::symlink_metadata(&wrapper).is_ok_and(|meta| meta.file_type().is_file())
+        && super::am::is_library_wrapper_file(&wrapper)
+    {
+        std::fs::remove_file(&wrapper)?;
+    }
+    Ok(LocalDisposition::Removed)
+}
+
+/// Whether `path` is inside `tree` by what it resolves to, not by its
+/// spelling: every component below `tree` is a plain name (a script name is
+/// joined verbatim, so `../` in one would otherwise walk out), and neither
+/// `tree` itself nor any folder between it and the file is a symlink.
+fn confined(tree: &Path, path: &Path) -> Result<bool> {
+    let Ok(below) = path.strip_prefix(tree) else {
+        return Ok(false);
+    };
+    if below
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Ok(false);
+    }
+    let mut current = tree.to_path_buf();
+    let folders = below.parent().into_iter().flat_map(Path::components);
+    for component in std::iter::once(None).chain(folders.map(Some)) {
+        if let Some(component) = component {
+            current.push(component);
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => return Ok(false),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(true)
+}
+
 /// Stop tracking every hook of a managed object that was just deleted, and
 /// return their names. Their slots went with the object, so each would
 /// otherwise sit in `status` as missing until forgotten one by one. Local
@@ -3456,6 +3577,189 @@ mod tests {
                 .unwrap(),
             None
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `--remove-local` removes only a file still holding the last-synced
+    /// bytes, and forgets the record whatever it decides about the file.
+    #[test]
+    fn forget_removing_local_removes_only_an_unmodified_plain_file() {
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let tree = dir.join("tree");
+        let synced = |name: &str| RemoteScript {
+            reference: endpoint_ref(name),
+            raw_config: json!({"type": "text/javascript", "source": "synced"}),
+        };
+        let file = |name: &str| workspace_file_in(&tree, "", &endpoint_ref(name));
+        let cases: [(&str, Option<&[u8]>, LocalDisposition); 3] = [
+            ("clean", Some(b"synced"), LocalDisposition::Removed),
+            (
+                "edited",
+                Some(b"edited"),
+                LocalDisposition::Kept("it differs from the last sync"),
+            ),
+            ("gone", None, LocalDisposition::Absent),
+        ];
+        for (name, bytes, expected) in cases {
+            store.record(&synced(name), "").unwrap();
+            if let Some(bytes) = bytes {
+                std::fs::create_dir_all(file(name).parent().unwrap()).unwrap();
+                std::fs::write(file(name), bytes).unwrap();
+            }
+            let got = forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, name).unwrap();
+            assert_eq!(got, expected, "{name}");
+            assert_eq!(file(name).exists(), name == "edited", "{name}");
+            assert!(
+                store.lookup(Kind::IdmEndpoint, name, "").unwrap().is_none(),
+                "{name}"
+            );
+        }
+        // The discriminating case: a symlink to a file holding the synced bytes
+        // reads as unmodified, and must still not be removed through.
+        store.record(&synced("linked"), "").unwrap();
+        let target = dir.join("elsewhere.js");
+        std::fs::write(&target, b"synced").unwrap();
+        std::os::unix::fs::symlink(&target, file("linked")).unwrap();
+        assert_eq!(
+            forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, "linked").unwrap(),
+            LocalDisposition::Kept("it is not a plain file")
+        );
+        assert!(target.exists() && file("linked").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn forget_removing_local_never_deletes_through_a_linked_folder() {
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let tree = dir.join("tree");
+        let reference = endpoint_ref("clean");
+        store
+            .record(
+                &RemoteScript {
+                    reference: reference.clone(),
+                    raw_config: json!({"type": "text/javascript", "source": "synced"}),
+                },
+                "",
+            )
+            .unwrap();
+        let file = workspace_file_in(&tree, "", &reference);
+        let folder = file.parent().unwrap();
+        let elsewhere = dir.join("other-checkout");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join(file.file_name().unwrap()), b"synced").unwrap();
+        std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, folder).unwrap();
+        assert_eq!(
+            forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, "clean").unwrap(),
+            LocalDisposition::Kept("its path leaves the workspace or passes through a symlink")
+        );
+        assert!(elsewhere.join(file.file_name().unwrap()).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn forget_removing_local_keeps_a_file_outside_the_tree_by_any_route() {
+        let synced = |reference: &RemoteRef| RemoteScript {
+            reference: reference.clone(),
+            raw_config: json!({"type": "text/javascript", "source": "synced"}),
+        };
+        // A name that walks out through ordinary folders.
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let tree = dir.join("tree");
+        let name = "../../../victim";
+        let reference = endpoint_ref(name);
+        store.record(&synced(&reference), "").unwrap();
+        let file = workspace_file_in(&tree, "", &reference);
+        std::fs::create_dir_all(tree.join("idm/endpoint")).unwrap();
+        let resolved = dir.join("victim.cjs");
+        std::fs::write(&resolved, b"synced").unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&file).unwrap(),
+            std::fs::canonicalize(&resolved).unwrap(),
+            "the name must resolve outside the tree for this case to mean anything"
+        );
+        assert_eq!(
+            forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, name).unwrap(),
+            LocalDisposition::Kept("its path leaves the workspace or passes through a symlink")
+        );
+        assert!(resolved.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // The tenant tree itself is a link to another checkout.
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let other = dir.join("other-checkout");
+        let tree = dir.join("tree");
+        let reference = endpoint_ref("clean");
+        store.record(&synced(&reference), "").unwrap();
+        let file = workspace_file_in(&other, "", &reference);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"synced").unwrap();
+        std::os::unix::fs::symlink(&other, &tree).unwrap();
+        assert_eq!(
+            forget_removing_local_in(&store, &tree, "", Kind::IdmEndpoint, "clean").unwrap(),
+            LocalDisposition::Kept("its path leaves the workspace or passes through a symlink")
+        );
+        assert!(file.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn forget_removing_local_removes_only_a_library_scripts_own_wrapper() {
+        let dir = tmp();
+        let store = store_at(&dir.join("store"));
+        let tree = dir.join("tree");
+        let am = |name: &str, context: &str| RemoteRef {
+            context: Some(context.into()),
+            ..am_ref(name)
+        };
+        // (name, context, wrapper is a link, wrapper survives)
+        let cases = [
+            ("Lib", "LIBRARY", false, false),
+            ("Claims", "OIDC_CLAIMS", false, true),
+            ("Linked", "LIBRARY", true, true),
+        ];
+        for (name, context, linked, survives) in cases {
+            let reference = am(name, context);
+            store
+                .record(
+                    &RemoteScript {
+                        reference: reference.clone(),
+                        raw_config: json!({"script": base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            "synced"
+                        )}),
+                    },
+                    "alpha",
+                )
+                .unwrap();
+            let file = workspace_file_in(&tree, "alpha", &reference);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, b"synced").unwrap();
+            let wrapper = file.with_extension("js");
+            let bytes = super::super::am::library_wrapper_contents(name);
+            if linked {
+                let target = dir.join(format!("{name}-target.js"));
+                std::fs::write(&target, &bytes).unwrap();
+                std::os::unix::fs::symlink(&target, &wrapper).unwrap();
+            } else {
+                std::fs::write(&wrapper, &bytes).unwrap();
+            }
+            assert_eq!(
+                forget_removing_local_in(&store, &tree, "alpha", Kind::Am, name).unwrap(),
+                LocalDisposition::Removed,
+                "{name}"
+            );
+            assert!(!file.exists(), "{name}");
+            assert_eq!(
+                std::fs::symlink_metadata(&wrapper).is_ok(),
+                survives,
+                "{name}"
+            );
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

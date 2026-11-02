@@ -145,6 +145,16 @@ pub enum Command {
                     unless the cached one still has most of its life left)"
         )]
         token: bool,
+        #[arg(
+            long,
+            value_name = "URL-OR-HOST",
+            help = "Mint the token for the context whose host this URL names \
+                    (without --tenant), and refuse, printing no token, unless it \
+                    is the tenant's own host or one of its custom domains. Pass the \
+                    URL your request will go to: `curl -H \"Authorization: Bearer \
+                    $(aic whoami --token --host \"$URL\")\" \"$URL\"`"
+        )]
+        host: Option<String>,
     },
     /// ESV operations (variables, secrets).
     Esv {
@@ -423,7 +433,11 @@ pub(crate) async fn dispatch(
         Some(Command::Session { command }) => session(command).await,
         Some(Command::Ctx { command }) => ctx(command).await,
         Some(Command::Settings { command }) => settings(command).await,
-        Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
+        Some(Command::Whoami {
+            tenant,
+            token,
+            host,
+        }) => whoami(tenant, token, host).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
@@ -953,6 +967,15 @@ fn capture_invocation(
     }
 }
 
+/// Whether this invocation's `--tenant` was typed rather than filled in from
+/// the parse-time default. With no capture (a library caller) a passed tenant
+/// counts as typed.
+fn tenant_flag_typed() -> bool {
+    INVOCATION_TENANT.get().is_none_or(|captured| {
+        matches!(&captured.resolution, Ok(Some(resolution)) if resolution.source == TenantSource::Flag)
+    })
+}
+
 /// Where the tenant a command targets came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TenantSource {
@@ -1161,7 +1184,7 @@ async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) ->
         }
         auth::unlock_plain_agent().await?;
         if announce {
-            println!("unlocked (plain mode)");
+            eprintln!("unlocked (plain mode)");
         }
         return Ok(());
     }
@@ -1194,7 +1217,7 @@ async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) ->
     drop(dek);
     warn_unsettled();
     if announce {
-        println!("unlocked");
+        eprintln!("unlocked");
     }
     Ok(())
 }
@@ -1588,15 +1611,43 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
 /// more life, because a token is below its own issue TTL the instant it exists.
 const SCRIPTED_TOKEN_MIN_TTL: u32 = 840;
 
-async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
+async fn whoami(
+    tenant_arg: Option<String>,
+    token_only: bool,
+    host_arg: Option<String>,
+) -> Result<()> {
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
+    let contexts: Vec<(&str, &str)> = cfg
+        .tenants
+        .iter()
+        .map(|config| (config.name.as_str(), config.base_url.as_str()))
+        .collect();
+    // Without `--tenant` the URL chooses the context, so the token is minted
+    // for the tenant the request goes to. A host no context's base URL names
+    // (a custom domain) falls through to the current context's check below.
+    // `tenant_arg` arrives holding the parse-time default, so ask whether the
+    // flag was actually typed.
+    let tenant_arg = match host_arg.as_deref() {
+        Some(requested) if !tenant_flag_typed() => identity::context_for_host(&contexts, requested)
+            .map(str::to_string)
+            .or(tenant_arg),
+        _ => tenant_arg,
+    };
     let tenant = resolve_tenant(tenant_arg, &cfg)?;
     let settings = config::Settings::load()?.unwrap_or_default();
     let tenant_config = cfg
         .tenants
         .iter()
         .find(|candidate| candidate.name == tenant);
+    // Checked before anything is minted, so a refusal never prints a token.
+    if let Some(requested) = host_arg.as_deref() {
+        let base_url = tenant_config.map_or("", |config| config.base_url.as_str());
+        identity::check_host(&tenant, base_url, requested, &contexts, || {
+            identity::custom_domains(&tenant)
+        })
+        .await?;
+    }
     let operator = operator::resolve(&settings, tenant_config, NetworkAccess::Skip).await;
 
     let client = AgentClient::connect_or_spawn().await?;
@@ -2404,6 +2455,36 @@ scopes = []
             cli.command,
             Some(Command::Workspace {
                 command: crate::scripts::cli::WorkspaceCommand::Init { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn workspace_update_accepts_dry_run_with_an_optional_tenant() {
+        for tenant in [None, Some("preview-tenant")] {
+            let mut args = vec!["aic", "workspace", "update", "--dry-run"];
+            if let Some(tenant) = tenant {
+                args.extend(["--tenant", tenant]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Some(Command::Workspace {
+                command:
+                    crate::scripts::cli::WorkspaceCommand::Update {
+                        dry_run,
+                        tenant: parsed,
+                    },
+            }) = cli.command
+            else {
+                panic!("expected workspace update");
+            };
+            assert!(dry_run);
+            assert_eq!(parsed.as_deref(), tenant);
+        }
+        let cli = Cli::try_parse_from(["aic", "workspace", "update"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Workspace {
+                command: crate::scripts::cli::WorkspaceCommand::Update { dry_run: false, .. }
             })
         ));
     }

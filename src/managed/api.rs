@@ -1,4 +1,6 @@
 //! Verified HTTP wrappers for the IDM `managed` config document.
+//! Journaled conversion writes bypass router retries and forward their saved
+//! transaction id through ApiCall; relink_call assembles the tested wire shape.
 //! All HTTP goes through `aic::api` → agent. See `docs/api/10-managed-objects.md`.
 
 use crate::{Error, Result};
@@ -96,20 +98,20 @@ pub async fn get_repo_ds(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, "/openidm/config/repo.ds").await
 }
 
-/// `PUT /openidm/config/repo.ds` — the whole document. Its one caller is
-/// `relationship repair`, which removes a stale mapping and holds a
-/// [`RepairPermit`](crate::managed::repair::RepairPermit) to get here. A JSON
+/// `PUT /openidm/config/repo.ds?waitForCompletion=true` — the whole document.
+/// The single workflow is `repair::apply_with`, for removals and additions; a
+/// [`WritePermit`](crate::managed::repair::WritePermit) is required to get here. A JSON
 /// `PATCH` on this document was measured to return 200 and change nothing,
 /// which is why there is no patch wrapper.
 pub async fn put_repo_ds(
     tenant: &str,
-    _permit: &crate::managed::repair::RepairPermit,
+    _permit: &crate::managed::repair::WritePermit,
     document: &Value,
     confirmed_prod: bool,
 ) -> Result<()> {
     crate::aic::api::put(
         tenant,
-        "/openidm/config/repo.ds",
+        "/openidm/config/repo.ds?waitForCompletion=true",
         document.clone(),
         confirmed_prod,
     )
@@ -257,6 +259,65 @@ pub async fn ref_filter_finds(
     Ok(result
         .iter()
         .any(|entry| entry.get("_ref").and_then(Value::as_str) == Some(reference)))
+}
+
+/// Whether `managed/<object>?_queryFilter=_id eq "<id>" and <key> pr` finds
+/// record `id` — on a record holding a link through `key`, true only when the
+/// running IDM stores `key` mapped ([`crate::managed::verify::Runtime`]).
+pub async fn present_filter_finds(tenant: &str, object: &str, id: &str, key: &str) -> Result<bool> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair(
+            "_queryFilter",
+            &format!("_id eq \"{}\" and {key} pr", id.replace('"', "\\\"")),
+        )
+        .append_pair("_fields", "_id");
+    let path = format!(
+        "/openidm/managed/{}?{}",
+        crate::idmstore::api::path_segment(object),
+        query.finish()
+    );
+    let body = get_settled(tenant, object, &path).await?;
+    let result = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Api {
+            status: 0,
+            body: format!("{path} returned no `result` array: {body}"),
+        })?;
+    Ok(result
+        .iter()
+        .any(|entry| entry.get("_id").and_then(Value::as_str) == Some(id)))
+}
+
+/// Finds evidence of orphaned values after assigning a reference column.
+/// A single match is enough to fail: this is not a generic-link census.
+pub async fn present_records(tenant: &str, object: &str, key: &str) -> Result<Vec<String>> {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("_queryFilter", &format!("/{key} pr"))
+        .append_pair("_fields", "_id")
+        .append_pair("_pageSize", "1");
+    let path = format!(
+        "/openidm/managed/{}?{}",
+        crate::idmstore::api::path_segment(object),
+        query.finish()
+    );
+    let body = get_settled(tenant, object, &path).await?;
+    let records = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Config(format!("orphan query returned no result array: {body}")))?;
+    records
+        .iter()
+        .map(|record| {
+            record
+                .get("_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| Error::Config("orphan query returned a record without _id".into()))
+        })
+        .collect()
 }
 
 /// One activation probe of `object.key` through record `id`:
@@ -453,24 +514,40 @@ pub async fn send_relink(
     write: &crate::managed::relink::Write,
     confirmed_prod: bool,
 ) -> Result<Value> {
+    // A journaled id denotes one attempt. Reusing it across router retries
+    // would make an earlier terminal log ambiguous about the latest dispatch.
+    if write.transaction_id.is_some() {
+        return relink_call(tenant, write, confirmed_prod)?.send().await;
+    }
+    settled(object, || async {
+        relink_call(tenant, write, confirmed_prod)?.send().await
+    })
+    .await
+}
+
+fn relink_call<'a>(
+    tenant: &'a str,
+    write: &'a crate::managed::relink::Write,
+    confirmed_prod: bool,
+) -> Result<crate::aic::api::ApiCall<'a>> {
     if !matches!(write.method, "DELETE" | "POST" | "PATCH") {
         return Err(Error::Config(format!(
             "relink has no {} write",
             write.method
         )));
     }
-    settled(object, || {
-        let mut call = crate::aic::api::ApiCall::new(tenant, write.method, &write.path)
-            .confirmed_prod(confirmed_prod);
-        if let Some(body) = &write.body {
-            call = call.body(body.clone());
-        }
-        if let Some(revision) = &write.if_match {
-            call = call.if_match(revision);
-        }
-        call.send()
-    })
-    .await
+    let mut call = crate::aic::api::ApiCall::new(tenant, write.method, &write.path)
+        .confirmed_prod(confirmed_prod);
+    if let Some(id) = &write.transaction_id {
+        call = call.transaction_id(id);
+    }
+    if let Some(body) = &write.body {
+        call = call.body(body.clone());
+    }
+    if let Some(revision) = &write.if_match {
+        call = call.if_match(revision);
+    }
+    Ok(call)
 }
 
 /// Unconfirmed `PUT /openidm/config/managed` with the complete managed config
@@ -709,6 +786,35 @@ pub fn summarize(doc: &Value) -> Result<Vec<ObjectSummary>> {
 
 #[cfg(test)]
 mod tests {
+
+    // Regression: the id persisted by conversion must survive call assembly
+    // and the actual serialized client/agent envelope.
+    #[test]
+    fn conversion_transaction_id_reaches_agent_wire_for_every_record_method() {
+        use crate::managed::{conversion::tests::captured, relink};
+        let (capture, census) = captured(true);
+        let permit = relink::authorize(false, true).unwrap();
+        for array in [false, true] {
+            let mut writes =
+                relink::writes(&permit, "a", "link", array, &census.edges[0], Some("r1")).unwrap();
+            for write in &mut writes {
+                let id = crate::http::transaction_id();
+                write.transaction_id = Some(id.clone());
+                let envelope = relink_call(&capture.tenant, write, true)
+                    .unwrap()
+                    .envelope();
+                let wire =
+                    serde_json::to_value(crate::agent::protocol::WireRequest::current(envelope))
+                        .unwrap();
+                assert_eq!(wire["transaction_id"], id);
+                assert_eq!(wire["method"], write.method);
+                assert_eq!(
+                    wire["if_match"],
+                    serde_json::to_value(&write.if_match).unwrap()
+                );
+            }
+        }
+    }
 
     /// The control the first version lacked: a permanently missing property
     /// answers the same router 404, so it is retried only just after a
