@@ -8,6 +8,7 @@ let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
 const cases: Array<[string, PropertyConfig]> = [
+  ["type", { type: "unmeasured-shape" }],
   ["encryption", { encryption: { cipher: "AES/CBC/PKCS5Padding", key: "example" } }],
   ["secureHash", { secureHash: { algorithm: "SHA-256" } }],
   ["isVirtual", { isVirtual: true, onRetrieve: js("'derived'") }],
@@ -56,4 +57,11 @@ it.each(["enum", "policies", "required"])("Astra #3 declared %s policy cannot si
   const result = await runner.eval({ engine: "idm", source: "openidm.create('managed/widget','a',{})" }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
   expect(result.emulation?.missing).toContain(cause);
+});
+
+it("Astra #3 an empty enum is a declaration, not permission to accept anything", async () => {
+  expectEmulationFailure("schema policy enum: widget/secret");
+  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: { secret: { type: "string", enum: [] } } } }] } }), runner);
+  const result = await runner.eval({ engine: "idm", source: "try {openidm.create('managed/widget','a',{secret:'not-allowed'})} catch(e) {} 42;" }, { onCall: emu.onCall });
+  expect(result.outcome).not.toBe("ok");
 });
