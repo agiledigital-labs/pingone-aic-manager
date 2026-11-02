@@ -76,13 +76,13 @@ function dump(body: unknown): unknown {
 }
 it("transient survives a callback-free edge and disappears on the next round trip, shared survives both", async () => {
   const emu = graph({ invented: { entryNodeId: "seed", nodes: { seed: { nodeType: "ScriptedDecisionNode", connections: { next: "dump" } }, dump: { nodeType: "ScriptedDecisionNode", connections: {} } } } }, {
-    seed: "nodeState.putTransient('temporary','t');nodeState.putShared('lasting','s');action.goTo('next');",
-    dump: "callbacksBuilder.hiddenValueCallback('state',JSON.stringify({temporary:nodeState.get('temporary'),lasting:nodeState.get('lasting'),hasTransient:nodeState.keys().contains('temporary'),getShared:typeof nodeState.getShared,getTransient:typeof nodeState.getTransient}));",
+    seed: "nodeState.remove('maxAuthenticationSessionDuration');nodeState.putShared('maxAuthenticationSessionDuration','caller-owned');nodeState.putTransient('temporary','t');nodeState.putShared('lasting','s');action.goTo('next');",
+    dump: "callbacksBuilder.hiddenValueCallback('state',JSON.stringify({ambientName:nodeState.get('maxAuthenticationSessionDuration'),temporary:nodeState.get('temporary'),lasting:nodeState.get('lasting'),hasTransient:nodeState.keys().contains('temporary'),getShared:typeof nodeState.getShared,getTransient:typeof nodeState.getTransient}));",
   });
   const first = await request(emu);
-  expect(dump(first.body)).toEqual({ temporary: "t", lasting: "s", hasTransient: true, getShared: "undefined", getTransient: "undefined" });
+  expect(dump(first.body)).toEqual({ ambientName: "caller-owned", temporary: "t", lasting: "s", hasTransient: true, getShared: "undefined", getTransient: "undefined" });
   const next = await request(emu, first.body as object);
-  expect(dump(next.body)).toEqual({ temporary: null, lasting: "s", hasTransient: false, getShared: "undefined", getTransient: "undefined" });
+  expect(dump(next.body)).toEqual({ ambientName: "caller-owned", temporary: null, lasting: "s", hasTransient: false, getShared: "undefined", getTransient: "undefined" });
 });
 it.each(["true", "false"])("inner %s maps back to the evaluator and preserves the four visibility boundaries", async (outcome) => {
   const emu = graph({
@@ -175,4 +175,73 @@ it("the existing AIC driveJourney consumes this engine without a parallel callba
   expect(passes[0]?.callbacks).toEqual([{ type: "NameCallback", prompt: "Name" }]);
   expect(passes[1]?.outcome).toBe("done");
   expect(passes[1]?.evidence?.unbucketedState).toContainEqual(expect.objectContaining({ key: "answer", after: "invented" }));
+});
+it("non-ASCII signature corruption remains the measured 400, never an internal error", async () => {
+  const emu = make("callbacksBuilder.nameCallback('Name');");
+  const first = await request(emu);
+  const body = first.body as { authId: string; callbacks: import("../../src/protocol.ts").JsonValue[] };
+  expect(await request(emu, { ...body, authId: body.authId.slice(0, -1) + "é" })).toMatchObject({ status: 400, body: { message: "Authentication Error: Invalid AuthId Signature" } });
+});
+it("non-finite AM host results fail closed instead of turning into protocol marker objects", async () => {
+  expectEmulationFailure("AM host non-finite or negative-zero result");
+  const emu = make("try{httpClient.send('https://service.example.com').get().json();}catch(e){}nodeState.putShared('username','invented');action.goTo('true');", undefined, undefined, { http: () => ({ status: 200, body: { value: NaN } }) });
+  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: ["AM host non-finite or negative-zero result"] } });
+});
+it("malformed HTTP JSON is audited missing through the authenticate seam", async () => {
+  expectEmulationFailure("authenticate invalid JSON body");
+  const { journeyHttp } = await import("../../src/journey/index.ts");
+  const result = await journeyHttp(make("action.goTo('false');"))({ url: "https://tenant.example.com/am/json/realms/root/realms/alpha/authenticate?authIndexType=service&authIndexValue=invented", method: "POST", headerLines: [], body: "{broken" });
+  expect(result.status).toBe(501);
+  expect(JSON.parse(result.body)).toMatchObject({ message: expect.stringContaining("authenticate invalid JSON body") });
+});
+it("AM harness timeout is sticky even when finally returns and the script chooses success", async () => {
+  expectEmulationFailure("AM harness timeout");
+  const emu = make("(function(){try{while(true){}}finally{return 42;}})();nodeState.putShared('username','invented');action.goTo('true');", undefined, undefined, { timeoutMs: 80 });
+  expect(await request(emu)).toMatchObject({ status: 500, emulation: { kind: "timeout", message: "AM harness timeout" } });
+});
+it("script cannot catch a missing host failure and perform a managed write", async () => {
+  expectEmulationFailure("unmocked httpClient.send: https://service.example.com/check");
+  const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "one", nodes: { one: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } } } } }, nodes: { ScriptedDecisionNode: { one: { script: "script", outcomes: ["true"] } } }, scripts: { script: script("try{httpClient.send('https://service.example.com/check').get();}catch(e){openidm.create('managed/widget','caught',{});}nodeState.putShared('username','invented');action.goTo('true');") } });
+  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: {} } }] } }), runner);
+  expect(await request(new JourneyEmulator(config, runner, idm))).toMatchObject({ status: 501 });
+  expect((await idm.request({ method: "GET", path: "managed/widget/caught" })).status).toBe(404);
+});
+it("HTTP mock crashes are emulation failures even if script catches", async () => {
+  expectEmulationFailure("journey HTTP mock failed: Error: broken mock");
+  const emu = make("try{httpClient.send('https://service.example.com').get();}catch(e){}nodeState.putShared('username','invented');action.goTo('true');", undefined, undefined, { http: () => { throw new Error("broken mock"); } });
+  expect(await request(emu)).toMatchObject({ status: 500, emulation: { kind: "internal" } });
+});
+it("transition admission refuses an accidental loop with an audited protocol failure", async () => {
+  expectEmulationFailure("journey transition limit exceeded");
+  const emu = graph({ invented: { entryNodeId: "loop", nodes: { loop: { nodeType: "ScriptedDecisionNode", connections: { next: "loop" } } } } }, { loop: "action.goTo('next');" }, {}, { maxTransitions: 2 });
+  expect(await request(emu)).toMatchObject({ status: 500, emulation: { kind: "protocol", message: "journey transition limit exceeded" } });
+});
+it("unsupported legacy evaluator fails before execution", async () => {
+  expectEmulationFailure("script evaluatorVersion: 1.0");
+  const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "one", nodes: { one: { nodeType: "ScriptedDecisionNode", connections: {} } } } }, nodes: { ScriptedDecisionNode: { one: { script: "script", outcomes: [] } } }, scripts: { script: { ...script("throw new Error('must not run');"), evaluatorVersion: "1.0" } } });
+  expect(await request(new JourneyEmulator(config, runner, new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner)))).toMatchObject({ status: 501, emulation: { missing: ["script evaluatorVersion: 1.0"] } });
+});
+it("tenant IDM conflicts stay catchable while the journey retains their host evidence", async () => {
+  const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "one", nodes: { one: { nodeType: "ScriptedDecisionNode", connections: {} } } } }, nodes: { ScriptedDecisionNode: { one: { script: "script", outcomes: [] } } }, scripts: { script: script("openidm.create('managed/widget','record',{});try{openidm.create('managed/widget','record',{});}catch(e){logger.info('caught {}',e.code);callbacksBuilder.hiddenValueCallback('error',JSON.stringify({code:e.code,type:typeof e.code,detail:typeof e.detail}));}") } });
+  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: {} } }] } }), runner);
+  const result = await request(new JourneyEmulator(config, runner, idm));
+  expect(result.status).toBe(200);
+  expect(dump(result.body)).toEqual({ code: "412", type: "string", detail: "object" });
+  expect(result.provenance).toContainEqual({ kind: "assumed", behavior: "AM openidm errors use a JavaException-named JS adapter with string code and JSON detail" });
+});
+it("output-only callbacks count toward IDToken numbering and the existing client answers the right input", async () => {
+  const emu = make("if(callbacks.isEmpty()){callbacksBuilder.textOutputCallback(0,'hello');callbacksBuilder.nameCallback('Name');action.goTo('false');}else{nodeState.putShared('username',callbacks.getNameCallbacks().get(0));action.goTo('true');}");
+  const first = await request(emu);
+  expect(first.body).toMatchObject({ callbacks: [{ type: "TextOutputCallback" }, { type: "NameCallback", input: [{ name: "IDToken2", value: "" }] }] });
+  expect(await request(emu, JSON.parse(fillCallbackInputs(first.body, [{ type: "NameCallback", value: "invented" }], "numbering")))).toMatchObject({ status: 200, body: { tokenId: expect.any(String) } });
+});
+it("unknown callback types and altered snapshot callback metadata remain missing", async () => {
+  expectEmulationFailure("callback wire type: InventedCallback");
+  expectEmulationFailure("authenticate callback submission differs from snapshot");
+  const emu = make("if(callbacks.isEmpty()){callbacksBuilder.nameCallback('Name');}else{nodeState.putShared('username','invented');action.goTo('true');}");
+  expect(await request(emu, { callbacks: [{ type: "InventedCallback" }] })).toMatchObject({ status: 501, emulation: { missing: ["callback wire type: InventedCallback"] } });
+  const first = await request(emu);
+  const body = JSON.parse(fillCallbackInputs(first.body, [{ type: "NameCallback", value: "invented" }], "tamper"));
+  body.callbacks[0].output[0].value = "altered prompt";
+  expect(await request(emu, body)).toMatchObject({ status: 501, emulation: { missing: ["authenticate callback submission differs from snapshot"] } });
 });

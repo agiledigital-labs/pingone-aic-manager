@@ -24,6 +24,8 @@ export type AuthenticateRequest = {
   readonly path: string;
   readonly query: { readonly authIndexType: string; readonly authIndexValue: string; readonly [key: string]: string | readonly string[] };
   readonly body?: JsonValue;
+  /** Raw transport input; parsing stays inside the audited request scope. */
+  readonly rawBody?: string;
   readonly headers?: Readonly<Record<string, string[]>>;
   readonly cookies?: Readonly<Record<string, string>>;
 };

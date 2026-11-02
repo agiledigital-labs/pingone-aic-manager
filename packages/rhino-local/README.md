@@ -1356,3 +1356,11 @@ missing until implemented. Input defaults, local Java collection facsimiles,
 initial ambient state values, HTTP response fixtures and AM host-error adapters
 retain explicit assumptions. The request's provenance distinguishes these from
 the measurement agent's doc 25 rows; those rows were not measured by this agent.
+
+`timeoutMs` bounds each script job (default 10 seconds); `maxTransitions` bounds
+a callback-free request (default 1000 transitions). Exhaustion is an audited
+emulation failure. Malformed JSON and callback shapes, callback metadata that
+no longer matches a signed snapshot, and non-finite/negative-zero host values
+remain missing rather than becoming plausible answers. The ambient duration
+key's initial value/bucket is explicitly assumed; ordinary caller-written shared
+state is preserved even when its key has an ambient name.

@@ -291,7 +291,7 @@ public final class Runner {
             preambleScript.exec(cx, scope);
           } finally {
             ScriptableObject.deleteProperty(scope, hostOpName);
-            ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
+            if (bridge != null) ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }
         } catch (EvaluatorException e) {
           return errorFromRhino(id, "compile_error", e);
