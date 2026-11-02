@@ -124,8 +124,8 @@ it("unsupported node requires an explicit declared outcome, validated when the t
   const declared = await request(new JourneyEmulator(new JourneyConfig(input), runner, idm, { declaredOutcomes: { one: "next" } }));
   expect(declared).toMatchObject({ status: 401 });
   expect(declared.provenance).toContainEqual({ kind: "assumed", behavior: "declared by test: invented/one -> next" });
-  const known = structuredClone(input); known.trees.invented.nodes.one.nodeType = "IdentifyExistingUserNode";
-  expect(await request(new JourneyEmulator(new JourneyConfig({ ...known, nodes: { IdentifyExistingUserNode: { one: {} } } }), runner, idm, { declaredOutcomes: { one: "nope" } }))).toMatchObject({ status: 401, body: { message: "Login failure" } });
+  const known = structuredClone(input); known.trees.invented.nodes.one.nodeType = "ValidatedUsernameNode";
+  expect(await request(new JourneyEmulator(new JourneyConfig({ ...known, nodes: { ValidatedUsernameNode: { one: {} } } }), runner, idm, { declaredOutcomes: { one: "nope" } }))).toMatchObject({ status: 401, body: { message: "Login failure" } });
 });
 it("missing binding use cannot be swallowed in script code", async () => {
   expectEmulationFailure("action.putSessionProperty");
@@ -136,15 +136,20 @@ it.each(["UsernameCollectorNode", "PasswordCollectorNode", "AttributeCollectorNo
   const outcome = type === "CreateObjectNode" ? "CREATED" : type === "PatchObjectNode" ? "PATCHED" : type === "IdentifyExistingUserNode" ? "true" : "outcome";
   const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "node", nodes: { node: { nodeType: type, connections: {} } } } }, nodes: { [type]: { node: {} } }, scripts: {} });
   const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
-  // Known + unwired is 500; an invented outcome is 401, not a fake successful stub.
+  if (type !== "ValidatedUsernameNode") {
+    expect(() => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: outcome } })).toThrow("declared outcome for emulated node");
+    expect(() => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "bogus" } })).toThrow("declared outcome for emulated node");
+    return;
+  }
+  // Only the still-unimplemented ValidatedUsername can use the measured vocabulary.
   expect(await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: outcome } }))).toMatchObject({ status: 500, rawBody: "" });
   expect(await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "bogus" } }))).toMatchObject({ status: 401 });
 });
 it("declared Page outcome resolves its last child's stored config", async () => {
   const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "page", nodes: { page: { nodeType: "PageNode", connections: {} } } } }, nodes: { PageNode: { page: { nodes: [{ _id: "child", nodeType: "ScriptedDecisionNode" }] } }, ScriptedDecisionNode: { child: { outcomes: ["chosen"], script: "unused" } } }, scripts: {} });
   const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
-  expect(await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { page: "chosen" } }))).toMatchObject({ status: 500, rawBody: "" });
-  expect(await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { page: "bogus" } }))).toMatchObject({ status: 401 });
+  expect(() => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { page: "chosen" } })).toThrow("declared outcome for emulated node");
+  expect(() => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { page: "bogus" } })).toThrow("declared outcome for emulated node");
 });
 it("existingSession is undefined without a cookie and a flat caller-supplied map with one", async () => {
   const emu = make("callbacksBuilder.hiddenValueCallback('session',JSON.stringify({kind:typeof existingSession,user:typeof existingSession==='undefined'?null:existingSession.UserId,unknown:typeof existingSession==='undefined'?null:typeof existingSession.notAKey}));", undefined, undefined, { cookieName: "session", sessions: { issued: { UserId: "invented", AuthLevel: "0" } } });

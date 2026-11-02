@@ -3,13 +3,14 @@ import type { CallbackEffect } from "../case/types.ts";
 import type { JsonValue } from "../protocol.ts";
 import { isDocument } from "../idm/document.ts";
 export type WireCallback = { type: string; output: { name: string; value: JsonValue }[]; input?: { name: string; value: JsonValue }[] };
-const SUPPORTED = ["NameCallback", "PasswordCallback", "TextInputCallback", "TextOutputCallback", "HiddenValueCallback"];
+const SUPPORTED = ["NameCallback", "PasswordCallback", "TextInputCallback", "TextOutputCallback", "HiddenValueCallback", "StringAttributeInputCallback"];
 export function toWire(callbacks: CallbackEffect[], absent: (name: string) => never): WireCallback[] {
   return callbacks.map((callback, index) => {
     if (!SUPPORTED.includes(callback.type)) absent(`callback wire type: ${callback.type}`);
     const output = Object.entries(callback).filter(([key]) => key !== "type").map(([name, value]) => ({ name, value }));
     const out: WireCallback = { type: callback.type, output };
-    if (callback.type !== "TextOutputCallback") out.input = [{ name: `IDToken${index + 1}`, value: callback.type === "HiddenValueCallback" ? callback.id ?? "" : callback.type === "TextInputCallback" ? callback.defaultText ?? "" : "" }];
+    if (callback.type !== "TextOutputCallback") out.input = [{ name: `IDToken${index + 1}`, value: callback.type === "StringAttributeInputCallback" ? callback.value ?? "" : callback.type === "HiddenValueCallback" ? callback.id ?? "" : callback.type === "TextInputCallback" ? callback.defaultText ?? "" : "" }];
+    if (callback.type === "StringAttributeInputCallback") out.input?.push({ name: `IDToken${index + 1}validateOnly`, value: false });
     return out;
   });
 }
@@ -23,6 +24,10 @@ export function fromWire(raw: JsonValue | undefined, absent: (name: string) => n
     const effect: CallbackEffect = { type: callback.type };
     if (Array.isArray(callback.output)) for (const field of callback.output) if (isDocument(field) && typeof field.name === "string" && field.value !== undefined) effect[field.name] = field.value;
     if (Array.isArray(callback.input) && isDocument(callback.input[0]) && callback.input[0].value !== undefined) effect.value = callback.input[0].value;
+    if (callback.type === "StringAttributeInputCallback") {
+      if (!Array.isArray(callback.input) || !isDocument(callback.input[1]) || typeof callback.input[1].value !== "boolean") absent("StringAttributeInputCallback validateOnly input shape");
+      effect.validateOnly = callback.input[1].value;
+    }
     return effect;
   });
 }

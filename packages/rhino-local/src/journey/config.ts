@@ -25,6 +25,17 @@ export class JourneyConfig {
     }
     for (const [type, nodes] of Object.entries(input.nodes)) { record(nodes, `nodes/${type}`); for (const [id, node] of Object.entries(nodes)) record(node, `nodes/${type}/${id}`); }
     for (const [id, script] of Object.entries(input.scripts)) record(script, `scripts/${id}`);
+    for (const page of Object.values(input.nodes.PageNode ?? {})) {
+      if (!Array.isArray(page.nodes)) continue;
+      for (const child of page.nodes.slice(0, -1)) {
+        if (child === null || typeof child !== "object" || Array.isArray(child)) continue;
+        const ref = child as Record<string, unknown>;
+        const config = typeof ref.nodeType === "string" && typeof ref._id === "string" && Object.hasOwn(input.nodes, ref.nodeType) && Object.hasOwn(input.nodes[ref.nodeType] ?? {}, ref._id) ? input.nodes[ref.nodeType]?.[ref._id] : undefined;
+        const outcomes = ref.nodeType === "InnerTreeEvaluatorNode" ? ["true", "false"] : config?.outcomes;
+        if (Array.isArray(outcomes) && outcomes.length > 1) throw new RangeError("400 Invalid config: Only the last node in a page can have more than one outcome");
+        if (["IdentifyExistingUserNode", "CreateObjectNode", "PatchObjectNode"].includes(String(ref.nodeType))) throw new RangeError("400 Invalid config: Only the last node in a page can have more than one outcome");
+      }
+    }
     const snapshot = structuredClone(input); freeze(snapshot);
     this.realm = snapshot.realm; this.trees = snapshot.trees; this.nodes = snapshot.nodes; this.scripts = snapshot.scripts;
     Object.freeze(this);
