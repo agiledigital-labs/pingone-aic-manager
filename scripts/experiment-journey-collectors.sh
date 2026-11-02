@@ -10,7 +10,8 @@
 #   "ac": a lone AttributeCollectorNode (givenName, sn, mail; no validation,
 #   not required). "page": a Page of ValidatedUsername + AttributeCollector
 #   (required, validated) + ValidatedPassword, submitted first with mail empty
-#   (the control for the required/policy path) and then complete. Each is
+#   (the control for the required/policy path) and then complete. A first
+#   round leaves the username and password empty. Each is
 #   followed by a dump node that reports state on its first pass and again
 #   after its own callback round trip (transient keys vanish). Password values
 #   are fake and the dump masks any password value it prints.
@@ -79,7 +80,8 @@ try:
     # Callbacks without a `name` output are answered by type.
     base = {"ValidatedCreateUsernameCallback": uname, "PasswordCallback": "Zz-emu-Passw0rd!x",
             "ValidatedCreatePasswordCallback": "Zz-emu-Passw0rd!x"}
-    follow(tree2, "page", [dict(base, givenName="Zz", sn="Emu", mail=""),
+    follow(tree2, "page", [{"givenName": "Zz", "sn": "Emu", "mail": "zzemu-coll@example.com"},
+                           dict(base, givenName="Zz", sn="Emu", mail=""),
                            dict(base, givenName="Zz", sn="Emu", mail="zzemu-coll@example.com")])
 finally:
     log("--- cleanup")
