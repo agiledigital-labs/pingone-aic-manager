@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { SUCCESS_NODE_ID as SUCCESS } from "../../src/aic/constants.ts";
+import { FAILURE_NODE_ID as FAILURE, SUCCESS_NODE_ID as SUCCESS } from "../../src/aic/constants.ts";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 import { HostCallError, RhinoRunner } from "../../src/runner.ts";
 import { IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
@@ -145,8 +145,11 @@ it("a declared outcome cannot bypass an emulated Page", () => {
     make(config(["user", "pass"], child), { declaredOutcomes: { page: "outcome" } }),
   ).toThrow("declared outcome for emulated node");
 });
+// Doc 25 Page table, discovery rows (experiment-journey-page-discovery.sh, 2026-11-02).
+const PAGE_DISCOVERY =
+  "PageNode discovery runs every scripted child once, with real effects and retained state, and ignores its goTo; submission runs it again";
 it.each([false, true])(
-  "Page no-callback script is not run at discovery, runs once on submit, last goTo wins: last=%s",
+  "Page no-callback script runs at discovery and again on submit with state kept: last=%s",
   async (last) => {
     const input = config(
       last ? ["user", "pass", "child"] : ["user", "child", "pass"],
@@ -154,22 +157,26 @@ it.each([false, true])(
     );
     const emu = make(input),
       first = await request(emu);
+    // Not shown on the first response: only the collectors' callbacks.
     expect(
       (first.body as { callbacks: { type: string }[] }).callbacks.map((cb) => cb.type),
     ).toEqual(["NameCallback", "PasswordCallback"]);
+    expect(first.provenance).toContainEqual({
+      kind: "measured",
+      behavior: PAGE_DISCOVERY,
+      source: expect.stringContaining("25-journey-runtime") as string,
+    });
     const next = await request(emu, answer(first.body, ["invented", "secret"]));
     expect(next.status).toBe(200);
-    // Doc 25: not shown on the first response; on submission it runs once.
+    // The submit run read the discovery run's counter (1) and wrote 2.
     expect(dump(next.body)).toMatchObject({
-      passes: 1,
+      passes: 2,
       seen: 0,
       username: "invented",
       password: "secret",
     });
   },
 );
-const PAGE_SPECULATION =
-  "PageNode discovery classifies a scripted child by an isolated run (copied state, forked IDM, no HTTP); only a child that queues callbacks is then executed";
 function widgets() {
   return new IdmEmulator(
     new IdmConfig({
@@ -186,73 +193,100 @@ async function widgetCount(idm: IdmEmulator): Promise<number> {
   });
   return (listed.body as { result: unknown[] }).result.length;
 }
-it("Page discovery does not commit a callback-free child's host write", async () => {
-  const idm = widgets();
-  const emu = make(
-    config(
-      ["user", "child"],
-      "openidm.create('managed/widget',null,{x:'created'});action.goTo('chosen');",
-    ),
-    {},
-    idm,
+it.each([
+  ["callback-free child after Username", ["user", "child"], "action.goTo('chosen');", ["invented"]],
+  [
+    "callback-free child before Username",
+    ["child", "user"],
+    "action.goTo('chosen');",
+    ["invented"],
+  ],
+  [
+    "callback-queuing child (positive control)",
+    ["user", "child"],
+    "if(callbacks.isEmpty()){callbacksBuilder.nameCallback('Own');}else{action.goTo('chosen');}",
+    ["invented", "own"],
+  ],
+])(
+  "Page %s writes once at discovery and again on submit",
+  async (_name, children, tail, values) => {
+    const idm = widgets();
+    const emu = make(
+      config(children, `openidm.create('managed/widget',null,{x:'created'});${tail}`),
+      {},
+      idm,
+    );
+    expect(await widgetCount(idm)).toBe(0);
+    const first = await request(emu);
+    expect(first.status).toBe(200);
+    expect(await widgetCount(idm)).toBe(1);
+    const next = await request(emu, answer(first.body, values));
+    expect(next.status).toBe(200);
+    expect(await widgetCount(idm)).toBe(2);
+  },
+);
+it("Page discovery goTo is ignored; the submit run's goTo is the page outcome", async () => {
+  const input = config(
+    ["user", "child"],
+    "if(nodeState.get('flag')){action.goTo('a');}else{nodeState.putShared('flag',true);action.goTo('b');}",
+    ["a", "b"],
   );
-  const first = await request(emu);
+  const tree = input.trees.invented as { nodes: Record<string, unknown> };
+  const wired = {
+    ...input,
+    trees: {
+      invented: {
+        ...input.trees.invented,
+        nodes: {
+          ...tree.nodes,
+          page: { nodeType: "PageNode", connections: { a: "dump", b: FAILURE } },
+        },
+      },
+    },
+  } as JourneyConfigInput;
+  const emu = make(wired),
+    first = await request(emu);
+  // Had discovery's goTo('b') been taken, the first POST would be the Failure 401.
   expect(first.status).toBe(200);
-  expect(await widgetCount(idm)).toBe(0);
+  expect((first.body as { callbacks: unknown[] }).callbacks).toHaveLength(1);
   const next = await request(emu, answer(first.body, ["invented"]));
+  // 'a' is only reachable through the flag the discovery run wrote.
   expect(next.status).toBe(200);
-  expect(await widgetCount(idm)).toBe(1);
+  expect(dump(next.body)).toMatchObject({ username: "invented" });
 });
-it("Page discovery runs a callback-emitting child for real exactly once", async () => {
+it.each([
+  [
+    "throws without username",
+    "if(nodeState.get('username')===null){throw new Error('username required');}",
+    401,
+  ],
+  [
+    "reads username (control)",
+    "nodeState.putShared('seen',{username:nodeState.get('username')});",
+    200,
+  ],
+])("Page discovery run that %s: first POST %s", async (_name, head, status) => {
   const idm = widgets();
   const emu = make(
     config(
       ["user", "child"],
-      "if(callbacks.isEmpty()){openidm.create('managed/widget',null,{x:'created'});callbacksBuilder.nameCallback('Own');}else{action.goTo('chosen');}",
+      `${head}openidm.create('managed/widget',null,{x:'c'});action.goTo('chosen');`,
     ),
     {},
     idm,
   );
   const first = await request(emu);
-  expect((first.body as { callbacks: { type: string }[] }).callbacks.map((cb) => cb.type)).toEqual([
-    "NameCallback",
-    "NameCallback",
-  ]);
-  expect(await widgetCount(idm)).toBe(1);
-  expect(first.provenance).toContainEqual({
-    kind: "assumed",
-    behavior: PAGE_SPECULATION,
-  });
-  const next = await request(emu, answer(first.body, ["invented", "own"]));
-  expect(next.status).toBe(200);
-  expect(await widgetCount(idm)).toBe(1);
-});
-it("Page discovery reads state without failing the initial POST", async () => {
-  const emu = make(
-    config(
-      ["user", "child"],
-      "nodeState.putShared('seen',{username:nodeState.get('username')});action.goTo('chosen');",
-    ),
-  );
-  const first = await request(emu);
-  expect(first.status).toBe(200);
+  expect(first.status).toBe(status);
+  if (status === 401) {
+    expect(first.body).toMatchObject({ message: "Login failure" });
+    expect(await widgetCount(idm)).toBe(0);
+    return;
+  }
+  // Discovery read username as null; the submit run sees the submitted value.
   const next = await request(emu, answer(first.body, ["invented"]));
   expect(dump(next.body)).toMatchObject({ seen: { username: "invented" } });
 });
-it("Page discovery of a child that throws without username is missing, not a 401", async () => {
-  const cause = "PageNode scripted child that throws before its callbacks are known";
-  expectEmulationFailure(cause);
-  const emu = make(
-    config(
-      ["user", "child"],
-      "if(nodeState.get('username')===null){throw new Error('username required');}action.goTo('chosen');",
-    ),
-  );
-  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
-});
-it("Page discovery refuses HTTP before a child's callbacks are known", async () => {
-  const cause = "PageNode scripted child httpClient.send before its callbacks are known";
-  expectEmulationFailure(cause);
+it("Page discovery run sends its HTTP for real, then again on submit", async () => {
   let calls = 0;
   const emu = make(
     config(
@@ -266,8 +300,11 @@ it("Page discovery refuses HTTP before a child's callbacks are known", async () 
       },
     },
   );
-  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
-  expect(calls).toBe(0);
+  const first = await request(emu);
+  expect(first.status).toBe(200);
+  expect(calls).toBe(1);
+  await request(emu, answer(first.body, ["invented"]));
+  expect(calls).toBe(2);
 });
 it("Page holding an unmeasured child type is missing before it runs", async () => {
   const cause = "PageNode child type: CreateObjectNode";
