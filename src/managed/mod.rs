@@ -4,8 +4,8 @@
 //! The feature is split by responsibility:
 //! - [`api`] contains the verified config wrappers (whole-document GET/PUT —
 //!   the `managed` config has no `_rev` and no partial patch).
-//! - [`cli`] implements `aic managed` read-only inspection; write-capable TUI
-//!   flows live in [`ops`], [`screen`], and [`view`].
+//! - [`cli`] implements `aic managed` inspection and writes; TUI flows live
+//!   in [`ops`], [`screen`], and [`view`].
 //! - [`diff`] normalises and compares an object against a repository file,
 //!   for `aic managed diff`; tenant-free.
 //! - [`ops`] owns managed-object schema writes and undo.
@@ -13,6 +13,13 @@
 //!   how one-sided links are re-created; tenant-free.
 //! - [`verify`] judges relationship pairs against `config/repo.ds` and
 //!   sampled links, for `aic managed relationship verify`; tenant-free.
+//! - [`storage`] plans relationship mappings and allocates columns;
+//!   [`repair`] owns the single permit-gated repo.ds addition/removal writer.
+//! - [`conversion`] owns durable link capture, exact-set checks, Q14 guards
+//!   and resumable migration; `conversion_records` owns readiness and full
+//!   rollback preflight/removal over injected record/config transport;
+//!   `conversion_cli` supplies map, promotion
+//!   capture-links, record-only restore-links and explicit rollback-map.
 //! - [`state`], [`screen`], and [`view`] implement the TUI browser and field
 //!   attribute editor.
 //!
@@ -34,6 +41,9 @@
 
 pub mod api;
 pub mod cli;
+pub mod conversion;
+mod conversion_cli;
+mod conversion_records;
 pub mod diff;
 mod keys;
 pub mod ops;
@@ -43,5 +53,6 @@ pub mod repair;
 pub mod screen;
 pub mod spec;
 pub mod state;
+pub mod storage;
 pub mod verify;
 pub mod view;

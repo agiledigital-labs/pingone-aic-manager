@@ -10,6 +10,10 @@ pub(crate) fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder().user_agent(USER_AGENT)
 }
 
+pub(crate) fn transaction_id() -> String {
+    format!("aic-{}", uuid::Uuid::new_v4())
+}
+
 /// Add a fresh, recognisably `aic` transaction id to one outbound request.
 pub(crate) trait RequestBuilderExt {
     fn aic_transaction_id(self) -> Self;
@@ -17,10 +21,7 @@ pub(crate) trait RequestBuilderExt {
 
 impl RequestBuilderExt for reqwest::RequestBuilder {
     fn aic_transaction_id(self) -> Self {
-        self.header(
-            TRANSACTION_ID_HEADER,
-            format!("aic-{}", uuid::Uuid::new_v4()),
-        )
+        self.header(TRANSACTION_ID_HEADER, transaction_id())
     }
 }
 

@@ -84,6 +84,21 @@ so the bare id you sent retrieves them — see
 [08-logs.md](08-logs.md#transaction-id-matching-is-a-prefix-match) for the
 matching rule and the collision it creates for sequentially numbered ids.
 
+## Gateway errors and retries
+
+Operators saw intermittent `502`/`503` on plain `config/managed` reads that an
+immediate manual retry cleared (2026-10-31, not isolated to `aic`).
+`AicClient::get` retries a `502`/`503`/`504` twice (250 ms, then 750 ms), but
+only on paths that read stored configuration or schema: `/openidm/config/…`,
+`/openidm/schema/…`, `/openidm/info/…`, `/am/json/…`, `/environment/…` and
+`/monitoring/…`, never with `_action`, and only when the URL parser sends the
+path unchanged (`/openidm/config/../endpoint/x` goes to the endpoint, so it is
+not retried). A gateway error does not say the
+request did not run, and a `GET` is not side-effect free here: a `GET` of
+`/openidm/endpoint/<name>` runs that endpoint's script, a managed record read
+runs `onRead`/`onRetrieve` hooks, and a connector read runs connector scripts.
+Those, and every write, are never retried.
+
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
