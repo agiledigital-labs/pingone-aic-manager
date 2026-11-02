@@ -88,6 +88,11 @@ export class JourneyNodes {
     ) {
       if (type === "ValidatedPasswordNode" && config.validateInput !== false)
         this.missing("ValidatedPasswordNode validateInput: true or unspecified");
+      // Measured only with passwordAttribute "password" (scripts/experiment-journey-collectors.sh).
+      if (type === "ValidatedPasswordNode" && config.passwordAttribute !== "password")
+        this.missing(
+          `ValidatedPasswordNode passwordAttribute: ${typeof config.passwordAttribute === "string" ? config.passwordAttribute : "unspecified"}`,
+        );
       const username = type === "UsernameCollectorNode";
       if (!submitted.length) {
         this.evidence.assumed(

@@ -2,6 +2,8 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
 import { JourneyConfig, JourneyEmulator, type JourneyOptions } from "../../src/journey/index.ts";
+import { listOutcomes } from "../../src/journey/engine.ts";
+import type { JsonValue } from "../../src/protocol.ts";
 import { SUCCESS_NODE_ID as SUCCESS, FAILURE_NODE_ID as FAILURE } from "../../src/aic/constants.ts";
 import { fillCallbackInputs, parseAuthenticateCallbacks } from "../../src/aic/callbacks.ts";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
@@ -436,20 +438,12 @@ it.each([
   "UsernameCollectorNode",
   "PasswordCollectorNode",
   "AttributeCollectorNode",
-  "ValidatedUsernameNode",
   "ValidatedPasswordNode",
   "IdentifyExistingUserNode",
   "CreateObjectNode",
   "PatchObjectNode",
-])("declared %s outcome uses the measured type vocabulary", async (type) => {
-  const outcome =
-    type === "CreateObjectNode"
-      ? "CREATED"
-      : type === "PatchObjectNode"
-        ? "PATCHED"
-        : type === "IdentifyExistingUserNode"
-          ? "true"
-          : "outcome";
+  "PageNode",
+])("an emulated %s refuses any declared outcome at construction", (type) => {
   const config = new JourneyConfig({
     realm: "alpha",
     trees: {
@@ -459,46 +453,87 @@ it.each([
     scripts: {},
   });
   const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
-  if (type !== "ValidatedUsernameNode") {
-    expect(
-      () => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: outcome } }),
-    ).toThrow("declared outcome for emulated node");
-    expect(
-      () => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "bogus" } }),
-    ).toThrow("declared outcome for emulated node");
-    return;
-  }
-  // Only the still-unimplemented ValidatedUsername can use the measured vocabulary.
   expect(
-    await request(
-      new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: outcome } }),
-    ),
-  ).toMatchObject({ status: 500, rawBody: "" });
-  expect(
-    await request(
-      new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "bogus" } }),
-    ),
-  ).toMatchObject({ status: 401 });
+    () => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "outcome" } }),
+  ).toThrow("declared outcome for emulated node");
 });
-it("declared Page outcome resolves its last child's stored config", async () => {
+it("declared ValidatedUsernameNode outcome is judged by its measured vocabulary", async () => {
   const config = new JourneyConfig({
     realm: "alpha",
     trees: {
-      invented: { entryNodeId: "page", nodes: { page: { nodeType: "PageNode", connections: {} } } },
+      invented: {
+        entryNodeId: "node",
+        nodes: { node: { nodeType: "ValidatedUsernameNode", connections: {} } },
+      },
     },
-    nodes: {
-      PageNode: { page: { nodes: [{ _id: "child", nodeType: "ScriptedDecisionNode" }] } },
-      ScriptedDecisionNode: { child: { outcomes: ["chosen"], script: "unused" } },
-    },
+    nodes: { ValidatedUsernameNode: { node: {} } },
     scripts: {},
   });
   const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
+  // In the vocabulary but unwired: empty 500. Outside it: 401.
   expect(
-    () => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { page: "chosen" } }),
-  ).toThrow("declared outcome for emulated node");
+    await request(
+      new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "outcome" } }),
+    ),
+  ).toMatchObject({ status: 500, rawBody: "" });
   expect(
-    () => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { page: "bogus" } }),
-  ).toThrow("declared outcome for emulated node");
+    await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "true" } })),
+  ).toMatchObject({ status: 401 });
+});
+// Doc 25 "Declared outcomes": listOutcomes per type, with a node config body.
+const stored = new JourneyConfig({
+  realm: "alpha",
+  trees: {},
+  nodes: {
+    ScriptedDecisionNode: {
+      two: { script: "unused", outcomes: ["a", "b"] },
+      one: { script: "unused", outcomes: ["true"] },
+    },
+    PasswordCollectorNode: { pass: {} },
+  },
+  scripts: {},
+});
+it.each([
+  ["UsernameCollectorNode", {}, ["outcome"]],
+  ["PasswordCollectorNode", {}, ["outcome"]],
+  ["AttributeCollectorNode", {}, ["outcome"]],
+  ["ValidatedUsernameNode", {}, ["outcome"]],
+  ["ValidatedPasswordNode", {}, ["outcome"]],
+  ["ScriptedDecisionNode", {}, []],
+  ["ScriptedDecisionNode", { outcomes: ["x", "y"] }, ["x", "y"]],
+  ["PageNode", {}, []],
+  ["PageNode", { nodes: [{ _id: "two", nodeType: "ScriptedDecisionNode" }] }, ["a", "b"]],
+  [
+    "PageNode",
+    {
+      nodes: [
+        { _id: "one", nodeType: "ScriptedDecisionNode" },
+        { _id: "pass", nodeType: "PasswordCollectorNode" },
+      ],
+    },
+    ["outcome"],
+  ],
+  [
+    "PageNode",
+    {
+      nodes: [
+        { _id: "pass", nodeType: "PasswordCollectorNode" },
+        { _id: "one", nodeType: "ScriptedDecisionNode" },
+      ],
+    },
+    ["true"],
+  ],
+  ["InnerTreeEvaluatorNode", { displayErrorOutcome: false }, ["true", "false"]],
+  ["InnerTreeEvaluatorNode", { displayErrorOutcome: true }, ["true", "false", "error"]],
+  ["IdentifyExistingUserNode", {}, ["true", "false"]],
+  ["CreateObjectNode", {}, ["CREATED", "FAILURE"]],
+  ["PatchObjectNode", {}, ["PATCHED", "FAILURE"]],
+  ["InventedNode", {}, undefined],
+] as const)("listOutcomes %s %j is %j", (type, body, expected) => {
+  const outcomes = listOutcomes(stored, type, structuredClone(body) as never, (name) => {
+    throw new Error(name);
+  });
+  expect(outcomes === undefined ? undefined : [...outcomes]).toEqual(expected);
 });
 it("existingSession is undefined without a cookie and a flat caller-supplied map with one", async () => {
   const emu = make(
@@ -797,4 +832,136 @@ it("unknown callback types and altered snapshot callback metadata remain missing
     status: 501,
     emulation: { missing: ["authenticate callback submission differs from snapshot"] },
   });
+});
+function chain(sources: string[], options: JourneyOptions = {}) {
+  const ids = sources.map((_, index) => `n${index}`);
+  return new JourneyEmulator(
+    new JourneyConfig({
+      realm: "alpha",
+      trees: {
+        invented: {
+          entryNodeId: "n0",
+          nodes: Object.fromEntries(
+            ids.map((id, index) => [
+              id,
+              {
+                nodeType: "ScriptedDecisionNode",
+                connections: { next: ids[index + 1] ?? SUCCESS, true: SUCCESS },
+              },
+            ]),
+          ),
+        },
+      },
+      nodes: {
+        ScriptedDecisionNode: Object.fromEntries(
+          ids.map((id) => [id, { script: id, outcomes: ["next", "true"] }]),
+        ),
+      },
+      scripts: Object.fromEntries(ids.map((id, index) => [id, script(sources[index] ?? "")])),
+    }),
+    runner,
+    new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+    options,
+  );
+}
+const SUCCEED = "nodeState.putShared('username','invented');action.goTo('true');";
+it.each([
+  [
+    "replaced bridge closure (review repro)",
+    "httpClient.send.__parent__.host=function(){return '{\"result\":null}';};",
+    "action.putSessionProperty('probe','value');",
+    "action.putSessionProperty",
+  ],
+  [
+    "replaced global stub hook",
+    "__rhinoLocalNotMocked=function(){return null;};",
+    "emailService.send('a','b','c');",
+    "emailService.send",
+  ],
+  [
+    "replaced guarded original",
+    "var f=nodeState.putShared;for(var p=f.__parent__;p;p=p.__parent__){if('original' in p){p.original=function(){return nodeState;};}}",
+    "nodeState.putShared('x',undefined);",
+    "nodeState.putShared: Error: rhino-local: nodeState.putShared: value is undefined",
+  ],
+])("author code cannot answer a refused call: %s", async (_name, attack, call, cause) => {
+  expectEmulationFailure(cause);
+  const result = await request(make(attack + call + SUCCEED));
+  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it.each([
+  ["cyclic object", "var o={};o.self=o;nodeState.putShared('x',o);", "cyclic object at x.self"],
+  ["function", "nodeState.putShared('x',{f:function(){return 42;}});", "function at x.f"],
+  ["NaN", "nodeState.putShared('x',NaN);", "non-finite or negative-zero number at x"],
+  ["nested undefined", "nodeState.putShared('x',{u:undefined});", "undefined at x.u"],
+  [
+    "transient Infinity",
+    "nodeState.putTransient('x',[1,Infinity]);",
+    "non-finite or negative-zero number at x[1]",
+  ],
+])("unmeasured state shape is missing, not rewritten or a 401: %s", async (_name, store, shape) => {
+  const bucket = store.includes("putTransient") ? "transient" : "shared";
+  const cause = `journey state ${bucket} value: ${shape}`;
+  expectEmulationFailure(cause);
+  const result = await request(
+    chain([
+      store + "action.goTo('next');",
+      "callbacksBuilder.hiddenValueCallback('state',JSON.stringify({value:nodeState.get('x')}));",
+    ]),
+  );
+  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("a cyclic value on the way to Success is missing, not a 401", async () => {
+  const cause = "journey state shared value: cyclic object at x.self";
+  expectEmulationFailure(cause);
+  expect(
+    await request(make("var o={};o.self=o;nodeState.putShared('x',o);" + SUCCEED)),
+  ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("state read back through nodeState wrappers stays representable", async () => {
+  const result = await request(
+    chain([
+      "nodeState.mergeShared({objectAttributes:{x:'v'}});var a=nodeState.get('objectAttributes');a.put('y','w');nodeState.putShared('objectAttributes',a);action.goTo('next');",
+      "callbacksBuilder.hiddenValueCallback('state',JSON.stringify(nodeState.get('objectAttributes')));",
+    ]),
+  );
+  expect(result.status).toBe(200);
+});
+it("assumptions survive callback round trips into the final result", async () => {
+  const emu = new JourneyEmulator(
+    new JourneyConfig({
+      realm: "alpha",
+      trees: {
+        x: {
+          entryNodeId: "risk",
+          nodes: {
+            risk: { nodeType: "ExternalRiskNode", connections: { allow: "user" } },
+            user: { nodeType: "UsernameCollectorNode", connections: { outcome: SUCCESS } },
+          },
+        },
+      },
+      nodes: { ExternalRiskNode: { risk: {} }, UsernameCollectorNode: { user: {} } },
+      scripts: {},
+    }),
+    runner,
+    new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+    { declaredOutcomes: { risk: "allow" } },
+  );
+  const call = (body: JsonValue) =>
+    emu.request({
+      method: "POST",
+      path: "authenticate",
+      query: { authIndexType: "service", authIndexValue: "x" },
+      body,
+    });
+  const declared = { kind: "assumed", behavior: "declared by test: x/risk -> allow" };
+  const first = await call({});
+  expect(first.provenance).toContainEqual(declared);
+  const done = await call(
+    JSON.parse(
+      fillCallbackInputs(first.body, [{ type: "NameCallback", value: "invented" }], "provenance"),
+    ),
+  );
+  expect(done).toMatchObject({ status: 200, body: { tokenId: expect.any(String) } });
+  expect(done.provenance).toContainEqual(declared);
 });

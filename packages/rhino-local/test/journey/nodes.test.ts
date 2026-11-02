@@ -146,7 +146,7 @@ it("a declared outcome cannot bypass an emulated Page", () => {
   ).toThrow("declared outcome for emulated node");
 });
 it.each([false, true])(
-  "Page no-callback script executes once per submit and last goTo wins: last=%s",
+  "Page no-callback script is not run at discovery, runs once on submit, last goTo wins: last=%s",
   async (last) => {
     const input = config(
       last ? ["user", "pass", "child"] : ["user", "child", "pass"],
@@ -159,14 +159,132 @@ it.each([false, true])(
     ).toEqual(["NameCallback", "PasswordCallback"]);
     const next = await request(emu, answer(first.body, ["invented", "secret"]));
     expect(next.status).toBe(200);
+    // Doc 25: not shown on the first response; on submission it runs once.
     expect(dump(next.body)).toMatchObject({
-      passes: 2,
+      passes: 1,
       seen: 0,
       username: "invented",
       password: "secret",
     });
   },
 );
+const PAGE_SPECULATION =
+  "PageNode discovery classifies a scripted child by an isolated run (copied state, forked IDM, no HTTP); only a child that queues callbacks is then executed";
+function widgets() {
+  return new IdmEmulator(
+    new IdmConfig({
+      managed: { objects: [{ name: "widget", schema: { properties: { x: { type: "string" } } } }] },
+    }),
+    runner,
+  );
+}
+async function widgetCount(idm: IdmEmulator): Promise<number> {
+  const listed = await idm.request({
+    method: "GET",
+    path: "managed/widget",
+    query: { _queryFilter: "true" },
+  });
+  return (listed.body as { result: unknown[] }).result.length;
+}
+it("Page discovery does not commit a callback-free child's host write", async () => {
+  const idm = widgets();
+  const emu = make(
+    config(
+      ["user", "child"],
+      "openidm.create('managed/widget',null,{x:'created'});action.goTo('chosen');",
+    ),
+    {},
+    idm,
+  );
+  const first = await request(emu);
+  expect(first.status).toBe(200);
+  expect(await widgetCount(idm)).toBe(0);
+  const next = await request(emu, answer(first.body, ["invented"]));
+  expect(next.status).toBe(200);
+  expect(await widgetCount(idm)).toBe(1);
+});
+it("Page discovery runs a callback-emitting child for real exactly once", async () => {
+  const idm = widgets();
+  const emu = make(
+    config(
+      ["user", "child"],
+      "if(callbacks.isEmpty()){openidm.create('managed/widget',null,{x:'created'});callbacksBuilder.nameCallback('Own');}else{action.goTo('chosen');}",
+    ),
+    {},
+    idm,
+  );
+  const first = await request(emu);
+  expect((first.body as { callbacks: { type: string }[] }).callbacks.map((cb) => cb.type)).toEqual([
+    "NameCallback",
+    "NameCallback",
+  ]);
+  expect(await widgetCount(idm)).toBe(1);
+  expect(first.provenance).toContainEqual({
+    kind: "assumed",
+    behavior: PAGE_SPECULATION,
+  });
+  const next = await request(emu, answer(first.body, ["invented", "own"]));
+  expect(next.status).toBe(200);
+  expect(await widgetCount(idm)).toBe(1);
+});
+it("Page discovery reads state without failing the initial POST", async () => {
+  const emu = make(
+    config(
+      ["user", "child"],
+      "nodeState.putShared('seen',{username:nodeState.get('username')});action.goTo('chosen');",
+    ),
+  );
+  const first = await request(emu);
+  expect(first.status).toBe(200);
+  const next = await request(emu, answer(first.body, ["invented"]));
+  expect(dump(next.body)).toMatchObject({ seen: { username: "invented" } });
+});
+it("Page discovery of a child that throws without username is missing, not a 401", async () => {
+  const cause = "PageNode scripted child that throws before its callbacks are known";
+  expectEmulationFailure(cause);
+  const emu = make(
+    config(
+      ["user", "child"],
+      "if(nodeState.get('username')===null){throw new Error('username required');}action.goTo('chosen');",
+    ),
+  );
+  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("Page discovery refuses HTTP before a child's callbacks are known", async () => {
+  const cause = "PageNode scripted child httpClient.send before its callbacks are known";
+  expectEmulationFailure(cause);
+  let calls = 0;
+  const emu = make(
+    config(
+      ["user", "child"],
+      "httpClient.send('https://service.example.com/x',{}).get();action.goTo('chosen');",
+    ),
+    {
+      http: async () => {
+        calls += 1;
+        return { status: 200, body: {} };
+      },
+    },
+  );
+  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+  expect(calls).toBe(0);
+});
+it("Page re-sent after a scripted child ran on submission is missing", async () => {
+  const cause = "PageNode re-sent after a scripted child ran on submission";
+  expectEmulationFailure(cause);
+  const emu = make(
+    config(
+      ["user", "child"],
+      "nodeState.putShared('passes',(nodeState.get('passes')||0)+1);callbacksBuilder.nameCallback('Again');",
+    ),
+  );
+  const first = await request(emu);
+  expect(first.status).toBe(200);
+  expect(await request(emu, answer(first.body, ["invented", "own"]))).toMatchObject({
+    status: 501,
+    emulation: { missing: [cause] },
+  });
+});
 it.each(["chosen", "unwired", "undeclared"])("Page last scripted outcome %s", async (outcome) => {
   const input = config(
     ["user", "child"],
@@ -288,7 +406,7 @@ it.each([false, true])(
       AttributeCollectorNode: {
         attrs: { attributesToCollect: ["givenName", "sn"], validateInputs: false, required: true },
       },
-      ValidatedPasswordNode: { pass: { validateInput: false } },
+      ValidatedPasswordNode: { pass: { validateInput: false, passwordAttribute: "password" } },
     };
     const emu = make({ ...input, nodes }, {}, storage()),
       first = await request(emu);
@@ -372,6 +490,22 @@ it.each(["validateOnly", "policy", "password"])(
     expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
   },
 );
+it.each([
+  ["customPassword", "ValidatedPasswordNode passwordAttribute: customPassword"],
+  [undefined, "ValidatedPasswordNode passwordAttribute: unspecified"],
+])("ValidatedPasswordNode passwordAttribute %s is missing", async (attribute, cause) => {
+  expectEmulationFailure(cause);
+  const emu = make(
+    flow(
+      "ValidatedPasswordNode",
+      { validateInput: false, ...(attribute ? { passwordAttribute: attribute } : {}) },
+      "",
+    ),
+    {},
+    storage(),
+  );
+  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
 it.each(["shared", "transient", "username", "none", "wrongAttribute"])(
   "Identify user with %s source",
   async (variant) => {
