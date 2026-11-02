@@ -1102,6 +1102,32 @@ Sync tooling should detect hooks **by value shape** (any object property with
 `type` + `source`/`file`), not by a hardcoded key list — which event keys beyond
 the six observed are accepted/fired remains an open question.
 
+**Hook bindings — there is no event variable (verified 2026-11-02).** A
+throwaway type (`alpha_hook_probe`, since deleted) carried `onCreate`,
+`onUpdate`, `postCreate` and `postUpdate` hooks that dumped their scope into a
+second type's records; one `PUT` create and one `PATCH` update fired them.
+
+- **In scope in all four:** `object`, `newObject`, `oldObject`, `request`,
+  `context`, `resourceName`, `openidm`, `logger`. **Absent:** `hook`, `event`,
+  `trigger`, `method`, `action`, `id`, `state`. The hook a script is attached to
+  _is_ the event; to share one body across hooks, pass a literal from a
+  one-line wrapper per hook.
+- `resourceName` is a string, `managed/<type>/<id>`.
+- `request` and `context` are **plain script objects, not Java objects**:
+  `request.getClass()` throws `Cannot find function getClass`. A create shows
+  `method: "create"`, `resourcePath`, `newResourceId`; a patch shows
+  `patchOperations` (whether `method` is also present on a patch was lost to
+  truncation — unmeasured).
+- **Unmeasured:** `onDelete` / `postDelete` (`aic script list` does not surface
+  them, so they could not be probed).
+- **Do not dump `context`.** It includes the HTTP context's request headers, so
+  a hook that logs or stores it writes the caller's `Authorization` bearer
+  token. The probe's sink records held one and were deleted at once.
+- A custom type created only via config (here `Terraform_lifecycle_probe`) has
+  no storage entry: `PUT` create answers **500** and `PATCH` answers `404 No
+  Such Entry … ou=<type>,ou=managed`. `aic managed object create` produces a
+  type that works.
+
 **A custom type can carry the same hook shapes as the Ping-shipped objects.**
 Verified 2026-08-15: a throwaway custom type `Terraform_lifecycle_probe` was
 inserted via the usual whole-document RMW. It accepted:

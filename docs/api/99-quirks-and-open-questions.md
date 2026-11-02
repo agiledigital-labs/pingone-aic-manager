@@ -1706,3 +1706,12 @@ sampled: journeys, scripts and ESV secret mappings listed as added or
 modified were byte-identical on both tenants. The report is the service's
 claim against some baseline that is not the live upper env. Measurement and
 the sampled table: `docs/api/23-promotion.md`.
+
+## 2026-11-02 — a managed lifecycle hook cannot ask which event it is
+
+Asked whether a lifecycle script can read its event from context. It cannot:
+no `hook`/`event`/`method` binding exists, and the hook attachment is the only
+signal. `request`/`context` are plain objects without `getClass`. Measured with
+a throwaway type; `onDelete`/`postDelete` are unmeasured. Dumping `context`
+leaks the caller's bearer token. Detail: `docs/api/10-managed-objects.md`
+("Hook bindings").
