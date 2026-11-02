@@ -269,6 +269,21 @@ it("Page discovery refuses HTTP before a child's callbacks are known", async () 
   expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
   expect(calls).toBe(0);
 });
+it("Page holding an unmeasured child type is missing before it runs", async () => {
+  const cause = "PageNode child type: CreateObjectNode";
+  expectEmulationFailure(cause);
+  const idm = widgets();
+  const input = config(["user", "make"], "");
+  const page = input.nodes.PageNode?.page as { nodes: { _id: string; nodeType: string }[] };
+  page.nodes[1] = { _id: "make", nodeType: "CreateObjectNode" };
+  const withCreate = {
+    ...input,
+    nodes: { ...input.nodes, CreateObjectNode: { make: { identityResource: "managed/widget" } } },
+  };
+  const result = await request(make(withCreate, {}, idm));
+  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+  expect(await widgetCount(idm)).toBe(0);
+});
 it("Page re-sent after a scripted child ran on submission is missing", async () => {
   const cause = "PageNode re-sent after a scripted child ran on submission";
   expectEmulationFailure(cause);
