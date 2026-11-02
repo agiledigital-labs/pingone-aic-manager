@@ -111,6 +111,24 @@ prefix was not inspected: salt, iterations and encoding are **unmeasured**.
 Only `alpha_user` was probed; do not infer `bravo_user` behavior from this.
 These are the orchestrator's tenant measurements, not local emulator runs.
 
+**Encoded password write-back.** The orchestrator's sandbox probe **p25**,
+**2026-11-02**, created two throwaway UUID `alpha_user` records and deleted both:
+
+| Internal write/call | Observed result |
+| --- | --- |
+| `openidm.update(path, null, readObject)` after changing `sn` | Stored password hash identical to the original (90 characters) |
+| `openidm.patch(path, null, [{operation: "replace", field: "password", value: hash}])` | Stored password hash identical |
+| `openidm.create(collection, secondId, {password: firstHash, ...})` | Second record's stored hash identical to the first record's; not re-hashed |
+| `openidm.matches(plain, hash)` | `false` for the original password against its own stored hash and every other pairing tried, including a hash passed as the plain argument |
+
+Thus an already encoded `{PBKDF2-HMAC-SHA256}` password can be written back
+verbatim, including to a different record; preservation is not conditional on
+matching that record's previous value. These are orchestrator-supplied tenant
+measurements, not local emulator runs. The hash body was not inspected. Acceptance
+of malformed bodies or other `{SCHEME}` prefixes remains **unmeasured**. The
+`matches` results do not establish verifier semantics: do not implement a password
+verifier, or a constant-false substitute, from this observation.
+
 The orchestrator's sandbox `script?_action=eval` probe **p21** on
 **2026-11-02** also rejected readable ids on both `alpha_user` and `bravo_user`
 with `org.forgerock.json.resource.BadRequestException: Invalid Attribute Syntax:

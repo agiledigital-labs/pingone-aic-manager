@@ -32,6 +32,8 @@ export function revision(request: RestRequest): string | undefined {
 
 export class ManagedStore {
   private cookieKey = randomBytes(32);
+  // Body syntax is unmeasured: recognize our opaque tokens by issuance, not a guessed regex.
+  private passwordTokens = new Set<string>();
   private readonly records: Map<string, Document>;
   private readonly scripts: Scripts;
   private readonly evidence: Evidence;
@@ -50,6 +52,9 @@ export class ManagedStore {
 
   /** Forks retain continuation credentials; offset cookies use each fork's current rows. */
   inheritCookies(parent: ManagedStore): void { this.cookieKey = Buffer.from(parent.cookieKey); }
+
+  /** Token validity knowledge is shared by a fork family; record state remains isolated. */
+  inheritPasswordTokens(parent: ManagedStore): void { this.passwordTokens = parent.passwordTokens; }
 
   async dispatch(type: ManagedType, id: string | undefined, op: Operation): Promise<Reply> {
     const { request } = op;
@@ -150,14 +155,20 @@ export class ManagedStore {
     return this.projectVisible(type, object, selectors, op);
   }
 
-  private encodePassword(type: ManagedType, object: Document, previous: Document | null): void {
+  private encodePassword(type: ManagedType, object: Document): void {
     if (!Object.hasOwn(object, "password")) return;
     if (type.name === "bravo_user") missing(this.evidence, "bravo_user password semantics");
     if (type.name !== "alpha_user") return;
     if (typeof object.password !== "string") missing(this.evidence, "alpha_user password without measured string value");
-    this.evidence.assumed("opaque password body uses 70 hex characters from a randomly keyed HMAC-SHA512; commit timing and unchanged-token retention are unmeasured");
-    if (previous && object.password === previous.password) return;
+    this.evidence.assumed("opaque password body uses 70 hex characters from a randomly keyed HMAC-SHA512; commit timing is unmeasured");
+    if (object.password.startsWith("{PBKDF2-HMAC-SHA256}")) {
+      if (!this.passwordTokens.has(object.password)) missing(this.evidence, "alpha_user password prefixed body is unmeasured");
+      this.evidence.measured("alpha_user encoded password survives update, password PATCH and cross-record create verbatim", "orchestrator p25, 2026-11-02; docs/api/10-managed-objects.md");
+      return;
+    }
+    if (/^\{[^}]*\}/.test(object.password)) missing(this.evidence, "alpha_user password scheme is unmeasured");
     object.password = "{PBKDF2-HMAC-SHA256}" + createHmac("sha512", randomBytes(32)).update(object.password).digest("hex").slice(0, 70);
+    this.passwordTokens.add(object.password);
   }
 
   private projectVisible(type: ManagedType, object: Document, selectors: string[], op: Operation): Document {
@@ -169,7 +180,7 @@ export class ManagedStore {
         if (typeof result.password !== "string") missing(this.evidence, "alpha_user password without measured string value");
         if (!result.password.startsWith("{PBKDF2-HMAC-SHA256}")) missing(this.evidence, "alpha_user password representation after retrieval hooks");
         this.evidence.measured("alpha_user internal read/query exposes encoded password prefix", "orchestrator p22/p23, 2026-11-02; docs/api/10-managed-objects.md");
-        this.evidence.assumed("opaque password body uses 70 hex characters from a randomly keyed HMAC-SHA512; commit timing and unchanged-token retention are unmeasured");
+        this.evidence.assumed("opaque password body uses 70 hex characters from a randomly keyed HMAC-SHA512; commit timing is unmeasured");
       }
     } else {
       this.evidence.measured("alpha_user HTTP GET omits password", "docs/api/10-managed-objects.md");
@@ -179,9 +190,21 @@ export class ManagedStore {
     return result;
   }
 
+  private patch(type: ManagedType, object: Document, op: Operation): Document {
+    const operations = op.request.body;
+    const normalized = type.name === "alpha_user" && op.internal && Array.isArray(operations) ? operations.map((raw) => {
+      if (raw && typeof raw === "object" && !Array.isArray(raw) && raw.operation === "replace" && raw.field === "password") {
+        this.evidence.measured("alpha_user internal password PATCH accepts bare password field", "orchestrator p25, 2026-11-02; docs/api/10-managed-objects.md");
+        return { ...raw, field: "/password" };
+      }
+      return raw;
+    }) : operations;
+    return applyPatch(object, normalized, this.evidence);
+  }
+
   private async prepare(type: ManagedType, id: string, op: Operation, oldObject: Document | null, method: "create" | "update"): Promise<Document> {
     const object = op.request.method === "PATCH" && oldObject ?
-      applyPatch(oldObject, op.request.body, this.evidence) : document(op.request.body);
+      this.patch(type, oldObject, op) : document(op.request.body);
     this.evidence.assumed("undeclared attribute checking applies to external and internal writes");
     const undeclared = Object.keys(object).filter((key) => key !== "_id" && key !== "_rev" && !Object.hasOwn(type.schema.properties, key));
     if (undeclared.length) {
@@ -234,7 +257,7 @@ export class ManagedStore {
     this.evidence.measured("server-assigned managed ids are UUIDs", "docs/api/10-managed-objects.md");
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
     this.evidence.assumed("recreated records restart revision at 0");
-    this.encodePassword(type, object, null);
+    this.encodePassword(type, object);
     const record = this.materialize(type, { ...object, _id: id, _rev: "0" });
     this.records.set(this.key(type, id), structuredClone(record));
     await this.afterWrite(type, id, op, record, null, "create");
@@ -252,8 +275,9 @@ export class ManagedStore {
     }
     this.checkRevision(oldObject, op.request);
     if (op.request.method === "PATCH") {
-      const patched = applyPatch(oldObject, op.request.body, this.evidence);
+      const patched = this.patch(type, oldObject, op);
       if (isDeepStrictEqual(oldObject, patched)) {
+        this.encodePassword(type, patched);
         this.evidence.measured("no-change PATCH only runs read hooks");
         return { status: 200, body: project(oldObject, fields(op.request.query?._fields), this.evidence) };
       }
@@ -264,7 +288,7 @@ export class ManagedStore {
       throw new IdmError(412, "Revision mismatch");
     }
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
-    this.encodePassword(type, object, oldObject);
+    this.encodePassword(type, object);
     const record = this.materialize(type, { ...object, _id: id, _rev: String(Number(oldObject._rev) + 1) });
     this.records.set(this.key(type, id), structuredClone(record));
     await this.afterWrite(type, id, op, record, oldObject, "update");
