@@ -11,12 +11,15 @@ function freeze(value: unknown): void {
 export class IdmConfig {
   readonly managed: ManagedConfig;
   readonly endpoints: Readonly<Record<string, EndpointConfig>>;
+  /** A supplied map, including {}, establishes namespace coverage; omission does not. */
+  readonly endpointsSupplied: boolean;
   private readonly types: ReadonlyMap<string, ManagedType>;
 
   constructor(input: ConfigInput) {
     const snapshot = structuredClone(input);
     freeze(snapshot);
     this.managed = snapshot.managed;
+    this.endpointsSupplied = snapshot.endpoints !== undefined;
     this.endpoints = snapshot.endpoints ?? Object.freeze({});
     const types = new Map<string, ManagedType>();
     for (const type of this.managed.objects) {

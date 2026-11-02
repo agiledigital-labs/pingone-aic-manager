@@ -247,6 +247,10 @@ Read from IDM's bytecode while preparing these probes, and **not** verified live
 - A `PUT` whose content equals the stored record runs no hooks and does not bump
   `_rev`. (The `PATCH` row above is verified; the `PUT` probe was confounded by
   a `null` property failing policy.)
+- Stale-revision `PUT`/`PATCH` ordering: whether retrieval hooks run before the
+  revision precondition is checked. The emulator retains pre-read-before-check
+  ordering, consistent with the measured normal update sequence, and labels the
+  stale extension assumed; this stale case has not been measured on the tenant.
 - Object-level `onStore` sees encrypted/hashed property values, and its `value`
   binding is the copy taken before `onValidate`.
 - A throw from `onSync` fails the request after the write has committed.

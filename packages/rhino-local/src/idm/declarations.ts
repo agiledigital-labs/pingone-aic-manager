@@ -20,7 +20,12 @@ export function validateDeclarations(config: IdmConfig, evidence: Evidence): voi
   };
   const matches = (value: unknown, declaration: Record<string, unknown>): boolean => {
     if (declaration.type === "array") return Array.isArray(value) && (!isDocument(declaration.items) || value.every((item) => matches(item, declaration.items as Record<string, unknown>)));
-    if (declaration.type === "object") return isDocument(value);
+    if (declaration.type === "object") {
+      if (!isDocument(value)) return false;
+      const properties = declaration.properties;
+      return !isDocument(properties) || Object.entries(value).every(([name, child]) =>
+        !Object.hasOwn(properties, name) || (isDocument(properties[name]) && matches(child, properties[name] as Record<string, unknown>)));
+    }
     if (declaration.type === "number") return typeof value === "number" && Number.isFinite(value);
     return ["string", "boolean"].includes(String(declaration.type)) && typeof value === declaration.type;
   };

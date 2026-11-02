@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 import { IdmConfig, IdmEmulator, type Document } from "../../src/idm/index.ts";
 import { RhinoRunner } from "../../src/runner.ts";
-import { emulator } from "./fixtures.ts";
+import { emulator, simple } from "./fixtures.ts";
 let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
@@ -10,7 +10,7 @@ const routes = ["system/hr/account/123", "repo/internal/user/123", "config/sync"
 it.each(routes)("Astra #1 route knowledge determines the outcome for read %s", async (path) => {
   const knownAbsent = path.startsWith("managed/notConfigured") || path === "endpoint/notConfigured";
   if (!knownAbsent) expectEmulationFailure(`resource route: ${path}`);
-  const result = await runner.eval({ engine: "idm", source: `(function(){try { return openidm.read(${JSON.stringify(path)}); } catch(e) {} finally { 42; }})()` }, { onCall: emulator(runner).onCall });
+  const result = await runner.eval({ engine: "idm", source: `(function(){try { return openidm.read(${JSON.stringify(path)}); } catch(e) {} finally { 42; }})()` }, { onCall: new IdmEmulator(new IdmConfig({ managed: { objects: [simple] }, endpoints: {} }), runner).onCall });
   if (knownAbsent) expect(result).toMatchObject({ outcome: "ok", value: null });
   else {
     expect(result.outcome).not.toBe("ok");
