@@ -124,11 +124,22 @@ final class IdmRuntime {
       if (names != null) for (String name : names) if (!absent.contains(name)) absent.add(name);
     }
     if (Boolean.TRUE.equals(job.get("reportMissing")) || !absent.isEmpty()) response.put("missing", absent);
+    java.util.Set<String> measurements = new java.util.TreeSet<String>();
+    java.util.Set<String> assumptions = new java.util.TreeSet<String>();
     if (factory.usedSpawn) {
-      response.put("measured", java.util.Collections.singletonList("spawn child settings and throwing-child join (orchestrator p20, 2026-11-02)"));
+      measurements.add("spawn child settings and throwing-child join (orchestrator p20, 2026-11-02)");
       runtime.assumed.add("spawn uses harness observer threshold 1000 and a custom context factory for deadlines");
     }
-    if (runtime != null && !runtime.assumed.isEmpty()) response.put("assumed", new ArrayList<String>(runtime.assumed));
+    if (runtime != null) assumptions.addAll(runtime.assumed);
+    java.util.List<Object> hostEvidence = calls == null ? new ArrayList<Object>() : calls.evidenceSnapshot();
+    if (!hostEvidence.isEmpty()) response.put("provenance", hostEvidence);
+    for (Object raw : hostEvidence) {
+      Map<String, Object> entry = Json.asObject(raw, "host evidence");
+      if ("assumed".equals(entry.get("kind"))) assumptions.add(Json.optionalString(entry, "behavior"));
+      if ("measured".equals(entry.get("kind"))) measurements.add(Json.optionalString(entry, "behavior"));
+    }
+    if (!assumptions.isEmpty()) response.put("assumed", new ArrayList<String>(assumptions));
+    if (!measurements.isEmpty()) response.put("measured", new ArrayList<String>(measurements));
     Map<String, Object> serialized = Json.asObject(IdmValues.wireValue(response), "response");
     if (Boolean.TRUE.equals(job.get("internalValues"))) {
       if ("ok".equals(response.get("outcome"))) serialized.put("internalValue", internalResult);

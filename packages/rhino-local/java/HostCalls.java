@@ -17,6 +17,33 @@ public final class HostCalls {
   private final IdmContextFactory factory;
   IdmValues values;
   private int sequence;
+  private final java.util.SortedMap<String, Map<String, Object>> evidence = new java.util.TreeMap<String, Map<String, Object>>();
+  private synchronized void collectEvidence(Object raw) {
+    if (raw == null) return;
+    try {
+      if (!(raw instanceof java.util.List)) throw new IllegalArgumentException("expected array");
+      java.util.List<String> absent = new java.util.ArrayList<String>();
+      for (Object item : (java.util.List<?>) raw) {
+        Map<String, Object> entry = Json.asObject(item, "host evidence");
+        String kind = Json.optionalString(entry, "kind"), behavior = Json.optionalString(entry, "behavior");
+        String source = Json.optionalString(entry, "source");
+        if (!("measured".equals(kind) || "assumed".equals(kind) || "missing".equals(kind)) || behavior == null) throw new IllegalArgumentException("expected evidence kind/behavior");
+        String key = Json.stringify(java.util.Arrays.asList(kind, behavior, source));
+        evidence.put(key, new LinkedHashMap<String, Object>(entry));
+        if ("missing".equals(kind) && !absent.contains(behavior)) absent.add(behavior);
+      }
+      // Even an adapter that returns a failed REST body's JSON cannot demote a
+      // missing record to tenant data merely by ignoring the result status.
+      if (!absent.isEmpty()) {
+        EmulationFailure error = new EmulationFailure("missing", "Missing IDM behavior: " + String.join(", ", absent));
+        error.info.put("missing", absent);
+        throw fail(error);
+      }
+    } catch (RuntimeException e) {
+      throw fail(new EmulationFailure("protocol", "rhino-local: invalid host evidence: " + e.getMessage()));
+    }
+  }
+  synchronized java.util.List<Object> evidenceSnapshot() { return new java.util.ArrayList<Object>(evidence.values()); }
   final java.util.Set<Integer> unanswered = new java.util.concurrent.ConcurrentSkipListSet<Integer>();
   EmulationFailure fail(EmulationFailure error) {
     return factory.fail(error);
@@ -53,6 +80,7 @@ public final class HostCalls {
       long remaining = factory.remainingMillis();
       Map<String, Object> reply = remaining == 0 ? future.get() : future.get(remaining, TimeUnit.MILLISECONDS);
       unanswered.remove(seq); // Authoritative: this worker consumed the reply, not merely received stdin.
+      collectEvidence(reply.get("provenance"));
       if (reply.get("error") != null) {
         Map<String, Object> error = Json.asObject(reply.get("error"), "host error");
         java.util.List<String> absent = Json.optionalStringList(error, "missing");
