@@ -11,10 +11,13 @@ const supported = new Set(["type", "properties", "items", "default", "required",
 export function checkCapabilities(type: ManagedType, writing: boolean, evidence: Evidence, hasPolicy: boolean): void {
   const visit = (config: Record<string, unknown>, path: string): void => {
     if (config.type === "relationship") missing(evidence, `managed relationship: ${path}`);
+    if (Object.hasOwn(config, "type") && (typeof config.type !== "string" || !["string", "number", "boolean", "object", "array"].includes(config.type))) {
+      missing(evidence, `property behavior type: ${path}`);
+    }
     for (const key of Object.keys(config)) {
       if (["encryption", "secureHash"].includes(key) && !writing) continue;
       if (writing && !hasPolicy && ["enum", "policies", "required"].includes(key) &&
-          (!Array.isArray(config[key]) || (config[key] as unknown[]).length > 0)) {
+          (key !== "required" || !Array.isArray(config[key]) || (config[key] as unknown[]).length > 0)) {
         missing(evidence, `schema policy ${key}: ${path}`);
       }
       if (supported.has(key)) continue;

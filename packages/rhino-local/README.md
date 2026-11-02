@@ -884,7 +884,7 @@ except on measured `alpha_user` and `bravo_user`, which require UUID syntax.
 
 Schema capability checks fail closed before repository work. Writes with
 `encryption` or `secureHash`, and reads/writes with `isVirtual`,
-`returnByDefault`, `viewable`, `userEditable`, `scope` or unknown declarations
+`returnByDefault`, `viewable`, `userEditable`, `scope`, unknown types or declarations
 are missing until implemented and measured. Checks include nested properties and
 array items; they conservatively refuse the declared capability even if that
 request supplies no value. Relationships remain missing. `searchable` is the
