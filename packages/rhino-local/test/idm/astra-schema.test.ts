@@ -38,15 +38,15 @@ it.each(["isVirtual", "returnByDefault", "viewable", "scope"])("Astra #3 read re
   const result = await runner.eval({ engine: "idm", source: "try { openidm.query('managed/widget',{_queryFilter:'true'}); } catch(e) {} 42;" }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
 });
-it("Astra #3 alpha_user GET and query already omit write-only password", async () => {
+it("Astra #3 alpha_user internal read/query expose encoded password while HTTP omits it", async () => {
   const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string" }, mail: { type: "string" } } } }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: `
     var r=openidm.create('managed/alpha_user',null,{password:'secret',mail:'Mixed@Example.com'});
     var read=openidm.read('managed/alpha_user/'+r._id);
     var row=openidm.query('managed/alpha_user',{_queryFilter:'true'}).result[0];
-    ({readHas:'password' in read,queryHas:'password' in row,mail:read.mail});
+    ({readHas:'password' in read,queryHas:'password' in row,mail:read.mail,password:read.password});
   ` }, { onCall: emu.onCall });
-  expect(result).toMatchObject({ outcome: "ok", value: { readHas: false, queryHas: false, mail: "Mixed@Example.com" } });
+  expect(result).toMatchObject({ outcome: "ok", value: { readHas: true, queryHas: true, mail: "Mixed@Example.com", password: expect.stringMatching(/^\{PBKDF2-HMAC-SHA256\}/) } });
 });
 
 it.each(["enum", "policies", "required"])("Astra #3 declared %s policy cannot silently pass without its evaluator", async (key) => {
