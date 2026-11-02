@@ -146,7 +146,34 @@ with the generic 401. Patch Object wrote nothing new into state.
 
 ## Attribute Collector
 
-Not yet measured.
+Measured 2026-11-02 with `scripts/experiment-journey-collectors.sh`. Variant
+`ac`: a lone `AttributeCollectorNode` collecting `givenName`, `sn`, `mail`
+(`validateInputs: false`, `required: false`). Variant `page`: a Page of
+`ValidatedUsernameNode` (`validateInput: true`), the same collector with
+`validateInputs: true, required: true`, and `ValidatedPasswordNode`
+(`validateInput: false`), submitted first with `mail` empty and then complete.
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Outcomes | `listOutcomes`: `["outcome"]` (also `ValidatedUsernameNode`, `ValidatedPasswordNode`) | — |
+| Callbacks | One `StringAttributeInputCallback` per attribute, in `attributesToCollect` order. Outputs: `name` (the attribute), `prompt` (the schema title: `First Name`, `Last Name`, `Email Address`), `required`, `policies`, `failedPolicies`, `validateOnly: false`, `value: ""`. Inputs: `IDTokenN` **and `IDTokenNvalidateOnly`** | — |
+| `policies` output | `{}` with `validateInputs: false`; with `true`, a JSON object holding the attribute's IDM policy (`policyRequirements: ["REQUIRED","VALID_TYPE", …]`, `policies`, `fallbackPolicies: null`, `name`) | The flag is the only change between the variants |
+| `required` output | Mirrors the node's `required` flag | Same |
+| State written | **Shared** `objectAttributes = {givenName, sn, mail}`, nothing at top level (`nodeState.get("mail")` is `null`) | Present after the dump's round trip |
+| A required attribute left empty | The whole page is **sent again**, with every submitted value echoed in its callback's `value` output — and `failedPolicies` on `mail` still `[]`; no message says why | The next submission, differing only in a filled `mail`, left the page |
+| `ValidatedUsernameNode` | Emits `ValidatedCreateUsernameCallback` (outputs `policies`, `failedPolicies`, `validateOnly`, `prompt: "Username"`; no `name`). An empty submission came back with `failedPolicies` naming `REQUIRED` and `MIN_LENGTH`. Writes **shared** `username` and shared `objectAttributes.userName` | — |
+| `ValidatedPasswordNode` with `validateInput: false` | Emits a plain **`PasswordCallback`** (`prompt: "Password"`), not `ValidatedCreatePasswordCallback`. Writes **transient** `password` and a **transient** `objectAttributes = {password}` | Both gone after the dump's round trip, while `username` survived |
+
+**`objectAttributes` lives in both channels at once, and `nodeState.get` does
+not merge them.** After that page, `nodeState.get("objectAttributes")` returned
+the transient map alone — `{password}` — and only after the round trip dropped
+it did the same call return the shared `{mail, givenName, sn, userName}`. A
+node that reads `objectAttributes` sees one map or the other, never their
+union. (Create Object and Patch Object above read transient-only and
+shared-only maps; a split map was not fed to them.)
+
+**Not measured:** `ValidatedPasswordNode` with `validateInput: true`; whether
+`IDTokenNvalidateOnly: true` suppresses the write.
 
 ## Transient state across a callback-free boundary
 
