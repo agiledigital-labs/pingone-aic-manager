@@ -216,7 +216,11 @@ for (var i = 0; i < keys.length; i++) {
     gs = gs === null || gs === "n/a" ? gs : "len=" + String(gs).length;
     gt = gt === null || gt === "n/a" ? gt : "len=" + String(gt).length;
   }
-  out[k] = { get: String(g), shared: String(gs), transient: String(gt) };
+  // a map holding a password (objectAttributes) prints it: mask the value
+  var mask = function (v) {
+    return String(v).replace(/(password"?\s*[:=]\s*"?)[^",}]*/gi, "$1<masked>");
+  };
+  out[k] = { get: mask(g), shared: mask(gs), transient: mask(gt) };
 }
 var ks = [];
 var it = nodeState.keys().iterator();
@@ -247,7 +251,9 @@ def show(label, resp):
             if c["type"] == "HiddenValueCallback":
                 log("   ", c["output"].get("id"), "=", c["output"].get("value"))
             else:
-                log("   ", json.dumps(c))
+                o = {k: (v if len(json.dumps(v)) < 160 else json.dumps(v)[:160] + "…")
+                     for k, v in c["output"].items()}
+                log("   ", json.dumps({"type": c["type"], "output": o, "input": c["input"]}))
         rest = {k: v for k, v in safe(body).items() if k != "callbacks"}
         log("    other keys:", json.dumps(rest))
     else:
