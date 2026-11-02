@@ -230,20 +230,6 @@ restore command and does not restore relationship records.
 
 ## Promotion: capture UAT's links, promote, restore UAT
 
-> **Stop: this runbook did not complete on UAT (2026-11-02).** In a measured
-> run on throwaway types, the promotion delivered the mapping and hid UAT's
-> links, but UAT then could not search through the mapped column, so
-> `restore-links` refused (safely, writing nothing) and the links stayed
-> hidden. Do not run it on a real pair until
-> [Q18](api/99-quirks-and-open-questions.md) is resolved. Before any
-> promotion that carries a conversion, run the read-only check below on a
-> pair the console already mapped in that environment, and keep the capture
-> file: it is the only copy of the hidden links.
->
-> ```sh
-> aic managed relationship verify <object>.<field> --tenant uat
-> ```
-
 Promotion carries `repo.ds` as a **whole document** (measured 2026-11-02):
 the upper environment ends up byte-equal to the lower one, and a mapping only
 the upper has is deleted. **Records are never promoted**, so a promoted
