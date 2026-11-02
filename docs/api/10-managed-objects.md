@@ -75,7 +75,7 @@ deployment without further validation.
 The maintainer measured two fixture-relevant differences on the sandbox on
 2026-09-14:
 
-- `managed/alpha_user.password` is write-only. A create containing `password`
+- `managed/alpha_user.password` is write-only over HTTP. A create containing `password`
   returned 201 and produced a readable record, but the subsequent GET omitted
   `password`; teardown then deleted the record. A control retaining mixed-case
   `mail` without `password` round-tripped exactly. No other field has been
@@ -85,6 +85,22 @@ The maintainer measured two fixture-relevant differences on the sandbox on
   `Invalid Attribute Syntax`, while `managed/alpha_role` accepted the readable
   id `rl-fix-role-01`. Do not generalize the user constraint to every managed
   object type.
+
+**Internal calls differ from HTTP.** Orchestrator-supplied sandbox probes
+**p22/p23**, **2026-11-02**, created and deleted UUID-named throwaway
+`alpha_user` records through `script?_action=eval`:
+
+| Read surface | `password` result |
+| --- | --- |
+| HTTP GET (2026-09-14 measurement above) | Omitted |
+| `openidm.read(path)`, `read(path, null, ["password"])`, `read(path, null, ["*"])` | Present, string |
+| `openidm.query(collection, {_queryFilter: ...})`, also with `_fields: "password"` | Present on returned row, string |
+
+The internal string was **90 characters**, began **`{PBKDF2-HMAC-SHA256}`**,
+and differed from the submitted 27-character password. The body after the
+prefix was not inspected: salt, iterations and encoding are **unmeasured**.
+Only `alpha_user` was probed; do not infer `bravo_user` behavior from this.
+These are the orchestrator's tenant measurements, not local emulator runs.
 
 The orchestrator's sandbox `script?_action=eval` probe **p21** on
 **2026-11-02** also rejected readable ids on both `alpha_user` and `bravo_user`

@@ -138,11 +138,36 @@ export class ManagedStore {
     await this.scripts.hook(type, "onRetrieve", invocation);
     await this.scripts.properties(type, "onRetrieve", invocation, selectors);
     if (readHook) await this.scripts.hook(type, "onRead", invocation);
-    if (type.name === "alpha_user") {
-      this.evidence.measured("alpha_user password is write-only", "docs/api/10-managed-objects.md");
-      delete object.password;
+    return this.projectVisible(type, object, selectors, op);
+  }
+
+  private encodePassword(type: ManagedType, object: Document, previous: Document | null): void {
+    if (!Object.hasOwn(object, "password")) return;
+    if (type.name === "bravo_user") missing(this.evidence, "bravo_user password semantics");
+    if (type.name !== "alpha_user") return;
+    if (typeof object.password !== "string") missing(this.evidence, "alpha_user password without measured string value");
+    this.evidence.assumed("opaque password body uses 70 hex characters from a randomly keyed HMAC-SHA512; commit timing and unchanged-token retention are unmeasured");
+    if (previous && object.password === previous.password) return;
+    object.password = "{PBKDF2-HMAC-SHA256}" + createHmac("sha512", randomBytes(32)).update(object.password).digest("hex").slice(0, 70);
+  }
+
+  private projectVisible(type: ManagedType, object: Document, selectors: string[], op: Operation): Document {
+    if (type.name === "bravo_user" && Object.hasOwn(object, "password")) missing(this.evidence, "bravo_user password semantics");
+    const result = project(object, selectors, this.evidence);
+    if (type.name !== "alpha_user") return result;
+    if (op.internal) {
+      if (Object.hasOwn(result, "password")) {
+        if (typeof result.password !== "string") missing(this.evidence, "alpha_user password without measured string value");
+        if (!result.password.startsWith("{PBKDF2-HMAC-SHA256}")) missing(this.evidence, "alpha_user password representation after retrieval hooks");
+        this.evidence.measured("alpha_user internal read/query exposes encoded password prefix", "orchestrator p22/p23, 2026-11-02; docs/api/10-managed-objects.md");
+        this.evidence.assumed("opaque password body uses 70 hex characters from a randomly keyed HMAC-SHA512; commit timing and unchanged-token retention are unmeasured");
+      }
+    } else {
+      this.evidence.measured("alpha_user HTTP GET omits password", "docs/api/10-managed-objects.md");
+      if (selectors.includes("password")) this.evidence.assumed("external password projection also omits the field");
+      delete result.password;
     }
-    return project(object, selectors, this.evidence);
+    return result;
   }
 
   private async prepare(type: ManagedType, id: string, op: Operation, oldObject: Document | null, method: "create" | "update"): Promise<Document> {
@@ -200,6 +225,7 @@ export class ManagedStore {
     this.evidence.measured("server-assigned managed ids are UUIDs", "docs/api/10-managed-objects.md");
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
     this.evidence.assumed("recreated records restart revision at 0");
+    this.encodePassword(type, object, null);
     const record = this.materialize(type, { ...object, _id: id, _rev: "0" });
     this.records.set(this.key(type, id), structuredClone(record));
     await this.afterWrite(type, id, op, record, null, "create");
@@ -228,6 +254,7 @@ export class ManagedStore {
       throw new IdmError(412, "Revision mismatch");
     }
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
+    this.encodePassword(type, object, oldObject);
     const record = this.materialize(type, { ...object, _id: id, _rev: String(Number(oldObject._rev) + 1) });
     this.records.set(this.key(type, id), structuredClone(record));
     await this.afterWrite(type, id, op, record, oldObject, "update");
@@ -352,8 +379,7 @@ export class ManagedStore {
     } else {
       this.evidence.measured("ordinary managed query runs no hooks");
       rows = rows.map((row) => {
-        if (type.name === "alpha_user") delete row.password;
-        return project(row, selectors, this.evidence);
+        return this.projectVisible(type, row, selectors, op);
       });
     }
     const result: Document = { result: rows, resultCount: rows.length, pagedResultsCookie: cookie,

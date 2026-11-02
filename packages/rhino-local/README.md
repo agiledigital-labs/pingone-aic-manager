@@ -892,8 +892,15 @@ measured UI/schema setting, not an index declaration. Display metadata, defaults
 and hooks are supported. Declared `enum`, `required` and `policies` require the
 explicit policy evaluator on writes; without one they are missing rather than
 silently accepted. The generic policy omission assumption remains for schemas
-without such declarations. `alpha_user.password` is omitted on read/query;
-no other type's password semantics are inferred.
+without such declarations. HTTP reads/queries omit `alpha_user.password`;
+internal calls expose a 90-character `{PBKDF2-HMAC-SHA256}`-prefixed string
+(orchestrator p22/p23, 2026-11-02). Its opaque body is assumed: 70 hex characters
+from a randomly keyed HMAC-SHA512, stored at commit and retained for unchanged
+password tokens. This does not model IDM's salt/iteration encoding or password
+verification. Commit timing, unchanged-token retention and explicit HTTP password
+projection omission are labeled assumptions. Unmeasured non-string password
+values or retrieval-hook changes to its representation are missing.
+`bravo_user.password` remains missing; no cross-type password rule is inferred.
 
 Results add `provenance: {kind, behavior, source?}[]`, deduplicated per request.
 `measured` entries cite the verified API docs; `assumed` entries identify the
