@@ -25,6 +25,13 @@ Measured with `scripts/experiment-journey-*.sh`; details and controls in
   outcome declared on a node (or page) but not connected in the tree, and
   reaching Success with no `username` in shared state. An outcome the node
   does not declare is instead the ordinary `401 Login failure`.
+- **A Page node runs its scripted children when the page is first shown**,
+  callback-free ones included, and runs them again on submit. `25-journey-runtime.md`
+  first said a callback-free child "runs once" on submission; that came from a
+  `nodeState` counter. Re-measured 2026-11-02 with an external side effect
+  (`scripts/experiment-journey-page-discovery.sh`, an `openidm.create` per
+  execution): two executions, the discovery run's state kept, its `goTo`
+  ignored, and a throw in it fails the first POST with `401`.
 
 ---
 
