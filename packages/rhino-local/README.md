@@ -996,8 +996,25 @@ its job finishes reports `missing: spawned thread outlived its job` before the
 result is published; detached-thread tenant semantics are unmeasured. Joined or
 already completed children remain supported. Detached cleanup has a 100 ms total
 bound and interrupts script observers / Java waits; daemon children cannot hold
-JVM shutdown open. A deadline-disabled parent's measured plain context is retained;
-child contexts use lifetime observers to stop script execution after job closure.
+JVM shutdown open. `spawn` with `timeoutMs: 0` is refused as uncatchable
+`missing: spawn with disabled deadline`: bytecode compiled without observer
+checks cannot gain them in a child. A deadline-disabled parent keeps its measured
+plain context when it does not spawn. With a deadline, joined children retain
+measured language 200, optimisation 9, features 13/21 off, closure visibility,
+`openidm` and throwing-child join behavior (orchestrator p20, 2026-11-02).
+The harness observer threshold 1000 and custom deadline factory are assumed
+execution controls, differing from the measured tenant child threshold 0/plain
+factory. If any child survives the bounded cleanup (for example an
+uninterruptible Java wait), that JVM is retired: subsequent evaluations receive
+an explicit protocol refusal. Close that runner and create another; shutdown
+remains available. It never accepts a new job in that contaminated JVM.
+
+Log appends and response snapshots are synchronized. Shared Java-backed binding
+maps/lists synchronize each operation and copy each container under its own
+lock for serialization. Wrapper identities remain cached per graph. Compound
+script operations such as concurrent read-modify-write remain subject to normal
+interleaving; graph-wide atomicity and thread log order are not inferred.
+Log argument snapshots at emission carry an explicit assumption label.
 
 Tests deliberately exercising an unsupported feature declare its named cause:
 

@@ -24,7 +24,7 @@ recognise a JWE. Read the fields you need by name (see `10-managed-objects.md`,
 
 ## Verified against
 
-Sandbox tenant, IDM bundles `9.0.0-20261019…`, **2026-11-01**.
+Sandbox tenant, IDM bundles `9.0.0-20261019…`, **2026-11-02** (spawn addition: orchestrator-supplied p20 evidence; other rows retain their earlier measurements).
 
 ## Engine configuration
 
@@ -38,6 +38,7 @@ Read from inside a script: IDM has no class shutter, so
 | Optimisation level          | **9** — scripts compile to JVM bytecode                                                                                                                                  | -1 (interpreted)                                                     |
 | Instruction observer        | threshold 0 — no script timeout                                                                                                                                          | every 1,000 instructions                                             |
 | Context factory             | plain `ContextFactory`; `hasFeature` true for 3, 5, 6, 14, 16, 20 only; 21 (Java map access) false; 22 throws                                                            | custom; 21 true                                                      |
+| `spawn(fn)` child           | Orchestrator sandbox probe **p20**, **2026-11-02**: language **200**, optimisation **9**, observer threshold **0**, plain `org.mozilla.javascript.ContextFactory`, features **13/21 false**, identical to parent; `eval("let v=42;v")` returns **42**, `typeof openidm` is **"object"**, parent `var` closure visible. A throwing child dies; `join(5000)` returns normally, exception not visible to parent. | Not measured |
 | Max interpreter stack depth | `Integer.MAX_VALUE`                                                                                                                                                      | 10000                                                                |
 | Wrap factory                | plain; `isJavaPrimitiveWrap()` true                                                                                                                                      |                                                                      |
 | JVM                         | JDK 21.0.12.1, `Etc/UTC`, default locale `en`                                                                                                                            | Temurin 25, `Etc/UTC`, `en-US`                                       |

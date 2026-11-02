@@ -20,7 +20,7 @@ final class IdmRuntime {
   private final Global scope;
   private final IdmValues values;
   private final HostCalls calls;
-  private final List<Object> logs = new ArrayList<Object>();
+  private final List<Object> logs = java.util.Collections.synchronizedList(new ArrayList<Object>());
   private final java.util.Set<String> missing = new java.util.concurrent.ConcurrentSkipListSet<String>();
   private final Map<String, Object> bindings;
   private final Map<String, Object> properties;
@@ -114,7 +114,7 @@ final class IdmRuntime {
       response.put("emulation", new EmulationFailure("timeout", "IDM harness timeout").info);
     }
     if (calls != null && !calls.unanswered.isEmpty()) response.put("unanswered", new ArrayList<Integer>(calls.unanswered));
-    response.put("logs", runtime == null ? new ArrayList<Object>() : runtime.logs);
+    response.put("logs", runtime == null ? new ArrayList<Object>() : runtime.logSnapshot());
     response.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : runtime.bindings);
     List<String> absent = runtime == null ? new ArrayList<String>() : new ArrayList<String>(runtime.missing);
     if (calls != null) for (String name : calls.missing) if (!absent.contains(name)) absent.add(name);
@@ -124,11 +124,15 @@ final class IdmRuntime {
       if (names != null) for (String name : names) if (!absent.contains(name)) absent.add(name);
     }
     if (Boolean.TRUE.equals(job.get("reportMissing")) || !absent.isEmpty()) response.put("missing", absent);
+    if (factory.usedSpawn) {
+      response.put("measured", java.util.Collections.singletonList("spawn child settings and throwing-child join (orchestrator p20, 2026-11-02)"));
+      runtime.assumed.add("spawn uses harness observer threshold 1000 and a custom context factory for deadlines");
+    }
     if (runtime != null && !runtime.assumed.isEmpty()) response.put("assumed", new ArrayList<String>(runtime.assumed));
     Map<String, Object> serialized = Json.asObject(IdmValues.wireValue(response), "response");
     if (Boolean.TRUE.equals(job.get("internalValues"))) {
       if ("ok".equals(response.get("outcome"))) serialized.put("internalValue", internalResult);
-      serialized.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : runtime.bindings);
+      serialized.put("bindings", runtime == null ? new LinkedHashMap<String, Object>() : IdmValues.snapshot(runtime.bindings));
     }
     return serialized;
   }
@@ -261,12 +265,19 @@ final class IdmRuntime {
 
   private static boolean nullableMap(Object value) { return value == null || value instanceof Map; }
 
+  private List<Object> logSnapshot() {
+    synchronized (logs) { return new ArrayList<Object>(logs); }
+  }
+
   private void log(String surface, String level, Object[] args) {
     String message = args.length == 0 ? "" : Context.toString(args[0]);
     List<Object> converted = new ArrayList<Object>();
-    for (Object arg : args) converted.add(IdmValues.javaValue(arg));
+    for (Object arg : args) converted.add(IdmValues.snapshot(IdmValues.javaValue(arg)));
+    if (args.length > 1) for (Object arg : converted) if (arg instanceof Map || arg instanceof List) {
+      assumed.add("logs snapshot each argument at emission; concurrent argument graphs have per-container consistency");
+    }
     for (int i = 1; i < args.length; i++) {
-      String replacement = args[i] instanceof Scriptable ? String.valueOf(IdmValues.javaValue(args[i])) : Context.toString(args[i]);
+      String replacement = args[i] instanceof Scriptable ? String.valueOf(converted.get(i)) : Context.toString(args[i]);
       int at = message.indexOf("{}");
       if (at >= 0) message = message.substring(0, at) + replacement + message.substring(at + 2);
       else if ("console".equals(surface)) message += " " + replacement;
