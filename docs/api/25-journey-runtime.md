@@ -84,11 +84,65 @@ failure node (`fail`).
 
 ## Identify Existing User
 
-Not yet measured.
+Measured 2026-11-02 with `scripts/experiment-journey-identity-nodes.sh`
+(variants `ieu-*`). A seed script wrote exactly the keys under test, then the
+node, then one dump node per outcome. One throwaway `alpha_user` existed with
+`userName` U and `mail` M. Node config `identityAttribute: "mail"`,
+`identifier: "userName"` unless stated.
+
+| Seed (state before the node) | Outcome | State after (dump) |
+| --- | --- | --- |
+| shared `objectAttributes = {mail: M}` | `true` | `username = U`, `_id = <user _id>`, `objectAttributes = {mail: M, userName: U}` — all **shared** (survived a round trip) |
+| shared `username = M`, no `objectAttributes` | `true` | `username = U` (overwritten with the `identifier` attribute's value), `_id`, shared `objectAttributes = {userName: U}` (created) |
+| shared `username = U` (the userName, not the mail) | `false` | nothing written: no `_id`, no `objectAttributes` |
+| the same, with `identityAttribute: "userName"` | `true` | as the second row — the control that the previous row failed because the lookup is on `identityAttribute` |
+| transient `objectAttributes = {mail: M}` | `true` | as the first row; the node's `objectAttributes = {userName: U}` went to **shared** (visible after the round trip, when the transient copy was gone) |
+| shared `objectAttributes.mail` and `username` both a non-existent address | `false` | nothing written |
+
+So: the lookup value is `objectAttributes[identityAttribute]` (shared or
+transient), or `username` when `objectAttributes` lacks it; it is matched
+against `identityAttribute`; on a match it writes shared `_id`, shared
+`username` = the user's `identifier` attribute, and adds
+`objectAttributes[identifier]` in shared. **Not measured:** which source wins
+when `objectAttributes[identityAttribute]` and `username` both hold different
+existing users.
+
+`listOutcomes`: `["true","false"]`.
 
 ## Create Object and Patch Object
 
-Not yet measured.
+Measured 2026-11-02 with `scripts/experiment-journey-identity-nodes.sh`
+(variants `co-*`, `po-*`). Create config `identityResource:
+"managed/alpha_user"`; Patch config the same plus `identityAttribute:
+"userName"`, `patchAsObject: false`, `ignoredFields: []`. Results were read
+back from IDM, not inferred from the outcome.
+
+### Create Object (`listOutcomes`: `["CREATED","FAILURE"]`)
+
+| Seed | Outcome | IDM | State after |
+| --- | --- | --- | --- |
+| shared `objectAttributes` with `userName`, `givenName`, `sn`, `mail` | `CREATED` | user exists | **no `_id`, no `username`** written — `keys()` was the seed's keys plus `authLevel`, `realm` |
+| the same in **transient** `objectAttributes` | `CREATED` | user exists | nothing written; `objectAttributes` gone after a round trip (it was never copied to shared) |
+| shared `objectAttributes = {userName}` only (required fields missing) | `FAILURE` | no user | nothing written |
+
+So Create Object reads `objectAttributes` through the same transient-first
+lookup as `nodeState.get`, and **does not return the new `_id` in state**. A
+journey that needs the new user's id must look it up afterwards (for example
+with Identify Existing User).
+
+### Patch Object (`listOutcomes`: `["PATCHED","FAILURE"]`)
+
+| Seed | Outcome | IDM `sn` after |
+| --- | --- | --- |
+| shared `objectAttributes = {userName: U, sn: "PatchedShared"}` | `PATCHED` | `PatchedShared` |
+| transient `objectAttributes = {userName: U, sn: "PatchedTransient"}` | `PATCHED` | `PatchedTransient` |
+| shared `username = U`, `objectAttributes = {sn: "PatchedByUsername"}` | `PATCHED` | `PatchedByUsername` — the object is found from `username` when `objectAttributes` lacks `identityAttribute` |
+| shared `_id = <user _id>`, `objectAttributes = {sn: "PatchedById"}` | `FAILURE` | unchanged — **`_id` is not used** to find the object |
+| shared `objectAttributes = {userName: "zzemu-nobody", sn}` (no such user) | **none — the journey ended `HTTP 401 {"code":401,"reason":"Unauthorized","message":"Login failure"}`** | unchanged |
+
+The last two rows are worth separating in an emulator: no identifier at all is
+the `FAILURE` outcome, but an identifier naming nobody aborts the whole journey
+with the generic 401. Patch Object wrote nothing new into state.
 
 ## Attribute Collector
 
