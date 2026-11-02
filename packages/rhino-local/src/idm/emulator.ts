@@ -134,9 +134,16 @@ export class IdmEmulator {
     return { ...value, provenance };
   }
 
+  private namedResource(resource: string): string {
+    const path = resource.replace(/^\/?(?:openidm\/)?/, "").replace(/\/$/, "");
+    // Completeness covers named resources, never the unmeasured namespace roots.
+    if (!path.split("/")[1] || path === "config/endpoint") missing(this.evidence, `resource route: ${path}`);
+    return path;
+  }
+
   private async route(op: Operation, forcedMethod?: string): Promise<Reply> {
     validateDeclarations(this.config, this.evidence);
-    const path = op.request.path.replace(/^\/?(?:openidm\/)?/, "").replace(/\/$/, "");
+    const path = this.namedResource(op.request.path);
     const parts = path.split("/");
     const recognized = new Set(["_action", "_fields", "_queryFilter", "_queryId", "_queryExpression",
       "_pageSize", "_pagedResultsOffset", "_pagedResultsCookie", "_sortKeys"]);
@@ -145,7 +152,7 @@ export class IdmEmulator {
     }
     if (parts[0] === "config") {
       if (op.request.method === "GET" && parts[1] === "endpoint" && parts.length === 3 && this.config.endpointsSupplied && !own(this.config.endpoints, parts[2] ?? "")) {
-        return this.knownAbsent(path, path, op, forcedMethod);
+        return this.knownAbsent("config/endpoint", path, path, op, forcedMethod);
       }
       if (op.request.method !== "GET") missing(this.evidence, `config writes (config is read-only): ${path}`);
       if (Object.keys(op.request.query ?? {}).length > 0) missing(this.evidence, "config read query parameters");
@@ -159,28 +166,28 @@ export class IdmEmulator {
     }
     if (parts[0] === "managed") {
       const type = this.config.managedType(parts[1] ?? "");
-      if (!type) return this.knownAbsent(path, parts.slice(0, 2).join("/"), op, forcedMethod);
+      if (!type) return this.knownAbsent("managed", path, parts.slice(0, 2).join("/"), op, forcedMethod);
       if (parts.length > 3) missing(this.evidence, "managed subresource routing");
       return this.managed.dispatch(type, parts[2], op);
     }
     if (parts[0] === "endpoint") {
       const config = own(this.config.endpoints, parts[1] ?? "");
       if (!config) {
-        return this.knownAbsent(path, parts.slice(0, 2).join("/"), op, forcedMethod);
+        return this.knownAbsent("endpoint", path, parts.slice(0, 2).join("/"), op, forcedMethod);
       }
       return endpoint(config, parts.slice(2).join("/"), op, this.scripts, this.evidence, forcedMethod);
     }
     missing(this.evidence, `resource route: ${path}`);
   }
 
-  private knownAbsent(path: string, resource: string, op: Operation, hostMethod?: string): never {
-    const namespace = resource.startsWith("managed/") ? "managed" : "endpoints";
-    if (op.request.method !== "GET" || !this.config.complete[namespace]) missing(this.evidence, `resource route: ${path}`);
-    this.evidence.assumed(`caller declared ${namespace} namespace complete`);
-    if (path.startsWith("config/endpoint/")) this.evidence.assumed("endpoint completeness also establishes config/endpoint snapshot absence");
+  private knownAbsent(namespace: "managed" | "endpoint" | "config/endpoint", path: string, resource: string, op: Operation, hostMethod?: string): never {
+    const completeness = ({ managed: "managed", endpoint: "endpoints", "config/endpoint": "endpoints" } as const)[namespace];
+    if (op.request.method !== "GET" || !this.config.complete[completeness]) missing(this.evidence, `resource route: ${path}`);
+    this.evidence.assumed(`caller declared ${completeness} namespace complete`);
+    if (namespace === "config/endpoint") this.evidence.assumed("endpoint completeness also establishes config/endpoint snapshot absence");
     if (hostMethod === "read") this.evidence.measured("unconfigured managed/endpoint names read as null internally", "orchestrator p24, 2026-11-02");
     if (hostMethod === "query") {
-      if (resource.startsWith("managed/")) this.evidence.measured("unconfigured managed query throws NotFoundException", "orchestrator p24, 2026-11-02");
+      if (namespace === "managed") this.evidence.measured("unconfigured managed query throws NotFoundException", "orchestrator p24, 2026-11-02");
       else this.evidence.assumed("unconfigured endpoint query uses the managed NotFoundException diagnostic");
     }
     if (!op.internal) this.evidence.assumed("authoritative namespace absence uses REST 404");
@@ -193,6 +200,8 @@ export class IdmEmulator {
       const args = call.args;
       const resource = args[0];
       if (typeof resource !== "string") throw invalidInput("Expected resource name");
+      // Check before create can append an id and turn a root into a named route.
+      this.namedResource(resource);
       let request: RestRequest;
       const queryAt = (index: number): Document => args[index] === null || args[index] === undefined ? {} : document(args[index]);
       const revisionHeaders = (): Record<string, string> => typeof args[1] === "string" ? { "If-Match": args[1] } : { "If-Match": "*" };
