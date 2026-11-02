@@ -877,7 +877,13 @@ and script `file` references fail as missing behavior. The caller owns the
 runner and closes it after every emulator/fork using it has finished.
 
 Unimplemented routes fail as `missing` unless the supplied configuration
-establishes absence. The managed and endpoint maps are authoritative: unknown
+establishes absence. The required managed config is authoritative; omission is a construction error,
+never an implicit empty managed namespace. For endpoints, omission (or undefined)
+means unknown coverage, so both `endpoint/<name>` and `config/endpoint/<name>`
+remain missing. A supplied endpoint map, including `{}`, is authoritative for
+that namespace. A partial fixture supplied as a map deliberately declares every
+unlisted endpoint absent; there is no separate opt-in. Forks retain that coverage.
+With supplied namespace coverage: unknown
 names read as null internally and queries throw NotFoundException. Managed query
 and both read outcomes are measured by orchestrator p24 (2026-11-02); endpoint
 query diagnostic reuse is assumed. The endpoint map also establishes absent
@@ -891,12 +897,17 @@ except on measured `alpha_user` and `bravo_user`, which require UUID syntax.
 Declaration shape/location validation runs first across supplied configuration,
 before routing. Tuple/array-form `items`, malformed schemas/scripts and nested
 property hooks/file references/defaults are missing; only immediate property
-hooks/defaults are implemented. Type-mismatched defaults are missing until schema
-activation/unavailability is modeled. Routing, known absence, and implemented
+hooks/defaults are implemented. Type-mismatched defaults, including recursively typed object/array members, are
+missing until schema activation/unavailability is modeled; nested activation is
+unmeasured, and the scalar 404 measurement is not generalized. Routing, known absence, and implemented
 rejections (including unknown collection actions and invalid query selectors)
 then run before storage-capability checks. Schema `id` remains unmeasured and
 refused when storage is reached; it cannot block a known-absent record read or
 the implemented unknown-action rejection.
+
+Updates retain pre-read/retrieval hooks before revision validation, including
+stale revisions. The stale-case ordering is explicitly assumed until measured;
+a stale revision cannot hide an unsupported retrieval hook.
 
 Storage capability checks retain the conservative whole-schema refusal rule. Writes with
 `encryption` or `secureHash`, and reads/writes with `isVirtual`,

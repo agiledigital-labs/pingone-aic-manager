@@ -143,7 +143,7 @@ export class IdmEmulator {
       if (key.startsWith("_") && !recognized.has(key)) missing(this.evidence, `request parameter: ${key}`);
     }
     if (parts[0] === "config") {
-      if (op.request.method === "GET" && parts[1] === "endpoint" && parts.length === 3 && !own(this.config.endpoints, parts[2] ?? "")) {
+      if (op.request.method === "GET" && parts[1] === "endpoint" && parts.length === 3 && this.config.endpointsSupplied && !own(this.config.endpoints, parts[2] ?? "")) {
         this.evidence.assumed("configured endpoint map also establishes config/endpoint snapshot absence");
         return this.knownAbsent(path, path, op, forcedMethod);
       }
@@ -165,7 +165,10 @@ export class IdmEmulator {
     }
     if (parts[0] === "endpoint") {
       const config = own(this.config.endpoints, parts[1] ?? "");
-      if (!config) return this.knownAbsent(path, parts.slice(0, 2).join("/"), op, forcedMethod);
+      if (!config) {
+        if (!this.config.endpointsSupplied) missing(this.evidence, `resource route: ${path}`);
+        return this.knownAbsent(path, parts.slice(0, 2).join("/"), op, forcedMethod);
+      }
       return endpoint(config, parts.slice(2).join("/"), op, this.scripts, this.evidence, forcedMethod);
     }
     missing(this.evidence, `resource route: ${path}`);

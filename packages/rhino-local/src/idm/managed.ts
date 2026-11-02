@@ -60,7 +60,7 @@ export class ManagedStore {
     if (id !== undefined && (["GET", "PATCH", "DELETE"].includes(request.method) ||
         (request.method === "PUT" && revision(request) !== undefined))) {
       const existing = this.stored(type, id);
-      if (request.method !== "GET") this.checkRevision(existing, request);
+      if (request.method === "DELETE") this.checkRevision(existing, request);
     }
     const noneMatch = header(request, "If-None-Match");
     if (noneMatch !== undefined && noneMatch !== "*") missing(this.evidence, "If-None-Match other than star");
@@ -245,6 +245,7 @@ export class ManagedStore {
     const original = this.records.get(this.key(type, id));
     const oldObject = this.stored(type, id);
     if (!skipRead) {
+      this.evidence.assumed("update pre-read and retrieval hooks run before revision validation, including stale revisions");
       await this.read(type, id, op, true, []);
       this.evidence.measured("write pre-read mutations are discarded");
       if (this.records.get(this.key(type, id)) !== original) throw new IdmError(412, "Revision mismatch");
