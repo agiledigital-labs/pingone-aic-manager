@@ -38,8 +38,6 @@ type State = {
   /** Evidence gathered before a round trip; the eventual result depends on it too. */
   provenance?: Provenance[];
 };
-/** Where a scripted node's host calls go; Page discovery runs against a fork with no HTTP. */
-type Route = { idm: IdmEmulator; http: boolean };
 export type JourneyOptions = {
   /** Outcomes by node id, for otherwise unimplemented node types only. */
   declaredOutcomes?: Readonly<Record<string, string>>;
@@ -68,8 +66,6 @@ const PAGE_CHILDREN: readonly string[] = [
   "ValidatedUsernameNode",
   "ValidatedPasswordNode",
 ];
-const PAGE_SPECULATION =
-  "PageNode discovery classifies a scripted child by an isolated run (copied state, forked IDM, no HTTP); only a child that queues callbacks is then executed";
 /**
  * A node's stored outcome vocabulary, as doc 25's listOutcomes table reports it;
  * undefined for a type the table does not cover.
@@ -417,7 +413,6 @@ export class JourneyEmulator {
     frame: Frame,
     submitted: CallbackEffect[],
     request: AuthenticateRequest,
-    route: Route = { idm: this.idm, http: true },
   ): Promise<NodeResult> {
     const currentTree = this.tree(frame.tree),
       inner = state.frames.length > 1;
@@ -482,7 +477,7 @@ export class JourneyEmulator {
           ),
         }),
       },
-      { onCall: this.evidence.bind((call) => this.host(call, route)) },
+      { onCall: this.evidence.bind((call) => this.host(call)) },
     );
     for (const entry of response.provenance ?? [])
       this.evidence.add(entry.kind, entry.behavior, entry.source);
@@ -559,9 +554,7 @@ export class JourneyEmulator {
       collected: CallbackEffect[] = [];
     let offset = 0,
       outcome: string | null = null,
-      scriptRan = false,
-      speculated = false,
-      scriptQueued = false;
+      scriptRan = false;
     for (const [index, child] of config.nodes.entries()) {
       if (!isDocument(child) || typeof child._id !== "string" || typeof child.nodeType !== "string")
         this.missing("PageNode child reference");
@@ -574,17 +567,9 @@ export class JourneyEmulator {
       const count = previous?.counts[index] ?? 0;
       const own = previous ? submitted.slice(offset, offset + count) : [];
       offset += count;
-      if (child.nodeType === "ScriptedDecisionNode") {
-        if (!previous) speculated = true;
-        if (!previous && !(await this.queuesCallbacks(childConfig, state, frame, request))) {
-          // Doc 25: a callback-free script is not shown on the first response and
-          // runs once, on submission. It is not executed here at all.
-          counts.push(0);
-          continue;
-        }
-        if (previous) scriptRan = true;
-        else scriptQueued = true;
-      }
+      // Doc 25 (discovery rows): every scripted child runs for real when the page
+      // is first reached, callback-free or not, and again on submission.
+      if (previous && child.nodeType === "ScriptedDecisionNode") scriptRan = true;
       const result = await this.execute(
         child.nodeType,
         child._id,
@@ -595,12 +580,10 @@ export class JourneyEmulator {
         request,
       );
       if (result.abort) {
-        if (!previous && child.nodeType === "ScriptedDecisionNode")
-          this.missing("PageNode scripted child discovery is not reproducible");
+        if (!previous)
+          this.measured("a throw in a Page child's discovery run fails the first POST with 401");
         return result;
       }
-      if (!previous && child.nodeType === "ScriptedDecisionNode" && !result.callbacks.length)
-        this.missing("PageNode scripted child discovery is not reproducible");
       counts.push(result.callbacks.length);
       collected.push(...result.callbacks);
       outcome = result.outcome;
@@ -615,10 +598,11 @@ export class JourneyEmulator {
       this.evidence.assumed(
         "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured",
       );
-      if (speculated) this.evidence.assumed(PAGE_SPECULATION);
-      if (scriptQueued)
-        this.evidence.assumed(
-          "PageNode discovery executes callback-emitting script children once and retains their state effects",
+      if (
+        config.nodes.some((child) => isDocument(child) && child.nodeType === "ScriptedDecisionNode")
+      )
+        this.measured(
+          "PageNode discovery runs every scripted child once, with real effects and retained state, and ignores its goTo; submission runs it again",
         );
       return { outcome: null, callbacks: collected };
     }
@@ -648,31 +632,6 @@ export class JourneyEmulator {
       return { outcome: null, callbacks: retry };
     }
     return { outcome, callbacks: [] };
-  }
-  /**
-   * Whether a Page's scripted child would queue callbacks on discovery. AM knows
-   * without running it (doc 25: a callback-free script is not run on the first
-   * response); the emulator finds out by an isolated run whose effects are all
-   * discarded: copied state, a forked IDM, HTTP refused, provenance dropped. A
-   * child whose answer would need HTTP, or that throws, is undecidable.
-   */
-  private async queuesCallbacks(
-    config: NodeDocument,
-    state: State,
-    frame: Frame,
-    request: AuthenticateRequest,
-  ): Promise<boolean> {
-    const copy = structuredClone(state);
-    const copyFrame = copy.frames.at(-1);
-    if (!copyFrame || copyFrame.node !== frame.node)
-      throw new Error("page speculation frame invariant");
-    copyFrame.transient = structuredClone(frame.transient);
-    const { value } = await this.evidence.run(() =>
-      this.scripted(config, copy, copyFrame, [], request, { idm: this.idm.fork(), http: false }),
-    );
-    if (value.abort)
-      this.missing("PageNode scripted child that throws before its callbacks are known");
-    return value.callbacks.length > 0;
   }
   private outcomes(type: string, config: NodeDocument): readonly string[] | undefined {
     return listOutcomes(this.config, type, config, (name) => this.missing(name));
@@ -712,10 +671,10 @@ export class JourneyEmulator {
     }
   }
 
-  private async host(call: HostCall, route: Route): Promise<JsonValue> {
+  private async host(call: HostCall): Promise<JsonValue> {
     if (call.method !== "http") {
       try {
-        const result = await route.idm.onCall(call);
+        const result = await this.idm.onCall(call);
         this.checkHostValue(result);
         return result;
       } catch (error) {
@@ -726,8 +685,6 @@ export class JourneyEmulator {
         throw error;
       }
     }
-    if (!route.http)
-      this.missing("PageNode scripted child httpClient.send before its callbacks are known");
     const [url, options] = call.args;
     if (typeof url !== "string" || !isDocument(options)) this.missing("httpClient request shape");
     if (!this.options.http) this.missing(`unmocked httpClient.send: ${url}`);
