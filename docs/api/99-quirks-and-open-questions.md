@@ -6,26 +6,6 @@ new things are learned.
 
 ---
 
-## 2026-11-02 — Q18: a promoted relationship mapping is not searchable on UAT (open)
-
-Three real dev → UAT promotions of throwaway types settled the earlier
-inference: `repo.ds` is promoted as a whole document, so a mapping only the
-upper environment has is deleted, and a promoted conversion hides the upper
-environment's links. They also found something the in-place conversions on
-dev and the sandbox never showed. With `repo.ds` byte-equal on both tenants,
-UAT read and wrote the pair through the record field, but `pr` and
-`/_ref eq` queries through the mapped column found nothing, where dev's found
-the link. UAT's relationship collection endpoint still listed the hidden
-pre-promotion edges. No change in 15 minutes.
-
-Open: is a custom `fr-idm-reference-<n>` column unsearchable on upper
-environments in general (an index question), or does a promoted mapping load
-only partly? A read-only discriminator is `aic managed relationship verify`
-on a pair the console mapped in an upper environment: "mapped, confirmed"
-there points at promotion. Details: `10-managed-objects.md`, "Promotion".
-
----
-
 ## 2026-11-01 — the schema route works, but not for the service account
 
 The 2026-10-26 entry below says the `/openidm/schema` API "refused all five

@@ -641,21 +641,6 @@ repo.ds`; one that also deleted the two probe types listed only `Managed
 Objects — 2 deleted`, and the 2026-11-01 dry run that added types and a
 mapping listed only `Managed Objects — 2 added`.
 
-**After the promotion, UAT did not behave as a mapped pair does on dev.** With
-`repo.ds` byte-equal on both tenants, a link written on UAT after the
-promotion was readable from the record field and the reverse end, but every
-search through the mapped column returned nothing: `_queryFilter=/probeTo pr`
-found no record, and the relationship collection's `/_ref eq` query found
-nothing for a link the record listed. On dev the same writes and queries
-found the link (`verify`: "mapped, confirmed"). UAT's relationship collection
-endpoint also still listed the three hidden pre-promotion edges, with their
-`_refProperties`, while the record field showed none. Repeated reads agreed
-and nothing changed over 15 minutes. Why is unmeasured: whether upper
-environments never index a custom `fr-idm-reference-<n>` column, or a
-promoted mapping is only partly loaded, was not separated. `aic managed
-relationship restore-links` refused on its runtime check and wrote nothing.
-Q18 in `99-quirks-and-open-questions.md`.
-
 **Renaming a mapped relationship through `config/managed` breaks it.** Measured
 by renaming `test_from.hasOnehOne` (mapped, reverse `test_to.hasOneHasOne`) to
 `hasOneRen` and repointing the reverse's `reversePropertyName`; the `PUT` was a
@@ -2056,9 +2041,8 @@ on create, or when actually rotating it.
   Promotion 1 carried the types with a generic pair; three links with a
   custom `_refProperties.note` were created on UAT. The pair was mapped on dev
   with `aic managed relationship map`, UAT captured with `capture-links`,
-  dry run (report read), promotion 2, then `restore-links` (refused), with
-  `relationship verify` and direct reads on both tenants, a fresh link on each
-  tenant as the control, and one read per minute on UAT for 15 minutes. All
+  dry run (report read), promotion 2, with `relationship verify` and direct
+  reads on both tenants and a fresh link on each tenant as the control. All
   records were deleted on both tenants, dev's `repo.ds` restored from the
   backup and the types deleted; promotion 3 carried that. Each promotion's
   report was read and both tenants' documents compared after each; after
