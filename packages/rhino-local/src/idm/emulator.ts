@@ -60,6 +60,7 @@ export class IdmEmulator {
   private async requestOwned(request: RestRequest): Promise<RestResult> {
     const { value, provenance } = await this.evidence.run<Omit<RestResult, "provenance">>(async () => {
       try {
+        validateDeclarations(this.config, this.evidence);
         const headers: Record<string, string> = Object.create(null) as Record<string, string>;
         for (const [name, value] of Object.entries(request.headers ?? {})) {
           const existing = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase());
@@ -142,6 +143,10 @@ export class IdmEmulator {
       if (key.startsWith("_") && !recognized.has(key)) missing(this.evidence, `request parameter: ${key}`);
     }
     if (parts[0] === "config") {
+      if (op.request.method === "GET" && parts[1] === "endpoint" && parts.length === 3 && !own(this.config.endpoints, parts[2] ?? "")) {
+        this.evidence.assumed("configured endpoint map also establishes config/endpoint snapshot absence");
+        return this.knownAbsent(path, path, op, forcedMethod);
+      }
       if (op.request.method !== "GET") missing(this.evidence, `config writes (config is read-only): ${path}`);
       if (Object.keys(op.request.query ?? {}).length > 0) missing(this.evidence, "config read query parameters");
       this.evidence.assumed("config snapshot reads are immediately consistent");
@@ -154,24 +159,32 @@ export class IdmEmulator {
     }
     if (parts[0] === "managed") {
       const type = this.config.managedType(parts[1] ?? "");
-      if (!type) {
-        missing(this.evidence, `resource route: ${path}`);
-      }
+      if (!type) return this.knownAbsent(path, parts.slice(0, 2).join("/"), op, forcedMethod);
       if (parts.length > 3) missing(this.evidence, "managed subresource routing");
       return this.managed.dispatch(type, parts[2], op);
     }
     if (parts[0] === "endpoint") {
       const config = own(this.config.endpoints, parts[1] ?? "");
-      if (!config) {
-        missing(this.evidence, `resource route: ${path}`);
-      }
+      if (!config) return this.knownAbsent(path, parts.slice(0, 2).join("/"), op, forcedMethod);
       return endpoint(config, parts.slice(2).join("/"), op, this.scripts, this.evidence, forcedMethod);
     }
     missing(this.evidence, `resource route: ${path}`);
   }
 
+  private knownAbsent(path: string, resource: string, op: Operation, hostMethod?: string): never {
+    if (op.request.method !== "GET") missing(this.evidence, `resource route: ${path}`);
+    if (hostMethod === "read") this.evidence.measured("unconfigured managed/endpoint names read as null internally", "orchestrator p24, 2026-11-02");
+    if (hostMethod === "query") {
+      if (resource.startsWith("managed/")) this.evidence.measured("unconfigured managed query throws NotFoundException", "orchestrator p24, 2026-11-02");
+      else this.evidence.assumed("unconfigured endpoint query uses the managed NotFoundException diagnostic");
+    }
+    if (!op.internal) this.evidence.assumed("authoritative namespace absence uses REST 404");
+    throw new IdmError(404, `Resource '${resource}' not found`);
+  }
+
   private async host(call: HostCall): Promise<JsonValue> {
     try {
+      validateDeclarations(this.config, this.evidence);
       const args = call.args;
       const resource = args[0];
       if (typeof resource !== "string") throw invalidInput("Expected resource name");
@@ -225,7 +238,7 @@ export class IdmEmulator {
       if (!(error instanceof IdmError)) throw error;
       if (error.assumption) this.evidence.assumed(error.assumption);
       if (call.method === "read" && error.status === 404) {
-        this.evidence.measured("openidm.read of absent id in implemented collection returns null");
+        this.evidence.measured("openidm.read translates authoritative absence to null");
         return null;
       }
       throw error.host();

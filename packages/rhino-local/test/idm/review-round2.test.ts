@@ -106,8 +106,9 @@ it("R2 an adapter cannot swallow a nested protocol rejection", async () => {
 it.each(["__proto__", "constructor", "toString", "prototype"])("R2 new5 unconfigured %s endpoint names are own lookups", async (name) => {
   const emu = emulator(runner);
   for (const prefix of ["endpoint", "config/endpoint"]) {
-    expectEmulationFailure(`resource route: ${prefix}/${name}`);
-    expect((await emu.request({ method: "GET", path: `${prefix}/${name}` })).emulation).toMatchObject({ kind: "missing" });
+    const result = await emu.request({ method: "GET", path: `${prefix}/${name}` });
+    expect(result.status).toBe(404);
+    expect(result.emulation).toBeUndefined();
   }
 });
 
