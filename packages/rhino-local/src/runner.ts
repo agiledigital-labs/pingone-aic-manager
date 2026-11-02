@@ -540,6 +540,7 @@ export class RhinoRunner {
     const id = job.id;
     const payload: Record<string, unknown> = { id, source: job.source };
     if (job.engine !== undefined) payload.engine = job.engine;
+    if (job.hostCalls !== undefined) payload.hostCalls = job.hostCalls;
     if (job.bindings !== undefined) payload.bindings = job.bindings;
     if (job.properties !== undefined) payload.properties = job.properties;
     if (job.bindingAliases !== undefined) payload.bindingAliases = job.bindingAliases;
@@ -612,7 +613,7 @@ export class RhinoRunner {
       return reply;
     }));
     if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall);
-    if (job.engine !== "idm") {
+    if (job.engine !== "idm" && !job.hostCalls) {
       const [host, container] = await Promise.all([
         this.#primary.send(id, payload),
         this.#shadow.send(id, payload),

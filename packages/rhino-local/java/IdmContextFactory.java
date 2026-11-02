@@ -9,6 +9,7 @@ import org.mozilla.javascript.ScriptRuntime;
 /** IDM's plain feature set, with an optional harness deadline in compiled code. */
 final class IdmContextFactory extends ContextFactory {
   private final long timeoutMs;
+  private final String timeoutMessage;
   private final long started = System.nanoTime();
   // One state for every context/thread executing this job, including shell spawn.
   volatile EmulationFailure failure;
@@ -82,11 +83,14 @@ final class IdmContextFactory extends ContextFactory {
   }
 
   EmulationFailure timeout() {
-    return fail(new EmulationFailure("timeout", "IDM harness timeout"));
+    return fail(new EmulationFailure("timeout", timeoutMessage));
   }
 
-  IdmContextFactory(long timeoutMs) {
+  IdmContextFactory(long timeoutMs) { this(timeoutMs, "IDM harness timeout"); }
+
+  IdmContextFactory(long timeoutMs, String timeoutMessage) {
     this.timeoutMs = timeoutMs;
+    this.timeoutMessage = timeoutMessage;
   }
 
   @Override

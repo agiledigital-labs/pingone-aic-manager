@@ -1290,3 +1290,69 @@ Empty-`elements` bindings (`requestHeaders`, `requestParameters`,
 `requestCookies`, `locales`) are emitted as `{}` — a seam a test case seeds
 directly. Scalar bindings (`realm`, `scriptName`, `cookieName`) start as
 `"__rhino-local-unseeded__"`; `resumedFromSuspend` starts as `false`.
+
+### Experimental journey emulator core (J1)
+
+`src/journey/index.ts` exposes `JourneyConfig`, `JourneyEmulator` and
+`journeyHttp` inside the checkout. They are not package exports yet: J1 is the
+framework-free core; Page/collectors/identity nodes and harness selection follow
+in J2 and later slices. Use the mandatory Vitest setup/runner/reporter described
+above when testing it. Its requests, runner evaluations and shared IDM calls use
+the same append-only emulation audit and verdict guard as IDM.
+
+```ts
+const config = new JourneyConfig({
+  realm: "alpha",
+  trees: { Example: treeDocument },
+  nodes: { ScriptedDecisionNode: { [nodeId]: nodeDocument } },
+  scripts: { [scriptId]: scriptDocument }, // script is REST base64, evaluatorVersion "2.0"
+});
+const journey = new JourneyEmulator(config, runner, idm, {
+  declaredOutcomes: { [unimplementedNodeId]: "true" },
+  http: async (url, options) => mockResponse(url, options),
+});
+const result = await journey.request({
+  method: "POST", path: "authenticate",
+  query: { authIndexType: "service", authIndexValue: "Example" },
+  body: {},
+});
+```
+
+The caller supplies one IDM emulator per test, shared with the journey, so
+script `openidm` calls execute managed hooks in that instance. `fork()` shares
+frozen config and the runner, forks IDM records, copies authentication snapshots,
+and shares failure history. The caller closes the runner. `journeyHttp(journey)`
+implements `AicIo.http` for the existing `invokeJourney`/`driveJourney` transport;
+no parallel callback driver or verdict implementation is introduced.
+
+The REST result uses `{status, body, rawBody?, provenance, emulation?}` just like
+IDM. Callbacks use the tenant `{authId, callbacks}` output/input envelopes;
+`aic/callbacks.ts` fills their inputs unchanged. Queued callbacks beat `goTo`;
+the node runs again on resume. Shared state survives, transient survives
+callback-free edges and is dropped at a round trip. Inner trees share shared
+state, isolate their transient state and restore outer transient state. Inner
+exceptions, callbacks and nested inner trees remain missing. Legacy scripts,
+unsupported bindings, session-property actions, `noSession`, unsupported tree
+flags and unmocked HTTP are fatal missing behavior, even if script catches or
+`finally` tries to hide the failure.
+
+AuthIds use signed immutable local snapshot references (assumed format).
+Suspended snapshots may be replayed; tampering returns the measured 400. A fork
+accepts snapshots present when it forked; a parent's later snapshots are not
+present there. Replay after a previous submission minted a session is explicitly
+missing: doc 25 lists that case as unmeasured. Session tokenIds are local UUIDs;
+principal existence and session properties are not modeled. Success is currently
+measured only for realm alpha. `existingSession` can be supplied as complete flat
+string-map fixtures under `sessions: { [cookieValue]: properties }` with an
+explicit `cookieName`; unknown cookies fail missing instead of inventing session
+properties. Newly issued tokenIds do not synthesize such a session fixture.
+
+Declared outcomes are assumptions, not implementations of the named node. They
+carry `assumed: declared by test: <tree>/<node> -> <outcome>`. Known type
+vocabularies come from doc 25, including Page's last stored child's outcomes.
+Undeclared types are missing. Basic Name/Password/TextInput/TextOutput/HiddenValue
+callback wire shapes reuse the AM binding runtime; other wire types remain
+missing until implemented. Input defaults, local Java collection facsimiles,
+initial ambient state values, HTTP response fixtures and AM host-error adapters
+retain explicit assumptions. The request's provenance distinguishes these from
+the measurement agent's doc 25 rows; those rows were not measured by this agent.

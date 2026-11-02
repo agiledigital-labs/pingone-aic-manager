@@ -207,6 +207,7 @@ export class IdmEmulator {
       const queryAt = (index: number): Document => args[index] === null || args[index] === undefined ? {} : document(args[index]);
       const revisionHeaders = (): Record<string, string> => typeof args[1] === "string" ? { "If-Match": args[1] } : { "If-Match": "*" };
       switch (call.method) {
+        case "http": return missing(this.evidence, "HTTP host call sent to IDM adapter");
         case "read": {
           const query = queryAt(1);
           if (args[2] !== undefined) query._fields = args[2];

@@ -22,7 +22,7 @@ export type JourneyConfigInput = {
 export type AuthenticateRequest = {
   readonly method: "POST";
   readonly path: string;
-  readonly query: { readonly authIndexType: string; readonly authIndexValue: string };
+  readonly query: { readonly authIndexType: string; readonly authIndexValue: string; readonly [key: string]: string | readonly string[] };
   readonly body?: JsonValue;
   readonly headers?: Readonly<Record<string, string[]>>;
   readonly cookies?: Readonly<Record<string, string>>;

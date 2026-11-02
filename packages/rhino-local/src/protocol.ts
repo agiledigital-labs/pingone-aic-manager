@@ -27,6 +27,8 @@ export interface JobRequest {
   source: string;
   /** AM is the default; IDM uses the measured compiled engine and Java bindings. */
   engine?: "am" | "idm";
+  /** Opt-in host transport for the journey AM evaluator. */
+  hostCalls?: boolean;
   /** IDM top-level bindings, wrapped as Java-backed maps/lists. */
   bindings?: { [key: string]: JsonValue };
   /** IDM aliases resolved to the same backing object before script evaluation. */
@@ -74,7 +76,7 @@ export interface JobError {
   lineSource: string | null;
 }
 
-export type HostMethod = "read" | "create" | "update" | "patch" | "delete" | "query" | "action";
+export type HostMethod = "read" | "create" | "update" | "patch" | "delete" | "query" | "action" | "http";
 
 export interface HostCall {
   type: "call";
@@ -248,6 +250,7 @@ const HOST_METHODS: ReadonlySet<string> = new Set([
   "delete",
   "query",
   "action",
+  "http",
 ]);
 
 export function parseHostCall(raw: unknown): HostCall | undefined {

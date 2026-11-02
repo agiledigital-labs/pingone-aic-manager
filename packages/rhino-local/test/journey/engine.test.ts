@@ -1,0 +1,178 @@
+import { afterAll, beforeAll, expect, it } from "vitest";
+import { RhinoRunner } from "../../src/runner.ts";
+import { IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
+import { JourneyConfig, JourneyEmulator, type JourneyOptions } from "../../src/journey/index.ts";
+import { SUCCESS_NODE_ID as SUCCESS, FAILURE_NODE_ID as FAILURE } from "../../src/aic/constants.ts";
+import { fillCallbackInputs, parseAuthenticateCallbacks } from "../../src/aic/callbacks.ts";
+import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
+let runner: RhinoRunner;
+beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+afterAll(async () => { await runner?.close(); });
+const script = (source: string) => ({ name: "invented-script", evaluatorVersion: "2.0", language: "JAVASCRIPT", script: Buffer.from(source).toString("base64") });
+function make(source: string, outcomes = ["true", "false"], connections = { true: SUCCESS, false: FAILURE }, options: JourneyOptions = {}) {
+  return new JourneyEmulator(new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "one", nodes: { one: { nodeType: "ScriptedDecisionNode", connections } } } }, nodes: { ScriptedDecisionNode: { one: { script: "script", outcomes } } }, scripts: { script: script(source) } }), runner, new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner), options);
+}
+function request(emu: JourneyEmulator, body = {}) { return emu.request({ method: "POST", path: "authenticate", query: { authIndexType: "service", authIndexValue: "invented" }, body }); }
+it("success uses the authenticate envelope", async () => {
+  const result = await request(make("nodeState.putShared('username','invented');action.goTo('true');"));
+  expect(result).toMatchObject({ status: 200, body: { tokenId: expect.any(String), successUrl: "/enduser/?realm=/alpha", realm: "/alpha" } });
+});
+it.each(["action.goTo('false');", "action.goTo('nope');", "throw new Error('private detail');"])("tenant failure is 401: %s", async (source) => {
+  expect(await request(make(source))).toMatchObject({ status: 401, body: { code: 401, reason: "Unauthorized", message: "Login failure" } });
+});
+it.each(["action.goTo('false').withErrorMessage('specific');", "action.withErrorMessage('specific').goTo('false');"])("withErrorMessage order: %s", async (source) => {
+  expect(await request(make(source))).toMatchObject({ status: 401, body: { message: "specific" } });
+});
+it("lockout text has no visible effect", async () => {
+  expect(await request(make("action.goTo('false').withLockoutMessage('not visible');"))).toMatchObject({ status: 401, body: { message: "Login failure" } });
+});
+it("unwired declared outcome differs from undeclared and missing username", async () => {
+  const unwired = await request(make("action.goTo('other');", ["other"], { true: SUCCESS, false: FAILURE }));
+  expect(unwired).toMatchObject({ status: 500, rawBody: "", body: null });
+  expect(await request(make("action.goTo('other');"))).toMatchObject({ status: 401 });
+  expect(await request(make("action.goTo('true');"))).toMatchObject({ status: 500, rawBody: "", body: null });
+});
+it("callbacks win over goTo, then the node reruns on resume", async () => {
+  const emu = make("nodeState.putShared('passes',(nodeState.get('passes')||0)+1);if(callbacks.isEmpty()){callbacksBuilder.nameCallback('Name');action.goTo('false');}else{nodeState.putShared('username',callbacks.getNameCallbacks().get(0));action.goTo(nodeState.get('passes')===2?'true':'false');}");
+  const first = await request(emu);
+  expect(first.status).toBe(200);
+  expect(parseAuthenticateCallbacks(first.body).callbacks).toEqual([{ type: "NameCallback", prompt: "Name" }]);
+  const resumed = await request(emu, JSON.parse(fillCallbackInputs(first.body, [{ type: "NameCallback", value: "invented" }], "invented")));
+  expect(resumed).toMatchObject({ status: 200, body: { tokenId: expect.any(String) } });
+});
+it("tampered authId is 400; authId-less callbacks reach the first node", async () => {
+  const emu = make("if(callbacks.isEmpty()){callbacksBuilder.nameCallback('Name');}else{nodeState.putShared('username',callbacks.getNameCallbacks().get(0));action.goTo('true');}");
+  const first = await request(emu); const posted = JSON.parse(fillCallbackInputs(first.body, [{ type: "NameCallback", value: "invented" }], "invented"));
+  const changed = { ...posted, authId: posted.authId + "tampered" };
+  expect(await request(emu, changed)).toMatchObject({ status: 400, body: { message: "Authentication Error: Invalid AuthId Signature" } });
+  delete posted.authId;
+  expect(await request(emu, posted)).toMatchObject({ status: 200, body: { tokenId: expect.any(String) } });
+});
+it("unmocked HTTP cannot be caught, even by finally returning", async () => {
+  expectEmulationFailure("unmocked httpClient.send: https://service.example.com/check");
+  const emu = make("(function(){try{httpClient.send('https://service.example.com/check').get();}catch(e){}finally{return 42;}})();nodeState.putShared('username','invented');action.goTo('true');");
+  expect(await request(emu)).toMatchObject({ status: 501, emulation: { kind: "missing", missing: ["unmocked httpClient.send: https://service.example.com/check"] } });
+});
+it("mocked HTTP goes through the host exactly once including both replay", async () => {
+  let calls = 0;
+  const emu = make("var r=httpClient.send('https://service.example.com/check').get();if(r.ok&&r.json().allowed){nodeState.putShared('username','invented');action.goTo('true');}else{action.goTo('false');}", undefined, undefined, { http: () => { calls++; return { status: 200, body: { allowed: true } }; } });
+  expect(await request(emu)).toMatchObject({ status: 200, body: { tokenId: expect.any(String) } });
+  expect(calls).toBe(1);
+});
+it("script openidm creates through the shared IDM core and executes hooks", async () => {
+  const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "one", nodes: { one: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS } } } } }, nodes: { ScriptedDecisionNode: { one: { script: "script", outcomes: ["true"] } } }, scripts: { script: script("openidm.create('managed/widget','record',{text:'input'});nodeState.putShared('username','invented');action.goTo('true');") } });
+  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: { text: { type: "string" } } }, onCreate: { type: "text/javascript", source: "object.text += '-hook';" } }] } }), runner);
+  expect(await request(new JourneyEmulator(config, runner, idm))).toMatchObject({ status: 200 });
+  expect((await idm.request({ method: "GET", path: "managed/widget/record" })).body).toMatchObject({ text: "input-hook" });
+});
+
+function graph(trees: Record<string, { entryNodeId: string; innerTreeOnly?: boolean; nodes: Record<string, { nodeType: string; connections: Record<string, string> }> }>, sources: Record<string, string>, innerNodes: Record<string, { tree: string; displayErrorOutcome?: boolean }> = {}, options: JourneyOptions = {}) {
+  const scripted = Object.fromEntries(Object.keys(sources).map((id) => [id, { script: id, outcomes: ["true", "false", "next"] }]));
+  return new JourneyEmulator(new JourneyConfig({ realm: "alpha", trees, nodes: { ScriptedDecisionNode: scripted, InnerTreeEvaluatorNode: innerNodes }, scripts: Object.fromEntries(Object.entries(sources).map(([id, source]) => [id, script(source)])) }), runner, new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner), options);
+}
+function dump(body: unknown): unknown {
+  const cb = parseAuthenticateCallbacks(body).callbacks[0];
+  return JSON.parse(String(cb?.value));
+}
+it("transient survives a callback-free edge and disappears on the next round trip, shared survives both", async () => {
+  const emu = graph({ invented: { entryNodeId: "seed", nodes: { seed: { nodeType: "ScriptedDecisionNode", connections: { next: "dump" } }, dump: { nodeType: "ScriptedDecisionNode", connections: {} } } } }, {
+    seed: "nodeState.putTransient('temporary','t');nodeState.putShared('lasting','s');action.goTo('next');",
+    dump: "callbacksBuilder.hiddenValueCallback('state',JSON.stringify({temporary:nodeState.get('temporary'),lasting:nodeState.get('lasting'),hasTransient:nodeState.keys().contains('temporary'),getShared:typeof nodeState.getShared,getTransient:typeof nodeState.getTransient}));",
+  });
+  const first = await request(emu);
+  expect(dump(first.body)).toEqual({ temporary: "t", lasting: "s", hasTransient: true, getShared: "undefined", getTransient: "undefined" });
+  const next = await request(emu, first.body as object);
+  expect(dump(next.body)).toEqual({ temporary: null, lasting: "s", hasTransient: false, getShared: "undefined", getTransient: "undefined" });
+});
+it.each(["true", "false"])("inner %s maps back to the evaluator and preserves the four visibility boundaries", async (outcome) => {
+  const emu = graph({
+    invented: { entryNodeId: "outer", nodes: { outer: { nodeType: "ScriptedDecisionNode", connections: { next: "inner" } }, inner: { nodeType: "InnerTreeEvaluatorNode", connections: { true: "yes", false: "no" } }, yes: { nodeType: "ScriptedDecisionNode", connections: {} }, no: { nodeType: "ScriptedDecisionNode", connections: {} } } },
+    child: { entryNodeId: "child1", innerTreeOnly: true, nodes: { child1: { nodeType: "ScriptedDecisionNode", connections: { next: "child2" } }, child2: { nodeType: "ScriptedDecisionNode", connections: { true: SUCCESS, false: FAILURE } } } },
+  }, {
+    outer: "nodeState.putShared('outerShared','os');nodeState.putTransient('outerTransient','ot');nodeState.putShared('outerName',journey.name());nodeState.putShared('outerFlag',journey.innerJourney());action.goTo('next');",
+    child1: "nodeState.putShared('sawShared',nodeState.get('outerShared'));nodeState.putShared('sawTransient',nodeState.get('outerTransient'));nodeState.putShared('innerName',journey.name());nodeState.putShared('innerFlag',journey.innerJourney());nodeState.putShared('innerShared','is');nodeState.putTransient('innerTransient','it');action.goTo('next');",
+    child2: `nodeState.putShared('innerControl',nodeState.get('innerTransient'));action.goTo('${outcome}');`,
+    yes: "callbacksBuilder.hiddenValueCallback('state',JSON.stringify({branch:'true',s:nodeState.get('sawShared'),t:nodeState.get('sawTransient'),inner:nodeState.get('innerShared'),innerT:nodeState.get('innerTransient'),outerT:nodeState.get('outerTransient'),control:nodeState.get('innerControl'),innerName:nodeState.get('innerName'),innerFlag:nodeState.get('innerFlag'),name:journey.name(),flag:journey.innerJourney(),outerName:nodeState.get('outerName'),outerFlag:nodeState.get('outerFlag')}));",
+    no: "callbacksBuilder.hiddenValueCallback('state',JSON.stringify({branch:'false',s:nodeState.get('sawShared'),t:nodeState.get('sawTransient'),inner:nodeState.get('innerShared'),innerT:nodeState.get('innerTransient'),outerT:nodeState.get('outerTransient'),control:nodeState.get('innerControl'),innerName:nodeState.get('innerName'),innerFlag:nodeState.get('innerFlag'),name:journey.name(),flag:journey.innerJourney(),outerName:nodeState.get('outerName'),outerFlag:nodeState.get('outerFlag')}));",
+  }, { inner: { tree: "child", displayErrorOutcome: true } });
+  const result = await request(emu);
+  expect(result.status).toBe(200);
+  expect(dump(result.body)).toEqual({ branch: outcome, s: "os", t: null, inner: "is", innerT: null, outerT: "ot", control: "it", innerName: "child", innerFlag: true, name: "invented", flag: false, outerName: "invented", outerFlag: false });
+  const resumed = await request(emu, result.body as object);
+  expect(dump(resumed.body)).toMatchObject({ inner: "is", outerT: null, innerT: null, s: "os", control: "it" });
+  expect(await emu.request({ method: "POST", path: "authenticate", query: { authIndexType: "service", authIndexValue: "child" } })).toMatchObject({ status: 400, body: { message: "No Configuration found" } });
+});
+it("stale callback snapshot replays from its immutable shared state and survives a fork", async () => {
+  const emu = make("nodeState.putShared('count',(nodeState.get('count')||0)+1);callbacksBuilder.hiddenValueCallback('count',String(nodeState.get('count')));");
+  const first = await request(emu);
+  expect(dump(first.body)).toBe(1);
+  expect(dump((await request(emu, first.body as object)).body)).toBe(2);
+  expect(dump((await request(emu, first.body as object)).body)).toBe(2);
+  expect(dump((await request(emu.fork(), first.body as object)).body)).toBe(2);
+});
+it.each(["throw new Error('inner');", "callbacksBuilder.nameCallback('inner');"])("unmeasured inner behavior is missing: %s", async (source) => {
+  const cause = source.startsWith("throw") ? "inner tree script exception" : "inner tree callbacks";
+  expectEmulationFailure(cause);
+  const emu = graph({ invented: { entryNodeId: "inner", nodes: { inner: { nodeType: "InnerTreeEvaluatorNode", connections: { true: SUCCESS, false: FAILURE } } } }, child: { entryNodeId: "child", innerTreeOnly: true, nodes: { child: { nodeType: "ScriptedDecisionNode", connections: {} } } } }, { child: source }, { inner: { tree: "child" } });
+  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("unsupported node requires an explicit declared outcome, validated when the type is known", async () => {
+  expectEmulationFailure("node type: InventedNode");
+  const input = { realm: "alpha", trees: { invented: { entryNodeId: "one", nodes: { one: { nodeType: "InventedNode", connections: { next: FAILURE } } } } }, nodes: { InventedNode: { one: {} } }, scripts: {} };
+  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
+  expect(await request(new JourneyEmulator(new JourneyConfig(input), runner, idm))).toMatchObject({ status: 501, emulation: { missing: ["node type: InventedNode"] } });
+  const declared = await request(new JourneyEmulator(new JourneyConfig(input), runner, idm, { declaredOutcomes: { one: "next" } }));
+  expect(declared).toMatchObject({ status: 401 });
+  expect(declared.provenance).toContainEqual({ kind: "assumed", behavior: "declared by test: invented/one -> next" });
+  const known = structuredClone(input); known.trees.invented.nodes.one.nodeType = "IdentifyExistingUserNode";
+  expect(await request(new JourneyEmulator(new JourneyConfig({ ...known, nodes: { IdentifyExistingUserNode: { one: {} } } }), runner, idm, { declaredOutcomes: { one: "nope" } }))).toMatchObject({ status: 401, body: { message: "Login failure" } });
+});
+it("missing binding use cannot be swallowed in script code", async () => {
+  expectEmulationFailure("action.putSessionProperty");
+  const result = await request(make("try{action.putSessionProperty('secret','value');}catch(e){}nodeState.putShared('username','invented');action.goTo('true');"));
+  expect(result).toMatchObject({ status: 501, emulation: { missing: ["action.putSessionProperty"] } });
+});
+it.each(["UsernameCollectorNode", "PasswordCollectorNode", "AttributeCollectorNode", "ValidatedUsernameNode", "ValidatedPasswordNode", "IdentifyExistingUserNode", "CreateObjectNode", "PatchObjectNode"])("declared %s outcome uses the measured type vocabulary", async (type) => {
+  const outcome = type === "CreateObjectNode" ? "CREATED" : type === "PatchObjectNode" ? "PATCHED" : type === "IdentifyExistingUserNode" ? "true" : "outcome";
+  const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "node", nodes: { node: { nodeType: type, connections: {} } } } }, nodes: { [type]: { node: {} } }, scripts: {} });
+  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
+  // Known + unwired is 500; an invented outcome is 401, not a fake successful stub.
+  expect(await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: outcome } }))).toMatchObject({ status: 500, rawBody: "" });
+  expect(await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "bogus" } }))).toMatchObject({ status: 401 });
+});
+it("declared Page outcome resolves its last child's stored config", async () => {
+  const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: "page", nodes: { page: { nodeType: "PageNode", connections: {} } } } }, nodes: { PageNode: { page: { nodes: [{ _id: "child", nodeType: "ScriptedDecisionNode" }] } }, ScriptedDecisionNode: { child: { outcomes: ["chosen"], script: "unused" } } }, scripts: {} });
+  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
+  expect(await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { page: "chosen" } }))).toMatchObject({ status: 500, rawBody: "" });
+  expect(await request(new JourneyEmulator(config, runner, idm, { declaredOutcomes: { page: "bogus" } }))).toMatchObject({ status: 401 });
+});
+it("existingSession is undefined without a cookie and a flat caller-supplied map with one", async () => {
+  const emu = make("callbacksBuilder.hiddenValueCallback('session',JSON.stringify({kind:typeof existingSession,user:typeof existingSession==='undefined'?null:existingSession.UserId,unknown:typeof existingSession==='undefined'?null:typeof existingSession.notAKey}));", undefined, undefined, { cookieName: "session", sessions: { issued: { UserId: "invented", AuthLevel: "0" } } });
+  expect(dump((await request(emu)).body)).toEqual({ kind: "undefined", user: null, unknown: null });
+  const result = await emu.request({ method: "POST", path: "authenticate", query: { authIndexType: "service", authIndexValue: "invented" }, cookies: { session: "issued" } });
+  expect(dump(result.body)).toEqual({ kind: "object", user: "invented", unknown: "undefined" });
+});
+it.each(["noSession", "transactionalOnly", "maximumSessionTime"])("unmeasured tree %s is missing", async (flag) => {
+  expectEmulationFailure(`tree ${flag}`);
+  const config = new JourneyConfig({ realm: "alpha", trees: { invented: { entryNodeId: SUCCESS, nodes: {}, [flag]: true } }, nodes: {}, scripts: {} });
+  expect(await request(new JourneyEmulator(config, runner, new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner)))).toMatchObject({ status: 501, emulation: { missing: [`tree ${flag}`] } });
+});
+it("the existing AIC driveJourney consumes this engine without a parallel callback driver", async () => {
+  const { emitWrapperJourney } = await import("../../src/aic/emit-journey.ts");
+  const { driveJourney } = await import("../../src/aic/run.ts");
+  const { validateCase } = await import("../../src/case/index.ts");
+  const { journeyHttp } = await import("../../src/journey/index.ts");
+  const source = "if(callbacks.isEmpty()){callbacksBuilder.nameCallback('Name');}else{nodeState.putShared('answer',callbacks.getNameCallbacks().get(0));action.goTo('done');}";
+  const first = validateCase({ name: "invented chain", script: source, outcomes: ["done"], given: {}, expect: { outcome: null, callbacks: [{ type: "NameCallback", prompt: "Name" }] } });
+  const last = validateCase({ name: "invented chain", script: source, outcomes: ["done"], given: {}, expect: { outcome: "done" } });
+  const wrapper = emitWrapperJourney(last, source, { runId: "invented", realm: "alpha" });
+  const config = new JourneyConfig({ realm: "alpha", trees: { [wrapper.treeName]: wrapper.treeBody as unknown as import("../../src/journey/types.ts").TreeDocument }, nodes: { ScriptedDecisionNode: wrapper.nodeBodies }, scripts: Object.fromEntries(wrapper.scripts.map((s) => [s.id, script(s.source)])) });
+  const emu = new JourneyEmulator(config, runner, new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner));
+  const provider = { describe: async () => ({ name: "local", baseUrl: "https://tenant.example.com" }), getToken: async () => "unused" };
+  const io = { http: journeyHttp(emu), aic: async () => { throw new Error("no CLI calls for authentication"); } };
+  const passes = await driveJourney(io, { tenantName: "local", baseUrl: "https://tenant.example.com", token: "unused", provider }, wrapper, [first, last], [[{ type: "NameCallback", value: "invented" }]], { next: () => "invented-transaction" });
+  expect(passes).toHaveLength(2);
+  expect(passes[0]?.callbacks).toEqual([{ type: "NameCallback", prompt: "Name" }]);
+  expect(passes[1]?.outcome).toBe("done");
+  expect(passes[1]?.evidence?.unbucketedState).toContainEqual(expect.objectContaining({ key: "answer", after: "invented" }));
+});

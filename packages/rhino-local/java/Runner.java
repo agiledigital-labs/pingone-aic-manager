@@ -204,6 +204,17 @@ public final class Runner {
 
   static Map<String, Object> evalJob(
       AmContextFactory factory, String id, Map<String, Object> job) {
+    if (!Boolean.TRUE.equals(job.get("hostCalls"))) return evalAmJob(factory, id, job, null);
+    AmHostBridge bridge = new AmHostBridge(id, Json.optionalLong(job, "timeoutMs", DEFAULT_TIMEOUT_MS));
+    Map<String, Object> result;
+    try { result = evalAmJob(factory, id, job, bridge); }
+    catch (EmulationFailure e) { bridge.state.fail(e); result = errorResponse(id, "runtime_error", e, null, -1, -1, null); }
+    catch (Throwable e) { bridge.calls.close(); throw e; }
+    return bridge.finish(id, result);
+  }
+
+  private static Map<String, Object> evalAmJob(
+      AmContextFactory factory, String id, Map<String, Object> job, AmHostBridge bridge) {
     final String source = Json.optionalString(job, "source");
     if (source == null) {
       return errorResponse(
@@ -257,6 +268,7 @@ public final class Runner {
       }
       if (cx instanceof AmContextFactory.ObservedContext) {
         ((AmContextFactory.ObservedContext) cx).timeoutMs = timeoutMs;
+        ((AmContextFactory.ObservedContext) cx).hostBridge = bridge;
       }
       final SimpleScriptContext scriptContext = AmScopes.newEngineContext(sourceName);
       injectGlobals(scriptContext, job.get("globals"));
@@ -269,11 +281,17 @@ public final class Runner {
           hostOps.setParentScope(scope);
           hostOps.setPrototype(ScriptableObject.getFunctionPrototype(scope));
           ScriptableObject.putProperty(scope, hostOpName, hostOps);
+          if (bridge != null) {
+            bridge.setParentScope(scope);
+            bridge.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+            ScriptableObject.putProperty(scope, "__rhinoLocalJourneyHost", bridge);
+          }
           try {
             Script preambleScript = cx.compileString(preamble, preambleName, 1, null);
             preambleScript.exec(cx, scope);
           } finally {
             ScriptableObject.deleteProperty(scope, hostOpName);
+            ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }
         } catch (EvaluatorException e) {
           return errorFromRhino(id, "compile_error", e);
