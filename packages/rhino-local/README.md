@@ -876,6 +876,8 @@ Managed schemas retain object hooks, property hooks and custom `actions`.
 and script `file` references fail as missing behavior. The caller owns the
 runner and closes it after every emulator/fork using it has finished.
 
+Namespace roots (`managed`, `endpoint`, `config`, and `config/endpoint`) are
+unmeasured and fail as `missing`, regardless of completeness declarations.
 Unimplemented routes fail as `missing`. Supplying managed types or endpoint
 implementations covers only the listed names; unlisted names remain unknown,
 including with an empty map. To model genuinely absent names, explicitly declare
