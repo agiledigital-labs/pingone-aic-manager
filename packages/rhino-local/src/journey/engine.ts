@@ -10,13 +10,13 @@ import type { HostCall, JsonValue } from "../protocol.ts";
 import { HostCallError, type RhinoRunner } from "../runner.ts";
 import { decisionNodeClassAllowList } from "../bindings/allowlist.ts";
 import { SUCCESS_NODE_ID, FAILURE_NODE_ID } from "../aic/constants.ts";
-import { fromWire, toWire } from "./callbacks.ts";
+import { fromWire, toWire, type WireCallback } from "./callbacks.ts";
 import { JourneyConfig } from "./config.ts";
 import { journeyPreamble, JOURNEY_HARVEST } from "./script.ts";
 import type { AuthenticateRequest, AuthenticateResult, HttpMock, NodeDocument, TreeDocument } from "./types.ts";
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
 type Frame = { tree: string; node: string; transient: Document };
-type State = { shared: Document; frames: Frame[]; errorMessage: string | null; existingSession?: Record<string, string> };
+type State = { shared: Document; frames: Frame[]; errorMessage: string | null; pending?: WireCallback[]; existingSession?: Record<string, string> };
 export type JourneyOptions = {
   /** Outcomes by node id, for otherwise unimplemented node types only. */
   declaredOutcomes?: Readonly<Record<string, string>>;
@@ -25,6 +25,7 @@ export type JourneyOptions = {
   sessions?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   cookieName?: string;
   maxTransitions?: number;
+  timeoutMs?: number;
 };
 const OUTCOMES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   UsernameCollectorNode: ["outcome"], PasswordCollectorNode: ["outcome"], AttributeCollectorNode: ["outcome"], ValidatedUsernameNode: ["outcome"], ValidatedPasswordNode: ["outcome"],
@@ -43,6 +44,7 @@ export class JourneyEmulator {
   constructor(config: JourneyConfig, runner: RhinoRunner, idm: IdmEmulator, options: JourneyOptions = {}) {
     this.config = config; this.runner = runner; this.idm = idm;
     this.options = { ...options, declaredOutcomes: Object.freeze(structuredClone(options.declaredOutcomes ?? {})), sessions: structuredClone(options.sessions ?? {}) };
+    if (!Number.isSafeInteger(options.timeoutMs ?? 10000) || (options.timeoutMs ?? 10000) < 0) throw new TypeError("timeoutMs must be a nonnegative integer");
     if (!Number.isSafeInteger(options.maxTransitions ?? 1000) || (options.maxTransitions ?? 1000) < 1) throw new TypeError("maxTransitions must be a positive integer");
   }
   fork(): JourneyEmulator {
@@ -77,14 +79,14 @@ export class JourneyEmulator {
   private snapshot(state: State): string {
     const id = randomUUID(); const stored = structuredClone(state);
     for (const frame of stored.frames) frame.transient = {};
-    delete stored.shared.maxAuthenticationSessionDuration;
     this.snapshots.set(id, stored);
+    if (state.errorMessage !== null) this.evidence.assumed("action error message persists across node and callback boundaries");
     this.evidence.assumed("authId uses a random snapshot id and HMAC-SHA256; forks copy snapshots and share signing credentials");
     return `${id}.${createHmac("sha256", this.key).update(id).digest("base64url")}`;
   }
   private restore(token: string): State | undefined {
     const [id, mac, extra] = token.split(".");
-    if (!id || !mac || extra !== undefined) return undefined;
+    if (!id || !mac || extra !== undefined || !/^[A-Za-z0-9_-]{43}$/.test(mac)) return undefined;
     const expected = createHmac("sha256", this.key).update(id).digest("base64url");
     if (mac.length !== expected.length || !timingSafeEqual(Buffer.from(mac), Buffer.from(expected))) return undefined;
     const snapshot = this.snapshots.get(id);
@@ -101,7 +103,11 @@ export class JourneyEmulator {
   private async authenticate(request: AuthenticateRequest): Promise<Omit<AuthenticateResult, "provenance">> {
     if (request.method !== "POST" || !["authenticate", "/authenticate", `/am/json/realms/root/realms/${this.config.realm}/authenticate`].includes(request.path)) this.missing(`journey REST route: ${request.method} ${request.path}`);
     if (request.query.authIndexType !== "service") this.missing(`authIndexType: ${request.query.authIndexType}`);
-    const body = request.body ?? {};
+    let body: JsonValue = request.body ?? {};
+    if (request.rawBody !== undefined) {
+      try { body = JSON.parse(request.rawBody) as JsonValue; }
+      catch { this.missing("authenticate invalid JSON body"); }
+    }
     if (!isDocument(body)) this.missing("authenticate request body shape");
     const name = request.query.authIndexValue;
     const tree = this.config.tree(name);
@@ -118,8 +124,8 @@ export class JourneyEmulator {
       this.measured("stale callback authId replay is accepted; shared state survives and transient is dropped");
       this.evidence.assumed("authId uses a random snapshot id and HMAC-SHA256; forks copy snapshots and share signing credentials");
     } else {
-      state = { shared: { realm: `/${this.config.realm}`, authLevel: 0, maxAuthenticationSessionDuration: 300000 }, frames: [{ tree: name, node: tree.entryNodeId, transient: {} }], errorMessage: null };
-      this.evidence.assumed("initial shared state seeds realm path, authLevel 0 and maxAuthenticationSessionDuration 300000; duration value is unmeasured");
+      state = { shared: { realm: `/${this.config.realm}`, authLevel: 0 }, frames: [{ tree: name, node: tree.entryNodeId, transient: { maxAuthenticationSessionDuration: 300000 } }], errorMessage: null };
+      this.evidence.assumed("initial ambient state assumes shared realm/authLevel 0 and transient maxAuthenticationSessionDuration 300000; duration value and bucket are unmeasured");
       const cookieName = this.options.cookieName;
       if (Object.keys(request.cookies ?? {}).length && !cookieName) this.missing("session cookie name not supplied");
       const cookie = cookieName ? request.cookies?.[cookieName] : undefined;
@@ -132,6 +138,17 @@ export class JourneyEmulator {
       if (body.callbacks !== undefined) this.measured("callbacks without authId start a fresh journey and reach its first node");
     }
     let submitted = fromWire(body.callbacks, (name) => this.missing(name));
+    if (state.pending) {
+      const raw = body.callbacks;
+      if (!Array.isArray(raw) || raw.length !== state.pending.length) this.missing("authenticate callback submission differs from snapshot");
+      for (const [index, expected] of state.pending.entries()) {
+        const actual = raw[index];
+        if (!isDocument(actual) || actual.type !== expected.type || JSON.stringify(actual.output) !== JSON.stringify(expected.output)) this.missing("authenticate callback submission differs from snapshot");
+        const names = Array.isArray(actual.input) ? actual.input.map((item) => isDocument(item) ? item.name : null) : [];
+        if (JSON.stringify(names) !== JSON.stringify((expected.input ?? []).map((item) => item.name))) this.missing("authenticate callback submission differs from snapshot");
+      }
+      delete state.pending;
+    }
     for (let step = 0; step < (this.options.maxTransitions ?? 1000); step++) {
       const frame = state.frames.at(-1);
       if (!frame) throw new Error("journey frame invariant");
@@ -181,7 +198,7 @@ export class JourneyEmulator {
         this.evidence.assumed("AM binding facsimiles reuse rhino-local's measured overlay; Java collection wrappers remain local approximations");
         this.measured("next-gen nodeState has no getShared/getTransient; callback-free boundaries retain transient state");
         this.measured("action withErrorMessage works in either call order; withLockoutMessage has no visible failure-message effect");
-        const response = await this.runner.eval({ engine: "am", hostCalls: true, source: Buffer.from(script.script, "base64").toString("utf8") + JOURNEY_HARVEST,
+        const response = await this.runner.eval({ engine: "am", hostCalls: true, timeoutMs: this.options.timeoutMs ?? 10000, source: Buffer.from(script.script, "base64").toString("utf8") + JOURNEY_HARVEST,
           sourceName: script.name ?? config.script ?? "script", classAllowList: decisionNodeClassAllowList(),
           preamble: journeyPreamble({ shared: state.shared, transient: frame.transient, callbacks: submitted, tree: frame.tree, inner, identityResource: currentTree.identityResource ?? `managed/${this.config.realm}_user`, realm: this.config.realm, scriptName: script.name ?? config.script ?? "script", scriptId: config.script ?? "script", ...(state.existingSession ? { existingSession: state.existingSession } : {}), ...(request.headers ? { headers: { ...request.headers } } : {}), ...(request.cookies ? { cookies: { ...request.cookies } } : {}), parameters: Object.fromEntries(Object.entries(request.query).map(([key, value]) => [key, typeof value === "string" ? [value] : [...value]])) }),
         }, { onCall: this.evidence.bind((call) => this.host(call)) });
@@ -202,6 +219,7 @@ export class JourneyEmulator {
           this.measured("queued callbacks supersede goTo; node re-executes on resume with shared state preserved");
           this.evidence.assumed("basic callback wire envelopes reuse binding effect fields; input defaults use empty strings except HiddenValue id and TextInput defaultText");
           const callbacks = toWire(result.effects.callbacks, (name) => this.missing(name));
+          state.pending = callbacks;
           return { status: 200, body: { authId: this.snapshot(state), callbacks } };
         }
         outcome = result.effects.outcome;
@@ -239,13 +257,26 @@ export class JourneyEmulator {
     const frame = state.frames.at(-1); if (!frame) throw new Error("journey advance frame invariant");
     const node = this.tree(frame.tree).nodes[frame.node]; if (!node) throw new Error("journey advance node invariant");
     if (!Object.hasOwn(node.connections, outcome)) { this.measured("declared but unwired node outcome returns empty 500"); return this.empty(); }
-    if (state.errorMessage !== null) this.evidence.assumed("action error message persists across node boundaries");
+    if (state.errorMessage !== null) this.evidence.assumed("action error message persists across node and callback boundaries");
     frame.node = node.connections[outcome] ?? "";
     return undefined;
   }
+  private checkHostValue(value: JsonValue): void {
+    try {
+      JSON.stringify(value, (_key, item: unknown) => {
+        if (typeof item === "number" && (!Number.isFinite(item) || Object.is(item, -0))) this.missing("AM host non-finite or negative-zero result");
+        if (["undefined", "function", "symbol", "bigint"].includes(typeof item)) this.missing("AM host non-JSON result");
+        return item;
+      });
+    } catch (error) {
+      if (emulationFailure(error)) throw error;
+      throw new EmulationFailure({ kind: "protocol", message: "AM host result is not JSON serializable" });
+    }
+  }
+
   private async host(call: HostCall): Promise<JsonValue> {
     if (call.method !== "http") {
-      try { return await this.idm.onCall(call); }
+      try { const result = await this.idm.onCall(call); this.checkHostValue(result); return result; }
       catch (error) {
         if (error instanceof HostCallError) this.evidence.assumed("AM openidm errors use a JavaException-named JS adapter with string code and JSON detail");
         throw error;
@@ -255,10 +286,12 @@ export class JourneyEmulator {
     if (typeof url !== "string" || !isDocument(options)) this.missing("httpClient request shape");
     if (!this.options.http) this.missing(`unmocked httpClient.send: ${url}`);
     this.evidence.assumed("httpClient response is supplied by the test mock; get/json/text wrappers reuse AM binding shapes");
-    let response;
+    let response: Awaited<ReturnType<HttpMock>>;
     try { response = await this.options.http(url, options); }
     catch (error) { throw new EmulationFailure(emulationFailure(error) ?? { kind: "internal", message: `journey HTTP mock failed: ${String(error)}` }); }
     if (!response || !Number.isInteger(response.status) || response.status < 100 || response.status > 599) this.missing(`httpClient mock response: ${url}`);
-    return { status: response.status, body: response.body ?? null, headers: response.headers ?? {} };
+    const result = { status: response.status, body: response.body ?? null, headers: response.headers ?? {} };
+    this.checkHostValue(result);
+    return result;
   }
 }

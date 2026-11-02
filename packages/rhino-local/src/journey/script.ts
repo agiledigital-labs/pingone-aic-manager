@@ -64,7 +64,7 @@ var __journeyErrorMessage = null;
       };
     });
   }
-  protect(nodeState, 'nodeState'); protect(callbacks, 'callbacks'); protect(callbacksBuilder, 'callbacksBuilder');
+  protect(action, 'action'); protect(journey, 'journey'); protect(nodeState, 'nodeState'); protect(callbacks, 'callbacks'); protect(callbacksBuilder, 'callbacksBuilder');
 })(__rhinoLocalJourneyHost);
 `;
 }
