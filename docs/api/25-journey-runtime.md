@@ -22,9 +22,12 @@ and never print a `tokenId`.** Read the fields an experiment needs by name.
 
 ## Verified against
 
-Sandbox tenant, realm `alpha`, **2026-11-02**. Every row names the
-`scripts/experiment-journey-*.sh` run that established it. Rows not so marked
-are not measured.
+Sandbox tenant, realm `alpha`, **2026-11-02**, next-gen scripted decisions
+(`evaluatorVersion: "2.0"`). Every section names the
+`scripts/experiment-journey-*.sh` run that established it; those scripts
+create their own `zzemu-*` trees, nodes, scripts and users and delete them on
+exit (set `AIC_REPO` to the checkout whose `.aic/` holds the tenant context).
+Anything under "Not yet measured" is not.
 
 ## Page node
 
@@ -161,7 +164,7 @@ Measured 2026-11-02 with `scripts/experiment-journey-collectors.sh`. Variant
 | `required` output | Mirrors the node's `required` flag | Same |
 | State written | **Shared** `objectAttributes = {givenName, sn, mail}`, nothing at top level (`nodeState.get("mail")` is `null`) | Present after the dump's round trip |
 | A required attribute left empty | The whole page is **sent again**, with every submitted value echoed in its callback's `value` output — and `failedPolicies` on `mail` still `[]`; no message says why | The next submission, differing only in a filled `mail`, left the page |
-| `ValidatedUsernameNode` | Emits `ValidatedCreateUsernameCallback` (outputs `policies`, `failedPolicies`, `validateOnly`, `prompt: "Username"`; no `name`). An empty submission came back with `failedPolicies` naming `REQUIRED` and `MIN_LENGTH`. Writes **shared** `username` and shared `objectAttributes.userName` | — |
+| `ValidatedUsernameNode` | Emits `ValidatedCreateUsernameCallback` (outputs `policies`, `failedPolicies`, `validateOnly`, `prompt: "Username"`; no `name`). An empty submission came back with the page re-sent and `failedPolicies` naming `REQUIRED` and `MIN_LENGTH` — an array of **JSON-encoded strings** (`["{ \"policyRequirement\": \"REQUIRED\" }", …]`), not of objects. Writes **shared** `username` and shared `objectAttributes.userName` | — |
 | `ValidatedPasswordNode` with `validateInput: false` | Emits a plain **`PasswordCallback`** (`prompt: "Password"`), not `ValidatedCreatePasswordCallback`. Writes **transient** `password` and a **transient** `objectAttributes = {password}` | Both gone after the dump's round trip, while `username` survived |
 
 **`objectAttributes` lives in both channels at once, and `nodeState.get` does
@@ -271,4 +274,24 @@ script afterwards was 200).
 
 ## Not yet measured
 
-- Everything above, pending the experiments.
+None of these was exercised; do not build on them as measured:
+
+- Identify Existing User when `objectAttributes[identityAttribute]` and
+  `username` name **different** existing users (which wins).
+- Create Object / Patch Object fed a **split** `objectAttributes` (part
+  shared, part transient, as a Validated Password page leaves it); Patch
+  Object with `patchAsObject: true`, or with `ignoredFields`.
+- `ValidatedPasswordNode` with `validateInput: true` (expected to emit
+  `ValidatedCreatePasswordCallback`; not observed), and the effect of
+  `IDTokenNvalidateOnly: true` on any validated callback.
+- A Page node holding a node that is not a collector or scripted decision; a
+  scripted child that calls `action.suspend()` or `withHeader` inside a page.
+- `withLockoutMessage` on an account that is actually locked out.
+- Inner Tree with `displayErrorOutcome: true` when the inner tree throws; an
+  inner tree that sends callbacks; nested inner trees.
+- Replaying the `authId` of a step that led to **success** (whether a second
+  session is minted).
+- Message Node, Choice Collector, Polling Wait, Email Suspend and other node
+  types not named above.
+- Any of this in realm `bravo` or under a `noSession` / `transactionalOnly`
+  tree.
