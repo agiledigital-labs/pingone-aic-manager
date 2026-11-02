@@ -6,6 +6,28 @@ new things are learned.
 
 ---
 
+## 2026-11-02 — journey runtime surprises
+
+Measured with `scripts/experiment-journey-*.sh`; details and controls in
+`25-journey-runtime.md`.
+
+- **Deleting a tree deletes its nodes**, page children included. A node
+  referenced by no tree survives the same `DELETE`; scripts are never deleted
+  with a tree. `09-journeys.md` recorded only that the tree `GET` 404s
+  afterwards. Anything that deletes a tree and then its nodes must accept 404
+  for the nodes.
+- **A node type's outcomes are listable**: `POST …/nodes/{nodeType}?_action=listOutcomes`
+  with the node config as the body. The per-node path (`…/{id}?_action=listOutcomes`)
+  is `501`. `09-journeys.md`'s catalog section did not list this action.
+- **A replayed `authId` is accepted**, and callbacks posted with no `authId`
+  start a fresh journey whose first node is handed them as if resuming.
+- **Two different empty-body 500s** stand in for configuration faults: an
+  outcome declared on a node (or page) but not connected in the tree, and
+  reaching Success with no `username` in shared state. An outcome the node
+  does not declare is instead the ordinary `401 Login failure`.
+
+---
+
 ## 2026-10-26 — relationships carry `repo.ds` mappings after all
 
 `10-managed-objects.md` said generic custom objects need no `repo.ds`
@@ -52,6 +74,12 @@ lane: it queued a TextOutputCallback, wrote shared state, and called
 contradicts the earlier claim in `12-script-bindings-matrix.md` and
 `09-journeys.md` that callbacks are sent only without `goTo`. The measurement
 was supplied to this change; it was not re-run by the implementing agent.
+
+**Re-run 2026-11-02** (`scripts/experiment-journey-flow.sh`, part 3, with a
+control identical minus the callback): **confirmed**. The callback was
+returned and the outcome discarded; on resume the script ran again from the
+top with `callbacks` non-empty and its `goTo` was then acted on. See
+`25-journey-runtime.md`, "Callbacks versus `goTo`".
 
 ---
 
