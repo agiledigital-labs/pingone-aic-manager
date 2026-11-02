@@ -2,14 +2,46 @@
 import { mockPreamble } from "../bindings/preamble.ts";
 import type { Given, CallbackEffect } from "../case/types.ts";
 import type { Document } from "../idm/types.ts";
-export type ScriptState = { shared: Document; transient: Document; callbacks: CallbackEffect[]; tree: string; inner: boolean; identityResource: string; realm: string; scriptName: string; scriptId: string; existingSession?: Record<string, string>; headers?: Record<string, string[]>; cookies?: Record<string, string>; parameters?: Record<string, string[]> };
+export type ScriptState = {
+  shared: Document;
+  transient: Document;
+  callbacks: CallbackEffect[];
+  tree: string;
+  inner: boolean;
+  identityResource: string;
+  realm: string;
+  scriptName: string;
+  scriptId: string;
+  existingSession?: Record<string, string>;
+  headers?: Record<string, string[]>;
+  cookies?: Record<string, string>;
+  parameters?: Record<string, string[]>;
+};
 export function journeyPreamble(state: ScriptState): string {
-  const given: Given = { engine: "next-gen", sharedState: state.shared, transientState: state.transient, callbacks: state.callbacks,
-    realm: state.realm, scriptName: state.scriptName, loggerScriptId: state.scriptId,
-    requestHeaders: state.headers ?? {}, requestCookies: state.cookies ?? {}, requestParameters: state.parameters ?? {},
+  const given: Given = {
+    engine: "next-gen",
+    sharedState: state.shared,
+    transientState: state.transient,
+    callbacks: state.callbacks,
+    realm: state.realm,
+    scriptName: state.scriptName,
+    loggerScriptId: state.scriptId,
+    requestHeaders: state.headers ?? {},
+    requestCookies: state.cookies ?? {},
+    requestParameters: state.parameters ?? {},
     ...(state.existingSession ? { existingSession: state.existingSession } : {}),
-    bindings: { journey: { name: state.tree, innerJourney: state.inner, identityResource: state.identityResource, mustRun: false } } };
-  return mockPreamble(given) + `
+    bindings: {
+      journey: {
+        name: state.tree,
+        innerJourney: state.inner,
+        identityResource: state.identityResource,
+        mustRun: false,
+      },
+    },
+  };
+  return (
+    mockPreamble(given) +
+    `
 var __journeyErrorMessage = null;
 (function(host) {
   function absent(name) { return host('missing', name); }
@@ -66,6 +98,7 @@ var __journeyErrorMessage = null;
   }
   protect(action, 'action'); protect(journey, 'journey'); protect(nodeState, 'nodeState'); protect(callbacks, 'callbacks'); protect(callbacksBuilder, 'callbacksBuilder');
 })(__rhinoLocalJourneyHost);
-`;
+`
+  );
 }
 export const JOURNEY_HARVEST = `\n;JSON.stringify({effects:JSON.parse(__rhinoLocalHarvest()),errorMessage:__journeyErrorMessage});\n`;
