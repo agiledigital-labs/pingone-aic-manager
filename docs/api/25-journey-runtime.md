@@ -177,19 +177,97 @@ shared-only maps; a split map was not fed to them.)
 
 ## Transient state across a callback-free boundary
 
-Not yet measured.
+Measured 2026-11-02 with `scripts/experiment-journey-flow.sh` (part 1).
+`S1` wrote `zzT` (transient) and `zzS` (shared) and went straight to `S2`,
+which read both, then to a dump node.
+
+| Boundary | `zzT` (transient) | Control |
+| --- | --- | --- |
+| `S1` → `S2`, no callback | **Visible** (`"t1"`) | — |
+| `S1` → `S2` → dump, still no callback | Visible on the dump's first pass | — |
+| The dump's own callback round trip | **Gone** (`null`, absent from `keys()`) | `zzS` (shared) survived the same round trip |
+
+Transient state lives for the whole server-side run between two client
+round trips, across any number of nodes, and is dropped at the round trip — the
+same rule as `09-journeys.md` "What survives a callback round trip". Inner
+trees are the exception (they get their own transient state, see above).
 
 ## Failure shapes
 
-Not yet measured.
+Measured 2026-11-02 with `scripts/experiment-journey-flow.sh` (part 2). Each
+variant is a one-script tree, `true` → Success, `false` → Failure. `f-plain`
+is the control the message variants are compared against.
+
+| Variant | HTTP | Body |
+| --- | --- | --- |
+| `goTo("false")` → Failure node | 401 | `{"code":401,"reason":"Unauthorized","message":"Login failure"}` |
+| `goTo("false").withErrorMessage("x")` | 401 | same, **`message: "x"`** |
+| `withErrorMessage("x").goTo("false")` | 401 | same, `message: "x"` — order does not matter |
+| `goTo("false").withLockoutMessage("x")` | 401 | `message: "Login failure"` — the lockout message did **not** appear |
+| the script throws `new Error(…)` | 401 | `Login failure` (no hint of the exception) |
+| `goTo("nope")`, an outcome the node does not declare | 401 | `Login failure` |
+| `goTo("other")`, declared on the node but **not connected** in the tree | **500** | **empty body** (the page-node variant of this is in the Page node table) |
+| `goTo("true")` → Success with shared `username` set | 200 | `{"tokenId":"…","successUrl":"/enduser/?realm=/alpha","realm":"/alpha"}` |
+| `goTo("true")` → Success with **no `username`** | **500** | **empty body** |
+| `goTo("true").withErrorMessage("x")`, no `username` | 500 | empty body — same as the row above |
+| `goTo("true").withErrorMessage("x")` with `username` | 200 | a normal success; the message is ignored |
+| `authIndexValue` naming no tree | 400 | `{"code":400,"reason":"Bad Request","message":"No Configuration found"}` — identical to invoking an `innerTreeOnly` tree |
+| Resubmitting an **earlier** response (stale `authId`) after it was already answered once | **200** | Accepted: the node ran again from that point and gave the same result as the first submission |
+| `authId` with its last 8 characters altered | 400 | `{"code":400,"reason":"Bad Request","message":"Authentication Error: Invalid AuthId Signature"}` |
+| The callbacks resubmitted **without** `authId` | 200 | A **new** journey starts, and its first node receives the submitted callbacks as if resuming (the probe node took its `callbacks`-non-empty branch, with the first-pass-only key `maxAuthenticationSessionDuration` present) |
+
+The `authId` is a signed, client-held token of roughly 2 KB (lengths 1,900–3,100
+here, growing with state), and a replayed one is not rejected — replay
+protection is not something an emulator should add.
+
+The success-without-`username` row is the trap the `withErrorMessage` row
+would otherwise hide: the 500 belongs to the missing principal, not to the
+message.
 
 ## Declared outcomes
 
-Not yet measured.
+Measured 2026-11-02 (all scripts above call it): **`POST
+/am/json/realms/root/realms/alpha/realm-config/authentication/authenticationtrees/nodes/{nodeType}?_action=listOutcomes`
+with a node _config_ as the body** returns `[{"id": …, "displayName": …}]`.
+
+| Node type | Body | Outcomes |
+| --- | --- | --- |
+| `UsernameCollectorNode`, `PasswordCollectorNode`, `AttributeCollectorNode`, `ValidatedUsernameNode`, `ValidatedPasswordNode` | `{}` or their config | `outcome` |
+| `ScriptedDecisionNode` | `{}` | `[]` — its outcomes are the config's `outcomes` |
+| `PageNode` | `{}` | `[]` |
+| `PageNode` | `{"nodes": [<child refs>]}` | the **last** child's outcomes, read from that child's stored config by `_id` (`["a","b"]`, `["outcome"]`, `["true"]` measured) |
+| `InnerTreeEvaluatorNode` | `{"displayErrorOutcome": false}` / `true` | `true,false` / `true,false,error` |
+| `IdentifyExistingUserNode` | `{}` | `true,false` |
+| `CreateObjectNode` | `{}` | `CREATED,FAILURE` |
+| `PatchObjectNode` | `{}` | `PATCHED,FAILURE` |
+
+The per-instance form, `POST …/nodes/{nodeType}/{id}?_action=listOutcomes`,
+is **`501 listOutcomes not supported`** for every type tried (Page, Scripted
+Decision, Username Collector).
 
 ## Callbacks versus `goTo`
 
-Not yet measured.
+Measured 2026-11-02 with `scripts/experiment-journey-flow.sh` (part 3),
+re-running the measurement `99-quirks-and-open-questions.md` (2026-09-30)
+recorded as supplied but never re-run.
+
+| Variant | Step 1 | Step 2 |
+| --- | --- | --- |
+| `cb-and-goto`: on its first pass queues a `TextOutputCallback` **and** calls `goTo("true")` | **The callback is returned**; the outcome is discarded | Resubmitting runs the script **again** (its pass counter, kept in shared state, read `2`; `callbacks.isEmpty()` was `false`), its `goTo("true")` is now acted on and the dump node runs |
+| `goto-only`: identical minus the callback (control) | The dump node runs straight away; pass counter `1` | — |
+
+Confirmed: queued callbacks win over `goTo` on the same pass, the node is
+re-executed from the top on resume, and shared state written on the
+suspended pass survives into the resumed one.
+
+## Tree deletion removes the tree's nodes
+
+Measured 2026-11-02 with `scripts/experiment-journey-flow.sh` (part 4):
+a `ScriptedDecisionNode` referenced by a tree and one referenced by none both
+`GET` 200; after `DELETE` of the tree (200) the first `GET`s **404** and the
+second still 200. The page experiments showed the same for nodes that are only
+page children. Scripts are **not** deleted with the tree (each `DELETE` of a
+script afterwards was 200).
 
 ## Not yet measured
 
