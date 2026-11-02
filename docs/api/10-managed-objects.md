@@ -70,6 +70,15 @@ single-node test reproduces. Prefer create-based acquisition over PUT-upsert,
 but do not treat any managed-object create as a hard mutex in a replicated
 deployment without further validation.
 
+Orchestrator-supplied sandbox probe **p24**, **2026-11-02**, reconfirmed that
+script reads of an unconfigured managed type, endpoint, config resource and
+system resource return `null`. Querying the unconfigured managed collection
+instead threw `org.forgerock.json.resource.NotFoundException: Resource
+'managed/<name>' not found`. This measures genuinely absent tenant resources;
+it does not establish that an arbitrary unimplemented emulator namespace is
+absent. A local emulator needs authoritative configuration coverage before
+answering such an existence probe.
+
 ### Record fields and ids are object-type-specific
 
 The maintainer measured two fixture-relevant differences on the sandbox on

@@ -7,11 +7,15 @@ let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
 const routes = ["system/hr/account/123", "repo/internal/user/123", "config/sync", "config/access", "internal/user/123", "unrouted/path", "managed/notConfigured/123", "endpoint/notConfigured"];
-it.each(routes)("Astra #1 unsupported read %s is fatal even through finally", async (path) => {
-  expectEmulationFailure(`resource route: ${path}`);
-  const result = await runner.eval({ engine: "idm", source: `try { openidm.read(${JSON.stringify(path)}); } catch(e) {} finally { 42; }` }, { onCall: emulator(runner).onCall });
-  expect(result.outcome).not.toBe("ok");
-  expect(result.emulation?.missing).toContain(`resource route: ${path}`);
+it.each(routes)("Astra #1 route knowledge determines the outcome for read %s", async (path) => {
+  const knownAbsent = path.startsWith("managed/notConfigured") || path === "endpoint/notConfigured";
+  if (!knownAbsent) expectEmulationFailure(`resource route: ${path}`);
+  const result = await runner.eval({ engine: "idm", source: `(function(){try { return openidm.read(${JSON.stringify(path)}); } catch(e) {} finally { 42; }})()` }, { onCall: emulator(runner).onCall });
+  if (knownAbsent) expect(result).toMatchObject({ outcome: "ok", value: null });
+  else {
+    expect(result.outcome).not.toBe("ok");
+    expect(result.emulation?.missing).toContain(`resource route: ${path}`);
+  }
 });
 it.each(["GET", "POST", "PUT", "PATCH", "DELETE"] as const)("Astra #1 unsupported REST %s route names its cause", async (method) => {
   expectEmulationFailure("resource route: other/a");

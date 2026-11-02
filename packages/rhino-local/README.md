@@ -876,9 +876,15 @@ Managed schemas retain object hooks, property hooks and custom `actions`.
 and script `file` references fail as missing behavior. The caller owns the
 runner and closes it after every emulator/fork using it has finished.
 
-Unimplemented routes fail as `missing`, including unknown managed types,
-endpoints and config snapshots; only an absent id in an implemented collection
-reads as null. The built-in collection actions `patch`, `triggerSyncCheck` and
+Unimplemented routes fail as `missing` unless the supplied configuration
+establishes absence. The managed and endpoint maps are authoritative: unknown
+names read as null internally and queries throw NotFoundException. Managed query
+and both read outcomes are measured by orchestrator p24 (2026-11-02); endpoint
+query diagnostic reuse is assumed. The endpoint map also establishes absent
+`config/endpoint/<name>` snapshots (assumed). Unknown general `config/*`, `system/*`
+and other namespaces remain missing, even though p24 observed null for genuinely
+absent tenant resources there: the emulator was not given those namespaces.
+An absent id in an implemented collection continues to read as null. The built-in collection actions `patch`, `triggerSyncCheck` and
 `updateLastSync` are explicit missing boundaries. Readable ids remain supported
 except on measured `alpha_user` and `bravo_user`, which require UUID syntax.
 

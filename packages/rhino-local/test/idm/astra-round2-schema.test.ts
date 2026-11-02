@@ -80,3 +80,10 @@ it.each(["{}", "{_queryExpression:'x'}"])("A2 #4 query rejection %s precedes sto
   const result = await runner.eval({ engine: "idm", source: `try {openidm.query('managed/widget',${params})} catch(e) {e.javaException.getCode()}` }, { onCall: make({ properties: { text: { type: "string", viewable: false } } }).onCall });
   expect(result).toMatchObject({ outcome: "ok", value: params === "{}" ? 400 : 405 });
 });
+it("A2 #3 declaration validation precedes host argument normalization", async () => {
+  expectEmulationFailure("schema declaration shape: widget/box/items (expected object)");
+  const emu = make({ properties: { box: { type: "array", items: [] } } });
+  const result = await runner.eval({ engine: "idm", source: "try {openidm.create('managed/widget','a',null)} catch(e) {} 42;" }, { onCall: emu.onCall });
+  expect(result.emulation?.missing).toContain("schema declaration shape: widget/box/items (expected object)");
+  expect(result.outcome).not.toBe("ok");
+});
