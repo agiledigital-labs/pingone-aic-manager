@@ -241,8 +241,8 @@ Measured with a throwaway `config/endpoint/zzemu-probe`.
 
 ## Not yet measured
 
-Read from IDM's bytecode while preparing these probes, and **not** verified live
-— treat as hypotheses:
+Unverified runtime hypotheses and open cases. Some were read from IDM's bytecode
+while preparing these probes; none below was verified live:
 
 - A `PUT` whose content equals the stored record runs no hooks and does not bump
   `_rev`. (The `PATCH` row above is verified; the `PUT` probe was confounded by
