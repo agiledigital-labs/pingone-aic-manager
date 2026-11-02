@@ -882,14 +882,23 @@ reads as null. The built-in collection actions `patch`, `triggerSyncCheck` and
 `updateLastSync` are explicit missing boundaries. Readable ids remain supported
 except on measured `alpha_user` and `bravo_user`, which require UUID syntax.
 
-Schema capability checks fail closed before repository work. Writes with
+Declaration shape/location validation runs first across supplied configuration,
+before routing. Tuple/array-form `items`, malformed schemas/scripts and nested
+property hooks/file references/defaults are missing; only immediate property
+hooks/defaults are implemented. Type-mismatched defaults are missing until schema
+activation/unavailability is modeled. Routing, known absence, and implemented
+rejections (including unknown collection actions and invalid query selectors)
+then run before storage-capability checks. Schema `id` remains unmeasured and
+refused when storage is reached; it cannot block a known-absent record read or
+the implemented unknown-action rejection.
+
+Storage capability checks retain the conservative whole-schema refusal rule. Writes with
 `encryption` or `secureHash`, and reads/writes with `isVirtual`,
 `returnByDefault`, `viewable`, `userEditable`, `scope`, unknown types or declarations
 are missing until implemented and measured. Checks include nested properties and
 array items; they conservatively refuse the declared capability even if that
 request supplies no value. Relationships remain missing. `searchable` is the
-measured UI/schema setting, not an index declaration. Display metadata, defaults
-and hooks are supported. Declared `enum`, `required` and `policies` require the
+measured UI/schema setting, not an index declaration. Display metadata and supported immediate defaults/hooks remain implemented. Declared `enum`, `required` and `policies` require the
 explicit policy evaluator on writes; without one they are missing rather than
 silently accepted. The generic policy omission assumption remains for schemas
 without such declarations. HTTP reads/queries omit `alpha_user.password`;

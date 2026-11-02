@@ -54,9 +54,17 @@ export class ManagedStore {
   async dispatch(type: ManagedType, id: string | undefined, op: Operation): Promise<Reply> {
     const { request } = op;
     const action = request.query?._action;
+    // Configuration shape checks ran before routing. Finish known absence and
+    // implemented rejections before inspecting storage capabilities.
+    if (request.method === "POST" && id === undefined && action !== undefined && action !== "create") return this.action(type, id, op);
+    if (id !== undefined && (["GET", "PATCH", "DELETE"].includes(request.method) ||
+        (request.method === "PUT" && revision(request) !== undefined))) {
+      const existing = this.stored(type, id);
+      if (request.method !== "GET") this.checkRevision(existing, request);
+    }
     const noneMatch = header(request, "If-None-Match");
     if (noneMatch !== undefined && noneMatch !== "*") missing(this.evidence, "If-None-Match other than star");
-    checkCapabilities(type, !["GET", "DELETE"].includes(request.method), this.evidence, this.policy !== undefined);
+    if (request.method !== "GET") checkCapabilities(type, request.method !== "DELETE", this.evidence, this.policy !== undefined);
     this.evidence.measured("managed CRUD status and response shapes", "docs/api/10-managed-objects.md");
     if (request.method === "GET") {
       if (id !== undefined) return { status: 200, body: await this.read(type, id, op) };
@@ -132,6 +140,7 @@ export class ManagedStore {
 
   private async read(type: ManagedType, id: string, op: Operation, readHook = true, selectors = fields(op.request.query?._fields)): Promise<Document> {
     const object = this.stored(type, id);
+    checkCapabilities(type, false, this.evidence, this.policy !== undefined);
     if (!readHook) this.evidence.assumed("executeOnRetrieve request.method is query");
     this.evidence.measured(readHook ? "managed read hook order and bindings" : "query executeOnRetrieve hook order and bindings");
     const invocation = this.invocation(type, id, op, readHook ? "read" : "query", object, null, null);
@@ -332,6 +341,7 @@ export class ManagedStore {
     this.evidence.measured("CREST filter syntax and documented parse failures", "docs/api/10-managed-objects.md");
     this.evidence.assumed("CREST comparison uses case-sensitive strings and existential array matching");
     const filter = parseFilter(query._queryFilter);
+    checkCapabilities(type, false, this.evidence, this.policy !== undefined);
     let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, row)).map(([, row]) => structuredClone(row));
     if (query._sortKeys !== undefined) {
       this.evidence.measured("nested query sort keys", "docs/api/10-managed-objects.md");
