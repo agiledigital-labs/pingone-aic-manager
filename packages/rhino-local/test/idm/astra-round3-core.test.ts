@@ -13,8 +13,8 @@ it.each(["endpoint/notSupplied", "config/endpoint/notSupplied"])("A3 #1 omitted 
   expect(result.outcome).not.toBe("ok");
   expect(result.emulation?.missing).toContain(`resource route: ${path}`);
 });
-it.each([{}, { actual: js("({ok:true})") }])("A3 #1 a supplied endpoint map is authoritative: %j", async (endpoints) => {
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints }), runner);
+it.each([{}, { actual: js("({ok:true})") }])("A3 #1 an explicitly complete endpoint map establishes absence: %j", async (endpoints) => {
+  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints, complete: { endpoints: true } }), runner);
   const result = await runner.eval({ engine: "idm", source: "({endpoint:openidm.read('endpoint/notSupplied'),config:openidm.read('config/endpoint/notSupplied')})" }, { onCall: emu.onCall });
   expect(result).toMatchObject({ outcome: "ok", value: { endpoint: null, config: null } });
 });

@@ -876,20 +876,38 @@ Managed schemas retain object hooks, property hooks and custom `actions`.
 and script `file` references fail as missing behavior. The caller owns the
 runner and closes it after every emulator/fork using it has finished.
 
-Unimplemented routes fail as `missing` unless the supplied configuration
-establishes absence. The required managed config is authoritative; omission is a construction error,
-never an implicit empty managed namespace. For endpoints, omission (or undefined)
-means unknown coverage, so both `endpoint/<name>` and `config/endpoint/<name>`
-remain missing. A supplied endpoint map, including `{}`, is authoritative for
-that namespace. A partial fixture supplied as a map deliberately declares every
-unlisted endpoint absent; there is no separate opt-in. Forks retain that coverage.
-With supplied namespace coverage: unknown
-names read as null internally and queries throw NotFoundException. Managed query
-and both read outcomes are measured by orchestrator p24 (2026-11-02); endpoint
-query diagnostic reuse is assumed. The endpoint map also establishes absent
-`config/endpoint/<name>` snapshots (assumed). Unknown general `config/*`, `system/*`
-and other namespaces remain missing, even though p24 observed null for genuinely
-absent tenant resources there: the emulator was not given those namespaces.
+Unimplemented routes fail as `missing`. Supplying managed types or endpoint
+implementations covers only the listed names; unlisted names remain unknown,
+including with an empty map. To model genuinely absent names, explicitly declare
+namespace completeness:
+
+```ts
+new IdmConfig({
+  managed: { objects: [widgetType] },
+  endpoints: {},
+  complete: { managed: true, endpoints: true },
+});
+```
+
+Both flags default to false. Managed config is required, but even a full
+`managed.json` pull needs `complete.managed: true`: the emulator cannot distinguish
+that document from a partial fixture by its shape. A caller loading a complete
+pull can make that declaration explicitly. Endpoint completeness requires an
+explicit endpoint map, including `{}` for an empty namespace. Omission or
+undefined means no endpoint snapshot was supplied. Namespace containers must be
+plain objects (ordinary or null prototype); null, arrays, primitives and class
+instances are configuration errors at construction, before normalization.
+
+With explicit completeness, an unlisted name reads as null internally and queries
+throw NotFoundException. Each such absence carries `assumed: caller declared
+managed namespace complete` or `assumed: caller declared endpoints namespace
+complete`: the emulator cannot verify the caller's claim. The null read and
+managed-query diagnostic are measured by orchestrator p24 (2026-11-02); endpoint
+query diagnostic reuse is assumed. Endpoint completeness also covers absent
+`config/endpoint/<name>` snapshots (assumed). REST absence uses 404 (assumed).
+Forks preserve the declarations. Unknown general `config/*`, `system/*` and other
+namespaces remain missing, even though p24 observed null for genuinely absent
+tenant resources there: the emulator was not given those namespaces.
 An absent id in an implemented collection continues to read as null. The built-in collection actions `patch`, `triggerSyncCheck` and
 `updateLastSync` are explicit missing boundaries. Readable ids remain supported
 except on measured `alpha_user` and `bravo_user`, which require UUID syntax.
