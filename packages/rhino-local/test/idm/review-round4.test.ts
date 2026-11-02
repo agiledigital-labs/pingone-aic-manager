@@ -25,7 +25,7 @@ it.each([
 });
 
 it("R4 #1 a joined completed child preserves shell spawn arguments and success", async () => {
-  const result = await runner.eval({ engine: "idm", timeoutMs: 0, source: `
+  const result = await runner.eval({ engine: "idm", timeoutMs: 2000, source: `
     var out=new java.util.concurrent.atomic.AtomicInteger(0);
     spawn(function(a,b){out.set(a+b)},[19,23]).join();out.get();
   ` });

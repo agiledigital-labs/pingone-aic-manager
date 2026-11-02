@@ -14,6 +14,7 @@ final class IdmContextFactory extends ContextFactory {
   volatile EmulationFailure failure;
   final java.util.Set<String> missing = new java.util.concurrent.ConcurrentSkipListSet<String>();
   private volatile boolean finished;
+  volatile boolean usedSpawn;
   private final java.util.List<Thread> spawned = new java.util.ArrayList<Thread>();
 
   /** Shell spawn calling convention, with admission recorded before thread start. */
@@ -21,6 +22,12 @@ final class IdmContextFactory extends ContextFactory {
     if (args.length == 0 || !(args[0] instanceof Function || args[0] instanceof Script)) {
       return shellSpawn.call(parent, scope, scope, args); // Shell's own argument error.
     }
+    if (timeoutMs <= 0) {
+      EmulationFailure error = new EmulationFailure("missing", "Missing IDM behavior: spawn with disabled deadline");
+      error.info.put("missing", java.util.Collections.singletonList("spawn with disabled deadline"));
+      throw fail(error);
+    }
+    usedSpawn = true;
     final Object target = args[0];
     final Object[] argv = args.length > 1 && args[1] instanceof Scriptable
         ? parent.getElements((Scriptable) args[1]) : ScriptRuntime.emptyArgs;
@@ -63,6 +70,8 @@ final class IdmContextFactory extends ContextFactory {
       try { thread.join(remaining); }
       catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
     }
+    // Java waits need not honor interrupts. Such a JVM must never accept reuse.
+    for (Thread thread : live) if (thread.isAlive()) Runner.retire();
   }
 
   synchronized EmulationFailure fail(EmulationFailure error) {

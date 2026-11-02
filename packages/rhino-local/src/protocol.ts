@@ -141,6 +141,8 @@ export interface JobResponse {
   missing?: string[];
   /** Assumptions reached by IDM runtime helpers. */
   assumed?: string[];
+  /** Measured behavior reached by IDM runtime helpers, with probe attribution. */
+  measured?: string[];
 }
 
 const OUTCOMES: ReadonlySet<string> = new Set([
@@ -180,6 +182,7 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
     ...(raw.unanswered === undefined ? {} : { unanswered: raw.unanswered as number[] }),
     ...(raw.emulation === undefined ? {} : { emulation: raw.emulation as EmulationFailureInfo }),
     ...(raw.assumed === undefined ? {} : { assumed: raw.assumed as string[] }),
+    ...(raw.measured === undefined ? {} : { measured: raw.measured as string[] }),
   };
 }
 

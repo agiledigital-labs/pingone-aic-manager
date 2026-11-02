@@ -30,7 +30,7 @@ final class IdmValues {
     return result;
   }
 
-  Object wrapRequest(Object value) {
+  synchronized Object wrapRequest(Object value) {
     Map<String, Object> map = Json.asObject(value, "request");
     String method = Json.asString(map.get("method"), "request.method");
     String tag = "Scriptable" + Character.toUpperCase(method.charAt(0)) + method.substring(1) + "Request";
@@ -56,7 +56,27 @@ final class IdmValues {
   }
 
   static Object internalValue(Object value) {
-    return javaValue(value, new IdentityHashMap<Object, Boolean>(), true);
+    return snapshot(javaValue(value, new IdentityHashMap<Object, Boolean>(), true));
+  }
+
+  /** Copy each shared backing container under the same lock used by its wrapper.
+   * Never hold a container lock across script getters, host calls or another graph. */
+  static Object snapshot(Object value) { return snapshot(value, new IdentityHashMap<Object, Boolean>()); }
+  private static Object snapshot(Object value, IdentityHashMap<Object, Boolean> active) {
+    if (!(value instanceof Map) && !(value instanceof List)) return value;
+    if (active.put(value, Boolean.TRUE) != null) throw Context.reportRuntimeError("rhino-local: cyclic IDM value");
+    try {
+      if (value instanceof Map) {
+        Map<String, Object> copy;
+        synchronized (value) { copy = new LinkedHashMap<String, Object>(Json.asObject(value, "map")); }
+        for (Map.Entry<String, Object> e : copy.entrySet()) e.setValue(snapshot(e.getValue(), active));
+        return copy;
+      }
+      List<Object> copy;
+      synchronized (value) { copy = new ArrayList<Object>((List<?>) value); }
+      for (int i = 0; i < copy.size(); i++) copy.set(i, snapshot(copy.get(i), active));
+      return copy;
+    } finally { active.remove(value); }
   }
 
   private static Object javaValue(Object value, IdentityHashMap<Object, Boolean> active, boolean internal) {
@@ -95,7 +115,7 @@ final class IdmValues {
 
   /** Endpoint/protocol conversion must not alter numeric values already stored in maps. */
   static Object wireValue(Object value) {
-    value = javaValue(value);
+    value = snapshot(javaValue(value));
     if (value instanceof Number && Double.isNaN(((Number) value).doubleValue())) return "NaN";
     if (value instanceof Map) {
       Map<String, Object> result = new LinkedHashMap<String, Object>();
@@ -129,8 +149,8 @@ final class IdmValues {
   }
 
   private abstract class Value extends ScriptableObject {
-    private Scriptable prototype;
-    private Scriptable parent = scope;
+    private volatile Scriptable prototype;
+    private volatile Scriptable parent = scope;
     Value(boolean array) {
       prototype = array ? ScriptableObject.getArrayPrototype(scope) : ScriptableObject.getObjectPrototype(scope);
     }
@@ -158,24 +178,28 @@ final class IdmValues {
       this.className = className;
       toJson = new BaseFunction(scope, ScriptableObject.getFunctionPrototype(scope)) {
         @Override public Object call(Context cx, Scriptable s, Scriptable self, Object[] args) {
-          return nativeValue(map);
+          return nativeValue(snapshot(map));
         }
       };
     }
     @Override Object backing() { return map; }
     @Override public String getClassName() { return className; }
     @Override public Object get(String name, Scriptable start) {
-      if (map.containsKey(name)) return wrap(map.get(name));
-      return "toJSON".equals(name) ? toJson : NOT_FOUND;
+      Object value;
+      synchronized (map) {
+        if (!map.containsKey(name)) return "toJSON".equals(name) ? toJson : NOT_FOUND;
+        value = map.get(name);
+      }
+      return wrap(value);
     }
     @Override public Object get(int index, Scriptable start) { return get(Integer.toString(index), start); }
-    @Override public boolean has(String name, Scriptable start) { return map.containsKey(name) || "toJSON".equals(name); }
+    @Override public boolean has(String name, Scriptable start) { synchronized (map) { return map.containsKey(name) || "toJSON".equals(name); } }
     @Override public boolean has(int index, Scriptable start) { return has(Integer.toString(index), start); }
-    @Override public void put(String name, Scriptable start, Object value) { map.put(name, javaValue(value)); }
+    @Override public void put(String name, Scriptable start, Object value) { Object converted = javaValue(value); synchronized (map) { map.put(name, converted); } }
     @Override public void put(int index, Scriptable start, Object value) { put(Integer.toString(index), start, value); }
-    @Override public void delete(String name) { map.remove(name); }
+    @Override public void delete(String name) { synchronized (map) { map.remove(name); } }
     @Override public void delete(int index) { delete(Integer.toString(index)); }
-    @Override public Object[] getIds() { return map.keySet().toArray(); }
+    @Override public Object[] getIds() { synchronized (map) { return map.keySet().toArray(); } }
   }
 
   private final class ListValue extends Value {
@@ -185,23 +209,27 @@ final class IdmValues {
     @Override Object backing() { return list; }
     @Override public String getClassName() { return "Array"; }
     @Override public Object get(String name, Scriptable start) {
-      if ("length".equals(name)) return Integer.valueOf(list.size());
+      if ("length".equals(name)) { synchronized (list) { return Integer.valueOf(list.size()); } }
       try { return get(Integer.parseInt(name), start); } catch (NumberFormatException e) { return NOT_FOUND; }
     }
     @Override public Object get(int index, Scriptable start) {
-      return index >= 0 && index < list.size() ? wrap(list.get(index)) : NOT_FOUND;
+      Object value;
+      synchronized (list) { if (index < 0 || index >= list.size()) return NOT_FOUND; value = list.get(index); }
+      return wrap(value);
     }
     @Override public boolean has(String name, Scriptable start) {
       if ("length".equals(name)) return true;
       try { return has(Integer.parseInt(name), start); } catch (NumberFormatException e) { return false; }
     }
-    @Override public boolean has(int index, Scriptable start) { return index >= 0 && index < list.size() && list.get(index) != null; }
+    @Override public boolean has(int index, Scriptable start) { synchronized (list) { return index >= 0 && index < list.size() && list.get(index) != null; } }
     @Override public void put(String name, Scriptable start, Object value) {
       if ("length".equals(name)) {
         int length = (int) Context.toNumber(value);
         if (length < 0) throw Context.reportRuntimeError("Invalid array length");
-        while (list.size() > length) list.remove(list.size() - 1);
-        while (list.size() < length) list.add(null);
+        synchronized (list) {
+          while (list.size() > length) list.remove(list.size() - 1);
+          while (list.size() < length) list.add(null);
+        }
       } else {
         try { put(Integer.parseInt(name), start, value); } catch (NumberFormatException e) {
           throw Context.reportRuntimeError("rhino-local: non-index list property " + name);
@@ -210,17 +238,22 @@ final class IdmValues {
     }
     @Override public void put(int index, Scriptable start, Object value) {
       if (index < 0) return;
-      while (list.size() <= index) list.add(null);
-      list.set(index, javaValue(value));
+      Object converted = javaValue(value);
+      synchronized (list) {
+        while (list.size() <= index) list.add(null);
+        list.set(index, converted);
+      }
     }
     @Override public void delete(String name) {
       try { delete(Integer.parseInt(name)); } catch (NumberFormatException e) { /* absent */ }
     }
-    @Override public void delete(int index) { if (index >= 0 && index < list.size()) list.set(index, null); }
+    @Override public void delete(int index) { synchronized (list) { if (index >= 0 && index < list.size()) list.set(index, null); } }
     @Override public Object[] getIds() {
-      Object[] ids = new Object[list.size()];
-      for (int i = 0; i < ids.length; i++) ids[i] = Integer.valueOf(i);
-      return ids;
+      synchronized (list) {
+        Object[] ids = new Object[list.size()];
+        for (int i = 0; i < ids.length; i++) ids[i] = Integer.valueOf(i);
+        return ids;
+      }
     }
   }
 

@@ -43,6 +43,9 @@ public final class Runner {
   static final PrintStream ERR =
       new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8);
 
+  private static volatile boolean retired;
+  static void retire() { retired = true; }
+
   private static final Map<String, Boolean> ACTIVE = new ConcurrentHashMap<String, Boolean>();
 
   public static void main(String[] args) throws Exception {
@@ -93,6 +96,8 @@ public final class Runner {
         } else if (Boolean.TRUE.equals(job.get("shutdown")) || "shutdown".equals(job.get("op"))) {
           shuttingDown = true;
           shutdown(workers, shutdownWaitMs, id);
+        } else if (retired) {
+          write(refusal(id, "rhino-local: JVM retired because a spawned thread survived cleanup"));
         } else if (ACTIVE.putIfAbsent(id, Boolean.TRUE) != null) {
           write(refusal(id, "rhino-local: duplicate active job id"));
         } else {
