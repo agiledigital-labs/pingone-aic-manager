@@ -50,6 +50,7 @@ final class AmContextFactory extends ContextFactory {
       return;
     }
     if (System.currentTimeMillis() - observed.startTime > timeoutMs) {
+      if (observed.hostBridge != null) throw observed.hostBridge.state.timeout();
       throw new Error("Interrupt.");
     }
   }
@@ -57,6 +58,7 @@ final class AmContextFactory extends ContextFactory {
   static final class ObservedContext extends Context {
     final long startTime;
     long timeoutMs;
+    AmHostBridge hostBridge;
 
     ObservedContext(ContextFactory factory) {
       super(factory);
