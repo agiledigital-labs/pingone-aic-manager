@@ -8,6 +8,6 @@ it("journey config uses immutable REST shapes and own names", () => {
   expect(config.tree("constructor")).toBeUndefined();
   expect(Object.isFrozen(config.tree("invented")?.nodes)).toBe(true);
 });
-it.each([null, [], false, 0])("journey config rejects malformed maps %j", (trees) => {
+it.each([null, [], false, 0].map((value) => [value]))("journey config rejects malformed maps %j", (trees) => {
   expect(() => new JourneyConfig({ realm: "alpha", trees, nodes: {}, scripts: {} } as unknown as ConstructorParameters<typeof JourneyConfig>[0])).toThrow("trees must be a plain object");
 });
