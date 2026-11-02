@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { IdmConfig, IdmEmulator, type Document } from "../../src/idm/index.ts";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
+import { js } from "./fixtures.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
@@ -54,4 +55,19 @@ it("A2 #1 bravo_user password remains an explicit unmeasured boundary", async ()
   const result = await runner.eval({ engine: "idm", source: `try {openidm.create('managed/bravo_user','${id}',{password:'secret'})} catch(e) {} 42;` }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
   expect(result.emulation?.missing).toContain("bravo_user password semantics");
+});
+
+it.each([null, 7, {}])("A2 #1 unmeasured non-string password %j fails missing", async (password) => {
+  expectEmulationFailure("alpha_user password without measured string value");
+  const result = await runner.eval({ engine: "idm", source: `try {openidm.create('managed/alpha_user','${id}',{password:${JSON.stringify(password)}})} catch(e) {} 42;` }, { onCall: make().onCall });
+  expect(result.emulation?.missing).toContain("alpha_user password without measured string value");
+  expect(result.outcome).not.toBe("ok");
+});
+it("A2 #1 unmeasured retrieval-hook password representation cannot expose plaintext", async () => {
+  expectEmulationFailure("alpha_user password representation after retrieval hooks");
+  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string", onRetrieve: js("'hook-plaintext'") } } } }] } }), runner);
+  await emu.request({ method: "PUT", path, body: { password: "submitted-secret" } });
+  const result = await runner.eval({ engine: "idm", source: `try {openidm.read('${path}')} catch(e) {} 42;` }, { onCall: emu.onCall });
+  expect(result.emulation?.missing).toContain("alpha_user password representation after retrieval hooks");
+  expect(result.outcome).not.toBe("ok");
 });
