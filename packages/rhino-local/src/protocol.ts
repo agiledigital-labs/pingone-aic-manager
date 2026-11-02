@@ -102,9 +102,16 @@ export interface HostError {
   detail: JsonValue;
 }
 
-export type HostReply =
+export interface BehaviorEvidence {
+  kind: "measured" | "assumed" | "missing";
+  behavior: string;
+  source?: string;
+}
+
+export type HostReply = (
   | { type: "reply"; id: string; seq: number; result: JsonValue }
-  | { type: "reply"; id: string; seq: number; error: HostError };
+  | { type: "reply"; id: string; seq: number; error: HostError }
+) & { provenance?: BehaviorEvidence[] };
 
 export interface JobLog {
   surface: "logger" | "console";
@@ -124,6 +131,8 @@ export interface ThrownValue {
 }
 
 export interface JobResponse {
+  /** Evidence on consumed host replies, including original source attribution. */
+  provenance?: BehaviorEvidence[];
   internalValue?: JsonValue;
   /** Host sequences emitted but never consumed by the JVM worker. */
   unanswered?: number[];
@@ -183,6 +192,7 @@ export function parseJobResponse(raw: unknown, line: string): JobResponse {
     ...(raw.emulation === undefined ? {} : { emulation: raw.emulation as EmulationFailureInfo }),
     ...(raw.assumed === undefined ? {} : { assumed: raw.assumed as string[] }),
     ...(raw.measured === undefined ? {} : { measured: raw.measured as string[] }),
+    ...(raw.provenance === undefined ? {} : { provenance: raw.provenance as BehaviorEvidence[] }),
   };
 }
 

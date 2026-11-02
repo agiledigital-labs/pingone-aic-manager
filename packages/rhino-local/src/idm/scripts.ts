@@ -46,6 +46,7 @@ export class Scripts {
       bindings: { ...script.globals, ...bindings }, resourceNameBindings: ["resourceName"], reportMissing: true, crestBindings: true,
     }, { onCall: this.evidence.bind((call) => this.onCall(call, isDocument(bindings.context) ? bindings.context : {})) });
     for (const measurement of response.measured ?? []) this.evidence.measured(measurement, "docs/api/24-idm-script-runtime.md");
+    for (const entry of response.provenance ?? []) if (entry.kind !== "missing") this.evidence.add(entry.kind, entry.behavior, entry.source);
     for (const assumption of response.assumed ?? []) this.evidence.assumed(assumption);
     for (const helper of response.missing ?? []) this.evidence.add("missing", `runtime helper: ${helper}`);
     const absent = this.evidence.firstMissing();

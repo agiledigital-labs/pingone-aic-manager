@@ -1086,6 +1086,15 @@ It maps all seven host operations into the same core, returns null for missing
 reads, and throws `HostCallError` with CREST class/code/detail otherwise.
 `idm.hostRequest(call)` exposes a standalone call's body/status/provenance when
 the host needs to retain its evidence; `onCall` returns only the script value.
+Evaluation results now retain host-side evidence too: `provenance` preserves
+kind, behavior and source, while `assumed` and `measured` include host behavior
+summaries alongside JVM runtime evidence. This covers successful and caught-error
+calls, `hostRequest`/REST adapters, bound hook callbacks and nested evaluations,
+even if an adapter ignores a nested result. Metadata is carried on host replies
+and recorded by the JVM only when consumed. Shadow replay uses the identical
+reply metadata; late unanswered replies cannot change the completed report.
+Missing metadata remains fatal even if an adapter returns an error body as data.
+
 REST-driven scripts automatically aggregate all their nested evidence. Missing
 host behavior also travels in error metadata to the outer JVM job: its response
 contains `missing` and a non-`ok` outcome without requiring `reportMissing`.

@@ -1,3 +1,4 @@
+import { withHostEvidence, reportResponseEvidence } from "./host-evidence.ts";
 import { decodeProtocol, stringifyProtocol } from "./protocol-values.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EmulationFailure, EmulationFailureJournal, bindEmulationOwner, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
@@ -20,6 +21,7 @@ import {
 import {
   parseHostCall,
   parseJobResponse,
+  type BehaviorEvidence,
   type HostCall,
   type HostError,
   type HostReply,
@@ -511,12 +513,17 @@ export class RhinoRunner {
     this.#jobs.add(done);
     try {
       const response = await this.#evalJob({ ...job, id }, options);
+      reportResponseEvidence(response);
       const fatal = responseFailure(response);
       if (fatal) this.#failures.record(fatal, `job ${id}`);
       const parent = callScope.getStore();
       if (fatal && parent) parent.failure ??= fatal;
       return fatal ? { ...response, ...(response.outcome === "ok" ? failedResponse(id, fatal) : { emulation: fatal }) } : response;
     } catch (error) {
+      if (error instanceof LaneDivergenceError) {
+        reportResponseEvidence(error.host);
+        reportResponseEvidence(error.container);
+      }
       const failure = emulationFailure(error) ?? { kind: "internal" as const, message: String(error) };
       this.#failures.record(failure, `job ${id}`);
       const parent = callScope.getStore();
@@ -575,11 +582,12 @@ export class RhinoRunner {
       };
       transcript.push(entry);
       let reply: HostReply;
+      const provenance: BehaviorEvidence[] = [];
       const scope: { failure?: NonNullable<HostError["emulation"]> } = {};
       try {
         if (options.onCall === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
-        const result = await callScope.run(scope, () => options.onCall!(call));
+        const result = await callScope.run(scope, () => withHostEvidence(provenance, () => options.onCall!(call)));
         if (scope.failure) throw new EmulationFailure(scope.failure);
         if (result === undefined)
           throw new EmulationFailure({ kind: "protocol", message: "rhino-local: onCall must return a JSON value (use null)" });
@@ -597,6 +605,7 @@ export class RhinoRunner {
           error: hostError(scope.failure ? new EmulationFailure(scope.failure) : error),
         };
       }
+      if (provenance.length > 0) reply = { ...reply, provenance: structuredClone(provenance) };
       const fatal = "error" in reply ? emulationFailure(reply.error) : undefined;
       if (fatal) this.#failures.record(fatal, `host callback ${id}#${call.seq}`);
       if (!transcriptFrozen) entry.reply = reply;

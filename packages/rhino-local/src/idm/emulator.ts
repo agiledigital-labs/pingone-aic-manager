@@ -96,7 +96,8 @@ export class IdmEmulator {
 
   /** Attach directly to runner.eval(..., { onCall: emulator.onCall }).
    * REST calls collect nested provenance on their result. Independent script
-   * hosts can use hostRequest to also collect provenance. Missing evidence travels
+   * hosts can use hostRequest to inspect REST provenance directly. Host evidence
+   * also travels on replies into the evaluation report. Missing evidence travels
    * in the host error metadata and is retained by the outer JVM job even if caught. */
   readonly onCall = async (call: HostCall): Promise<JsonValue> => {
     const result = await this.hostRequest(call);
