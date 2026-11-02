@@ -36,6 +36,7 @@ it("callbacks win over goTo, then the node reruns on resume", async () => {
   const emu = make("nodeState.putShared('passes',(nodeState.get('passes')||0)+1);if(callbacks.isEmpty()){callbacksBuilder.nameCallback('Name');action.goTo('false');}else{nodeState.putShared('username',callbacks.getNameCallbacks().get(0));action.goTo(nodeState.get('passes')===2?'true':'false');}");
   const first = await request(emu);
   expect(first.status).toBe(200);
+  expect(first.provenance).toContainEqual({ kind: "assumed", behavior: "basic callback wire envelopes reuse binding effect fields; input defaults use empty strings except HiddenValue id and TextInput defaultText" });
   expect(parseAuthenticateCallbacks(first.body).callbacks).toEqual([{ type: "NameCallback", prompt: "Name" }]);
   const resumed = await request(emu, JSON.parse(fillCallbackInputs(first.body, [{ type: "NameCallback", value: "invented" }], "invented")));
   expect(resumed).toMatchObject({ status: 200, body: { tokenId: expect.any(String) } });

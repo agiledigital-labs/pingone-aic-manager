@@ -1291,14 +1291,14 @@ Empty-`elements` bindings (`requestHeaders`, `requestParameters`,
 directly. Scalar bindings (`realm`, `scriptName`, `cookieName`) start as
 `"__rhino-local-unseeded__"`; `resumedFromSuspend` starts as `false`.
 
-### Experimental journey emulator core (J1)
+### Experimental journey emulator core (J1/J2)
 
 `src/journey/index.ts` exposes `JourneyConfig`, `JourneyEmulator` and
-`journeyHttp` inside the checkout. They are not package exports yet: J1 is the
-framework-free core; Page/collectors/identity nodes and harness selection follow
-in J2 and later slices. Use the mandatory Vitest setup/runner/reporter described
-above when testing it. Its requests, runner evaluations and shared IDM calls use
-the same append-only emulation audit and verdict guard as IDM.
+`journeyHttp` inside the checkout. They are not package exports yet: the
+framework-free core now includes Page, collectors and identity nodes; harness
+selection follows in later slices. Use the mandatory Vitest setup/runner/reporter
+described above when testing it. Its requests, runner evaluations and shared IDM
+calls use the same append-only emulation audit and verdict guard as IDM.
 
 ```ts
 const config = new JourneyConfig({
@@ -1364,3 +1364,41 @@ no longer matches a signed snapshot, and non-finite/negative-zero host values
 remain missing rather than becoming plausible answers. The ambient duration
 key's initial value/bucket is explicitly assumed; ordinary caller-written shared
 state is preserved even when its key has an ambient name.
+
+Page executes children in config order, merges their callbacks inline, and routes
+by the last child's outcome. Each scripted child receives only its own answers.
+A non-last child with multiple known outcomes is rejected by `JourneyConfig`
+with a `RangeError` carrying the measured `400 Invalid config: Only the last
+node in a page can have more than one outcome` diagnostic. Construction is the
+local config-loading boundary; this core does not expose node PUT. Declaring an
+outcome for any emulated node (including a Page child) throws `TypeError` when
+constructing `JourneyEmulator`, so declarations cannot bypass its implementation.
+
+Username/Password collectors write shared username/transient password.
+AttributeCollector (`validateInputs: false`) uses string-property titles from
+the shared IDM schema, emits the two-input attribute callback, and writes shared
+objectAttributes. Empty required fields re-send the Page with echoed answers
+and empty failedPolicies. `ValidatedPasswordNode` (`validateInput: false`) writes
+transient password and transient objectAttributes. `nodeState.get` returns the
+whole transient value when present, otherwise shared; objectAttributes maps are
+never merged across these buckets. Extending that shadowing to other caller keys
+is labelled assumed. The shared `pageNodeCallbacks` value is assumed to be the
+merged wire array; doc 25 measures its presence/lifetime, not its contents.
+Page discovery evaluates script children once and retains their state effects
+(assumed); submission evaluates each child once, even one that queued nothing.
+
+IdentifyExistingUser queries the same IDM emulator and writes shared _id,
+username and the identifier in shared objectAttributes. CreateObject uses that
+emulator's create path (including managed hooks and the caller-supplied IDM
+policy evaluator) and writes no journey state. Missing-required policy rejection
+routes to FAILURE; the broader mapping of IDM 400/403 to FAILURE is assumed.
+PatchObject uses the identity attribute or username, ignores _id for lookup,
+and aborts with 401 when an identifier names nobody. Identify/Create do not add
+an extra principal-existence check at Success: doc 25 does not establish one.
+Create alone leaves username absent and therefore cannot produce a session.
+
+Attribute policy evaluation/validateOnly, validated-password validation,
+split objectAttributes passed to Create/Patch, conflicting identity sources,
+Patch patchAsObject/ignoredFields, Page headers/descriptions and nested Pages
+remain fatal missing behavior when reached. Policy evaluation is not copied
+into the journey layer: managed writes use the existing IDM policy seam.

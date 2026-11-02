@@ -1,7 +1,7 @@
 /** Collector and identity nodes; managed policy and writes stay in the shared IDM core. */
 import type { CallbackEffect } from "../case/types.ts";
 import { EmulationFailure } from "../emulation.ts";
-import { isDocument } from "../idm/document.ts";
+import { isDocument, own, setOwn } from "../idm/document.ts";
 import type { IdmEmulator } from "../idm/emulator.ts";
 import type { Evidence } from "../idm/provenance.ts";
 import type { Document, RestResult } from "../idm/types.ts";
@@ -10,8 +10,6 @@ import type { AuthenticateResult, NodeDocument } from "./types.ts";
 export const EMULATED = ["ScriptedDecisionNode", "InnerTreeEvaluatorNode", "PageNode", "UsernameCollectorNode", "PasswordCollectorNode", "AttributeCollectorNode", "ValidatedPasswordNode", "IdentifyExistingUserNode", "CreateObjectNode", "PatchObjectNode"];
 export type NodeResult = { outcome: string | null; callbacks: CallbackEffect[]; abort?: Omit<AuthenticateResult, "provenance"> };
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
-const value = (map: Document, key: string) => Object.hasOwn(map, key) ? map[key] : undefined;
-const put = (map: Document, key: string, data: JsonValue) => Object.defineProperty(map, key, { value: data, enumerable: true, writable: true, configurable: true });
 export class JourneyNodes {
   private readonly idm: IdmEmulator;
   private readonly evidence: Evidence;
@@ -52,13 +50,14 @@ export class JourneyNodes {
       }
       if (submitted.length !== 1 || submitted[0]?.type !== (username ? "NameCallback" : "PasswordCallback") || typeof submitted[0].value !== "string") this.missing(`${type} callback submission`);
       const answer = submitted[0].value;
-      put(username ? shared : transient, username ? "username" : "password", answer);
-      if (type === "ValidatedPasswordNode") put(transient, "objectAttributes", { password: answer });
+      setOwn(username ? shared : transient, username ? "username" : "password", answer);
+      if (type === "ValidatedPasswordNode") setOwn(transient, "objectAttributes", { password: answer });
       this.evidence.measured("collectors write shared username and transient password; ValidatedPasswordNode writes transient objectAttributes without merging", SOURCE);
       return done("outcome");
     }
     if (type === "AttributeCollectorNode") {
       if (config.validateInputs !== false) this.missing("AttributeCollectorNode policy evaluation; supply the IDM policy seam for managed writes");
+      if (config.required !== undefined && typeof config.required !== "boolean") this.missing("AttributeCollectorNode required configuration");
       if (!Array.isArray(config.attributesToCollect) || !config.attributesToCollect.length || config.attributesToCollect.some((key) => typeof key !== "string")) this.missing("AttributeCollectorNode attributesToCollect configuration");
       const resource = typeof config.identityResource === "string" ? config.identityResource : defaultResource;
       if (!resource.startsWith("managed/")) this.missing(`AttributeCollectorNode schema: ${resource}`);
@@ -74,18 +73,19 @@ export class JourneyNodes {
         if (cb && (cb.type !== "StringAttributeInputCallback" || cb.name !== attribute || typeof cb.value !== "string")) this.missing("AttributeCollectorNode callback submission");
         if (cb?.validateOnly === true) this.missing("AttributeCollectorNode validateOnly");
         const answer = cb?.value ?? "";
-        put(attrs, attribute, answer);
+        setOwn(attrs, attribute, answer);
         if (config.required === true && answer === "") invalid = true;
         callbacks.push({ type: "StringAttributeInputCallback", name: attribute, prompt: property.title, required: config.required === true, policies: {}, failedPolicies: [], validateOnly: false, value: answer });
       }
       this.evidence.measured("AttributeCollectorNode callback fields, shared objectAttributes and required-empty retry with empty failedPolicies", SOURCE);
       if (!submitted.length || invalid) return { outcome: null, callbacks };
       const previous = isDocument(shared.objectAttributes) ? shared.objectAttributes : {};
-      put(shared, "objectAttributes", { ...previous, ...attrs });
+      setOwn(shared, "objectAttributes", { ...previous, ...attrs });
       this.evidence.assumed("AttributeCollectorNode merges collected attributes into existing shared objectAttributes");
       return done("outcome");
     }
     const attrs = this.attributes(shared, transient);
+    if (config.identityResource === undefined) this.evidence.assumed("identity nodes default identityResource to the executing tree identityResource");
     const resource = typeof config.identityResource === "string" ? config.identityResource : defaultResource;
     if (type === "CreateObjectNode") {
       if (Object.hasOwn(shared, "objectAttributes") && Object.hasOwn(transient, "objectAttributes")) this.missing("CreateObjectNode split objectAttributes across shared and transient");
@@ -93,8 +93,8 @@ export class JourneyNodes {
       const result = await this.call("create", [resource, null, attrs]);
       this.evidence.measured("CreateObjectNode creates through IDM and writes no state; missing-required rejection yields FAILURE", SOURCE);
       if (result.status >= 400) {
-        if (result.status !== 400) this.missing(`CreateObjectNode IDM error: ${result.status}`);
-        this.evidence.assumed("CreateObjectNode maps all IDM 400 rejections to FAILURE; missing required is measured");
+        if (![400, 403].includes(result.status)) this.missing(`CreateObjectNode IDM error: ${result.status}`);
+        this.evidence.assumed("CreateObjectNode maps IDM 400/403 rejections to FAILURE; missing required is measured");
       }
       return done(result.status < 400 ? "CREATED" : "FAILURE");
     }
@@ -105,7 +105,7 @@ export class JourneyNodes {
       if (Object.hasOwn(shared, "objectAttributes") && Object.hasOwn(transient, "objectAttributes")) this.missing("PatchObjectNode split objectAttributes across shared and transient");
     }
     if (typeof config.identityAttribute !== "string") this.missing(`${type} identityAttribute configuration`);
-    const objectValue = attrs ? value(attrs, config.identityAttribute) : undefined;
+    const objectValue = attrs ? own(attrs, config.identityAttribute) : undefined;
     const username = Object.hasOwn(transient, "username") ? transient.username : shared.username;
     if (objectValue !== undefined && username !== undefined && objectValue !== username) this.missing(`${type} conflicting identity sources`);
     const lookup = objectValue ?? username;
@@ -114,10 +114,10 @@ export class JourneyNodes {
     if (type === "IdentifyExistingUserNode") {
       this.evidence.measured("IdentifyExistingUserNode lookup and shared _id/username/identifier writeback", SOURCE);
       if (!match) return done("false");
-      if (typeof config.identifier !== "string" || typeof value(match, config.identifier) !== "string" || typeof match._id !== "string") this.missing("IdentifyExistingUserNode identifier configuration or result");
-      const identifier = value(match, config.identifier) as string;
-      put(shared, "_id", match._id); put(shared, "username", identifier);
-      put(shared, "objectAttributes", { ...(isDocument(shared.objectAttributes) ? shared.objectAttributes : {}), [config.identifier]: identifier });
+      if (typeof config.identifier !== "string" || typeof own(match, config.identifier) !== "string" || typeof match._id !== "string") this.missing("IdentifyExistingUserNode identifier configuration or result");
+      const identifier = own(match, config.identifier) as string;
+      setOwn(shared, "_id", match._id); setOwn(shared, "username", identifier);
+      setOwn(shared, "objectAttributes", { ...(isDocument(shared.objectAttributes) ? shared.objectAttributes : {}), [config.identifier]: identifier });
       return done("true");
     }
     this.evidence.measured("PatchObjectNode ignores _id, uses identity attribute or username, and aborts on no match", SOURCE);
