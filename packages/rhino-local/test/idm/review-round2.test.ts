@@ -104,7 +104,7 @@ it("R2 an adapter cannot swallow a nested protocol rejection", async () => {
 
 
 it.each(["__proto__", "constructor", "toString", "prototype"])("R2 new5 unconfigured %s endpoint names are own lookups", async (name) => {
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {} }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {}, complete: { endpoints: true } }), runner);
   for (const prefix of ["endpoint", "config/endpoint"]) {
     const result = await emu.request({ method: "GET", path: `${prefix}/${name}` });
     expect(result.status).toBe(404);

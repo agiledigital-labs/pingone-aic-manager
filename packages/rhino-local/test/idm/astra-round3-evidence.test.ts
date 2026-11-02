@@ -8,7 +8,7 @@ import { js } from "./fixtures.ts";
 let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
-function make() { return new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string" } } } }] }, endpoints: { nested: js("openidm.read('config/managed');({ok:true});") } }), runner); }
+function make() { return new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string" } } } }] }, endpoints: { nested: js("openidm.read('config/managed');({ok:true});") }, complete: { endpoints: true } }), runner); }
 it("A3 #2 public onCall exposes password assumptions and measurement sources", async () => {
   const emu = make(), path = "managed/alpha_user/00000000-0000-0000-0000-000000000001";
   await emu.request({ method: "PUT", path, body: { password: "submitted-secret" } });
@@ -86,7 +86,7 @@ it("A3 #2 reply consumption freezes evidence before an unanswered late reply", a
   } });
   expect(result.outcome).toBe("timeout");
   expect(result.assumed).toContain("config snapshot reads are immediately consistent");
-  expect(result.assumed).not.toContain("configured endpoint map also establishes config/endpoint snapshot absence");
+  expect(result.assumed).not.toContain("caller declared endpoints namespace complete");
   expect(result.unanswered).toContain(2);
 });
 it("A3 #2 invalid host evidence is an uncatchable protocol failure", async () => {

@@ -40,6 +40,8 @@ export type ConfigInput = {
   readonly managed: ManagedConfig;
   /** Keys are bare endpoint names, as in config/endpoint/<name>. */
   readonly endpoints?: Readonly<Record<string, EndpointConfig>>;
+  /** Maps are partial unless the caller explicitly declares the namespace complete. */
+  readonly complete?: { readonly managed?: boolean; readonly endpoints?: boolean };
 };
 export type RestRequest = {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

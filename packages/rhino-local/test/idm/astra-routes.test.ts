@@ -10,7 +10,7 @@ const routes = ["system/hr/account/123", "repo/internal/user/123", "config/sync"
 it.each(routes)("Astra #1 route knowledge determines the outcome for read %s", async (path) => {
   const knownAbsent = path.startsWith("managed/notConfigured") || path === "endpoint/notConfigured";
   if (!knownAbsent) expectEmulationFailure(`resource route: ${path}`);
-  const result = await runner.eval({ engine: "idm", source: `(function(){try { return openidm.read(${JSON.stringify(path)}); } catch(e) {} finally { 42; }})()` }, { onCall: new IdmEmulator(new IdmConfig({ managed: { objects: [simple] }, endpoints: {} }), runner).onCall });
+  const result = await runner.eval({ engine: "idm", source: `(function(){try { return openidm.read(${JSON.stringify(path)}); } catch(e) {} finally { 42; }})()` }, { onCall: new IdmEmulator(new IdmConfig({ managed: { objects: [simple] }, endpoints: {}, complete: { managed: true, endpoints: true } }), runner).onCall });
   if (knownAbsent) expect(result).toMatchObject({ outcome: "ok", value: null });
   else {
     expect(result.outcome).not.toBe("ok");

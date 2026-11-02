@@ -5,7 +5,7 @@ let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
 for (const namespace of ["endpoints", "managed"] as const) {
-  it.each([null, [], false, 0, "bad", new Date(0), new Map()])(`A4 #1 rejects malformed ${namespace}: %j`, (value) => {
+  it.each([null, [], Object.setPrototypeOf([], null) as unknown, false, 0, "bad", new Date(0), new Map()].map((value) => [value]))(`A4 #1 rejects malformed ${namespace}: %j`, (value) => {
     const input = { managed: { objects: [] }, [namespace]: value } as unknown as ConfigInput;
     expect(() => new IdmEmulator(new IdmConfig(input), runner)).toThrow(`Invalid IDM configuration: ${namespace} must be a plain object`);
   });
@@ -13,7 +13,7 @@ for (const namespace of ["endpoints", "managed"] as const) {
 it.each([null, {}, false, 0])("A4 #1 rejects malformed managed.objects: %j", (objects) => {
   expect(() => new IdmEmulator(new IdmConfig({ managed: { objects } } as unknown as ConfigInput), runner)).toThrow("Invalid IDM configuration: managed.objects must be an array");
 });
-it.each([null, [], false, 0])("A4 #1 rejects malformed managed type entries: %j", (type) => {
+it.each([null, [], Object.setPrototypeOf([], null) as unknown, false, 0].map((value) => [value]))("A4 #1 rejects malformed managed type entries: %j", (type) => {
   expect(() => new IdmEmulator(new IdmConfig({ managed: { objects: [type] } } as unknown as ConfigInput), runner)).toThrow("Invalid IDM configuration: managed.objects[0] must be a plain object");
 });
 it("A4 #1 accepts null-prototype namespace maps without changing implemented routing", async () => {
@@ -23,7 +23,7 @@ it("A4 #1 accepts null-prototype namespace maps without changing implemented rou
   const result = await runner.eval({ engine: "idm", source: "openidm.read('endpoint/actual')" }, { onCall: emu.onCall });
   expect(result).toMatchObject({ outcome: "ok", value: { answer: 42 } });
 });
-it.each([null, [], false, 0])("A4 #1 rejects malformed root input: %j", (input) => {
+it.each([null, [], Object.setPrototypeOf([], null) as unknown, false, 0].map((value) => [value]))("A4 #1 rejects malformed root input: %j", (input) => {
   expect(() => new IdmEmulator(new IdmConfig(input as unknown as ConfigInput), runner)).toThrow("Invalid IDM configuration: input must be a plain object");
 });
 it.each([undefined, 0, ""])("A4 #1 rejects invalid managed type names: %j", (name) => {

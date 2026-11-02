@@ -145,7 +145,6 @@ export class IdmEmulator {
     }
     if (parts[0] === "config") {
       if (op.request.method === "GET" && parts[1] === "endpoint" && parts.length === 3 && this.config.endpointsSupplied && !own(this.config.endpoints, parts[2] ?? "")) {
-        this.evidence.assumed("configured endpoint map also establishes config/endpoint snapshot absence");
         return this.knownAbsent(path, path, op, forcedMethod);
       }
       if (op.request.method !== "GET") missing(this.evidence, `config writes (config is read-only): ${path}`);
@@ -167,7 +166,6 @@ export class IdmEmulator {
     if (parts[0] === "endpoint") {
       const config = own(this.config.endpoints, parts[1] ?? "");
       if (!config) {
-        if (!this.config.endpointsSupplied) missing(this.evidence, `resource route: ${path}`);
         return this.knownAbsent(path, parts.slice(0, 2).join("/"), op, forcedMethod);
       }
       return endpoint(config, parts.slice(2).join("/"), op, this.scripts, this.evidence, forcedMethod);
@@ -176,7 +174,10 @@ export class IdmEmulator {
   }
 
   private knownAbsent(path: string, resource: string, op: Operation, hostMethod?: string): never {
-    if (op.request.method !== "GET") missing(this.evidence, `resource route: ${path}`);
+    const namespace = resource.startsWith("managed/") ? "managed" : "endpoints";
+    if (op.request.method !== "GET" || !this.config.complete[namespace]) missing(this.evidence, `resource route: ${path}`);
+    this.evidence.assumed(`caller declared ${namespace} namespace complete`);
+    if (path.startsWith("config/endpoint/")) this.evidence.assumed("endpoint completeness also establishes config/endpoint snapshot absence");
     if (hostMethod === "read") this.evidence.measured("unconfigured managed/endpoint names read as null internally", "orchestrator p24, 2026-11-02");
     if (hostMethod === "query") {
       if (resource.startsWith("managed/")) this.evidence.measured("unconfigured managed query throws NotFoundException", "orchestrator p24, 2026-11-02");
