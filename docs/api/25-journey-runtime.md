@@ -60,7 +60,27 @@ was decided.
 
 ## Inner Tree
 
-Not yet measured.
+Measured 2026-11-02 with `scripts/experiment-journey-inner-tree.sh`. Outer
+tree: a script writing `zzOuterShared` (shared) and `zzOuterTransient`
+(transient) → `InnerTreeEvaluatorNode` → dump nodes T / F. Inner tree
+(`innerTreeOnly: true`): a script that records what it can read and writes
+`zzInnerShared` / `zzInnerTransient`, then a second script that reads the
+transient key back and goes to the inner success node (`ok`) or the inner
+failure node (`fail`).
+
+| Question | Observed | Control |
+| --- | --- | --- |
+| Outcomes (`listOutcomes`) | `["true","false"]`; with `displayErrorOutcome: true`, `["true","false","error"]` | The flag is the only change |
+| Outcome mapping | Inner tree reaching its **success** node → evaluator `true`; reaching its **failure** node → `false` (the outer journey continued down `false`, it did not fail) | `ok` vs `fail` differ only in the inner `goTo` |
+| Outer **shared** state, inside | Visible (`zzInnerSawShared = "os"`) | — |
+| Outer **transient** state, inside | **Not visible** (`null`) | Inside the inner tree, transient written by its first node **was** visible to its second (`zzInner2SawTransient = "it"`), so the binding reads transient there |
+| Inner **shared** state, after | Visible (`zzInnerShared = "is"`), and survived the dump's round trip | — |
+| Inner **transient** state, after | **Not visible** (`null`) | — |
+| Outer transient, after the inner tree | **Visible again** (`zzOuterTransient = "ot"` on the dump's first pass, gone after its round trip) — the inner tree runs with its own transient state and the outer one is restored | — |
+| `journey.name()` | The tree **currently executing**: the inner tree's name inside, the outer's outside | — |
+| `journey.innerJourney()` | `true` inside, `false` in the outer tree | — |
+| `journey.mustRun()` / `identityResource()` | `false` / `managed/alpha_user` in both | — |
+| An `innerTreeOnly: true` tree invoked directly by `authIndexValue` | `400 {"code":400,"reason":"Bad Request","message":"No Configuration found"}` | The outer trees (`innerTreeOnly: false`) in the same run started normally |
 
 ## Identify Existing User
 
