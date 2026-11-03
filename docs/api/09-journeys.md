@@ -27,6 +27,11 @@ send `Accept-API-Version: protocol=2.0,resource=1.0`.
 | Upsert | `PUT`    | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees/{name}`            | Plain `PUT` works for create and update; no `If-Match` required. Create returned 201, update returned 200 (verified 2026-06-14). |
 | Delete | `DELETE` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees/{name}`            | Returned 200; follow-up `GET` returned 404 (verified 2026-06-14).                                                                |
 
+Deleting a tree also deletes its nodes: after a tree `DELETE`, a `DELETE` of
+each of its nodes returned `404` (verified 2026-11-03, a `ScriptedDecisionNode`
+and a `SetSuccessUrlNode`). The tree's script survives and needs its own
+`DELETE`.
+
 ### Nodes (per type)
 
 | Op        | Method | Path                                                                                                      | Notes                                                                                                                            |
@@ -34,6 +39,13 @@ send `Accept-API-Version: protocol=2.0,resource=1.0`.
 | List type | `GET`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}?_queryFilter=true` |                                                                                                                                  |
 | Read      | `GET`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}`          |                                                                                                                                  |
 | Upsert    | `PUT`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}`          | Plain `PUT` works for create and update; no `If-Match` required. Create returned 201, update returned 200 (verified 2026-06-14). |
+
+### Redirect validation
+
+| Op                     | Method | Path                                                         | Notes                                                                                                                                       |
+| ---------------------- | ------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read `goto` allowlist  | `GET`  | `/am/json{realm-path}/realm-config/services/validation`      | `validGotoDestinations`. Decides whether a `goto` becomes the `successUrl` — see [`goto` and the success URL](#goto-and-the-success-url-verified-2026-11-03). |
+| Validate a `goto`      | `POST` | `/am/json{realm-path}/users?_action=validateGoto`            | Body `{"goto": "<url>"}`, `Accept-API-Version: protocol=2.1,resource=3.0`. Returns `{"successURL": …}`; called by the hosted `/login/` UI.   |
 
 ### Custom (designed) nodes
 
@@ -839,6 +851,54 @@ three-step flow that does is in
 (verified 2026-09-03). `authIndexType`/`authIndexValue` on the authorize URL do
 **not** select the tree for a browser; only `treeName` does.
 
+## `goto` and the success URL (verified 2026-11-03)
+
+A `goto` on `/authenticate` becomes the journey's `successUrl` **only if the
+realm's Validation Service allows it**
+(`GET /am/json/realms/root/realms/{realm}/realm-config/services/validation`,
+`validGotoDestinations`). The sandbox's list is the tenant FQDN
+(`&{am.server.protocol|https}://&{fqdn}/*?*`) plus one IG host. A `goto`
+outside the list is dropped **silently** — no error, the realm default
+(`/enduser/?realm=/alpha`) comes back instead. Relative paths are accepted.
+
+What sets the success URL, measured on a throwaway tree in `alpha`:
+
+| Case                                                                    | `successUrl` returned |
+| ----------------------------------------------------------------------- | --------------------- |
+| no `goto`                                                               | realm default         |
+| `goto` on the tenant host, or on a listed host                          | the `goto`            |
+| `goto` on an unlisted host                                              | realm default         |
+| script `nodeState.putShared("successUrl", <unlisted URL>)`              | that URL              |
+| same, with a valid `goto` also on the request                           | the script's URL      |
+| `SetSuccessUrlNode` with an unlisted URL, with or without a valid `goto` | the node's URL        |
+
+So **a success URL set inside the journey is not validated and beats `goto`.**
+`successUrl` in shared state is the key `SetSuccessUrlNode` writes; the
+next-gen `action` has no success-URL method. A script can therefore read
+`requestParameters.get("goto")` and copy it into shared state to honour an
+unlisted `goto`.
+
+**The hosted login UI goes through a second check, and that check still
+passes.** After the journey succeeds, `/login/` posts the URL's own `goto` to
+`POST …/users?_action=validateGoto` (`protocol=2.1,resource=3.0`) with the new
+session cookie and redirects to the `successURL` it returns. With an unlisted
+`goto` that endpoint falls back to the **session's** `successURL` property —
+the script-set URL — and only without one to the realm default:
+
+| Session minted by                     | `validateGoto` of the unlisted `goto` |
+| ------------------------------------- | ------------------------------------- |
+| a journey that copied `goto` (above)  | the copied URL                        |
+| an ordinary journey (control)         | realm default                         |
+
+The UI behaviour is read from the tenant's `/login/` bundle, not driven in a
+browser.
+
+**Copying `goto` unchecked turns the journey into an open redirect** — the
+allowlist is the protection being bypassed. Prefer adding the host to
+`validGotoDestinations`. If the script route is needed, check the host against
+an allowlist of its own (an ESV) before copying. A `goto=javascript:…` was
+refused `403` at the edge before reaching AM; do not rely on that.
+
 ## Quirks
 
 - **Tree ID is the name**, not a UUID. Renaming = delete + create (no in-place
@@ -870,6 +930,12 @@ it in the confirming-read comparison rather than normalizing it away.
 
 ## Verified against
 
+- Date: 2026-11-03 — `goto` / success URL, realm `alpha`: throwaway tree
+  (scripted decision → success, and scripted decision → `SetSuccessUrlNode` →
+  success) driven with eleven `goto`/script combinations, then
+  `users?_action=validateGoto` with each minted session's cookie; trees and
+  script deleted afterwards. Hosted-UI redirect logic read from the
+  `/login/` JS bundle. No reproduce script — scratch files only.
 - Date: 2026-10-31 — node reads, realms `alpha` and `bravo`: every node of
   every journey (960) read `200` through `aic journey status`; a `GET` of
   `…/authenticationtrees/nodes/PageNode/<an id that does not exist>` is
