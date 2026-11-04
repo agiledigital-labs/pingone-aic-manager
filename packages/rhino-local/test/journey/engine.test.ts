@@ -905,6 +905,29 @@ it.each([
     "nodeState.putTransient('x',[1,Infinity]);",
     "non-finite or negative-zero number at x[1]",
   ],
+  [
+    "hidden toJSON",
+    "var o={a:1};Object.defineProperty(o,'toJSON',{value:function(){return 'rewritten';}});nodeState.putShared('x',o);",
+    "non-enumerable property at x.toJSON",
+  ],
+  [
+    "hidden NaN",
+    "var o={a:1};Object.defineProperty(o,'bad',{value:NaN});nodeState.putShared('x',o);",
+    "non-enumerable property at x.bad",
+  ],
+  [
+    "accessor",
+    "var o={};Object.defineProperty(o,'g',{get:function(){return 1;},enumerable:true});nodeState.putShared('x',o);",
+    "accessor property at x.g",
+  ],
+  [
+    "custom prototype",
+    "function C(){this.a=1;}nodeState.putShared('x',new C());",
+    "non-plain prototype at x",
+  ],
+  ["null prototype", "nodeState.putShared('x',Object.create(null));", "non-plain prototype at x"],
+  ["array expando", "var a=[1];a.k=2;nodeState.putShared('x',a);", "array property at x.k"],
+  ["array hole", "nodeState.putShared('x',[1,,3]);", "array hole at x"],
 ])("unmeasured state shape is missing, not rewritten or a 401: %s", async (_name, store, shape) => {
   const bucket = store.includes("putTransient") ? "transient" : "shared";
   const cause = `journey state ${bucket} value: ${shape}`;
@@ -970,4 +993,118 @@ it("assumptions survive callback round trips into the final result", async () =>
   );
   expect(done).toMatchObject({ status: 200, body: { tokenId: expect.any(String) } });
   expect(done.provenance).toContainEqual(declared);
+});
+it.each([
+  [
+    "JsonValue constructor",
+    "try{new org.forgerock.json.JsonValue({a:1});}catch(e){}",
+    "new JsonValue(...) is not modelled; use JsonValue.json or JsonValue.object",
+  ],
+  ["logger arity", "try{logger.info();}catch(e){}", "logger.info arity=0 (expected >= 1)"],
+  ["request map arity", "try{requestHeaders.get();}catch(e){}", "map.get arity=0 (expected 1)"],
+  [
+    "utils arity",
+    "try{utils.crypto.randomUUID(1);}catch(e){}",
+    "utils.crypto.randomUUID arity=1 (expected 0)",
+  ],
+])(
+  "a caught rhino-local diagnostic is missing, not a script error: %s",
+  async (_name, call, cause) => {
+    expectEmulationFailure(cause);
+    expect(await request(make(call + SUCCEED))).toMatchObject({
+      status: 501,
+      emulation: { missing: [cause] },
+    });
+  },
+);
+it("measured utils members run locally and say so", async () => {
+  const result = await request(
+    make(
+      "nodeState.putShared('username',utils.base64.encode('hi')+utils.crypto.randomUUID().length);action.goTo('true');",
+    ),
+  );
+  expect(result.status).toBe(200);
+  for (const member of ["utils.base64.encode", "utils.crypto.randomUUID"])
+    expect(result.provenance).toContainEqual({
+      kind: "measured",
+      behavior: `${member} runs locally as measured`,
+      source: "docs/api/12-script-bindings-matrix.md (utils, utils.crypto.subtle)",
+    });
+});
+it.each([
+  [
+    "callback NaN",
+    "callbacksBuilder.stringAttributeInputCallback('n','p','v',true,{bad:NaN},false,[]);",
+    "journey callbacks value: non-finite or negative-zero number at callbacks[0].policies.bad",
+  ],
+  [
+    "callback undefined",
+    "callbacksBuilder.stringAttributeInputCallback('n','p','v',true,{},false,[undefined]);",
+    "journey callbacks value: undefined at callbacks[0].failedPolicies[0]",
+  ],
+  [
+    "cyclic host argument",
+    "var o={};o.self=o;try{openidm.create('managed/widget',null,o);}catch(e){}" + SUCCEED,
+    "AM host openidm.create argument: cyclic object at [2].self",
+  ],
+  [
+    "undefined host argument",
+    "openidm.create('managed/widget',null,{x:'a',u:undefined});" + SUCCEED,
+    "AM host openidm.create argument: undefined at [2].u",
+  ],
+  [
+    "undefined HTTP header",
+    "httpClient.send('https://service.example.com/x',{method:'GET',headers:{h:undefined}}).get();" +
+      SUCCEED,
+    "AM host httpClient.send argument: undefined at [1].headers.h",
+  ],
+])("a value JSON would rewrite is missing: %s", async (_name, source, cause) => {
+  expectEmulationFailure(cause);
+  const result = await request(
+    make(
+      source,
+      ["true", "false"],
+      { true: SUCCESS, false: FAILURE },
+      { http: async () => ({ status: 200, body: {} }) },
+    ),
+  );
+  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("undefined inside an HTTP body goes out as null (docs/api/12)", async () => {
+  let seen: unknown;
+  const result = await request(
+    make(
+      "httpClient.send('https://service.example.com/x',{method:'POST',body:{u:undefined,n:1,nested:{u:undefined},arr:[1,undefined]}}).get();" +
+        SUCCEED,
+      ["true", "false"],
+      { true: SUCCESS, false: FAILURE },
+      {
+        http: async (_url, options) => {
+          seen = options.body;
+          return { status: 200, body: {} };
+        },
+      },
+    ),
+  );
+  expect(result.status).toBe(200);
+  expect(seen).toEqual({ u: null, n: 1, nested: { u: null }, arr: [1, null] });
+});
+it("withErrorMessage alongside queued callbacks is missing", async () => {
+  const cause = "action.withErrorMessage with queued callbacks";
+  expectEmulationFailure(cause);
+  expect(
+    await request(
+      make(
+        "callbacksBuilder.nameCallback('Name');action.goTo('false').withErrorMessage('discarded');",
+      ),
+    ),
+  ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("a non-array ScriptedDecisionNode outcomes configuration is missing, not a substring match", async () => {
+  const cause = "ScriptedDecisionNode outcomes configuration";
+  expectEmulationFailure(cause);
+  expect(await request(make(SUCCEED, "true,false" as unknown as string[]))).toMatchObject({
+    status: 501,
+    emulation: { missing: [cause] },
+  });
 });

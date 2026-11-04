@@ -42,6 +42,13 @@ export class JourneyNodes {
     if (!isDocument(attrs)) this.missing("objectAttributes is not an object");
     return attrs;
   }
+  /** Shared objectAttributes a node merges into; a non-object one is unmeasured. */
+  private sharedAttributes(shared: Document, type: string): Document {
+    if (!Object.hasOwn(shared, "objectAttributes")) return {};
+    if (!isDocument(shared.objectAttributes))
+      this.missing(`${type} over non-object shared objectAttributes`);
+    return shared.objectAttributes;
+  }
   private async call(method: HostCall["method"], args: JsonValue[]): Promise<RestResult> {
     const response = await this.idm.hostRequest({
       type: "call",
@@ -115,6 +122,10 @@ export class JourneyNodes {
       )
         this.missing(`${type} callback submission`);
       const answer = submitted[0].value;
+      // Doc 25 measured the write over no transient objectAttributes only; over
+      // existing keys, replace versus merge is unmeasured.
+      if (type === "ValidatedPasswordNode" && Object.hasOwn(transient, "objectAttributes"))
+        this.missing("ValidatedPasswordNode over existing transient objectAttributes");
       setOwn(username ? shared : transient, username ? "username" : "password", answer);
       if (type === "ValidatedPasswordNode")
         setOwn(transient, "objectAttributes", { password: answer });
@@ -183,7 +194,7 @@ export class JourneyNodes {
         SOURCE,
       );
       if (!submitted.length || invalid) return { outcome: null, callbacks };
-      const previous = isDocument(shared.objectAttributes) ? shared.objectAttributes : {};
+      const previous = this.sharedAttributes(shared, type);
       setOwn(shared, "objectAttributes", { ...previous, ...attrs });
       this.evidence.assumed(
         "AttributeCollectorNode merges collected attributes into existing shared objectAttributes",
@@ -217,6 +228,9 @@ export class JourneyNodes {
     }
     if (!["IdentifyExistingUserNode", "PatchObjectNode"].includes(type))
       this.missing(`node type: ${type}`);
+    // Doc 25 measured every identity node with objectAttributes in one bucket only.
+    if (Object.hasOwn(shared, "objectAttributes") && Object.hasOwn(transient, "objectAttributes"))
+      this.missing(`${type} split objectAttributes across shared and transient`);
     if (type === "PatchObjectNode") {
       if (config.patchAsObject !== false)
         this.missing("PatchObjectNode patchAsObject: true or unspecified");
@@ -225,8 +239,10 @@ export class JourneyNodes {
         (!Array.isArray(config.ignoredFields) || config.ignoredFields.length)
       )
         this.missing("PatchObjectNode ignoredFields");
-      if (Object.hasOwn(shared, "objectAttributes") && Object.hasOwn(transient, "objectAttributes"))
-        this.missing("PatchObjectNode split objectAttributes across shared and transient");
+    }
+    if (type === "IdentifyExistingUserNode") {
+      if (typeof config.identifier !== "string")
+        this.missing("IdentifyExistingUserNode identifier configuration");
     }
     if (typeof config.identityAttribute !== "string")
       this.missing(`${type} identityAttribute configuration`);
@@ -234,9 +250,19 @@ export class JourneyNodes {
     const username = Object.hasOwn(transient, "username") ? transient.username : shared.username;
     if (objectValue !== undefined && username !== undefined && objectValue !== username)
       this.missing(`${type} conflicting identity sources`);
+    if (objectValue === null || username === null) this.missing(`${type} null identity source`);
     const lookup = objectValue ?? username;
-    if (lookup === undefined || lookup === null)
-      return done(type === "IdentifyExistingUserNode" ? "false" : "FAILURE");
+    if (lookup === undefined) {
+      // Measured for Patch only (doc 25: shared _id plus objectAttributes {sn} is FAILURE).
+      if (type === "IdentifyExistingUserNode")
+        this.missing("IdentifyExistingUserNode with no identity value");
+      if (!attrs) this.missing("PatchObjectNode missing objectAttributes");
+      this.evidence.measured(
+        "PatchObjectNode ignores _id, uses identity attribute or username, and aborts on no match",
+        SOURCE,
+      );
+      return done("FAILURE");
+    }
     const match = await this.find(resource, config.identityAttribute, lookup);
     if (type === "IdentifyExistingUserNode") {
       this.evidence.measured(
@@ -244,18 +270,15 @@ export class JourneyNodes {
         SOURCE,
       );
       if (!match) return done("false");
-      if (
-        typeof config.identifier !== "string" ||
-        typeof own(match, config.identifier) !== "string" ||
-        typeof match._id !== "string"
-      )
-        this.missing("IdentifyExistingUserNode identifier configuration or result");
-      const identifier = own(match, config.identifier) as string;
+      const key = config.identifier as string;
+      if (typeof own(match, key) !== "string" || typeof match._id !== "string")
+        this.missing("IdentifyExistingUserNode identifier result");
+      const identifier = own(match, key) as string;
       setOwn(shared, "_id", match._id);
       setOwn(shared, "username", identifier);
       setOwn(shared, "objectAttributes", {
-        ...(isDocument(shared.objectAttributes) ? shared.objectAttributes : {}),
-        [config.identifier]: identifier,
+        ...this.sharedAttributes(shared, type),
+        [key]: identifier,
       });
       return done("true");
     }
