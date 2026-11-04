@@ -36,6 +36,7 @@ var __rhinoLocal = {
   http: [],
   logs: [],
   identityWrites: [],
+  faults: [],
   identityAttributes: {},
   identityCustomAttrs: {},
   identityCustomAttrsOwnedKeys: {},
@@ -75,59 +76,113 @@ function __rhinoLocalCloneUndefinedAsNull(value, topLevelOnly) {
   );
 }
 
-// The httpClient.send body is recorded as a JSON snapshot taken at send time.
-// Only `undefined` -> null (docs/api/12 §2, §3) and number/string values are
-// measured. AIC's handling of a function, a cycle, NaN or +/-Infinity, or a
-// Date is not, and JSON would silently turn each into an error or a guess
-// (null, an ISO string), so they are refused here by name. Other values
-// (Java objects, -0 recorded as 0) pass through JSON as before, unmeasured.
-function __rhinoLocalCheckSendBody(value, path, ancestors) {
+// The httpClient.send body is recorded as a snapshot taken at send time (this
+// harness's choice, so later mutation cannot change the record), converted as
+// AIC converts an object body. Measured (docs/api/12 §2, §3, §5, 2026-11-04):
+//   undefined -> null at any depth;
+//   NaN, 1/0, -1/0 -> the strings "NaN", "Infinity", "-Infinity";
+//   -0 -> -0.0 on the wire (kept as -0 here; the harvest's JSON records 0, the
+//     same lost precision as 1.0 recorded as 1);
+//   new java.util.Date(t) -> t, epoch milliseconds;
+//   a cycle -> a catchable InternalError, nothing sent;
+//   a JS Date, RegExp or function -> a 1-1.7 KB dump of the Rhino object. That
+//     is not reproducible here and no script means to send it, so it is a
+//     harness fault: thrown, and failing the run even if the script catches it
+//     (AIC would not have thrown, so the script's catch is not AIC's path).
+// toJSON is never called (AIC does not). Values the measurement did not cover
+// (other Java objects, other built-ins) pass through JSON as before, unmeasured.
+function __rhinoLocalSendBody(value, path, ancestors) {
   var kind;
+  var out;
+  var item;
   var key;
   var i;
-  if (typeof value === "function") {
-    throw __rhinoLocalFail(
-      "rhino-local: httpClient.send " + path + " is a function: not JSON data, and how AIC sends one is unmeasured"
-    );
+  if (value === undefined) {
+    return null;
   }
-  if (typeof value === "number" && (value !== value || value === Infinity || value === -Infinity)) {
-    throw __rhinoLocalFail(
-      "rhino-local: httpClient.send " + path + " is " + String(value) +
-        ": not JSON data, and how AIC sends it is unmeasured"
-    );
+  if (typeof value === "number") {
+    if (value !== value) {
+      return "NaN";
+    }
+    if (value === Infinity || value === -Infinity) {
+      return value > 0 ? "Infinity" : "-Infinity";
+    }
+    return value;
   }
-  if (value === null || typeof value !== "object") {
-    return;
+  if (value === null || typeof value !== "object" && typeof value !== "function") {
+    return value;
   }
   kind = Object.prototype.toString.call(value);
   if (kind === "[object Date]") {
-    throw __rhinoLocalFail(
-      "rhino-local: httpClient.send " + path + " is a Date: how AIC serialises one is unmeasured; send a string (date.toISOString()) or a number instead"
+    throw __rhinoLocalFault(
+      "rhino-local: httpClient.send " + path + " is a JS Date: AIC sends a ~1 KB dump of the Rhino NativeDate object without the time value, not the date (docs/api/12 §5); send date.toISOString() or date.getTime()"
     );
   }
+  if (kind === "[object RegExp]") {
+    throw __rhinoLocalFault(
+      "rhino-local: httpClient.send " + path + " is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags (docs/api/12 §5); send regexp.source as a string"
+    );
+  }
+  if (typeof value === "function") {
+    throw __rhinoLocalFault(
+      "rhino-local: httpClient.send " + path + " is a function: AIC sends a ~1.7 KB dump of the Rhino function object, which exposes the script's name, its encoded source and the name of every binding and variable in the script (docs/api/12 §5); leave it out of the body"
+    );
+  }
+  if (kind === "[object JavaObject]" && __rhinoLocalIsJavaDate(value)) {
+    return Number(value.getTime());
+  }
   if (kind !== "[object Object]" && kind !== "[object Array]") {
-    return;
+    item = JSON.stringify(value);
+    return item === undefined ? undefined : JSON.parse(item);
   }
   for (i = 0; i < ancestors.length; i += 1) {
     if (ancestors[i] === value) {
-      throw __rhinoLocalFail(
-        "rhino-local: httpClient.send " + path + " refers back to an enclosing object (a cycle): it cannot be sent as JSON"
+      // Measured with plain objects only; a cycle through an array may report
+      // another message (or none), so that shape is a fault.
+      if (path.indexOf("[") === -1) {
+        throw new InternalError("Cannot produce JSON from [object Object]");
+      }
+      throw __rhinoLocalFault(
+        "rhino-local: httpClient.send " + path + " refers back to an enclosing value through an array (a cycle): AIC's error for this shape is unmeasured"
       );
     }
   }
   ancestors.push(value);
   if (kind === "[object Array]") {
+    out = [];
     for (i = 0; i < value.length; i += 1) {
-      __rhinoLocalCheckSendBody(value[i], path + "[" + i + "]", ancestors);
+      item = __rhinoLocalSendBody(value[i], path + "[" + i + "]", ancestors);
+      out.push(item === undefined ? null : item);
     }
   } else {
+    out = {};
     for (key in value) {
       if (Object.prototype.hasOwnProperty.call(value, key)) {
-        __rhinoLocalCheckSendBody(value[key], path + "." + key, ancestors);
+        item = __rhinoLocalSendBody(value[key], path + "." + key, ancestors);
+        if (item !== undefined) {
+          out[key] = item;
+        }
       }
     }
   }
   ancestors.pop();
+  return out;
+}
+
+function __rhinoLocalIsJavaDate(value) {
+  try {
+    return value instanceof java.util.Date;
+  } catch (e) {
+    // java.util.Date hidden by the class shutter: the script cannot hold one.
+    return false;
+  }
+}
+
+// A refusal the script must not be able to swallow: thrown as usual, and also
+// recorded so the harvest fails the run if the script caught it.
+function __rhinoLocalFault(message) {
+  __rhinoLocal.faults.push(message);
+  return __rhinoLocalFail(message);
 }
 
 // What a Java `toArray()` hands a script: indexable with a working `length`,
@@ -2608,11 +2663,12 @@ httpClient.send = function (uri, requestOptions) {
   }
   var effect = { url: url, method: method };
   // A `body` key holding undefined is sent as null, not omitted (docs/api/12
-  // §3, measured). Recording a send-time snapshot, not the live object, is
-  // this harness's choice so later mutation cannot change the record.
+  // §3, measured); see __rhinoLocalSendBody for the rest of the conversion.
   if (requestOptions && typeof requestOptions === "object" && "body" in requestOptions) {
-    __rhinoLocalCheckSendBody(requestOptions.body, "body", []);
-    effect.body = __rhinoLocalCloneUndefinedAsNull(requestOptions.body, false);
+    effect.body = __rhinoLocalSendBody(requestOptions.body, "body", []);
+    if (effect.body === undefined) {
+      delete effect.body;
+    }
   }
   __rhinoLocal.http.push(effect);
   var reply = __rhinoLocalMatchHttp(url, method);
@@ -3965,6 +4021,7 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.http = [];
   __rhinoLocal.logs = [];
   __rhinoLocal.identityWrites = [];
+  __rhinoLocal.faults = [];
   // Local-only: the AIC lane runs against the tenant's real mapping.
   __rhinoLocal.identityAttributes = __rhinoLocalClone(given.identityAttributes || {});
 
@@ -4036,6 +4093,12 @@ function __rhinoLocalSeed(given) {
 }
 
 function __rhinoLocalHarvest() {
+  if (__rhinoLocal.faults.length > 0) {
+    throw new Error(
+      __rhinoLocal.faults[0] +
+        " (the script caught this refusal, but AIC would not have thrown there, so the run fails anyway)"
+    );
+  }
   var recordedOutcome = __rhinoLocal.outcome;
   if (
     recordedOutcome === null &&

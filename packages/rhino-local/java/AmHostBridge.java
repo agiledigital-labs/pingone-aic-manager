@@ -166,6 +166,8 @@ final class AmHostBridge extends BaseFunction {
       "docs/api/12-script-bindings-matrix.md (utils, utils.crypto.subtle)";
   private static final String BODY_SOURCE =
       "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
+  private static final String NONJSON_SOURCE =
+      "docs/api/12-script-bindings-matrix.md (§5 non-JSON values in an object body, 2026-11-04)";
   private static final String CREATE_SOURCE =
       "docs/api/12-script-bindings-matrix.md (openidm.create content with an undefined value,"
           + " 2026-11-04)";
@@ -221,7 +223,11 @@ final class AmHostBridge extends BaseFunction {
    * JSON, no script-reachable function runs. Anything whose JSON form would not be the value — a
    * custom prototype, an accessor, a hidden or array-named property, a hole, a cycle, a non-finite
    * number, undefined, a function, a host object — is missing, never rewritten or thrown as a
-   * catchable error.
+   * catchable error. The exception is an httpClient.send body, where docs/api/12 §5 measured what
+   * AIC does with non-JSON values and the encoder does the same: NaN and ±Infinity become strings,
+   * -0 is -0.0, a java.util.Date is its epoch milliseconds, and a cycle of plain objects throws
+   * AIC's catchable InternalError. A JS Date, RegExp or function, which AIC sends as a dump of the
+   * Rhino object, is missing with a message saying so.
    */
   private final class Encoder {
     private final Context cx;
@@ -236,6 +242,8 @@ final class AmHostBridge extends BaseFunction {
     boolean fieldNulled;
     /** Why wire text may differ from AIC's: each names a shape docs/api/12 did not measure. */
     final java.util.TreeSet<String> assumed = new java.util.TreeSet<String>();
+    /** docs/api/12 §5 conversions this body used, each a measured provenance note. */
+    final java.util.TreeSet<String> measured = new java.util.TreeSet<String>();
 
     Encoder(Context cx, String where, String nullUnder) {
       this(cx, where, nullUnder, null, false);
@@ -324,6 +332,33 @@ final class AmHostBridge extends BaseFunction {
       return out.append('"').toString();
     }
 
+    /** True inside an httpClient.send body, where docs/api/12 §5 applies. */
+    private boolean inBody(String path) {
+      return nullUnder != null && under(path);
+    }
+
+    /** The body-relative path a script author recognises: body, body.d, body[0]. */
+    private String bodyPath(String path) {
+      String rel = path.substring(nullUnder.length());
+      if (!rel.isEmpty() && rel.charAt(0) != '.' && rel.charAt(0) != '[') rel = "." + rel;
+      return "body" + rel;
+    }
+
+    /** A §5 conversion: measured under an object key; inside an array it is the same guess. */
+    private void converted(String behavior, String path) {
+      measured.add(behavior);
+      if (bodyPath(path).indexOf('[') >= 0) {
+        assumed.add(
+            "httpClient body text for NaN, ±Infinity, -0 or a java.util.Date inside an array,"
+                + " written as measured under an object key (docs/api/12 §5)");
+      }
+    }
+
+    /** §5: AIC sends a dump of the Rhino object, which nothing here can reproduce. */
+    private EmulationFailure dump(String what, String path) {
+      return missing("httpClient.send " + bodyPath(path) + " is " + what + " (docs/api/12 §5)");
+    }
+
     private EmulationFailure shape(String what, String path) {
       return missing(where + what + (path.isEmpty() ? "" : " at " + path));
     }
@@ -338,6 +373,34 @@ final class AmHostBridge extends BaseFunction {
 
     Encoder write(Object value, String path) {
       boolean wrapped = false;
+      Object unwrapped = value instanceof Wrapper ? ((Wrapper) value).unwrap() : value;
+      if (unwrapped != null && unwrapped.getClass() == java.util.Date.class && inBody(path)) {
+        converted("httpClient.send body java.util.Date is sent as its epoch milliseconds", path);
+        out.append(Long.toString(((java.util.Date) unwrapped).getTime()));
+        return this;
+      }
+      if (value instanceof ScriptableObject && inBody(path)) {
+        String type = ((ScriptableObject) value).getClassName();
+        if ("Date".equals(type)) {
+          throw dump(
+              "a JS Date: AIC sends a ~1 KB dump of the Rhino NativeDate object without the time"
+                  + " value, not the date; send date.toISOString() or date.getTime()",
+              path);
+        }
+        if ("RegExp".equals(type)) {
+          throw dump(
+              "a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source"
+                  + " or flags; send regexp.source as a string",
+              path);
+        }
+        if (value instanceof Function) {
+          throw dump(
+              "a function: AIC sends a ~1.7 KB dump of the Rhino function object, which exposes the"
+                  + " script's name, its encoded source and the name of every binding and variable"
+                  + " in the script; leave it out of the body",
+              path);
+        }
+      }
       if (value instanceof Wrapper) {
         Object raw = ((Wrapper) value).unwrap();
         if (!(raw instanceof CharSequence || raw instanceof Boolean || raw instanceof Number)) {
@@ -358,7 +421,23 @@ final class AmHostBridge extends BaseFunction {
         out.append(wire ? wireString(value.toString()) : Json.quote(value.toString()));
       } else if (value instanceof Number) {
         double number = ((Number) value).doubleValue();
-        if (Double.isNaN(number) || Double.isInfinite(number) || (number == 0 && 1 / number < 0)) {
+        boolean nonFinite = Double.isNaN(number) || Double.isInfinite(number);
+        boolean negativeZero = number == 0 && 1 / number < 0;
+        if ((nonFinite || negativeZero) && !wrapped && inBody(path)) {
+          if (negativeZero) {
+            converted("httpClient.send body -0 is sent as -0.0", path);
+            out.append("-0.0");
+          } else {
+            converted(
+                "httpClient.send body NaN and ±Infinity are sent as the strings \"NaN\","
+                    + " \"Infinity\" and \"-Infinity\"",
+                path);
+            String text = Double.isNaN(number) ? "NaN" : number > 0 ? "Infinity" : "-Infinity";
+            out.append(wire ? wireString(text) : Json.quote(text));
+          }
+          return this;
+        }
+        if (nonFinite || negativeZero) {
           throw shape("non-finite or negative-zero number", path);
         }
         out.append(
@@ -379,7 +458,18 @@ final class AmHostBridge extends BaseFunction {
       if (!(array ? "Array".equals(type) : "Object".equals(type))) {
         throw shape(type + " object", path);
       }
-      if (active.containsKey(object)) throw shape("cyclic object", path);
+      if (active.containsKey(object)) {
+        if (inBody(path) && !array && bodyPath(path).indexOf('[') < 0) {
+          // docs/api/12 §5: a cycle of plain objects fails the send with a catchable error.
+          calls.note(
+              "measured",
+              "httpClient.send body with a cycle throws a catchable InternalError; nothing is sent",
+              NONJSON_SOURCE);
+          throw ScriptRuntime.constructError(
+              "InternalError", "Cannot produce JSON from [object Object]");
+        }
+        throw shape("cyclic object", path);
+      }
       if (object.getPrototype() != (array ? arrayProto : objectProto)) {
         throw shape("non-plain prototype", path);
       }
@@ -569,6 +659,7 @@ final class AmHostBridge extends BaseFunction {
             assumed.add("httpClient body text for a top-level non-object body");
           }
           assumed.addAll(text.assumed);
+          for (String behavior : text.measured) calls.note("measured", behavior, NONJSON_SOURCE);
           wire.put("body", text.text());
         }
       }

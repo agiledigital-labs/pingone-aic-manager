@@ -247,6 +247,14 @@ describe("queryFilter grammar", () => {
       expect(result.status).toBe(501);
       expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
     });
+    // R7-4: on a type with no measured rule the wide variants are what make a trailing NBSP undecided.
+    it("bravo_user eq differing only by a trailing no-break space is missing, not a definite 0", async () => {
+      const cause = "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: bravo_user mail";
+      expectEmulationFailure(cause);
+      const result = await query(await users(), "bravo_user", 'mail eq "ma@example.com\u00a0"');
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
     it("controls: a no-break space or ß on both sides is definite", async () => {
       const emu = await users();
       await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a7", headers: { "If-None-Match": "*" }, body: { givenName: "stra\u00dfe\u00a0x" } }, 201);

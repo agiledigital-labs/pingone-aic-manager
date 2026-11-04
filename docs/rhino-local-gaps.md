@@ -248,7 +248,7 @@ What the 2026-09-12 ranking called the shutter gap is closed:
 expectation that was incomplete). The five legacy cases were dropped on
 2026-09-12 (`7bb0195`); legacy scripts are not supported.
 
-### Unlabelled query matching and unmeasured send bodies (listed 2026-11-04)
+### Unlabelled query matching and send bodies (listed 2026-11-04)
 
 Two script-tester behaviours disagree with, or go beyond, what was measured,
 and neither carries a label:
@@ -264,13 +264,36 @@ and neither carries a label:
   experimental IDM emulator (`src/idm/filter.ts`) applies the measured rules
   and refuses the unmeasured ones; the script tester does not yet route through
   them.
-- **`httpClient.send` refuses bodies whose conversion is unmeasured.** The
-  recorded body is a JSON snapshot taken at send time. A function, a cycle,
-  `NaN`, `±Infinity` or a `Date` anywhere in it fails with a `rhino-local:`
-  message naming the path, because JSON would turn each into an engine error
-  or a guess (`null`, an ISO string) and AIC's handling is not measured. `-0`
-  is still recorded as `0`, and Java objects pass through as before, both
-  unmeasured.
+- **`httpClient.send` converts an object body as AIC measured, and fails on
+  what it cannot reproduce.** `docs/api/12` §5 (2026-11-04) measured AIC's
+  serializer. The recorded body is a snapshot taken at send time, and it
+  follows that measurement:
+  - `NaN`, `1/0` and `-1/0` are recorded as the strings `"NaN"`,
+    `"Infinity"` and `"-Infinity"`.
+  - A `java.util.Date` is recorded as its epoch milliseconds.
+  - A cycle of plain objects throws AIC's catchable
+    `InternalError: Cannot produce JSON from [object Object]` and records
+    nothing.
+  - `toJSON` is never called.
+
+  A JS `Date`, a `RegExp` or a function goes out from AIC as a 1–1.7 KB dump of
+  the Rhino object, which the harness cannot reproduce. For a function, that
+  dump exposes the script's source and the names of its bindings and
+  variables. Such a send is a **harness fault**: it throws a `rhino-local:`
+  message saying what AIC sends, and it fails the run even if the script
+  catches the throw, because AIC would not have thrown. A cycle that passes
+  through an array is treated the same way, since its message was not
+  measured. Still unlabelled:
+  - `-0` is sent as `-0.0` but recorded as `0`, because recorded effects are
+    JSON. This is the same lost precision as `1.0` recorded as `1`.
+  - These conversions were measured under an object key only. Array elements
+    and a top-level body reuse the same rule.
+  - Other Java objects and other built-ins pass through JSON as before,
+    unmeasured.
+
+  The journey emulator applies the same rules in Java. It labels them
+  measured, labels the array case assumed, and reports the dump cases as
+  missing.
 
 ## Binding probes (measured 2026-09-29)
 
