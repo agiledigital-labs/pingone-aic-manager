@@ -159,8 +159,8 @@ describe("queryFilter grammar", () => {
       expect(result.provenance).not.toContainEqual(SPACE);
     });
     it.each([
-      ['mail eq " ma@example.com"', "bravo_user", "query eq whose match turns on leading, trailing or repeated spaces: bravo_user mail"],
-      ['mail sw " ma"', "alpha_user", "query sw whose match turns on leading, trailing or repeated spaces: alpha_user mail"],
+      ['mail eq " ma@example.com"', "bravo_user", "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: bravo_user mail"],
+      ['mail sw " ma"', "alpha_user", "query sw whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user mail"],
       ['userName gt "UA"', "bravo_user", "query gt whose order turns on letter case: bravo_user userName"],
     ])("%s on %s is missing", async (filter, type, cause) => {
       expectEmulationFailure(cause);
@@ -169,7 +169,7 @@ describe("queryFilter grammar", () => {
       expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
     });
     it("a run of interior spaces is missing on a measured field: whether DS collapses it is unmeasured", async () => {
-      const cause = "query eq whose match turns on leading, trailing or repeated spaces: alpha_user givenName";
+      const cause = "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user givenName";
       expectEmulationFailure(cause);
       const emu = await users();
       await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a4", headers: { "If-None-Match": "*" }, body: { givenName: "mary ann" } }, 201);
@@ -199,6 +199,66 @@ describe("queryFilter grammar", () => {
       const cause = "query eq whose match turns on letter case: bravo_user givenName";
       expectEmulationFailure(cause);
       const result = await query(await users(), "bravo_user", filter);
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    // R6-1: negation and array elements are the two arms that could turn `unknown` into a definite answer.
+    it("bravo_user !(case-only leaf) is missing, not the negation of a guess", async () => {
+      const cause = "query eq whose match turns on letter case: bravo_user givenName";
+      expectEmulationFailure(cause);
+      const result = await query(await users(), "bravo_user", '!(givenName eq "ALICE")');
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    it("a case-only match against an array element on bravo_user is missing, not dropped", async () => {
+      const cause = "query eq whose match turns on letter case: bravo_user tags";
+      expectEmulationFailure(cause);
+      const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "bravo_user", schema: { properties: { tags: { type: "array", items: { type: "string" } } } } }] } }), runner);
+      await send(emu, { method: "PUT", path: `managed/bravo_user/${user}`, headers: { "If-None-Match": "*" }, body: { tags: ["beta", "Alpha"] } }, 201);
+      const result = await query(emu, "bravo_user", 'tags eq "alpha"');
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+      // Control: an exact element match is definite whatever the other element would do.
+      expect(((await query(emu, "bravo_user", 'tags eq "beta"')).body as Document).resultCount).toBe(1);
+    });
+    // R6-2: "space" was U+0020 only, and no case variant differed on ß. Neither is measured, so an
+    // answer that turns on other whitespace or on a non-ASCII fold is missing, not a definite guess.
+    const SPACE_CAUSE = (field: string) => `query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user ${field}`;
+    it.each([
+      ["a trailing no-break space", "mail", "ma@example.com", "ma@example.com\u00a0"],
+      ["a trailing tab", "mail", "ma@example.com", "ma@example.com\t"],
+      ["an interior no-break space", "givenName", "mary ann", "mary\u00a0ann"],
+      ["a leading ideographic space", "userName", "ub", "\u3000ub"],
+    ])("alpha_user eq differing by %s is missing", async (_what, field, stored, expected) => {
+      const cause = SPACE_CAUSE(field);
+      expectEmulationFailure(cause);
+      const emu = await users();
+      await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a5", headers: { "If-None-Match": "*" }, body: { [field]: stored } }, 201);
+      const result = await query(emu, "alpha_user", `${field} eq ${JSON.stringify(expected)}`);
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    it.each([["givenName", "stra\u00dfe", "STRASSE"], ["givenName", "STRASSE", "stra\u00dfe"]])("alpha_user %s %s eq %s turns on a non-ASCII fold and is missing", async (field, stored, expected) => {
+      const cause = "query eq whose match turns on letter case: alpha_user givenName";
+      expectEmulationFailure(cause);
+      const emu = await users();
+      await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a6", headers: { "If-None-Match": "*" }, body: { [field]: stored } }, 201);
+      const result = await query(emu, "alpha_user", `${field} eq ${JSON.stringify(expected)}`);
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    it("controls: a no-break space or ß on both sides is definite", async () => {
+      const emu = await users();
+      await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a7", headers: { "If-None-Match": "*" }, body: { givenName: "stra\u00dfe\u00a0x" } }, 201);
+      const result = await query(emu, "alpha_user", 'givenName eq "STRA\u00dfE\u00a0X"');
+      expect(result.status, JSON.stringify(result.provenance)).toBe(200);
+      expect((result.body as Document).resultCount).toBe(1);
+    });
+    // R6-3: the refusal names the leaf that left the answer undecided, not the first unknown one.
+    it("the missing message names the deciding leaf, not one an or already made irrelevant", async () => {
+      const cause = "query eq whose match turns on letter case: bravo_user city";
+      expectEmulationFailure(cause);
+      const result = await query(await users(), "bravo_user", '(givenName eq "ALICE" or sn eq "doe") and city eq "PERTH"');
       expect(result.status).toBe(501);
       expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
     });
