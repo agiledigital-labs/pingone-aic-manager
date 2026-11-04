@@ -133,12 +133,19 @@ describe("case isolation in one runner", () => {
   });
 
   it("the next case after a polluter starts exactly as if fresh", async () => {
-    await pollute(runner);
-    await probe(runner);
-    // And again: the second probe is served entirely from cached compiled scripts.
-    await pollute(runner);
-    await probe(runner);
-  });
+    // Its own JVM, polluting first: anything cached is cached from the
+    // polluter's job, which is the order that exposes a shared compiled form.
+    const own = await RhinoRunner.spawn();
+    try {
+      await pollute(own);
+      await probe(own);
+      // And again: the second probe is served entirely from cached compiled scripts.
+      await pollute(own);
+      await probe(own);
+    } finally {
+      await own.close();
+    }
+  }, 60_000);
 
   it("concurrent cases do not see each other", async () => {
     await Promise.all([pollute(runner), probe(runner), pollute(runner), probe(runner)]);
