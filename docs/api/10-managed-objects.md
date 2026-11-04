@@ -414,6 +414,7 @@ other:
 | **Create** omitting a property that has a `default`            | 201, and the record comes back holding the default — `false`/`true`/`0` alike |
 | **Create** omitting a `required` property that has a `default` | 201 — the default is applied _before_ policy runs, so `REQUIRED` is satisfied |
 | **Create** sending an explicit `null`                          | **403 `NOT_NULL`** (+ `VALID_TYPE` when the property is also `required`)      |
+| **Create** from a next-gen journey script's `openidm.create` with the property `undefined` | **403 `NOT_NULL`**, exactly as `null` — the key is sent as `null`, not dropped, so the default does not land (2026-11-04, below) |
 | Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — the null guard is independent of `required`        |
 | **Update** (`PUT` whole record) omitting the property          | **200, and the stored value is dropped** — `required` does not catch this     |
 | `PATCH remove` the property                                    | 403 `REQUIRED`                                                                |
@@ -428,6 +429,16 @@ Three consequences worth carrying:
   an untouched field gets a 403 that reads like "you must supply a value", when
   the fix is to _omit_ the key and let the default land. Strip null-valued keys
   from create bodies rather than adding `default`s to satisfy them.
+- **`undefined` from a journey script is `null`, not "omitted".** Measured
+  2026-11-04 with `scripts/experiment-journey-defaults-case.sh` on `bravo_user.frIndexedInteger1`
+  (`default: 0`; `alpha_user` has **no** property with a `default` in the live
+  schema, and no schema was written). One next-gen decision node called
+  `openidm.create` four times: key omitted → created, stored `0` (control: the
+  default applies); `null` → refused, `detail` naming `NOT_NULL` on the
+  property (control); `undefined` → **refused identically**; `7` → stored `7`
+  (positive control). IDM REST repeated the omitted (201, `0`) and `null` (403
+  `NOT_NULL`) controls. So a script building `{x: maybeValue}` defeats the
+  default; delete the key instead. Run twice, same result.
 - **Defaults apply on create only, and whole-record `PUT` silently drops absent
   properties.** So a read-modify-write that loses a key doesn't re-default it
   and isn't refused either — it just erases the value. Adding a `required`
@@ -1467,6 +1478,15 @@ Three ways a filter silently matches nothing, all HTTP 200:
 - **A number matches quoted or unquoted.** `frIndexedInteger1 eq 7` and
   `frIndexedInteger1 eq "7"` both matched the same integer-valued field, so
   quoting cannot be used to distinguish a string from a number.
+
+**`eq` on `mail` and `userName` is case-insensitive** (verified 2026-11-04,
+`scripts/experiment-journey-defaults-case.sh`, run twice). One `alpha_user` stored with an all-lower-case
+`userName` and `mail`; `mail eq "<alternating-case copy>"` and
+`userName eq "<alternating-case copy>"` each returned the record
+(`resultCount: 1`), as the exact-case controls did — over IDM REST and through
+`openidm.query` from a next-gen journey script alike. Identify Existing User
+matches the same way (`docs/api/25-journey-runtime.md`). Other properties
+were not probed; do not assume every string property behaves so.
 
 `true`, `false` and `3.5` all parse as literals. **`eq null` is a 400** —
 there is no null literal; ask for absence with `!(field pr)`. A malformed

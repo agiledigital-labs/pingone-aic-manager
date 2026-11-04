@@ -616,8 +616,25 @@ neither fails the create nor stores the string `"undefined"`; the record is
 indistinguishable from one created without the key. A plain `GET` renders
 every schema property, so absent and `null` both read as `null` — the presence
 query is what shows nothing was stored. Whether `openidm` serialized the key as
-`null` or dropped it is **not** observable this way (the store keeps neither),
-so do not infer from this that `openidm.*` shares `httpClient`'s serializer.
+`null` or dropped it is **not** observable this way (the store keeps neither).
+
+**On a property with a schema `default` it is observable, and `undefined` is
+sent as `null`** (verified 2026-11-04, `scripts/experiment-journey-defaults-case.sh`,
+run twice). `alpha_user` has no defaulted property, so the probe used
+`bravo_user.frIndexedInteger1` (`default: 0`) and wrote no schema:
+
+| `frIndexedInteger1` in `content` | `openidm.create` | Stored |
+| --- | --- | --- |
+| key omitted (control) | returns the record | `0` — the default applied |
+| `null` (control) | throws `JavaException: …ResourceExceptionScriptAdapter: Policy validation failed`; `e.javaException.getDetail()` names `NOT_NULL` on the property | no record (GET 404) |
+| `undefined` | **throws the same, with the same `NOT_NULL` detail** | no record |
+| `7` (positive control) | returns the record | `7` |
+
+So `openidm.create` serializes an `undefined` value as `null` — the same rule
+as `httpClient`'s top-level body above. Where the property has no default
+and no `NOT_NULL` guard the difference is invisible; where it has a default,
+`{x: maybeValue}` both loses the default and fails the create. Delete the key
+instead (`docs/api/10-managed-objects.md`, defaults table).
 
 > **Surfaced since `TEMPLATES_VERSION` 46.** `HttpOptions.body` stays typed as
 > plain `object` — neither trap is expressible as a type without contorting the

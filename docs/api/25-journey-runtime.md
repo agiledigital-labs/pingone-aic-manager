@@ -22,7 +22,7 @@ and never print a `tokenId`.** Read the fields an experiment needs by name.
 
 ## Verified against
 
-Sandbox tenant, realm `alpha`, **2026-11-02**, next-gen scripted decisions
+Sandbox tenant, realm `alpha`, **2026-11-02 to 2026-11-04**, next-gen scripted decisions
 (`evaluatorVersion: "2.0"`). Every section names the
 `scripts/experiment-journey-*.sh` run that established it; those scripts
 create their own `zzemu-*` trees, nodes, scripts and users and delete them on
@@ -139,6 +139,32 @@ rows show the realistic shape (collector writes shared `username`, attribute
 collector writes shared `objectAttributes.mail`) behaves exactly as the seeded
 one.
 
+### A blank or `null` lookup value, and letter case (2026-11-04)
+
+Measured with `scripts/experiment-journey-defaults-case.sh`, run twice with the same result. One user A
+stored with all-lower-case `userName` UA and `mail` MA. A callback-free probe
+node before Identify recorded what `nodeState.get("objectAttributes")` held.
+Same node config unless stated. `username = MA` was chosen so that a fallback
+to `username` would find A (`true`) while a lookup of `""` would not.
+
+| Variant | `objectAttributes.mail` before | Outcome | State after |
+| --- | --- | --- | --- |
+| `blank`: Page[`UsernameCollectorNode`, `AttributeCollectorNode(mail, required: false)`] answered MA, `""` | key **present**, `""` (a string) | **`false`** | no `_id`; `username` left as MA — `""` is looked up, no fallback |
+| `filled`: the same page answered MA, MA (control) | MA | `true` | A |
+| `seed-empty`: `putShared` `username = MA`, `objectAttributes = {mail: ""}` | `""` | `false` | as `blank` — so the collector's write, not the page, decides it |
+| `seed-null`: the same with `{mail: null}` | key present, `null` | **`true`** | A; `objectAttributes.mail` stays `null` beside the added `userName` — a `null` counts as absent and `username` is used |
+| `seed-nomail`: `objectAttributes = {sn}` (control) | key absent | `true` | A, as the 2026-11-02 second row |
+| `ieu-mail-mixed`: `objectAttributes = {mail: <alternating-case MA>}` | mixed case | **`true`** | A; `username` = UA (stored case), `objectAttributes.mail` keeps the mixed-case input |
+| `ieu-mail-exact` (control) | MA | `true` | A |
+| `ieu-uname-mixed`: `username = <alternating-case UA>`, `identityAttribute: "userName"` | — | **`true`** | A; `username` overwritten with stored-case UA |
+| `ieu-uname-exact` (control) | — | `true` | A |
+
+So the precedence rule above reads "`objectAttributes[identityAttribute]`
+unless it is absent **or `null`**": an empty string is a real lookup value and
+fails. And the lookup is case-insensitive on both `mail` and `userName`, like
+the underlying IDM `eq` (`10-managed-objects.md`); a node downstream that
+compares `username` with what the user typed must expect the stored case.
+
 `listOutcomes`: `["true","false"]`.
 
 ## Create Object and Patch Object
@@ -192,6 +218,7 @@ Measured 2026-11-02 with `scripts/experiment-journey-collectors.sh`. Variant
 | `policies` output | `{}` with `validateInputs: false`; with `true`, a JSON object holding the attribute's IDM policy (`policyRequirements: ["REQUIRED","VALID_TYPE", …]`, `policies`, `fallbackPolicies: null`, `name`) | The flag is the only change between the variants |
 | `required` output | Mirrors the node's `required` flag | Same |
 | State written | **Shared** `objectAttributes = {givenName, sn, mail}`, nothing at top level (`nodeState.get("mail")` is `null`) | Present after the dump's round trip |
+| A non-required attribute left blank (2026-11-04, `scripts/experiment-journey-defaults-case.sh`) | The page is **not** re-sent; `objectAttributes.mail` is written as the empty string `""` — key present, `typeof` `string`, not `null`, not absent | The same page with `mail` filled wrote the value |
 | A required attribute left empty | The whole page is **sent again**, with every submitted value echoed in its callback's `value` output — and `failedPolicies` on `mail` still `[]`; no message says why | The next submission, differing only in a filled `mail`, left the page |
 | `ValidatedUsernameNode` | Emits `ValidatedCreateUsernameCallback` (outputs `policies`, `failedPolicies`, `validateOnly`, `prompt: "Username"`; no `name`). An empty submission came back with the page re-sent and `failedPolicies` naming `REQUIRED` and `MIN_LENGTH` — an array of **JSON-encoded strings** (`["{ \"policyRequirement\": \"REQUIRED\" }", …]`), not of objects. Writes **shared** `username` and shared `objectAttributes.userName` | — |
 | `ValidatedPasswordNode` with `validateInput: false` | Emits a plain **`PasswordCallback`** (`prompt: "Password"`), not `ValidatedCreatePasswordCallback`. Writes **transient** `password` and a **transient** `objectAttributes = {password}` | Both gone after the dump's round trip, while `username` survived |
@@ -309,7 +336,10 @@ serialization". In short: `openidm.create` content with `description:
 undefined` succeeds and stores nothing (as an omitted key or `null` does, never
 the string `"undefined"`); `httpClient.send` with top-level `body: undefined`
 sends the 4-byte body `null`, as `body: null` does, while omitting `body` sends
-an empty one; `{count: 1}` goes out as `{"count":1.0}`.
+an empty one; `{count: 1}` goes out as `{"count":1.0}`. On a property with a schema `default`
+the difference shows: `undefined` is refused `NOT_NULL` exactly as `null` is,
+so the default never lands (2026-11-04, `scripts/experiment-journey-defaults-case.sh`;
+same section of doc 12).
 
 ## Not yet measured
 
