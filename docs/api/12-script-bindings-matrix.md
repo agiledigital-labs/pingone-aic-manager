@@ -598,6 +598,38 @@ So `body: undefined` is not "no body": a conditional body built as
 Omit the key instead. The last row re-confirms §1. The charset
 suffix appears only when a body is serialized.
 
+### 4. String escaping on the wire (verified 2026-11-04)
+
+`scripts/experiment-journey-escaping-query.sh`, next-gen journey decision node,
+`POST` with `Content-Type: application/json` and an object `body`, through the
+same httpbin.org echo (here it returned the first body as a base64 `data:` URL,
+so the bytes below are exact; `Content-Length` agreed with every count).
+Control: the script's own `JSON.stringify` of the same object, returned
+alongside. Hex is the UTF-8 the receiver got.
+
+| String in the body | `JSON.stringify` (Rhino) | On the wire via `httpClient` |
+| --- | --- | --- |
+| every char `0x20`–`0x7e` in one value | `"` → `\"`, `\` → `\\`, nothing else escaped | **byte-identical**: no `\/`, and `<`, `>`, `&`, `'` stay literal |
+| `"é"`, U+00A0, U+2028, U+FEFF | raw | raw UTF-8: `c3 a9`, `c2 a0`, `e2 80 a8`, `ef bb bf` — U+2028 is **not** escaped |
+| U+007F | raw | raw `7f` |
+| `"\n"`, `"\t"` | `\n`, `\t` | `\n`, `\t` |
+| U+0001, U+001F | `\u0001`, `\u001f` | `\u0001`, **`\u001F`** — upper-case hex |
+| `"\ud83d\ude00"` (an astral emoji) | raw (4 UTF-8 bytes) | **`\uD83D\uDE00`** — escaped, upper-case, ASCII only |
+| lone surrogate `"\ud800"` | raw lone surrogate | **accepted, sent as `\uD800`** (status 200) |
+| key `"k/<é"` | `{"k/<é":"x"}` | identical — keys are escaped like values, `é` raw (`c3 a9`) |
+| `nul: null` | `"nul":null` | `"nul":null` — a null value keeps its key |
+
+So for strings the serializer agrees with `JSON.stringify` except in two
+places: control characters other than the short escapes use upper-case hex,
+and every code point above U+FFFF — or an unpaired surrogate — goes out as
+`\uXXXX` surrogate escapes instead of raw bytes. Both are valid JSON and parse
+to the same value; only a receiver that hashes or signs the raw body (an HMAC
+over the request, a byte-for-byte comparison) sees the difference. BMP
+characters, U+2028 included, are never escaped. A lone surrogate is not
+refused: it reaches the receiver as an escape that a strict UTF-16 decoder may
+reject. Rhino's own `JSON.stringify` emits a lone surrogate raw, which is not
+ES2019 well-formed output either.
+
 ### `openidm.create` content with an `undefined` value (verified 2026-11-04)
 
 Same script; one next-gen journey decision node called

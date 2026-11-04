@@ -1485,8 +1485,37 @@ Three ways a filter silently matches nothing, all HTTP 200:
 `userName eq "<alternating-case copy>"` each returned the record
 (`resultCount: 1`), as the exact-case controls did — over IDM REST and through
 `openidm.query` from a next-gen journey script alike. Identify Existing User
-matches the same way (`docs/api/25-journey-runtime.md`). Other properties
-were not probed; do not assume every string property behaves so.
+matches the same way (`docs/api/25-journey-runtime.md`).
+
+The rest of the comparison is case- and edge-space-insensitive too (verified
+2026-11-04, `scripts/experiment-journey-escaping-query.sh`, run twice). One
+`alpha_user` stored with lower-case `userName` `<p>-alice` and `mail`
+`<p>@example.com`, each filter returning 0 or 1 row:
+
+| Filter | IDM REST | `openidm.query` (journey) | Control |
+| --- | --- | --- | --- |
+| `mail eq " <mail>"`, `mail eq "<mail> "` (leading / trailing space) | **1** | **1** | exact value: 1 |
+| `mail eq "<local>@ example.com"` (space after `@`) | 0 | 0 | exact value: 1 |
+| `userName eq " <name>"`, `"<name> "` | **1** | **1** | exact value: 1 |
+| `userName eq "zze mu…"` (interior space) | 0 | 0 | exact value: 1 |
+| `userName gt "<p>-Alice"` | **0** (code-point order would match) | 0 | `gt "<p>-alice"`: 0 |
+| `userName ge "<p>-ALICE"` | **1** (code-point order would not) | 1 | `ge "<p>-alice"`: 1 |
+| `userName lt "<p>-B"` | **1** (code-point order would not) | 1 | `lt "<p>-b"`: 1 |
+| `userName gt "<p>-alicd"` (same case) | 1 | 1 | — |
+| `givenName`, `sn`, `description`, `frIndexedString1`, `frUnindexedString1` `eq` the case-swapped value | **1** each (REST) | not run | exact value: 1 each |
+
+Each `gt`/`ge`/`lt` filter was run ANDed with `_id eq "<uuid>"` and,
+separately, with `userName sw "<p>"`; both agreed. Identify Existing User
+seeded with `objectAttributes.mail` behaved as `eq`: leading and trailing space
+→ `true` (the user found), space after `@` → `false`.
+
+So on `alpha_user` string properties — indexed, unindexed and `description`
+alike — `eq` and the ordering operators compare **case-folded with leading and
+trailing spaces ignored**; an inserted interior space is significant. That is
+the shape of LDAP `caseIgnoreMatch` / `caseIgnoreOrderingMatch` on the DS
+repository. Not probed: whether a run of interior spaces collapses to one (as
+that matching rule would), non-ASCII case folding, `sw`/`co` with edge spaces,
+and other managed objects.
 
 `true`, `false` and `3.5` all parse as literals. **`eq null` is a 400** —
 there is no null literal; ask for absence with `!(field pr)`. A malformed

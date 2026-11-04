@@ -164,6 +164,9 @@ unless it is absent **or `null`**": an empty string is a real lookup value and
 fails. And the lookup is case-insensitive on both `mail` and `userName`, like
 the underlying IDM `eq` (`10-managed-objects.md`); a node downstream that
 compares `username` with what the user typed must expect the stored case.
+Leading and trailing spaces in `objectAttributes.mail` are ignored the same way
+(`true`), while a space inside the value is a miss (`false`) — verified
+2026-11-04, `scripts/experiment-journey-escaping-query.sh`.
 
 `listOutcomes`: `["true","false"]`.
 
