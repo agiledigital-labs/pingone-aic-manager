@@ -1,5 +1,6 @@
 import { relative } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, expect } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, inject } from "vitest";
+import { JVM_POOL_CONTEXT } from "../pool.ts";
 import type { z } from "zod";
 import type {
   RunnerTestFile as File,
@@ -140,7 +141,10 @@ export function useLease<TSchema extends z.ZodType>(
   // Vitest 5 requires fixture destructuring before the suite argument.
   // eslint-disable-next-line no-empty-pattern
   beforeAll(async ({}, scope) => {
-    runner = await RhinoRunner.spawn();
+    // Borrow this worker slot's warm JVM from the reporter's pool when there is
+    // one (src/pool.ts); otherwise start a JVM for this lease, as before.
+    const pool = inject(JVM_POOL_CONTEXT);
+    runner = pool === undefined ? await RhinoRunner.spawn() : await RhinoRunner.borrow(pool);
     lease.open();
     if (options.aic !== undefined) {
       claimAicLeaseForFile(vitestFilePath(scope), options.aic.id);

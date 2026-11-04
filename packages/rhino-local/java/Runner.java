@@ -44,7 +44,13 @@ public final class Runner {
       new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8);
 
   private static volatile boolean retired;
-  static void retire() { retired = true; }
+  /** Marker line: a pool that reuses JVMs across clients reads it to stop handing this one out. */
+  static final String RETIRED_MARKER = "rhino-local-runner retired";
+  static synchronized void retire() {
+    if (retired) return;
+    retired = true;
+    ERR.println(RETIRED_MARKER);
+  }
 
   private static final Map<String, Boolean> ACTIVE = new ConcurrentHashMap<String, Boolean>();
 

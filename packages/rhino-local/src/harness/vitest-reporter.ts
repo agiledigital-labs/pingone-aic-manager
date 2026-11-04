@@ -3,13 +3,31 @@ import type { Reporter, Vitest, TestModule, RunnerTaskResultPack } from "vitest/
 import { emulationAuditDiagnostics, type EmulationAudit } from "../emulation.ts";
 
 import { EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION } from "./vitest-context.ts";
+import { JVM_POOL_CONTEXT, JvmPool, poolEnabled } from "../pool.ts";
 
 export default class EmulationReporter implements Reporter {
   #audits = new Map<string, EmulationAudit>();
   #ended = false;
   #printed = new Set<string>();
 
-  onInit(vitest: Vitest): void { vitest.provide(EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION); }
+  #pool: Promise<JvmPool | undefined> | undefined;
+  #watch = false;
+
+  // The reporter is the package's one required main-process hook, so it owns
+  // the JVM pool `useLease` borrows from (src/pool.ts). Vitest awaits onInit,
+  // so the address is provided before any worker starts.
+  async onInit(vitest: Vitest): Promise<void> {
+    vitest.provide(EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION);
+    this.#watch = vitest.config.watch;
+    if (!poolEnabled()) return;
+    this.#pool ??= JvmPool.start().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      process.emitWarning(`rhino-local: JVM pool unavailable, each lease will start its own JVM: ${message}`);
+      return undefined;
+    });
+    const pool = await this.#pool;
+    if (pool !== undefined) vitest.provide(JVM_POOL_CONTEXT, pool.address);
+  }
 
   onTestRunStart(): void { this.#audits.clear(); this.#printed.clear(); this.#ended = false; }
   #accept(meta: object): void {
@@ -22,10 +40,12 @@ export default class EmulationReporter implements Reporter {
     for (const [, , meta] of packs) if (meta) this.#accept(meta);
     if (this.#ended) this.#enforce();
   }
-  onTestRunEnd(modules: readonly TestModule[]): void {
+  async onTestRunEnd(modules: readonly TestModule[]): Promise<void> {
     for (const module of modules) this.#accept(module.meta());
     this.#ended = true;
     this.#enforce();
+    // A watch run keeps its warm JVMs for the next rerun; idle ones never hold the process open.
+    if (!this.#watch) await (await this.#pool)?.stop();
   }
   #enforce(): void {
     for (const audit of this.#audits.values()) for (const message of emulationAuditDiagnostics(audit)) {
