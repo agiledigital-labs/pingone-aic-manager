@@ -75,6 +75,61 @@ function __rhinoLocalCloneUndefinedAsNull(value, topLevelOnly) {
   );
 }
 
+// The httpClient.send body is recorded as a JSON snapshot taken at send time.
+// Only `undefined` -> null (docs/api/12 §2, §3) and number/string values are
+// measured. AIC's handling of a function, a cycle, NaN or +/-Infinity, or a
+// Date is not, and JSON would silently turn each into an error or a guess
+// (null, an ISO string), so they are refused here by name. Other values
+// (Java objects, -0 recorded as 0) pass through JSON as before, unmeasured.
+function __rhinoLocalCheckSendBody(value, path, ancestors) {
+  var kind;
+  var key;
+  var i;
+  if (typeof value === "function") {
+    throw __rhinoLocalFail(
+      "rhino-local: httpClient.send " + path + " is a function: not JSON data, and how AIC sends one is unmeasured"
+    );
+  }
+  if (typeof value === "number" && (value !== value || value === Infinity || value === -Infinity)) {
+    throw __rhinoLocalFail(
+      "rhino-local: httpClient.send " + path + " is " + String(value) +
+        ": not JSON data, and how AIC sends it is unmeasured"
+    );
+  }
+  if (value === null || typeof value !== "object") {
+    return;
+  }
+  kind = Object.prototype.toString.call(value);
+  if (kind === "[object Date]") {
+    throw __rhinoLocalFail(
+      "rhino-local: httpClient.send " + path + " is a Date: how AIC serialises one is unmeasured; send a string (date.toISOString()) or a number instead"
+    );
+  }
+  if (kind !== "[object Object]" && kind !== "[object Array]") {
+    return;
+  }
+  for (i = 0; i < ancestors.length; i += 1) {
+    if (ancestors[i] === value) {
+      throw __rhinoLocalFail(
+        "rhino-local: httpClient.send " + path + " refers back to an enclosing object (a cycle): it cannot be sent as JSON"
+      );
+    }
+  }
+  ancestors.push(value);
+  if (kind === "[object Array]") {
+    for (i = 0; i < value.length; i += 1) {
+      __rhinoLocalCheckSendBody(value[i], path + "[" + i + "]", ancestors);
+    }
+  } else {
+    for (key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        __rhinoLocalCheckSendBody(value[key], path + "." + key, ancestors);
+      }
+    }
+  }
+  ancestors.pop();
+}
+
 // What a Java `toArray()` hands a script: indexable with a working `length`,
 // but not a JS array (measured: Array.isArray false). `length` is hidden so
 // for...in and Object.keys see only indices, as they would on an array. A
@@ -2553,8 +2608,10 @@ httpClient.send = function (uri, requestOptions) {
   }
   var effect = { url: url, method: method };
   // A `body` key holding undefined is sent as null, not omitted (docs/api/12
-  // §3); the body is recorded as it was when sent, not as later mutated.
+  // §3, measured). Recording a send-time snapshot, not the live object, is
+  // this harness's choice so later mutation cannot change the record.
   if (requestOptions && typeof requestOptions === "object" && "body" in requestOptions) {
+    __rhinoLocalCheckSendBody(requestOptions.body, "body", []);
     effect.body = __rhinoLocalCloneUndefinedAsNull(requestOptions.body, false);
   }
   __rhinoLocal.http.push(effect);

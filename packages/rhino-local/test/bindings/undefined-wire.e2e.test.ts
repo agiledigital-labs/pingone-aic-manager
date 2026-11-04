@@ -61,3 +61,24 @@ it("httpClient.send records the body as it was when sent, not as mutated afterwa
   const effects = await run('var b = { n: 1 }; httpClient.send("https://service.example.com/x", { method: "POST", body: b }).get(); b.n = 2;');
   expect(effects.http[0]?.body).toEqual({ n: 1 });
 });
+
+// R6-4: a body JSON cannot carry, or whose conversion AIC was never measured doing, fails by name
+// at send rather than as an opaque engine error or a silent guess (NaN -> null, Date -> string).
+it.each([
+  ["a cycle", "(function () { var b = { n: {} }; b.n.up = b; return b; })()", /rhino-local: httpClient\.send body\.n\.up refers back to an enclosing object \(a cycle\)/],
+  ["a function body", "function () {}", /rhino-local: httpClient\.send body is a function: not JSON data/],
+  ["a nested function", "{ arr: [1, function () {}] }", /rhino-local: httpClient\.send body\.arr\[1\] is a function/],
+  ["NaN", "{ n: NaN }", /rhino-local: httpClient\.send body\.n is NaN: not JSON data, and how AIC sends it is unmeasured/],
+  ["-Infinity", "{ n: -1 / 0 }", /rhino-local: httpClient\.send body\.n is -Infinity/],
+  ["a Date", "{ d: new Date(0) }", /rhino-local: httpClient\.send body\.d is a Date: how AIC serialises one is unmeasured/],
+])("httpClient.send refuses %s by name", async (_name, body, message) => {
+  await expect(run(`httpClient.send("https://service.example.com/x", { method: "POST", body: ${body} }).get();`)).rejects.toThrow(message);
+});
+
+it.each([
+  ["a shared, acyclic sub-object", "(function () { var s = { k: 1 }; return { a: s, b: s }; })()", { a: { k: 1 }, b: { k: 1 } }],
+  ["a Java String", "new java.lang.String('x')", "x"],
+])("httpClient.send still records %s", async (_name, body, recorded) => {
+  const effects = await run(`httpClient.send("https://service.example.com/x", { method: "POST", body: ${body} }).get();`);
+  expect(effects.http[0]?.body).toEqual(recorded);
+});

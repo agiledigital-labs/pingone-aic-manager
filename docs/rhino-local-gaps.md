@@ -248,6 +248,30 @@ What the 2026-09-12 ranking called the shutter gap is closed:
 expectation that was incomplete). The five legacy cases were dropped on
 2026-09-12 (`7bb0195`); legacy scripts are not supported.
 
+### Unlabelled query matching and unmeasured send bodies (listed 2026-11-04)
+
+Two script-tester behaviours disagree with, or go beyond, what was measured,
+and neither carries a label:
+
+- **Query filters are case- and space-sensitive.** `openidm.query` over
+  `given.managed` (`__rhinoLocalCompareField` in `runtime.cjs`) and the harness
+  `check idm.query` (`src/harness/idm.ts`, exact `JSON.stringify` equality)
+  compare strings exactly. `docs/api/10-managed-objects.md` measured `eq` on
+  `alpha_user` ignoring letter case and leading/trailing spaces, so
+  `mail eq "Alice@example.com"` finds a stored `alice@example.com` on AIC and
+  nothing locally. A test that asserts a case-different value is _not_ found
+  (for example "this is a new account") can pass locally and fail live. The
+  experimental IDM emulator (`src/idm/filter.ts`) applies the measured rules
+  and refuses the unmeasured ones; the script tester does not yet route through
+  them.
+- **`httpClient.send` refuses bodies whose conversion is unmeasured.** The
+  recorded body is a JSON snapshot taken at send time. A function, a cycle,
+  `NaN`, `±Infinity` or a `Date` anywhere in it fails with a `rhino-local:`
+  message naming the path, because JSON would turn each into an engine error
+  or a guess (`null`, an ISO string) and AIC's handling is not measured. `-0`
+  is still recorded as `0`, and Java objects pass through as before, both
+  unmeasured.
+
 ## Binding probes (measured 2026-09-29)
 
 Ten `binding-*` fixtures exercise the scripted-decision binding surface

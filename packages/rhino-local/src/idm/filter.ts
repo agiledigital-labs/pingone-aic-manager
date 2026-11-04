@@ -86,7 +86,7 @@ export function parseFilter(input: string): Filter {
 
 /**
  * How a string comparison treats letter case and edge spaces, per field and operator. `fold` means
- * the rule applies (ASCII lower-casing; trimming U+0020 at both ends), `exact` that it does not, and
+ * the rule applies (ASCII lower-casing; trimming U+0020 at both ends — other readings are checked as variants), `exact` that it does not, and
  * `unknown` that nobody measured it. The repository knows which fields were measured; the grammar
  * does not.
  */
@@ -101,7 +101,9 @@ export interface StringPolicy {
   /** The record's whole answer turns on an unmeasured rule; must refuse. */
   unknown(field: string, op: Operator, dimension: Dimension): never;
 }
-type Tri = boolean | "unknown";
+type Blame = [field: string, op: Operator, dimension: Dimension];
+/** `true`, `false`, or the leaf that left the answer undecided. */
+type Tri = boolean | { unknown: Blame };
 type Transform = (text: string) => string;
 const same: Transform = (text) => text;
 const asciiLower: Transform = (text) => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
@@ -109,11 +111,18 @@ const asciiUpper: Transform = (text) => text.replace(/[a-z]/g, (c) => c.toUpperC
 const fullLower: Transform = (text) => text.toLowerCase();
 const trim: Transform = (text) => text.replace(/^ +| +$/g, "");
 const collapse: Transform = (text) => trim(text).replace(/ {2,}/g, " ");
+// RFC 4518 §2.2 maps these to SPACE before insignificant-space handling; nothing measured whether AIC does.
+const toSpace: Transform = (text) => text.replace(/[\t-\r\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, " ");
+const wideTrim: Transform = (text) => trim(toSpace(text));
+const wideCollapse: Transform = (text) => collapse(toSpace(text));
+// Upper then lower maps ß to "ss", as RFC 4518 case folding does; no other variant differs on it.
+const foldLower: Transform = (text) => text.toUpperCase().toLowerCase();
 // The applied transform first; the rest are readings of the same rule that nothing measured (a
-// non-ASCII fold, the fold direction for ordering, whether interior runs of spaces collapse).
+// non-ASCII fold, the fold direction for ordering, whether interior runs of spaces collapse,
+// whether whitespace other than U+0020 counts as a space).
 const variants: Record<Dimension, Record<StringRule, Transform[]>> = {
-  case: { exact: [same], fold: [asciiLower, fullLower, asciiUpper], unknown: [same, asciiLower, fullLower, asciiUpper] },
-  space: { exact: [same], fold: [trim, collapse], unknown: [same, trim, collapse] },
+  case: { exact: [same], fold: [asciiLower, fullLower, asciiUpper, foldLower], unknown: [same, asciiLower, fullLower, asciiUpper, foldLower] },
+  space: { exact: [same], fold: [trim, collapse, wideTrim, wideCollapse], unknown: [same, trim, collapse, wideTrim, wideCollapse] },
 };
 
 /**
@@ -121,30 +130,30 @@ const variants: Record<Dimension, Record<StringRule, Transform[]>> = {
  * only a record whose whole answer is `unknown` refuses, so `and`/`or` operand order cannot matter.
  */
 export function matchesFilter(filter: Filter, object: JsonValue, policy?: StringPolicy): boolean {
-  let blame: [string, Operator, Dimension] | undefined;
-  const result = evaluate(filter, object, policy, (field, op, dimension) => { blame ??= [field, op, dimension]; });
-  if (result !== "unknown") return result;
-  if (!policy || !blame) throw new Error("unknown filter answer without a policy");
-  return policy.unknown(...blame);
+  const result = evaluate(filter, object, policy);
+  if (typeof result === "boolean") return result;
+  if (!policy) throw new Error("unknown filter answer without a policy");
+  return policy.unknown(...result.unknown);
 }
 
-function evaluate(filter: Filter, object: JsonValue, policy: StringPolicy | undefined, blame: (field: string, op: Operator, dimension: Dimension) => void): Tri {
+// An undecided result carries its own blame, so a leaf that `and`/`or` made irrelevant is never named.
+function evaluate(filter: Filter, object: JsonValue, policy: StringPolicy | undefined): Tri {
   if (filter.op === "literal") return filter.value;
   if (filter.op === "and") {
-    const left = evaluate(filter.left, object, policy, blame);
+    const left = evaluate(filter.left, object, policy);
     if (left === false) return false;
-    const right = evaluate(filter.right, object, policy, blame);
-    return right === false ? false : left === true && right === true ? true : "unknown";
+    const right = evaluate(filter.right, object, policy);
+    return right === false ? false : left === true ? right : left;
   }
   if (filter.op === "or") {
-    const left = evaluate(filter.left, object, policy, blame);
+    const left = evaluate(filter.left, object, policy);
     if (left === true) return true;
-    const right = evaluate(filter.right, object, policy, blame);
-    return right === true ? true : left === false && right === false ? false : "unknown";
+    const right = evaluate(filter.right, object, policy);
+    return right === true ? true : left === false ? right : left;
   }
   if (filter.op === "!") {
-    const child = evaluate(filter.child, object, policy, blame);
-    return child === "unknown" ? child : !child;
+    const child = evaluate(filter.child, object, policy);
+    return typeof child === "boolean" ? !child : child;
   }
   if (!("field" in filter)) return false;
   const value = fieldValue(object, filter.field);
@@ -171,8 +180,7 @@ function evaluate(filter: Filter, object: JsonValue, policy: StringPolicy | unde
     const answer = run(cases[0]!, spaces[0]!);
     for (const c of cases) for (const s of spaces) {
       if (run(c, s) === answer) continue;
-      blame(field, op, run(c, spaces[0]!) !== answer ? "case" : "space");
-      return "unknown";
+      return { unknown: [field, op, run(c, spaces[0]!) !== answer ? "case" : "space"] };
     }
     if (answer !== test(candidate, expected)) {
       const caseAlone = run(cases[0]!, same) !== test(candidate, expected), spaceAlone = run(same, spaces[0]!) !== test(candidate, expected);
@@ -200,5 +208,5 @@ function evaluate(filter: Filter, object: JsonValue, policy: StringPolicy | unde
   if (value === undefined) return false;
   if (!Array.isArray(value)) return compare(value);
   const each = value.map(compare);
-  return each.includes(true) ? true : each.includes("unknown") ? "unknown" : false;
+  return each.includes(true) ? true : each.find((t) => typeof t !== "boolean") ?? false;
 }

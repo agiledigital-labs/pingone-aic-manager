@@ -478,7 +478,7 @@ function stringPolicy(type: string, evidence: Evidence): StringPolicy {
       evidence.assumed("string ordering compares UTF-16 code units after the case and space rules");
     },
     unknown(field, op: Operator, dimension): never {
-      const what = dimension === "case" ? (ORDERING.includes(op) ? "order" : "match") + " turns on letter case" : "match turns on leading, trailing or repeated spaces";
+      const what = dimension === "case" ? (ORDERING.includes(op) ? "order" : "match") + " turns on letter case" : "match turns on leading, trailing or repeated spaces or non-U+0020 whitespace";
       return missing(evidence, `query ${op} whose ${what}: ${type} ${field}`);
     },
   };
