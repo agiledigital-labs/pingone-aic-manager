@@ -630,6 +630,35 @@ refused: it reaches the receiver as an escape that a strict UTF-16 decoder may
 reject. Rhino's own `JSON.stringify` emits a lone surrogate raw, which is not
 ES2019 well-formed output either.
 
+### 5. Non-JSON values in an object body (verified 2026-11-04)
+
+`scripts/experiment-journey-nonjson-body.sh`, next-gen journey decision node,
+`POST` with `Content-Type: application/json` and an **object** `body` (the form
+the rhino-local emulator models), through the same httpbin.org echo. One tree
+per case, so a failure in one cannot hide another; each value sits under `v`
+beside a sentinel `a: "x"`. Positive control: `{a: "x"}` arrived as exactly
+`{"a":"x"}` (9 bytes). No case failed the journey (every `authenticate` was
+HTTP 200 with the node's callback).
+
+| `v` in the body | `JSON.stringify` (Rhino) | `httpClient.send` | On the wire |
+| --- | --- | --- | --- |
+| `new Date(0)` | `"1970-01-01T00:00:00.000Z"` | sends (200) | **a ~1 KB bean dump of the Rhino `NativeDate`**: `{"className":"Date","empty":true,…,"prototype":{…"allIds":["constructor","toString",…]}…}` — the time value is **not** in it |
+| `NaN` | `null` | sends | **`"NaN"`** — a string |
+| `1/0`, `-1/0` | `null`, `null` | sends | **`"Infinity"`**, **`"-Infinity"`** — strings |
+| `-0` | `0` | sends | **`-0.0`** |
+| `function () { return 1; }` | key omitted | sends | **a ~1.7 KB bean dump of the Rhino function**: `sourceName` (the script's name), `encodedSource` (Rhino's encoded form of the function source), line numbers, and the `ids` of the enclosing `ScriptContextScope` — every binding and top-level variable **name** in the script |
+| cycle (`b.self = b`) | throws `TypeError: Cyclic org.mozilla.javascript.NativeObject value not allowed.` | **throws, catchable**: `InternalError: Cannot produce JSON from [object Object]` | nothing sent |
+| `/a/g` | `{}` | sends | **a ~1 KB bean dump of the Rhino `NativeRegExp`** (same scope `ids` list); neither source nor flags appear |
+| `new java.util.Date(0)` | `"Thu Jan 01 00:00:00 UTC 1970"` (constructs: the class shutter allows it) | sends | **`0`** — epoch milliseconds, an integer |
+
+So the serializer never refuses a value except a cycle, and it never applies
+`toJSON`. A JS `Date`, `RegExp` or function is reflected as a Java bean of the
+Rhino object rather than converted, which sends a large meaningless object
+and, for a function, sends source-derived data and the script's variable names
+to the receiver. The non-finite numbers become strings rather than JSON's
+`null`. A `java.util.Date` is the one date type that arrives as a usable value.
+Convert before sending: `date.toISOString()` or `date.getTime()`.
+
 ### `openidm.create` content with an `undefined` value (verified 2026-11-04)
 
 Same script; one next-gen journey decision node called
