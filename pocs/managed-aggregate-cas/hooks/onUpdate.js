@@ -10,7 +10,7 @@
  *             a terminal outcome (E1, E4, E6, E9, E13, E14, E16, E18)
  *   audit     diff oldObject -> object over `data` and `items`, append one
  *             entry per changed leaf to `audit` in memory (E19)
- *   children  derive from the `children` relationship (E10, E11, E12)
+ *   children  derive from the relationship named by `rel` (E10, E11, E12)
  *   selfpatch fold, then openidm.patch this same record once (E15)
  *
  * `trace: true` on the record makes every run create one alpha_poc_sink record
@@ -119,7 +119,9 @@
   }
 
   function children() {
-    var res = openidm.query(String(resourceName) + "/children", { _queryFilter: "true" }, [
+    // `rel` picks the pair: "children" (repo.ds-mapped) or "gchildren" (generic).
+    var rel = object.rel === "gchildren" ? "gchildren" : "children";
+    var res = openidm.query(String(resourceName) + "/" + rel, { _queryFilter: "true" }, [
       "_ref",
       "_refProperties/status",
       "value",
