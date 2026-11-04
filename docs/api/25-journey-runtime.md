@@ -111,9 +111,33 @@ So: the lookup value is `objectAttributes[identityAttribute]` (shared or
 transient), or `username` when `objectAttributes` lacks it; it is matched
 against `identityAttribute`; on a match it writes shared `_id`, shared
 `username` = the user's `identifier` attribute, and adds
-`objectAttributes[identifier]` in shared. **Not measured:** which source wins
-when `objectAttributes[identityAttribute]` and `username` both hold different
-existing users.
+`objectAttributes[identifier]` in shared.
+
+### Precedence when the two sources disagree (2026-11-04)
+
+Measured with `scripts/experiment-journey-precedence.sh` (variants named in the
+first column), run twice with the same result. Two throwaway users, A (`userName`
+UA, `mail` MA) and B (`userName` UB, `mail` MB); same node config. A next-gen
+seed script `putShared` exactly the keys shown; N is a `mail` nobody has.
+
+| Variant: shared `username` / `objectAttributes.mail` | Outcome | State after (dump) |
+| --- | --- | --- |
+| `agree`: UA / MA (control) | `true` | `username = UA`, `_id` = A's, `objectAttributes = {userName: UA, mail: MA}` |
+| `oaB-unameA`: UA / MB | `true` | **B**: `username = UB`, `_id` = B's — the seeded `username` is overwritten |
+| `oaB-umailA`: MA / MB | `true` | **B** — a `username` that would itself find A (second row of the table above) still loses |
+| `oaB-unobody`: N / MB | `true` | B — a non-matching `username` does not stop the lookup |
+| `oanobody-unameA`: UA / N | `false` | no `_id`; `username` left as UA |
+| `oanobody-umailA`: MA / N | **`false`** | no `_id`; `username` left as MA — **no fallback** to `username`, although `username = MA` alone is `true` |
+| `page-agree`: Page[`UsernameCollectorNode`, `AttributeCollectorNode(mail)`] answered UA, MA | `true` | A, as `agree` |
+| `page-disagree`: the same page answered UA, MB | `true` | B, as `oaB-unameA` |
+
+So when `objectAttributes` holds `identityAttribute`, it is the **only** lookup
+value: `username` is consulted only when that key is absent, a miss on
+`objectAttributes` is `false` rather than a retry with `username`, and on a hit
+the node overwrites `username` with the found user's `identifier`. The page
+rows show the realistic shape (collector writes shared `username`, attribute
+collector writes shared `objectAttributes.mail`) behaves exactly as the seeded
+one.
 
 `listOutcomes`: `["true","false"]`.
 
@@ -277,12 +301,20 @@ second still 200. The page experiments showed the same for nodes that are only
 page children. Scripts are **not** deleted with the tree (each `DELETE` of a
 script afterwards was 200).
 
+## Values a journey script hands to IDM and `httpClient`
+
+Measured 2026-11-04 with `scripts/experiment-journey-precedence.sh`; the rows
+are in `12-script-bindings-matrix.md` under "`httpClient.send` body
+serialization". In short: `openidm.create` content with `description:
+undefined` succeeds and stores nothing (as an omitted key or `null` does, never
+the string `"undefined"`); `httpClient.send` with top-level `body: undefined`
+sends the 4-byte body `null`, as `body: null` does, while omitting `body` sends
+an empty one; `{count: 1}` goes out as `{"count":1.0}`.
+
 ## Not yet measured
 
 None of these was exercised; do not build on them as measured:
 
-- Identify Existing User when `objectAttributes[identityAttribute]` and
-  `username` name **different** existing users (which wins).
 - Create Object / Patch Object fed a **split** `objectAttributes` (part
   shared, part transient, as a Validated Password page leaves it); Patch
   Object with `patchAsObject: true`, or with `ignoredFields`.

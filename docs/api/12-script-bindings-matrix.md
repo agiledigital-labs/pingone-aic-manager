@@ -579,8 +579,45 @@ if (typeof value === "undefined") {
 ```
 
 Both behaviours were observed on the next-gen engine. Not probed: the `form`
-(form-encoded) option, the legacy `httpClient`, and whether `openidm.*` write
-payloads share the serializer — do not assume they do.
+(form-encoded) option and the legacy `httpClient`.
+
+### 3. A top-level `undefined` body is sent as `null` (verified 2026-11-04)
+
+`scripts/experiment-journey-precedence.sh`, next-gen journey decision node, the
+same httpbin.org echo as above; `data` is the raw body httpbin received.
+
+| `options` passed to `httpClient.send` (all `POST`, `Content-Type: application/json`) | Body on the wire | Echoed `Content-Type` |
+| --- | --- | --- |
+| no `body` key (control) | empty, `Content-Length: 0` | `application/json` |
+| `body: undefined` | **`null`** (4 bytes) | `application/json; charset=UTF-8` |
+| `body: null` (control) | `null` (4 bytes) | `application/json; charset=UTF-8` |
+| `body: {count: 1}` | `{"count":1.0}`; the script's own `JSON.stringify` gave `{"count":1}` | `application/json; charset=UTF-8` |
+
+So `body: undefined` is not "no body": a conditional body built as
+`body: maybeObject` posts the JSON literal `null` when the value is missing.
+Omit the key instead. The last row re-confirms §1. The charset
+suffix appears only when a body is serialized.
+
+### `openidm.create` content with an `undefined` value (verified 2026-11-04)
+
+Same script; one next-gen journey decision node called
+`openidm.create("managed/alpha_user", <uuid>, content)` four times, each
+`content` being `{userName, givenName, sn, mail}` plus:
+
+| `description` in `content` | Create | Returned object's `description` | IDM REST re-read | `description pr` query |
+| --- | --- | --- | --- | --- |
+| key omitted (control) | succeeds | `null` | `"description": null` | no match |
+| `undefined` | **succeeds** | `null` | `"description": null` | no match |
+| `null` (control) | succeeds | `null` | `"description": null` | no match |
+| `"zz-set"` (positive control) | succeeds | `"zz-set"` | `"zz-set"` | **match** |
+
+`description eq "undefined"` matched none of the four. So an `undefined` value
+neither fails the create nor stores the string `"undefined"`; the record is
+indistinguishable from one created without the key. A plain `GET` renders
+every schema property, so absent and `null` both read as `null` — the presence
+query is what shows nothing was stored. Whether `openidm` serialized the key as
+`null` or dropped it is **not** observable this way (the store keeps neither),
+so do not infer from this that `openidm.*` shares `httpClient`'s serializer.
 
 > **Surfaced since `TEMPLATES_VERSION` 46.** `HttpOptions.body` stays typed as
 > plain `object` — neither trap is expressible as a type without contorting the
