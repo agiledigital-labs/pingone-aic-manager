@@ -122,3 +122,55 @@ Concurrent, threshold 5, N = 20:
 
 Exactly `threshold` writers win: the guard runs inside the CAS, on the state the
 write commits against, so "first five" is enforced without locks.
+
+## E10 — concurrent link writes while `onUpdate` derives from the relationship
+
+Each writer creates a child (`value` = 1..N) and links it with
+`PATCH add /<rel>/-` on the parent, `_refProperties.status = "active"`.
+`onUpdate` (children mode) queries `<parent>/<rel>` and stores count and sum.
+No notification settings (the `aic`/console defaults).
+
+| pair      | N  | HTTP     | links | `derived.count` | `derived.sum` / want | `onUpdate` runs | requests retried |
+| --------- | -- | -------- | ----- | --------------- | -------------------- | --------------- | ---------------- |
+| mapped    | 5  | 5 × 200  | 5     | 0               | 0 / 15               | 15              | 4                |
+| mapped    | 5  | 5 × 200  | 5     | 4               | 11 / 15              | 23              | 4                |
+| mapped    | 5  | 5 × 200  | 5     | 4               | 10 / 15              | 25              | 4                |
+| mapped    | 20 | 20 × 200 | 20    | 19              | 194 / 210            | 245             | 19               |
+| mapped    | 20 | 20 × 200 | 20    | 19              | 207 / 210            | 248             | 19               |
+| mapped    | 20 | 20 × 200 | 20    | 19              | 193 / 210            | 269             | 19               |
+| generic   | 5  | 5 × 200  | 5     | 4               | 10 / 15              | 15              | 4                |
+| generic   | 5  | 5 × 200  | 5     | 4               | 14 / 15              | 15              | 4                |
+| generic   | 5  | 5 × 200  | 5     | 4               | 11 / 15              | 15              | 4                |
+| generic   | 20 | 20 × 200 | 20    | 19              | 203 / 210            | 209             | 19               |
+| generic   | 20 | 20 × 200 | 20    | 19              | 208 / 210            | 203             | 19               |
+| generic   | 20 | 20 × 200 | 20    | 19              | 194 / 210            | 199             | 19               |
+
+- Every link landed, in both modes.
+- `derived` is **always** wrong: `onUpdate` runs before the request's own link
+  is persisted, so the last writer's link is never counted, and which N−1 are
+  counted depends on the interleaving (the sums differ run to run).
+- The first mapped run counted nothing; it was the first write through a pair
+  `aic` had just mapped, and `aic` warns that a fresh pair needs a few seconds
+  before it is live. Not investigated further.
+- The retries here come from `derived` itself: a plain field the hook changes
+  on every commit, which moves `_rev`. That is not evidence that link writes
+  are inside the CAS — E11 shows they are not.
+
+## E11 — an edge `_refProperties` write
+
+`PATCH <parent>/<rel>/<edgeId>` replacing `/_refProperties/status`:
+
+| pair    | HTTP | edge changed | parent `_rev` moved | parent `onUpdate` ran | `derived.active` |
+| ------- | ---- | ------------ | ------------------- | --------------------- | ---------------- |
+| mapped  | 200  | yes          | **yes**             | no                    | unchanged        |
+| generic | 200  | yes          | no                  | no                    | unchanged        |
+
+An edge write does not run the parent's hooks. On a mapped pair it does move the
+parent's `_rev` (the link lives on the parent's entry), so a parent `PATCH` with
+`If-Match` would see a conflict from it; on a generic pair nothing does.
+
+## E12 — a child changes after the parent derived from it
+
+`PATCH` the linked child's `value` 5 → 50: parent `onUpdate` did not run, its
+`_rev` did not move and `derived.sum` stayed 5, in both modes. Anything derived
+from another record is stale from the moment that record changes.
