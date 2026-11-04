@@ -18,6 +18,8 @@ import {
   type Launch,
   type RunnerEnvironment,
 } from "./jvm.ts";
+import { PooledChild, type PoolAddress } from "./pool.ts";
+import type { Readable } from "node:stream";
 import {
   parseHostCall,
   parseJobResponse,
@@ -149,11 +151,21 @@ type Pending = {
   onCall: ((call: HostCall) => Promise<HostReply>) | undefined;
 };
 
+/** What {@link JvmProcess} needs of a child: a spawned JVM, or a pooled one ({@link PooledChild}). */
+type RunnerChild = Pick<ChildProcessWithoutNullStreams, "stdin" | "kill"> & {
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  on(event: "error", listener: (error: Error) => void): unknown;
+};
+
 /** One JVM speaking the line protocol. {@link RhinoRunner} holds one or two. */
 class JvmProcess {
   readonly lane: "host" | "container";
   readonly containerName: string | undefined;
-  #child: ChildProcessWithoutNullStreams;
+  #child: RunnerChild;
+  /** Borrowed from the pool: closing returns it there instead of shutting it down. */
+  readonly #pooled: PooledChild | undefined;
   #pending = new Map<string, Pending>();
   #stdoutBuf = "";
   #stderrBuf = "";
@@ -166,14 +178,21 @@ class JvmProcess {
   #exitWaiters: Array<() => void> = [];
   environment: RunnerEnvironment | undefined;
 
-  constructor(lane: "host" | "container", launch: Launch, shutdownWaitMs = 5000) {
+  constructor(lane: "host" | "container", launch: Launch | PooledChild, shutdownWaitMs = 5000) {
     this.#shutdownWaitMs = shutdownWaitMs;
     this.lane = lane;
-    this.containerName = launch.containerName;
-    const child = spawn(launch.command, launch.args, {
-      env: launch.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    let child: RunnerChild;
+    if (launch instanceof PooledChild) {
+      this.#pooled = launch;
+      this.containerName = undefined;
+      child = launch as unknown as RunnerChild;
+    } else {
+      this.containerName = launch.containerName;
+      child = spawn(launch.command, launch.args, {
+        env: launch.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    }
     this.#child = child;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -284,10 +303,14 @@ class JvmProcess {
       return;
     }
     this.#closed = true;
-    try {
-      this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
-    } catch {
-      // already closed
+    if (this.#pooled !== undefined) {
+      this.#pooled.release();
+    } else {
+      try {
+        this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
+      } catch {
+        // already closed
+      }
     }
     const exited = await Promise.race([
       this.#waitForExit().then(() => true),
@@ -528,6 +551,27 @@ export class RhinoRunner {
       throw new Error("rhino-local: no runner lane selected");
     }
     return new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
+  }
+
+  /**
+   * A runner on JVMs borrowed from a {@link JvmPool}; `close()` returns them.
+   * @internal Used by `useLease`; the pool's address comes from the package reporter.
+   */
+  static async borrow(address: PoolAddress, options: Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs"> = {}): Promise<RhinoRunner> {
+    const lane = options.lane ?? laneFromEnv();
+    const cache = options.cache ?? cacheDir();
+    const slot = process.env.VITEST_POOL_ID ?? `pid-${process.pid}`;
+    const kinds = lane === "both" ? (["host", "container"] as const) : ([lane] as const);
+    const processes = kinds.map((kind) => new JvmProcess(kind, new PooledChild(address, kind, slot, cache)));
+    try {
+      await Promise.all(processes.map((p) => p.waitUntilReady(options.spawnTimeoutMs ?? 60_000)));
+    } catch (error) {
+      await Promise.all(processes.map((p) => p.close()));
+      throw error;
+    }
+    const [primary, shadow] = processes;
+    if (primary === undefined) throw new Error("rhino-local: no runner lane selected");
+    return new RhinoRunner(lane, primary, shadow, 5000);
   }
 
   /** What the (primary) JVM reported at startup. */
