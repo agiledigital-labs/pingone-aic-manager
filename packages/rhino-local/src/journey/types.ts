@@ -54,6 +54,9 @@ export type AuthenticateResult = RestResult;
  * What AIC would put on the wire for the request, beside the parsed `options`
  * (docs/api/12): `bodyText` renders every JS number as a Java double (`1` is
  * `1.0`) and `undefined` as `null`, and is `""` when `options` has no `body`.
+ * That was measured for object bodies sent as `Content-Type: application/json`
+ * with plain-ASCII strings; anything else is labelled assumed, and `form` is
+ * missing.
  */
 export type HttpWire = { readonly bodyText: string };
 export type HttpMock = (

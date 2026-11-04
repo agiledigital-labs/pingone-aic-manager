@@ -27,6 +27,8 @@ export type NodeResult = {
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
 const PRECEDENCE_SOURCE =
   "docs/api/25-journey-runtime.md (Identify Existing User precedence, 2026-11-04)";
+const BLANK_SOURCE =
+  "docs/api/25-journey-runtime.md (A blank or null lookup value, and letter case, 2026-11-04)";
 export class JourneyNodes {
   private readonly idm: IdmEmulator;
   private readonly evidence: Evidence;
@@ -180,6 +182,11 @@ export class JourneyNodes {
         const answer = cb?.value ?? "";
         setOwn(attrs, attribute, answer);
         if (config.required === true && answer === "") invalid = true;
+        else if (cb && answer === "")
+          this.evidence.measured(
+            "AttributeCollectorNode writes a blank non-required answer as the empty string",
+            "docs/api/25-journey-runtime.md (Attribute Collector, a non-required attribute left blank, 2026-11-04)",
+          );
         callbacks.push({
           type: "StringAttributeInputCallback",
           name: attribute,
@@ -252,14 +259,26 @@ export class JourneyNodes {
     const username = Object.hasOwn(transient, "username") ? transient.username : shared.username;
     let lookup: JsonValue | undefined;
     if (type === "IdentifyExistingUserNode") {
-      // Doc 25 (2026-11-04): objectAttributes[identityAttribute], when present, is the only
-      // lookup value; username is read only when that key is absent, and a miss never falls back.
-      lookup = objectValue !== undefined ? objectValue : username;
+      // Doc 25 (2026-11-04): objectAttributes[identityAttribute], when present and not null, is
+      // the only lookup value — "" included; username is read only when that value is absent or
+      // null, and a miss never falls back.
+      const present = objectValue !== undefined && objectValue !== null;
+      lookup = present ? objectValue : username;
       if (lookup === null) this.missing(`${type} null identity source`);
-      if (objectValue !== undefined && username !== undefined)
+      if (present && username !== undefined)
         this.evidence.measured(
           "IdentifyExistingUserNode looks up objectAttributes[identityAttribute] alone when present, ignoring username",
           PRECEDENCE_SOURCE,
+        );
+      if (objectValue === "")
+        this.evidence.measured(
+          "IdentifyExistingUserNode looks up an empty objectAttributes[identityAttribute] and does not fall back",
+          BLANK_SOURCE,
+        );
+      if (objectValue === null)
+        this.evidence.measured(
+          "IdentifyExistingUserNode treats a null objectAttributes[identityAttribute] as absent and uses username",
+          BLANK_SOURCE,
         );
     } else {
       // Patch Object precedence between the two sources is not measured.

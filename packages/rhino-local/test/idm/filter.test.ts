@@ -3,7 +3,7 @@ import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { create, emulator, send } from "./fixtures.ts";
-import type { Document, IdmEmulator } from "../../src/idm/index.ts";
+import { type Document, IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
 
 let runner: RhinoRunner;
 let seeded: IdmEmulator;
@@ -73,5 +73,64 @@ describe("queryFilter grammar", () => {
     await create(emu, { text: 'double"quote' }, "quoted");
     const body = await send(emu, { method: "GET", path: "managed/widget", query: { _queryFilter: 'text eq "double\\"quote"' } });
     expect(body.resultCount).toBe(0);
+  });
+
+  // docs/api/10 (2026-11-04): eq on alpha_user mail and userName ignores letter case. Nothing
+  // else was probed, so a match that turns on case alone elsewhere is missing, not guessed.
+  describe("letter case", () => {
+    const user = "00000000-0000-0000-0000-0000000000a1";
+    const CASE = { kind: "measured", behavior: "eq on alpha_user mail and userName ignores letter case", source: "docs/api/10-managed-objects.md (eq on mail and userName is case-insensitive, 2026-11-04)" };
+    const users = async () => {
+      const props = { userName: { type: "string" }, mail: { type: "string" }, givenName: { type: "string" } };
+      const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: props } }, { name: "bravo_user", schema: { properties: props } }] } }), runner);
+      for (const type of ["alpha_user", "bravo_user"]) await send(emu, { method: "PUT", path: `managed/${type}/${user}`, headers: { "If-None-Match": "*" }, body: { userName: "ua", mail: "ma@example.com", givenName: "alice" } }, 201);
+      return emu;
+    };
+    it.each([
+      ['mail eq "mA@eXaMpLe.CoM"'], ['userName eq "uA"'], ['/mail eq "MA@EXAMPLE.COM"'],
+    ])("alpha_user %s matches the lower-case record, as measured", async (filter) => {
+      const emu = await users();
+      const result = await emu.request({ method: "GET", path: "managed/alpha_user", query: { _queryFilter: filter } });
+      expect((result.body as Document).resultCount).toBe(1);
+      expect(result.provenance).toContainEqual(CASE);
+      // Through a script's openidm.query too.
+      const scripted = await runner.eval({ engine: "idm", source: "openidm.query('managed/alpha_user',{_queryFilter:filter}).resultCount;", bindings: { filter } }, { onCall: emu.onCall });
+      expect(scripted.value).toBe(1);
+    });
+    it.each([
+      ['mail eq "ma@example.com"', "alpha_user", 1], ['mail eq "mb@example.com"', "alpha_user", 0], ['mail sw "ma@"', "alpha_user", 1],
+      ['givenName eq "alice"', "alpha_user", 1], ['mail eq "ma@example.com"', "bravo_user", 1],
+    ])("%s on %s needs no case rule", async (filter, type, count) => {
+      const emu = await users();
+      const result = await emu.request({ method: "GET", path: `managed/${type}`, query: { _queryFilter: filter } });
+      expect((result.body as Document).resultCount).toBe(count);
+      expect(result.provenance).not.toContainEqual(CASE);
+    });
+    it.each([
+      ['mail sw "MA@"', "alpha_user", "query sw whose match turns on letter case: alpha_user mail"],
+      ['mail co "EXAMPLE"', "alpha_user", "query co whose match turns on letter case: alpha_user mail"],
+      ['givenName eq "Alice"', "alpha_user", "query eq whose match turns on letter case: alpha_user givenName"],
+      ['mail eq "MA@example.com"', "bravo_user", "query eq whose match turns on letter case: bravo_user mail"],
+      ['userName eq "UA"', "bravo_user", "query eq whose match turns on letter case: bravo_user userName"],
+    ])("%s on %s is missing: case sensitivity there is unmeasured", async (filter, type, cause) => {
+      expectEmulationFailure(cause);
+      const result = await (await users()).request({ method: "GET", path: `managed/${type}`, query: { _queryFilter: filter } });
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    it("a non-ASCII case difference on a measured field is missing", async () => {
+      const cause = "query eq whose match turns on letter case: alpha_user userName";
+      expectEmulationFailure(cause);
+      const emu = await users();
+      await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a2", headers: { "If-None-Match": "*" }, body: { userName: "émile" } }, 201);
+      const result = await emu.request({ method: "GET", path: "managed/alpha_user", query: { _queryFilter: 'userName eq "Émile"' } });
+      expect(result.status).toBe(501);
+    });
+    it("a case-only eq on an unprobed managed type is missing", async () => {
+      const cause = "query eq whose match turns on letter case: widget text";
+      expectEmulationFailure(cause);
+      const result = await seeded.fork().request({ method: "GET", path: "managed/widget", query: { _queryFilter: 'text eq "ALPHA"' } });
+      expect(result.status).toBe(501);
+    });
   });
 });

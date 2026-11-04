@@ -7,7 +7,7 @@ import type { JsonValue } from "../protocol.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
-import { fieldValue, matchesFilter, parseFilter } from "./filter.ts";
+import { type CaseOnly, fieldValue, matchesFilter, parseFilter } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Invocation, Scripts } from "./scripts.ts";
 import type { Document, ManagedType, PolicyEvaluator, RestRequest } from "./types.ts";
@@ -364,10 +364,20 @@ export class ManagedStore {
     if (query._queryId !== undefined) missing(this.evidence, `named _queryId: ${String(query._queryId)}`);
     if (typeof query._queryFilter !== "string") throw new IdmError(400, "A value could not be parsed as a valid query filter");
     this.evidence.measured("CREST filter syntax and documented parse failures", "docs/api/10-managed-objects.md");
-    this.evidence.assumed("CREST comparison uses case-sensitive strings and existential array matching");
+    this.evidence.assumed("CREST comparison uses existential array matching");
     const filter = parseFilter(query._queryFilter);
     checkCapabilities(type, false, this.evidence, this.policy !== undefined);
-    let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, row)).map(([, row]) => structuredClone(row));
+    // A string match that turns on letter case alone: measured for eq on alpha_user mail and
+    // userName (ASCII case), unknown everywhere else, where either answer could be a false pass.
+    const caseOnly: CaseOnly = (field, op, ascii) => {
+      if (type.name === "alpha_user" && op === "eq" && ascii && ["mail", "userName"].includes(field.replace(/^\//, ""))) {
+        this.evidence.measured("eq on alpha_user mail and userName ignores letter case",
+          "docs/api/10-managed-objects.md (eq on mail and userName is case-insensitive, 2026-11-04)");
+        return true;
+      }
+      return missing(this.evidence, `query ${op} whose match turns on letter case: ${type.name} ${field}`);
+    };
+    let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, row, caseOnly)).map(([, row]) => structuredClone(row));
     if (query._sortKeys !== undefined) {
       this.evidence.measured("nested query sort keys", "docs/api/10-managed-objects.md");
       this.evidence.assumed("sort nulls first and break ties by insertion order");
