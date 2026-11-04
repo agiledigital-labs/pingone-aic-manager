@@ -50,9 +50,16 @@ export type AuthenticateRequest = {
   readonly cookies?: Readonly<Record<string, string>>;
 };
 export type AuthenticateResult = RestResult;
+/**
+ * What AIC would put on the wire for the request, beside the parsed `options`
+ * (docs/api/12): `bodyText` renders every JS number as a Java double (`1` is
+ * `1.0`) and `undefined` as `null`, and is `""` when `options` has no `body`.
+ */
+export type HttpWire = { readonly bodyText: string };
 export type HttpMock = (
   url: string,
   options: { [key: string]: JsonValue },
+  wire: HttpWire,
 ) =>
   | Promise<{ status: number; body?: JsonValue; headers?: Record<string, string> }>
   | { status: number; body?: JsonValue; headers?: Record<string, string> };

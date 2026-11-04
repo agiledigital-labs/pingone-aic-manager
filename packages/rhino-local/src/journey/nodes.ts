@@ -25,6 +25,8 @@ export type NodeResult = {
   abort?: Omit<AuthenticateResult, "provenance">;
 };
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
+const PRECEDENCE_SOURCE =
+  "docs/api/25-journey-runtime.md (Identify Existing User precedence, 2026-11-04)";
 export class JourneyNodes {
   private readonly idm: IdmEmulator;
   private readonly evidence: Evidence;
@@ -248,10 +250,24 @@ export class JourneyNodes {
       this.missing(`${type} identityAttribute configuration`);
     const objectValue = attrs ? own(attrs, config.identityAttribute) : undefined;
     const username = Object.hasOwn(transient, "username") ? transient.username : shared.username;
-    if (objectValue !== undefined && username !== undefined && objectValue !== username)
-      this.missing(`${type} conflicting identity sources`);
-    if (objectValue === null || username === null) this.missing(`${type} null identity source`);
-    const lookup = objectValue ?? username;
+    let lookup: JsonValue | undefined;
+    if (type === "IdentifyExistingUserNode") {
+      // Doc 25 (2026-11-04): objectAttributes[identityAttribute], when present, is the only
+      // lookup value; username is read only when that key is absent, and a miss never falls back.
+      lookup = objectValue !== undefined ? objectValue : username;
+      if (lookup === null) this.missing(`${type} null identity source`);
+      if (objectValue !== undefined && username !== undefined)
+        this.evidence.measured(
+          "IdentifyExistingUserNode looks up objectAttributes[identityAttribute] alone when present, ignoring username",
+          PRECEDENCE_SOURCE,
+        );
+    } else {
+      // Patch Object precedence between the two sources is not measured.
+      if (objectValue !== undefined && username !== undefined && objectValue !== username)
+        this.missing(`${type} conflicting identity sources`);
+      if (objectValue === null || username === null) this.missing(`${type} null identity source`);
+      lookup = objectValue ?? username;
+    }
     if (lookup === undefined) {
       // Measured for Patch only (doc 25: shared _id plus objectAttributes {sn} is FAILURE).
       if (type === "IdentifyExistingUserNode")

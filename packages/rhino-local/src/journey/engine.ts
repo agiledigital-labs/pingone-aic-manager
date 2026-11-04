@@ -27,6 +27,8 @@ import type {
   TreeDocument,
 } from "./types.ts";
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
+const HTTP_BODY_SOURCE =
+  "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
 type Frame = {
   tree: string;
   node: string;
@@ -762,15 +764,30 @@ export class JourneyEmulator {
         throw error;
       }
     }
-    const [url, options] = call.args;
-    if (typeof url !== "string" || !isDocument(options)) this.missing("httpClient request shape");
+    const [url, options, wire] = call.args;
+    if (
+      typeof url !== "string" ||
+      !isDocument(options) ||
+      !isDocument(wire) ||
+      typeof wire.approximate !== "boolean" ||
+      !(wire.body === undefined || typeof wire.body === "string")
+    )
+      this.missing("httpClient request shape");
     if (!this.options.http) this.missing(`unmocked httpClient.send: ${url}`);
     this.evidence.assumed(
       "httpClient response is supplied by the test mock; get/json/text wrappers reuse AM binding shapes",
     );
+    this.evidence.measured(
+      "httpClient body text: JS numbers as Java doubles (1 is 1.0), undefined as null, no body key as empty",
+      HTTP_BODY_SOURCE,
+    );
+    if (wire.approximate)
+      this.evidence.assumed(
+        "httpClient body text for a string or top-level non-object body, or a number other than an integer up to 1e6 or a boxed Integer/Long",
+      );
     let response: Awaited<ReturnType<HttpMock>>;
     try {
-      response = await this.options.http(url, options);
+      response = await this.options.http(url, options, { bodyText: wire.body ?? "" });
     } catch (error) {
       throw new EmulationFailure(
         emulationFailure(error) ?? {

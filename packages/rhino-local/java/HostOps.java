@@ -149,7 +149,9 @@ public final class HostOps extends BaseFunction {
         boolean encrypt = Context.toBoolean(args[1]);
         byte[] key = toBytes(args[2]);
         byte[] data = toBytes(args[3]);
-        // RSA transformation and encoded key formats were not independently measured; use JDK defaults.
+        // docs/api/12 (utils.crypto, verified 2026-09-29): RSA-2048, PKCS#8 private / X.509 public
+        // keys, PKCS#1 v1.5 padding, which is the JDK default for "RSA" (RSA/ECB/PKCS1Padding).
+        // The padding claim has no committed fixture (see that section).
         KeyFactory factory = KeyFactory.getInstance("RSA");
         Cipher cipher = Cipher.getInstance("RSA");
         cipher.init(encrypt ? Cipher.ENCRYPT_MODE : Cipher.DECRYPT_MODE,

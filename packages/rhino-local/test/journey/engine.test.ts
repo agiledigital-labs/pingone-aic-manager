@@ -1048,9 +1048,14 @@ it.each([
     "AM host openidm.create argument: cyclic object at [2].self",
   ],
   [
-    "undefined host argument",
-    "openidm.create('managed/widget',null,{x:'a',u:undefined});" + SUCCEED,
-    "AM host openidm.create argument: undefined at [2].u",
+    "undefined nested in create content",
+    "openidm.create('managed/widget',null,{x:'a',n:{u:undefined}});" + SUCCEED,
+    "AM host openidm.create argument: undefined at [2].n.u",
+  ],
+  [
+    "undefined in update content",
+    "openidm.update('managed/widget/x',null,{x:'a',u:undefined});" + SUCCEED,
+    "AM host openidm.update argument: undefined at [2].u",
   ],
   [
     "undefined HTTP header",
@@ -1070,24 +1075,81 @@ it.each([
   );
   expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
 });
-it("undefined inside an HTTP body goes out as null (docs/api/12)", async () => {
-  let seen: unknown;
+const BODY_SOURCE = "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
+const BODY_TEXT = {
+  kind: "measured",
+  behavior:
+    "httpClient body text: JS numbers as Java doubles (1 is 1.0), undefined as null, no body key as empty",
+  source: BODY_SOURCE,
+};
+const BODY_APPROXIMATE = {
+  kind: "assumed",
+  behavior:
+    "httpClient body text for a string or top-level non-object body, or a number other than an integer up to 1e6 or a boxed Integer/Long",
+};
+async function send(options: string) {
+  const seen: { body?: unknown; has: boolean; text: string }[] = [];
   const result = await request(
     make(
-      "httpClient.send('https://service.example.com/x',{method:'POST',body:{u:undefined,n:1,nested:{u:undefined},arr:[1,undefined]}}).get();" +
-        SUCCEED,
+      `httpClient.send('https://service.example.com/x',${options}).get();` + SUCCEED,
       ["true", "false"],
       { true: SUCCESS, false: FAILURE },
       {
-        http: async (_url, options) => {
-          seen = options.body;
+        http: async (_url, sent, wire) => {
+          seen.push({ body: sent.body, has: Object.hasOwn(sent, "body"), text: wire.bodyText });
           return { status: 200, body: {} };
         },
       },
     ),
   );
   expect(result.status).toBe(200);
-  expect(seen).toEqual({ u: null, n: 1, nested: { u: null }, arr: [1, null] });
+  expect(seen).toHaveLength(1);
+  return { ...seen[0]!, provenance: result.provenance };
+}
+it("an HTTP body reaches the mock as parsed JSON and as AIC's text (docs/api/12)", async () => {
+  const sent = await send(
+    "{method:'POST',body:{u:undefined,n:1,big:1000000,neg:-5,nested:{u:undefined},arr:[1,undefined],j:java.lang.Integer.valueOf(1)}}",
+  );
+  // Parsed JSON cannot carry 1.0; the text the tenant would send does.
+  expect(sent.body).toEqual({
+    u: null,
+    n: 1,
+    big: 1000000,
+    neg: -5,
+    nested: { u: null },
+    arr: [1, null],
+    j: 1,
+  });
+  expect(sent.text).toBe(
+    '{"u":null,"n":1.0,"big":1000000.0,"neg":-5.0,"nested":{"u":null},"arr":[1.0,null],"j":1}',
+  );
+  expect(sent.provenance).toContainEqual(BODY_TEXT);
+  expect(sent.provenance).toContainEqual({
+    kind: "measured",
+    behavior: "httpClient.send body undefined is sent as null",
+    source: BODY_SOURCE,
+  });
+  expect(sent.provenance).not.toContainEqual(BODY_APPROXIMATE);
+});
+it.each([
+  ["body: undefined", "{method:'POST',body:undefined}", true, null, "null"],
+  ["body: null", "{method:'POST',body:null}", true, null, "null"],
+  ["no body key", "{method:'POST'}", false, undefined, ""],
+])("HTTP %s is measured (docs/api/12)", async (_name, options, has, body, text) => {
+  const sent = await send(options);
+  expect(sent).toMatchObject({ has, body, text });
+  expect(sent.provenance).toContainEqual(BODY_TEXT);
+  expect(sent.provenance).not.toContainEqual(BODY_APPROXIMATE);
+});
+it.each([
+  ["a fraction", "{method:'POST',body:{f:1.5}}", '{"f":1.5}'],
+  ["an integer past 1e6", "{method:'POST',body:{n:1e7}}", '{"n":1.0E7}'],
+  ["a string body", "{method:'POST',body:'raw'}", "raw"],
+  ["a top-level array", "{method:'POST',body:[1]}", "[1.0]"],
+])("HTTP body text for %s is labelled assumed", async (_name, options, text) => {
+  const sent = await send(options);
+  expect(sent.text).toBe(text);
+  expect(sent.provenance).toContainEqual(BODY_APPROXIMATE);
 });
 it("withErrorMessage alongside queued callbacks is missing", async () => {
   const cause = "action.withErrorMessage with queued callbacks";
@@ -1108,3 +1170,82 @@ it("a non-array ScriptedDecisionNode outcomes configuration is missing, not a su
     emulation: { missing: [cause] },
   });
 });
+it("an undefined openidm.create content field is stored as if omitted (docs/api/12)", async () => {
+  const idm = new IdmEmulator(
+    new IdmConfig({
+      managed: {
+        objects: [
+          {
+            name: "widget",
+            schema: { properties: { x: { type: "string" }, d: { type: "string" } } },
+          },
+        ],
+      },
+    }),
+    runner,
+  );
+  const emu = new JourneyEmulator(
+    new JourneyConfig({
+      realm: "alpha",
+      trees: {
+        invented: {
+          entryNodeId: "one",
+          nodes: {
+            one: {
+              nodeType: "ScriptedDecisionNode",
+              connections: { true: SUCCESS, false: FAILURE },
+            },
+          },
+        },
+      },
+      nodes: { ScriptedDecisionNode: { one: { script: "script", outcomes: ["true", "false"] } } },
+      scripts: {
+        script: script(
+          "openidm.create('managed/widget','w',{x:'a',d:undefined});" +
+            "openidm.create('managed/widget','v',{x:'a'});" +
+            "nodeState.putShared('username','invented');action.goTo('true');",
+        ),
+      },
+    }),
+    runner,
+    idm,
+  );
+  const result = await request(emu);
+  expect(result.status).toBe(200);
+  // As measured, the record is indistinguishable from the omitted-key control.
+  const read = async (id: string) => {
+    const { _id, _rev, ...rest } = (
+      await idm.request({ method: "GET", path: `managed/widget/${id}` })
+    ).body as Record<string, unknown>;
+    return { id: _id, rev: typeof _rev, rest };
+  };
+  const [w, v] = [await read("w"), await read("v")];
+  expect(w.id).toBe("w");
+  expect(w.rest).toEqual(v.rest);
+  expect(w.rest).toMatchObject({ x: "a" });
+  expect(result.provenance).toContainEqual({
+    kind: "measured",
+    behavior: "openidm.create content field holding undefined is stored as if omitted",
+    source: "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)",
+  });
+});
+it.each(["httpClient.send();", "httpClient.send(undefined,{method:'GET'});"])(
+  "httpClient.send with no URL is a missing journey behavior: %s",
+  async (source) => {
+    const cause = "httpClient.send with no URL";
+    expectEmulationFailure(cause);
+    expect(
+      await request(
+        make(
+          source + SUCCEED,
+          ["true", "false"],
+          { true: SUCCESS, false: FAILURE },
+          { http: async () => ({ status: 200, body: {} }) },
+        ),
+      ),
+    ).toMatchObject({
+      status: 501,
+      emulation: { message: `Missing journey behavior: ${cause}`, missing: [cause] },
+    });
+  },
+);

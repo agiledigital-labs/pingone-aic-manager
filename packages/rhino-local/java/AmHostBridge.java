@@ -164,6 +164,8 @@ final class AmHostBridge extends BaseFunction {
 
   private static final String UTILS_SOURCE =
       "docs/api/12-script-bindings-matrix.md (utils, utils.crypto.subtle)";
+  private static final String BODY_SOURCE =
+      "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
   private static final java.util.Set<String> MAP_HIDDEN =
       new java.util.HashSet<String>(
           java.util.Arrays.asList(
@@ -211,14 +213,51 @@ final class AmHostBridge extends BaseFunction {
     private final Context cx;
     private final String where;
     private final String nullUnder;
+    private final String dropUnder;
+    private final boolean wire;
     private final StringBuilder out = new StringBuilder();
     private final IdentityHashMap<Object, Boolean> active = new IdentityHashMap<Object, Boolean>();
+    /** Set when undefined was written as null under nullUnder, or dropped under dropUnder. */
+    boolean nulled;
+    boolean dropped;
+    /** Set when wire text rendered a number in a form docs/api/12 did not measure. */
+    boolean approximate;
 
-    /** nullUnder: undefined strictly below this path is written as null (measured for HTTP bodies). */
     Encoder(Context cx, String where, String nullUnder) {
+      this(cx, where, nullUnder, null, false);
+    }
+
+    /**
+     * nullUnder: undefined at or below this path is written as null (measured for HTTP bodies).
+     * dropUnder: an undefined field of the object at exactly this path is left out (measured for
+     * openidm.create content). wire: numbers are rendered as AIC's httpClient writes them.
+     */
+    Encoder(Context cx, String where, String nullUnder, String dropUnder, boolean wire) {
       this.cx = cx;
       this.where = where;
       this.nullUnder = nullUnder;
+      this.dropUnder = dropUnder;
+      this.wire = wire;
+    }
+
+    private boolean under(String path) {
+      return nullUnder.isEmpty()
+          || path.equals(nullUnder)
+          || path.startsWith(nullUnder + ".")
+          || path.startsWith(nullUnder + "[");
+    }
+
+    /**
+     * docs/api/12: every JS number goes out as a Java double (1 is 1.0, measured for integers up
+     * to 1e6 at any depth); a boxed java.lang.Integer or Long goes out as written. Anything else
+     * is rendered the same way but flagged, since its form on the wire was not measured.
+     */
+    private String wireNumber(Object value, double number, boolean wrapped) {
+      if (wrapped && (value instanceof Integer || value instanceof Long)) return value.toString();
+      if (!(value instanceof Double && number == Math.rint(number) && Math.abs(number) <= 1e6)) {
+        approximate = true;
+      }
+      return wrapped && !(value instanceof Double) ? value.toString() : Double.toString(number);
     }
 
     private EmulationFailure shape(String what, String path) {
@@ -234,20 +273,20 @@ final class AmHostBridge extends BaseFunction {
     }
 
     Encoder write(Object value, String path) {
+      boolean wrapped = false;
       if (value instanceof Wrapper) {
         Object raw = ((Wrapper) value).unwrap();
         if (!(raw instanceof CharSequence || raw instanceof Boolean || raw instanceof Number)) {
           throw shape("host object", path);
         }
         value = raw;
+        wrapped = true;
       }
       if (value == null) {
         out.append("null");
       } else if (value == Undefined.instance || value == Scriptable.NOT_FOUND) {
-        if (nullUnder == null
-            || !(path.startsWith(nullUnder + ".") || path.startsWith(nullUnder + "["))) {
-          throw shape("undefined", path);
-        }
+        if (nullUnder == null || !under(path)) throw shape("undefined", path);
+        nulled = true;
         out.append("null");
       } else if (value instanceof Boolean) {
         out.append(value.toString());
@@ -258,7 +297,8 @@ final class AmHostBridge extends BaseFunction {
         if (Double.isNaN(number) || Double.isInfinite(number) || (number == 0 && 1 / number < 0)) {
           throw shape("non-finite or negative-zero number", path);
         }
-        out.append(ScriptRuntime.numberToString(number, 10));
+        out.append(
+            wire ? wireNumber(value, number, wrapped) : ScriptRuntime.numberToString(number, 10));
       } else if (value instanceof Function) {
         throw shape("function", path);
       } else if (!(value instanceof ScriptableObject)) {
@@ -303,6 +343,8 @@ final class AmHostBridge extends BaseFunction {
         if (array) {
           if (!(id instanceof Integer)) throw shape("array property", at);
           elements.put((Integer) id, item);
+        } else if (item == Undefined.instance && path.equals(dropUnder)) {
+          dropped = true;
         } else {
           fields.put(String.valueOf(id), item);
         }
@@ -340,14 +382,25 @@ final class AmHostBridge extends BaseFunction {
   }
 
   /** The arguments array as JSON, refusing values JSON would silently rewrite. */
-  private Object encode(Context cx, String label, Object[] values, String nullUnder) {
-    Encoder encoder = new Encoder(cx, "AM host " + label + " argument: ", nullUnder);
+  private Object encode(
+      Context cx, String label, Object[] values, String nullUnder, String dropUnder) {
+    Encoder encoder =
+        new Encoder(cx, "AM host " + label + " argument: ", nullUnder, dropUnder, false);
     encoder.out.append('[');
     for (int i = 0; i < values.length; i++) {
       if (i > 0) encoder.out.append(',');
       encoder.write(values[i], "[" + i + "]");
     }
     encoder.out.append(']');
+    if (encoder.nulled) {
+      calls.note("measured", "httpClient.send body undefined is sent as null", BODY_SOURCE);
+    }
+    if (encoder.dropped) {
+      calls.note(
+          "measured",
+          "openidm.create content field holding undefined is stored as if omitted",
+          BODY_SOURCE);
+    }
     return Json.parse(encoder.text());
   }
 
@@ -360,8 +413,7 @@ final class AmHostBridge extends BaseFunction {
   }
 
   /** One host round trip; a tenant-shaped host error becomes a catchable JavaException. */
-  private Object invoke(Context cx, String method, Object[] values, String label, String nullUnder) {
-    Object input = encode(cx, label, values, nullUnder);
+  private Object invoke(Context cx, String method, Object input) {
     Object result;
     try {
       result = calls.call(method, input);
@@ -386,7 +438,9 @@ final class AmHostBridge extends BaseFunction {
 
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-      return invoke(cx, method, args, "openidm." + method, null);
+      // docs/api/12: an undefined field of openidm.create content stores nothing.
+      String drop = "create".equals(method) ? "[2]" : null;
+      return invoke(cx, method, encode(cx, "openidm." + method, args, null, drop));
     }
   }
 
@@ -407,16 +461,46 @@ final class AmHostBridge extends BaseFunction {
   private final class HttpSend extends BaseFunction {
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+      Object url = arg(args, 0);
+      if (url == Undefined.instance || url == null) throw missing("httpClient.send with no URL");
       Object options = arg(args, 1);
       if (!ScriptableObject.isTrue(options)) options = cx.newObject(top);
-      // docs/api/12 (httpClient.send body serialization): undefined inside a body goes out as null.
-      Object reply =
-          invoke(
+      // docs/api/12 (httpClient.send body serialization): undefined in a body goes out as null.
+      Object input =
+          encode(
               cx,
-              "http",
-              new Object[] {Context.toString(arg(args, 0)), options},
               "httpClient.send",
-              "[1].body");
+              new Object[] {Context.toString(url), options},
+              "[1].body",
+              null);
+      // Passed the encoder above, so options is plain data with no accessor left to run.
+      Map<String, Object> wire = new LinkedHashMap<String, Object>();
+      if (options instanceof ScriptableObject
+          && ((ScriptableObject) options).has("body", (ScriptableObject) options)) {
+        Object body = ScriptableObject.getProperty((ScriptableObject) options, "body");
+        if (body instanceof Wrapper) body = ((Wrapper) body).unwrap();
+        if (body instanceof CharSequence) {
+          // A string body's bytes on the wire were not measured.
+          wire.put("body", body.toString());
+          wire.put("approximate", Boolean.TRUE);
+        } else {
+          Encoder text = new Encoder(cx, "AM host httpClient.send body: ", "", null, true);
+          text.write(body, "");
+          boolean shaped =
+              body == null
+                  || body == Undefined.instance
+                  || (body instanceof ScriptableObject
+                      && "Object".equals(((ScriptableObject) body).getClassName()));
+          wire.put("body", text.text());
+          wire.put("approximate", text.approximate || !shaped);
+        }
+      } else {
+        wire.put("approximate", Boolean.FALSE);
+      }
+      @SuppressWarnings("unchecked")
+      java.util.List<Object> list = (java.util.List<Object>) input;
+      list.add(wire);
+      Object reply = invoke(cx, "http", input);
       if (!(reply instanceof Scriptable)) throw protocol("journey HTTP reply shape");
       Scriptable shape = (Scriptable) reply;
       Object status = ScriptableObject.getProperty(shape, "status");
