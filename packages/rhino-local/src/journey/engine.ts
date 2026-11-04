@@ -28,7 +28,7 @@ import type {
 } from "./types.ts";
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
 const HTTP_BODY_SOURCE =
-  "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
+  "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization; §4 string escaping, 2026-11-04)";
 type Frame = {
   tree: string;
   node: string;
@@ -779,10 +779,11 @@ export class JourneyEmulator {
       "httpClient response is supplied by the test mock; get/json/text wrappers reuse AM binding shapes",
     );
     // Java names each way this request leaves the measured shape; only a request inside it
-    // (an object body sent as application/json, plain-ASCII strings) gets the measured label.
+    // (an object body sent as application/json, strings in the classes doc 12 §4 sampled) gets
+    // the measured label.
     if (wire.assumed.length === 0)
       this.evidence.measured(
-        "httpClient body text: an object body sent as Content-Type: application/json renders JS numbers as Java doubles (1 is 1.0) and undefined as null; no body key is empty",
+        'httpClient body text: an object body sent as Content-Type: application/json renders JS numbers as Java doubles (1 is 1.0) and undefined as null, and escapes strings and keys as measured (in printable ASCII only " and \\; other BMP raw; \\n, \\t short; other controls, astral and lone high surrogates as upper-case \\u escapes); no body key is empty',
         HTTP_BODY_SOURCE,
       );
     for (const reason of wire.assumed as string[]) this.evidence.assumed(reason);

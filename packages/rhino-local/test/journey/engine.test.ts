@@ -1075,11 +1075,12 @@ it.each([
   );
   expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
 });
-const BODY_SOURCE = "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
+const BODY_SOURCE =
+  "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization; §4 string escaping, 2026-11-04)";
 const BODY_TEXT = {
   kind: "measured",
   behavior:
-    "httpClient body text: an object body sent as Content-Type: application/json renders JS numbers as Java doubles (1 is 1.0) and undefined as null; no body key is empty",
+    'httpClient body text: an object body sent as Content-Type: application/json renders JS numbers as Java doubles (1 is 1.0) and undefined as null, and escapes strings and keys as measured (in printable ASCII only " and \\; other BMP raw; \\n, \\t short; other controls, astral and lone high surrogates as upper-case \\u escapes); no body key is empty',
   source: BODY_SOURCE,
 };
 const JSON_HEADER = "headers:{'Content-Type':'application/json'}";
@@ -1135,7 +1136,7 @@ it("an HTTP body reaches the mock as parsed JSON and as AIC's text (docs/api/12)
   expect(sent.provenance).toContainEqual({
     kind: "measured",
     behavior: "httpClient.send body undefined is sent as null",
-    source: BODY_SOURCE,
+    source: "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)",
   });
   expect(sent.assumed).toEqual([]);
 });
@@ -1156,8 +1157,6 @@ const FRACTION =
   "httpClient body text for a fractional number or an integer past 1e6, written as a Java double";
 const STRING = "httpClient body text for a string body, sent as the string itself";
 const TOP = "httpClient body text for a top-level non-object body";
-const CHARS =
-  "httpClient body text for a string holding a control or non-ASCII character or one of < > & = ' \" \\, written unescaped";
 const INTEGER =
   "httpClient body text for a number the script engine holds as a Java Integer (results of length, indexOf, JSON.parse), written as a Java double";
 it.each([
@@ -1165,11 +1164,6 @@ it.each([
   ["an integer past 1e6", "body:{n:1e7}", '{"n":1.0E7}', [FRACTION]],
   ["a string body", "body:'raw'", "raw", [STRING]],
   ["a top-level array", "body:[1]", "[1.0]", [TOP]],
-  ["a '<' in a string", "body:{s:'a<b'}", '{"s":"a<b"}', [CHARS]],
-  ["an '&' in a string", "body:{s:'a&b'}", '{"s":"a&b"}', [CHARS]],
-  ["a non-ASCII string", "body:{s:'café'}", '{"s":"café"}', [CHARS]],
-  ["U+2028 in a string", "body:{s:'a\\u2028b'}", undefined, [CHARS]],
-  ["a non-ASCII key", "body:{'é':1}", '{"é":1.0}', [CHARS]],
   ["a string length", "body:{count:'abc'.length}", '{"count":3.0}', [INTEGER]],
   ["an indexOf result", "body:{at:'abc'.indexOf('c')}", '{"at":2.0}', [INTEGER]],
   ["a JSON.parse result", "body:JSON.parse('{\"n\":2}')", '{"n":2.0}', [INTEGER]],
@@ -1179,6 +1173,68 @@ it.each([
   expect(sent.assumed).toEqual(reasons);
   expect(sent.provenance).not.toContainEqual(BODY_TEXT);
 });
+// docs/api/12 §4 (2026-11-04): exact wire bytes for strings and keys. Script literals are
+// written as \u escapes so that Rhino reads U+2028 and lone surrogates as data, not source.
+const lit = (text: string) =>
+  `'${[...Array(text.length).keys()].map((i) => `\\u${text.charCodeAt(i).toString(16).padStart(4, "0")}`).join("")}'`;
+const PRINTABLE = String.fromCharCode(...Array.from({ length: 0x5f }, (_, i) => 0x20 + i));
+it.each([
+  // Byte-identical to JSON.stringify: only " and \\ escaped, no \\/, < > & ' literal.
+  [
+    "every printable ASCII character",
+    PRINTABLE,
+    `"${PRINTABLE.replace(/[\\"]/g, (c) => `\\${c}`)}"`,
+  ],
+  ["a URL", "https://a.example.com/x", '"https://a.example.com/x"'],
+  [
+    "non-ASCII, U+2028, U+FEFF and U+007F",
+    "\u00e9\u00a0\u2028\ufeff\u007f",
+    '"\u00e9\u00a0\u2028\ufeff\u007f"',
+  ],
+  ["newline and tab", "a\nb\tc", '"a\\nb\\tc"'],
+  ["C0 controls", "\u0000\u0001\u001f", '"\\u0000\\u0001\\u001F"'],
+  ["an astral character", "\ud83d\ude00", '"\\uD83D\\uDE00"'],
+  ["a lone high surrogate", "a\ud800b", '"a\\uD800b"'],
+])("HTTP body text for %s is exact and measured", async (_name, value, quoted) => {
+  for (const [body, text] of [
+    [`{s:${lit(value)}}`, `{"s":${quoted}}`],
+    // Keys are escaped like values.
+    [`{${lit(value)}:'x'}`, `{${quoted}:"x"}`],
+  ]) {
+    const sent = await send(`{method:'POST',${JSON_HEADER},body:${body}}`);
+    expect(sent.text).toBe(text);
+    expect(sent.assumed).toEqual([]);
+    expect(sent.provenance).toContainEqual(BODY_TEXT);
+  }
+});
+it.each([
+  [
+    "a carriage return",
+    "a\rb",
+    '"a\\rb"',
+    "httpClient body text for \\r, \\b or \\f in a string, written as a short escape (docs/api/12 §4 measured only \\n and \\t)",
+  ],
+  [
+    "a C1 control",
+    "\u0085",
+    '"\u0085"',
+    "httpClient body text for a C1 control character (U+0080-U+009F), written raw like the measured U+007F and other non-ASCII",
+  ],
+  [
+    "a lone low surrogate",
+    "\udc00",
+    '"\\uDC00"',
+    "httpClient body text for a lone low surrogate, written as an upper-case escape like the measured lone high surrogate",
+  ],
+])(
+  "HTTP body text for %s is written as AIC likely would, labelled assumed",
+  async (_name, value, quoted, reason) => {
+    const sent = await send(`{method:'POST',${JSON_HEADER},body:{s:${lit(value)}}}`);
+    expect(sent.text).toBe(`{"s":${quoted}}`);
+    expect(sent.assumed).toEqual([reason]);
+    expect(sent.provenance).not.toContainEqual(BODY_TEXT);
+  },
+);
 it.each([
   ["no headers", "{method:'POST',body:{n:1}}"],
   ["another Content-Type", "{method:'POST',headers:{'Content-Type':'text/plain'},body:{n:1}}"],

@@ -81,9 +81,9 @@ describe("queryFilter grammar", () => {
     const user = "00000000-0000-0000-0000-0000000000a1";
     const CASE = { kind: "measured", behavior: "eq on alpha_user mail and userName ignores letter case", source: "docs/api/10-managed-objects.md (eq on mail and userName is case-insensitive, 2026-11-04)" };
     const users = async () => {
-      const props = { userName: { type: "string" }, mail: { type: "string" }, givenName: { type: "string" } };
+      const props = { userName: { type: "string" }, mail: { type: "string" }, givenName: { type: "string" }, sn: { type: "string" }, city: { type: "string" } };
       const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: props } }, { name: "bravo_user", schema: { properties: props } }] } }), runner);
-      for (const type of ["alpha_user", "bravo_user"]) await send(emu, { method: "PUT", path: `managed/${type}/${user}`, headers: { "If-None-Match": "*" }, body: { userName: "ua", mail: "ma@example.com", givenName: "alice" } }, 201);
+      for (const type of ["alpha_user", "bravo_user"]) await send(emu, { method: "PUT", path: `managed/${type}/${user}`, headers: { "If-None-Match": "*" }, body: { userName: "ua", mail: "ma@example.com", givenName: "alice", sn: "doe", city: "perth" } }, 201);
       return emu;
     };
     it.each([
@@ -109,7 +109,6 @@ describe("queryFilter grammar", () => {
     it.each([
       ['mail sw "MA@"', "alpha_user", "query sw whose match turns on letter case: alpha_user mail"],
       ['mail co "EXAMPLE"', "alpha_user", "query co whose match turns on letter case: alpha_user mail"],
-      ['givenName eq "Alice"', "alpha_user", "query eq whose match turns on letter case: alpha_user givenName"],
       ['mail eq "MA@example.com"', "bravo_user", "query eq whose match turns on letter case: bravo_user mail"],
       ['userName eq "UA"', "bravo_user", "query eq whose match turns on letter case: bravo_user userName"],
     ])("%s on %s is missing: case sensitivity there is unmeasured", async (filter, type, cause) => {
@@ -125,6 +124,90 @@ describe("queryFilter grammar", () => {
       await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a2", headers: { "If-None-Match": "*" }, body: { userName: "émile" } }, 201);
       const result = await emu.request({ method: "GET", path: "managed/alpha_user", query: { _queryFilter: 'userName eq "Émile"' } });
       expect(result.status).toBe(501);
+    });
+    // 3bddde0 (doc 10, 2026-11-04): five more alpha_user properties fold under eq; gt/ge/lt on
+    // userName fold; eq on mail/userName ignores leading and trailing spaces, not interior ones.
+    const query = async (emu: IdmEmulator, type: string, filter: string) => emu.request({ method: "GET", path: `managed/${type}`, query: { _queryFilter: filter } });
+    const label = (kind: string, behavior: string) => kind === "measured" ? { kind, behavior, source: "docs/api/10-managed-objects.md (eq/gt/lt ignore case and edge spaces, 2026-11-04)" } : { kind, behavior };
+    const PROBED = label("measured", "eq on alpha_user givenName, sn, description, frIndexedString1, frUnindexedString1 ignores letter case");
+    const SPACE = label("measured", "eq on alpha_user mail and userName ignores leading and trailing spaces");
+    const ORDER = label("measured", "gt, ge and lt on alpha_user userName ignore letter case");
+    const ORDERING = label("assumed", "string ordering compares UTF-16 code units after the case and space rules");
+    it.each([
+      ['givenName eq "ALICE"', 1, [PROBED]],
+      ['sn eq "Doe"', 1, [PROBED]],
+      ['city eq "Perth"', 1, [label("assumed", "eq on alpha_user city ignores letter case: unprobed, assumed like the probed properties")]],
+      ['mail eq " ma@example.com"', 1, [SPACE]],
+      ['userName eq "ua  "', 1, [SPACE]],
+      ['mail eq " MA@example.com "', 1, [SPACE, CASE]],
+      ['city eq " perth"', 1, [label("assumed", "eq on alpha_user ignores leading and trailing spaces like eq on mail and userName")]],
+      // Ordering: code-point order would answer the other way on each of the first three.
+      ['userName gt "UA"', 0, [ORDERING]],
+      ['userName ge "UB"', 0, [ORDER, ORDERING]],
+      ['userName lt "UB"', 1, [ORDER, ORDERING]],
+      ['userName le "UA"', 1, [label("assumed", "le on alpha_user userName ignores letter case: unprobed, assumed like the probed properties"), ORDERING]],
+      ['userName gt "ta"', 1, [ORDERING]],
+    ])("alpha_user %s answers %i, labelled", async (filter, count, labels) => {
+      const result = await query(await users(), "alpha_user", filter as string);
+      expect(result.status, JSON.stringify(result.provenance)).toBe(200);
+      expect((result.body as Document).resultCount).toBe(count);
+      for (const l of labels as object[]) expect(result.provenance).toContainEqual(l);
+    });
+    it.each([['mail eq "ma@ example.com"'], ['mail eq "ma@example.com"']])("alpha_user %s needs no space rule", async (filter) => {
+      const result = await query(await users(), "alpha_user", filter);
+      expect((result.body as Document).resultCount).toBe(filter.includes("@ ") ? 0 : 1);
+      expect(result.provenance).not.toContainEqual(SPACE);
+    });
+    it.each([
+      ['mail eq " ma@example.com"', "bravo_user", "query eq whose match turns on leading, trailing or repeated spaces: bravo_user mail"],
+      ['mail sw " ma"', "alpha_user", "query sw whose match turns on leading, trailing or repeated spaces: alpha_user mail"],
+      ['userName gt "UA"', "bravo_user", "query gt whose order turns on letter case: bravo_user userName"],
+    ])("%s on %s is missing", async (filter, type, cause) => {
+      expectEmulationFailure(cause);
+      const result = await query(await users(), type, filter);
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    it("a run of interior spaces is missing on a measured field: whether DS collapses it is unmeasured", async () => {
+      const cause = "query eq whose match turns on leading, trailing or repeated spaces: alpha_user givenName";
+      expectEmulationFailure(cause);
+      const emu = await users();
+      await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a4", headers: { "If-None-Match": "*" }, body: { givenName: "mary ann" } }, 201);
+      const result = await query(emu, "alpha_user", 'givenName eq "mary  ann"');
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    it("an ordering whose answer turns on the fold direction is missing", async () => {
+      // "u_" vs "uA": lower-cased "u_" < "ua", upper-cased "U_" > "UA".
+      const cause = "query gt whose order turns on letter case: alpha_user userName";
+      expectEmulationFailure(cause);
+      const emu = await users();
+      await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a3", headers: { "If-None-Match": "*" }, body: { userName: "u_" } }, 201);
+      expect((await query(emu, "alpha_user", 'userName gt "uA"')).status).toBe(501);
+    });
+    // R5-2a: an unmeasured leaf refuses only when the record's whole answer turns on it.
+    it.each([
+      ['givenName eq "ALICE" and sn eq "smith"', 0], ['sn eq "smith" and givenName eq "ALICE"', 0],
+      ['givenName eq "ALICE" or sn eq "doe"', 1], ['sn eq "doe" or givenName eq "ALICE"', 1],
+      ['!(givenName eq "ALICE" and sn eq "smith")', 1],
+    ])("bravo_user %s answers %i in either operand order", async (filter, count) => {
+      const result = await query(await users(), "bravo_user", filter as string);
+      expect(result.status, JSON.stringify(result.provenance)).toBe(200);
+      expect((result.body as Document).resultCount).toBe(count);
+    });
+    it.each([['givenName eq "ALICE" and sn eq "doe"'], ['sn eq "doe" and givenName eq "ALICE"'], ['givenName eq "ALICE" or sn eq "smith"']])("bravo_user %s turns on case and is missing", async (filter) => {
+      const cause = "query eq whose match turns on letter case: bravo_user givenName";
+      expectEmulationFailure(cause);
+      const result = await query(await users(), "bravo_user", filter);
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    it("the reviewer's example (case-swapped givenName, wrong sn) is measured on alpha_user now, in both operand orders", async () => {
+      for (const filter of ['givenName eq "Alice" and sn eq "smith"', 'sn eq "smith" and givenName eq "Alice"']) {
+        const result = await query(await users(), "alpha_user", filter);
+        expect(result.status).toBe(200);
+        expect((result.body as Document).resultCount).toBe(0);
+      }
     });
     it("a case-only eq on an unprobed managed type is missing", async () => {
       const cause = "query eq whose match turns on letter case: widget text";

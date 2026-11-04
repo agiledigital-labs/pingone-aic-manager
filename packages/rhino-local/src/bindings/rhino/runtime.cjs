@@ -53,6 +53,28 @@ function __rhinoLocalClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// docs/api/12 (2026-11-04), as measured on the wire: an `undefined` field of
+// openidm.create content is sent as null (only the top level was measured, so
+// nested undefined still drops), and an httpClient.send body sends undefined as
+// null at any depth, the body itself included.
+function __rhinoLocalCloneUndefinedAsNull(value, topLevelOnly) {
+  if (topLevelOnly) {
+    if (value === null || typeof value !== "object") {
+      return __rhinoLocalClone(value);
+    }
+    return JSON.parse(
+      JSON.stringify(value, function (key, field) {
+        return field === undefined && this === value ? null : field;
+      })
+    );
+  }
+  return JSON.parse(
+    JSON.stringify(value, function (key, field) {
+      return field === undefined ? null : field;
+    })
+  );
+}
+
 // What a Java `toArray()` hands a script: indexable with a working `length`,
 // but not a JS array (measured: Array.isArray false). `length` is hidden so
 // for...in and Object.keys see only indices, as they would on an array. A
@@ -1827,7 +1849,8 @@ function __rhinoLocalProjectChild(value, path, previous) {
 function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
   var rec = { method: method, resource: resource };
   if (body !== undefined) {
-    rec.body = __rhinoLocalClone(body);
+    rec.body =
+      method === "create" ? __rhinoLocalCloneUndefinedAsNull(body, true) : __rhinoLocalClone(body);
   }
   if (actionName !== undefined) {
     rec.actionName = actionName;
@@ -2352,7 +2375,7 @@ openidm.create = function (resourceName, newResourceId, content) {
       "rhino-local: openidm.create: Entry Already Exists: " + recordedResource
     );
   }
-  var stored = __rhinoLocalClone(content);
+  var stored = __rhinoLocalCloneUndefinedAsNull(content, true);
   stored = __rhinoLocalOpenidmRecord(
     stored,
     id,
@@ -2525,16 +2548,14 @@ httpClient.send = function (uri, requestOptions) {
   }
   var url = String(uri);
   var method = "GET";
-  var body;
   if (requestOptions && requestOptions.method) {
     method = String(requestOptions.method).toUpperCase();
   }
-  if (requestOptions && requestOptions.body !== undefined) {
-    body = requestOptions.body;
-  }
   var effect = { url: url, method: method };
-  if (body !== undefined) {
-    effect.body = body;
+  // A `body` key holding undefined is sent as null, not omitted (docs/api/12
+  // §3); the body is recorded as it was when sent, not as later mutated.
+  if (requestOptions && typeof requestOptions === "object" && "body" in requestOptions) {
+    effect.body = __rhinoLocalCloneUndefinedAsNull(requestOptions.body, false);
   }
   __rhinoLocal.http.push(effect);
   var reply = __rhinoLocalMatchHttp(url, method);
