@@ -879,10 +879,16 @@ it.each([
     "emailService.send",
   ],
   [
-    "replaced guarded original",
-    "var f=nodeState.putShared;for(var p=f.__parent__;p;p=p.__parent__){if('original' in p){p.original=function(){return nodeState;};}}",
-    "nodeState.putShared('x',undefined);",
-    "nodeState.putShared: Error: rhino-local: nodeState.putShared: value is undefined",
+    "rebound Error.prototype.toString around a caught diagnostic",
+    "Error.prototype.toString=function(){return 'safe';};",
+    "try{nodeState.putShared('x',undefined);}catch(e){}",
+    "nodeState.putShared: value is undefined",
+  ],
+  [
+    "rebound arity helper around a caught diagnostic",
+    "__rhinoLocalExpectArity=function(){};",
+    "try{logger.info();}catch(e){}",
+    "logger.info arity=0 (expected >= 1)",
   ],
 ])("author code cannot answer a refused call: %s", async (_name, attack, call, cause) => {
   expectEmulationFailure(cause);

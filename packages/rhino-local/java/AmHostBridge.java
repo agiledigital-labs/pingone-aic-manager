@@ -6,16 +6,16 @@ import java.util.Map;
 import org.mozilla.javascript.BaseFunction;
 import org.mozilla.javascript.Callable;
 import org.mozilla.javascript.Context;
-import org.mozilla.javascript.EcmaError;
 import org.mozilla.javascript.Function;
 import org.mozilla.javascript.JavaScriptException;
 import org.mozilla.javascript.NativeArray;
 import org.mozilla.javascript.NativeJSON;
-import org.mozilla.javascript.RhinoException;
+import org.mozilla.javascript.ScriptRuntime;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Undefined;
 import org.mozilla.javascript.WrappedException;
+import org.mozilla.javascript.Wrapper;
 import org.mozilla.javascript.json.JsonParser;
 
 /**
@@ -33,7 +33,8 @@ final class AmHostBridge extends BaseFunction {
   final HostCalls calls;
   private Scriptable top;
   private Function errorType;
-  private Callable harvest;
+  private Scriptable objectProto;
+  private Scriptable arrayProto;
   private Scriptable runtime;
   private Scriptable action;
   private String errorMessage;
@@ -70,18 +71,17 @@ final class AmHostBridge extends BaseFunction {
     if ("missing".equals(verb)) throw missing(Context.toString(arg(args, 1)));
     if ("install".equals(verb)) {
       if (top != null) throw protocol("journey bridge installed twice");
-      if (!(arg(args, 1) instanceof Callable)
-          || !(arg(args, 2) instanceof Scriptable)
-          || !(arg(args, 3) instanceof Scriptable)) {
+      if (!(arg(args, 1) instanceof Scriptable) || !(arg(args, 2) instanceof Scriptable)) {
         throw protocol("journey bridge install arguments");
       }
       top = ScriptableObject.getTopLevelScope(scope);
       Object error = ScriptableObject.getProperty(top, "Error");
       if (!(error instanceof Function)) throw protocol("journey bridge: Error constructor");
       errorType = (Function) error;
-      harvest = (Callable) args[1];
-      runtime = (Scriptable) args[2];
-      action = (Scriptable) args[3];
+      objectProto = ScriptableObject.getObjectPrototype(top);
+      arrayProto = ScriptableObject.getArrayPrototype(top);
+      runtime = (Scriptable) args[1];
+      action = (Scriptable) args[2];
       return Undefined.instance;
     }
     if (top == null) throw protocol("journey bridge used before install");
@@ -98,12 +98,12 @@ final class AmHostBridge extends BaseFunction {
         return expose(new ErrorMessage());
       case "chain":
         return expose(new Chain());
-      case "guard":
-        if (!(arg(args, 1) instanceof Scriptable) || !(arg(args, 2) instanceof Callable)) {
-          throw protocol("journey bridge guard arguments");
-        }
-        return expose(
-            new Guard((Scriptable) args[1], (Callable) args[2], Context.toString(arg(args, 3))));
+      case "unsupported":
+        return expose(new Unsupported());
+      case "observe":
+        if (!(arg(args, 1) instanceof Callable)) throw protocol("journey bridge observe arguments");
+        if (args[1] instanceof Refusal) return args[1];
+        return expose(new Observe((Callable) args[1], Context.toString(arg(args, 2))));
       default:
         throw protocol("journey bridge verb: " + verb);
     }
@@ -123,6 +123,37 @@ final class AmHostBridge extends BaseFunction {
     }
   }
 
+  /**
+   * Replaces the runtime's __rhinoLocalFail: every "rhino-local:" diagnostic is an approximation
+   * the local runtime cannot stand behind, so it fails the run as missing. The decision is made
+   * here, by which function was called, never by reading an error's text after a script could
+   * have touched it.
+   */
+  private final class Unsupported extends BaseFunction {
+    @Override
+    public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+      String message = Context.toString(arg(args, 0));
+      throw missing(message.startsWith("rhino-local: ") ? message.substring(13) : message);
+    }
+  }
+
+  /** A binding member measured in docs/api: runs the local implementation and says so. */
+  private final class Observe extends BaseFunction {
+    private final Callable original;
+    private final String behavior;
+
+    Observe(Callable original, String behavior) {
+      this.original = original;
+      this.behavior = behavior;
+    }
+
+    @Override
+    public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+      calls.note("measured", behavior + " runs locally as measured", UTILS_SOURCE);
+      return original.call(cx, scope, thisObj, args);
+    }
+  }
+
   /** Replacement for the generated stubs' global hook, kept for any caller that names it. */
   private final class NotMocked extends BaseFunction {
     @Override
@@ -131,29 +162,193 @@ final class AmHostBridge extends BaseFunction {
     }
   }
 
-  /** The arguments array, as JSON, refusing values JSON would silently rewrite. */
-  private Object encode(Context cx, Object[] values) {
-    BaseFunction replacer =
-        new BaseFunction() {
-          @Override
-          public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-            Object value = arg(args, 1);
-            if (value instanceof Function) throw missing("AM host function arguments");
-            if (value instanceof Number) {
-              double number = ((Number) value).doubleValue();
-              if (Double.isNaN(number)
-                  || Double.isInfinite(number)
-                  || (number == 0 && 1 / number < 0)) {
-                throw missing("AM host non-finite or negative-zero arguments");
-              }
-            }
-            return value;
-          }
-        };
-    expose(replacer);
-    Object text =
-        NativeJSON.stringify(cx, top, cx.newArray(top, values), replacer, Undefined.instance);
-    return Json.parse(Context.toString(text));
+  private static final String UTILS_SOURCE =
+      "docs/api/12-script-bindings-matrix.md (utils, utils.crypto.subtle)";
+  private static final java.util.Set<String> MAP_HIDDEN =
+      new java.util.HashSet<String>(
+          java.util.Arrays.asList(
+              "__rhinoLocalMapEntries",
+              "toJSON",
+              "toString",
+              "get",
+              "put",
+              "containsKey",
+              "size",
+              "keySet",
+              "entrySet",
+              "values"));
+  private static final java.util.Set<String> LIST_HIDDEN =
+      new java.util.HashSet<String>(
+          java.util.Arrays.asList("size", "get", "isEmpty", "contains", "toArray", "iterator"));
+  private static java.lang.reflect.Method descriptorMethod;
+
+  /** ScriptableObject.getOwnPropertyDescriptor is protected; it is the one read that sees accessors. */
+  private ScriptableObject descriptor(Context cx, ScriptableObject object, Object id) {
+    try {
+      if (descriptorMethod == null) {
+        java.lang.reflect.Method method =
+            ScriptableObject.class.getDeclaredMethod(
+                "getOwnPropertyDescriptor", Context.class, Object.class);
+        method.setAccessible(true);
+        descriptorMethod = method;
+      }
+      return (ScriptableObject) descriptorMethod.invoke(object, cx, id);
+    } catch (java.lang.reflect.InvocationTargetException e) {
+      throw protocol("journey value descriptor: " + e.getCause());
+    } catch (ReflectiveOperationException | RuntimeException e) {
+      throw protocol("journey value descriptor: " + e);
+    }
+  }
+
+  /**
+   * Serializes a script value to JSON text in Java, from the value itself: no toJSON, no global
+   * JSON, no script-reachable function runs. Anything whose JSON form would not be the value — a
+   * custom prototype, an accessor, a hidden or array-named property, a hole, a cycle, a non-finite
+   * number, undefined, a function, a host object — is missing, never rewritten or thrown as a
+   * catchable error.
+   */
+  private final class Encoder {
+    private final Context cx;
+    private final String where;
+    private final String nullUnder;
+    private final StringBuilder out = new StringBuilder();
+    private final IdentityHashMap<Object, Boolean> active = new IdentityHashMap<Object, Boolean>();
+
+    /** nullUnder: undefined strictly below this path is written as null (measured for HTTP bodies). */
+    Encoder(Context cx, String where, String nullUnder) {
+      this.cx = cx;
+      this.where = where;
+      this.nullUnder = nullUnder;
+    }
+
+    private EmulationFailure shape(String what, String path) {
+      return missing(where + what + (path.isEmpty() ? "" : " at " + path));
+    }
+
+    private String child(String path, Object id) {
+      return path.isEmpty() ? String.valueOf(id) : path + "." + id;
+    }
+
+    String text() {
+      return out.toString();
+    }
+
+    Encoder write(Object value, String path) {
+      if (value instanceof Wrapper) {
+        Object raw = ((Wrapper) value).unwrap();
+        if (!(raw instanceof CharSequence || raw instanceof Boolean || raw instanceof Number)) {
+          throw shape("host object", path);
+        }
+        value = raw;
+      }
+      if (value == null) {
+        out.append("null");
+      } else if (value == Undefined.instance || value == Scriptable.NOT_FOUND) {
+        if (nullUnder == null
+            || !(path.startsWith(nullUnder + ".") || path.startsWith(nullUnder + "["))) {
+          throw shape("undefined", path);
+        }
+        out.append("null");
+      } else if (value instanceof Boolean) {
+        out.append(value.toString());
+      } else if (value instanceof CharSequence) {
+        out.append(Json.quote(value.toString()));
+      } else if (value instanceof Number) {
+        double number = ((Number) value).doubleValue();
+        if (Double.isNaN(number) || Double.isInfinite(number) || (number == 0 && 1 / number < 0)) {
+          throw shape("non-finite or negative-zero number", path);
+        }
+        out.append(ScriptRuntime.numberToString(number, 10));
+      } else if (value instanceof Function) {
+        throw shape("function", path);
+      } else if (!(value instanceof ScriptableObject)) {
+        throw shape("host object", path);
+      } else {
+        object((ScriptableObject) value, path);
+      }
+      return this;
+    }
+
+    private void object(ScriptableObject object, String path) {
+      boolean array = object instanceof NativeArray;
+      String type = object.getClassName();
+      if (!(array ? "Array".equals(type) : "Object".equals(type))) {
+        throw shape(type + " object", path);
+      }
+      if (active.containsKey(object)) throw shape("cyclic object", path);
+      if (object.getPrototype() != (array ? arrayProto : objectProto)) {
+        throw shape("non-plain prototype", path);
+      }
+      active.put(object, Boolean.TRUE);
+      java.util.Set<String> hidden =
+          array
+              ? LIST_HIDDEN
+              : ownHidden(object, "__rhinoLocalMapEntries")
+                  ? MAP_HIDDEN
+                  : Collections.<String>emptySet();
+      java.util.TreeMap<Integer, Object> elements = new java.util.TreeMap<Integer, Object>();
+      LinkedHashMap<String, Object> fields = new LinkedHashMap<String, Object>();
+      for (Object id : object.getAllIds()) {
+        if (array && "length".equals(id)) continue;
+        String at =
+            array && id instanceof Integer ? path + "[" + id + "]" : child(path, id);
+        ScriptableObject desc = descriptor(cx, object, id);
+        if (desc == null) continue;
+        if (desc.has("get", desc) || desc.has("set", desc)) throw shape("accessor property", at);
+        Object item = desc.get("value", desc);
+        if (!ScriptRuntime.toBoolean(desc.get("enumerable", desc))) {
+          if (hidden.contains(String.valueOf(id)) && item instanceof Function) continue;
+          throw shape("non-enumerable property", at);
+        }
+        if (array) {
+          if (!(id instanceof Integer)) throw shape("array property", at);
+          elements.put((Integer) id, item);
+        } else {
+          fields.put(String.valueOf(id), item);
+        }
+      }
+      if (array) {
+        long length = ((NativeArray) object).getLength();
+        if (elements.size() != length) throw shape("array hole", path);
+        out.append('[');
+        int index = 0;
+        for (Map.Entry<Integer, Object> element : elements.entrySet()) {
+          if (index++ > 0) out.append(',');
+          write(element.getValue(), path + "[" + element.getKey() + "]");
+        }
+        out.append(']');
+      } else {
+        out.append('{');
+        boolean first = true;
+        for (Map.Entry<String, Object> field : fields.entrySet()) {
+          if (!first) out.append(',');
+          first = false;
+          out.append(Json.quote(field.getKey())).append(':');
+          write(field.getValue(), child(path, field.getKey()));
+        }
+        out.append('}');
+      }
+      active.remove(object);
+    }
+
+    private boolean ownHidden(ScriptableObject object, String name) {
+      ScriptableObject desc = descriptor(cx, object, name);
+      return desc != null
+          && !ScriptRuntime.toBoolean(desc.get("enumerable", desc))
+          && desc.get("value", desc) instanceof Function;
+    }
+  }
+
+  /** The arguments array as JSON, refusing values JSON would silently rewrite. */
+  private Object encode(Context cx, String label, Object[] values, String nullUnder) {
+    Encoder encoder = new Encoder(cx, "AM host " + label + " argument: ", nullUnder);
+    encoder.out.append('[');
+    for (int i = 0; i < values.length; i++) {
+      if (i > 0) encoder.out.append(',');
+      encoder.write(values[i], "[" + i + "]");
+    }
+    encoder.out.append(']');
+    return Json.parse(encoder.text());
   }
 
   private Object toJs(Context cx, Object value) {
@@ -165,8 +360,8 @@ final class AmHostBridge extends BaseFunction {
   }
 
   /** One host round trip; a tenant-shaped host error becomes a catchable JavaException. */
-  private Object invoke(Context cx, String method, Object[] values) {
-    Object input = encode(cx, values);
+  private Object invoke(Context cx, String method, Object[] values, String label, String nullUnder) {
+    Object input = encode(cx, label, values, nullUnder);
     Object result;
     try {
       result = calls.call(method, input);
@@ -191,7 +386,7 @@ final class AmHostBridge extends BaseFunction {
 
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-      return invoke(cx, method, args);
+      return invoke(cx, method, args, "openidm." + method, null);
     }
   }
 
@@ -214,8 +409,14 @@ final class AmHostBridge extends BaseFunction {
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
       Object options = arg(args, 1);
       if (!ScriptableObject.isTrue(options)) options = cx.newObject(top);
+      // docs/api/12 (httpClient.send body serialization): undefined inside a body goes out as null.
       Object reply =
-          invoke(cx, "http", new Object[] {Context.toString(arg(args, 0)), options});
+          invoke(
+              cx,
+              "http",
+              new Object[] {Context.toString(arg(args, 0)), options},
+              "httpClient.send",
+              "[1].body");
       if (!(reply instanceof Scriptable)) throw protocol("journey HTTP reply shape");
       Scriptable shape = (Scriptable) reply;
       Object status = ScriptableObject.getProperty(shape, "status");
@@ -257,118 +458,51 @@ final class AmHostBridge extends BaseFunction {
     }
   }
 
-  /** A mock runtime method whose rhino-local diagnostics are unsupported emulation. */
-  private final class Guard extends BaseFunction {
-    private final Scriptable target;
-    private final Callable original;
-    private final String behavior;
-
-    Guard(Scriptable target, Callable original, String behavior) {
-      this.target = target;
-      this.original = original;
-      this.behavior = behavior;
-    }
-
-    @Override
-    public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-      try {
-        return original.call(cx, scope, target, args);
-      } catch (JavaScriptException e) {
-        String text;
-        try {
-          text = Context.toString(e.getValue());
-        } catch (RuntimeException unreadable) {
-          throw e;
-        }
-        if (text.contains("rhino-local:")) throw missing(behavior + ": " + text);
-        throw e;
-      } catch (EcmaError e) {
-        String text = e.getName() + ": " + e.getErrorMessage();
-        if (text.contains("rhino-local:")) throw missing(behavior + ": " + text);
-        throw e;
-      }
-    }
-  }
-
   /**
-   * After author code: refuse state values whose JSON form would differ from the value, then
-   * harvest. Failures here are emulation failures, never script exceptions.
+   * After author code: the node's effects, serialized in Java from the runtime object the trusted
+   * preamble handed over. No global, built-in or toJSON is consulted, so author code cannot
+   * redirect it short of rewriting that object itself. Failures here are emulation failures, never
+   * script exceptions.
    */
   String harvest(Context cx) {
     if (top == null) throw protocol("journey bridge used before install");
-    try {
-      return harvestChecked(cx);
-    } catch (RhinoException e) {
-      throw missing("journey harvest serialization: " + e.details());
+    Object queued = ScriptableObject.getProperty(runtime, "callbacks");
+    if (!(queued instanceof NativeArray)) throw missing("journey callbacks container");
+    // Queued next-gen callbacks suspend the node even after goTo.
+    Object outcome =
+        ((NativeArray) queued).getLength() > 0
+            ? null
+            : ScriptableObject.getProperty(runtime, "outcome");
+    if (outcome != null && !(outcome instanceof CharSequence)) {
+      throw missing("journey outcome value");
     }
-  }
-
-  private String harvestChecked(Context cx) {
+    StringBuilder out = new StringBuilder("{\"effects\":{\"outcome\":");
+    out.append(outcome == null ? "null" : Json.quote(outcome.toString()));
+    StringBuilder maps = new StringBuilder();
     for (String bucket : new String[] {"shared", "transient"}) {
       Object root = ScriptableObject.getProperty(runtime, bucket);
-      if (!(root instanceof ScriptableObject)) {
+      if (!(root instanceof ScriptableObject) || root instanceof NativeArray) {
         throw missing("journey state " + bucket + " container");
       }
-      ScriptableObject object = (ScriptableObject) root;
-      IdentityHashMap<Object, Boolean> active = new IdentityHashMap<Object, Boolean>();
-      active.put(object, Boolean.TRUE);
-      for (Object id : object.getIds()) {
-        checkState(bucket, key(id), get(object, id), active);
-      }
+      out.append(",\"").append(bucket).append("State\":{\"final\":");
+      out.append(new Encoder(cx, "journey state " + bucket + " value: ", null).write(root, "").text());
+      out.append('}');
+      Object attributes = ScriptableObject.getProperty((Scriptable) root, "objectAttributes");
+      boolean map =
+          attributes instanceof ScriptableObject
+              && ((ScriptableObject) attributes).has("__rhinoLocalMapEntries", (Scriptable) attributes);
+      maps.append(maps.length() == 0 ? "" : ",")
+          .append('"')
+          .append(bucket)
+          .append("\":")
+          .append(map);
     }
-    Object effects = harvest.call(cx, top, top, new Object[0]);
-    if (!(effects instanceof CharSequence)) throw missing("journey harvest serialization");
-    return "{\"effects\":"
-        + effects
-        + ",\"errorMessage\":"
-        + (errorMessage == null ? "null" : Json.quote(errorMessage))
-        + "}";
-  }
-
-  private static String key(Object id) {
-    return String.valueOf(id);
-  }
-
-  private static Object get(Scriptable object, Object id) {
-    return id instanceof Integer
-        ? ScriptableObject.getProperty(object, (Integer) id)
-        : ScriptableObject.getProperty(object, String.valueOf(id));
-  }
-
-  private void checkState(
-      String bucket, String path, Object value, IdentityHashMap<Object, Boolean> active) {
-    String where = "journey state " + bucket + " value: ";
-    if (value == null || value instanceof Boolean || value instanceof CharSequence) return;
-    if (value instanceof Number) {
-      double number = ((Number) value).doubleValue();
-      if (Double.isNaN(number) || Double.isInfinite(number) || (number == 0 && 1 / number < 0)) {
-        throw missing(where + "non-finite or negative-zero number at " + path);
-      }
-      return;
-    }
-    if (value == Undefined.instance || value == Scriptable.NOT_FOUND) {
-      throw missing(where + "undefined at " + path);
-    }
-    if (value instanceof Function) throw missing(where + "function at " + path);
-    if (!(value instanceof ScriptableObject)) throw missing(where + "host object at " + path);
-    ScriptableObject object = (ScriptableObject) value;
-    String type = object.getClassName();
-    if (!"Object".equals(type) && !"Array".equals(type)) {
-      throw missing(where + type + " object at " + path);
-    }
-    if (active.containsKey(object)) throw missing(where + "cyclic object at " + path);
-    active.put(object, Boolean.TRUE);
-    if (object instanceof NativeArray) {
-      long length = ((NativeArray) object).getLength();
-      for (long i = 0; i < length; i++) {
-        checkState(bucket, path + "[" + i + "]", get(object, (int) i), active);
-      }
-    } else {
-      for (Object id : object.getIds()) {
-        checkState(bucket, path + "." + key(id), get(object, id), active);
-      }
-    }
-    active.remove(object);
+    out.append(",\"callbacks\":");
+    out.append(new Encoder(cx, "journey callbacks value: ", null).write(queued, "callbacks").text());
+    out.append(",\"javaMapObjectAttributes\":{").append(maps).append("}}");
+    out.append(",\"errorMessage\":");
+    out.append(errorMessage == null ? "null" : Json.quote(errorMessage));
+    return out.append('}').toString();
   }
 
   Map<String, Object> finish(String id, Map<String, Object> response) {
