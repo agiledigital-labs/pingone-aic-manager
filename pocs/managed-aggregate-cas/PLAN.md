@@ -129,6 +129,27 @@ For each one, record:
 | E16 | Does `onUpdate` fire on a no-op patch?                        | Patch with an identical value                                                                        | Code says it short-circuits. Confirm                                                           |
 | E17 | How do `onUpdate` and `postUpdate` see the patch?             | Log `request.patchOperations` shape and `oldObject`/`object` on retry                                | Does a retry's `oldObject` reflect the newer revision?                                         |
 | E18 | How does array size affect cost?                              | Parent with 10 / 100 / 1000 entries                                                                  | Latency and size limits; pick a sensible cap                                                   |
+| E19 | Can `onUpdate` write the audit trail in memory?               | See "Audit trail" below                                                                              | One audit entry per committed change, none duplicated by retries; far fewer round trips        |
+
+### Audit trail (E19, added 2026-11-05)
+
+The motivating project has complex objects with audit trails, and patches the
+audit trail as it goes, so one logical update becomes many `PATCH` calls. If
+changes are pushed through a root object, its `onUpdate` can derive the audit
+entries from `oldObject` → `object` and append them to `object.audit` in memory,
+in the same write. Measure:
+
+- **Cost:** k changes to nested data on the root as (a) k data `PATCH`es plus k
+  audit `PATCH`es (today's shape), (b) k `PATCH`es with the audit written by
+  `onUpdate`, (c) one `PATCH` carrying k operations with the audit written by
+  `onUpdate`. Round trips and wall-clock for k = 1, 10, 50.
+- **Correctness under contention:** N concurrent writers change the root. The
+  audit must hold exactly one entry per committed change, and form a chain:
+  every entry's `from` equals the previous entry's `to` for that path. A retry
+  that leaked a stale `oldObject` would break the chain or duplicate an entry.
+- **Shape:** what `onUpdate` sees of nested changes, whether
+  `request.patchOperations` or the `oldObject`/`object` diff is the better
+  source, and the cost of a large `audit` array (ties to E18).
 
 Run each concurrency experiment at least three times, and at least once through
 a custom endpoint as well as raw REST.
