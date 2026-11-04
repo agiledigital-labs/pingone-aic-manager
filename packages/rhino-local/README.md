@@ -1334,7 +1334,33 @@ state, isolate their transient state and restore outer transient state. Inner
 exceptions, callbacks and nested inner trees remain missing. Legacy scripts,
 unsupported bindings, session-property actions, `noSession`, unsupported tree
 flags and unmocked HTTP are fatal missing behavior, even if script catches or
-`finally` tries to hide the failure.
+`finally` tries to hide the failure. So is every `rhino-local:` diagnostic the
+binding runtime raises (an arity it does not model, `new JsonValue(...)`, and so
+on): in a journey the runtime's one diagnostic constructor, `__rhinoLocalFail`,
+is a Java function that fails the run, so the decision never depends on an
+error's text. `utils` members measured in `docs/api/12` run locally and record
+that provenance; any other `utils` member is refused.
+
+Node effects are serialized in Java from the values themselves, never through a
+script-reachable `JSON.stringify` or `toJSON`. Shared and transient state, queued
+callback arguments and `openidm`/`httpClient` arguments must be plain JSON: a
+custom or null prototype, an accessor, a non-enumerable property, an array
+expando or hole, a cycle, `undefined`, a non-finite number, a function or a host
+object is missing, never rewritten or thrown as a catchable error. The one
+measured exception is `undefined` inside an `httpClient.send` body, which goes
+out as `null` (`docs/api/12`); the body's integers going out as `1.0` is not
+modelled, since the mock receives parsed JSON. `objectAttributes` that a node
+wrote, or that crossed a callback round trip, reaches the next script as a Java
+map (`get`/`put` work); its printed form is measured, the methods are inferred
+and labelled assumed.
+
+The guarantee is against accidental false passes from realistic scripts, not a
+sandbox. AM's global scope cannot be made read-only, so a script that
+deliberately rebinds the runtime's own globals — `__rhinoLocalFail`,
+`__rhinoLocal`, built-ins such as `Error.prototype` or `Object.prototype` — can
+still change what the local runtime does. The cheap paths are closed: refusals
+and diagnostics are classified in Java by which function ran, and the harvest
+reads the runtime object handed to Java before author code, not a global.
 
 AuthIds use signed immutable local snapshot references (assumed format).
 Suspended snapshots may be replayed; tampering returns the measured 400. A fork
@@ -1377,15 +1403,21 @@ constructing `JourneyEmulator`, so declarations cannot bypass its implementation
 Username/Password collectors write shared username/transient password.
 AttributeCollector (`validateInputs: false`) uses string-property titles from
 the shared IDM schema, emits the two-input attribute callback, and writes shared
-objectAttributes. Empty required fields re-send the Page with echoed answers
-and empty failedPolicies. `ValidatedPasswordNode` (`validateInput: false`) writes
+objectAttributes. Empty required fields re-send the Page with empty
+failedPolicies: attribute callbacks echo their submitted value (measured), while
+an accepted sibling's other callbacks go out as first sent — a PasswordCallback
+never carries the password (measured), other types are labelled assumed. A
+scripted child after a sibling that rejected the submission is missing before it
+runs, since whether AM runs it is unmeasured. `ValidatedPasswordNode` (`validateInput: false`) writes
 transient password and transient objectAttributes. `nodeState.get` returns the
 whole transient value when present, otherwise shared; objectAttributes maps are
 never merged across these buckets. Extending that shadowing to other caller keys
 is labelled assumed. The shared `pageNodeCallbacks` value is assumed to be the
 merged wire array; doc 25 measures its presence/lifetime, not its contents.
-Page discovery evaluates script children once and retains their state effects
-(assumed); submission evaluates each child once, even one that queued nothing.
+Page discovery evaluates every script child once for real and retains its state
+effects, ignoring its goTo (measured); submission evaluates each child again.
+`withErrorMessage` in a discovery run, or alongside queued callbacks, is missing:
+AM discards that Action, and whether the message survives is unmeasured.
 
 IdentifyExistingUser queries the same IDM emulator and writes shared _id,
 username and the identifier in shared objectAttributes. CreateObject uses that
@@ -1398,7 +1430,13 @@ an extra principal-existence check at Success: doc 25 does not establish one.
 Create alone leaves username absent and therefore cannot produce a session.
 
 Attribute policy evaluation/validateOnly, validated-password validation,
-split objectAttributes passed to Create/Patch, conflicting identity sources,
-Patch patchAsObject/ignoredFields, Page headers/descriptions and nested Pages
-remain fatal missing behavior when reached. Policy evaluation is not copied
+split objectAttributes passed to Create/Patch/Identify, conflicting or null
+identity sources, Identify with no identity value at all, Patch with neither an
+identity value nor objectAttributes, a non-object shared objectAttributes under
+AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
+transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks
+posted without an authId to an entry node other than a scripted decision, a
+non-array `outcomes` configuration, Patch patchAsObject/ignoredFields, Page
+headers/descriptions and nested Pages remain fatal missing behavior when
+reached. Policy evaluation is not copied
 into the journey layer: managed writes use the existing IDM policy seam.
