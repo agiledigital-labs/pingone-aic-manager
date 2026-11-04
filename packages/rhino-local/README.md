@@ -1350,14 +1350,20 @@ expando or hole, a cycle, `undefined`, a non-finite number, a function or a host
 object is missing, never rewritten or thrown as a catchable error. The measured
 exceptions (`docs/api/12`, 2026-11-04): `undefined` anywhere in an
 `httpClient.send` body, including `body: undefined` itself, goes out as `null`;
-and a top-level `undefined` field of `openidm.create` content is stored as if the
-key were omitted. Nested `undefined` in `openidm` content, and `undefined` in any
+and a top-level `undefined` field of `openidm.create` content is sent as `null`,
+so a schema `default` does not land and a `NOT_NULL` policy refuses it.
+Nested `undefined` in `openidm` content, and `undefined` in any
 other `openidm` call, stay missing. The HTTP mock receives the body as parsed
 JSON and, as its third argument, `{ bodyText }`: the text AIC would send, where
 every JS number is a Java double (`1` is `1.0`), a boxed `java.lang.Integer` or
-`Long` is written as is, and no `body` key is `""`. A string or top-level
-non-object body, or a number other than an integer up to 1e6, is rendered the
-same way but labelled assumed. `objectAttributes` that a node
+`Long` is written as is, and no `body` key is `""`. That is measured for an
+object body sent with `Content-Type: application/json` and plain-ASCII
+strings. Each other shape is rendered the same way and labelled assumed with
+its reason: no such header, a string or top-level non-object body, a string
+holding a control or non-ASCII character or one of `< > & = ' " \`, a
+fraction or an integer past 1e6, or a number the script engine holds as a Java
+Integer (`s.length`, `indexOf`, `JSON.parse` results). A `form` request is
+missing, because its body is not the JSON text. `objectAttributes` that a node
 wrote, or that crossed a callback round trip, reaches the next script as a Java
 map (`get`/`put` work); its printed form is measured, the methods are inferred
 and labelled assumed.
@@ -1431,8 +1437,13 @@ IdentifyExistingUser queries the same IDM emulator and writes shared _id,
 username and the identifier in shared objectAttributes. When
 `objectAttributes[identityAttribute]` is present it is the only lookup value:
 a hit overwrites `username`, a miss is `false` with `username` untouched and no
-fallback; `username` is used only when that key is absent (measured
-2026-11-04). CreateObject uses that
+fallback; `username` is used only when that key is absent or `null`, and an
+empty string, as a blank optional AttributeCollector answer writes it, is
+looked up and fails (measured 2026-11-04). The IDM emulator's `eq` ignores
+letter case on `alpha_user` `mail` and `userName` (measured), so Identify
+finds a mixed-case input and `username` takes the stored case; any other string
+match that turns on letter case alone (another type or field, `sw`, `co`) is
+missing, since either answer could be a false pass. CreateObject uses that
 emulator's create path (including managed hooks and the caller-supplied IDM
 policy evaluator) and writes no journey state. Missing-required policy rejection
 routes to FAILURE; the broader mapping of IDM 400/403 to FAILURE is assumed.

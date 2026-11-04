@@ -769,7 +769,8 @@ export class JourneyEmulator {
       typeof url !== "string" ||
       !isDocument(options) ||
       !isDocument(wire) ||
-      typeof wire.approximate !== "boolean" ||
+      !Array.isArray(wire.assumed) ||
+      wire.assumed.some((reason) => typeof reason !== "string") ||
       !(wire.body === undefined || typeof wire.body === "string")
     )
       this.missing("httpClient request shape");
@@ -777,14 +778,14 @@ export class JourneyEmulator {
     this.evidence.assumed(
       "httpClient response is supplied by the test mock; get/json/text wrappers reuse AM binding shapes",
     );
-    this.evidence.measured(
-      "httpClient body text: JS numbers as Java doubles (1 is 1.0), undefined as null, no body key as empty",
-      HTTP_BODY_SOURCE,
-    );
-    if (wire.approximate)
-      this.evidence.assumed(
-        "httpClient body text for a string or top-level non-object body, or a number other than an integer up to 1e6 or a boxed Integer/Long",
+    // Java names each way this request leaves the measured shape; only a request inside it
+    // (an object body sent as application/json, plain-ASCII strings) gets the measured label.
+    if (wire.assumed.length === 0)
+      this.evidence.measured(
+        "httpClient body text: an object body sent as Content-Type: application/json renders JS numbers as Java doubles (1 is 1.0) and undefined as null; no body key is empty",
+        HTTP_BODY_SOURCE,
       );
+    for (const reason of wire.assumed as string[]) this.evidence.assumed(reason);
     let response: Awaited<ReturnType<HttpMock>>;
     try {
       response = await this.options.http(url, options, { bodyText: wire.body ?? "" });

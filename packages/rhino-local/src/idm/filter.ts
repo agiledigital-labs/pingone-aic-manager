@@ -84,17 +84,34 @@ export function parseFilter(input: string): Filter {
   return result;
 }
 
-export function matchesFilter(filter: Filter, object: JsonValue): boolean {
+/**
+ * Answers a string `eq`/`co`/`sw` whose result turns on letter case alone (`ascii`: ASCII case
+ * folding alone explains it). The repository knows which fields were measured; the grammar does not.
+ */
+export type CaseOnly = (field: string, op: "eq" | "co" | "sw", ascii: boolean) => boolean;
+const asciiLower = (text: string) => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+export function matchesFilter(filter: Filter, object: JsonValue, caseOnly?: CaseOnly): boolean {
   if (filter.op === "literal") return filter.value;
-  if (filter.op === "and") return matchesFilter(filter.left, object) && matchesFilter(filter.right, object);
-  if (filter.op === "or") return matchesFilter(filter.left, object) || matchesFilter(filter.right, object);
-  if (filter.op === "!") return !matchesFilter(filter.child, object);
+  if (filter.op === "and") return matchesFilter(filter.left, object, caseOnly) && matchesFilter(filter.right, object, caseOnly);
+  if (filter.op === "or") return matchesFilter(filter.left, object, caseOnly) || matchesFilter(filter.right, object, caseOnly);
+  if (filter.op === "!") return !matchesFilter(filter.child, object, caseOnly);
   if (!("field" in filter)) return false;
   const value = fieldValue(object, filter.field);
   if (filter.op === "pr") return value !== undefined && value !== null;
+  const strings = (op: "eq" | "co" | "sw", candidate: string, expected: string): boolean => {
+    const test = (a: string, b: string) => op === "eq" ? a === b : op === "co" ? a.includes(b) : a.startsWith(b);
+    const exact = test(candidate, expected);
+    if (!caseOnly || exact === test(candidate.toLowerCase(), expected.toLowerCase())) return exact;
+    return caseOnly(filter.field, op, test(asciiLower(candidate), asciiLower(expected)) !== exact);
+  };
   const compare = (candidate: JsonValue): boolean => {
     if (candidate === null || typeof candidate === "object") return false;
     const expected = filter.value;
+    if ((filter.op === "eq" || filter.op === "co" || filter.op === "sw") && typeof candidate === "string" &&
+        typeof expected === "string" && !(filter.op === "eq" && expected.includes('"'))) {
+      return strings(filter.op, candidate, expected);
+    }
     switch (filter.op) {
       case "eq":
         // The measured DS filter accepts escaped quotes but never matches them.

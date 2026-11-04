@@ -775,6 +775,184 @@ it.each([
   expect(dump(next.body)).toMatchObject({ branch: "true", id, username: after });
   expect(next.provenance).toContainEqual(PRECEDENCE);
 });
+// docs/api/25 (2026-11-04, "A blank or null lookup value, and letter case"): "" is looked up and
+// fails with no fallback; null counts as absent, so username is used.
+const BLANK_SOURCE =
+  "docs/api/25-journey-runtime.md (A blank or null lookup value, and letter case, 2026-11-04)";
+const EMPTY_LOOKUP = {
+  kind: "measured",
+  behavior:
+    "IdentifyExistingUserNode looks up an empty objectAttributes[identityAttribute] and does not fall back",
+  source: BLANK_SOURCE,
+};
+const NULL_LOOKUP = {
+  kind: "measured",
+  behavior:
+    "IdentifyExistingUserNode treats a null objectAttributes[identityAttribute] as absent and uses username",
+  source: BLANK_SOURCE,
+};
+it.each([
+  ["seed-empty", "{mail:''}", "false", null, "ma@example.com", { mail: "" }, EMPTY_LOOKUP],
+  ["seed-null", "{mail:null}", "true", "a", "ua", { mail: null, userName: "ua" }, NULL_LOOKUP],
+  ["seed-nomail", "{sn:'x'}", "true", "a", "ua", { sn: "x", userName: "ua" }, undefined],
+])(
+  "Identify %s: username = mail A, objectAttributes %s",
+  async (_variant, attrs, branch, id, username, after, label) => {
+    const next = await request(
+      make(
+        flow(
+          "IdentifyExistingUserNode",
+          { identityAttribute: "mail", identifier: "userName" },
+          `nodeState.putShared('username','ma@example.com');nodeState.putShared('objectAttributes',${attrs});`,
+          ["true", "false"],
+        ),
+        {},
+        await twoUsers(),
+      ),
+    );
+    expect(dump(next.body)).toMatchObject({ branch, id, username, attrs: after });
+    for (const other of [EMPTY_LOOKUP, NULL_LOOKUP])
+      if (other === label) expect(next.provenance).toContainEqual(other);
+      else expect(next.provenance).not.toContainEqual(other);
+  },
+);
+it.each([
+  ["blank", "", "false", null, "ma@example.com"],
+  ["filled", "ma@example.com", "true", "a", "ua"],
+])(
+  "Identify after Page[Username, AttributeCollector(mail, required: false)] answered %s",
+  async (variant, mail, branch, id, username) => {
+    const input = flow(
+      "IdentifyExistingUserNode",
+      { identityAttribute: "mail", identifier: "userName" },
+      "",
+      ["true", "false"],
+    );
+    const trees = {
+      invented: {
+        ...input.trees.invented,
+        entryNodeId: "page",
+        nodes: {
+          ...input.trees.invented!.nodes,
+          page: { nodeType: "PageNode", connections: { outcome: "node" } },
+        },
+      },
+    };
+    const nodes = {
+      ...input.nodes,
+      PageNode: {
+        page: {
+          nodes: [
+            { _id: "user", nodeType: "UsernameCollectorNode" },
+            { _id: "attrs", nodeType: "AttributeCollectorNode" },
+          ],
+        },
+      },
+      UsernameCollectorNode: { user: {} },
+      AttributeCollectorNode: {
+        attrs: { attributesToCollect: ["mail"], validateInputs: false, required: false },
+      },
+    };
+    const emu = make({ ...input, trees, nodes }, {}, await twoUsers());
+    const first = await request(emu);
+    const next = await request(emu, answer(first.body, ["ma@example.com", mail]));
+    expect(dump(next.body)).toMatchObject({ branch, id, username, attrs: { mail } });
+    const blank = {
+      kind: "measured",
+      behavior: "AttributeCollectorNode writes a blank non-required answer as the empty string",
+      source:
+        "docs/api/25-journey-runtime.md (Attribute Collector, a non-required attribute left blank, 2026-11-04)",
+    };
+    if (variant === "blank") expect(next.provenance).toContainEqual(blank);
+    else expect(next.provenance).not.toContainEqual(blank);
+  },
+);
+// Case-insensitive eq was measured on alpha_user only, so these rows use that type.
+const USER_A = "00000000-0000-0000-0000-0000000000a1";
+async function alphaUser() {
+  const idm = new IdmEmulator(
+    new IdmConfig({
+      managed: {
+        objects: [
+          {
+            name: "alpha_user",
+            schema: {
+              properties: {
+                userName: { type: "string", title: "Username" },
+                mail: { type: "string", title: "Email Address" },
+              },
+            },
+          },
+        ],
+      },
+    }),
+    runner,
+  );
+  await idm.request({
+    method: "PUT",
+    path: `managed/alpha_user/${USER_A}`,
+    body: { userName: "ua", mail: "ma@example.com" },
+  });
+  return idm;
+}
+it.each([
+  [
+    "ieu-mail-mixed",
+    "mail",
+    "nodeState.putShared('objectAttributes',{mail:'mA@eXaMpLe.CoM'});",
+    { mail: "mA@eXaMpLe.CoM", userName: "ua" },
+  ],
+  [
+    "ieu-mail-exact",
+    "mail",
+    "nodeState.putShared('objectAttributes',{mail:'ma@example.com'});",
+    { mail: "ma@example.com", userName: "ua" },
+  ],
+  ["ieu-uname-mixed", "userName", "nodeState.putShared('username','uA');", { userName: "ua" }],
+  ["ieu-uname-exact", "userName", "nodeState.putShared('username','ua');", { userName: "ua" }],
+])(
+  "Identify %s on alpha_user: found, username takes the stored case",
+  async (variant, identityAttribute, seed, attrs) => {
+    const next = await request(
+      make(
+        flow(
+          "IdentifyExistingUserNode",
+          { identityAttribute, identifier: "userName", identityResource: "managed/alpha_user" },
+          seed,
+          ["true", "false"],
+        ),
+        {},
+        await alphaUser(),
+      ),
+    );
+    expect(dump(next.body)).toMatchObject({ branch: "true", id: USER_A, username: "ua", attrs });
+    const label = {
+      kind: "measured",
+      behavior: "eq on alpha_user mail and userName ignores letter case",
+      source:
+        "docs/api/10-managed-objects.md (eq on mail and userName is case-insensitive, 2026-11-04)",
+    };
+    if (variant.endsWith("mixed")) expect(next.provenance).toContainEqual(label);
+    else expect(next.provenance).not.toContainEqual(label);
+  },
+);
+it("Identify on an unprobed type whose match turns on letter case is missing", async () => {
+  const cause = "query eq whose match turns on letter case: widget mail";
+  expectEmulationFailure(cause);
+  const next = await request(
+    make(
+      flow(
+        "IdentifyExistingUserNode",
+        { identityAttribute: "mail", identifier: "userName" },
+        "nodeState.putShared('objectAttributes',{mail:'MA@example.com'});",
+        ["true", "false"],
+      ),
+      {},
+      await twoUsers(),
+    ),
+  );
+  expect(next).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
 it.each(["PatchObjectNode"])("conflicting identity sources are missing: %s", async (type) => {
   const cause = `${type} conflicting identity sources`;
   expectEmulationFailure(cause);

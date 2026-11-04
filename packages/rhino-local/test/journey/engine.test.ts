@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { RhinoRunner } from "../../src/runner.ts";
+import { HostCallError, RhinoRunner } from "../../src/runner.ts";
 import { IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
 import { JourneyConfig, JourneyEmulator, type JourneyOptions } from "../../src/journey/index.ts";
 import { listOutcomes } from "../../src/journey/engine.ts";
@@ -1079,14 +1079,16 @@ const BODY_SOURCE = "docs/api/12-script-bindings-matrix.md (httpClient.send body
 const BODY_TEXT = {
   kind: "measured",
   behavior:
-    "httpClient body text: JS numbers as Java doubles (1 is 1.0), undefined as null, no body key as empty",
+    "httpClient body text: an object body sent as Content-Type: application/json renders JS numbers as Java doubles (1 is 1.0) and undefined as null; no body key is empty",
   source: BODY_SOURCE,
 };
-const BODY_APPROXIMATE = {
-  kind: "assumed",
-  behavior:
-    "httpClient body text for a string or top-level non-object body, or a number other than an integer up to 1e6 or a boxed Integer/Long",
-};
+const JSON_HEADER = "headers:{'Content-Type':'application/json'}";
+const bodyAssumptions = (provenance: unknown) =>
+  (provenance as { kind: string; behavior: string }[])
+    .filter(
+      (entry) => entry.kind === "assumed" && entry.behavior.startsWith("httpClient body text"),
+    )
+    .map((entry) => entry.behavior);
 async function send(options: string) {
   const seen: { body?: unknown; has: boolean; text: string }[] = [];
   const result = await request(
@@ -1104,11 +1106,15 @@ async function send(options: string) {
   );
   expect(result.status).toBe(200);
   expect(seen).toHaveLength(1);
-  return { ...seen[0]!, provenance: result.provenance };
+  return {
+    ...seen[0]!,
+    provenance: result.provenance,
+    assumed: bodyAssumptions(result.provenance),
+  };
 }
 it("an HTTP body reaches the mock as parsed JSON and as AIC's text (docs/api/12)", async () => {
   const sent = await send(
-    "{method:'POST',body:{u:undefined,n:1,big:1000000,neg:-5,nested:{u:undefined},arr:[1,undefined],j:java.lang.Integer.valueOf(1)}}",
+    `{method:'POST',${JSON_HEADER},body:{u:undefined,n:1,big:1000000,neg:-5,nested:{u:undefined},arr:[1,undefined],j:java.lang.Integer.valueOf(1),s:'s',t:true}}`,
   );
   // Parsed JSON cannot carry 1.0; the text the tenant would send does.
   expect(sent.body).toEqual({
@@ -1119,9 +1125,11 @@ it("an HTTP body reaches the mock as parsed JSON and as AIC's text (docs/api/12)
     nested: { u: null },
     arr: [1, null],
     j: 1,
+    s: "s",
+    t: true,
   });
   expect(sent.text).toBe(
-    '{"u":null,"n":1.0,"big":1000000.0,"neg":-5.0,"nested":{"u":null},"arr":[1.0,null],"j":1}',
+    '{"u":null,"n":1.0,"big":1000000.0,"neg":-5.0,"nested":{"u":null},"arr":[1.0,null],"j":1,"s":"s","t":true}',
   );
   expect(sent.provenance).toContainEqual(BODY_TEXT);
   expect(sent.provenance).toContainEqual({
@@ -1129,27 +1137,70 @@ it("an HTTP body reaches the mock as parsed JSON and as AIC's text (docs/api/12)
     behavior: "httpClient.send body undefined is sent as null",
     source: BODY_SOURCE,
   });
-  expect(sent.provenance).not.toContainEqual(BODY_APPROXIMATE);
+  expect(sent.assumed).toEqual([]);
 });
 it.each([
-  ["body: undefined", "{method:'POST',body:undefined}", true, null, "null"],
-  ["body: null", "{method:'POST',body:null}", true, null, "null"],
-  ["no body key", "{method:'POST'}", false, undefined, ""],
+  ["body: undefined", `{method:'POST',${JSON_HEADER},body:undefined}`, true, null, "null"],
+  ["body: null", `{method:'POST',${JSON_HEADER},body:null}`, true, null, "null"],
+  ["no body key", `{method:'POST',${JSON_HEADER}}`, false, undefined, ""],
+  // With no body there is no body text for a header to change.
+  ["no body key and no header", "{method:'GET'}", false, undefined, ""],
 ])("HTTP %s is measured (docs/api/12)", async (_name, options, has, body, text) => {
   const sent = await send(options);
   expect(sent).toMatchObject({ has, body, text });
   expect(sent.provenance).toContainEqual(BODY_TEXT);
-  expect(sent.provenance).not.toContainEqual(BODY_APPROXIMATE);
+  expect(sent.assumed).toEqual([]);
+});
+const NO_HEADER = "httpClient body text without a Content-Type: application/json header";
+const FRACTION =
+  "httpClient body text for a fractional number or an integer past 1e6, written as a Java double";
+const STRING = "httpClient body text for a string body, sent as the string itself";
+const TOP = "httpClient body text for a top-level non-object body";
+const CHARS =
+  "httpClient body text for a string holding a control or non-ASCII character or one of < > & = ' \" \\, written unescaped";
+const INTEGER =
+  "httpClient body text for a number the script engine holds as a Java Integer (results of length, indexOf, JSON.parse), written as a Java double";
+it.each([
+  ["a fraction", "body:{f:1.5}", '{"f":1.5}', [FRACTION]],
+  ["an integer past 1e6", "body:{n:1e7}", '{"n":1.0E7}', [FRACTION]],
+  ["a string body", "body:'raw'", "raw", [STRING]],
+  ["a top-level array", "body:[1]", "[1.0]", [TOP]],
+  ["a '<' in a string", "body:{s:'a<b'}", '{"s":"a<b"}', [CHARS]],
+  ["an '&' in a string", "body:{s:'a&b'}", '{"s":"a&b"}', [CHARS]],
+  ["a non-ASCII string", "body:{s:'café'}", '{"s":"café"}', [CHARS]],
+  ["U+2028 in a string", "body:{s:'a\\u2028b'}", undefined, [CHARS]],
+  ["a non-ASCII key", "body:{'é':1}", '{"é":1.0}', [CHARS]],
+  ["a string length", "body:{count:'abc'.length}", '{"count":3.0}', [INTEGER]],
+  ["an indexOf result", "body:{at:'abc'.indexOf('c')}", '{"at":2.0}', [INTEGER]],
+  ["a JSON.parse result", "body:JSON.parse('{\"n\":2}')", '{"n":2.0}', [INTEGER]],
+])("HTTP body text for %s is labelled assumed", async (_name, body, text, reasons) => {
+  const sent = await send(`{method:'POST',${JSON_HEADER},${body}}`);
+  if (text !== undefined) expect(sent.text).toBe(text);
+  expect(sent.assumed).toEqual(reasons);
+  expect(sent.provenance).not.toContainEqual(BODY_TEXT);
 });
 it.each([
-  ["a fraction", "{method:'POST',body:{f:1.5}}", '{"f":1.5}'],
-  ["an integer past 1e6", "{method:'POST',body:{n:1e7}}", '{"n":1.0E7}'],
-  ["a string body", "{method:'POST',body:'raw'}", "raw"],
-  ["a top-level array", "{method:'POST',body:[1]}", "[1.0]"],
-])("HTTP body text for %s is labelled assumed", async (_name, options, text) => {
+  ["no headers", "{method:'POST',body:{n:1}}"],
+  ["another Content-Type", "{method:'POST',headers:{'Content-Type':'text/plain'},body:{n:1}}"],
+])("an HTTP object body with %s is labelled assumed", async (_name, options) => {
   const sent = await send(options);
-  expect(sent.text).toBe(text);
-  expect(sent.provenance).toContainEqual(BODY_APPROXIMATE);
+  expect(sent.text).toBe('{"n":1.0}');
+  expect(sent.assumed).toEqual([NO_HEADER]);
+  expect(sent.provenance).not.toContainEqual(BODY_TEXT);
+});
+it("an HTTP form body is missing: its text is not the JSON body (docs/api/12: form not probed)", async () => {
+  const cause = "httpClient.send form body text";
+  expectEmulationFailure(cause);
+  const result = await request(
+    make(
+      "httpClient.send('https://service.example.com/x',{method:'POST',form:{a:'b'}}).get();" +
+        SUCCEED,
+      ["true", "false"],
+      { true: SUCCESS, false: FAILURE },
+      { http: async () => ({ status: 200, body: {} }) },
+    ),
+  );
+  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
 });
 it("withErrorMessage alongside queued callbacks is missing", async () => {
   const cause = "action.withErrorMessage with queued callbacks";
@@ -1170,19 +1221,38 @@ it("a non-array ScriptedDecisionNode outcomes configuration is missing, not a su
     emulation: { missing: [cause] },
   });
 });
-it("an undefined openidm.create content field is stored as if omitted (docs/api/12)", async () => {
+it("an undefined openidm.create content field is sent as null, so a schema default does not land (docs/api/12)", async () => {
+  // docs/api/12 (2026-11-04): omitted gets the default; null and undefined are both refused
+  // NOT_NULL. The policy evaluator stands in for the tenant's NOT_NULL guard.
   const idm = new IdmEmulator(
     new IdmConfig({
       managed: {
         objects: [
           {
             name: "widget",
-            schema: { properties: { x: { type: "string" }, d: { type: "string" } } },
+            schema: {
+              properties: { x: { type: "string" }, d: { type: "string", default: "def" } },
+            },
           },
         ],
       },
     }),
     runner,
+    {
+      policy: ({ object }) => {
+        if (object.d === null)
+          throw new HostCallError({
+            class: "org.forgerock.json.resource.ForbiddenException",
+            code: 403,
+            message: "Policy validation failed",
+            detail: {
+              failedPolicyRequirements: [
+                { property: "d", policyRequirements: [{ policyRequirement: "NOT_NULL" }] },
+              ],
+            },
+          });
+      },
+    },
   );
   const emu = new JourneyEmulator(
     new JourneyConfig({
@@ -1201,9 +1271,12 @@ it("an undefined openidm.create content field is stored as if omitted (docs/api/
       nodes: { ScriptedDecisionNode: { one: { script: "script", outcomes: ["true", "false"] } } },
       scripts: {
         script: script(
-          "openidm.create('managed/widget','w',{x:'a',d:undefined});" +
-            "openidm.create('managed/widget','v',{x:'a'});" +
-            "nodeState.putShared('username','invented');action.goTo('true');",
+          "var seen=[];" +
+            "[['omitted',{x:'a'}],['null',{x:'a',d:null}],['undefined',{x:'a',d:undefined}]].forEach(function(c){" +
+            "try{openidm.create('managed/widget',c[0],c[1]);seen.push(c[0]+':created');}" +
+            "catch(e){seen.push(c[0]+':'+e.code);}});" +
+            "nodeState.putShared('username','invented');" +
+            "action.goTo(seen.join(',')==='omitted:created,null:403,undefined:403'?'true':'false');",
         ),
       },
     }),
@@ -1212,21 +1285,15 @@ it("an undefined openidm.create content field is stored as if omitted (docs/api/
   );
   const result = await request(emu);
   expect(result.status).toBe(200);
-  // As measured, the record is indistinguishable from the omitted-key control.
-  const read = async (id: string) => {
-    const { _id, _rev, ...rest } = (
-      await idm.request({ method: "GET", path: `managed/widget/${id}` })
-    ).body as Record<string, unknown>;
-    return { id: _id, rev: typeof _rev, rest };
-  };
-  const [w, v] = [await read("w"), await read("v")];
-  expect(w.id).toBe("w");
-  expect(w.rest).toEqual(v.rest);
-  expect(w.rest).toMatchObject({ x: "a" });
+  const read = (id: string) => idm.request({ method: "GET", path: `managed/widget/${id}` });
+  expect(await read("omitted")).toMatchObject({ status: 200, body: { d: "def" } });
+  expect((await read("null")).status).toBe(404);
+  expect((await read("undefined")).status).toBe(404);
   expect(result.provenance).toContainEqual({
     kind: "measured",
-    behavior: "openidm.create content field holding undefined is stored as if omitted",
-    source: "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)",
+    behavior: "openidm.create content field holding undefined is sent as null",
+    source:
+      "docs/api/12-script-bindings-matrix.md (openidm.create content with an undefined value, 2026-11-04)",
   });
 });
 it.each(["httpClient.send();", "httpClient.send(undefined,{method:'GET'});"])(

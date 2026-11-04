@@ -166,6 +166,20 @@ final class AmHostBridge extends BaseFunction {
       "docs/api/12-script-bindings-matrix.md (utils, utils.crypto.subtle)";
   private static final String BODY_SOURCE =
       "docs/api/12-script-bindings-matrix.md (httpClient.send body serialization)";
+  private static final String CREATE_SOURCE =
+      "docs/api/12-script-bindings-matrix.md (openidm.create content with an undefined value,"
+          + " 2026-11-04)";
+
+  /** True when the parsed headers carry exactly the Content-Type every measurement sent. */
+  private static boolean jsonContentType(Object headers) {
+    if (!(headers instanceof Map)) return false;
+    for (Map.Entry<?, ?> header : ((Map<?, ?>) headers).entrySet()) {
+      if ("content-type".equalsIgnoreCase(String.valueOf(header.getKey()))) {
+        return "application/json".equals(header.getValue());
+      }
+    }
+    return false;
+  }
   private static final java.util.Set<String> MAP_HIDDEN =
       new java.util.HashSet<String>(
           java.util.Arrays.asList(
@@ -213,15 +227,15 @@ final class AmHostBridge extends BaseFunction {
     private final Context cx;
     private final String where;
     private final String nullUnder;
-    private final String dropUnder;
+    private final String nullFieldsOf;
     private final boolean wire;
     private final StringBuilder out = new StringBuilder();
     private final IdentityHashMap<Object, Boolean> active = new IdentityHashMap<Object, Boolean>();
-    /** Set when undefined was written as null under nullUnder, or dropped under dropUnder. */
+    /** Set when undefined was written as null under nullUnder, or as a null field of nullFieldsOf. */
     boolean nulled;
-    boolean dropped;
-    /** Set when wire text rendered a number in a form docs/api/12 did not measure. */
-    boolean approximate;
+    boolean fieldNulled;
+    /** Why wire text may differ from AIC's: each names a shape docs/api/12 did not measure. */
+    final java.util.TreeSet<String> assumed = new java.util.TreeSet<String>();
 
     Encoder(Context cx, String where, String nullUnder) {
       this(cx, where, nullUnder, null, false);
@@ -229,14 +243,15 @@ final class AmHostBridge extends BaseFunction {
 
     /**
      * nullUnder: undefined at or below this path is written as null (measured for HTTP bodies).
-     * dropUnder: an undefined field of the object at exactly this path is left out (measured for
-     * openidm.create content). wire: numbers are rendered as AIC's httpClient writes them.
+     * nullFieldsOf: an undefined field of the object at exactly this path is written as null
+     * (measured for openidm.create content). wire: numbers are rendered as AIC's httpClient writes
+     * them.
      */
-    Encoder(Context cx, String where, String nullUnder, String dropUnder, boolean wire) {
+    Encoder(Context cx, String where, String nullUnder, String nullFieldsOf, boolean wire) {
       this.cx = cx;
       this.where = where;
       this.nullUnder = nullUnder;
-      this.dropUnder = dropUnder;
+      this.nullFieldsOf = nullFieldsOf;
       this.wire = wire;
     }
 
@@ -254,10 +269,34 @@ final class AmHostBridge extends BaseFunction {
      */
     private String wireNumber(Object value, double number, boolean wrapped) {
       if (wrapped && (value instanceof Integer || value instanceof Long)) return value.toString();
-      if (!(value instanceof Double && number == Math.rint(number) && Math.abs(number) <= 1e6)) {
-        approximate = true;
+      if (!wrapped && value instanceof Integer) {
+        assumed.add(
+            "httpClient body text for a number the script engine holds as a Java Integer (results"
+                + " of length, indexOf, JSON.parse), written as a Java double");
+      } else if (!(value instanceof Double)) {
+        assumed.add(
+            "httpClient body text for a number held as a Java "
+                + value.getClass().getSimpleName());
+      } else if (number != Math.rint(number) || Math.abs(number) > 1e6) {
+        assumed.add(
+            "httpClient body text for a fractional number or an integer past 1e6, written as a"
+                + " Java double");
       }
       return wrapped && !(value instanceof Double) ? value.toString() : Double.toString(number);
+    }
+
+    /** docs/api/12 measured only plain-ASCII strings; Gson-style escaping would differ. */
+    private String wireString(String value) {
+      for (int i = 0; i < value.length(); i++) {
+        char c = value.charAt(i);
+        if (c < 0x20 || c > 0x7e || "<>&='\"\\".indexOf(c) >= 0) {
+          assumed.add(
+              "httpClient body text for a string holding a control or non-ASCII character or one"
+                  + " of < > & = ' \" \\, written unescaped");
+          break;
+        }
+      }
+      return Json.quote(value);
     }
 
     private EmulationFailure shape(String what, String path) {
@@ -291,7 +330,7 @@ final class AmHostBridge extends BaseFunction {
       } else if (value instanceof Boolean) {
         out.append(value.toString());
       } else if (value instanceof CharSequence) {
-        out.append(Json.quote(value.toString()));
+        out.append(wire ? wireString(value.toString()) : Json.quote(value.toString()));
       } else if (value instanceof Number) {
         double number = ((Number) value).doubleValue();
         if (Double.isNaN(number) || Double.isInfinite(number) || (number == 0 && 1 / number < 0)) {
@@ -343,8 +382,9 @@ final class AmHostBridge extends BaseFunction {
         if (array) {
           if (!(id instanceof Integer)) throw shape("array property", at);
           elements.put((Integer) id, item);
-        } else if (item == Undefined.instance && path.equals(dropUnder)) {
-          dropped = true;
+        } else if (item == Undefined.instance && path.equals(nullFieldsOf)) {
+          fieldNulled = true;
+          fields.put(String.valueOf(id), null);
         } else {
           fields.put(String.valueOf(id), item);
         }
@@ -365,7 +405,7 @@ final class AmHostBridge extends BaseFunction {
         for (Map.Entry<String, Object> field : fields.entrySet()) {
           if (!first) out.append(',');
           first = false;
-          out.append(Json.quote(field.getKey())).append(':');
+          out.append(wire ? wireString(field.getKey()) : Json.quote(field.getKey())).append(':');
           write(field.getValue(), child(path, field.getKey()));
         }
         out.append('}');
@@ -383,9 +423,9 @@ final class AmHostBridge extends BaseFunction {
 
   /** The arguments array as JSON, refusing values JSON would silently rewrite. */
   private Object encode(
-      Context cx, String label, Object[] values, String nullUnder, String dropUnder) {
+      Context cx, String label, Object[] values, String nullUnder, String nullFieldsOf) {
     Encoder encoder =
-        new Encoder(cx, "AM host " + label + " argument: ", nullUnder, dropUnder, false);
+        new Encoder(cx, "AM host " + label + " argument: ", nullUnder, nullFieldsOf, false);
     encoder.out.append('[');
     for (int i = 0; i < values.length; i++) {
       if (i > 0) encoder.out.append(',');
@@ -395,11 +435,9 @@ final class AmHostBridge extends BaseFunction {
     if (encoder.nulled) {
       calls.note("measured", "httpClient.send body undefined is sent as null", BODY_SOURCE);
     }
-    if (encoder.dropped) {
+    if (encoder.fieldNulled) {
       calls.note(
-          "measured",
-          "openidm.create content field holding undefined is stored as if omitted",
-          BODY_SOURCE);
+          "measured", "openidm.create content field holding undefined is sent as null", CREATE_SOURCE);
     }
     return Json.parse(encoder.text());
   }
@@ -438,9 +476,10 @@ final class AmHostBridge extends BaseFunction {
 
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-      // docs/api/12: an undefined field of openidm.create content stores nothing.
-      String drop = "create".equals(method) ? "[2]" : null;
-      return invoke(cx, method, encode(cx, "openidm." + method, args, null, drop));
+      // docs/api/12 (2026-11-04): an undefined field of openidm.create content is sent as null,
+      // so a schema default does not land. Deeper, and in other verbs, it stays missing.
+      String fields = "create".equals(method) ? "[2]" : null;
+      return invoke(cx, method, encode(cx, "openidm." + method, args, null, fields));
     }
   }
 
@@ -474,31 +513,41 @@ final class AmHostBridge extends BaseFunction {
               "[1].body",
               null);
       // Passed the encoder above, so options is plain data with no accessor left to run.
+      @SuppressWarnings("unchecked")
+      java.util.List<Object> list = (java.util.List<Object>) input;
+      @SuppressWarnings("unchecked")
+      Map<String, Object> sent =
+          list.get(1) instanceof Map
+              ? (Map<String, Object>) list.get(1)
+              : Collections.<String, Object>emptyMap();
+      // docs/api/12: the form-encoded option was not probed, and its body is not the JSON text.
+      if (sent.containsKey("form")) throw missing("httpClient.send form body text");
       Map<String, Object> wire = new LinkedHashMap<String, Object>();
-      if (options instanceof ScriptableObject
-          && ((ScriptableObject) options).has("body", (ScriptableObject) options)) {
+      java.util.TreeSet<String> assumed = new java.util.TreeSet<String>();
+      if (sent.containsKey("body")) {
         Object body = ScriptableObject.getProperty((ScriptableObject) options, "body");
         if (body instanceof Wrapper) body = ((Wrapper) body).unwrap();
+        // Every docs/api/12 body measurement sent exactly this header.
+        if (!jsonContentType(sent.get("headers"))) {
+          assumed.add("httpClient body text without a Content-Type: application/json header");
+        }
         if (body instanceof CharSequence) {
-          // A string body's bytes on the wire were not measured.
           wire.put("body", body.toString());
-          wire.put("approximate", Boolean.TRUE);
+          assumed.add("httpClient body text for a string body, sent as the string itself");
         } else {
           Encoder text = new Encoder(cx, "AM host httpClient.send body: ", "", null, true);
           text.write(body, "");
-          boolean shaped =
-              body == null
-                  || body == Undefined.instance
-                  || (body instanceof ScriptableObject
-                      && "Object".equals(((ScriptableObject) body).getClassName()));
+          if (!(body == null
+              || body == Undefined.instance
+              || (body instanceof ScriptableObject
+                  && "Object".equals(((ScriptableObject) body).getClassName())))) {
+            assumed.add("httpClient body text for a top-level non-object body");
+          }
+          assumed.addAll(text.assumed);
           wire.put("body", text.text());
-          wire.put("approximate", text.approximate || !shaped);
         }
-      } else {
-        wire.put("approximate", Boolean.FALSE);
       }
-      @SuppressWarnings("unchecked")
-      java.util.List<Object> list = (java.util.List<Object>) input;
+      wire.put("assumed", new ArrayList<Object>(assumed));
       list.add(wire);
       Object reply = invoke(cx, "http", input);
       if (!(reply instanceof Scriptable)) throw protocol("journey HTTP reply shape");
