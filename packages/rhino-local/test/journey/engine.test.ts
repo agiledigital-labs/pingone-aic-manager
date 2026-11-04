@@ -1244,6 +1244,96 @@ it.each([
   expect(sent.assumed).toEqual([NO_HEADER]);
   expect(sent.provenance).not.toContainEqual(BODY_TEXT);
 });
+// docs/api/12 §5 (2026-11-04): non-JSON values in an object body, as AIC sends them.
+const NONJSON_SOURCE =
+  "docs/api/12-script-bindings-matrix.md (§5 non-JSON values in an object body, 2026-11-04)";
+const nonJson = (behavior: string) => ({ kind: "measured", behavior, source: NONJSON_SOURCE });
+it("NaN, ±Infinity, -0 and java.util.Date in an HTTP body go out as AIC sends them, measured", async () => {
+  const sent = await send(
+    `{method:'POST',${JSON_HEADER},body:{a:'x',n:NaN,p:1/0,m:-1/0,z:-0,d0:new java.util.Date(0),d:new java.util.Date(1234)}}`,
+  );
+  expect(sent.text).toBe(
+    '{"a":"x","n":"NaN","p":"Infinity","m":"-Infinity","z":-0.0,"d0":0,"d":1234}',
+  );
+  expect(Object.is((sent.body as { z: number }).z, -0)).toBe(true);
+  expect(sent.body).toEqual({
+    a: "x",
+    n: "NaN",
+    p: "Infinity",
+    m: "-Infinity",
+    z: -0,
+    d0: 0,
+    d: 1234,
+  });
+  expect(sent.assumed).toEqual([]);
+  expect(sent.provenance).toContainEqual(BODY_TEXT);
+  for (const behavior of [
+    'httpClient.send body NaN and ±Infinity are sent as the strings "NaN", "Infinity" and "-Infinity"',
+    "httpClient.send body -0 is sent as -0.0",
+    "httpClient.send body java.util.Date is sent as its epoch milliseconds",
+  ])
+    expect(sent.provenance).toContainEqual(nonJson(behavior));
+});
+it("a §5 conversion inside an array is labelled assumed", async () => {
+  const sent = await send(`{method:'POST',${JSON_HEADER},body:{arr:[NaN]}}`);
+  expect(sent.text).toBe('{"arr":["NaN"]}');
+  expect(sent.assumed).toEqual([
+    "httpClient body text for NaN, ±Infinity, -0 or a java.util.Date inside an array, written as measured under an object key (docs/api/12 §5)",
+  ]);
+});
+it("a cycle in an HTTP body throws AIC's catchable InternalError and sends nothing", async () => {
+  const seen: unknown[] = [];
+  const result = await request(
+    make(
+      "var b={a:'x',n:{}};b.n.up=b;var m='none';" +
+        `try{httpClient.send('https://service.example.com/x',{method:'POST',${JSON_HEADER},body:b}).get();}catch(e){m=String(e);}` +
+        "if(m==='InternalError: Cannot produce JSON from [object Object]'){" +
+        SUCCEED +
+        "}else{action.goTo('false');}",
+      ["true", "false"],
+      { true: SUCCESS, false: FAILURE },
+      { http: async (url) => (seen.push(url), { status: 200, body: {} }) },
+    ),
+  );
+  expect(result.status).toBe(200);
+  expect(seen).toEqual([]);
+  expect(result.provenance).toContainEqual(
+    nonJson("httpClient.send body with a cycle throws a catchable InternalError; nothing is sent"),
+  );
+});
+const DUMP = {
+  date: "httpClient.send body.v is a JS Date: AIC sends a ~1 KB dump of the Rhino NativeDate object without the time value, not the date; send date.toISOString() or date.getTime() (docs/api/12 §5)",
+  regexp:
+    "httpClient.send body.v is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags; send regexp.source as a string (docs/api/12 §5)",
+  fn: "httpClient.send body.v is a function: AIC sends a ~1.7 KB dump of the Rhino function object, which exposes the script's name, its encoded source and the name of every binding and variable in the script; leave it out of the body (docs/api/12 §5)",
+};
+it.each([
+  ["a JS Date", "new Date(0)", DUMP.date],
+  ["a RegExp", "/a/g", DUMP.regexp],
+  ["a function", "function(){return 1;}", DUMP.fn],
+  [
+    "a toJSON method (never called)",
+    "{toJSON:function(){return 'x';}}",
+    DUMP.fn.replace("body.v", "body.v.toJSON"),
+  ],
+  [
+    "a cycle through an array",
+    "(function(){var l=[];l.push({l:l});return l;})()",
+    "AM host httpClient.send argument: cyclic object at [1].body.v[0].l",
+  ],
+])("%s in an HTTP body is missing even when the send is caught", async (_name, value, cause) => {
+  expectEmulationFailure(cause);
+  const result = await request(
+    make(
+      `try{httpClient.send('https://service.example.com/x',{method:'POST',${JSON_HEADER},body:{a:'x',v:${value}}}).get();}catch(e){}` +
+        SUCCEED,
+      ["true", "false"],
+      { true: SUCCESS, false: FAILURE },
+      { http: async () => ({ status: 200, body: {} }) },
+    ),
+  );
+  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
 it("an HTTP form body is missing: its text is not the JSON body (docs/api/12: form not probed)", async () => {
   const cause = "httpClient.send form body text";
   expectEmulationFailure(cause);

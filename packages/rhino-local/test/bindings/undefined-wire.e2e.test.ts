@@ -62,19 +62,42 @@ it("httpClient.send records the body as it was when sent, not as mutated afterwa
   expect(effects.http[0]?.body).toEqual({ n: 1 });
 });
 
-// R6-4: a body JSON cannot carry, or whose conversion AIC was never measured doing, fails by name
-// at send rather than as an opaque engine error or a silent guess (NaN -> null, Date -> string).
-it.each([
-  ["a cycle", "(function () { var b = { n: {} }; b.n.up = b; return b; })()", /rhino-local: httpClient\.send body\.n\.up refers back to an enclosing object \(a cycle\)/],
-  ["a function body", "function () {}", /rhino-local: httpClient\.send body is a function: not JSON data/],
-  ["a nested function", "{ arr: [1, function () {}] }", /rhino-local: httpClient\.send body\.arr\[1\] is a function/],
-  ["NaN", "{ n: NaN }", /rhino-local: httpClient\.send body\.n is NaN: not JSON data, and how AIC sends it is unmeasured/],
-  ["-Infinity", "{ n: -1 / 0 }", /rhino-local: httpClient\.send body\.n is -Infinity/],
-  ["a Date", "{ d: new Date(0) }", /rhino-local: httpClient\.send body\.d is a Date: how AIC serialises one is unmeasured/],
-])("httpClient.send refuses %s by name", async (_name, body, message) => {
-  await expect(run(`httpClient.send("https://service.example.com/x", { method: "POST", body: ${body} }).get();`)).rejects.toThrow(message);
+// docs/api/12 §5 (2026-11-04): what AIC sends for non-JSON values in an object body.
+const SEND = (body: string) => `httpClient.send("https://service.example.com/x", { method: "POST", body: ${body} }).get();`;
+it("httpClient.send records NaN, ±Infinity, -0 and java.util.Date as AIC sends them", async () => {
+  const effects = await run(SEND("{ a: 'x', n: NaN, p: 1 / 0, m: -1 / 0, z: -0, d0: new java.util.Date(0), d: new java.util.Date(1234), arr: [NaN] }"));
+  // -0 goes out as -0.0; the recorded effects are JSON, which cannot carry the sign (as 1.0 is 1).
+  expect(effects.http[0]?.body).toEqual({ a: "x", n: "NaN", p: "Infinity", m: "-Infinity", z: 0, d0: 0, d: 1234, arr: ["NaN"] });
 });
-
+it("httpClient.send never calls toJSON: a toJSON method is a function in the body", async () => {
+  await expect(run(SEND("{ a: 1, toJSON: function () { return 'x'; } }"))).rejects.toThrow(/rhino-local: httpClient\.send body\.toJSON is a function: AIC sends/);
+});
+const CYCLE = "(function () { var b = { a: 'x', n: {} }; b.n.up = b; return b; })()";
+it("a cycle throws AIC's catchable InternalError and records nothing", async () => {
+  const effects = await run(`try { ${SEND(CYCLE)} } catch (e) { nodeState.putShared("err", String(e)); }`);
+  expect(effects.sharedState.final.err).toBe("InternalError: Cannot produce JSON from [object Object]");
+  expect(effects.http).toEqual([]);
+});
+it("an uncaught cycle fails the script with AIC's message", async () => {
+  await expect(run(SEND(CYCLE))).rejects.toThrow(/InternalError: Cannot produce JSON from \[object Object\]/);
+});
+// A Date, RegExp or function goes out as a Rhino object dump nothing here reproduces, so the send
+// is a harness fault: it fails the run even when the script catches it, because AIC would not throw.
+const DATE = /rhino-local: httpClient\.send body\.d is a JS Date: AIC sends a ~1 KB dump of the Rhino NativeDate object without the time value, not the date \(docs\/api\/12 §5\); send date\.toISOString\(\) or date\.getTime\(\)/;
+it.each([
+  ["a JS Date", "{ d: new Date(0) }", DATE],
+  ["a RegExp", "{ r: /a/g }", /rhino-local: httpClient\.send body\.r is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags/],
+  ["a function body", "function () {}", /rhino-local: httpClient\.send body is a function: AIC sends a ~1\.7 KB dump of the Rhino function object, which exposes the script's name, its encoded source and the name of every binding and variable in the script/],
+  ["a nested function", "{ arr: [1, function () {}] }", /rhino-local: httpClient\.send body\.arr\[1\] is a function: AIC sends/],
+  ["a cycle through an array", "(function () { var b = { l: [] }; b.l.push(b); return b; })()", /rhino-local: httpClient\.send body\.l\[0\] refers back to an enclosing value through an array \(a cycle\): AIC's error for this shape is unmeasured/],
+])("httpClient.send with %s fails the run by name", async (_name, body, message) => {
+  await expect(run(SEND(body))).rejects.toThrow(message);
+});
+it("a caught Date refusal still fails the run, and says the script caught it", async () => {
+  const caught = run(`try { ${SEND("{ d: new Date(0) }")} } catch (e) { nodeState.putShared("err", String(e)); }`);
+  await expect(caught).rejects.toThrow(DATE);
+  await expect(run(`try { ${SEND("{ d: new Date(0) }")} } catch (e) {}`)).rejects.toThrow(/the script caught this refusal, but AIC would not have thrown there, so the run fails anyway/);
+});
 it.each([
   ["a shared, acyclic sub-object", "(function () { var s = { k: 1 }; return { a: s, b: s }; })()", { a: { k: 1 }, b: { k: 1 } }],
   ["a Java String", "new java.lang.String('x')", "x"],
