@@ -27,9 +27,17 @@ import type {
   TreeDocument,
 } from "./types.ts";
 const SOURCE = "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)";
-type Frame = { tree: string; node: string; transient: Document };
+type Frame = {
+  tree: string;
+  node: string;
+  transient: Document;
+  /** transient.objectAttributes is a Java map in AM, not a JS object. */
+  javaMap?: boolean;
+};
 type State = {
   shared: Document;
+  /** shared.objectAttributes is a Java map in AM, not a JS object. */
+  javaMap?: boolean;
   frames: Frame[];
   errorMessage: string | null;
   pending?: WireCallback[];
@@ -201,7 +209,13 @@ export class JourneyEmulator {
       "authId uses a random snapshot id and HMAC-SHA256; forks copy snapshots and share signing credentials",
     );
     const stored = structuredClone({ ...state, provenance: this.evidence.entries() });
-    for (const frame of stored.frames) frame.transient = {};
+    for (const frame of stored.frames) {
+      frame.transient = {};
+      delete frame.javaMap;
+    }
+    // Doc 25 probes: after a callback round trip, shared objectAttributes prints
+    // in Java-map form whoever wrote it, a script included.
+    stored.javaMap = isDocument(stored.shared.objectAttributes);
     this.snapshots.set(id, stored);
     return `${id}.${createHmac("sha256", this.key).update(id).digest("base64url")}`;
   }
@@ -445,6 +459,13 @@ export class JourneyEmulator {
     this.measured(
       "next-gen nodeState has no getShared/getTransient; callback-free boundaries retain transient state",
     );
+    if (
+      (state.javaMap && isDocument(state.shared.objectAttributes)) ||
+      (frame.javaMap && isDocument(frame.transient.objectAttributes))
+    )
+      this.evidence.assumed(
+        "objectAttributes written by a node or carried across a round trip is a Java map in later scripts; its printed form is measured, its get/put are inferred",
+      );
     this.measured(
       "action withErrorMessage works in either call order; withLockoutMessage has no visible failure-message effect",
     );
@@ -467,6 +488,7 @@ export class JourneyEmulator {
           scriptName: script.name ?? config.script ?? "script",
           scriptId: config.script ?? "script",
           ...(state.existingSession ? { existingSession: state.existingSession } : {}),
+          javaMaps: { shared: Boolean(state.javaMap), transient: Boolean(frame.javaMap) },
           ...(request.headers ? { headers: { ...request.headers } } : {}),
           ...(request.cookies ? { cookies: { ...request.cookies } } : {}),
           parameters: Object.fromEntries(
@@ -497,11 +519,14 @@ export class JourneyEmulator {
         transientState: { final: Document };
         callbacks: CallbackEffect[];
         outcome: string | null;
+        javaMapObjectAttributes: { shared: boolean; transient: boolean };
       };
       errorMessage: string | null;
     };
     state.shared = result.effects.sharedState.final;
     frame.transient = result.effects.transientState.final;
+    state.javaMap = result.effects.javaMapObjectAttributes.shared;
+    frame.javaMap = result.effects.javaMapObjectAttributes.transient;
     if (result.errorMessage !== null) state.errorMessage = result.errorMessage;
     return { outcome: result.effects.outcome, callbacks: result.effects.callbacks };
   }
@@ -517,8 +542,9 @@ export class JourneyEmulator {
     if (type === "ScriptedDecisionNode")
       return this.scripted(config, state, frame, submitted, request);
     if (type === "PageNode") return this.page(config, state, frame, submitted, request);
-    if (EMULATED.includes(type))
-      return this.nodes.run(
+    if (EMULATED.includes(type)) {
+      const before = [state.shared.objectAttributes, frame.transient.objectAttributes];
+      const result = await this.nodes.run(
         type,
         config,
         state.shared,
@@ -526,6 +552,13 @@ export class JourneyEmulator {
         submitted,
         this.tree(frame.tree).identityResource ?? `managed/${this.config.realm}_user`,
       );
+      // Doc 25 probes: objectAttributes a node writes prints in Java-map form in the next script.
+      if (JSON.stringify(state.shared.objectAttributes) !== JSON.stringify(before[0]))
+        state.javaMap = isDocument(state.shared.objectAttributes);
+      if (JSON.stringify(frame.transient.objectAttributes) !== JSON.stringify(before[1]))
+        frame.javaMap = isDocument(frame.transient.objectAttributes);
+      return result;
+    }
     const declarations = this.options.declaredOutcomes;
     if (!declarations || !Object.hasOwn(declarations, id)) this.missing(`node type: ${type}`);
     const outcome = declarations[id] ?? null;

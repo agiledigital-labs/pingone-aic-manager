@@ -43,6 +43,14 @@ public final class HostCalls {
       throw fail(new EmulationFailure("protocol", "rhino-local: invalid host evidence: " + e.getMessage()));
     }
   }
+  /** Evidence the AM bridge records itself, e.g. use of a binding measured in docs/api. */
+  synchronized void note(String kind, String behavior, String source) {
+    Map<String, Object> entry = new LinkedHashMap<String, Object>();
+    entry.put("kind", kind);
+    entry.put("behavior", behavior);
+    if (source != null) entry.put("source", source);
+    evidence.put(Json.stringify(java.util.Arrays.asList(kind, behavior, source)), entry);
+  }
   synchronized java.util.List<Object> evidenceSnapshot() { return new java.util.ArrayList<Object>(evidence.values()); }
   final java.util.Set<Integer> unanswered = new java.util.concurrent.ConcurrentSkipListSet<Integer>();
   EmulationFailure fail(EmulationFailure error) {

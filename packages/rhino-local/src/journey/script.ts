@@ -19,6 +19,8 @@ export type ScriptState = {
   headers?: Record<string, string[]>;
   cookies?: Record<string, string>;
   parameters?: Record<string, string[]>;
+  /** Buckets whose objectAttributes AM hands a script as a Java map rather than a JS object. */
+  javaMaps?: { shared: boolean; transient: boolean };
 };
 
 /*
@@ -36,9 +38,31 @@ function stubRoots(): string[] {
     if (match[1]) roots.add(match[1]);
   return [...roots].sort();
 }
-const overlay = (roots: string[]) => `
-(function (host, roots) {
-  host('install', __rhinoLocalHarvest, __rhinoLocal, action);
+/** utils members docs/api/12 measured; any other utils member is refused. */
+const MEASURED_UTILS = [
+  ...["base64", "base64url"].flatMap((codec) =>
+    ["encode", "decode", "decodeToBytes", "btoa", "atob"].map((name) => `${codec}.${name}`),
+  ),
+  "types.stringToBytes",
+  "types.bytesToString",
+  "crypto.randomUUID",
+  "crypto.getRandomValues",
+  "crypto.checkBcrypt",
+  ...["encrypt", "decrypt", "generateKey", "digest", "sign", "verify", "deriveKey"].map(
+    (name) => `crypto.subtle.${name}`,
+  ),
+];
+const overlay = (roots: string[], maps: { shared: boolean; transient: boolean }) => `
+(function (host, roots, measuredUtils, maps) {
+  host('install', __rhinoLocal, action);
+  // Every rhino-local diagnostic goes through this global; in a journey it is
+  // missing behaviour, decided in Java by which function ran, not by error text.
+  __rhinoLocalFail = host('unsupported');
+  ['shared', 'transient'].forEach(function (bucket) {
+    var value = __rhinoLocal[bucket].objectAttributes;
+    if (maps[bucket] && value !== null && typeof value === 'object' && !Array.isArray(value))
+      __rhinoLocal[bucket].objectAttributes = __rhinoLocalAsJavaMap(value);
+  });
 
   // Generated stubs reach a global hook author code could rebind; replace each
   // with a Java refusal named after its binding path.
@@ -86,26 +110,28 @@ const overlay = (roots: string[]) => `
   });
   refuse(openidm, 'openidm', hostMethods);
   httpClient.send = host('http');
-  [['idRepository', idRepository], ['utils', utils], ['secrets', secrets],
+  // utils is nested: walk every own member, enumerable or not. Measured members
+  // run locally and record provenance; anything else is refused.
+  (function observe(object, prefix, depth) {
+    if (depth > 4) return;
+    Object.getOwnPropertyNames(object).forEach(function (key) {
+      var value = object[key], path = prefix + key;
+      if (typeof value === 'function') {
+        object[key] = measuredUtils.indexOf(path) !== -1
+          ? host('observe', value, 'utils.' + path)
+          : host('refusal', 'utils.' + path);
+      } else if (value !== null && typeof value === 'object') {
+        observe(value, path + '.', depth + 1);
+      }
+    });
+  })(utils, '', 0);
+  [['idRepository', idRepository], ['secrets', secrets],
     ['cacheManager', cacheManager], ['systemEnv', systemEnv]].forEach(function (pair) {
     refuse(pair[1], pair[0], []);
   });
   require = host('refusal', 'require library resolution');
-
-  // Runtime mock errors denote unsupported emulation, not catchable tenant failures.
-  function protect(object, prefix) {
-    Object.keys(object).forEach(function (key) {
-      if (typeof object[key] === 'function') {
-        object[key] = host('guard', object, object[key], prefix + '.' + key);
-      }
-    });
-  }
-  protect(action, 'action');
-  protect(journey, 'journey');
-  protect(nodeState, 'nodeState');
-  protect(callbacks, 'callbacks');
-  protect(callbacksBuilder, 'callbacksBuilder');
-})(__rhinoLocalJourneyHost, ${JSON.stringify(roots)});
+})(__rhinoLocalJourneyHost, ${JSON.stringify(roots)}, ${JSON.stringify(MEASURED_UTILS)},
+  ${JSON.stringify(maps)});
 `;
 
 export function journeyPreamble(state: ScriptState): string {
@@ -130,5 +156,8 @@ export function journeyPreamble(state: ScriptState): string {
       },
     },
   };
-  return mockPreamble(given) + overlay(stubRoots());
+  return (
+    mockPreamble(given) +
+    overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false })
+  );
 }
