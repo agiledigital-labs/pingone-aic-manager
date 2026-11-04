@@ -12,6 +12,7 @@
  *             entry per changed leaf to `audit` in memory (E19)
  *   children  derive from the relationship named by `rel` (E10, E11, E12)
  *   selfpatch fold, then openidm.patch this same record once (E15)
+ *   plain     nothing beyond `trace` (E19 baseline: the caller writes audit)
  *
  * `trace: true` on the record makes every run create one alpha_poc_sink record
  * of kind "onUpdate". That is a side effect inside onUpdate on purpose: it is
