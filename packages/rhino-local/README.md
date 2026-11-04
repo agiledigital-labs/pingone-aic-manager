@@ -693,6 +693,23 @@ lanes require Docker and the AM image. The cache defaults to
 job rather than hanging. `close()` ends stdin and waits for the process;
 `afterAll` should call it.
 
+**JVM reuse.** Under the package's Vitest reporter, `useLease` borrows its JVM
+from a pool the reporter keeps in the main Vitest process, so a worker runs
+every file it is given on one JVM rather than starting one per file: the JVM
+count is the worker count. A borrowed JVM is returned at `afterAll`. One that
+crashed, or retired itself after a spawned thread survived cleanup, is never
+lent again. Isolation does not depend on the JVM: every case still runs in a
+fresh `initStandardObjects()` scope, and only compiled code is shared
+(`test/harness/isolation.e2e.test.ts` pins this). Set
+`AIC_SCRIPT_TESTER_JVM_POOL=0` to start a JVM per lease as before.
+
+Within a JVM, the case prelude (generated mocks, identity policy, runtime) and
+each library body are compiled once and cached by content hash, and each
+distinct text crosses the pipe once. A case therefore costs a few
+milliseconds, plus executing the libraries it `require`s, however large the
+library map. `node bench/run.ts [--workers=N]` and `node bench/micro.ts`
+measure this on invented fixtures.
+
 Job shape (open enough to carry later mock bindings):
 
 - `source` / `sourceName` — author's script; `sourceName` is Rhino's source
@@ -701,6 +718,14 @@ Job shape (open enough to carry later mock bindings):
 - `globals` — AM JSON values placed in ENGINE_SCOPE Bindings
 - `preamble` — evaluated first so concatenating mocks into `source` is not
   needed (that would shift line numbers)
+- `prelude` — optional; evaluated before `preamble` and compiled once per JVM
+  per distinct text. `preamble` continues its line numbers
+- `preambleData` — optional string, visible to the preamble only as
+  `__rhinoLocalPreambleData`; per-case data travels here rather than as a
+  literal that would be compiled every case
+- `libraries` — optional `require()` id → body, compiled once per JVM per
+  distinct body. The runtime's `require` reads them; an undeclared id is
+  still refused
 - `timeoutMs` — per-job; AM's `Error("Interrupt.")` past the instruction
   observer. Omit for the runner's 10s harness default; `0` disables timeouts
 
