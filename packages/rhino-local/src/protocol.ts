@@ -63,6 +63,28 @@ export interface JobRequest {
   /** Evaluated first, so author line numbers on `source` stay intact. */
   preamble?: string;
   preambleName?: string;
+  /**
+   * Evaluated before `preamble`, in the same scope and under the same
+   * `preambleName`; `preamble`'s line numbers continue from it, so the two
+   * behave as `prelude + preamble` sent as one string would. Unlike
+   * `preamble` it is shipped to a JVM once and compiled once, then reused by
+   * every job that sends the same text — so it is for the part of a preamble
+   * that does not change between jobs. Each job still executes it into its
+   * own fresh scope.
+   */
+  prelude?: string;
+  /**
+   * Text visible to the preamble (and prelude) as the string global
+   * `__rhinoLocalPreambleData`, deleted before `source` runs. Lets per-job
+   * data reach the preamble as data rather than as source to compile.
+   */
+  preambleData?: string;
+  /**
+   * `require()` bodies by id, for the rhino-local runtime's loader. Each
+   * distinct body is shipped to a JVM once and compiled once; a body that
+   * changes is a different body. Visible to the preamble only.
+   */
+  libraries?: Record<string, string>;
   /** Return this global after evaluation instead of Rhino's completion value. */
   resultGlobal?: string;
 }

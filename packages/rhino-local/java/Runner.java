@@ -73,10 +73,9 @@ public final class Runner {
       if (line.isEmpty()) {
         continue;
       }
-      final String input = line;
       final Object parsed;
       try {
-        parsed = ProtocolValues.decode(Json.parse(input));
+        parsed = ProtocolValues.decode(Json.parse(line));
       } catch (RuntimeException e) {
         ERR.println("rhino-local-runner: skipping unparseable line: " + e.getMessage());
         continue;
@@ -84,14 +83,19 @@ public final class Runner {
       if (parsed instanceof Map && "reply".equals(((Map<?, ?>) parsed).get("type"))) {
         HostCalls.reply(Json.asObject(parsed, "reply"));
       } else if (parsed instanceof Map) {
-        Map<String, Object> job = Json.asObject(parsed, "job");
+        final Map<String, Object> job = Json.asObject(parsed, "job");
         Object rawId = job.get("id");
         if (!(rawId instanceof String) || ((String) rawId).isEmpty()) {
           ERR.println("rhino-local-runner: skipping job with no string id");
           continue;
         }
         String id = (String) rawId;
-        if (shuttingDown) {
+        // Before any refusal: the client counts a source as shipped once its
+        // line is written, whatever becomes of the job that carried it.
+        String sourceError = registerSources(job.remove("sources"));
+        if (sourceError != null) {
+          write(refusal(id, "rhino-local: " + sourceError));
+        } else if (shuttingDown) {
           write(refusal(id, "rhino-local: runner is shutting down"));
         } else if (Boolean.TRUE.equals(job.get("shutdown")) || "shutdown".equals(job.get("op"))) {
           shuttingDown = true;
@@ -101,7 +105,7 @@ public final class Runner {
         } else if (ACTIVE.putIfAbsent(id, Boolean.TRUE) != null) {
           write(refusal(id, "rhino-local: duplicate active job id"));
         } else {
-          try { workers.execute(() -> handleLine(factory, input)); }
+          try { workers.execute(() -> handleJob(factory, job)); }
           catch (RejectedExecutionException e) {
             respond(refusal(id, "rhino-local: concurrent job limit exceeded (" + maxJobs + ")"));
           }
@@ -165,27 +169,27 @@ public final class Runner {
     return env;
   }
 
-  static void handleLine(AmContextFactory factory, String line) {
-    final Object parsed;
+  /**
+   * Content-addressed sources a job line carries: {@code {"<sha256>": "<text>"}}.
+   * The client sends each text once per JVM and names it by hash afterwards,
+   * because a 470 KB job line costs ~8 ms to move and parse on its own.
+   */
+  private static String registerSources(Object raw) {
+    if (raw == null) return null;
     try {
-      parsed = ProtocolValues.decode(Json.parse(line));
+      for (Map.Entry<String, Object> e : Json.asObject(raw, "sources").entrySet()) {
+        if (!(e.getValue() instanceof String)) return "source " + e.getKey() + " is not a string";
+        ScriptCache.register(e.getKey(), (String) e.getValue());
+      }
+      return null;
     } catch (RuntimeException e) {
-      ERR.println("rhino-local-runner: skipping unparseable line: " + e.getMessage());
-      return;
+      return e.getMessage();
     }
-    final Map<String, Object> job;
-    try {
-      job = Json.asObject(parsed, "job");
-    } catch (RuntimeException e) {
-      ERR.println("rhino-local-runner: skipping non-object job: " + e.getMessage());
-      return;
-    }
-    final Object idRaw = job.get("id");
-    if (!(idRaw instanceof String) || ((String) idRaw).isEmpty()) {
-      ERR.println("rhino-local-runner: skipping job with no string id");
-      return;
-    }
-    final String id = (String) idRaw;
+  }
+
+  /** The job map the reader already parsed; parsing it again here cost as much as the move. */
+  static void handleJob(AmContextFactory factory, Map<String, Object> job) {
+    final String id = (String) job.get("id");
     try {
       Object engine = job.get("engine");
       if (engine == null || "am".equals(engine)) {
@@ -256,6 +260,19 @@ public final class Runner {
       return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
     }
 
+    final String preludeHash;
+    final String preambleData;
+    final Map<String, String> libraryRefs;
+    try {
+      preludeHash = Json.optionalString(job, "prelude");
+      preambleData = Json.optionalString(job, "preambleData");
+      libraryRefs = stringMap(job.get("libraryRefs"), "libraryRefs");
+      if (preludeHash != null) ScriptCache.source(preludeHash);
+      if (libraryRefs != null) for (String hash : libraryRefs.values()) ScriptCache.source(hash);
+    } catch (RuntimeException e) {
+      return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
+    }
+
     final Context cx = factory.enterContext();
     try {
       cx.setLanguageVersion(languageVersion);
@@ -274,7 +291,8 @@ public final class Runner {
       injectGlobals(scriptContext, job.get("globals"));
       final Scriptable scope = AmScopes.makeScriptable(cx, scriptContext);
 
-      if (preamble != null && !preamble.isEmpty()) {
+      final boolean hasPreamble = preamble != null && !preamble.isEmpty();
+      if (hasPreamble || preludeHash != null) {
         try {
           final String hostOpName = "__rhinoLocalHostOp";
           HostOps hostOps = new HostOps();
@@ -286,11 +304,32 @@ public final class Runner {
             bridge.setPrototype(ScriptableObject.getFunctionPrototype(scope));
             ScriptableObject.putProperty(scope, "__rhinoLocalJourneyHost", bridge);
           }
+          if (libraryRefs != null) {
+            LibraryHost libraries = new LibraryHost(libraryRefs);
+            libraries.setParentScope(scope);
+            libraries.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+            ScriptableObject.putProperty(scope, LIBRARIES_NAME, libraries);
+          }
+          if (preambleData != null) ScriptableObject.putProperty(scope, PREAMBLE_DATA_NAME, preambleData);
           try {
-            Script preambleScript = cx.compileString(preamble, preambleName, 1, null);
-            preambleScript.exec(cx, scope);
+            // The prelude and the preamble run as one script would: the
+            // preamble continues the prelude's line numbering under the same
+            // name, so a position reported from either is where it was when
+            // they were sent as one string.
+            int line = 1;
+            if (preludeHash != null) {
+              final ScriptCache.Source prelude = ScriptCache.source(preludeHash);
+              ScriptCache.compile(cx, "prelude:" + preludeHash, () -> prelude.text, preambleName, 1).exec(cx, scope);
+              line = prelude.lines + 1;
+            }
+            if (hasPreamble) {
+              Script preambleScript = cx.compileString(preamble, preambleName, line, null);
+              preambleScript.exec(cx, scope);
+            }
           } finally {
             ScriptableObject.deleteProperty(scope, hostOpName);
+            ScriptableObject.deleteProperty(scope, LIBRARIES_NAME);
+            ScriptableObject.deleteProperty(scope, PREAMBLE_DATA_NAME);
             if (bridge != null) ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }
         } catch (EvaluatorException e) {
@@ -335,6 +374,20 @@ public final class Runner {
     } finally {
       Context.exit();
     }
+  }
+
+  /** Defined for the preamble only, like {@code __rhinoLocalHostOp}. */
+  static final String LIBRARIES_NAME = "__rhinoLocalLibraries";
+  static final String PREAMBLE_DATA_NAME = "__rhinoLocalPreambleData";
+
+  private static Map<String, String> stringMap(Object raw, String what) {
+    if (raw == null) return null;
+    Map<String, String> out = new LinkedHashMap<String, String>();
+    for (Map.Entry<String, Object> e : Json.asObject(raw, what).entrySet()) {
+      if (!(e.getValue() instanceof String)) throw new IllegalArgumentException(what + "." + e.getKey() + " must be a string");
+      out.put(e.getKey(), (String) e.getValue());
+    }
+    return out;
   }
 
   static void injectGlobals(SimpleScriptContext scriptContext, Object globalsRaw) {

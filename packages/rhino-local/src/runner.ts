@@ -3,7 +3,7 @@ import { decodeProtocol, stringifyProtocol } from "./protocol-values.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EmulationFailure, EmulationFailureJournal, bindEmulationOwner, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual, promisify } from "node:util";
 import {
   cacheDir,
@@ -160,6 +160,8 @@ class JvmProcess {
   #closed = false;
   readonly #shutdownWaitMs: number;
   #spawnError: Error | undefined;
+  /** What this JVM has been sent; a separate set per process, so each lane gets every text once. */
+  readonly #sources = new ShippedSources();
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   #exitWaiters: Array<() => void> = [];
   environment: RunnerEnvironment | undefined;
@@ -255,7 +257,7 @@ class JvmProcess {
     }
     return new Promise<JobResponse>((resolve, reject) => {
       this.#pending.set(id, { resolve, reject, onCall });
-      const ok = this.#child.stdin.write(`${stringifyProtocol(payload)}\n`);
+      const ok = this.#child.stdin.write(`${stringifyProtocol(this.#sources.address(payload))}\n`);
       if (!ok) {
         const onError = (error: Error): void => {
           this.#child.stdin.off("drain", onDrain);
@@ -420,6 +422,59 @@ class JvmProcess {
   }
 }
 
+/**
+ * Replaces a job's `prelude` and `libraries` texts by their hashes, attaching
+ * under `sources` each text this JVM has not been sent yet. The JVM registers
+ * a line's sources on its reader thread, in line order, before it admits or
+ * refuses the job, so a text counts as shipped as soon as its line is written.
+ */
+class ShippedSources {
+  readonly #sent = new Set<string>();
+
+  address(payload: Record<string, unknown>): Record<string, unknown> {
+    const { prelude, libraries, ...rest } = payload as {
+      prelude?: string;
+      libraries?: Record<string, string>;
+    } & Record<string, unknown>;
+    if (prelude === undefined && libraries === undefined) return payload;
+    const sources: Record<string, string> = {};
+    const ref = (text: string): string => {
+      const hash = sourceHash(text);
+      if (!this.#sent.has(hash)) {
+        this.#sent.add(hash);
+        sources[hash] = text;
+      }
+      return hash;
+    };
+    const out: Record<string, unknown> = { ...rest };
+    if (prelude !== undefined) out.prelude = ref(prelude);
+    if (libraries !== undefined) {
+      const refs: Record<string, string> = {};
+      for (const [id, text] of Object.entries(libraries)) refs[id] = ref(String(text));
+      out.libraryRefs = refs;
+    }
+    if (Object.keys(sources).length > 0) out.sources = sources;
+    return out;
+  }
+}
+
+const HASH_MEMO_LIMIT = 4096;
+const hashMemo = new Map<string, string>();
+
+/**
+ * SHA-256 over UTF-16LE code units, as java/ScriptCache.java#sha256 computes
+ * it. Memoized by text: the same prelude and library strings come back every
+ * case, and a Map lookup is cheaper than rehashing 300 KB.
+ */
+function sourceHash(text: string): string {
+  const known = hashMemo.get(text);
+  if (known !== undefined) return known;
+  const hash = createHash("sha256").update(Buffer.from(text, "utf16le")).digest("hex");
+  if (hashMemo.size >= HASH_MEMO_LIMIT) hashMemo.delete(hashMemo.keys().next().value as string);
+  hashMemo.set(text, hash);
+  return hash;
+}
+
 // The logical host-call chain can cross runner instances; independent async
 // chains still have separate stores. A nested runner must mark its caller's scope.
 const callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
@@ -567,6 +622,9 @@ export class RhinoRunner {
     if (job.preambleName !== undefined) {
       payload.preambleName = job.preambleName;
     }
+    if (job.prelude !== undefined) payload.prelude = job.prelude;
+    if (job.preambleData !== undefined) payload.preambleData = job.preambleData;
+    if (job.libraries !== undefined) payload.libraries = job.libraries;
     if (job.classAllowList !== undefined) {
       payload.classAllowList = job.classAllowList;
     }

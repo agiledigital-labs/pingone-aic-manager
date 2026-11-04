@@ -3727,28 +3727,38 @@ JavaImporter = function () {
   return wrapper;
 };
 
-function __rhinoLocalLoadLibrary(name) {
-  var id = String(name);
-  if (__rhinoLocalHas(__rhinoLocal.requireCache, id)) {
-    return __rhinoLocal.requireCache[id];
-  }
-  if (!__rhinoLocalHas(__rhinoLocal.libraries, id)) {
-    throw __rhinoLocalFail(
-      "rhino-local: require: library " + JSON.stringify(id) +
-        " is not declared on the suite (given.libraries); if this name exists on AIC, AM would load the tenant's copy and the lanes would disagree"
-    );
-  }
-  var exports = {};
-  var module = { exports: exports };
-  __rhinoLocal.requireCache[id] = exports;
-  var source = String(__rhinoLocal.libraries[id]);
-  var loader = eval(
-    "(function (require, exports, module) {\n" + source + "\n})"
-  );
-  loader(require, exports, module);
-  __rhinoLocal.requireCache[id] = module.exports;
-  return module.exports;
-}
+// The runner defines __rhinoLocalLibraries for the preamble only
+// (java/LibraryHost.java) and deletes it before the script runs: it answers a
+// declared id with the module's loader, evaluated in this case's scope from a
+// compiled form shared across cases, so a library body is compiled once per
+// JVM rather than once per case. Absent (the node vm path, or a direct runner
+// caller that seeds given.libraries), the bodies are eval'd from the seed.
+var __rhinoLocalLoadLibrary = (function (host) {
+  return function (name) {
+    var id = String(name);
+    if (__rhinoLocalHas(__rhinoLocal.requireCache, id)) {
+      return __rhinoLocal.requireCache[id];
+    }
+    var loader = host === null ? undefined : host(id);
+    if (loader === undefined && !__rhinoLocalHas(__rhinoLocal.libraries, id)) {
+      throw __rhinoLocalFail(
+        "rhino-local: require: library " + JSON.stringify(id) +
+          " is not declared on the suite (given.libraries); if this name exists on AIC, AM would load the tenant's copy and the lanes would disagree"
+      );
+    }
+    var exports = {};
+    var module = { exports: exports };
+    __rhinoLocal.requireCache[id] = exports;
+    if (loader === undefined) {
+      loader = eval(
+        "(function (require, exports, module) {\n" + String(__rhinoLocal.libraries[id]) + "\n})"
+      );
+    }
+    loader(require, exports, module);
+    __rhinoLocal.requireCache[id] = module.exports;
+    return module.exports;
+  };
+})(typeof __rhinoLocalLibraries === "function" ? __rhinoLocalLibraries : null);
 
 // utils is backed by java/HostOps.java, a native function the runner defines
 // for the preamble and deletes before the script runs: java.util.Base64,
