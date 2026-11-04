@@ -5,7 +5,7 @@
  *     node bench/run.ts [--workers=4]
  *
  * JVMs are counted from outside: the process tree under the Vitest process is
- * sampled every 25 ms and every distinct `java` pid is recorded. A runner JVM
+ * sampled every 25 ms and every distinct `java … Runner` pid is recorded. A runner JVM
  * lives far longer than one sample, so none is missed.
  */
 import { spawn } from "node:child_process";
@@ -49,7 +49,14 @@ function descendantJavas(rootPid: number, seen: Set<number>): void {
     return false;
   };
   for (const [pid, row] of table) {
-    if (row.comm.includes("java") && isDescendant(pid)) seen.add(pid);
+    if (!row.comm.includes("java") || seen.has(pid) || !isDescendant(pid)) continue;
+    try {
+      // The runner itself, not javac or a `java -version` probe.
+      const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      if (argv.includes("Runner")) seen.add(pid);
+    } catch {
+      // exited
+    }
   }
 }
 

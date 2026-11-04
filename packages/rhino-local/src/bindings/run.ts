@@ -1,9 +1,9 @@
 import { judge, validateCase } from "../case/index.ts";
 import type { Case, CompleteRecordedEffects, Verdict } from "../case/types.ts";
-import type { JobResponse } from "../protocol.ts";
+import type { JobRequest, JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
-import { mockPreamble, withHarvest, type MockPreambleOptions } from "./preamble.ts";
+import { casePreamble, withHarvest, type MockPreambleOptions } from "./preamble.ts";
 import { decisionNodeClassAllowList } from "./allowlist.ts";
 import { checkSeededManaged } from "../profile/seed.ts";
 import type { EnvProfile } from "../profile/types.ts";
@@ -36,7 +36,9 @@ export interface CaseRun {
 
 /**
  * Eval a case against the local Rhino runner: mocks as preamble, author script
- * as source, harvest appended so line numbers do not shift.
+ * as source, harvest appended so line numbers do not shift. The preamble goes
+ * as {@link casePreamble}'s parts, so the runner compiles the mocks and each
+ * library once per JVM instead of once per case.
  */
 export async function runCase(
   runner: RhinoRunner,
@@ -50,17 +52,10 @@ export async function runCase(
     // case rather than surfacing as a puzzling mismatch downstream.
     checkSeededManaged(options.profile, kase.given.managed, kase.name, kase.given.identityCustomAttrs);
   }
-  const request: {
-    source: string;
-    sourceName: string;
-    preamble: string;
-    preambleName: string;
-    timeoutMs?: number;
-    classAllowList?: string[];
-  } = {
+  const request: JobRequest = {
     source: withHarvest(kase.script),
     sourceName: options.sourceName ?? kase.name,
-    preamble: mockPreamble(kase.given, preambleOptions(options)),
+    ...casePreamble(kase.given, preambleOptions(options)),
     preambleName: "rhino-local-mocks.cjs",
   };
   if (options.timeoutMs !== undefined) {

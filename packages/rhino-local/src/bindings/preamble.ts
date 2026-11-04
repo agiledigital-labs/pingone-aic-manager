@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
 import type { EnvProfile } from "../profile/types.ts";
@@ -21,13 +21,54 @@ export interface MockPreambleOptions {
 /**
  * Generated stubs + behaviour overlay + seed. Eval'd as the runner `preamble`
  * so author line numbers on `source` stay intact.
+ *
+ * Self-contained: the seed, library bodies included, is a literal in the
+ * returned source. {@link runCase} sends the same thing in three parts
+ * instead — see {@link casePreamble}.
  */
 export function mockPreamble(
   given: Given = {},
   options: MockPreambleOptions = {}
 ): string {
-  const generated = readFileSync(generatedJsPath, "utf8");
-  const runtime = readFileSync(bindingsRuntimePath, "utf8");
+  const { seed, overrides } = seedAndOverrides(given, options);
+  return `${prelude()}__rhinoLocalSeed(${serializeSeed(seed)});\n${overrides}\n`;
+}
+
+/** {@link mockPreamble} as the runner job fields that carry it. */
+export interface CasePreamble {
+  /** Generated mocks, policy and runtime: identical for every case, so compiled once per JVM. */
+  prelude: string;
+  /** The seed call and binding overrides; continues the prelude's line numbers. */
+  preamble: string;
+  /** The seed as JSON text, read by `preamble` rather than compiled as a literal. */
+  preambleData: string;
+  /** Library bodies, kept out of the seed and compiled once per JVM per distinct body. */
+  libraries?: Record<string, string>;
+}
+
+/**
+ * The case preamble split so that the per-case part is small: run as
+ * `prelude` then `preamble`, it does exactly what {@link mockPreamble}'s one
+ * string does, at the same line numbers.
+ */
+export function casePreamble(
+  given: Given = {},
+  options: MockPreambleOptions = {}
+): CasePreamble {
+  const { seed, overrides } = seedAndOverrides(given, options);
+  const { libraries, ...data } = seed;
+  return {
+    prelude: prelude(),
+    preamble: `__rhinoLocalSeed(JSON.parse(__rhinoLocalPreambleData));\n${overrides}\n`,
+    preambleData: serializeSeed(data),
+    ...(libraries === undefined ? {} : { libraries: libraries as Record<string, string> }),
+  };
+}
+
+function seedAndOverrides(
+  given: Given,
+  options: MockPreambleOptions
+): { seed: Record<string, unknown>; overrides: string } {
   const seed: Record<string, unknown> = { ...normaliseIdentitySeeds(given) };
   if (options.libraries !== undefined) {
     seed.libraries = options.libraries;
@@ -44,8 +85,28 @@ export function mockPreamble(
   const overrides = Object.entries(given.bindingOverrides ?? {})
     .map(([name, expression]) => `${name} = (${expression});`)
     .join("\n");
-  const policy = readFileSync(bindingsIdentityPolicyPath, "utf8");
-  return `${generated}\n${policy}\n${runtime}\n__rhinoLocalSeed(${serializeSeed(seed)});\n${overrides}\n`;
+  return { seed, overrides };
+}
+
+let preludeMemo: { stamp: string; text: string } | undefined;
+
+/**
+ * The three package files, read once per process. Their size and mtime are
+ * checked each call, so an edit during a watch run is still picked up.
+ */
+function prelude(): string {
+  const files = [generatedJsPath, bindingsIdentityPolicyPath, bindingsRuntimePath];
+  const stamp = files
+    .map((file) => {
+      const stat = statSync(file);
+      return `${stat.size}:${stat.mtimeMs}`;
+    })
+    .join("|");
+  if (preludeMemo?.stamp !== stamp) {
+    const [generated, policy, runtime] = files.map((file) => readFileSync(file, "utf8"));
+    preludeMemo = { stamp, text: `${generated}\n${policy}\n${runtime}\n` };
+  }
+  return preludeMemo.text;
 }
 
 /** Append a harvest call without shifting author line numbers. */
