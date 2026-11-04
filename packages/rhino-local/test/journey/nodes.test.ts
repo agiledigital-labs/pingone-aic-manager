@@ -936,6 +936,37 @@ it.each([
     else expect(next.provenance).not.toContainEqual(label);
   },
 );
+// docs/api/25 (2026-11-04): leading and trailing spaces in objectAttributes.mail are ignored, a
+// space inside the value is a miss.
+it.each([
+  [" ma@example.com ", "true"],
+  ["ma@ example.com", "false"],
+])("Identify alpha_user mail %j: %s", async (mail, branch) => {
+  const next = await request(
+    make(
+      flow(
+        "IdentifyExistingUserNode",
+        {
+          identityAttribute: "mail",
+          identifier: "userName",
+          identityResource: "managed/alpha_user",
+        },
+        `nodeState.putShared('objectAttributes',{mail:${JSON.stringify(mail)}});`,
+        ["true", "false"],
+      ),
+      {},
+      await alphaUser(),
+    ),
+  );
+  expect(dump(next.body)).toMatchObject({ branch });
+  const space = {
+    kind: "measured",
+    behavior: "eq on alpha_user mail and userName ignores leading and trailing spaces",
+    source: "docs/api/10-managed-objects.md (eq/gt/lt ignore case and edge spaces, 2026-11-04)",
+  };
+  if (branch === "true") expect(next.provenance).toContainEqual(space);
+  else expect(next.provenance).not.toContainEqual(space);
+});
 it("Identify on an unprobed type whose match turns on letter case is missing", async () => {
   const cause = "query eq whose match turns on letter case: widget mail";
   expectEmulationFailure(cause);

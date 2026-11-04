@@ -285,18 +285,43 @@ final class AmHostBridge extends BaseFunction {
       return wrapped && !(value instanceof Double) ? value.toString() : Double.toString(number);
     }
 
-    /** docs/api/12 measured only plain-ASCII strings; Gson-style escaping would differ. */
+    /**
+     * docs/api/12 §4 (2026-11-04), exact: in printable ASCII only {@code "} and {@code \\} are
+     * escaped (no {@code \/}); other BMP characters go out raw (é, U+00A0, U+2028, U+FEFF, U+007F
+     * measured); {@code \n}/{@code \t} short; other C0 controls as backslash-u00XX in upper-case
+     * hex; a surrogate pair, and a lone high surrogate, as upper-case backslash-u escapes. Keys go
+     * through here too, as measured. What §4 did not sample is written the same way and flagged.
+     */
     private String wireString(String value) {
+      StringBuilder out = new StringBuilder(value.length() + 2).append('"');
       for (int i = 0; i < value.length(); i++) {
         char c = value.charAt(i);
-        if (c < 0x20 || c > 0x7e || "<>&='\"\\".indexOf(c) >= 0) {
+        if (c == '"' || c == '\\') out.append('\\').append(c);
+        else if (c == '\n') out.append("\\n");
+        else if (c == '\t') out.append("\\t");
+        else if (c == '\r' || c == '\b' || c == '\f') {
           assumed.add(
-              "httpClient body text for a string holding a control or non-ASCII character or one"
-                  + " of < > & = ' \" \\, written unescaped");
-          break;
+              "httpClient body text for \\r, \\b or \\f in a string, written as a short escape"
+                  + " (docs/api/12 §4 measured only \\n and \\t)");
+          out.append(c == '\r' ? "\\r" : c == '\b' ? "\\b" : "\\f");
+        } else if (c < 0x20 || Character.isSurrogate(c)) {
+          if (Character.isLowSurrogate(c)
+              && !(i > 0 && Character.isHighSurrogate(value.charAt(i - 1)))) {
+            assumed.add(
+                "httpClient body text for a lone low surrogate, written as an upper-case escape like"
+                    + " the measured lone high surrogate");
+          }
+          out.append(String.format(java.util.Locale.ROOT, "\\u%04X", (int) c));
+        } else {
+          if (c >= 0x80 && c <= 0x9f) {
+            assumed.add(
+                "httpClient body text for a C1 control character (U+0080-U+009F), written raw like"
+                    + " the measured U+007F and other non-ASCII");
+          }
+          out.append(c);
         }
       }
-      return Json.quote(value);
+      return out.append('"').toString();
     }
 
     private EmulationFailure shape(String what, String path) {

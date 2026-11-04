@@ -7,7 +7,7 @@ import type { JsonValue } from "../protocol.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
-import { type CaseOnly, fieldValue, matchesFilter, parseFilter } from "./filter.ts";
+import { type Dimension, type Operator, type StringPolicy, type StringRule, fieldValue, matchesFilter, parseFilter } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Invocation, Scripts } from "./scripts.ts";
 import type { Document, ManagedType, PolicyEvaluator, RestRequest } from "./types.ts";
@@ -367,17 +367,8 @@ export class ManagedStore {
     this.evidence.assumed("CREST comparison uses existential array matching");
     const filter = parseFilter(query._queryFilter);
     checkCapabilities(type, false, this.evidence, this.policy !== undefined);
-    // A string match that turns on letter case alone: measured for eq on alpha_user mail and
-    // userName (ASCII case), unknown everywhere else, where either answer could be a false pass.
-    const caseOnly: CaseOnly = (field, op, ascii) => {
-      if (type.name === "alpha_user" && op === "eq" && ascii && ["mail", "userName"].includes(field.replace(/^\//, ""))) {
-        this.evidence.measured("eq on alpha_user mail and userName ignores letter case",
-          "docs/api/10-managed-objects.md (eq on mail and userName is case-insensitive, 2026-11-04)");
-        return true;
-      }
-      return missing(this.evidence, `query ${op} whose match turns on letter case: ${type.name} ${field}`);
-    };
-    let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, row, caseOnly)).map(([, row]) => structuredClone(row));
+    const policy = stringPolicy(type.name, this.evidence);
+    let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, row, policy)).map(([, row]) => structuredClone(row));
     if (query._sortKeys !== undefined) {
       this.evidence.measured("nested query sort keys", "docs/api/10-managed-objects.md");
       this.evidence.assumed("sort nulls first and break ties by insertion order");
@@ -440,4 +431,55 @@ export function integer(value: JsonValue | undefined, fallback: number): number 
   const number = typeof value === "number" || typeof value === "string" ? Number(value) : NaN;
   if (!Number.isSafeInteger(number) || number < 0) throw invalidInput("Invalid non-negative integer query parameter");
   return number;
+}
+
+const QUERY_SOURCE = "docs/api/10-managed-objects.md (eq/gt/lt ignore case and edge spaces, 2026-11-04)";
+// Probed 2026-11-04 with a case-swapped eq; every one folded (doc 10).
+const CASE_PROBED = ["givenName", "sn", "description", "frIndexedString1", "frUnindexedString1"];
+const ORDERING = ["gt", "ge", "lt", "le"];
+
+/**
+ * Letter case and edge spaces in string comparisons, from doc 10 (2026-11-04). Only `alpha_user`
+ * was probed. Its probes span indexed, unindexed and `description` properties and all folded, which
+ * is LDAP caseIgnoreMatch / caseIgnoreOrderingMatch on the DS repository; the unprobed rest of
+ * `alpha_user` is assumed to share that rule. `co`/`sw` and every other managed type were not
+ * probed, and either guess can be a false pass there (a folding guess passes a "not found" test,
+ * an exact guess a `false`-branch test), so a record whose answer turns on them is missing.
+ */
+function stringPolicy(type: string, evidence: Evidence): StringPolicy {
+  const name = (field: string) => field.replace(/^\//, "");
+  return {
+    rules(_field, op): Record<Dimension, StringRule> {
+      if (type !== "alpha_user" || op === "co" || op === "sw") return { case: "unknown", space: "unknown" };
+      return { case: "fold", space: "fold" };
+    },
+    used(field, op, dimension) {
+      const f = name(field);
+      if (dimension === "case") {
+        if (op === "eq" && (f === "mail" || f === "userName")) {
+          evidence.measured("eq on alpha_user mail and userName ignores letter case",
+            "docs/api/10-managed-objects.md (eq on mail and userName is case-insensitive, 2026-11-04)");
+        } else if (op === "eq" && CASE_PROBED.includes(f)) {
+          evidence.measured(`eq on alpha_user ${CASE_PROBED.join(", ")} ignores letter case`, QUERY_SOURCE);
+        } else if (f === "userName" && op !== "le") {
+          evidence.measured("gt, ge and lt on alpha_user userName ignore letter case", QUERY_SOURCE);
+        } else {
+          evidence.assumed(`${op} on alpha_user ${f} ignores letter case: unprobed, assumed like the probed properties`);
+        }
+      } else if (op === "eq" && (f === "mail" || f === "userName")) {
+        evidence.measured("eq on alpha_user mail and userName ignores leading and trailing spaces", QUERY_SOURCE);
+      } else {
+        evidence.assumed(`${op} on alpha_user ignores leading and trailing spaces like eq on mail and userName`);
+      }
+    },
+    ordered() {
+      // Only same-case letters were ordered on the tenant (userName gt "<p>-alicd"); punctuation
+      // against folded letters and non-ASCII collation were not.
+      evidence.assumed("string ordering compares UTF-16 code units after the case and space rules");
+    },
+    unknown(field, op: Operator, dimension): never {
+      const what = dimension === "case" ? (ORDERING.includes(op) ? "order" : "match") + " turns on letter case" : "match turns on leading, trailing or repeated spaces";
+      return missing(evidence, `query ${op} whose ${what}: ${type} ${field}`);
+    },
+  };
 }
