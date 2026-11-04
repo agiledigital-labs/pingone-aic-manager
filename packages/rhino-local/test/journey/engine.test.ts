@@ -1248,31 +1248,30 @@ it.each([
 const NONJSON_SOURCE =
   "docs/api/12-script-bindings-matrix.md (§5 non-JSON values in an object body, 2026-11-04)";
 const nonJson = (behavior: string) => ({ kind: "measured", behavior, source: NONJSON_SOURCE });
-it("NaN, ±Infinity, -0 and java.util.Date in an HTTP body go out as AIC sends them, measured", async () => {
+it("NaN, ±Infinity, -0 and java.util.Date(0) in an HTTP body go out as AIC sends them, measured", async () => {
   const sent = await send(
-    `{method:'POST',${JSON_HEADER},body:{a:'x',n:NaN,p:1/0,m:-1/0,z:-0,d0:new java.util.Date(0),d:new java.util.Date(1234)}}`,
+    `{method:'POST',${JSON_HEADER},body:{a:'x',n:NaN,p:1/0,m:-1/0,z:-0,d0:new java.util.Date(0)}}`,
   );
-  expect(sent.text).toBe(
-    '{"a":"x","n":"NaN","p":"Infinity","m":"-Infinity","z":-0.0,"d0":0,"d":1234}',
-  );
+  expect(sent.text).toBe('{"a":"x","n":"NaN","p":"Infinity","m":"-Infinity","z":-0.0,"d0":0}');
   expect(Object.is((sent.body as { z: number }).z, -0)).toBe(true);
-  expect(sent.body).toEqual({
-    a: "x",
-    n: "NaN",
-    p: "Infinity",
-    m: "-Infinity",
-    z: -0,
-    d0: 0,
-    d: 1234,
-  });
+  expect(sent.body).toEqual({ a: "x", n: "NaN", p: "Infinity", m: "-Infinity", z: -0, d0: 0 });
   expect(sent.assumed).toEqual([]);
   expect(sent.provenance).toContainEqual(BODY_TEXT);
   for (const behavior of [
     'httpClient.send body NaN and ±Infinity are sent as the strings "NaN", "Infinity" and "-Infinity"',
     "httpClient.send body -0 is sent as -0.0",
-    "httpClient.send body java.util.Date is sent as its epoch milliseconds",
+    "httpClient.send body java.util.Date(0) is sent as the integer 0",
   ])
     expect(sent.provenance).toContainEqual(nonJson(behavior));
+});
+// §5 sent only Date(0), where ms, seconds and µs all give 0: a non-zero instant's unit is a guess.
+it("a java.util.Date other than epoch 0 is written as epoch milliseconds, labelled assumed", async () => {
+  const sent = await send(`{method:'POST',${JSON_HEADER},body:{d:new java.util.Date(1234)}}`);
+  expect(sent.text).toBe('{"d":1234}');
+  expect(sent.assumed).toEqual([
+    "httpClient body text for a java.util.Date other than epoch 0, written as epoch milliseconds (docs/api/12 §5 measured only Date(0), which every unit sends as 0)",
+  ]);
+  expect(sent.provenance).not.toContainEqual(BODY_TEXT);
 });
 it("a §5 conversion inside an array is labelled assumed", async () => {
   const sent = await send(`{method:'POST',${JSON_HEADER},body:{arr:[NaN]}}`);
@@ -1281,26 +1280,45 @@ it("a §5 conversion inside an array is labelled assumed", async () => {
     "httpClient body text for NaN, ±Infinity, -0 or a java.util.Date inside an array, written as measured under an object key (docs/api/12 §5)",
   ]);
 });
-it("a cycle in an HTTP body throws AIC's catchable InternalError and sends nothing", async () => {
-  const seen: unknown[] = [];
-  const result = await request(
-    make(
-      "var b={a:'x',n:{}};b.n.up=b;var m='none';" +
-        `try{httpClient.send('https://service.example.com/x',{method:'POST',${JSON_HEADER},body:b}).get();}catch(e){m=String(e);}` +
-        "if(m==='InternalError: Cannot produce JSON from [object Object]'){" +
-        SUCCEED +
-        "}else{action.goTo('false');}",
-      ["true", "false"],
-      { true: SUCCESS, false: FAILURE },
-      { http: async (url) => (seen.push(url), { status: 200, body: {} }) },
+// §5 sent only the root self-cycle; another shape is the same throw, labelled assumed.
+it.each([
+  [
+    "a root self-cycle, measured",
+    "b.self=b;",
+    nonJson(
+      "httpClient.send body with a root self-cycle throws a catchable InternalError; nothing is sent",
     ),
-  );
-  expect(result.status).toBe(200);
-  expect(seen).toEqual([]);
-  expect(result.provenance).toContainEqual(
-    nonJson("httpClient.send body with a cycle throws a catchable InternalError; nothing is sent"),
-  );
-});
+  ],
+  [
+    "a nested cycle, assumed",
+    "b.n.up=b;",
+    {
+      kind: "assumed",
+      behavior:
+        "httpClient.send body with a cycle other than a root self-cycle throws the catchable InternalError measured for b.self = b (docs/api/12 §5)",
+    },
+  ],
+])(
+  "%s: a cycle in an HTTP body throws AIC's catchable InternalError and sends nothing",
+  async (_name, cycle, evidence) => {
+    const seen: unknown[] = [];
+    const result = await request(
+      make(
+        `var b={a:'x',n:{}};${cycle}var m='none';` +
+          `try{httpClient.send('https://service.example.com/x',{method:'POST',${JSON_HEADER},body:b}).get();}catch(e){m=String(e);}` +
+          "if(m==='InternalError: Cannot produce JSON from [object Object]'){" +
+          SUCCEED +
+          "}else{action.goTo('false');}",
+        ["true", "false"],
+        { true: SUCCESS, false: FAILURE },
+        { http: async (url) => (seen.push(url), { status: 200, body: {} }) },
+      ),
+    );
+    expect(result.status).toBe(200);
+    expect(seen).toEqual([]);
+    expect(result.provenance.filter((e) => e.behavior.includes("cycle"))).toEqual([evidence]);
+  },
+);
 const DUMP = {
   date: "httpClient.send body.v is a JS Date: AIC sends a ~1 KB dump of the Rhino NativeDate object without the time value, not the date; send date.toISOString() or date.getTime() (docs/api/12 §5)",
   regexp:
@@ -1320,6 +1338,16 @@ it.each([
     "a cycle through an array",
     "(function(){var l=[];l.push({l:l});return l;})()",
     "AM host httpClient.send argument: cyclic object at [1].body.v[0].l",
+  ],
+  [
+    "an object repeated through an array",
+    "(function(){var b={l:[]};b.l.push(b);return b;})()",
+    "AM host httpClient.send argument: cyclic object at [1].body.v.l[0]",
+  ],
+  [
+    "an Error (unmeasured)",
+    "(function(){try{null.x;}catch(e){return e;}})()",
+    "httpClient.send body.v is an Error: what AIC sends for one is unmeasured (it most likely dumps the Rhino object, as it does a JS Date or RegExp, docs/api/12 §5); send e.message or String(e)",
   ],
 ])("%s in an HTTP body is missing even when the send is caught", async (_name, value, cause) => {
   expectEmulationFailure(cause);

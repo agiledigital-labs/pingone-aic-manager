@@ -270,30 +270,39 @@ and neither carries a label:
   follows that measurement:
   - `NaN`, `1/0` and `-1/0` are recorded as the strings `"NaN"`,
     `"Infinity"` and `"-Infinity"`.
-  - A `java.util.Date` is recorded as its epoch milliseconds.
+  - A `java.util.Date` is recorded as its epoch milliseconds. Only `Date(0)`
+    → `0` was measured, and every unit gives `0` there, so milliseconds is
+    inferred for other instants.
   - A cycle of plain objects throws AIC's catchable
     `InternalError: Cannot produce JSON from [object Object]` and records
-    nothing.
-  - `toJSON` is never called.
+    nothing. Only a root self-cycle (`b.self = b`) was measured; other shapes
+    are inferred to do the same.
+  - `toJSON` is never called. AIC did not apply `Date.prototype.toJSON`; other
+    `toJSON` methods are inferred the same.
 
   A JS `Date`, a `RegExp` or a function goes out from AIC as a 1–1.7 KB dump of
   the Rhino object, which the harness cannot reproduce. For a function, that
-  dump exposes the script's source and the names of its bindings and
-  variables. Such a send is a **harness fault**: it throws a `rhino-local:`
+  dump includes the script's name, the function's encoded source, and the name
+  of every binding and variable in the script. Such a send is a **harness fault**: it throws a `rhino-local:`
   message saying what AIC sends, and it fails the run even if the script
   catches the throw, because AIC would not have thrown. A cycle that passes
   through an array is treated the same way, since its message was not
-  measured. Still unlabelled:
+  measured. So is an `Error` (`{error: e}`): what AIC sends for one is
+  unmeasured, but it is a built-in like `Date` and `RegExp`, so AIC most likely
+  dumps it too, and recording any guess could pass a body assertion AIC would
+  fail. Still unlabelled:
   - `-0` is sent as `-0.0` but recorded as `0`, because recorded effects are
     JSON. This is the same lost precision as `1.0` recorded as `1`.
   - These conversions were measured under an object key only. Array elements
     and a top-level body reuse the same rule.
   - Other Java objects and other built-ins pass through JSON as before,
-    unmeasured.
+    unmeasured. A constructor instance is recorded as its own fields, where
+    the journey emulator reports a non-plain prototype as missing.
 
   The journey emulator applies the same rules in Java. It labels them
-  measured, labels the array case assumed, and reports the dump cases as
-  missing.
+  measured, labels the array case, a non-zero `java.util.Date` and a cycle
+  other than a root self-cycle assumed, and reports the dump cases and an
+  `Error` as missing.
 
 ## Binding probes (measured 2026-09-29)
 
