@@ -64,6 +64,7 @@ it("httpClient.send records the body as it was when sent, not as mutated afterwa
 
 // docs/api/12 §5 (2026-11-04): what AIC sends for non-JSON values in an object body.
 const SEND = (body: string) => `httpClient.send("https://service.example.com/x", { method: "POST", body: ${body} }).get();`;
+// d0 is measured. d's unit is assumed (epoch ms): §5 sent only Date(0), where every unit gives 0.
 it("httpClient.send records NaN, ±Infinity, -0 and java.util.Date as AIC sends them", async () => {
   const effects = await run(SEND("{ a: 'x', n: NaN, p: 1 / 0, m: -1 / 0, z: -0, d0: new java.util.Date(0), d: new java.util.Date(1234), arr: [NaN] }"));
   // -0 goes out as -0.0; the recorded effects are JSON, which cannot carry the sign (as 1.0 is 1).
@@ -72,6 +73,7 @@ it("httpClient.send records NaN, ±Infinity, -0 and java.util.Date as AIC sends 
 it("httpClient.send never calls toJSON: a toJSON method is a function in the body", async () => {
   await expect(run(SEND("{ a: 1, toJSON: function () { return 'x'; } }"))).rejects.toThrow(/rhino-local: httpClient\.send body\.toJSON is a function: AIC sends/);
 });
+// §5 measured the root self-cycle (b.self = b); this nested shape is assumed to throw the same.
 const CYCLE = "(function () { var b = { a: 'x', n: {} }; b.n.up = b; return b; })()";
 it("a cycle throws AIC's catchable InternalError and records nothing", async () => {
   const effects = await run(`try { ${SEND(CYCLE)} } catch (e) { nodeState.putShared("err", String(e)); }`);
@@ -89,6 +91,8 @@ it.each([
   ["a RegExp", "{ r: /a/g }", /rhino-local: httpClient\.send body\.r is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags/],
   ["a function body", "function () {}", /rhino-local: httpClient\.send body is a function: AIC sends a ~1\.7 KB dump of the Rhino function object, which exposes the script's name, its encoded source and the name of every binding and variable in the script/],
   ["a nested function", "{ arr: [1, function () {}] }", /rhino-local: httpClient\.send body\.arr\[1\] is a function: AIC sends/],
+  ["an Error (unmeasured)", "{ error: new Error('boom') }", /rhino-local: httpClient\.send body\.error is an Error: what AIC sends for one is unmeasured \(it most likely dumps the Rhino object, as it does a JS Date or RegExp, docs\/api\/12 §5\); send e\.message or String\(e\)/],
+  ["a caught TypeError", "(function () { try { null.x; } catch (e) { return { error: e }; } })()", /rhino-local: httpClient\.send body\.error is an Error: what AIC sends/],
   ["a cycle through an array", "(function () { var b = { l: [] }; b.l.push(b); return b; })()", /rhino-local: httpClient\.send body\.l\[0\] refers back to an enclosing value through an array \(a cycle\): AIC's error for this shape is unmeasured/],
 ])("httpClient.send with %s fails the run by name", async (_name, body, message) => {
   await expect(run(SEND(body))).rejects.toThrow(message);

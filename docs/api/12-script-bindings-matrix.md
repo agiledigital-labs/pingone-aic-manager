@@ -649,10 +649,12 @@ HTTP 200 with the node's callback).
 | `function () { return 1; }` | key omitted | sends | **a ~1.7 KB bean dump of the Rhino function**: `sourceName` (the script's name), `encodedSource` (Rhino's encoded form of the function source), line numbers, and the `ids` of the enclosing `ScriptContextScope` — every binding and top-level variable **name** in the script |
 | cycle (`b.self = b`) | throws `TypeError: Cyclic org.mozilla.javascript.NativeObject value not allowed.` | **throws, catchable**: `InternalError: Cannot produce JSON from [object Object]` | nothing sent |
 | `/a/g` | `{}` | sends | **a ~1 KB bean dump of the Rhino `NativeRegExp`** (same scope `ids` list); neither source nor flags appear |
-| `new java.util.Date(0)` | `"Thu Jan 01 00:00:00 UTC 1970"` (constructs: the class shutter allows it) | sends | **`0`** — epoch milliseconds, an integer |
+| `new java.util.Date(0)` | `"Thu Jan 01 00:00:00 UTC 1970"` (constructs: the class shutter allows it) | sends | **`0`** — an integer. Epoch 0 is the same in milliseconds, seconds and microseconds, so the unit is **inferred** as milliseconds (Jackson's default), not measured |
 
-So the serializer never refuses a value except a cycle, and it never applies
-`toJSON`. A JS `Date`, `RegExp` or function is reflected as a Java bean of the
+So the serializer never refuses a value except a cycle, and it did not apply
+`Date.prototype.toJSON`. No other `toJSON` was sent, so that it never calls one
+is inferred. Only a root self-cycle was sent; that any cycle of plain objects
+gives the same message is inferred from its naming only `[object Object]`. A JS `Date`, `RegExp` or function is reflected as a Java bean of the
 Rhino object rather than converted, which sends a large meaningless object
 and, for a function, sends source-derived data and the script's variable names
 to the receiver. The non-finite numbers become strings rather than JSON's

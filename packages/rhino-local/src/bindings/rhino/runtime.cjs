@@ -83,14 +83,21 @@ function __rhinoLocalCloneUndefinedAsNull(value, topLevelOnly) {
 //   NaN, 1/0, -1/0 -> the strings "NaN", "Infinity", "-Infinity";
 //   -0 -> -0.0 on the wire (kept as -0 here; the harvest's JSON records 0, the
 //     same lost precision as 1.0 recorded as 1);
-//   new java.util.Date(t) -> t, epoch milliseconds;
-//   a cycle -> a catchable InternalError, nothing sent;
+//   new java.util.Date(0) -> 0. Other instants are recorded as epoch
+//     milliseconds, which is assumed: at 0 every unit agrees;
+//   a root self-cycle (b.self = b) -> a catchable InternalError, nothing sent.
+//     Other cycles of plain objects are assumed to do the same, since the
+//     message names only [object Object];
 //   a JS Date, RegExp or function -> a 1-1.7 KB dump of the Rhino object. That
 //     is not reproducible here and no script means to send it, so it is a
 //     harness fault: thrown, and failing the run even if the script catches it
 //     (AIC would not have thrown, so the script's catch is not AIC's path).
-// toJSON is never called (AIC does not). Values the measurement did not cover
-// (other Java objects, other built-ins) pass through JSON as before, unmeasured.
+// toJSON is never called (AIC did not apply Date.prototype.toJSON; other toJSON
+// methods are assumed the same). An Error is unmeasured, but it is a built-in
+// like Date and RegExp, so AIC most likely dumps it too: a fault, since any
+// recorded guess could pass a body assertion AIC would fail. Values the
+// measurement did not cover (other Java objects, other built-ins) pass through
+// JSON as before, unmeasured.
 function __rhinoLocalSendBody(value, path, ancestors) {
   var kind;
   var out;
@@ -121,6 +128,11 @@ function __rhinoLocalSendBody(value, path, ancestors) {
   if (kind === "[object RegExp]") {
     throw __rhinoLocalFault(
       "rhino-local: httpClient.send " + path + " is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags (docs/api/12 §5); send regexp.source as a string"
+    );
+  }
+  if (kind === "[object Error]") {
+    throw __rhinoLocalFault(
+      "rhino-local: httpClient.send " + path + " is an Error: what AIC sends for one is unmeasured (it most likely dumps the Rhino object, as it does a JS Date or RegExp, docs/api/12 §5); send e.message or String(e)"
     );
   }
   if (typeof value === "function") {

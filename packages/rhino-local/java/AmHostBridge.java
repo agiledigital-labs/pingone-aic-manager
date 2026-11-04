@@ -225,8 +225,9 @@ final class AmHostBridge extends BaseFunction {
    * number, undefined, a function, a host object — is missing, never rewritten or thrown as a
    * catchable error. The exception is an httpClient.send body, where docs/api/12 §5 measured what
    * AIC does with non-JSON values and the encoder does the same: NaN and ±Infinity become strings,
-   * -0 is -0.0, a java.util.Date is its epoch milliseconds, and a cycle of plain objects throws
-   * AIC's catchable InternalError. A JS Date, RegExp or function, which AIC sends as a dump of the
+   * -0 is -0.0, a java.util.Date is an integer timestamp (0 measured for epoch 0; other values
+   * written as epoch milliseconds, assumed), and a cycle of plain objects throws AIC's catchable
+   * InternalError (measured for a root self-cycle, assumed for other shapes). An Error is missing. A JS Date, RegExp or function, which AIC sends as a dump of the
    * Rhino object, is missing with a message saying so.
    */
   private final class Encoder {
@@ -244,6 +245,9 @@ final class AmHostBridge extends BaseFunction {
     final java.util.TreeSet<String> assumed = new java.util.TreeSet<String>();
     /** docs/api/12 §5 conversions this body used, each a measured provenance note. */
     final java.util.TreeSet<String> measured = new java.util.TreeSet<String>();
+    /** The httpClient.send body root and the active depth below it, to tell a root self-cycle. */
+    private Object bodyRoot;
+    private int bodyDepth = -1;
 
     Encoder(Context cx, String where, String nullUnder) {
       this(cx, where, nullUnder, null, false);
@@ -347,6 +351,10 @@ final class AmHostBridge extends BaseFunction {
     /** A §5 conversion: measured under an object key; inside an array it is the same guess. */
     private void converted(String behavior, String path) {
       measured.add(behavior);
+      inArray(path);
+    }
+
+    private void inArray(String path) {
       if (bodyPath(path).indexOf('[') >= 0) {
         assumed.add(
             "httpClient body text for NaN, ±Infinity, -0 or a java.util.Date inside an array,"
@@ -375,8 +383,18 @@ final class AmHostBridge extends BaseFunction {
       boolean wrapped = false;
       Object unwrapped = value instanceof Wrapper ? ((Wrapper) value).unwrap() : value;
       if (unwrapped != null && unwrapped.getClass() == java.util.Date.class && inBody(path)) {
-        converted("httpClient.send body java.util.Date is sent as its epoch milliseconds", path);
-        out.append(Long.toString(((java.util.Date) unwrapped).getTime()));
+        long time = ((java.util.Date) unwrapped).getTime();
+        if (time == 0) {
+          converted("httpClient.send body java.util.Date(0) is sent as the integer 0", path);
+        } else {
+          // §5 measured only epoch 0, where milliseconds, seconds and microseconds all give 0.
+          assumed.add(
+              "httpClient body text for a java.util.Date other than epoch 0, written as epoch"
+                  + " milliseconds (docs/api/12 §5 measured only Date(0), which every unit sends"
+                  + " as 0)");
+          inArray(path);
+        }
+        out.append(Long.toString(time));
         return this;
       }
       if (value instanceof ScriptableObject && inBody(path)) {
@@ -392,6 +410,16 @@ final class AmHostBridge extends BaseFunction {
               "a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source"
                   + " or flags; send regexp.source as a string",
               path);
+        }
+        if ("Error".equals(type)) {
+          // Unmeasured: §5 sent no Error. It is a built-in like Date and RegExp, which AIC dumps,
+          // so recording any guessed text could pass a body assertion AIC would fail.
+          throw missing(
+              "httpClient.send "
+                  + bodyPath(path)
+                  + " is an Error: what AIC sends for one is unmeasured (it most likely dumps the"
+                  + " Rhino object, as it does a JS Date or RegExp, docs/api/12 §5); send"
+                  + " e.message or String(e)");
         }
         if (value instanceof Function) {
           throw dump(
@@ -460,11 +488,22 @@ final class AmHostBridge extends BaseFunction {
       }
       if (active.containsKey(object)) {
         if (inBody(path) && !array && bodyPath(path).indexOf('[') < 0) {
-          // docs/api/12 §5: a cycle of plain objects fails the send with a catchable error.
-          calls.note(
-              "measured",
-              "httpClient.send body with a cycle throws a catchable InternalError; nothing is sent",
-              NONJSON_SOURCE);
+          // docs/api/12 §5 measured a root self-cycle (b.self = b): a catchable error, nothing
+          // sent. Any other cycle of plain objects is assumed to fail the same way, since the
+          // message names only [object Object].
+          if (object == bodyRoot && active.size() == bodyDepth + 1) {
+            calls.note(
+                "measured",
+                "httpClient.send body with a root self-cycle throws a catchable InternalError;"
+                    + " nothing is sent",
+                NONJSON_SOURCE);
+          } else {
+            calls.note(
+                "assumed",
+                "httpClient.send body with a cycle other than a root self-cycle throws the"
+                    + " catchable InternalError measured for b.self = b (docs/api/12 §5)",
+                null);
+          }
           throw ScriptRuntime.constructError(
               "InternalError", "Cannot produce JSON from [object Object]");
         }
@@ -472,6 +511,10 @@ final class AmHostBridge extends BaseFunction {
       }
       if (object.getPrototype() != (array ? arrayProto : objectProto)) {
         throw shape("non-plain prototype", path);
+      }
+      if (nullUnder != null && path.equals(nullUnder)) {
+        bodyRoot = object;
+        bodyDepth = active.size();
       }
       active.put(object, Boolean.TRUE);
       java.util.Set<String> hidden =
