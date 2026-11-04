@@ -1,6 +1,6 @@
 /** Journey-specific overlay over the existing AM binding runtime. Host work uses the runner bridge. */
 import { readFileSync } from "node:fs";
-import { mockPreamble } from "../bindings/preamble.ts";
+import { casePreamble, type CasePreamble } from "../bindings/preamble.ts";
 import { generatedJsPath } from "../paths.ts";
 import type { Given, CallbackEffect } from "../case/types.ts";
 import type { Document } from "../idm/types.ts";
@@ -134,7 +134,8 @@ const overlay = (roots: string[], maps: { shared: boolean; transient: boolean })
   ${JSON.stringify(maps)});
 `;
 
-export function journeyPreamble(state: ScriptState): string {
+/** The case preamble plus the journey overlay; only the overlay is new per step. */
+export function journeyPreamble(state: ScriptState): CasePreamble {
   const given: Given = {
     engine: "next-gen",
     sharedState: state.shared,
@@ -156,8 +157,11 @@ export function journeyPreamble(state: ScriptState): string {
       },
     },
   };
-  return (
-    mockPreamble(given) +
-    overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false })
-  );
+  const base = casePreamble(given);
+  return {
+    ...base,
+    preamble:
+      base.preamble +
+      overlay(stubRoots(), state.javaMaps ?? { shared: false, transient: false }),
+  };
 }

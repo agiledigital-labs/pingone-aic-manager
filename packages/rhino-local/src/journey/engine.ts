@@ -493,7 +493,7 @@ export class JourneyEmulator {
         source: Buffer.from(script.script, "base64").toString("utf8"),
         sourceName: script.name ?? config.script ?? "script",
         classAllowList: decisionNodeClassAllowList(),
-        preamble: journeyPreamble({
+        ...journeyPreamble({
           shared: state.shared,
           transient: frame.transient,
           callbacks: submitted,
