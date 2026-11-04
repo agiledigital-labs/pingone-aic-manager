@@ -41,7 +41,8 @@ type State = {
   frames: Frame[];
   errorMessage: string | null;
   pending?: WireCallback[];
-  page?: { counts: number[] };
+  /** Callbacks each Page child sent at discovery, and the callbacks themselves. */
+  page?: { counts: number[]; effects: CallbackEffect[] };
   existingSession?: Record<string, string>;
   /** Evidence gathered before a round trip; the eventual result depends on it too. */
   provenance?: Provenance[];
@@ -71,7 +72,6 @@ const PAGE_CHILDREN: readonly string[] = [
   "UsernameCollectorNode",
   "PasswordCollectorNode",
   "AttributeCollectorNode",
-  "ValidatedUsernameNode",
   "ValidatedPasswordNode",
 ];
 /**
@@ -84,7 +84,12 @@ export function listOutcomes(
   node: NodeDocument,
   missing: (name: string) => never,
 ): readonly string[] | undefined {
-  if (type === "ScriptedDecisionNode") return node.outcomes ?? [];
+  if (type === "ScriptedDecisionNode") {
+    if (node.outcomes === undefined) return [];
+    if (!Array.isArray(node.outcomes) || node.outcomes.some((name) => typeof name !== "string"))
+      missing("ScriptedDecisionNode outcomes configuration");
+    return node.outcomes;
+  }
   if (type === "InnerTreeEvaluatorNode")
     return node.displayErrorOutcome ? ["true", "false", "error"] : ["true", "false"];
   if (type === "PageNode") {
@@ -312,8 +317,17 @@ export class JourneyEmulator {
           "existingSession is the caller-supplied complete cookie session snapshot",
         );
       }
-      if (body.callbacks !== undefined)
+      if (body.callbacks !== undefined) {
+        // Doc 25 measured this with a scripted entry node only.
+        const entry = tree.nodes[tree.entryNodeId]?.nodeType;
+        if (
+          Array.isArray(body.callbacks) &&
+          body.callbacks.length &&
+          entry !== "ScriptedDecisionNode"
+        )
+          this.missing(`callbacks without authId to a ${String(entry)} entry node`);
         this.measured("callbacks without authId start a fresh journey and reach its first node");
+      }
     }
     let submitted = fromWire(body.callbacks, (name) => this.missing(name));
     if (state.pending) {
@@ -523,6 +537,10 @@ export class JourneyEmulator {
       };
       errorMessage: string | null;
     };
+    // AM discards the Action when callbacks are queued; whether a message set
+    // alongside them survives is unmeasured.
+    if (result.errorMessage !== null && result.effects.callbacks.length)
+      this.missing("action.withErrorMessage with queued callbacks");
     state.shared = result.effects.sharedState.final;
     frame.transient = result.effects.transientState.final;
     state.javaMap = result.effects.javaMapObjectAttributes.shared;
@@ -587,7 +605,8 @@ export class JourneyEmulator {
       collected: CallbackEffect[] = [];
     let offset = 0,
       outcome: string | null = null,
-      scriptRan = false;
+      scriptRan = false,
+      rejected = false;
     for (const [index, child] of config.nodes.entries()) {
       if (!isDocument(child) || typeof child._id !== "string" || typeof child.nodeType !== "string")
         this.missing("PageNode child reference");
@@ -602,7 +621,14 @@ export class JourneyEmulator {
       offset += count;
       // Doc 25 (discovery rows): every scripted child runs for real when the page
       // is first reached, callback-free or not, and again on submission.
-      if (previous && child.nodeType === "ScriptedDecisionNode") scriptRan = true;
+      if (previous && child.nodeType === "ScriptedDecisionNode") {
+        // A sibling already rejected this submission: whether AM still runs a
+        // later script, and so commits its effects, is unmeasured.
+        if (rejected)
+          this.missing("PageNode scripted child after a rejected sibling on submission");
+        scriptRan = true;
+      }
+      const message = state.errorMessage;
       const result = await this.execute(
         child.nodeType,
         child._id,
@@ -617,6 +643,10 @@ export class JourneyEmulator {
           this.measured("a throw in a Page child's discovery run fails the first POST with 401");
         return result;
       }
+      // Discovery ignores the child's Action (doc 25); whether a message set there survives is unmeasured.
+      if (!previous && state.errorMessage !== message)
+        this.missing("action.withErrorMessage in a PageNode discovery run");
+      if (previous && result.callbacks.length) rejected = true;
       counts.push(result.callbacks.length);
       collected.push(...result.callbacks);
       outcome = result.outcome;
@@ -626,7 +656,7 @@ export class JourneyEmulator {
     );
     if (!previous) {
       if (!collected.length) this.missing("PageNode without callbacks");
-      state.page = { counts };
+      state.page = { counts, effects: structuredClone(collected) };
       state.shared.pageNodeCallbacks = toWire(collected, (name) => this.missing(name)) as JsonValue;
       this.evidence.assumed(
         "pageNodeCallbacks stores the merged callback wire array; only shared presence and lifetime are measured",
@@ -643,17 +673,31 @@ export class JourneyEmulator {
       // Doc 25 measured a re-send only for collectors; what a script's effects do
       // across a re-sent page is unmeasured.
       if (scriptRan) this.missing("PageNode re-sent after a scripted child ran on submission");
-      // A rejected collector re-sends the entire page, including siblings' answers.
-      const retry = submitted.map((cb) => ({ ...cb }));
-      let start = 0;
+      // A rejected collector re-sends the entire page. Doc 25 (out-coll page
+      // step 2): a StringAttributeInputCallback echoes its submitted value; a
+      // PasswordCallback goes out as first sent, prompt only, never the value.
+      const retry: CallbackEffect[] = [];
+      let start = 0,
+        firstShape = false;
       for (const [index, count] of previous.counts.entries()) {
+        const sent = previous.effects.slice(start, start + count);
+        const answered = submitted.slice(start, start + count);
         if (counts[index]) {
           if (counts[index] !== count)
             this.missing("PageNode callback count changes on resubmission");
-          retry.splice(start, count, ...collected.splice(0, count));
+          retry.push(...collected.splice(0, count));
+        } else if (answered.every((cb) => cb.type === "StringAttributeInputCallback")) {
+          retry.push(...answered.map((cb) => ({ ...cb })));
+        } else {
+          if (sent.some((cb) => cb.type !== "PasswordCallback")) firstShape = true;
+          retry.push(...structuredClone(sent));
         }
         start += count;
       }
+      if (firstShape)
+        this.evidence.assumed(
+          "a re-sent Page repeats an accepted sibling's callbacks as first sent; measured for PasswordCallback only",
+        );
       state.page = previous;
       state.shared.pageNodeCallbacks = toWire(retry, (name) => this.missing(name)) as JsonValue;
       this.evidence.assumed(

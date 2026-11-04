@@ -703,7 +703,7 @@ it.each(["IdentifyExistingUserNode", "PatchObjectNode"])(
     ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
   },
 );
-it.each(["CreateObjectNode", "PatchObjectNode"])(
+it.each(["CreateObjectNode", "PatchObjectNode", "IdentifyExistingUserNode"])(
   "split objectAttributes is missing: %s",
   async (type) => {
     const cause = `${type} split objectAttributes across shared and transient`;
@@ -834,4 +834,281 @@ it("Identify followed by Success issues a session; Create alone does not invent 
       expect(result).toMatchObject({ status: 200, body: { tokenId: expect.any(String) } });
     else expect(result).toMatchObject({ status: 500, body: null, rawBody: "" });
   }
+});
+type WirePage = {
+  callbacks: {
+    type: string;
+    input: { name: string; value: JsonValue }[];
+    output: { name: string; value: JsonValue }[];
+  }[];
+};
+/** A Page of the given collector children, wired to the state dump on its outcome. */
+function collectorPage(
+  children: [string, string][],
+  extra: Record<string, Record<string, Record<string, unknown>>> = {},
+  scripts: Record<string, string> = {},
+): JourneyConfigInput {
+  const input = flow(
+    "PageNode",
+    { nodes: children.map(([_id, nodeType]) => ({ _id, nodeType })) },
+    "",
+  );
+  return {
+    ...input,
+    nodes: {
+      ...input.nodes,
+      ...extra,
+      ScriptedDecisionNode: {
+        ...input.nodes.ScriptedDecisionNode,
+        ...Object.fromEntries(
+          Object.keys(scripts).map((id) => [id, { script: id, outcomes: ["outcome"] }]),
+        ),
+      },
+    },
+    scripts: {
+      ...input.scripts,
+      ...Object.fromEntries(Object.entries(scripts).map(([id, source]) => [id, script(source)])),
+    },
+  };
+}
+const COLLECTORS = {
+  UsernameCollectorNode: { user: {} },
+  PasswordCollectorNode: { pass: {} },
+  AttributeCollectorNode: {
+    attrs: { attributesToCollect: ["givenName", "sn"], validateInputs: false, required: true },
+  },
+};
+it("a re-sent Page echoes attribute values only; Name and Password go out as first sent", async () => {
+  const emu = make(
+    collectorPage(
+      [
+        ["user", "UsernameCollectorNode"],
+        ["attrs", "AttributeCollectorNode"],
+        ["pass", "PasswordCollectorNode"],
+      ],
+      COLLECTORS,
+    ),
+    {},
+    storage(),
+  );
+  const first = await request(emu);
+  const rejected = await request(
+    emu,
+    answer(first.body, ["invented", "Given", "", "super-secret-pw"]),
+  );
+  expect(rejected.status).toBe(200);
+  const sent = first.body as WirePage,
+    retry = rejected.body as WirePage;
+  expect(JSON.stringify(retry)).not.toContain("super-secret-pw");
+  expect(retry.callbacks[0]).toEqual(sent.callbacks[0]);
+  expect(retry.callbacks[3]).toEqual({
+    type: "PasswordCallback",
+    output: [{ name: "prompt", value: "Password" }],
+    input: [{ name: "IDToken4", value: "" }],
+  });
+  expect(retry.callbacks[1]?.output.find((field) => field.name === "value")?.value).toBe("Given");
+  expect(rejected.provenance).toContainEqual({
+    kind: "assumed",
+    behavior:
+      "a re-sent Page repeats an accepted sibling's callbacks as first sent; measured for PasswordCallback only",
+  });
+  // The re-sent page is what the snapshot expects back.
+  const done = await request(
+    emu,
+    answer(rejected.body, ["invented", "Given", "Family", "super-secret-pw"]),
+  );
+  expect(dump(done.body)).toMatchObject({ username: "invented", password: "super-secret-pw" });
+});
+it("a scripted Page child after a rejecting sibling is missing before it runs", async () => {
+  const cause = "PageNode scripted child after a rejected sibling on submission";
+  expectEmulationFailure(cause);
+  const idm = storage();
+  const emu = make(
+    collectorPage(
+      [
+        ["attrs", "AttributeCollectorNode"],
+        ["after", "ScriptedDecisionNode"],
+      ],
+      COLLECTORS,
+      {
+        after:
+          "openidm.create('managed/widget',null,{userName:'side-effect'});action.goTo('outcome');",
+      },
+    ),
+    {},
+    idm,
+  );
+  const first = await request(emu);
+  expect(await widgetCount(idm)).toBe(1); // discovery runs the script for real (doc 25)
+  expect(await request(emu, answer(first.body, ["Given", ""]))).toMatchObject({
+    status: 501,
+    emulation: { missing: [cause] },
+  });
+  expect(await widgetCount(idm)).toBe(1);
+});
+it("a ValidatedUsernameNode Page child is missing even with a declared outcome", async () => {
+  const cause = "PageNode child type: ValidatedUsernameNode";
+  expectEmulationFailure(cause);
+  const emu = make(
+    collectorPage(
+      [
+        ["vu", "ValidatedUsernameNode"],
+        ["pass", "PasswordCollectorNode"],
+      ],
+      { ...COLLECTORS, ValidatedUsernameNode: { vu: {} } },
+    ),
+    { declaredOutcomes: { vu: "outcome" } },
+    storage(),
+  );
+  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("ValidatedPasswordNode over existing transient objectAttributes is missing", async () => {
+  const cause = "ValidatedPasswordNode over existing transient objectAttributes";
+  expectEmulationFailure(cause);
+  const emu = make(
+    collectorPage(
+      [
+        ["seed2", "ScriptedDecisionNode"],
+        ["vpw", "ValidatedPasswordNode"],
+      ],
+      { ValidatedPasswordNode: { vpw: { validateInput: false, passwordAttribute: "password" } } },
+      { seed2: "nodeState.putTransient('objectAttributes',{custom:'x'});action.goTo('outcome');" },
+    ),
+    {},
+    storage(),
+  );
+  const first = await request(emu);
+  expect(await request(emu, answer(first.body, ["secret"]))).toMatchObject({
+    status: 501,
+    emulation: { missing: [cause] },
+  });
+});
+it("withErrorMessage in a Page discovery run is missing", async () => {
+  const cause = "action.withErrorMessage in a PageNode discovery run";
+  expectEmulationFailure(cause);
+  const emu = make(
+    collectorPage(
+      [
+        ["early", "ScriptedDecisionNode"],
+        ["user", "UsernameCollectorNode"],
+      ],
+      COLLECTORS,
+      { early: "action.goTo('outcome').withErrorMessage('discarded');" },
+    ),
+    {},
+    storage(),
+  );
+  expect(await request(emu)).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("objectAttributes a node wrote is a Java map in the next script", async () => {
+  const input = flow(
+    "AttributeCollectorNode",
+    { attributesToCollect: ["mail"], validateInputs: false, required: false },
+    "",
+    ["outcome"],
+    "callbacksBuilder.hiddenValueCallback('state',JSON.stringify({mail:nodeState.get('objectAttributes').get('mail'),printed:String(nodeState.get('objectAttributes'))}));",
+  );
+  const emu = make(input, {}, storage());
+  const first = await request(emu);
+  const next = await request(emu, answer(first.body, ["invented@example.com"]));
+  expect(dump(next.body)).toEqual({
+    mail: "invented@example.com",
+    printed: '{ "mail": "invented@example.com" }',
+  });
+  expect(next.provenance).toContainEqual({
+    kind: "assumed",
+    behavior:
+      "objectAttributes written by a node or carried across a round trip is a Java map in later scripts; its printed form is measured, its get/put are inferred",
+  });
+});
+it.each([
+  [
+    "AttributeCollectorNode",
+    { attributesToCollect: ["mail"], validateInputs: false, required: false },
+    "nodeState.putShared('objectAttributes','not-an-object');",
+    "AttributeCollectorNode over non-object shared objectAttributes",
+  ],
+  [
+    "IdentifyExistingUserNode",
+    { identityAttribute: "mail", identifier: "userName" },
+    "",
+    "IdentifyExistingUserNode with no identity value",
+  ],
+  [
+    "IdentifyExistingUserNode",
+    { identityAttribute: "mail", identifier: "userName" },
+    "nodeState.putShared('username',null);",
+    "IdentifyExistingUserNode null identity source",
+  ],
+  [
+    "IdentifyExistingUserNode",
+    { identityAttribute: "mail" },
+    "nodeState.putShared('username','invented@example.com');",
+    "IdentifyExistingUserNode identifier configuration",
+  ],
+  [
+    "PatchObjectNode",
+    { identityAttribute: "userName", patchAsObject: false },
+    "",
+    "PatchObjectNode missing objectAttributes",
+  ],
+] as const)("unmeasured identity input is missing: %s %#", async (type, node, seed, cause) => {
+  expectEmulationFailure(cause);
+  const idm = storage();
+  await idm.request({
+    method: "PUT",
+    path: "managed/widget/record",
+    body: { userName: "invented", mail: "invented@example.com" },
+  });
+  const emu = make(flow(type, { ...node }, seed, ["outcome", "true", "false"]), {}, idm);
+  const first = await request(emu);
+  const result =
+    type === "AttributeCollectorNode"
+      ? await request(emu, answer(first.body, ["invented@example.com"]))
+      : first;
+  expect(result).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
+it("Patch with no identity value records its measured FAILURE", async () => {
+  const next = await request(
+    make(
+      flow(
+        "PatchObjectNode",
+        { identityAttribute: "userName", patchAsObject: false },
+        "nodeState.putShared('objectAttributes',{sn:'Changed'});",
+        ["PATCHED", "FAILURE"],
+      ),
+      {},
+      storage(),
+    ),
+  );
+  expect(dump(next.body)).toMatchObject({ branch: "FAILURE" });
+  expect(next.provenance).toContainEqual({
+    kind: "measured",
+    behavior:
+      "PatchObjectNode ignores _id, uses identity attribute or username, and aborts on no match",
+    source: "docs/api/25-journey-runtime.md (measurement agent, 2026-11-02)",
+  });
+});
+it("callbacks without authId to a collector entry node are missing", async () => {
+  const cause = "callbacks without authId to a UsernameCollectorNode entry node";
+  expectEmulationFailure(cause);
+  const input: JourneyConfigInput = {
+    realm: "alpha",
+    trees: {
+      invented: {
+        entryNodeId: "user",
+        nodes: { user: { nodeType: "UsernameCollectorNode", connections: { outcome: SUCCESS } } },
+      },
+    },
+    nodes: { UsernameCollectorNode: { user: {} } },
+    scripts: {},
+  };
+  const emu = make(input);
+  const first = await request(emu);
+  const forged = structuredClone(first.body) as { authId?: string };
+  delete forged.authId;
+  expect(await request(emu, answer(forged as JsonValue, ["forged"]))).toMatchObject({
+    status: 501,
+    emulation: { missing: [cause] },
+  });
 });
