@@ -675,34 +675,127 @@ it.each(["id", "attribute", "username", "transient", "absent"])(
     ).toMatchObject({ sn: ["id", "absent"].includes(variant) ? "Family-hook" : "Changed" });
   },
 );
-it.each(["IdentifyExistingUserNode", "PatchObjectNode"])(
-  "conflicting identity sources are missing: %s",
-  async (type) => {
-    const cause = `${type} conflicting identity sources`;
-    expectEmulationFailure(cause);
-    const idm = storage();
-    for (const name of ["one", "two"])
-      await idm.request({
-        method: "PUT",
-        path: `managed/widget/${name}`,
-        body: { userName: name },
-      });
-    expect(
-      await request(
-        make(
-          flow(
-            type,
-            { identityAttribute: "userName", identifier: "userName", patchAsObject: false },
-            "nodeState.putShared('username','one');nodeState.putShared('objectAttributes',{userName:'two'});",
-            ["true", "false"],
-          ),
-          {},
-          idm,
+// docs/api/25 (2026-11-04): objectAttributes[identityAttribute], when present, is the
+// only lookup value; username is consulted only when it is absent, with no fallback.
+const PRECEDENCE = {
+  kind: "measured",
+  behavior:
+    "IdentifyExistingUserNode looks up objectAttributes[identityAttribute] alone when present, ignoring username",
+  source: "docs/api/25-journey-runtime.md (Identify Existing User precedence, 2026-11-04)",
+};
+async function twoUsers() {
+  const idm = storage();
+  for (const [id, userName, mail] of [
+    ["a", "ua", "ma@example.com"],
+    ["b", "ub", "mb@example.com"],
+  ] as const)
+    await idm.request({ method: "PUT", path: `managed/widget/${id}`, body: { userName, mail } });
+  return idm;
+}
+it.each([
+  ["agree", "ua", "ma@example.com", "true", "a", "ua"],
+  ["oaB-unameA", "ua", "mb@example.com", "true", "b", "ub"],
+  ["oaB-umailA", "ma@example.com", "mb@example.com", "true", "b", "ub"],
+  ["oaB-unobody", "nobody@example.com", "mb@example.com", "true", "b", "ub"],
+  ["oanobody-unameA", "ua", "nobody@example.com", "false", null, "ua"],
+  ["oanobody-umailA", "ma@example.com", "nobody@example.com", "false", null, "ma@example.com"],
+])(
+  "Identify precedence %s: objectAttributes alone decides when present",
+  async (_variant, username, mail, branch, id, after) => {
+    const next = await request(
+      make(
+        flow(
+          "IdentifyExistingUserNode",
+          { identityAttribute: "mail", identifier: "userName" },
+          `nodeState.putShared('username',${JSON.stringify(username)});nodeState.putShared('objectAttributes',{mail:${JSON.stringify(mail)}});`,
+          ["true", "false"],
         ),
+        {},
+        await twoUsers(),
       ),
-    ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+    );
+    expect(dump(next.body)).toMatchObject({ branch, id, username: after });
+    expect(next.provenance).toContainEqual(PRECEDENCE);
   },
 );
+it("Identify control: username alone finds the user objectAttributes missed above", async () => {
+  const next = await request(
+    make(
+      flow(
+        "IdentifyExistingUserNode",
+        { identityAttribute: "mail", identifier: "userName" },
+        "nodeState.putShared('username','ma@example.com');",
+        ["true", "false"],
+      ),
+      {},
+      await twoUsers(),
+    ),
+  );
+  expect(dump(next.body)).toMatchObject({ branch: "true", id: "a", username: "ua" });
+  expect(next.provenance).not.toContainEqual(PRECEDENCE);
+});
+it.each([
+  ["page-agree", "ma@example.com", "a", "ua"],
+  ["page-disagree", "mb@example.com", "b", "ub"],
+])("Identify after Page[Username, AttributeCollector(mail)]: %s", async (_v, mail, id, after) => {
+  const input = flow(
+    "IdentifyExistingUserNode",
+    { identityAttribute: "mail", identifier: "userName" },
+    "",
+    ["true", "false"],
+  );
+  const trees = {
+    invented: {
+      ...input.trees.invented,
+      entryNodeId: "page",
+      nodes: {
+        ...input.trees.invented!.nodes,
+        page: { nodeType: "PageNode", connections: { outcome: "node" } },
+      },
+    },
+  };
+  const nodes = {
+    ...input.nodes,
+    PageNode: {
+      page: {
+        nodes: [
+          { _id: "user", nodeType: "UsernameCollectorNode" },
+          { _id: "attrs", nodeType: "AttributeCollectorNode" },
+        ],
+      },
+    },
+    UsernameCollectorNode: { user: {} },
+    AttributeCollectorNode: {
+      attrs: { attributesToCollect: ["mail"], validateInputs: false, required: true },
+    },
+  };
+  const emu = make({ ...input, trees, nodes }, {}, await twoUsers());
+  const first = await request(emu);
+  const next = await request(emu, answer(first.body, ["ua", mail]));
+  expect(dump(next.body)).toMatchObject({ branch: "true", id, username: after });
+  expect(next.provenance).toContainEqual(PRECEDENCE);
+});
+it.each(["PatchObjectNode"])("conflicting identity sources are missing: %s", async (type) => {
+  const cause = `${type} conflicting identity sources`;
+  expectEmulationFailure(cause);
+  const idm = storage();
+  for (const name of ["one", "two"])
+    await idm.request({ method: "PUT", path: `managed/widget/${name}`, body: { userName: name } });
+  expect(
+    await request(
+      make(
+        flow(
+          type,
+          { identityAttribute: "userName", identifier: "userName", patchAsObject: false },
+          "nodeState.putShared('username','one');nodeState.putShared('objectAttributes',{userName:'two'});",
+          ["true", "false"],
+        ),
+        {},
+        idm,
+      ),
+    ),
+  ).toMatchObject({ status: 501, emulation: { missing: [cause] } });
+});
 it.each(["CreateObjectNode", "PatchObjectNode", "IdentifyExistingUserNode"])(
   "split objectAttributes is missing: %s",
   async (type) => {

@@ -58,8 +58,10 @@ describe("the utils host bridge on the real Rhino engine", () => {
   });
 
   // So what the dispatcher accepts is the limit instead: nothing the public
-  // utils surface refuses. RSA is the control that the path reaches it.
-  it("reached through __parent__, refuses what utils refuses", async () => {
+  // utils surface refuses. ECDSA is the control that the path reaches it: an
+  // RSA-2048 keygen here once outran the 5 s script budget under parallel load,
+  // a false red. The test's own timeout also stays above the script budget.
+  it("reached through __parent__, refuses what utils refuses", { timeout: 30_000 }, async () => {
     const result = await runCase(
       runner,
       defineCase({
@@ -71,7 +73,7 @@ describe("the utils host bridge on the real Rhino engine", () => {
           "}",
           "var probe = {",
           "  reached: typeof op,",
-          '  rsa: attempt(function () { return op("generateKeyPair", "RSA").publicKey; }),',
+          '  ecdsa: attempt(function () { return op("generateKeyPair", "ECDSA").publicKey; }),',
           '  dsa: attempt(function () { return op("generateKeyPair", "DSA"); }),',
           '  sha224: attempt(function () { return op("pbkdf2", utils.types.stringToBytes("p"), utils.types.stringToBytes("s"), 1, 128, "SHA-224"); }),',
           "};",
@@ -89,6 +91,6 @@ describe("the utils host bridge on the real Rhino engine", () => {
       string,
       unknown
     >;
-    expect(probe).toEqual({ reached: "function", rsa: "object", dsa: "threw", sha224: "threw" });
+    expect(probe).toEqual({ reached: "function", ecdsa: "object", dsa: "threw", sha224: "threw" });
   });
 });
