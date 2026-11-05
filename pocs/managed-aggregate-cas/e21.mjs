@@ -8,7 +8,7 @@
 // does not fire aborts that part.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -258,7 +258,7 @@ async function positiveControl() {
   const p = await makeParent("children");
   const created = await makeChild();
   if (created.status !== 200 && created.status !== 201) {
-    return { ok: false, reason: "child create", http: created.status };
+    return { ok: false, reason: "child create", parentHttp: null, childHttp: created.status };
   }
   const c = created.json;
   const pr = await call("PATCH", rec(PARENT, p._id), {
@@ -278,12 +278,17 @@ async function positiveControl() {
 }
 
 async function requireControl() {
+  // A config/managed write makes the router 404 the POC types for a few
+  // seconds. That is not a hook miss. Retry those. A 200 whose hooks stayed
+  // quiet is a real miss, and one retry is enough to void the part.
   let last = null;
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 8; i++) {
     last = await positiveControl();
-    console.log(`control ${last.ok ? "fired" : "MISSED"} parent ${last.parentHttp} child ${last.childHttp} ${JSON.stringify(last.hooks || {})}`);
+    console.log(`control ${last.ok ? "fired" : "MISSED"} parent ${last.parentHttp} child ${last.childHttp} ${last.reason || ""} ${JSON.stringify(last.hooks || {})}`);
     if (last.ok) return last;
-    await sleep(5000);
+    const quiet = last.parentHttp === 200 && last.childHttp === 200;
+    if (quiet && i >= 1) break;
+    await sleep(3000);
   }
   const err = new Error("positive control did not fire; this part is void");
   err.control = last;
@@ -527,6 +532,19 @@ async function partFanout() {
   const rows = [];
   const controls = [];
   const stored = [];
+  if (process.env.E21_RESUME === "1") {
+    try {
+      const prev = JSON.parse(readFileSync(join(OUT, "E21-fanout.json"), "utf8"));
+      const kept = new Set((prev.rows || []).map((r) => r.flags));
+      rows.push(...(prev.rows || []));
+      controls.push(...(prev.controls || []).filter((c) => kept.has(c.flags)));
+      stored.push(...(prev.shapes || []).filter((s) => kept.has(s.flags)));
+      console.log(`resume ${rows.length} rows, ${kept.size} configs`);
+    } catch (e) {
+      console.log(`resume found nothing (${scrub(e.message)})`);
+    }
+  }
+  const done = new Set(rows.map((r) => r.flags));
   const configs = [];
   for (const shape of shapes) {
     for (const flags of flagSets) {
@@ -580,6 +598,10 @@ async function partFanout() {
     mirror: true,
   });
   for (const cfg of configs) {
+    if (done.has(cfg.name)) {
+      console.log(`skip ${cfg.name}`);
+      continue;
+    }
     const set = configure(cfg.env);
     const shape = await liveShape().catch((e) => ({ error: scrub(e.message) }));
     stored.push({ flags: cfg.name, mirror: cfg.mirror, configure: set.ok ? "ok" : "failed", shape });
