@@ -40,6 +40,7 @@ export class IdmEmulator {
     const fork = new IdmEmulator(this.config, this.runner, { ...(this.policy ? { policy: this.policy } : {}), properties: this.properties });
     for (const [key, value] of this.records) fork.records.set(key, structuredClone(value));
     fork.managed.inheritCookies(this.managed);
+    fork.managed.inheritMaterialized(this.managed);
     fork.managed.inheritPasswordTokens(this.managed);
     fork.failures = this.failures;
     return fork;

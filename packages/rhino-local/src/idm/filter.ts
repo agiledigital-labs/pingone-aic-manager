@@ -5,32 +5,43 @@ import { bindingsCrestFilterPath } from "../paths.ts";
 
 export type Operator = "eq" | "co" | "sw" | "gt" | "ge" | "lt" | "le";
 type Ast = { kind: "true" | "false" } | { kind: "and" | "or"; left: Ast; right: Ast } | { kind: "not"; inner: Ast } |
-  { kind: "pr"; field: string } | { kind: "cmp"; field: string; op: string; value: string | number | boolean };
+  { kind: "pr"; field: string; positive?: boolean } |
+  { kind: "cmp"; field: string; op: string; value: string | number | boolean; spelling?: string; positive?: boolean };
 type Prepared = { ast: Ast; error?: undefined } | { error: "parse" | "unsupported" | "ne"; reason: string };
 /** A string reading: one way AIC might treat case, spaces or Unicode before comparing. */
 type Transform = (text: string) => string;
 /** Which unmeasured thing left a leaf undecided. */
-export type Dimension = "case" | "space" | "unicode" | "type" | "presence";
+export type Dimension = "case" | "space" | "unicode" | "type" | "presence" | "rule" | "path";
 type Blame = { field: string; op: string; dimension: Dimension };
 /** `true`, `false`, or the leaf that left the answer undecided. */
 type Tri = boolean | { unknown: Blame };
 type Strings = (field: string, op: string, candidate: string, expected: string) => Tri;
+/** What a lane supplies to the shared evaluator (crest-filter.cjs `evaluate`). */
+interface Lane {
+  strings: Strings;
+  quotedInteger(field: string): boolean;
+  scalar(field: string, op: string, type: "number" | "boolean"): void;
+}
 
 const grammar = createRequire(import.meta.url)(bindingsCrestFilterPath) as {
   pointerParts(path: string): string[];
   prepare(input: unknown, evaluated: readonly string[]): Prepared;
-  evaluate(ast: Ast, record: JsonValue, strings: Strings): Tri;
+  evaluate(ast: Ast, record: JsonValue, lane: Lane): Tri;
+  otherRule(type: string, field: string): boolean;
   readField(record: JsonValue, path: string): JsonValue | undefined;
   readStrings(candidate: string, op: string, expected: string, cases: Transform[], spaces: Transform[]):
     { answer: boolean; dimension: Dimension | null };
   compareText(left: string, op: string, right: string): boolean;
-  transforms: Record<"identity" | "asciiLower" | "asciiUpper" | "fullLower" | "foldLower" | "trim" | "collapse" |
-    "wideTrim" | "wideCollapse", Transform>;
+  transforms: Record<"identity" | "asciiLower" | "asciiUpper" | "fullLower" | "foldLower" | "charLower" | "fullFold" |
+    "trim" | "collapse" | "wideTrim" | "wideCollapse", Transform>;
 };
 
 export const pointerParts = (path: string): string[] => grammar.pointerParts(path);
 
 export const fieldValue = (value: JsonValue, path: string): JsonValue | undefined => grammar.readField(value, path);
+
+/** Whether a user type's field has a DS matching rule no string reading describes (round-5 P2-3). */
+export const otherRule = (type: string, field: string): boolean => grammar.otherRule(type, field);
 
 const evaluated: readonly Operator[] = ["eq", "co", "sw", "gt", "ge", "lt", "le"];
 
@@ -66,6 +77,12 @@ export interface StringPolicy {
   used(field: string, op: Operator, dimension: RuleDimension): void;
   /** Every string ordering leaf, so ordering never goes unlabelled. */
   ordered(field: string, op: Operator, ascii: boolean): void;
+  /** The measured `eq "7"` against a number (doc 10) holds for this field; labels it if so. */
+  quotedInteger(field: string): boolean;
+  /** A same-type number or boolean leaf was decided; the repository labels it. */
+  scalar(field: string, op: Operator, type: "number" | "boolean"): void;
+  /** No case or space reading describes this field (its DS matching rule is another); refuse it. */
+  refused(field: string): boolean;
   /** The record's whole answer turns on something unmeasured; must refuse. */
   unknown(field: string, op: Operator | "pr", dimension: Dimension): never;
 }
@@ -76,15 +93,25 @@ const t = grammar.transforms;
 // whether whitespace other than U+0020 counts as a space). The shared evaluator adds the Unicode
 // readings (NFKC, RFC 4518 map-to-nothing) on top, for every field.
 const variants: Record<RuleDimension, Record<StringRule, Transform[]>> = {
-  case: { exact: [t.identity], fold: [t.asciiLower, t.fullLower, t.asciiUpper, t.foldLower], unknown: [t.identity, t.asciiLower, t.fullLower, t.asciiUpper, t.foldLower] },
+  case: { exact: [t.identity], fold: [t.asciiLower, t.fullLower, t.asciiUpper, t.foldLower, t.charLower, t.fullFold],
+    unknown: [t.identity, t.asciiLower, t.fullLower, t.asciiUpper, t.foldLower, t.charLower, t.fullFold] },
   space: { exact: [t.identity], fold: [t.trim, t.collapse, t.wideTrim, t.wideCollapse], unknown: [t.identity, t.trim, t.collapse, t.wideTrim, t.wideCollapse] },
 };
 
 const ORDERING: readonly string[] = ["gt", "ge", "lt", "le"];
 
+function policyLane(policy: StringPolicy): Lane {
+  return {
+    strings: policyStrings(policy),
+    quotedInteger: (field) => policy.quotedInteger(field),
+    scalar: (field, op, type) => policy.scalar(field, op as Operator, type),
+  };
+}
+
 function policyStrings(policy: StringPolicy): Strings {
   return (field, operator, candidate, expected) => {
     const op = operator as Operator;
+    if (policy.refused(field)) return { unknown: { field, op, dimension: "rule" } };
     if (ORDERING.includes(op)) policy.ordered(field, op, /^[\x20-\x7e]*$/.test(candidate + expected));
     const rules = policy.rules(field, op);
     const cases = variants.case[rules.case], spaces = variants.space[rules.space];
@@ -107,7 +134,7 @@ function policyStrings(policy: StringPolicy): Strings {
  * `and`/`or` operand order cannot matter.
  */
 export function matchesFilter(filter: Filter, object: JsonValue, policy: StringPolicy): boolean {
-  const result = grammar.evaluate(filter, object, policyStrings(policy));
+  const result = grammar.evaluate(filter, object, policyLane(policy));
   if (typeof result === "boolean") return result;
   const { field, op, dimension } = result.unknown;
   return policy.unknown(field, op as Operator | "pr", dimension);
