@@ -396,4 +396,13 @@ rewriting the parent.
 was 200. Every repetition kept 10 edges, visible on both sides before and after.
 With `NOTIFY=1`, `derived` ended at count 10, sum 55, active 0. With the flags
 off, `derived` stayed at count 9, sum 45, active 9, which is the link-add result
-and not a missing edge. The collection cell is running.
+and not a missing edge.
+
+### map-coll
+
+`NOTIFY=1` with `notify` on the child's `resourceCollection` and `notifySelf` on
+the parent's relationship node. The control fired. Five repetitions lost edges
+(10 down to 7, 8, 6, 5 and 6). Same 404, both sides, nothing came back, no
+`DELETE`, no `idm-core` `ERROR`. `derived` matched the edges that remained. Two
+narrowing runs are in progress: the same mapped burst with the flags off, sent
+one patch at a time, and the same burst with N = 2.
