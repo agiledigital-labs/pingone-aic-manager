@@ -1965,7 +1965,14 @@ only way to its values is `values().toArray()` or `map[k]`. A key named `get`,
   local script tester's injected failures (`openidmFailures`) carry no `code`
   property and put the code in their own message text,
   `injected ResourceException code <code>`. `getCode()` was not probed on
-  that error.
+  that error. `e.javaException` was measured on the illegal-assertion 400
+  (below) to be the adapter itself, answering `getCode()` and `getReason()`,
+  so an injected failure's `e.javaException` answers `getCode()` with the
+  stub's code and `getReason()` with CREST's reason for it (a code outside
+  CREST's table faults, `openidm-failure-reason`). The revision-mismatch and
+  `Response is not application/json` errors carry no `e.javaException`
+  locally, because the status this binding reports for them was not
+  captured.
 - **An illegal filter assertion is a catchable `JavaException`, not IDM's
   `BadRequestException`** (verified 2026-11-06, E19 second probe, next-gen
   decision node). For `frIndexedInteger1 eq 7.5` (and `frIndexedDate1 eq

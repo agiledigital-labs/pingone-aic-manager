@@ -19,7 +19,8 @@ export function escapeError(value: JsonValue): JsonValue {
   return value;
 }
 
-const reasons: Record<number, string> = {
+/** CREST's reason phrase per status; the script tester's runtime.cjs holds the same table (`__rhinoLocalCrestReasons`). */
+export const reasons: Record<number, string> = {
   400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
   405: "Method Not Allowed", 409: "Conflict", 412: "Precondition Failed",
   500: "Internal Server Error", 501: "Not Implemented", 503: "Service Unavailable",

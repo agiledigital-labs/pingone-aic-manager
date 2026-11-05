@@ -286,6 +286,48 @@ function __rhinoLocalHide(object, name, fn) {
   object[name] = fn;
 }
 
+// A JavaException as AIC's Rhino surfaces one. `name` is not an own
+// enumerable key: AIC's `Object.keys(e)` is `fileName,lineNumber` (second
+// probe, 2026-11-06, docs/api/12), which the JVM lane's Error supplies and
+// node:vm's has none of.
+function __rhinoLocalJavaException(message) {
+  var error = new Error(message);
+  __rhinoLocalHide(error, "name", "JavaException");
+  return error;
+}
+
+// CREST's reason phrase for each status: the table src/idm/errors.ts uses
+// (test/bindings/effects.test.ts pins the two equal).
+var __rhinoLocalCrestReasons = {
+  400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+  405: "Method Not Allowed", 409: "Conflict", 412: "Precondition Failed",
+  500: "Internal Server Error", 501: "Not Implemented", 503: "Service Unavailable",
+};
+
+// The ResourceExceptionScriptAdapter AM wraps an IDM failure in, for a
+// failure whose status is known. `e.javaException` is the adapter (measured
+// on the illegal-assertion 400, docs/api/12): it answers getCode() and
+// getReason(), and its string is the message; nothing else is exposed
+// (getMessage and getClass are TypeErrors on AIC). A status with no reason
+// in CREST's table faults on getReason() rather than invent one.
+function __rhinoLocalAdapterException(text, code) {
+  var error = __rhinoLocalJavaException(
+    "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: " + text
+  );
+  var adapter = {};
+  __rhinoLocalHide(adapter, "getCode", function () { return code; });
+  __rhinoLocalHide(adapter, "getReason", function () {
+    if (!Object.prototype.hasOwnProperty.call(__rhinoLocalCrestReasons, code)) {
+      throw __rhinoLocalFault("openidm-failure-reason",
+        "rhino-local: javaException.getReason(): CREST's reason for status " + code + " is not in the emulator's table");
+    }
+    return __rhinoLocalCrestReasons[code];
+  });
+  __rhinoLocalHide(adapter, "toString", function () { return error.message; });
+  __rhinoLocalHide(error, "javaException", adapter);
+  return error;
+}
+
 // Where each method's accepted argument count comes from (E19, decision B).
 // On AIC every binding below is a Java object, and Rhino resolves a Java
 // method by argument count: a call matching no overload throws a catchable
@@ -2281,13 +2323,10 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
     }
     // No `code` property: AIC's ResourceExceptionScriptAdapter has none
     // (live-openidm-error-shape.e2e.test.ts measured typeof error.code as
-    // "undefined"), so the code travels in the message text only.
-    var error = new Error(
-      "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: " +
-        "injected ResourceException code " + stub.reply.code
-    );
-    error.name = "JavaException";
-    throw error;
+    // "undefined"). The code is in the message text and, as on every
+    // adapter, behind e.javaException.getCode(); the stub's code is the
+    // status this failure stands for.
+    throw __rhinoLocalAdapterException("injected ResourceException code " + stub.reply.code, stub.reply.code);
   }
 }
 
@@ -2316,9 +2355,12 @@ function __rhinoLocalFilterUnsupported(filter, reason) {
 }
 
 // update and patch with a stale non-null _rev (measured on both).
+// The message is measured; the status this binding reports for it is not (a
+// stale If-Match over REST was measured 412 on a different request), so it
+// carries no e.javaException (review pf-02 P3-3).
 function __rhinoLocalCheckRev(method, rev, record) {
   if (rev !== null && rev !== undefined && String(rev) !== String(record._rev)) {
-    var error = new Error(
+    var error = __rhinoLocalJavaException(
       "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: openidm." +
         method + ": The resource could not be accessed because the expected version '" +
         String(rev) +
@@ -2326,7 +2368,6 @@ function __rhinoLocalCheckRev(method, rev, record) {
         String(record._rev) +
         "'"
     );
-    error.name = "JavaException";
     throw error;
   }
 }
@@ -2373,18 +2414,9 @@ function __rhinoLocalParseFilter(filter, lane) {
 // letter-only or decimal literal reaches here, so `'` is the one character
 // REST's error escaping can touch.
 function __rhinoLocalIllegalAssertion(illegal) {
-  var error = new Error(
-    "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: " +
-      "The request cannot be processed because it contained an illegal filter assertion value &#39;" +
-      illegal.value + "&#39; for field &#39;" + illegal.field + "&#39;"
-  );
-  error.name = "JavaException";
-  var adapter = {};
-  __rhinoLocalHide(adapter, "getCode", function () { return 400; });
-  __rhinoLocalHide(adapter, "getReason", function () { return "Bad Request"; });
-  __rhinoLocalHide(adapter, "toString", function () { return error.message; });
-  __rhinoLocalHide(error, "javaException", adapter);
-  return error;
+  return __rhinoLocalAdapterException(
+    "The request cannot be processed because it contained an illegal filter assertion value &#39;" +
+      illegal.value + "&#39; for field &#39;" + illegal.field + "&#39;", 400);
 }
 
 var __rhinoLocalUndecidedWhy = {
@@ -2842,9 +2874,9 @@ function __rhinoLocalBagAccess(method, resource, record, fields, params) {
   // Delete: only a string bag was measured. Other categories stay refused.
   if ((fullRead && ["string", "number", "array", "boolean"].indexOf(category) !== -1) ||
       (method === "delete" && category === "string")) {
-    var error = new Error("org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Response is not application/json");
-    error.name = "JavaException";
-    throw error;
+    // Measured text; no status was captured for it, so no e.javaException
+    // (review pf-02 P3-3).
+    throw __rhinoLocalJavaException("org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: Response is not application/json");
   }
   if (method === "query" && ["string", "number", "array", "null"].indexOf(category) !== -1 &&
       params._queryFilter !== undefined && Array.isArray(fields) && fields.length === 1 && fields[0] === "_id") {
@@ -3022,13 +3054,11 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
 
 // The exception AM's store() throws when DS refuses the modify (measured text).
 function __rhinoLocalIdentityUpdateError(code) {
-  var error = new Error(
+  return __rhinoLocalJavaException(
     "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper$IdentityUpdateException: " +
       "Exception persisting attribute: Plug-in org.forgerock.openam.idrepo.ldap.DJLDAPv3Repo " +
       "encountered a ldap exception.  ldap errorcode=" + code
   );
-  error.name = "JavaException";
-  return error;
 }
 
 // Script value -> IDM value for a typed family. Returns {value} when stored,

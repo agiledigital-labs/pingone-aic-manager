@@ -128,7 +128,7 @@ colliding `openidm.create`, `Resource 'managed/<type>' not found` from
 `aic-script-tester-pull-profile`) does not declare, or the `_queryFilter` parse error for a filter AIC is measured (or
 certain) to reject, such as `name eq` or the word form `not (…)` (raised before any record is read, so an empty
 collection does not hide it). A filter the harness's CREST grammar cannot read, an operator it does not evaluate
-(`gt`/`ge`/`lt`/`le`, except on `alpha_user`'s measured date fields), `ne` (refused by AIC, in words not measured from a script), an empty or `null` filter, an escaped quote anywhere
+(`gt`/`ge`/`lt`/`le`, except `gt`/`lt` on `alpha_user`'s measured date fields), `ne` (refused by AIC, in words not measured from a script), an empty or `null` filter, an escaped quote anywhere
 but a bare `eq` joined by `and` alone, and a record whose match turns on letter case, spaces or Unicode normalisation
 (AIC folds them for some fields, unmeasured for the rest), on a type mismatch (a number field against a quoted
 integer such as `"7"` is decided on `alpha_user` `frIndexedInteger1` only, and this lane knows no other types), on a decimal literal against a
@@ -650,7 +650,10 @@ The failed call is still recorded in `expect.openidm`. The script sees a
 `JavaException` whose text reads
 `…ResourceExceptionScriptAdapter: injected ResourceException code <code>`, and
 no `code` property — AIC's adapter has none (`typeof error.code` measured
-`"undefined"`), so a script cannot route on one there either. The message text
+`"undefined"`), so a script cannot route on one there either. It routes on
+`e.javaException.getCode()`, which answers the stub's code, as AIC's adapter
+answers its status; `getReason()` answers CREST's reason phrase for it (a code
+outside CREST's table faults, `openidm-failure-reason`). The message text
 is the harness's own; AIC's carries the reason phrase, not the number. These
 stubs are AIC-ineligible. An AIC-enabled file lease refuses such a case unless
 its `aic.unsupported` is `"skip"`, which keeps the local verdict and reports

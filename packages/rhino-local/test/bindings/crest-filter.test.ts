@@ -103,8 +103,11 @@ function expectAmIllegal(call: () => unknown, row: Illegal, why: string) {
   const message = amIllegal(row);
   expect([e?.name, e?.message, String(e), e?.javaException?.getCode(), e?.javaException?.getReason(), String(e?.javaException)], why)
     .toEqual(["JavaException", message, `JavaException: ${message}`, 400, "Bad Request", message]);
-  // AIC's enumerable keys are fileName,lineNumber (docs/api/12): the adapter is not among them.
-  expect(Object.keys(e), why).not.toContain("javaException");
+  // AIC's `for (p in e)` gives fileName,lineNumber (am-errshape, docs/api/12): neither the adapter
+  // nor `name` is among them. node:vm's Error inherits neither of AIC's (the JVM lane checks those).
+  const enumerable: string[] = [];
+  for (const key in e) enumerable.push(key);
+  expect(enumerable, why).toEqual([]);
 }
 describe("openidm.query by collection, probe table (node:vm)", () => {
   const run = (row: CollectionRow, given: unknown) => {
@@ -169,7 +172,7 @@ describe("openidm.query on the JVM", () => {
   });
 
   it.each(collectionCases)("probe table: %s", async (_name, row) => {
-    const script = `try { nodeState.putShared("r", JSON.stringify(openidm.query(${JSON.stringify(`managed/${row.collection}`)}, { _queryFilter: ${JSON.stringify(row.filter)} }).result.map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", JSON.stringify(["caught", e.name, e.message, String(e), e.javaException ? e.javaException.getCode() : null, e.javaException ? e.javaException.getReason() : null])); }`;
+    const script = `try { nodeState.putShared("r", JSON.stringify(openidm.query(${JSON.stringify(`managed/${row.collection}`)}, { _queryFilter: ${JSON.stringify(row.filter)} }).result.map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", JSON.stringify(["caught", e.name, e.message, String(e), e.javaException ? e.javaException.getCode() : null, e.javaException ? e.javaException.getReason() : null, (function () { var k = []; for (var p in e) k.push(p); return k.join(); })()])); }`;
     if (row.am === "fault") expectHarnessFault("openidm-query-filter");
     const response = await runner.eval({ preamble: mockPreamble(byCollection(row) as never), source: withHarvest(script) });
     if (row.am === "fault") {
@@ -181,10 +184,21 @@ describe("openidm.query on the JVM", () => {
     const r = (parseHarvest(response.value as string).sharedState.final as Record<string, unknown>).r;
     if (isIllegal(row.am)) {
       const message = amIllegal(row.am);
-      expect(JSON.parse(String(r)), row.why).toEqual(["caught", "JavaException", message, `JavaException: ${message}`, 400, "Bad Request"]);
+      // `for (p in e)` exactly AIC's, as the capture enumerated it (review pf-02 P3-2).
+      expect(JSON.parse(String(r)), row.why).toEqual(["caught", "JavaException", message, `JavaException: ${message}`, 400, "Bad Request", "fileName,lineNumber"]);
       return;
     }
     expect(r, row.why).toBe(JSON.stringify(row.am));
+  });
+
+  it("an injected failure's adapter on the JVM: its own status, AIC's enumerable keys (review pf-02 P3-2, P3-3)", async () => {
+    const given = { managed: { "managed/alpha_user": [{ _id: "alice" }] },
+      openidmFailures: [{ match: { method: "read", resource: "managed/alpha_user/alice", ordinal: 1 }, reply: { code: 404 } }] };
+    const script = `try { openidm.read("managed/alpha_user/alice"); } catch (e) { nodeState.putShared("r", JSON.stringify([e.name, e.javaException.getCode(), e.javaException.getReason(), String(e.javaException) === e.message, (function () { var k = []; for (var p in e) k.push(p); return k.join(); })()])); }`;
+    const response = await runner.eval({ preamble: mockPreamble(given as never), source: withHarvest(script) });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    const r = (parseHarvest(response.value as string).sharedState.final as Record<string, unknown>).r;
+    expect(JSON.parse(String(r))).toEqual(["JavaException", 404, "Not Found", true, "fileName,lineNumber"]);
   });
 
   it.each(userRows)("by collection: %s on %s", async (filter, collection, answer, why) => {
