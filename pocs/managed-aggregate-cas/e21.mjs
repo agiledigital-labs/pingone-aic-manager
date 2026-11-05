@@ -1,6 +1,6 @@
 // E21 — relationship notification, both ends.
 //
-//   node e21.mjs repo|table|deletewait|placement|fanout|shape|peers|owner|attrs|trace|cas|all
+//   node e21.mjs repo|table|deletewait|placement|fanout|shape|peers|owner|attrs|trace|cas|casrepeat|all
 //
 // Requires `node setup.mjs install` first. Each part configures the POC
 // types, proves a direct PATCH fires the hooks it counts, then measures.
@@ -16,7 +16,7 @@ import {
   call, read, rec, createParent, sinksFor, sinksForChild, sleep, burst, summarise,
   PARENT, CHILD,
 } from "./lib.mjs";
-import { fetchSummary } from "./trace.mjs";
+import { fetchEvents, fetchSummary, fetchCoreErrors, summariseEvents } from "./trace.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, ".state/results");
@@ -39,10 +39,51 @@ const TABLE_WRITES = [
 
 function scrub(s) {
   return String(s ?? "")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/g, "Bearer <redacted>")
+    .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "<jwt>")
     .replace(/https?:\/\/\S+/g, "<url>")
     .replace(/[a-z0-9-]+\.forgeblocks\.com/gi, "<tenant>")
     .replace(/[a-z0-9-]+\.id\.forgerock\.io/gi, "<tenant>")
     .slice(0, 400);
+}
+
+const REDACT_KEYS = /token|secret|password|authorization|cookie|context/i;
+
+function sanitise(value, depth = 0) {
+  if (depth > 8) return "<deep>";
+  if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const clean = scrub(value);
+    return value.length > 400 ? `${clean.slice(0, 400)}<truncated>` : clean;
+  }
+  if (Array.isArray(value)) {
+    const out = value.slice(0, 40).map((v) => sanitise(v, depth + 1));
+    if (value.length > 40) out.push(`<${value.length - 40} more>`);
+    return out;
+  }
+  if (typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = REDACT_KEYS.test(k) ? "<redacted>" : sanitise(v, depth + 1);
+    }
+    return out;
+  }
+  return scrub(String(value));
+}
+
+function storeBody(json) {
+  const clean = sanitise(json);
+  const text = JSON.stringify(clean);
+  if (text.length <= 32000) return { truncated: false, body: clean };
+  return {
+    truncated: true,
+    bytes: text.length,
+    keys: clean && typeof clean === "object" && !Array.isArray(clean) ? Object.keys(clean) : [],
+    code: clean?.code ?? null,
+    reason: clean?.reason ?? null,
+    message: typeof clean?.message === "string" ? clean.message : null,
+    body: null,
+  };
 }
 
 function save(part, data) {
@@ -1249,6 +1290,463 @@ async function partCas() {
   return { rows: out };
 }
 
+// Round 3. Five repetitions of N concurrent edge-attribute patches, fresh
+// parent and children each time. Every request keeps its status, sanitised
+// body, latency and its own id. Ids under one stem are equal length and
+// zero-padded so none is a prefix of another (docs/api/08-logs.md).
+const CAS_CELLS = [
+  { name: "map-node", pair: "mapped", flags: "NOTIFY=1 node", env: { NOTIFY: "1", FLAG_AT: "node" } },
+  { name: "map-none", pair: "mapped", flags: "none", env: { NOTIFY: "", FLAG_AT: "node" } },
+  { name: "gen-node", pair: "generic", flags: "NOTIFY=1 node", env: { NOTIFY: "1", FLAG_AT: "node" } },
+  { name: "gen-none", pair: "generic", flags: "none", env: { NOTIFY: "", FLAG_AT: "node" } },
+  // notifySelf stays on the relationship node; notify moves to resourceCollection.
+  { name: "map-coll", pair: "mapped", flags: "NOTIFY=1 collection", env: { NOTIFY: "1", FLAG_AT: "collection" } },
+];
+
+const CAS_N = Number(process.env.E21_N || 10);
+const CAS_REPS = Number(process.env.E21_REPS || 5);
+
+function txId(cell, rep, nonce, i) {
+  return `e21r3-${cell}-r${String(rep).padStart(2, "0")}-${nonce}-i${String(i).padStart(2, "0")}`;
+}
+
+function assertNoPrefix(ids) {
+  const sorted = [...ids].sort();
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === sorted[i - 1] || sorted[i].startsWith(sorted[i - 1])) {
+      throw new Error("transaction ids collide under prefix match");
+    }
+  }
+}
+
+function assertTxShape(cells) {
+  const ids = [];
+  for (const cell of cells) {
+    for (let rep = 0; rep < 2; rep++) {
+      for (let i = 0; i < CAS_N; i++) ids.push(txId(cell.name, rep, "00000000-0000-4000-8000-000000000000", i));
+    }
+  }
+  const lengths = new Set(ids.map((id) => id.length));
+  if (lengths.size !== 1) throw new Error(`transaction id lengths differ (${[...lengths].join(",")})`);
+  assertNoPrefix(ids);
+}
+
+function zeroBase() {
+  return { parentOn: 0, parentPost: 0, childOn: 0, childPost: 0, childDel: 0 };
+}
+
+function loadJson(part) {
+  try {
+    return JSON.parse(readFileSync(join(OUT, `E21-${part}.json`), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function iso(ms) {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function flagProof(shape, pair) {
+  if (!shape || shape.error || shape.status) return shape || null;
+  const fields = (type, rel) => shape[type]?.fields?.[rel] || null;
+  return { parent: fields(PARENT, pair.parentRel), child: fields(CHILD, pair.childRel) };
+}
+
+async function makeParentRetry(rel) {
+  let last = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return { ok: true, parent: await makeParent(rel) };
+    } catch (e) {
+      last = scrub(e.message);
+      await sleep(3000);
+    }
+  }
+  return { ok: false, detail: last };
+}
+
+async function createLinked(parentId, rel, value) {
+  let created = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    created = await makeChild({ value });
+    if (created.status === 200 || created.status === 201) break;
+    await sleep(3000);
+  }
+  if (!created || (created.status !== 200 && created.status !== 201)) {
+    return { ok: false, step: "child", detail: { status: created?.status ?? 0, error: created?.error ? scrub(created.error) : null, ...storeBody(created?.json) } };
+  }
+  let linked = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    linked = await linkParent(parentId, rel, created.json._id, "active");
+    if (linked.res.status === 200 && linked.edgeId) break;
+    await sleep(3000);
+  }
+  if (!linked || linked.res.status !== 200 || !linked.edgeId) {
+    return { ok: false, step: "link", detail: { status: linked?.res.status ?? 0, error: linked?.res.error ? scrub(linked.res.error) : null, ...storeBody(linked?.res.json) } };
+  }
+  return { ok: true, kid: { id: created.json._id, edgeId: linked.edgeId, value } };
+}
+
+async function readChildSide(childId, childRel) {
+  const [recRes, rel] = await Promise.all([
+    call("GET", `${rec(CHILD, childId)}?_fields=_id`),
+    call("GET", `${rec(CHILD, childId)}/${childRel}?_fields=_id,_ref,_refProperties`),
+  ]);
+  const j = rel.json && typeof rel.json === "object" && !Array.isArray(rel.json) ? rel.json : null;
+  const rp = j && j._refProperties && typeof j._refProperties === "object" ? j._refProperties : null;
+  return {
+    childStatus: recRes.status,
+    relStatus: rel.status,
+    relError: rel.error ? scrub(rel.error) : null,
+    topId: j?._id || null,
+    refPropId: rp?._id || null,
+    statusProp: rp && Object.prototype.hasOwnProperty.call(rp, "status") ? rp.status : null,
+    keys: j ? Object.keys(j).sort() : [],
+    body: storeBody(rel.json),
+  };
+}
+
+function judgeOne(kid, edgeList, side) {
+  const listed = (edgeList || []).some((e) => e._id === kid.edgeId);
+  const listedTag = listed ? "parent-listed" : "parent-missing";
+  if (side.childStatus === 404) return listed ? "child-gone-parent-listed" : "child-gone";
+  if (side.childStatus !== 200) return `child-read-failed-${listedTag}`;
+  if (side.relStatus !== 200 && side.relStatus !== 404) return `child-rel-read-failed-${listedTag}`;
+  if (side.relStatus === 404) return listed ? "parent-listed-child-rel-missing" : "edge-gone";
+  if (side.refPropId === kid.edgeId) return listed ? "both" : "child-only";
+  if (!side.refPropId) return listed ? "parent-listed-child-rel-missing" : "edge-gone";
+  return listed ? "parent-listed-child-other-edge" : "child-other-edge";
+}
+
+async function snapshot(parentId, pair, kids) {
+  const [parentRes, edgesRes, ...sides] = await Promise.all([
+    call("GET", `${rec(PARENT, parentId)}?_fields=_id,derived`),
+    parentEdges(parentId, pair.parentRel),
+    ...kids.map((kid) => readChildSide(kid.id, pair.childRel)),
+  ]);
+  const edgeList = edgesRes.status === 200 ? edgesRes.edges : [];
+  const children = kids.map((kid, i) => {
+    const verdict = judgeOne(kid, edgeList, sides[i]);
+    return {
+      i,
+      value: kid.value,
+      edgeId: kid.edgeId,
+      verdict,
+      childStatus: sides[i].childStatus,
+      relStatus: sides[i].relStatus,
+      refPropId: sides[i].refPropId,
+      topId: sides[i].topId,
+      statusProp: sides[i].statusProp,
+      relKeys: sides[i].keys,
+      relBody: verdict === "both" ? undefined : sides[i].body,
+    };
+  });
+  return {
+    parentStatus: parentRes.status,
+    derived: parentRes.status === 200 ? (parentRes.json?.derived ?? null) : null,
+    listStatus: edgesRes.status,
+    listDetail: edgesRes.status === 200 ? null : (edgesRes.detail || null),
+    parentIds: edgeList.map((e) => e._id),
+    parentStatuses: edgeList.map((e) => e._refProperties?.status ?? null),
+    children,
+  };
+}
+
+function setupConsistent(view, kids) {
+  if (view.listStatus !== 200 || view.parentStatus !== 200) return false;
+  if (view.parentIds.length !== kids.length) return false;
+  const ids = new Set(view.parentIds);
+  if (kids.some((k) => !ids.has(k.edgeId))) return false;
+  return view.children.every((c) => c.verdict === "both");
+}
+
+function missingIds(before, after) {
+  if (!before || !after || before.listStatus !== 200 || after.listStatus !== 200) return null;
+  const afterIds = new Set(after.parentIds);
+  return before.parentIds.filter((id) => !afterIds.has(id));
+}
+
+function derivedTriple(view) {
+  const d = view?.derived;
+  if (!d || typeof d !== "object") return null;
+  return { count: d.count ?? null, sum: d.sum ?? null, active: d.active ?? null };
+}
+
+function edgesExpect(view, kids) {
+  if (!view || view.listStatus !== 200) return null;
+  const byId = new Map(kids.map((k) => [k.edgeId, k.value]));
+  let sum = 0;
+  let active = 0;
+  view.parentIds.forEach((id, i) => {
+    sum += Number(byId.get(id)) || 0;
+    if (view.parentStatuses[i] === "active") active += 1;
+  });
+  return { count: view.parentIds.length, sum, active };
+}
+
+function sameTriple(a, b) {
+  return !!a && !!b && a.count === b.count && a.sum === b.sum && a.active === b.active;
+}
+
+function wantTriple(kids, variant) {
+  const sum = kids.reduce((s, k) => s + k.value, 0);
+  if (variant === "same") return { count: kids.length, sum, active: kids.length - 1 };
+  return { count: kids.length, sum, active: 0 };
+}
+
+function isAnomaly(requests, before, after) {
+  if (requests.some((r) => r.status !== 200)) return true;
+  if (missingIds(before, after) === null) return true;
+  if (missingIds(before, after).length) return true;
+  return after.children.some((c) => c.verdict !== "both");
+}
+
+function requestRecord(r, edgeId) {
+  return {
+    edgeId,
+    status: r.error ? 0 : r.status,
+    error: r.error ? scrub(r.error) : null,
+    ms: Math.round(r.ms),
+    tx: r.tx,
+    ...storeBody(r.json),
+  };
+}
+
+async function firePatches(pair, parentId, kids, txs, variant) {
+  const one = (i) => {
+    const edgeId = variant === "same" ? kids[0].edgeId : kids[i].edgeId;
+    return call("PATCH", `${rec(PARENT, parentId)}/${pair.parentRel}/${edgeId}`, {
+      body: [{ operation: "replace", field: "/_refProperties/status", value: "inactive" }],
+      tx: txs[i],
+    });
+  };
+  if (variant === "seq") {
+    const out = [];
+    for (let i = 0; i < kids.length; i++) out.push(await one(i));
+    return out;
+  }
+  return burst(kids.length, one);
+}
+
+function digestEvents(events, sent) {
+  const summary = summariseEvents(events);
+  const writes = [];
+  const access = [];
+  for (const row of summary) {
+    const id = String(row.transactionId);
+    const relation = id === sent ? "exact" : id.startsWith(sent) ? "prefix" : "other";
+    for (const a of row.access) {
+      access.push({ relation, method: a.method, status: a.status, statusCode: a.statusCode, elapsedMs: a.elapsedMs });
+    }
+    for (const w of row.writes) {
+      writes.push({
+        relation,
+        operation: w.operation,
+        type: w.type,
+        status: w.status,
+        onRelationship: String(w.id || "").includes("/"),
+      });
+    }
+  }
+  return {
+    transactions: summary.length,
+    access,
+    writes,
+    operations: [...new Set(writes.map((w) => w.operation))],
+    sawDelete: writes.some((w) => /delete/i.test(w.operation || "")),
+    sawRelationshipRemoved: writes.some((w) => /remov|unlink/i.test(w.operation || "")),
+  };
+}
+
+function digestCore(raw) {
+  const stderr = scrub(raw.stderr || "");
+  const matches = (raw.events || []).slice(0, 15).map((ev) => ({
+    timestamp: typeof ev?.timestamp === "string" ? ev.timestamp : null,
+    line: scrub(typeof ev?.payload === "string" ? ev.payload : JSON.stringify(ev?.payload ?? "")),
+  }));
+  return {
+    exit: raw.exit,
+    finished: raw.exit === 0,
+    truncated: /later events may also match|max-time/i.test(`${raw.stderr || ""}`),
+    stderr: stderr || null,
+    matches,
+  };
+}
+
+async function collectLogs(requests, before, after, beginMs, endMs) {
+  const missing = missingIds(before, after);
+  const listFailed = missing === null;
+  const badEdges = new Set(missing || []);
+  for (const child of after.children || []) {
+    if (child.verdict !== "both") badEdges.add(child.edgeId);
+  }
+  const targets = listFailed
+    ? requests
+    : requests.filter((r) => r.status !== 200 || badEdges.has(r.edgeId));
+  const perRequest = [];
+  for (const r of targets) {
+    console.log(`casrepeat logs ${r.status} ${r.tx}`);
+    try {
+      perRequest.push({ tx: r.tx, status: r.status, edgeId: r.edgeId, ...digestEvents(fetchEvents(r.tx), r.tx) });
+    } catch (e) {
+      perRequest.push({ tx: r.tx, status: r.status, edgeId: r.edgeId, error: scrub(e.message) });
+    }
+  }
+  let core = null;
+  try {
+    core = digestCore(fetchCoreErrors(iso(beginMs - 5000), iso(Math.max(endMs, beginMs + 1000))));
+  } catch (e) {
+    core = { error: scrub(e.message) };
+  }
+  return { perRequest, core };
+}
+
+async function oneRep(cell, pair, rep, variant) {
+  const made = await makeParentRetry(pair.parentRel);
+  if (!made.ok) return { rep, measured: false, step: "parent", detail: made.detail };
+  const parentId = made.parent._id;
+  const kids = [];
+  for (let i = 0; i < CAS_N; i++) {
+    const linked = await createLinked(parentId, pair.parentRel, i + 1);
+    if (!linked.ok) return { rep, measured: false, step: linked.step, detail: linked.detail, parentId };
+    kids.push(linked.kid);
+  }
+  const setupHooks = await settle(parentId, null, zeroBase(), Math.max(WAIT_MS, 15000));
+  const before = await snapshot(parentId, pair, kids);
+  const beforeVerdicts = before.children.map((c) => c.verdict).join(",");
+  console.log(`casrepeat ${cell.name} r${rep} before edges ${before.parentIds.length} ${beforeVerdicts}`);
+  if (!setupConsistent(before, kids)) {
+    const sample = before.children[0];
+    console.log(`casrepeat ${cell.name} r${rep} setup not clean ${JSON.stringify({
+      listStatus: before.listStatus,
+      parentStatus: before.parentStatus,
+      verdict: sample?.verdict,
+      childStatus: sample?.childStatus,
+      relStatus: sample?.relStatus,
+      relKeys: sample?.relKeys,
+      idsMatch: sample ? sample.refPropId === sample.edgeId : null,
+    })}`);
+    return { rep, measured: false, step: "before", parentId, kids, before, setupHooks };
+  }
+  const nonce = randomUUID();
+  const txs = kids.map((_, i) => txId(cell.name, rep, nonce, i));
+  assertNoPrefix(txs);
+  const burstStart = Date.now();
+  const raw = await firePatches(pair, parentId, kids, txs, variant);
+  const requests = raw.map((r, i) => requestRecord(r, variant === "same" ? kids[0].edgeId : kids[i].edgeId));
+  await sleep(WAIT_MS);
+  const after = await snapshot(parentId, pair, kids);
+  let late = null;
+  let logs = null;
+  if (isAnomaly(requests, before, after)) {
+    console.log(`casrepeat ${cell.name} r${rep} anomaly; waiting ${LATE_MS}ms`);
+    await sleep(LATE_MS);
+    late = await snapshot(parentId, pair, kids);
+    logs = await collectLogs(requests, before, after, burstStart, Date.now());
+  }
+  const want = wantTriple(kids, variant);
+  const derivedBefore = derivedTriple(before);
+  const derivedAfter = derivedTriple(after);
+  const derivedLate = late ? derivedTriple(late) : null;
+  const missing = missingIds(before, after);
+  const lateMissing = late ? missingIds(before, late) : null;
+  let cameBack = null;
+  if (missing && late && late.listStatus === 200) {
+    const still = new Set(lateMissing || []);
+    cameBack = missing.filter((id) => !still.has(id));
+  }
+  const http = summarise(raw);
+  console.log(`casrepeat ${cell.name} r${rep} ${JSON.stringify(http.byStatus)} edges ${before.parentIds.length}->${after.parentIds.length} derived ${JSON.stringify(derivedAfter)} want ${JSON.stringify(want)}`);
+  return {
+    rep,
+    measured: true,
+    parentId,
+    kids,
+    setupHooks,
+    before,
+    requests,
+    after,
+    late,
+    logs,
+    summary: {
+      http: http.byStatus,
+      p50: http.p50,
+      max: http.max,
+      edgesBefore: before.parentIds.length,
+      edgesAfter: after.parentIds.length,
+      edgesLate: late ? (late.listStatus === 200 ? late.parentIds.length : null) : null,
+      missing,
+      cameBack,
+      verdictsAfter: after.children.map((c) => c.verdict),
+      verdictsLate: late ? late.children.map((c) => c.verdict) : null,
+      derivedBefore,
+      derivedAfter,
+      derivedLate,
+      derivedMatchesEdges: sameTriple(derivedAfter, edgesExpect(after, kids)),
+      derivedMatchesWant: sameTriple(derivedAfter, want),
+      want,
+    },
+  };
+}
+
+async function partCasRepeat() {
+  const variant = process.env.E21_VARIANT || "";
+  if (variant && variant !== "seq" && variant !== "same") throw new Error(`unknown E21_VARIANT ${variant}`);
+  if (!Number.isInteger(CAS_N) || CAS_N < 1 || CAS_N > 20) throw new Error(`E21_N ${process.env.E21_N}`);
+  if (!Number.isInteger(CAS_REPS) || CAS_REPS < 1 || CAS_REPS > 10) throw new Error(`E21_REPS ${process.env.E21_REPS}`);
+  const only = process.env.E21_CELLS ? process.env.E21_CELLS.split(",").filter(Boolean) : null;
+  const wanted = CAS_CELLS.filter((c) => !only || only.includes(c.name));
+  if (!wanted.length) throw new Error(`no cells match ${process.env.E21_CELLS}`);
+  assertTxShape(CAS_CELLS);
+  const prev = loadJson("casrepeat") || { cells: {} };
+  const doc = {
+    n: CAS_N,
+    reps: CAS_REPS,
+    variant: variant || "concurrent",
+    cells: prev.cells || {},
+  };
+  for (const cell of wanted) {
+    const pair = MAIN.find((p) => p.name === cell.pair);
+    const cfg = configure({ ...cell.env, FANOUT: "off", RETURN_BY_DEFAULT: "0" });
+    if (!cfg.ok) throw new Error(`casrepeat configure ${cell.name} failed: ${cfg.output}`);
+    await sleep(2000);
+    const control = await requireControl();
+    const shape = await liveShape().catch((e) => ({ error: scrub(e.message) }));
+    const resume = process.env.E21_RESUME === "1" ? doc.cells[cell.name] : null;
+    const attempts = resume?.attempts ? resume.attempts.slice() : [];
+    const measured = resume?.measured ? resume.measured.slice() : [];
+    doc.cells[cell.name] = {
+      pair: cell.pair,
+      flags: cell.flags,
+      control,
+      storedFlags: flagProof(shape, pair),
+      attempts,
+      measured,
+    };
+    save("casrepeat", doc);
+    let tries = attempts.length;
+    const maxTries = CAS_REPS + 3;
+    while (measured.length < CAS_REPS && tries < maxTries) {
+      console.log(`casrepeat ${cell.name} attempt ${tries} (${measured.length}/${CAS_REPS})`);
+      const row = await oneRep(cell, pair, tries, variant);
+      attempts.push(row.measured
+        ? { attempt: tries, measured: true, step: "burst" }
+        : { attempt: tries, measured: false, step: row.step || "?", row });
+      if (row.measured) measured.push(row);
+      tries += 1;
+      doc.cells[cell.name].attempts = attempts;
+      doc.cells[cell.name].measured = measured;
+      save("casrepeat", doc);
+    }
+    if (measured.length < CAS_REPS) {
+      throw new Error(`casrepeat ${cell.name} got ${measured.length}/${CAS_REPS} measured reps`);
+    }
+  }
+  save("casrepeat", doc);
+  return doc;
+}
+
 async function partRepo() {
   const r = await call("GET", "/openidm/repo/relationships?_queryFilter=true&_pageSize=1");
   const data = { status: r.status, body: scrub(JSON.stringify(r.json)?.slice(0, 240)) };
@@ -1269,6 +1767,7 @@ const PARTS = {
   attrs: partAttrs,
   trace: partTrace,
   cas: partCas,
+  casrepeat: partCasRepeat,
 };
 
 const asked = process.argv.slice(2);

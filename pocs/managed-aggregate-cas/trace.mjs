@@ -13,7 +13,7 @@
 // Matching is a prefix match. Number any ids that share a stem so that none
 // is a prefix of another (`<stem>-01`, not `<stem>-1`).
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,6 +88,47 @@ export function fetchEvents(id, { wait = true, timeout = 75 } = {}) {
 
 export function fetchSummary(id, opts) {
   return summariseEvents(fetchEvents(id, opts));
+}
+
+// idm-core has no transaction id on script lines. A short window grep for
+// ERROR is the error-line check; it is not proof the window was empty when
+// `exit` is non-zero (the scan stopped on --max-time).
+export function fetchCoreErrors(begin, end) {
+  const dir = mkdtempSync(join(tmpdir(), "poc-core-"));
+  const out = join(dir, "core.json");
+  const args = [
+    "--no-prompt",
+    "logs",
+    "grep",
+    "ERROR",
+    "--source",
+    "idm-core",
+    "--begin",
+    begin,
+    "--end",
+    end,
+    "--limit",
+    "15",
+    "--max-time",
+    "90s",
+    "--output",
+    out,
+  ];
+  const r = spawnSync(AIC, args, {
+    encoding: "utf8",
+    env: process.env,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  let events = [];
+  try {
+    const parsed = JSON.parse(readFileSync(out, "utf8"));
+    if (Array.isArray(parsed)) events = parsed;
+  } catch {
+    events = [];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return { exit: r.status, stderr: r.stderr || "", events };
 }
 
 export function formatSummary(id, rows) {
