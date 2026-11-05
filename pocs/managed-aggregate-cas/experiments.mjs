@@ -5,7 +5,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { call, ok, read, rec, createParent, sinksFor, burst, summarise, sleep, queryAll, PARENT, CHILD, SINK } from "./lib.mjs";
+import { fetchSummary } from "./trace.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, ".state/results");
@@ -464,7 +466,82 @@ async function E19() {
   return { cost, contention };
 }
 
-const ALL = { E1, E2, E3, E4, E5, E8, E9, E10, E11, E12, E13, E14, E15, E16, E18, E19 };
+// E20 under contention. N revision-less appends, each with its own transaction
+// id under one stem. Ids are zero-padded so none is a prefix of another
+// (`docs/api/08-logs.md`). The stem query is supposed to return every request;
+// one per-id query must return only that request.
+function entryFromOps(ops) {
+  const text = typeof ops === "string" ? ops : JSON.stringify(ops ?? "");
+  return /"id"\s*:\s*"([^"]+)"/.exec(text)?.[1] || null;
+}
+
+function belongs(stored, root) {
+  return stored === root || stored.startsWith(`${root}/`);
+}
+
+async function E20() {
+  const n = Number(process.env.E20_N || 10);
+  const stem = `p20${randomUUID().replace(/-/g, "")}`;
+  const txs = Array.from({ length: n }, (_, i) => `${stem}-${String(i).padStart(2, "0")}`);
+  for (const a of txs) {
+    for (const b of txs) {
+      if (a !== b && b.startsWith(a)) throw new Error(`${a} is a prefix of ${b}`);
+    }
+  }
+  const p = await createParent({ mode: "fold", trace: true, postMode: "sink" });
+  const results = await burst(n, (i) => addInbox(p._id, { id: `e${i}`, value: i }, { tx: txs[i] }));
+  const after = await read(PARENT, p._id);
+  const sinks = await sinksFor(p._id);
+  const onByEntry = {};
+  for (const sink of sinks) {
+    if (sink.kind !== "onUpdate") continue;
+    const entry = entryFromOps(sink.ops);
+    onByEntry[entry] = (onByEntry[entry] || 0) + 1;
+  }
+  const post = sinks.filter((s) => s.kind === "postUpdate").length;
+  let rows = await fetchSummary(stem);
+  if (rows.length < n) rows = await fetchSummary(stem, { timeout: 90 });
+  const one = await fetchSummary(txs[0], { wait: false });
+  const perRequest = txs.map((tx, i) => {
+    const mine = rows.filter((row) => belongs(row.transactionId, tx));
+    const writes = mine.flatMap((row) => row.writes);
+    const parentPatches = writes.filter((w) => w.type === PARENT && w.operation === "PATCH");
+    const sinkCreates = writes.filter((w) => w.type === SINK && w.operation === "CREATE");
+    const other = writes.filter((w) => !(w.type === PARENT && w.operation === "PATCH") && !(w.type === SINK && w.operation === "CREATE"));
+    return {
+      entry: `e${i}`,
+      http: results[i].status,
+      storedIds: mine.map((row) => row.transactionId),
+      access: mine.flatMap((row) => row.access).map((a) => ({ method: a.method, status: a.status, statusCode: a.statusCode, elapsedMs: a.elapsedMs })),
+      parentPatches: parentPatches.length,
+      parentIds: [...new Set(parentPatches.map((w) => w.id))],
+      parentStatuses: [...new Set(parentPatches.map((w) => w.status))],
+      sinkCreates: sinkCreates.length,
+      onUpdateSinks: onByEntry[`e${i}`] || 0,
+      otherWrites: other.length,
+    };
+  });
+  const stray = rows.filter((row) => !txs.some((tx) => belongs(row.transactionId, tx))).map((row) => row.transactionId);
+  return {
+    n,
+    http: summarise(results),
+    entries: after.entries.length,
+    allPresent: Array.from({ length: n }, (_, i) => `e${i}`).every((id) => after.entries.some((e) => e.id === id)),
+    derivedConsistent: consistent(after),
+    sinkRecords: sinks.length,
+    onUpdateSinks: sinks.filter((s) => s.kind === "onUpdate").length,
+    postUpdateSinks: post,
+    logTransactions: rows.length,
+    logSinkCreates: perRequest.reduce((sum, row) => sum + row.sinkCreates, 0),
+    logParentPatches: perRequest.reduce((sum, row) => sum + row.parentPatches, 0),
+    oneIdReturnsOnlyItself: one.length > 0 && one.every((row) => belongs(row.transactionId, txs[0])),
+    oneIdTransactionCount: one.length,
+    strayStoredIds: stray.length,
+    perRequest,
+  };
+}
+
+const ALL = { E1, E2, E3, E4, E5, E8, E9, E10, E11, E12, E13, E14, E15, E16, E18, E19, E20 };
 for (const id of process.argv.slice(2)) {
   if (!ALL[id]) {
     console.error(`unknown experiment ${id}; have ${Object.keys(ALL).join(" ")}`);

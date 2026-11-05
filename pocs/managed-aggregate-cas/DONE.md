@@ -26,6 +26,12 @@ wrong.
   traced `E14_N=100` (11 s) all 200 with 1670 `onUpdate` runs. No retry bound
   inside this range. Untraced rows cannot count retries: that counter is the
   trace sink. Untraced N = 50 p50 is 1392 ms against E1's traced 3281–6225 ms.
+- **E20 under contention** (2026-11-05, `node experiments.mjs E20`, 20 s). Ten
+  concurrent appends, zero-padded transaction ids under one stem. Each request's
+  `idm-activity` has exactly one parent `PATCH` and one sink `CREATE` per
+  `onUpdate` run plus one `postUpdate` create. Lost CAS attempts leave no write
+  event. Retried side effects do. Log creates (65) match the sink query.
+  `trace.mjs` prints the same summary.
 
 ## Surprises
 
