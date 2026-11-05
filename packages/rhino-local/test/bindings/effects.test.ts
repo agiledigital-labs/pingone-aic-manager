@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { loadBehaviour, runScript, sandboxFaults } from "./load-behaviour.ts";
+import { reasons } from "../../src/idm/errors.ts";
+import { loadBehaviour, runScript, runScriptWithFaults, sandboxFaults } from "./load-behaviour.ts";
 
 describe("logger", () => {
   it("formats slf4j {} placeholders, escapes, and surplus args", () => {
@@ -61,6 +62,47 @@ describe("openidm", () => {
     // AIC's adapter has no `code` property (live-openidm-error-shape.e2e);
     // an injected one must not invent it.
     expect(effects.sharedState.final.codeType).toBe("undefined");
+  });
+
+  // Review pf-02 P3-3: every ResourceExceptionScriptAdapter is e.javaException, answering
+  // getCode()/getReason() (measured on the illegal-assertion 400, docs/api/12). An injected
+  // failure's status is the stub's own code. P3-2: `name` is not an own enumerable key.
+  const injected = (code: number, probe: string) => runScriptWithFaults(
+    `try { openidm.read("managed/alpha_user/alice"); } catch (e) { nodeState.putShared("r", ${probe}); }`,
+    { managed: { "managed/alpha_user": [{ _id: "alice" }] },
+      openidmFailures: [{ match: { method: "read", resource: "managed/alpha_user/alice", ordinal: 1 }, reply: { code } }] });
+  it.each([[404, "Not Found"], [409, "Conflict"], [412, "Precondition Failed"], [503, "Service Unavailable"]])(
+    "an injected %i answers getCode and getReason from its own status", (code, reason) => {
+      const { effects, faults } = injected(code,
+        "JSON.stringify([e.name, e.message, e.javaException.getCode(), e.javaException.getReason(), String(e.javaException), (function () { var k = []; for (var p in e) k.push(p); return k; })(), Object.keys(e.javaException)])");
+      const message = `org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: injected ResourceException code ${code}`;
+      expect(JSON.parse(String(effects.sharedState.final.r))).toEqual(["JavaException", message, code, reason, message, [], []]);
+      expect(faults).toEqual([]);
+    });
+  it("an injected status outside CREST's reason table faults on getReason, not on getCode", () => {
+    const sandbox = loadBehaviour({ managed: { "managed/alpha_user": [{ _id: "alice" }] },
+      openidmFailures: [{ match: { method: "read", resource: "managed/alpha_user/alice", ordinal: 1 }, reply: { code: 418 } }] });
+    let caught: { javaException: { getCode(): number; getReason(): string } } | undefined;
+    try {
+      (sandbox.openidm as { read(r: string): unknown }).read("managed/alpha_user/alice");
+    } catch (error) {
+      caught = error as typeof caught;
+    }
+    expect(caught?.javaException.getCode()).toBe(418);
+    expect(sandboxFaults(sandbox)).toEqual([]);
+    expect(() => caught?.javaException.getReason()).toThrow(/reason for status 418/);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["openidm-failure-reason"]);
+  });
+  it("the runtime's reason table is the IDM emulator's", () => {
+    expect(loadBehaviour().__rhinoLocalCrestReasons).toEqual(reasons);
+  });
+  it("a revision mismatch keeps its measured text and no adapter (its status is unmeasured)", () => {
+    const effects = runScript(
+      'try { openidm.update("managed/alpha_user/alice", "0", { sn: "x" }); } catch (e) { nodeState.putShared("r", JSON.stringify([e.name, String(e), typeof e.javaException, (function () { var k = []; for (var p in e) k.push(p); return k; })()])); }',
+      { managed: { "managed/alpha_user": [{ _id: "alice", _rev: "1" }] } });
+    expect(JSON.parse(String(effects.sharedState.final.r))).toEqual(["JavaException",
+      "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: openidm.update: The resource could not be accessed because the expected version '0' does not match the current version '1'",
+      "undefined", []]);
   });
 
   it.each([

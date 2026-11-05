@@ -1810,7 +1810,7 @@ on create, or when actually rotating it.
   every filter in three lanes — `GET /openidm/managed/alpha_user?_queryFilter=…`,
   `POST /openidm/script?_action=eval` (`openidm.query`), and a throwaway
   next-gen scripted decision node (`openidm.query`) — rows identical on all
-  21 row-returning filters: `telephoneNumber` `eq "61499999999"`,
+  22 row-returning filters: `telephoneNumber` `eq "61499999999"`,
   `eq "614-9999-9999"`, `eq "6+1499999999"`, `sw "614"`, `co "+9999"` (match:
   `+` ignored), `eq "61499999998"`, `eq "+61499999998"` (no match);
   `frIndexedDate1` `gt`/`lt`/`eq`; `frIndexedInteger1` `eq 7`/`"7"`/`7.0`;

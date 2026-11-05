@@ -203,6 +203,7 @@ assumption in `docs/api/`:
 | `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
 | `openidm-unknown-managed-type`                                                    | a write (`create`, `update`, `patch`, `delete`, `action`) to a managed type the environment profile does not declare |
 | `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the harness cannot decide: one the shared CREST grammar (`src/bindings/rhino/crest-filter.cjs`) cannot read, an empty or non-string one, an operator the matcher does not evaluate (`gt`/`ge`/`lt`/`le` in the script tester), or `ne` from a script (its script text is unmeasured); in either lane, a record whose answer turns on letter case, spaces, Unicode normalisation, a type mismatch (decided in the IDM emulator only where measured: the quoted integer on `alpha_user`, the 2026-11-06 integer rule on `frIndexedInteger1`, and a quoted literal against a number on a type `repo` declares generic), a decimal literal against a number outside those, `pr` on `""`/`[]`/`{}` (except an explicit `[]` on the three measured `alpha_user` properties, emulator only), a pointer through an array anywhere but a bare `eq` reached through `and` alone, or an `alpha_user`/`bravo_user` field whose DS matching rule is not caseIgnore (`telephoneNumber`, the date and integer families) beyond the literal forms and operators the 2026-11-06 probe measured on `alpha_user` — in the script tester, every such field, and before any record is read; an escaped quote anywhere but a bare `eq` reached through `and` alone; a `_queryId` other than the measured ones. Only measured or certain rejections are the catchable parse error, in both lanes |
+| `openidm-failure-reason`                                                          | `e.javaException.getReason()` on an injected `openidmFailures` code outside CREST's reason table (`src/idm/errors.ts`); `getCode()` still answers the stub's code |
 | `openidm-fields-wildcard-with-path`, `openidm-fields-non-object-parent`, `openidm-fields-unresolved-ref` | `_fields` projections that were not measured                                                  |
 | `identity-attribute-layout`, `identity-write-idm-field-name`, `identity-write-cn`, `identity-set-attribute-non-array`, `identity-date-rendering`, `identity-wrapper-after-recreate` | `idRepository.getIdentity()` reads and writes outside the measured mapping |
 | `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
@@ -569,6 +570,16 @@ and neither carries a label:
   `JavaException` (the 400 above, the `ResourceExceptionScriptAdapter`
   family) has no suffix on AIC either. `mergeShared(null)`'s `null`
   carries none on AIC (`docs/api/12`).
+
+  **Emulated `JavaException`s enumerate like AIC's, with other values.**
+  `for (p in e)` gives `fileName,lineNumber` on the JVM, as on AIC, and
+  nothing on node:vm; `name` is not enumerable. The values are not the
+  script's (the JVM lane's are `""` and `0`), and `e.rhinoException`, an
+  object on AIC, is absent in both lanes. `e.javaException` (`getCode()`,
+  `getReason()`) is on the illegal-assertion 400 and on injected
+  `openidmFailures`, whose code is the stub's; a revision mismatch and
+  `Response is not application/json` have none, because their status
+  through this binding was never captured.
 
   **Generic (JSON-stored) types (probe §4).** On a type DS stores as JSON in
   `ou=managed`, a quoted literal never matches a number (`eq`, `gt`, `lt`:
