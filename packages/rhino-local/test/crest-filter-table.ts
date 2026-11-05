@@ -185,6 +185,7 @@ export const filterTable: FilterRow[] = [
   undecided('count eq " 1000"', "type", "count", "quoted integer with a space"),
   // Round-4 P2-2: CREST holds the long; Number() rounds it onto 2^53, a false pass.
   undecided('count eq "9007199254740993"', "type", "count", "quoted integer beyond 2^53 - 1"),
+  undecided('count eq "9007199254740992"', "type", "count", "2^53 is spelt canonically, but a fixture value past 2^53 - 1 may already be rounded onto it"),
   same('count eq "1000"', "ast", ["c"], "number field, canonical quoted integer: measured"),
   same('flag eq "true" and count eq 5', "ast", [], "unknown and false is false: no record is undecided"),
   { filter: 'count gt "5"', grammar: "ast", am: "fault", script: { missing: `query gt whose ${causes.type}: widget count` },

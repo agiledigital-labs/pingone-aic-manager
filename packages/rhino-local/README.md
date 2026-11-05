@@ -128,9 +128,10 @@ colliding `openidm.create`, `Resource 'managed/<type>' not found` from
 `aic-script-tester-pull-profile`) does not declare, or the `_queryFilter` parse error for a filter AIC is measured (or
 certain) to reject, such as `name eq` or the word form `not (…)` (raised before any record is read, so an empty
 collection does not hide it). A filter the harness's CREST grammar cannot read, an operator it does not evaluate
-(`gt`/`ge`/`lt`/`le`), `ne` (refused by AIC, in words not measured from a script), an empty or `null` filter, and a
-record whose match turns on letter case or spaces (AIC folds them for some fields, unmeasured for the rest) are the
-harness fault `openidm-query-filter` instead: AIC may well parse a filter the harness cannot. A script
+(`gt`/`ge`/`lt`/`le`), `ne` (refused by AIC, in words not measured from a script), an empty or `null` filter, an escaped quote anywhere
+but a bare `eq` joined by `and` alone, and a record whose match turns on letter case, spaces or Unicode normalisation
+(AIC folds them for some fields, unmeasured for the rest), on a type mismatch (only a number field against a quoted
+integer such as `"7"` is measured), or on `pr` of `""` or `[]` are the harness fault `openidm-query-filter` instead: AIC may well parse a filter the harness cannot. A script
 that catches one of those passes, just as it would on the tenant. `openidm.read`
 of an undeclared type returns `null`, as AIC's does. A profile speaks only for `managed/<type>`: any other unseeded
 resource (`internal/role`, `config/…`, a relationship collection) is the fault `fixture/managed` with or without one.
@@ -1590,7 +1591,8 @@ the rest of `alpha_user`, `le` and ordering on other properties are assumed),
 so Identify finds a mixed-case or space-padded input and `username` takes the
 stored case. A query whose answer for a record turns on an unmeasured case or
 space rule (another managed type, `sw`, `co`, non-ASCII folding, repeated
-interior spaces) is missing, since either answer could be a false pass; one
+interior spaces), on Unicode normalisation, on an unmeasured type mismatch or
+on `pr` of an empty string or array is missing, since either answer could be a false pass; one
 whose answer does not turn on it, in any operand order, is not. CreateObject uses that
 emulator's create path (including managed hooks and the caller-supplied IDM
 policy evaluator) and writes no journey state. Missing-required policy rejection

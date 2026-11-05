@@ -1,6 +1,7 @@
-// The one CREST _queryFilter grammar for both lanes: the script tester's
-// openidm.query (runtime.cjs, as text in Rhino and node:vm) and the IDM
-// emulator (src/idm/filter.ts, as CommonJS). Neither lane may grow its own.
+// The one CREST _queryFilter grammar and evaluator for both lanes: the
+// script tester's openidm.query (runtime.cjs, as text in Rhino and node:vm)
+// and the IDM emulator (src/idm/filter.ts, as CommonJS). Neither lane may
+// grow its own; a lane supplies only its string rule (see `evaluate`).
 //
 // parse(input) answers one of three ways, and the split is the point (E19):
 //   { ast }                        a filter this grammar reads, and AIC does.
