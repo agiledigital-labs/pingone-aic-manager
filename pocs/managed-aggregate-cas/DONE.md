@@ -243,53 +243,77 @@ matches it. Round 1's script wrote `notify` on the relationship node, and the
 table at that placement does not reproduce the parent hook. Both are in
 `RESULTS.md`. The round-1 tables were not overwritten.
 
-`notifyRelationships` on the object is stored and does not fan out. On the
-field that changes, it notifies the linked objects with no `notify` flag, and
-a different field's change does not. That is where `alpha_role` puts it.
-`alpha_user` declares none. Naming a relationship from itself (`parent` set
-to `["parent"]`) made `GET` of that managed type return 404 while
-`config/managed` still listed it. The other type stayed 200. Clearing the
-property restored the type, and the hook control then fired. The fanout matrix
-skipped those configs after one probe of each end. Naming the other
-relationship, which is the `alpha_organization.parent` shape, did not notify
-the far object. The near object was notified only when `notify` was also on
-`resourceCollection`.
+`notifyRelationships` on the object is stored and does not fan out. On the field
+that changes, it notifies the linked objects with no `notify` flag, and a
+different field's change does not. That is where `alpha_role` puts it.
+`alpha_user` declares none. Naming a relationship from itself (`parent` set to
+`["parent"]`) made `GET` of that managed type return 404 while `config/managed`
+still listed it. The other type stayed 200. Clearing the property restored the
+type, and the hook control then fired. The fanout matrix skipped those configs
+after one probe of each end. Naming the other relationship, which is the
+`alpha_organization.parent` shape, did not notify the far object. The near
+object was notified only when `notify` was also on `resourceCollection`.
 
 `peers` / `peerOf` (generic, both has-many) matched the node-placement hook
 table. `owner` / `owned` (generic, has-one forward) followed Ping's rule:
-`notify` on the forward's `resourceCollection` notifies the parent, `notify`
-on the node does not, `notifySelf` notifies the origin of a write through
-that URL.
+`notify` on the forward's `resourceCollection` notifies the parent, `notify` on
+the node does not, `notifySelf` notifies the origin of a write through that URL.
 
-`status`, declared on the parent end only, is one value on the shared edge.
-Both sides can read it and write it, mapped and generic. A child-side edge
-write moves the mapped parent's `_rev` and not the generic parent's, and not
-the child's. `returnByDefault` false omits relationships from `GET` and from
-a plain-field `onUpdate`'s `object` / `oldObject`. True includes them, and
-the hook then sees `status`. The first parent snapshot at false was a no-op
+`status`, declared on the parent end only, is one value on the shared edge. Both
+sides can read it and write it, mapped and generic. A child-side edge write
+moves the mapped parent's `_rev` and not the generic parent's, and not the
+child's. `returnByDefault` false omits relationships from `GET` and from a
+plain-field `onUpdate`'s `object` / `oldObject`. True includes them, and the
+hook then sees `status`. The first parent snapshot at false was a no-op
 `counter` patch and was discarded; a 0-to-7 patch is the one recorded.
 
 The notified hook's transaction id was the caller's id plus `/0`. The sink
-creates were in the one activity transaction `aic logs tx` returned for the
-sent id. The client waited (about 46 ms without the flag, about 72–85 ms
-with it). Ten concurrent notified edge patches ran `onUpdate` 38 times
-against 9 and 10 commits, with a repeated `oldRev`. The generic `derived`
-ended correct. The mapped pair returned one 404, kept nine edges, and
-`derived.sum` was 50 rather than 55.
+creates were in the one activity transaction `aic logs tx` returned for the sent
+id. The client waited (about 46 ms without the flag, about 72–85 ms with it).
+Ten concurrent notified edge patches ran `onUpdate` 38 times against 9 and 10
+commits, with a repeated `oldRev`. The generic `derived` ended correct. The
+mapped pair returned one 404, kept nine edges, and `derived.sum` was 50 rather
+than 55.
 
-`GET /openidm/repo/relationships` returned 403 `Access denied`. Where a
-generic link is stored, and what a console-created pair writes, were not
-measured. `DELETE` of the relationship URL was not a separate row from
-`DELETE` of the child record. A notification received through one
-relationship and propagated out along another was not isolated.
+`GET /openidm/repo/relationships` returned 403 `Access denied`. Where a generic
+link is stored, and what a console-created pair writes, were not measured.
+`DELETE` of the relationship URL was not a separate row from `DELETE` of the
+child record. A notification received through one relationship and propagated
+out along another was not isolated.
 
 The harness diverged from the brief in three places. The brief's object-level
 `notifyRelationships` is not the tenant's shape, so both were run. The
 self-named relationship form was probed once and then skipped, because driving
-the matrix at a 404'd type voided the control. The role-mirror and the
-non-self organization shape were the positive controls.
+the matrix at a 404'd type voided the control. The role-mirror and the non-self
+organization shape were the positive controls.
 
 ### Teardown
 
-Not run yet in this note. The success lines are `config equals backup: true`
-and `genericMapping equals run1/repo.ds-after.json: true`.
+`node setup.mjs teardown` exited 0. No second `alpha_poc_sink` delete was
+needed. `target tenant: sandbox` lines and Node's `NO_COLOR` warning omitted:
+
+```
+alpha_poc_agg: deleted 346 record(s)
+alpha_poc_child: deleted 300 record(s)
+alpha_poc_sink: deleted 1560 record(s)
+aic error: Config error: refusing relationship delete alpha_poc_agg.children --remove-mapping; nothing was written: refusing to repair alpha_poc_agg.children: config/repo.ds reads through it from alpha_poc_child.parent (also stale, but repair refuses it too: it is its object's last mapping). Removing a mapping another one reads through is unmeasured; refusing to repair alpha_poc_child.parent: it is the last mapped property of managed/alpha_poc_child, and removing an object's last mapping is unmeasured
+children: delete failed: Command failed: aic managed relationship delete alpha_poc_agg.children --remove-mapping
+managed object alpha_poc_agg deleted; undo it from the TUI history overlay
+also changed: alpha_poc_child.gparent (removed)
+also changed: alpha_poc_child.owner (removed)
+also changed: alpha_poc_child.parent (removed)
+also changed: alpha_poc_child.peerOf (removed)
+managed object alpha_poc_child deleted; undo it from the TUI history overlay
+managed object alpha_poc_sink deleted; undo it from the TUI history overlay
+endpoint pocagg: 404
+endpoint poctrace: 404
+leftover POC types: none; config equals backup: true
+repo.ds POC mappings left: managed/alpha_poc_agg,managed/alpha_poc_child; genericMapping equals run1/repo.ds-after.json: true
+```
+
+`relationship delete --remove-mapping` refused and wrote nothing, as in round
+
+1. `config/managed` equals the backup. `genericMapping` equals
+   `.state/run1/repo.ds-after.json`: the pre-POC baseline plus the two orphan
+   mappings, and nothing else. No open decision. The items left unmeasured are
+   listed at the end of the E21 section in `RESULTS.md`.
