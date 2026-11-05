@@ -289,15 +289,19 @@ final class IdmRuntime {
    * CommonJS require over the host's runtime-script provider (E15). The module
    * runs in its own scope whose prototype is the caller's top scope, so it sees
    * the caller's bindings and keeps its top-level vars (IDM 9.0.0's ModuleScope,
-   * read from bytecode). Exports are cached for this invocation only; a module
-   * that throws is not cached. The host answers {path, source} or fails the job
-   * with the idm-runtime-script fault.
+   * read from bytecode). Exports are cached for this invocation only, keyed by
+   * the id string as given, as IDM's Require keys its maps (bytecode): so
+   * require('x') and require('x.js') are two instances and each body runs. While
+   * a module runs, a cyclic require sees the original exports object, not a
+   * replacement assigned to module.exports; after it returns, the cache holds
+   * toObject(module.exports). A module that throws is not cached. The host
+   * answers {path, source} or fails the job with the idm-runtime-script fault.
    */
   private Object requireModule(BaseFunction require, Object[] args) {
     String id = args.length > 0 ? Context.toString(args[0]) : "undefined";
     String path = id.endsWith(".js") ? id : id + ".js";
-    Scriptable cached = modules.get(path);
-    if (cached != null) return ScriptableObject.getProperty(cached, "exports");
+    Scriptable cached = modules.get(id);
+    if (cached != null) return cached;
     List<Object> callArgs = new ArrayList<Object>();
     callArgs.add(id);
     Map<String, Object> loaded = Json.asObject(calls.call("require", callArgs), "require reply");
@@ -320,16 +324,20 @@ final class IdmRuntime {
     } catch (org.mozilla.javascript.EvaluatorException e) {
       throw org.mozilla.javascript.ScriptRuntime.constructError("SyntaxError", e.details(), e.sourceName(), e.lineNumber(), e.lineSource(), e.columnNumber());
     }
-    // Cached before it runs, so a cycle sees the partial exports, as CommonJS does.
-    modules.put(path, module);
+    // Cached before it runs, so a cycle sees the partial exports: the original
+    // exports object, as IDM's loading map holds it until the body returns.
+    modules.put(id, exports);
     boolean done = false;
+    Scriptable result;
     try {
       script.exec(cx, moduleScope);
+      result = org.mozilla.javascript.ScriptRuntime.toObject(cx, scope, ScriptableObject.getProperty(module, "exports"));
+      modules.put(id, result);
       done = true;
     } finally {
-      if (!done) modules.remove(path);
+      if (!done) modules.remove(id);
     }
-    return ScriptableObject.getProperty(module, "exports");
+    return result;
   }
 
   private static boolean nullableMap(Object value) { return value == null || value instanceof Map; }
