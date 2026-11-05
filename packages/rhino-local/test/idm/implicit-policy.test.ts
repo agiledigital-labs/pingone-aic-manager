@@ -57,6 +57,13 @@ describe("implicitPolicy decides from the real schema", () => {
     if (verdict.kind === "fault") expect(verdict.id).toBe(id);
     if (verdict.kind === "notNull") expect(verdict.property).toBe("count");
   });
+
+  // Discriminating: an untyped value would also fail a plain `actual !== type` comparison, so only
+  // the reason tells a missing type from a mismatch, for a value and for a null alike.
+  it.each([["a value", "x"], ["a null", null]] as const)("an untyped property says it declares no type, for %s", (_name, value) => {
+    const verdict = implicitPolicy(gadget([]), { loose: value }, creating);
+    expect(verdict).toMatchObject({ kind: "fault", id: "idm-policy/valid-type", reason: expect.stringContaining("declares no type") });
+  });
 });
 
 describe("the emulator applies it to writes without a policy evaluator", () => {
