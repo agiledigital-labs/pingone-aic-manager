@@ -79,6 +79,11 @@ is a test that reads nothing and passes. `lib-openidm-miss-consumer` encodes
 the live `null` and therefore cannot pass with a profile loaded. Retire or
 re-scope that case rather than relaxing the check.
 
+Since E19 (2026-11-05) the throw is the harness fault
+`openidm-unknown-managed-type` (see [Harness faults](#harness-faults)). A script
+that catches it no longer passes, because AIC would have returned `null`
+rather than thrown. Without a profile, the same miss is `fixture/managed`.
+
 ### What strict checking found on its first run
 
 Six of the eight fixtures carrying `given.managed` were rejected, and the
@@ -107,6 +112,72 @@ than invent `{}`; measured managed-collection actions retain their default.
 Undeclared ESVs still throw by default; `esvUndeclared: "absent"` opts into AM's
 null/default path and remains AIC-eligible. Comma-joined read/query field elements
 and params `_fields` share projection without trimming (2026-10-02 measurement).
+
+## Harness faults
+
+Decision E19 (2026-11-05): every **true refusal** in the script tester fails
+the run, even when the script catches it. A true refusal is the harness
+declining behaviour it does not emulate. An error that **AIC itself raises**,
+and that the harness emulates, stays an ordinary catchable script error. Each
+true refusal carries a stable id: a kebab-case slug, or a family prefix plus the
+binding method. Ids are never derived from line numbers or message text. A
+failure reads `rhino-local harness fault <id>: <message> (not emulated: this
+fails the run even if the script caught it)`. The run-end tally counts cases
+per id (see the package README, "Harness faults").
+
+The JVM keeps a per-job recorder (`java/HarnessFaults.java`). It reports the
+fault on the job's response whatever the outcome, so a script cannot swallow
+it. Under Node's `vm` (no JVM), `runtime.cjs` falls back to its own fault list
+and the harvest check.
+
+**Emulated AIC errors (catchable, not faults).** Each cites a measurement or an
+assumption in `docs/api/`:
+
+- `keySet` blocked by AM's class shutter (two sites).
+- a `consentMappingCallback` config with no `fields` list.
+- `No Such Entry`.
+- the two query-parameter errors (`You must use exactly one of …` and
+  `Query Expressions are not supported …`).
+- `Entry Already Exists` on a colliding `create`.
+- invalid JSON patch.
+- `Assertion Failed`.
+- `Expecting String containing one of …` for an unknown managed-collection
+  action.
+- `Secret not accessible`.
+
+**Ids**, by family:
+
+| Id                                                                                | Refusal                                                                                                               |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `not-mocked/<binding>.<method>`                                                   | a generated binding method the overlay does not implement                                                            |
+| `arity/<binding>.<method>`                                                        | an overlay method called with an argument count AIC's overload set was not measured with (see below)                  |
+| `fixture/<kind>`                                                                  | an unseeded fixture: `managed`, `http`, `esv`, `secrets`, `library`, `callbacks`, `callback-value`, `openidm-action`, `cacheManager`, `journey`, `match-pattern-type` |
+| `send-body-js-date`, `send-body-regexp`, `send-body-function`, `send-body-error`, `send-body-array-cycle` | an `httpClient.send` body AIC sends as a Rhino object dump, or whose error is unmeasured                     |
+| `state-put-undefined`                                                             | `nodeState.put*` / `sharedState.put` / `transientState.put` with `undefined`                                         |
+| `nodeState-merge-non-object`                                                      | `nodeState.mergeShared`/`mergeTransient` with a non-object                                                           |
+| `action-suspend-additional-logic`                                                 | `action.suspend` with a non-function `additionalLogic`                                                               |
+| `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
+| `openidm-unknown-managed-type`                                                    | a managed type the environment profile does not declare                                                              |
+| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the local matcher cannot evaluate; a `_queryId` other than the measured ones                         |
+| `openidm-fields-wildcard-with-path`, `openidm-fields-non-object-parent`, `openidm-fields-unresolved-ref` | `_fields` projections that were not measured                                                  |
+| `identity-attribute-layout`, `identity-write-idm-field-name`, `identity-write-cn`, `identity-set-attribute-non-array`, `identity-date-rendering`, `identity-wrapper-after-recreate` | `idRepository.getIdentity()` reads and writes outside the measured mapping |
+| `identity-bag-key-collision`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
+| `json-value-constructor`                                                          | `new JsonValue(...)`                                                                                                  |
+| `seed-cache-manager`, `seed-binding`                                              | seeding a binding the harness cannot seed                                                                            |
+
+`arity/…` is the disputed class. Only `session.get()` throwing
+`Can't find method` was measured (`docs/api/12`). The other arity checks
+assume AIC refuses an unlisted overload the same way. If it does, these are
+emulated errors (with an unmeasured message) and should be catchable. The ids
+make reclassifying any of them a one-site change.
+
+**Journey lane.** In a journey, AM's host bridge replaces the fault channel
+with its uncatchable `unsupported` refusal. The ids still reach the tally: a
+generated stub reports `not-mocked/<behaviour>`, and a script-tester refusal
+reports its own id. The journey and IDM emulators' own `missing` sites have no
+ids yet. The tally lists them under `unidentified`, keyed by cause text, and
+giving them ids is a per-site change in `AmHostBridge.java` and
+`src/journey/engine.ts`.
 
 ## Known gaps (measured 2026-09-28)
 
