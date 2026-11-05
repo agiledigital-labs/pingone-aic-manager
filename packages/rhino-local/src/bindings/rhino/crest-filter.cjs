@@ -799,11 +799,9 @@ var __rhinoLocalCrestFilter = (function () {
     return /^-?(?:0|[1-9][0-9]*)(?:\.0+)?$/.test(text) && Math.abs(Number(text)) <= SAFE_INTEGER;
   }
   function fractionalDecimal(text) {
-    if (!/^-?(?:0|[1-9][0-9]*)\.[0-9]*[1-9]0*$/.test(text)) {
-      return false;
-    }
-    var number = Number(text);
-    return Math.floor(number) !== number && String(number) === text.replace(/0+$/, "");
+    // The regex keeps a non-zero digit after the `.`, so an integral Double,
+    // which String() spells with no `.`, never re-spells to it.
+    return /^-?(?:0|[1-9][0-9]*)\.[0-9]*[1-9]0*$/.test(text) && String(Number(text)) === text.replace(/0+$/, "");
   }
 
   function compareNumbers(actual, op, expected) {
