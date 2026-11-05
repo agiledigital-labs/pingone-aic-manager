@@ -247,3 +247,50 @@ leaf (`/data/shared`), set a leaf of its own (`/data/per/w<i>`), append an item.
 - The audit is only as fine as the diff: a write that sets a leaf to the value
   it already had leaves no entry (the diff sees no change). Recording intent
   rather than effect means reading `request.patchOperations` instead.
+
+## E20 — tracing the reads and writes one change causes (transaction id)
+
+The question: given one logical change, how many reads and writes did it cause,
+and on which objects — ideally from a caller-chosen transaction id alone.
+
+**One `PATCH`** sent with `X-ForgeRock-TransactionId: <root>` to a parent whose
+`onUpdate` queries a relationship and creates a sink record, and whose
+`postUpdate` creates another. `aic logs tx <root>` over `idm-access`,
+`idm-activity`, `idm-core`, `idm-sync`, `idm-config`, `idm-authentication`
+returned four events, all stored under `<root>/0`:
+
+| source         | event      | operation | object                           | revision order |
+| -------------- | ---------- | --------- | -------------------------------- | -------------- |
+| `idm-activity` | `activity` | CREATE    | `managed/alpha_poc_sink/<id>`    | n (onUpdate)   |
+| `idm-activity` | `activity` | PATCH     | `managed/alpha_poc_agg/<id>`     | n+1            |
+| `idm-activity` | `activity` | CREATE    | `managed/alpha_poc_sink/<id>`    | n+2 (postUpdate) |
+| `idm-access`   | `access`   | PATCH     | the request path, `SUCCESSFUL`   | —              |
+
+- **Writes are traceable by transaction id.** `idm-activity` has one event per
+  write the change caused — the request's own and every `openidm.create` /
+  `patch` a hook made — each with `operation`, `objectId`, the new `revision`,
+  `runAs`/`userId`, `status`, and the full `before`/`after` documents
+  (`changedFields` was `[]` here). The revisions' order shows which phase made
+  each write.
+- **Reads are not logged anywhere.** The hook's relationship query left no
+  event in any source. Neither did an endpoint's `openidm.read` and
+  `openidm.query`: for a custom-endpoint call doing one of each, the
+  transaction held only the `idm-access` event of the outer `POST`.
+- **Script `logger` output is not keyed by transaction id.** `logger.info` from
+  the hook does reach `idm-core`, as `text/plain` (`"INFO: POC onUpdate run …"`)
+  with no transaction id, so `aic logs tx` never returns it. An endpoint's
+  `logger.debug/info/warn/error` with the tag in the message were not found by
+  transaction id either.
+- **A script can read its own transaction id**:
+  `context.transactionId.transactionId.value` is `<root>/0` (read from an
+  endpoint; only that field was read, never `context` itself). So the way to
+  make script logging and read counts traceable is to put that value in the
+  message — e.g. `logger.info("TX " + txid + " read managed/x/y")`.
+- **Searching `idm-core` by time is slow**: `aic logs grep` scanned about 80,000
+  events in 171 s on the sandbox. A message tagged with the transaction id
+  still has to be found by a time-window scan, not by `logs tx`.
+
+Not yet measured: what `idm-activity` shows under contention — whether a CAS
+attempt that lost and retried leaves any event (expected not: only the
+committed write is a write), and whether retried `onUpdate` side effects each
+appear (expected yes, as E6's sinks did).
