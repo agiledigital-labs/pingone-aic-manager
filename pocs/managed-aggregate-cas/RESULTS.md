@@ -479,3 +479,110 @@ parent `PATCH` was `SUCCESS` and named the one parent. No other write appeared.
   time-window grep of `idm-core`.
 - Not measured: a failed HTTP request's transaction (every call here was 200),
   and a revision-bearing `PATCH` that returns 412.
+
+## E21 — relationship notification, both ends
+
+Round 1 counted the parent's hooks only. This round adds `onUpdate`,
+`postUpdate` and `onDelete` on the child, each writing one `alpha_poc_sink` when
+the child has `trace: true`. The parent still writes its own sinks. A run is
+void unless a direct `PATCH` of the parent and of the child fires both of that
+record's hooks in the same configuration. Those controls fired for every flag
+mode below. Hook counts taken the moment the HTTP call returned matched the
+counts after the 6 s settle, on every row. Two rows were read again at 30 s (a
+plain child field under default flags, and an edge patch through the parent
+under `NOTIFY=1`, both on the mapped pair). Nothing further had arrived.
+
+`NOTIFY=1` is `notifySelf: true` on the parent relationship's node and
+`notify: true` on the child relationship's node, the same placement as round 1.
+`NOTIFY=2` swaps the ends. Default clears both. Flags sit on the relationship
+node, not on `resourceCollection`. `alpha_user` does not declare
+`notifyRelationships`; that shape is a later part.
+
+### Which hooks ran
+
+Same in both storage modes. Counts are parent `onUpdate`/`postUpdate`, then
+child `onUpdate`/`postUpdate`/`onDelete`. "Child update" is 1/1 and no parent
+hook. "Parent update" is 1/1 and no child hook.
+
+| Write                                          | default                            | `NOTIFY=1`                         | `NOTIFY=2`                         |
+| ---------------------------------------------- | ---------------------------------- | ---------------------------------- | ---------------------------------- |
+| child created with its reverse link set        | neither                            | neither                            | neither                            |
+| child `PATCH` of its reverse link              | child update; destination parent 0 | child update; destination parent 0 | child update; destination parent 0 |
+| child `PATCH` of a plain field (`value`)       | child update                       | child update                       | child update                       |
+| child deleted                                  | child `onDelete` only              | child `onDelete` only              | child `onDelete` only              |
+| edge `PATCH` through the parent's relationship | neither                            | parent update                      | neither                            |
+| edge `PATCH` through the child's relationship  | neither                            | neither                            | child update                       |
+| parent `PATCH add /<rel>/-`                    | parent update, no second run       | parent update, no second run       | parent update, no second run       |
+| parent `PATCH` of a plain field (`name`)       | parent update                      | parent update                      | parent update                      |
+| parent deleted                                 | neither                            | neither                            | neither                            |
+
+The child's reverse is addressable. `PATCH <child>/<rel>` replacing
+`/_refProperties/status` returned 200 on the first attempt, for both the mapped
+`parent` and the generic `gparent`. No second path was needed.
+
+- A create is not an update, so a child created with its reverse link set runs
+  no child hook either.
+- The child's own reverse-link replace runs the child's update hooks and does
+  not run either parent's. Round 1 left the `NOTIFY=2` cell of that row blank;
+  it is the same as the other two flag modes.
+- Round 1 left child-delete blank for default and `NOTIFY=2`, and reported
+  parent `onUpdate` + `postUpdate` for `NOTIFY=1`. This run fills all three: the
+  child's `onDelete` runs, and the parent's hooks do not, in either storage
+  mode. That **disagrees with round 1** on `NOTIFY=1`. The flags are the same
+  placement, and the same configuration's edge patch through the parent did run
+  the parent hooks, so the flag path is live. The 6 s settle already matched the
+  response. A 30 s wait, and one delete with the child's scripts removed, is a
+  separate run and is not in this table.
+- `NOTIFY=2` makes a child-side edge patch run the child's own update hooks. It
+  does not notify the parent. `NOTIFY=1` does not make a child-side edge patch
+  run either side.
+- A parent plain-field patch never runs the child's hooks. A child plain-field
+  patch never runs the parent's, in any of these three configs. Deleting the
+  parent runs nothing on the child. The parent has no `onDelete`, so its own
+  delete runs nothing either.
+- The parent-side link add is still one run, not a second post-persist run.
+  Round 1's stale `derived` on that write is unchanged by these flags; this
+  table did not re-read `derived`.
+
+### Whose `_rev` moved
+
+`null` means the record was deleted, or it did not exist before a create. A
+deletion is not counted as a revision move.
+
+| Write                                                   | mapped parent                       | generic parent          | child   |
+| ------------------------------------------------------- | ----------------------------------- | ----------------------- | ------- |
+| child created with its reverse link set                 | yes                                 | no                      | created |
+| child `PATCH` of its reverse link                       | yes, and the destination parent too | no, destination neither | no      |
+| child `PATCH` of a plain field                          | no                                  | no                      | yes     |
+| child deleted                                           | yes                                 | no                      | deleted |
+| edge `PATCH` through the parent, default and `NOTIFY=2` | yes                                 | no                      | no      |
+| edge `PATCH` through the parent, `NOTIFY=1`             | yes                                 | **yes**                 | no      |
+| edge `PATCH` through the child, all three flag modes    | yes                                 | no                      | no      |
+| parent `PATCH add /<rel>/-`                             | yes                                 | yes                     | no      |
+| parent `PATCH` of a plain field                         | yes                                 | yes                     | no      |
+| parent deleted                                          | deleted                             | deleted                 | no      |
+
+- A mapped membership or edge change moves the parent's `_rev` even when no
+  parent hook runs. A generic one does not, except the `NOTIFY=1` edge patch
+  through the parent: that notification commits a parent update, and the generic
+  parent's `_rev` moves with it. Round 1's "a generic edge write does not move
+  `_rev`" still holds for the unflagged write and for `NOTIFY=2`.
+- Replacing the child's reverse link on the mapped pair moves `_rev` on the
+  parent it leaves and the parent it joins, and runs neither parent's hooks. The
+  child's own `_rev` stays put while its update hooks run.
+- The same split on a child-side edge patch: mapped parent `_rev` moves, generic
+  parent `_rev` does not, child's `_rev` does not, including the `NOTIFY=2` row
+  whose child hooks did run. The relationship state is not the child's JSON
+  revision.
+- One sample of client latency for the edge patch through the parent, mapped
+  then generic: default 48 ms / 44 ms, `NOTIFY=1` 94 ms / 73 ms, `NOTIFY=2` 50
+  ms / 42 ms. The `NOTIFY=1` response already contained the sink, so the client
+  waited for the notified run. Whether that run shares the caller's transaction
+  id is a later part.
+
+Not in this section yet: `notifyRelationships` (object-level and the tenant's
+property-level shape), a has-many reverse, `notify` on a has-one forward,
+whether `status` is readable and present in `object` from the other side,
+`returnByDefault`, the activity log for a notified run, concurrent notified edge
+patches, and `GET /openidm/repo/relationships`. What a console-created pair
+stores still needs the console.
