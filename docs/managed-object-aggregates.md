@@ -158,18 +158,21 @@ The swap covers the parent's own fields. It does not cover:
   saw a stale set. The last writer's link was never counted, because the hook
   runs before the link is persisted. Which of the other links were visible
   changed from run to run. `derived` was wrong on every run.
-- **Edge properties.** `PATCH` of `<parent>/<rel>/<edgeId>` changing
-  `_refProperties` does not run the parent's hooks. On a mapped pair the
-  parent's `_rev` moves anyway, because the link lives on the parent's entry, so
-  an `If-Match` on the parent collides with it. On a generic pair the parent's
-  `_rev` stays put.
-- **Notification flags.** `notifySelf` on the parent's relationship and `notify`
-  on the child's reverse run the parent hooks for an edge write made through the
-  parent's relationship sub-resource, and for a deleted child. They do not run
-  them for a link created from the child, for a change to a child's own fields,
-  or a second time after the parent's own link add. Swapping which end carries
-  which flag did not change that. A derivation that has to notice a child edit
-  does not get it from these flags.
+- **Edge properties.** With no notification flags, `PATCH` of
+  `<parent>/<rel>/<edgeId>` changing `_refProperties` does not run the parent's
+  hooks. On a mapped pair the parent's `_rev` moves anyway, because the link
+  lives on the parent's entry, so an `If-Match` on the parent collides with it.
+  On a generic pair the parent's `_rev` stays put.
+- **Notification flags.** Where the flag sits decides who hears the write.
+  `notifySelf` on the relationship node runs the origin object's hooks for a
+  write through that relationship's own URL. `notify` on the relationship node
+  did not notify the other side. `notify` on `resourceCollection` did: a
+  child-side link change and a `DELETE` of the child record then ran the
+  parent's hooks, and a parent-side relationship write ran the child's. A plain
+  field change crossed neither way. None of these adds a second, post-persist
+  run to the parent's own link add. A derivation that has to notice a child's
+  field edit does not get it from these flags. See
+  `docs/api/10-managed-objects.md`.
 - **Other records.** `onUpdate` can read them. The parent is not recomputed when
   one of them changes later. A child `value` patched from 5 to 50 left the
   parent's `derived.sum` at 5, in both storage modes.
