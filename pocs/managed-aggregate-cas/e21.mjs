@@ -1,6 +1,6 @@
 // E21 — relationship notification, both ends.
 //
-//   node e21.mjs repo|table|fanout|peers|owner|attrs|trace|cas|all
+//   node e21.mjs repo|table|deletewait|placement|fanout|peers|owner|attrs|trace|cas|all
 //
 // Requires `node setup.mjs install` first. Each part configures the POC
 // types, proves a direct PATCH fires the hooks it counts, then measures.
@@ -70,6 +70,49 @@ function configure(env) {
   if (r.status !== 0) return { ok: false, output };
   console.log(output.split("\n").filter((l) => l.includes("confirmed") || l.includes("PUT")).join("\n") || "configured");
   return { ok: true, output };
+}
+
+function runSetup(cmd) {
+  const r = spawnSync(process.execPath, ["setup.mjs", cmd], {
+    cwd: HERE,
+    env: process.env,
+    encoding: "utf8",
+  });
+  return { ok: r.status === 0, output: scrub(`${r.stdout || ""}\n${r.stderr || ""}`).slice(-500) };
+}
+
+// Flags and notifyRelationships actually stored, per POC relationship and per
+// plain field that names relationships. No scripts, no ids.
+async function liveShape() {
+  const r = await call("GET", "/openidm/config/managed");
+  if (r.status !== 200) return { status: r.status };
+  const out = {};
+  for (const o of r.json.objects || []) {
+    if (o.name !== PARENT && o.name !== CHILD) continue;
+    const props = o.schema?.properties || {};
+    const fields = {};
+    for (const [k, prop] of Object.entries(props)) {
+      if (!prop || typeof prop !== "object") continue;
+      const node = prop.type === "array" ? prop.items : prop;
+      const rel = prop.type === "relationship" || node?.type === "relationship";
+      const named = prop.notifyRelationships || node?.notifyRelationships || null;
+      if (!rel && !named) continue;
+      fields[k] = {
+        notify: node?.notify ?? null,
+        notifySelf: node?.notifySelf ?? null,
+        rcNotify: node?.resourceCollection?.[0]?.notify ?? null,
+        rcNotifySelf: node?.resourceCollection?.[0]?.notifySelf ?? null,
+        returnByDefault: prop.returnByDefault ?? null,
+        notifyRelationships: named,
+      };
+    }
+    out[o.name] = {
+      object: o.notifyRelationships ?? null,
+      schema: o.schema?.notifyRelationships ?? null,
+      fields,
+    };
+  }
+  return out;
 }
 
 function countKinds(rows) {
@@ -380,11 +423,15 @@ async function measure(write, pair, { late = false } = {}) {
 async function withFlags(part, modes, pairs, writes, { lateFor } = {}) {
   const rows = [];
   const controls = [];
+  const shapes = [];
   for (const mode of modes) {
     const cfg = configure(mode.env);
+    const shape = await liveShape().catch((e) => ({ error: scrub(e.message) }));
+    shapes.push({ flags: mode.name, configure: cfg.ok ? "ok" : "failed", shape });
     if (!cfg.ok) {
       rows.push({ flags: mode.name, error: "configure failed", detail: cfg.output });
       console.log(`configure ${mode.name} failed`);
+      save(part, { controls, rows, shapes, partial: true });
       continue;
     }
     await sleep(2000);
@@ -393,7 +440,7 @@ async function withFlags(part, modes, pairs, writes, { lateFor } = {}) {
       control = await requireControl();
     } catch (e) {
       controls.push({ flags: mode.name, ok: false, control: e.control || null });
-      save(part, { controls, rows, void: mode.name });
+      save(part, { controls, rows, shapes, void: mode.name });
       throw e;
     }
     controls.push({ flags: mode.name, ...control });
@@ -409,8 +456,9 @@ async function withFlags(part, modes, pairs, writes, { lateFor } = {}) {
         }
       }
     }
+    save(part, { controls, rows, shapes, partial: true });
   }
-  return { controls, rows };
+  return { controls, rows, shapes };
 }
 
 async function warm(pairs) {
@@ -451,6 +499,17 @@ async function partTable() {
   return data;
 }
 
+async function partPlacement() {
+  // notify on the relationship node (the table) versus on resourceCollection,
+  // which is where the tenant puts it. No notifyRelationships.
+  const data = await withFlags("placement", [
+    { name: "NOTIFY=1-collection", env: { NOTIFY: "1", FLAG_AT: "collection", FANOUT: "off" } },
+    { name: "NOTIFY=2-collection", env: { NOTIFY: "2", FLAG_AT: "collection", FANOUT: "off" } },
+  ], MAIN, ["replace-reverse", "child-plain", "child-delete", "edge-parent", "edge-child", "parent-add"]);
+  save("placement", data);
+  return data;
+}
+
 async function partFanout() {
   const shapes = [
     { name: "object-child", fanout: "object-child", writes: ["child-plain", "replace-reverse"] },
@@ -467,6 +526,7 @@ async function partFanout() {
   ];
   const rows = [];
   const controls = [];
+  const stored = [];
   const configs = [];
   for (const shape of shapes) {
     for (const flags of flagSets) {
@@ -474,24 +534,59 @@ async function partFanout() {
         name: `${shape.name}/${flags.name}`,
         env: { ...flags.env, FANOUT: shape.fanout },
         writes: shape.writes,
-        mirror: shape.fanout.startsWith("field-") && flags.name === "NOTIFY=1-node",
+        mirror: false,
       });
     }
-    // Tenant shape: notify on resourceCollection, notifyRelationships on the field.
-    if (shape.fanout === "field-child" || shape.fanout === "field-parent") {
+    // Tenant puts notify on resourceCollection. alpha_role.temporalConstraints
+    // names members from the field that changes; alpha_organization.parent
+    // names its other relationships from the relationship itself.
+    if (shape.fanout === "field-child" || shape.fanout === "field-parent" || shape.fanout === "rel-child" || shape.fanout === "rel-parent") {
       configs.push({
         name: `${shape.name}/NOTIFY=1-collection`,
         env: { NOTIFY: "1", FLAG_AT: "collection", FANOUT: shape.fanout },
         writes: shape.writes,
-        mirror: true,
+        mirror: shape.fanout === "field-child" || shape.fanout === "rel-child",
       });
     }
   }
+  // Tight copy of alpha_role.temporalConstraints: notifyRelationships on the
+  // changing field, notify only on the named relationship's resourceCollection.
+  // alpha_user itself declares no notifyRelationships.
+  configs.push({
+    name: "field-child/role-mirror",
+    env: {
+      NOTIFY_SPEC: JSON.stringify({
+        parent: { notify: true, at: "collection" },
+        gparent: { notify: true, at: "collection" },
+      }),
+      FANOUT: "field-child",
+    },
+    writes: ["child-plain", "replace-reverse"],
+    mirror: true,
+  });
+  // Tight copy of alpha_organization.parent: notifySelf on the relationship
+  // node, notify on its resourceCollection, notifyRelationships on that same
+  // relationship naming the link that points at the other object.
+  configs.push({
+    name: "rel-child/org-mirror",
+    env: {
+      NOTIFY_SPEC: JSON.stringify({
+        parent: { notify: true, notifySelf: true, at: "collection" },
+        gparent: { notify: true, notifySelf: true, at: "collection" },
+      }),
+      FANOUT: "rel-child",
+    },
+    writes: ["replace-reverse", "child-plain"],
+    mirror: true,
+  });
   for (const cfg of configs) {
     const set = configure(cfg.env);
+    const shape = await liveShape().catch((e) => ({ error: scrub(e.message) }));
+    stored.push({ flags: cfg.name, mirror: cfg.mirror, configure: set.ok ? "ok" : "failed", shape });
     if (!set.ok) {
       rows.push({ flags: cfg.name, error: "configure failed", detail: set.output, mirror: cfg.mirror });
       console.log(`configure ${cfg.name} failed`);
+      save("fanout", { controls, rows, shapes: stored, partial: true });
       continue;
     }
     await sleep(2000);
@@ -500,7 +595,7 @@ async function partFanout() {
       controls.push({ flags: cfg.name, ...control });
     } catch (e) {
       controls.push({ flags: cfg.name, ok: false, control: e.control || null });
-      save("fanout", { controls, rows, void: cfg.name });
+      save("fanout", { controls, rows, shapes: stored, void: cfg.name });
       throw e;
     }
     for (const pair of MAIN) {
@@ -513,9 +608,33 @@ async function partFanout() {
         }
       }
     }
+    save("fanout", { controls, rows, shapes: stored, partial: true });
   }
-  const data = { controls, rows };
+  const data = { controls, rows, shapes: stored };
   save("fanout", data);
+  return data;
+}
+
+async function partDeleteWait() {
+  // Round 1 reported a parent hook on child delete under NOTIFY=1. The table
+  // waited 6s and saw none. Wait 30s, then once more with the child's scripts
+  // removed, in case onDelete is what suppresses it.
+  const cfg = configure({ NOTIFY: "1", FLAG_AT: "node", FANOUT: "off", RETURN_BY_DEFAULT: "0" });
+  if (!cfg.ok) throw new Error(`deletewait configure failed: ${cfg.output}`);
+  await sleep(2000);
+  const shape = await liveShape();
+  await requireControl();
+  const withHooks = [];
+  for (const pair of MAIN) withHooks.push(await measure("child-delete", pair, { late: true }));
+  const strip = runSetup("strip-child-hooks");
+  let bare = { strip };
+  if (strip.ok) {
+    await sleep(2000);
+    bare.row = await measure("child-delete", MAIN[0], { late: true });
+    bare.restore = runSetup("hooks");
+  }
+  const data = { shape, withHooks, bare };
+  save("deletewait", data);
   return data;
 }
 
@@ -627,6 +746,8 @@ async function partAttrs() {
         : null;
       const afterParentEdge = await revision(PARENT, p._id);
       const childAfterParentEdge = await revision(CHILD, c._id);
+      const childSubAfterParent = await call("GET", `${rec(CHILD, c._id)}/${pair.childRel}${pair.childMany ? "?_queryFilter=true&_fields=*" : ""}`);
+      const childFieldsAfterParent = await call("GET", `${rec(CHILD, c._id)}?_fields=${pair.childRel}`);
       await settle(p._id, c._id, { parentOn: 0, parentPost: 0, childOn: 0, childPost: 0, childDel: 0 }, 2000);
       const base = await tally(p._id, c._id);
       await call("PATCH", rec(CHILD, c._id), { body: [{ operation: "replace", field: "/label", value: `snap-${ret}` }] });
@@ -653,6 +774,10 @@ async function partAttrs() {
         parentEdgeWrite: parentEdgeWrite ? parentEdgeWrite.status : null,
         parentRevOnParentEdgeWrite: moved(beforeParentEdge, afterParentEdge),
         childRevOnParentEdgeWrite: moved(afterChildWriteC, childAfterParentEdge),
+        childSeesParentEdgeWrite: {
+          sub: { status: childSubAfterParent.status, summary: relSummary(childSubAfterParent.json) },
+          fields: { status: childFieldsAfterParent.status, summary: relSummary(childFieldsAfterParent.json?.[pair.childRel]) },
+        },
         childSnap,
         parentSnap,
       });
@@ -802,6 +927,8 @@ async function partRepo() {
 const PARTS = {
   repo: partRepo,
   table: partTable,
+  deletewait: partDeleteWait,
+  placement: partPlacement,
   fanout: partFanout,
   peers: partPeers,
   owner: partOwner,
@@ -812,7 +939,7 @@ const PARTS = {
 
 const asked = process.argv.slice(2);
 const list = asked.length === 0 || asked.includes("all")
-  ? ["repo", "table", "fanout", "peers", "owner", "attrs", "trace", "cas"]
+  ? ["repo", "table", "deletewait", "placement", "fanout", "peers", "owner", "attrs", "trace", "cas"]
   : asked;
 for (const name of list) {
   if (!PARTS[name]) {

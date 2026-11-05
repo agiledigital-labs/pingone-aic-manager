@@ -214,12 +214,14 @@ function applySchema(o) {
       title: "gchildren", reverseKey: "gparent", target: `managed/${CHILD}`, keepStatus: true,
     });
     ensureOrder(o, "gchildren");
+    // status stays on the holding end only, as on children/gchildren, so an
+    // edge patch is the same write. The reverse schema does not declare it.
     props.peers = cloneMany(props.children, {
-      title: "peers", reverseKey: "peerOf", target: `managed/${CHILD}`, keepStatus: false,
+      title: "peers", reverseKey: "peerOf", target: `managed/${CHILD}`, keepStatus: true,
     });
     ensureOrder(o, "peers");
     props.owned = cloneMany(props.children, {
-      title: "owned", reverseKey: "owner", target: `managed/${CHILD}`, keepStatus: false,
+      title: "owned", reverseKey: "owner", target: `managed/${CHILD}`, keepStatus: true,
     });
     ensureOrder(o, "owned");
     o.onUpdate = hook("onUpdate.js");
@@ -511,6 +513,17 @@ async function configure() {
   }, `configure notify=${process.env.NOTIFY || "off"} fanout=${process.env.FANOUT || "off"} at=${process.env.FLAG_AT || "node"}`);
 }
 
+// Child scripts off, flags left as they are. Used once, to see whether the
+// child's own onDelete is what stops a delete from notifying the parent.
+async function stripChildHooks() {
+  await rmw((o) => {
+    if (o.name !== CHILD) return;
+    delete o.onUpdate;
+    delete o.postUpdate;
+    delete o.onDelete;
+  }, "strip child hooks");
+}
+
 async function teardown() {
   requireBackups();
   for (const t of POC_TYPES) console.log(`${t}: deleted ${await deleteAll(t).catch(() => 0)} record(s)`);
@@ -567,6 +580,7 @@ if (isMain) {
     schema: () => rmw(applySchema, "schema+hooks").then(waitLive),
     configure,
     notify: configure,
+    "strip-child-hooks": stripChildHooks,
     teardown,
     live: waitLive,
   }[cmd] || (() => console.error("usage: preflight|install|hooks|schema|configure|teardown|live")))();

@@ -218,3 +218,16 @@ hooks live after 1 probe(s)
 No `repo.ds` write. A direct parent `PATCH` and a direct child `PATCH` each ran
 `onUpdate` and `postUpdate` on that record. A parent link add did the same on
 the parent only.
+
+### Table
+
+`node e21.mjs table` (307 s) ran every round-1 write, plus a parent plain-field
+`PATCH`, a parent delete, and an edge patch through the child, in both storage
+modes and all three node-placement flag configs. The direct-PATCH control fired
+on both ends in every config. Two rows waited 30 s and gained no further hooks.
+The RESULTS section for this table is written with the rest of E21. One
+disagreement with round 1: under `NOTIFY=1`, deleting the child did not run the
+parent's hooks. `deletewait` repeats that delete with a 30 s wait, and once more
+with the child's scripts removed. `peers` and `owned` now declare `status` on
+the parent end, the same as `children`, so their edge patch is the same write.
+The reverse schema does not declare it.
