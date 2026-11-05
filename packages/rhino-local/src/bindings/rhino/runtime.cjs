@@ -1979,6 +1979,26 @@ function __rhinoLocalDeclaresType(collection) {
   return __rhinoLocalHas(__rhinoLocal.knownTypes, collection);
 }
 
+// A write to a type the profile says the tenant does not have. Only read
+// (null) and query (Resource … not found) are measured; for create, update,
+// patch, delete and action it is unmeasured, so the harness cannot answer.
+function __rhinoLocalUnknownTypeFault(method, collection) {
+  return __rhinoLocalFault(
+    "openidm-unknown-managed-type",
+    "rhino-local: openidm." +
+      method +
+      ": " +
+      JSON.stringify(collection) +
+      " is not a managed object in environment " +
+      JSON.stringify(__rhinoLocal.profileTenant) +
+      " (pulled " +
+      String(__rhinoLocal.profilePulledAt) +
+      "), and what AIC does for " +
+      method +
+      " on an absent type is unmeasured. Check the name, or re-pull the profile if the tenant has changed."
+  );
+}
+
 function __rhinoLocalRequireCollection(method, collection) {
   if (__rhinoLocalHas(__rhinoLocal.managed, collection)) {
     return __rhinoLocal.managed[collection];
@@ -1994,20 +2014,7 @@ function __rhinoLocalRequireCollection(method, collection) {
   // query emulate AIC (null, and a catchable not-found) before reaching here;
   // what AIC does for update, patch or delete on an absent type is unmeasured.
   if (__rhinoLocal.knownTypes) {
-    throw __rhinoLocalFault(
-      "openidm-unknown-managed-type",
-      "rhino-local: openidm." +
-        method +
-        ": " +
-        JSON.stringify(collection) +
-        " is not a managed object in environment " +
-        JSON.stringify(__rhinoLocal.profileTenant) +
-        " (pulled " +
-        String(__rhinoLocal.profilePulledAt) +
-        "), and what AIC does for " +
-        method +
-        " on an absent type is unmeasured. Check the name, or re-pull the profile if the tenant has changed."
-    );
+    throw __rhinoLocalUnknownTypeFault(method, collection);
   }
   throw __rhinoLocalFixtureFault("managed",
     "rhino-local: openidm." +
@@ -2434,6 +2441,9 @@ openidm.create = function (resourceName, newResourceId, content) {
     recordedResource = collection + "/" + id;
   }
   __rhinoLocalPushOpenidm("create", recordedResource, content);
+  if (__rhinoLocalAbsentType(collection)) {
+    throw __rhinoLocalUnknownTypeFault("create", collection);
+  }
   if (!__rhinoLocalHas(__rhinoLocal.managed, collection)) {
     __rhinoLocal.managed[collection] = [];
   }
@@ -2539,6 +2549,12 @@ openidm.action = function (resource, actionName, content, params) {
   }
   __rhinoLocalPushOpenidm("action", String(resource), body, String(actionName));
   var managedCollection = /^managed\/[^/]+$/.test(String(resource));
+  // Checked before the measured action-name refusal: which of the two AIC
+  // raises for an absent type is unmeasured, and a stub cannot make it exist.
+  var managedType = /^(managed\/[^/]+)(?:\/|$)/.exec(String(resource));
+  if (managedType && __rhinoLocalAbsentType(managedType[1])) {
+    throw __rhinoLocalUnknownTypeFault("action", managedType[1]);
+  }
   // Measured on a managed collection only; other resources have other actions.
   if (
     managedCollection &&
@@ -4062,7 +4078,7 @@ function __rhinoLocalHarvest() {
   if (__rhinoLocal.faults.length > 0) {
     throw new Error(
       "rhino-local harness fault " + __rhinoLocal.faults[0] +
-        " (the script caught this refusal, but AIC would not have thrown there, so the run fails anyway)"
+        " (the script caught this refusal, but the harness cannot say what AIC does there, so the run fails anyway)"
     );
   }
   var recordedOutcome = __rhinoLocal.outcome;

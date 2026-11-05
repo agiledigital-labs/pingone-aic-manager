@@ -100,8 +100,12 @@ When a script does something the harness does not emulate, the harness refuses
 it with a **harness fault** rather than guessing. Examples are an unmocked
 binding method, an unseeded fixture, an argument count whose accepted range is
 the harness's guess, or a JS `Date` in an `httpClient.send` body. A harness fault **fails the case even if the script
-catches it and then succeeds**, because AIC would not have thrown there: a
-`try`/`catch` around it must not turn a gap in the harness into a passing test.
+catches it and then succeeds**, because the harness cannot say what AIC does
+there. Sometimes AIC measurably does not throw at all (it sends a `Date` body as
+a dump of the Rhino object); sometimes it throws something the harness has not
+measured (a write to a type the tenant lacks); sometimes nobody knows (a guessed
+argument count). In each case a `try`/`catch` around the call must not turn a
+gap in the harness into a passing test.
 
 ```text
 rhino-local harness fault send-body-js-date: httpClient.send body.d is a JS Date: … (not emulated: this fails the run even if the script caught it)
@@ -118,8 +122,11 @@ Errors that AIC itself raises and the harness emulates stay ordinary,
 catchable script errors. One example is `Entry Already Exists` from a
 colliding `openidm.create`, `Resource 'managed/<type>' not found` from
 `openidm.query` on a type the environment profile (from
-`aic-script-tester-pull-profile`) does not declare, or the `_queryFilter` parse error for a malformed filter (raised
-before any record is read, so an empty collection does not hide it). A script
+`aic-script-tester-pull-profile`) does not declare, or the `_queryFilter` parse error for a filter AIC is measured (or
+certain) to reject, such as `name eq` or the word form `not (…)` (raised before any record is read, so an empty
+collection does not hide it). A filter the harness's CREST grammar cannot read, an operator it does not evaluate
+(`gt`/`ge`/`lt`/`le`), `ne` (refused by AIC, in words not measured from a script) and an empty or `null` filter are the
+harness fault `openidm-query-filter` instead: AIC may well parse a filter the harness cannot. A script
 that catches one of those passes, just as it would on the tenant. `openidm.read`
 of an undeclared type returns `null`, as AIC's does.
 

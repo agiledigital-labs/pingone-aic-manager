@@ -64,8 +64,9 @@ not exist (`docs/api/10`), so a fixture typo is invisible on the tenant. With
 a profile the harness separates them — a declared-but-unseeded type reads as
 an empty collection (`null`, matching AIC), and an undeclared one is answered
 as AIC answers it: `openidm.read` returns `null` and `openidm.query` throws AIC's
-catchable `Resource 'managed/<type>' not found` (`docs/api/12`). A record write
-(`create`/`update`/`patch`/`delete`) to an undeclared type is the harness fault
+catchable `Resource 'managed/<type>' not found` (`docs/api/12`). A write
+(`create`, `update`, `patch`, `delete`, and `action` on the collection or a
+record) to an undeclared type is the harness fault
 `openidm-unknown-managed-type`, naming the environment and the pull date,
 because what AIC does there is unmeasured. Without a profile the pre-existing
 behaviour is unchanged: any unseeded collection is the fault `fixture/managed`.
@@ -165,8 +166,8 @@ assumption in `docs/api/`:
 | `node-state-merge-non-object`                                                     | `nodeState.mergeShared`/`mergeTransient` with a non-object                                                           |
 | `action-suspend-additional-logic`                                                 | `action.suspend` with a non-function `additionalLogic`                                                               |
 | `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
-| `openidm-unknown-managed-type`                                                    | a record write to a managed type the environment profile does not declare                                            |
-| `openidm-query-filter`, `openidm-query-id`                                        | a well-formed `_queryFilter` the local matcher cannot evaluate (`gt`/`ge`/`lt`/`le`, or `ne`, whose script text is unmeasured); a `_queryId` other than the measured ones |
+| `openidm-unknown-managed-type`                                                    | a write (`create`, `update`, `patch`, `delete`, `action`) to a managed type the environment profile does not declare |
+| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the harness cannot decide: one the shared CREST grammar (`src/bindings/rhino/crest-filter.cjs`) cannot read, an empty or non-string one, an operator the matcher does not evaluate (`gt`/`ge`/`lt`/`le` in the script tester), or `ne` from a script (its script text is unmeasured); a `_queryId` other than the measured ones. Only measured or certain rejections are the catchable parse error, in both lanes |
 | `openidm-fields-wildcard-with-path`, `openidm-fields-non-object-parent`, `openidm-fields-unresolved-ref` | `_fields` projections that were not measured                                                  |
 | `identity-attribute-layout`, `identity-write-idm-field-name`, `identity-write-cn`, `identity-set-attribute-non-array`, `identity-date-rendering`, `identity-wrapper-after-recreate` | `idRepository.getIdentity()` reads and writes outside the measured mapping |
 | `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
@@ -205,8 +206,9 @@ fault `arity-unknown/<path>`. The basis table (`__rhinoLocalArityBasis` in
 with its uncatchable `unsupported` refusal. The emulated AIC errors above stay
 catchable there too. The ids still reach the tally: a
 generated stub reports `not-mocked/<behaviour>`, and a script-tester refusal
-reports its own id. The journey and IDM emulators' own `missing` sites have no
-ids yet. The tally lists them under `unidentified`, keyed by cause text, and
+reports its own id. The IDM emulator's `_queryFilter` refusal reports
+`openidm-query-filter`; its other `missing` sites, and the journey emulator's,
+have no ids yet. The tally lists them under `unidentified`, keyed by cause text, and
 giving them ids is a per-site change in `AmHostBridge.java` and
 `src/journey/engine.ts`.
 
