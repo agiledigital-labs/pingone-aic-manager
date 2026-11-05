@@ -1,3 +1,5 @@
+import type { JsonObject } from "../src/case/types.ts";
+
 /**
  * One `_queryFilter` table for both lanes (E19 fix 2, P2-1). The grammar is
  * shared (src/bindings/rhino/crest-filter.cjs), and this table is run through
@@ -9,11 +11,11 @@
  * rejected by any grammar CREST could have. `fault` rows are the
  * `openidm-query-filter` harness fault: the harness cannot say what AIC does.
  */
-export const records = [
-  { _id: "a", text: "alpha", count: 1, flag: true, nested: { "a/b": "match" }, list: ["Red", "x"], spaced: "al  pha" },
-  { _id: "b", text: "beta", count: 2, flag: false, other: 'say "hi"', spaced: "ga\tma" },
-  { _id: "c", text: "alpine", count: 1000, spaced: "be\u00a0ta" },
-] as const;
+export const records: Array<JsonObject & { _id: string }> = [
+  { _id: "a", text: "alpha", count: 1, flag: true, nested: { "a/b": "match" }, list: ["Red", "x"], spaced: "al  pha", word: "al\u00adpha" },
+  { _id: "b", text: "beta", count: 2, flag: false, other: 'say "hi"', spaced: "ga\tma", label: "", list: [] },
+  { _id: "c", text: "alpine", count: 1000, spaced: "be\u00a0ta", label: "1000", nulls: [null, "y"], word: "jose\u0301" },
+];
 
 /** What a lane answers: matching ids, AIC's parse error, or the fault. */
 export type Answer = string[] | "parse" | "fault";
@@ -41,12 +43,15 @@ const same = (filter: unknown, grammar: FilterRow["grammar"], answer: Answer, wh
   ({ filter, grammar, am: answer, script: answer, rest: answer, why });
 
 const causes = {
-  case: "letter case",
-  space: "leading, trailing or repeated spaces or non-U+0020 whitespace",
+  case: "match turns on letter case",
+  space: "match turns on leading, trailing or repeated spaces or non-U+0020 whitespace",
+  unicode: "match turns on Unicode normalisation or characters RFC 4518 maps to nothing",
+  type: "match compares different JSON types, or an object or null element, which nothing measured",
+  presence: "answer for an empty string or array is unmeasured",
 } as const;
-/** A row whose answer for some record turns on an unmeasured rule: the AM fault, the emulator's missing. */
+/** A row whose answer for some record turns on something unmeasured: the AM fault, the emulator's missing. */
 const undecided = (filter: string, why: keyof typeof causes, field: string, note: string, op = "eq"): FilterRow => {
-  const missing = { missing: `query ${op} whose match turns on ${causes[why]}: widget ${field}` };
+  const missing = { missing: `query ${op} whose ${causes[why]}: widget ${field}` };
   return { filter, grammar: "ast", am: "fault", script: missing, rest: missing, why: note };
 };
 
@@ -158,6 +163,49 @@ export const filterTable: FilterRow[] = [
   undecided('spaced eq "al pha"', "space", "spaced", "a run of interior spaces: whether AIC collapses it is unmeasured"),
   undecided('spaced eq "be ta"', "space", "spaced", "U+00A0 inside the value: whether AIC reads it as a space is unmeasured"),
   undecided('spaced eq "ga ma"', "space", "spaced", "a tab inside the value: whether AIC reads it as a space is unmeasured"),
+  // Round-4 P3-3: RFC 4518, which DS's caseIgnoreMatch follows, maps a soft
+  // hyphen to nothing and applies NFKC; whether AIC does is unmeasured.
+  undecided('word eq "alpha"', "unicode", "word", "a soft hyphen: RFC 4518 maps it to nothing, unmeasured on AIC"),
+  undecided('word eq "jos\\u00e9"', "unicode", "word", "NFC literal, NFD record: RFC 4518 normalises with NFKC, unmeasured on AIC"),
+  same('word eq "beta"', "ast", [], "control: differs under every reading, so decided"),
+  // Round-4 P2-3: one type rule for every lane, which these inputs once split
+  // (the AM lane matched the first five through String(); the IDM lanes
+  // matched the next three through Number()). Same JSON type is decided; a
+  // number field against a canonical quoted integer is the one measured
+  // mismatch (docs/api/10, "A number matches quoted or unquoted"); every other
+  // mismatch, and an object or null element, is unknown.
+  undecided('flag eq "true"', "type", "flag", "boolean field, quoted literal: unmeasured"),
+  undecided('count sw "10"', "type", "count", "sw on a number field: unmeasured", "sw"),
+  undecided('count co "00"', "type", "count", "co on a number field: unmeasured", "co"),
+  undecided("label eq 1000", "type", "label", "string field, number literal: unmeasured"),
+  undecided('nested co "Object"', "type", "nested", "object field: String() would match [object Object]", "co"),
+  undecided('nulls eq ""', "type", "nulls", "a null array element: String() would read it as an empty string"),
+  undecided('count eq "1000.0"', "type", "count", "non-canonical quoted number: Number() would round it to 1000"),
+  undecided('count eq "01000"', "type", "count", "non-canonical quoted integer"),
+  undecided('count eq " 1000"', "type", "count", "quoted integer with a space"),
+  // Round-4 P2-2: CREST holds the long; Number() rounds it onto 2^53, a false pass.
+  undecided('count eq "9007199254740993"', "type", "count", "quoted integer beyond 2^53 - 1"),
+  same('count eq "1000"', "ast", ["c"], "number field, canonical quoted integer: measured"),
+  same('flag eq "true" and count eq 5', "ast", [], "unknown and false is false: no record is undecided"),
+  { filter: 'count gt "5"', grammar: "ast", am: "fault", script: { missing: `query gt whose ${causes.type}: widget count` },
+    rest: { missing: `query gt whose ${causes.type}: widget count` }, why: "ordering a number field against a quoted literal: unmeasured" },
+  // Round-4 P3-1: whether DS stores an empty string or array as present is unmeasured.
+  undecided("label pr", "presence", "label", "pr on an empty string", "pr"),
+  undecided("list pr", "presence", "list", "pr on an empty array", "pr"),
+  same('nulls pr and text eq "alpine"', "ast", ["c"], "control: a non-empty array is present"),
+  // The emulator materialises an absent array property as [] (its read
+  // shape), so there `pr` on any array property is unknown for every record
+  // that lacks it. The script tester reads the fixture as given.
+  { filter: "nulls pr", grammar: "ast", am: ["c"], script: { missing: `query pr whose ${causes.presence}: widget nulls` },
+    rest: { missing: `query pr whose ${causes.presence}: widget nulls` }, why: "emulator: absent array reads as [], whose pr is unmeasured" },
+  // Round-4 P3-2: the escaped-quote rule decides only a bare positive eq
+  // reached through `and` alone, where "the leaf is false" and "the query
+  // matches nothing" agree. Elsewhere they differ, so the filter is refused.
+  same('other eq "say \\"hi\\"" and flag eq false', "ast", [], "escaped quote under and: both readings give no rows"),
+  same('!(other eq "say \\"hi\\"")', "ast", "fault", "escaped quote under !: unmeasured"),
+  same('text eq "beta" or other eq "say \\"hi\\""', "ast", "fault", "escaped quote under or: unmeasured"),
+  same('other co "\\""', "ast", "fault", "escaped quote in co: unmeasured"),
+  same('other sw "say \\""', "ast", "fault", "escaped quote in sw: unmeasured"),
   { filter: "count gt 1", grammar: "ast", am: "fault", script: ["b", "c"], rest: ["b", "c"], why: "ordering: not evaluated in the AM lane" },
   { filter: 'text ne "x"', grammar: "ast", am: "fault", script: "fault", rest: "ne", why: "ne: REST 400 measured, script text unmeasured" },
 ];
