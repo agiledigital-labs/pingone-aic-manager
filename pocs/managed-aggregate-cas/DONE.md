@@ -225,10 +225,9 @@ the parent only.
 `PATCH`, a parent delete, and an edge patch through the child, in both storage
 modes and all three node-placement flag configs. The direct-PATCH control fired
 on both ends in every config. Two rows waited 30 s and gained no further hooks.
-The table is in `RESULTS.md` under "E21 — relationship notification, both
-ends". One
-disagreement with round 1: under `NOTIFY=1`, deleting the child did not run the
-parent's hooks. `deletewait` repeats that delete with a 30 s wait, and once more
-with the child's scripts removed. `peers` and `owned` now declare `status` on
-the parent end, the same as `children`, so their edge patch is the same write.
-The reverse schema does not declare it.
+The table is in `RESULTS.md` under "E21 — relationship notification, both ends".
+One disagreement with round 1: under `NOTIFY=1`, deleting the child did not run
+the parent's hooks. `deletewait` repeats that delete with a 30 s wait, and once
+more with the child's scripts removed. `peers` and `owned` now declare `status`
+on the parent end, the same as `children`, so their edge patch is the same
+write. The reverse schema does not declare it.
