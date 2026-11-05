@@ -695,13 +695,21 @@ job rather than hanging. `close()` ends stdin and waits for the process;
 
 **JVM reuse.** Under the package's Vitest reporter, `useLease` borrows its JVM
 from a pool the reporter keeps in the main Vitest process, so a worker runs
-every file it is given on one JVM rather than starting one per file: the JVM
-count is the worker count. A borrowed JVM is returned at `afterAll`. One that
-crashed, or retired itself after a spawned thread survived cleanup, is never
-lent again. Isolation does not depend on the JVM: every case still runs in a
-fresh `initStandardObjects()` scope, and only compiled code is shared
-(`test/harness/isolation.e2e.test.ts` pins this). Set
-`AIC_SCRIPT_TESTER_JVM_POOL=0` to start a JVM per lease as before.
+every file it is given on one JVM rather than starting one per file. The pool
+keeps one JVM per worker, per lane (two with `AIC_SCRIPT_TESTER_JVM=both`) and
+per lease a worker holds at once. A borrowed JVM is returned at `afterAll` and
+lent again only if it is idle: one that crashed, retired itself after a spawned
+thread survived cleanup, or still has a job running (a lease closed while a
+case was still executing) is discarded, and the next file gets a fresh JVM.
+Isolation does not depend on the JVM: every case still runs in a fresh
+`initStandardObjects()` scope, and only compiled code is shared
+(`test/harness/isolation.e2e.test.ts` and `pool-files.e2e.test.ts` pin this).
+
+The pool runs in the main Vitest process, so it and the JVMs it launches read
+**that** process's environment: set `AIC_SCRIPT_TESTER_JVM_POOL`,
+`JAVA_TOOL_OPTIONS` and the like in the shell that runs Vitest, not in
+`test.env`, which only reaches workers. Set `AIC_SCRIPT_TESTER_JVM_POOL=0` to
+start a JVM per lease as before.
 
 Within a JVM, the case prelude (generated mocks, identity policy, runtime) and
 each library body are compiled once and cached by content hash, and each
