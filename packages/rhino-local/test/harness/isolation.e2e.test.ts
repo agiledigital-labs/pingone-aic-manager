@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { cacheDir, ensureRhinoJar, ensureRunnerClasses } from "../../src/jvm.ts";
 import { JvmPool, PooledChild } from "../../src/pool.ts";
 import { RhinoRunner } from "../../src/runner.ts";
-import { FRESH, LIBRARIES, POLLUTER, PROBE } from "./isolation-scripts.ts";
+import { FRESH, LIBRARIES, PID_PROBE, POLLUTER, PROBE } from "./isolation-scripts.ts";
 
 
 async function runScript(runner: RhinoRunner, script: string, given: Given = { libraries: LIBRARIES }) {
@@ -46,7 +46,7 @@ async function probe(runner: RhinoRunner): Promise<void> {
 }
 
 async function jvmPid(runner: RhinoRunner): Promise<number> {
-  const response = await runner.eval({ source: "Number(java.lang.ProcessHandle.current().pid())" });
+  const response = await runner.eval(PID_PROBE);
   expect(response.outcome).toBe("ok");
   return response.value as number;
 }
@@ -132,7 +132,7 @@ describe("case isolation across files on a pooled JVM", () => {
   it("a timed-out case does not poison the JVM for the next file", async () => {
     const first = await file(async (runner) => {
       expectEmulationFailure("Rhino harness timeout");
-      const response = await runner.eval({ source: "for (;;) {}", timeoutMs: 200 });
+      const response = await runner.eval({ source: "for (;;) {}", timeoutMs: 200, classAllowList: [] });
       expect(response.outcome).toBe("timeout");
       return jvmPid(runner);
     });
@@ -149,7 +149,7 @@ describe("case isolation across files on a pooled JVM", () => {
     const runner = await RhinoRunner.borrow(pool.address, { lane: "host", shutdownWaitMs: 200 });
     const pid = await jvmPid(runner);
     expectEmulationFailure(/(?:Error: )?rhino-local: lease closed with 1 job\(s\) still pending; JVM discarded/);
-    const outcome = runner.eval({ timeoutMs: 0, source: "for (;;) {}" }).then(
+    const outcome = runner.eval({ timeoutMs: 0, source: "for (;;) {}", classAllowList: [] }).then(
       () => "resolved",
       (error: unknown) => String(error)
     );
@@ -173,10 +173,10 @@ describe("case isolation across files on a pooled JVM", () => {
         buffer = buffer.slice(nl + 1);
       }
     });
-    child.stdin.write(`${JSON.stringify({ id: "pid", source: "Number(java.lang.ProcessHandle.current().pid())" })}\n`);
+    child.stdin.write(`${JSON.stringify({ id: "pid", ...PID_PROBE })}\n`);
     while (lines.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
     const pid = (JSON.parse(lines[0] as string) as { value: number }).value;
-    child.stdin.write(`${JSON.stringify({ id: "busy", timeoutMs: 0, source: "for (;;) {}" })}\n`);
+    child.stdin.write(`${JSON.stringify({ id: "busy", timeoutMs: 0, source: "for (;;) {}", classAllowList: [] })}\n`);
     await new Promise((resolve) => setTimeout(resolve, 100));
     const gone = new Promise((resolve) => child.once("exit", resolve));
     child.release();
@@ -212,6 +212,48 @@ describe("case isolation across files on a pooled JVM", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  // Each way a job runs with no class shutter. Such a job can change the JVM
+  // itself, and a normal finish does not undo it, so the JVM is not lent again.
+  const POLLUTE_JVM =
+    "(function () {" +
+    " java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone('Australia/Sydney'));" +
+    " java.lang.System.setProperty('rhinoLocalLeak', 'from-file-A');" +
+    " return String(java.lang.System.getProperty('rhinoLocalLeak')); })()";
+  const READ_JVM = "String(java.lang.System.getProperty('rhinoLocalLeak')) + ' ' + java.util.TimeZone.getDefault().getID()";
+  const unshuttered: Array<[string, (runner: RhinoRunner) => Promise<unknown>]> = [
+    ["a raw eval with no classAllowList", async (runner) => (await runner.eval({ source: POLLUTE_JVM })).value],
+    ["the IDM engine", async (runner) => (await runner.eval({ engine: "idm", source: POLLUTE_JVM })).value],
+    [
+      "a case with classShutter: false",
+      async (runner) => {
+        const kase = defineCase({ name: "no-shutter", script: `nodeState.putShared("leak", ${POLLUTE_JVM}); action.goTo("done");`, outcomes: ["done"], expect: { outcome: "done" } });
+        return (await runCase(runner, kase, { classShutter: false })).effects.sharedState.final.leak;
+      },
+    ],
+    [
+      "a legacy-engine case",
+      async (runner) => {
+        const kase = defineCase({ name: "legacy", script: `sharedState.put("leak", ${POLLUTE_JVM}); outcome = "done";`, outcomes: ["done"], given: { engine: "legacy" }, expect: { outcome: "done" } });
+        return (await runCase(runner, kase)).effects.sharedState.final.leak;
+      },
+    ],
+  ];
+  it.each(unshuttered)("a JVM that ran %s is not lent to the next file", async (_name, polluteJvm) => {
+    const first = await file(async (runner) => {
+      const pid = await jvmPid(runner);
+      // The job really changed the JVM: it reads its own property back.
+      expect(await polluteJvm(runner)).toBe("from-file-A");
+      return pid;
+    });
+    const second = await file(async (runner) => {
+      const seen = await runner.eval({ source: READ_JVM });
+      expect(seen.value).toBe("null Etc/UTC");
+      return jvmPid(runner);
+    });
+    expect(first).toBeGreaterThan(0);
+    expect(second).not.toBe(first);
+  });
 
   it("a JVM that crashed is replaced, not lent again", async () => {
     const crashed = await file(async (runner) => {

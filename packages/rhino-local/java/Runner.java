@@ -55,8 +55,25 @@ public final class Runner {
   private static final Map<String, Boolean> ACTIVE = new ConcurrentHashMap<String, Boolean>();
 
   /**
+   * Sticky: this JVM has run a job with no class shutter (no
+   * {@code classAllowList}, or the IDM engine, which has none). Such a job can
+   * reach any Java class, so it can leave JVM-global state behind when it
+   * finishes normally: a default timezone, a system property, a thread it
+   * started. Nothing here can undo that, so the pool never lends this JVM to
+   * another client once the flag is set.
+   */
+  private static volatile boolean unshuttered;
+
+  static boolean shuttered(Map<String, Object> job) {
+    Object engine = job.get("engine");
+    boolean am = engine == null || "am".equals(engine);
+    return am && job.get("classAllowList") instanceof List;
+  }
+
+  /**
    * The JVM pool asks this before lending a JVM to another client: a JVM with
-   * a job still running, or one that retired itself, must never be reused.
+   * a job still running, one that retired itself, or one that has run a job
+   * with no class shutter must never be reused.
    * Read from the same flags that refuse jobs, so it cannot disagree with
    * them the way a scan of stderr for {@link #RETIRED_MARKER} can.
    */
@@ -68,6 +85,7 @@ public final class Runner {
     status.put("id", id);
     status.put("active", Integer.valueOf(ACTIVE.size()));
     status.put("retired", Boolean.valueOf(retired));
+    status.put("unshuttered", Boolean.valueOf(unshuttered));
     return status;
   }
 
@@ -131,6 +149,9 @@ public final class Runner {
         } else if (ACTIVE.putIfAbsent(id, Boolean.TRUE) != null) {
           write(refusal(id, "rhino-local: duplicate active job id"));
         } else {
+          // Set before the job can run, on the reader, so a status line sent
+          // after this job always sees it.
+          if (!shuttered(job)) unshuttered = true;
           try { workers.execute(() -> handleJob(factory, job)); }
           catch (RejectedExecutionException e) {
             respond(refusal(id, "rhino-local: concurrent job limit exceeded (" + maxJobs + ")"));

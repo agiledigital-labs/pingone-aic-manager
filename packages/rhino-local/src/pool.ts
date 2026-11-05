@@ -11,26 +11,39 @@
  * rather than exiting. One JVM per worker slot per lane, warm after the first
  * file.
  *
- * Reuse is safe for the same reason consecutive cases in one file already
- * share a JVM: every job builds a fresh scope (`initStandardObjects()` and
- * the whole preamble run again), and what the JVM keeps between jobs — the
- * compiled-script cache — is content-addressed code, never state.
+ * What reuse guarantees. Every job builds a fresh JavaScript scope
+ * (`initStandardObjects()` and the whole preamble run again), and what the
+ * JVM keeps between jobs — the compiled-script cache — is content-addressed
+ * code, never state. So a script's JavaScript state never reaches another
+ * job. Java-level state is a different matter: a script that can reach
+ * `java.lang.System`, `java.util.TimeZone` or `java.lang.Thread` can change
+ * the JVM itself. Behind the class shutter (a next-gen decision-node case,
+ * the default) none of those classes is visible. Without it (the legacy
+ * engine, `classShutter: false`, the IDM engine, or a raw `runner.eval` with
+ * no `classAllowList`) they are, so:
  *
- * A JVM is not lent again once it has exited or retired itself (a spawned
- * thread outlived its job), or while any job is still running in it: before
- * a returned JVM goes idle the pool asks it (`op: "pool-status"`) and discards
- * it unless it is idle and not retired. A client that closes with a job
- * pending kills its JVM outright. So neither one file's crash nor its runaway
- * job can reach the next file. A JVM is also only reused by a client whose
- * runner classes are the ones it was started with, so editing `java/*.java`
- * in watch mode starts fresh JVMs rather than testing the old build.
+ * - a JVM that has run any job without a shutter is never lent to another
+ *   client: it is discarded when its lease ends, and the next file starts a
+ *   new one, as it would with no pool;
+ * - within one lease (one file), cases share the JVM as they always have, so
+ *   an unshuttered case can still leave JVM-global state for the next case in
+ *   the same file.
+ *
+ * A JVM is also not lent again once it has exited or retired itself (a
+ * spawned thread outlived its job), or while any job is still running in it.
+ * Before a returned JVM goes idle the pool asks it (`op: "pool-status"`) and
+ * discards it unless it is idle, not retired and has run only shuttered jobs.
+ * A client that closes with a job pending kills its JVM outright. A JVM is
+ * only reused by a client whose runner classes are the ones it was started
+ * with (path and manifest), so rebuilding `java/*.java` in watch mode starts
+ * fresh JVMs rather than testing the old build.
  * Opt out with `AIC_SCRIPT_TESTER_JVM_POOL=0`: each `useLease` then spawns and
  * closes its own JVM, as before.
  */
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +83,8 @@ interface Status {
   id: string;
   active: number;
   retired: boolean;
+  /** The JVM has run a job with no class shutter; see the module comment. */
+  unshuttered: boolean;
 }
 
 /** Frames the pool adds to the runner's stdout stream; the runner never prints this prefix. */
@@ -105,7 +120,7 @@ export function poolEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 /** One pooled runner JVM, owned by the main process. */
 class PooledJvm {
   readonly key: string;
-  /** The runner classes directory it was started with; content-addressed, so it names the build. */
+  /** The runner classes it was started with: see {@link buildIdentity}. */
   readonly build: string;
   readonly #watch = new RetirementWatch();
   #status: { id: string; resolve: (status: Status | undefined) => void } | undefined;
@@ -145,8 +160,9 @@ class PooledJvm {
   }
 
   /**
-   * Ask the JVM whether it may be lent again: no job running, not retired.
-   * No answer within the bound counts as no.
+   * Ask the JVM whether it may be lent again: no job running, not retired,
+   * and never ran a job without a class shutter. No answer within the bound,
+   * or an answer missing a field, counts as no.
    */
   async reusable(): Promise<boolean> {
     if (!this.usable) return false;
@@ -163,7 +179,13 @@ class PooledJvm {
       this.write(JSON.stringify({ id, op: STATUS_OP }));
     });
     if (status?.retired === true) this.retired = true;
-    return status !== undefined && status.active === 0 && !status.retired && this.usable;
+    return (
+      status !== undefined &&
+      status.active === 0 &&
+      status.retired === false &&
+      status.unshuttered === false &&
+      this.usable
+    );
   }
 
   attach(client: Socket): void {
@@ -460,14 +482,15 @@ export class JvmPool {
     // runner is never served by a JVM started from the previous build.
     const jar = await ensureRhinoJar(hello.cache, undefined, env);
     const classes = await this.#classes(jar, hello.cache);
+    const build = buildIdentity(classes);
     const idle = this.#idle.get(key) ?? [];
     while (idle.length > 0) {
       const jvm = idle.pop() as PooledJvm;
-      if (jvm.usable && jvm.build === classes) return jvm;
+      if (jvm.usable && jvm.build === build) return jvm;
       this.#discard(jvm);
     }
     const launch = hello.kind === "host" ? hostLaunch(classes, jar, env) : containerLaunch(classes, jar, env);
-    const jvm = new PooledJvm(key, classes, launch);
+    const jvm = new PooledJvm(key, build, launch);
     this.#all.add(jvm);
     return jvm;
   }
@@ -483,7 +506,7 @@ export class JvmPool {
       checks.delete(check);
       if (checks.size === 0) this.#returning.delete(jvm.key);
       if (this.#stopped || !reusable) {
-        // Still running a job, or retired: never lend it again.
+        // Still running a job, retired, or it ran unshuttered: never lend it again.
         jvm.kill();
         this.#discard(jvm);
         return;
@@ -499,6 +522,23 @@ export class JvmPool {
     this.#all.delete(jvm);
     void jvm.stop();
   }
+}
+
+/**
+ * Which build a classes directory holds: its path and its manifest
+ * (`.complete`, a hash of every class file). The path alone is not enough:
+ * the package's prebuilt `dist/classes` keeps its path when `npm run build`
+ * rewrites it, so a JVM started from the old classes would be reused.
+ */
+function buildIdentity(classes: string): string {
+  let manifest: string;
+  try {
+    manifest = createHash("sha256").update(readFileSync(join(classes, ".complete"))).digest("hex");
+  } catch {
+    // No manifest to read: a fresh identity, so nothing is reused on a guess.
+    manifest = `unread-${randomUUID()}`;
+  }
+  return `${classes}\0${manifest}`;
 }
 
 function parseHello(line: string, token: string): Hello | undefined {
