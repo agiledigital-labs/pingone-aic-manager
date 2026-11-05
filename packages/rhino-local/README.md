@@ -1015,8 +1015,10 @@ are already decoded. Inline scripts use the tenant's `{type, source, globals?}`
 shape; endpoint configs can instead wrap one in `{type:"scripted", script}`.
 Managed schemas retain object hooks, property hooks and custom `actions`.
 `config/managed` and `config/endpoint/<name>` are readable snapshots; config writes
-and script `file` references fail as missing behavior. The caller owns the
-runner and closes it after every emulator/fork using it has finished.
+fail as missing behavior. A script `file` reference and a `require(id)` name one
+of IDM's own runtime scripts, which come from the `runtimeScripts` provider
+(below). The caller owns the runner and closes it after every emulator/fork
+using it has finished.
 
 Namespace roots (`managed`, `endpoint`, `config`, and `config/endpoint`) are
 unmeasured and fail as `missing`, regardless of completeness declarations.
@@ -1303,6 +1305,65 @@ uses this to enforce its fidelity boundary. Reached missing behavior is always
 reported; the option also requests an empty diagnostic list on complete jobs. `crestBindings: true` supplies the measured request class tags and
 case-insensitive HTTP header maps. These optional wrappers and missing-use
 diagnostics are the slice's Java changes; the IDM engine itself is unchanged.
+
+### IDM runtime scripts
+
+IDM runs scripts of its own: about 60 files under the tenant's
+`/opt/openidm/bin/defaults/script` (`policy.js`, `roles/effectiveRoles.js`,
+`onCreateUser.js`, `router-authz.js`, …) plus the engine's bundled `lib/lodash`,
+`lib/handlebars` and `lib/validator`. A tenant reaches them from configuration,
+either as a hook's `{type: "text/javascript", file: "roles/onDelete-roles.js"}`
+or from an inline one-liner such as `alpha_user.onCreate`'s
+`require('onCreateUser')`. This package does not ship them. The project
+supplies them, through a provider:
+
+```ts
+const idm = new IdmEmulator(config, runner, {
+  // A directory named by IDM's relative paths: <dir>/roles/effectiveRoles.js
+  runtimeScripts: "idm-runtime-scripts",
+  // …or a loader: (scriptPath) => string | undefined (it may return a promise)
+  // runtimeScripts: (path) => myScripts[path],
+});
+```
+
+The intended directory is a fetch from the tenant, run when you choose and
+never at test time: `aic idm runtime-scripts pull` (planned; until it ships,
+copy the files by hand in the same layout). Commit the output beside the rest
+of the configuration. Test runs then stay offline, and a later re-fetch shows
+ForgeRock's changes to these scripts as a diff. The directory holds each
+script at its IDM path, byte for byte, plus a `manifest.json` recording the
+tenant, the fetch time, the IDM version and each file's SHA-256. The emulator
+does not read the manifest. `test/fixtures/idm-runtime-scripts/` is an
+invented example of the layout.
+
+A `file` reference runs the supplied source with the bindings an inline script
+in the same place gets. `require(id)` loads `<id>.js` (or `id` if it already
+ends in `.js`) as a CommonJS module, following IDM 9.0.0's engine as read from
+its bytecode rather than measured on AIC. The module sees the caller's bindings
+(`openidm`, `object`, `request`, …) and keeps its own top-level `var`s. It runs
+at most once per script invocation, and runs again in the next invocation. A
+require cycle sees the partial exports. These rules are recorded as `assumed`
+provenance. Two differences from IDM are deliberate and also recorded: IDM
+preloads `lib/lodash`, `lib/handlebars` and `lib/validator` once per engine
+and shares their exports, where here they run per invocation; and a relative
+id (`./x`) is refused, because IDM's resolution of it is unmeasured.
+
+A script the provider does not supply is the harness fault
+`idm-runtime-script/<path>`, for example `idm-runtime-script/onCreateUser.js`.
+This includes the case where no provider is configured at all. The message
+names the script, how it was reached (`onCreate file reference`,
+`require("onCreateUser")`) and how to fetch it. As with every harness fault, a
+script that catches the failure still fails the request with 501, and the run's
+fault tally counts it. A name that is not a canonical path under the script
+root (absolute, `..`, `./`) is the fault `idm-runtime-script-path`. Supplying a
+script does not make the behaviour around it emulated: `policy.js` in
+particular is not wired. Writes go through the `policy` evaluator seam or carry
+`assumed: policy not evaluated`.
+
+`runner.eval({ engine: "idm" })` called directly, outside the emulator, keeps
+the old behaviour: `require` is the `missing` behaviour `require`. The emulator
+opts its own jobs in with `idmRequire: true`, which turns `require` into a
+`require` host call that it answers from the provider.
 
 ## Artefacts
 
