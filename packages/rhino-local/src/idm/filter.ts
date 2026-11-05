@@ -21,13 +21,23 @@ interface Lane {
   strings: Strings;
   quotedInteger(field: string): boolean;
   scalar(field: string, op: string, type: "number" | "boolean"): void;
+  /** The field's matching rule (crest-filter.cjs `fieldRule`, or `json` for a JSON-stored property). */
+  rule(field: string): FieldRule | null;
+  /** This lane applies the measured field rules (the script tester's does not). */
+  decides: boolean;
+  label(provenance: "measured" | "assumed", behavior: string, source: string): void;
 }
+/** A field whose DS matching rule is not a string reading (crest-filter.cjs `fieldRule`). */
+export type FieldRule = "phone" | "instant" | "integer" | "dsInteger" | "dsRefused" | "emptyAbsent" | "json";
+/** A literal AIC refuses with a 400 before reading any record. */
+export type Illegal = { field: string; value: string; op: string };
 
 const grammar = createRequire(import.meta.url)(bindingsCrestFilterPath) as {
   pointerParts(path: string): string[];
   prepare(input: unknown, evaluated: readonly string[]): Prepared;
   evaluate(ast: Ast, record: JsonValue, lane: Lane): Tri;
-  otherRule(type: string, field: string): boolean;
+  fieldRule(type: string, field: string): FieldRule | null;
+  assertions(ast: Ast, lane: Lane): { unknown: Blame } | { illegal: Illegal } | null;
   readField(record: JsonValue, path: string): JsonValue | undefined;
   readStrings(candidate: string, op: string, expected: string, cases: Transform[], spaces: Transform[]):
     { answer: boolean; dimension: Dimension | null };
@@ -40,8 +50,8 @@ export const pointerParts = (path: string): string[] => grammar.pointerParts(pat
 
 export const fieldValue = (value: JsonValue, path: string): JsonValue | undefined => grammar.readField(value, path);
 
-/** Whether a user type's field has a DS matching rule no string reading describes (round-5 P2-3). */
-export const otherRule = (type: string, field: string): boolean => grammar.otherRule(type, field);
+/** A user type's field whose DS matching rule no string reading describes (round 5; measured 2026-11-06). */
+export const fieldRule = (type: string, field: string): FieldRule | null => grammar.fieldRule(type, field);
 
 const evaluated: readonly Operator[] = ["eq", "co", "sw", "gt", "ge", "lt", "le"];
 
@@ -81,8 +91,10 @@ export interface StringPolicy {
   quotedInteger(field: string): boolean;
   /** A same-type number or boolean leaf was decided; the repository labels it. */
   scalar(field: string, op: Operator, type: "number" | "boolean"): void;
-  /** No case or space reading describes this field (its DS matching rule is another); refuse it. */
-  refused(field: string): boolean;
+  /** The field's matching rule, where it is not a string reading. */
+  rule(field: string): FieldRule | null;
+  /** A measured field rule decided a leaf; the repository labels it. */
+  label(provenance: "measured" | "assumed", behavior: string, source: string): void;
   /** The record's whole answer turns on something unmeasured; must refuse. */
   unknown(field: string, op: Operator | "pr", dimension: Dimension): never;
 }
@@ -105,13 +117,15 @@ function policyLane(policy: StringPolicy): Lane {
     strings: policyStrings(policy),
     quotedInteger: (field) => policy.quotedInteger(field),
     scalar: (field, op, type) => policy.scalar(field, op as Operator, type),
+    rule: (field) => policy.rule(field),
+    decides: true,
+    label: (provenance, behavior, source) => policy.label(provenance, behavior, source),
   };
 }
 
 function policyStrings(policy: StringPolicy): Strings {
   return (field, operator, candidate, expected) => {
     const op = operator as Operator;
-    if (policy.refused(field)) return { unknown: { field, op, dimension: "rule" } };
     if (ORDERING.includes(op)) policy.ordered(field, op, /^[\x20-\x7e]*$/.test(candidate + expected));
     const rules = policy.rules(field, op);
     const cases = variants.case[rules.case], spaces = variants.space[rules.space];
@@ -126,6 +140,19 @@ function policyStrings(policy: StringPolicy): Strings {
     }
     return read.answer;
   };
+}
+
+/**
+ * The leaves AIC judges before reading a record: a literal a measured field rule refuses (AIC's
+ * 400, returned for the caller to throw), or one this emulator cannot judge (refused through the
+ * policy, even when the collection is empty). `null` when the filter goes on to the records.
+ */
+export function illegalAssertion(filter: Filter, policy: StringPolicy): Illegal | null {
+  const verdict = grammar.assertions(filter, policyLane(policy));
+  if (verdict === null) return null;
+  if ("illegal" in verdict) return verdict.illegal;
+  const { field, op, dimension } = verdict.unknown;
+  return policy.unknown(field, op as Operator | "pr", dimension);
 }
 
 /**

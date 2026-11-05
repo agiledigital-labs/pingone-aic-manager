@@ -2354,7 +2354,7 @@ var __rhinoLocalUndecidedWhy = {
   unicode: "turns on Unicode normalisation or characters RFC 4518 maps to nothing",
   type: "compares different JSON types, or an object or null element, which nothing measured",
   presence: "asks pr of an empty string, array or object, which nothing measured",
-  rule: "is on a user field whose DS matching rule is not caseIgnoreMatch, which nothing measured",
+  rule: "is on a user field whose DS matching rule is not caseIgnoreMatch (telephone, time or integer): AIC's answer was measured over REST and IDM scripts only, never through this binding",
   path: "reads through an array, measured only as a bare eq reached through and alone",
 };
 
@@ -2438,6 +2438,15 @@ openidm.query = function (resourceName, params, fields) {
   // filter fails on an empty collection too.
   var ast = __rhinoLocalParseFilter(filter);
   var lane = __rhinoLocalCrestFilter.unmeasuredLane(collection);
+  // A leaf AIC judges before reading any record (a field rule, its 400s):
+  // undecided here even on an empty collection, so it cannot pass vacuously.
+  var assertion = __rhinoLocalCrestFilter.assertions(ast, lane);
+  if (assertion !== null) {
+    var blame = assertion.unknown !== undefined ? assertion.unknown
+      : { op: assertion.illegal.op, field: assertion.illegal.field, dimension: "rule" };
+    __rhinoLocalFilterUnsupported(filter, blame.op + " on " + blame.field + " " +
+      __rhinoLocalUndecidedWhy[blame.dimension]);
+  }
   var result = [];
   var i;
   for (i = 0; i < rows.length; i += 1) {

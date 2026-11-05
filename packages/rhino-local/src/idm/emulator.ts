@@ -43,7 +43,7 @@ export class IdmEmulator {
     this.records = new Map();
     this.scripts = new Scripts(runner, this.evidence, (call, context) => this.chain.run(context, () => this.host(call)), this.properties,
       new RuntimeScripts(options.runtimeScripts));
-    this.managed = new ManagedStore(this.records, this.scripts, this.evidence, this.policy);
+    this.managed = new ManagedStore(this.records, this.scripts, this.evidence, this.policy, (type, field) => config.jsonStored(type, field));
   }
 
   /** Shares frozen config and runner; copies all records, including nested JSON values. */

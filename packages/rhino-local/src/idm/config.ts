@@ -1,5 +1,25 @@
 /** Immutable tenant config snapshot, shared by emulator forks. No disk loading. */
+import type { JsonValue } from "../protocol.ts";
 import type { ConfigInput, EndpointConfig, ManagedConfig, ManagedType } from "./types.ts";
+
+/**
+ * Where DS stores a managed type's records. `generic`: JSON in `ou=managed` (the `managed/*`
+ * generic mapping, or a per-type `genericMapping` entry); `explicit`: a type with its own LDAP
+ * object class; `unknown`: no `repo` supplied, or a repo naming the type in both sections.
+ * `alpha_user` / `bravo_user` are explicit by name (docs/api/14).
+ */
+export type StorageKind = "generic" | "explicit" | "unknown";
+
+const USER_TYPES = ["alpha_user", "bravo_user"];
+
+function section(repo: Readonly<Record<string, JsonValue>> | undefined, name: string): Record<string, JsonValue> | undefined {
+  const mapping = repo?.resourceMapping;
+  if (mapping === null || typeof mapping !== "object" || Array.isArray(mapping)) return undefined;
+  const value = (mapping as Record<string, JsonValue>)[name];
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : undefined;
+}
+const has = (object: Record<string, JsonValue> | undefined, key: string): boolean =>
+  object !== undefined && Object.prototype.hasOwnProperty.call(object, key);
 
 /** Validate caller data before cloning can erase a non-plain prototype. */
 function plainObject(value: unknown, path: string): void {
@@ -23,6 +43,7 @@ export class IdmConfig {
   readonly endpointsSupplied: boolean;
   readonly complete: Readonly<{ managed: boolean; endpoints: boolean }>;
   private readonly types: ReadonlyMap<string, ManagedType>;
+  private readonly repo: Readonly<Record<string, JsonValue>> | undefined;
 
   constructor(input: ConfigInput) {
     plainObject(input, "input");
@@ -33,6 +54,7 @@ export class IdmConfig {
       if (typeof type.name !== "string" || type.name.length === 0) throw new TypeError(`Invalid IDM configuration: managed.objects[${index}].name must be a nonempty string`);
     }
     if (input.endpoints !== undefined) plainObject(input.endpoints, "endpoints");
+    if (input.repo !== undefined) plainObject(input.repo, "repo");
     if (input.complete !== undefined) {
       plainObject(input.complete, "complete");
       for (const [namespace, value] of Object.entries(input.complete)) {
@@ -49,6 +71,7 @@ export class IdmConfig {
     this.managed = snapshot.managed;
     this.endpointsSupplied = snapshot.endpoints !== undefined;
     this.endpoints = snapshot.endpoints ?? Object.freeze({});
+    this.repo = snapshot.repo;
     this.complete = Object.freeze({ managed: snapshot.complete?.managed === true, endpoints: snapshot.complete?.endpoints === true });
     const types = new Map<string, ManagedType>();
     for (const type of this.managed.objects) {
@@ -61,5 +84,30 @@ export class IdmConfig {
 
   managedType(name: string): ManagedType | undefined {
     return this.types.get(name);
+  }
+
+  /** The type's storage kind, read from the supplied `config/repo.ds` (see `StorageKind`). */
+  storage(type: string): StorageKind {
+    if (USER_TYPES.includes(type)) return "explicit";
+    if (this.repo === undefined) return "unknown";
+    const key = `managed/${type}`;
+    const explicit = has(section(this.repo, "explicitMapping"), key);
+    const generic = section(this.repo, "genericMapping");
+    const own = has(generic, key);
+    if (explicit && own) return "unknown";
+    if (explicit) return "explicit";
+    return own || has(generic, "managed/*") ? "generic" : "unknown";
+  }
+
+  /**
+   * Whether a top-level property of a type is stored as JSON in DS: a generic type's property
+   * that its `genericMapping` entry does not map to an attribute of its own (a mapped
+   * relationship is listed under `properties`).
+   */
+  jsonStored(type: string, field: string): boolean {
+    if (field.includes("/") || this.storage(type) !== "generic") return false;
+    const entry = section(this.repo, "genericMapping")?.[`managed/${type}`];
+    const properties = entry !== null && typeof entry === "object" && !Array.isArray(entry) ? (entry as Record<string, JsonValue>).properties : undefined;
+    return !(properties !== null && typeof properties === "object" && !Array.isArray(properties) && has(properties as Record<string, JsonValue>, field));
   }
 }
