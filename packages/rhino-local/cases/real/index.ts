@@ -1057,11 +1057,12 @@ export const realCases: RealEntry[] = [
         pulledAt: "2026-09-28T00:00:00.000Z",
         sources: [],
         objects: {
-          idr_name_variants: { name: "idr_name_variants", properties: {}, required: [] },
+          idr_name_variants: { name: "idr_name_variants", properties: {}, required: [], hooks: [] },
           idr_name_variant_discrepancies: {
             name: "idr_name_variant_discrepancies",
             properties: {},
             required: [],
+            hooks: [],
           },
         },
       },
@@ -3638,12 +3639,15 @@ export const realCases: RealEntry[] = [
       }
     },
     // The tenant declares alpha_role and not rlNoSuchType, so the absent type
-    // is answered as AIC answers it rather than as a missing fixture.
+    // is answered as AIC answers it rather than as a missing fixture. The
+    // hand-written profile records no hooks or policies on alpha_role, which
+    // is what lets its writes run here at all (E15b); the live writes above
+    // succeeded, so nothing the tenant ran refused them.
     profile: {
       tenant: "sandbox",
       pulledAt: "2026-09-29T00:00:00.000Z",
       sources: [],
-      objects: { alpha_role: { name: "alpha_role", properties: {}, required: [] } },
+      objects: { alpha_role: { name: "alpha_role", properties: {}, required: [], hooks: [] } },
     },
     allowUndeclared: {"openidmWrites":true},
     gap: {

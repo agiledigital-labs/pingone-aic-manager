@@ -29,6 +29,12 @@ export interface ObjectSchema {
   properties: Record<string, PropertySchema>;
   /** Property names IDM rejects a create without. */
   required: string[];
+  /**
+   * Names of the object-level script hooks the type declares (`onCreate`, `postUpdate`, …), sorted,
+   * WITHOUT their bodies: hook source is client code. Absent on a profile pulled before E15b, which
+   * cannot say whether the type has hooks, so the script tester faults its writes until a re-pull.
+   */
+  hooks?: string[];
 }
 
 export interface PropertySchema {
@@ -45,4 +51,8 @@ export interface PropertySchema {
   items?: PropertySchema;
   /** `managed/<target>` paths, for `type: "relationship"`. */
   resourceCollection?: string[];
+  /** Property-level script hooks (`onValidate`, `onStore`, `onRetrieve`), names only, sorted. */
+  hooks?: string[];
+  /** The `policyId`s of the property's declared `policies`, in order. AIC runs them on write. */
+  policies?: string[];
 }

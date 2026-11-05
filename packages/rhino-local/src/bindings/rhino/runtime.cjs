@@ -26,6 +26,7 @@ var __rhinoLocal = {
   httpStubs: [],
   openidmActions: [],
   openidmFailures: [],
+  managedWriteFaults: null,
   openidmCallCounts: {},
   generatedId: 0,
   outcome: null,
@@ -2133,6 +2134,18 @@ function __rhinoLocalRequireCollection(method, collection) {
   );
 }
 
+// A write that reaches this lane's store on a type whose profile declares hooks
+// or policies (E15b). A write a test stubs with given.openidmFailures has
+// already thrown in __rhinoLocalPushOpenidm and never gets here.
+function __rhinoLocalManagedWriteFault(method, collection) {
+  var table = __rhinoLocal.managedWriteFaults;
+  if (!table || !__rhinoLocalHas(table, collection) || !__rhinoLocalHas(table[collection], method)) {
+    return;
+  }
+  var fault = table[collection][method];
+  throw __rhinoLocalFault(fault.id, "rhino-local: openidm." + method + ": " + fault.message);
+}
+
 // A type a profile says the tenant does not have. Without a profile an
 // unseeded collection cannot be told from a typo, so it is never absent.
 function __rhinoLocalAbsentType(collection) {
@@ -2531,6 +2544,9 @@ openidm.create = function (resourceName, newResourceId, content) {
     __rhinoLocal.managed[collection] = [];
   }
   var rows = __rhinoLocal.managed[collection];
+  // Before the duplicate check: on AIC the create chain (hooks, policy) runs
+  // before the record is committed and found to collide.
+  __rhinoLocalManagedWriteFault("create", collection);
   var existing = __rhinoLocalFindRecord(collection, id).record;
   if (existing) {
     __rhinoLocalBagAccess("create", collection + "/" + id, existing);
@@ -2558,6 +2574,7 @@ openidm.update = function (id, _rev, value) {
   var found = __rhinoLocalRequireRecord("update", resource);
   __rhinoLocalBagAccess("update", resource, found.record);
   __rhinoLocalCheckRev("update", _rev, found.record);
+  __rhinoLocalManagedWriteFault("update", __rhinoLocalSplitResource(resource).collection);
   var next = __rhinoLocalClone(value);
   next = __rhinoLocalOpenidmRecord(next, found.record._id, found.record._rev);
   __rhinoLocalBagIdmWrite("update", resource, next);
@@ -2587,6 +2604,7 @@ openidm.patch = function (resourceName, _rev, patch) {
       );
     }
   }
+  __rhinoLocalManagedWriteFault("patch", __rhinoLocalSplitResource(resource).collection);
   var next = __rhinoLocalClone(found.record);
   for (i = 0; i < patch.length; i += 1) {
     op = patch[i];
@@ -2616,6 +2634,7 @@ openidm.delete = function (resourceName, _rev) {
       "rhino-local: openidm.delete: Assertion Failed: the entry cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry"
     );
   }
+  __rhinoLocalManagedWriteFault("delete", __rhinoLocalSplitResource(resource).collection);
   var removed = found.record;
   __rhinoLocalBagIdmWrite("delete", resource, removed);
   found.rows.splice(found.index, 1);
@@ -2656,8 +2675,15 @@ openidm.action = function (resource, actionName, content, params) {
       return __rhinoLocalClone(stub.reply.body);
     }
   }
+  // patch, triggerSyncCheck and updateLastSync on a managed collection used to
+  // return {} here. On AIC a collection patch runs the per-record write chain
+  // and the sync actions run the type's mappings; this lane does neither, and
+  // what each returns is unmeasured (E15b).
   if (managedCollection) {
-    return {};
+    throw __rhinoLocalFault("openidm-managed-collection-action/" + String(actionName),
+      "rhino-local: openidm.action: " + String(actionName) + " on " + JSON.stringify(String(resource)) +
+        " is not emulated: on AIC it runs the records' write chain or the type's sync mappings, and its result is unmeasured. " +
+        "Stub it with given.openidmActions, or expect the fault (E19)");
   }
   throw __rhinoLocalFixtureFault("openidm-action", 
     "rhino-local: openidm.action: no given.openidmActions stub for " +
@@ -4051,6 +4077,12 @@ function __rhinoLocalSeed(given) {
     : null;
   __rhinoLocal.profileTenant = given.profileTenant || null;
   __rhinoLocal.profilePulledAt = given.profilePulledAt || null;
+  // `managed/<type>` → method → { id, message }: the writes this lane cannot
+  // answer because the type declares hooks or policies (E15b). Decided in
+  // src/profile/write-guard.ts; this side only looks the answer up.
+  __rhinoLocal.managedWriteFaults = given.managedWriteFaults
+    ? __rhinoLocalClone(given.managedWriteFaults)
+    : null;
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
   __rhinoLocal.esvProvided = given.esv !== undefined;
   __rhinoLocal.esvUndeclared = given.esvUndeclared || "error";
