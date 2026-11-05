@@ -370,22 +370,30 @@ transaction had an access event and no activity. No `DELETE` and no
 relationship-removed event. `idm-core` in the burst window had no `ERROR` line.
 `derived` matched the edges that remained, not the original ten.
 
-| Rep | HTTP | Edges after | Still gone after ~30 s | `derived` |
-| --- | ---- | ----------- | ---------------------- | --------- |
-| 0   | 6×200, 4×404 | 6 | yes | 6 / 34 / 0 |
-| 1   | 4×200, 6×404 | 4 | yes | 4 / 15 / 0 |
-| 2   | 6×200, 4×404 | 6 | yes | 6 / 39 / 0 |
-| 3   | 6×200, 4×404 | 6 | yes | 6 / 30 / 0 |
-| 4   | 7×200, 3×404 | 7 | yes | 7 / 42 / 0 |
+| Rep | HTTP         | Edges after | Still gone after ~30 s | `derived`  |
+| --- | ------------ | ----------- | ---------------------- | ---------- |
+| 0   | 6×200, 4×404 | 6           | yes                    | 6 / 34 / 0 |
+| 1   | 4×200, 6×404 | 4           | yes                    | 4 / 15 / 0 |
+| 2   | 6×200, 4×404 | 6           | yes                    | 6 / 39 / 0 |
+| 3   | 6×200, 4×404 | 6           | yes                    | 6 / 30 / 0 |
+| 4   | 7×200, 3×404 | 7           | yes                    | 7 / 42 / 0 |
 
-Every 404 was an edge that was then absent on both sides. Every 200 was an
-edge still listed from both sides. The child records remained.
+Every 404 was an edge that was then absent on both sides. Every 200 was an edge
+still listed from both sides. The child records remained.
 
 ### map-none
 
-Same burst with the flags cleared. The control fired. The stored flags were
-null on both ends. Five repetitions also lost edges (10 down to 4, 6, 7, 5
-and 6). Same 404 body, same both-sides absence, nothing came back after ~30 s,
-no `DELETE` in the 404 transaction, no `idm-core` `ERROR`. `derived` stayed at
-the pre-burst count 9, sum 45, active 9, so the loss is not the notification
-hook rewriting the parent. The generic cells are running.
+Same burst with the flags cleared. The control fired. The stored flags were null
+on both ends. Five repetitions also lost edges (10 down to 4, 6, 7, 5 and 6).
+Same 404 body, same both-sides absence, nothing came back after ~30 s, no
+`DELETE` in the 404 transaction, no `idm-core` `ERROR`. `derived` stayed at the
+pre-burst count 9, sum 45, active 9, so the loss is not the notification hook
+rewriting the parent.
+
+### Generic
+
+`gen-node` and `gen-none`, five repetitions each, same harness. Every request
+was 200. Every repetition kept 10 edges, visible on both sides before and after.
+With `NOTIFY=1`, `derived` ended at count 10, sum 55, active 0. With the flags
+off, `derived` stayed at count 9, sum 45, active 9, which is the link-add result
+and not a missing edge. The collection cell is running.
