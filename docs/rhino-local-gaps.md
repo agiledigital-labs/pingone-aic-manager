@@ -382,17 +382,20 @@ expectation that was incomplete). The five legacy cases were dropped on
 Two script-tester behaviours disagree with, or go beyond, what was measured,
 and neither carries a label:
 
-- **Query filters are case- and space-sensitive.** `openidm.query` over
-  `given.managed` (`__rhinoLocalCompareField` in `runtime.cjs`) and the harness
+- **Query filters and letter case or spaces.** `docs/api/10-managed-objects.md`
+  measured `eq` on `alpha_user` ignoring letter case and leading/trailing
+  spaces, so `mail eq "Alice@example.com"` finds a stored `alice@example.com`
+  on AIC. Since E19 fix round 3, `openidm.query` over `given.managed`
+  (`__rhinoLocalCompareOne` in `runtime.cjs`) no longer answers that `[]`: a
+  record whose answer changes under any case or space reading (the IDM
+  emulator's transform set) is undecided, `and`/`or`/`!` follow Kleene logic,
+  and a record left undecided is the `openidm-query-filter` fault. It does not
+  apply the measured `alpha_user` fold either — it has no per-field policy — so
+  a case-different value that AIC is measured to match is a fault too, in the
+  safe direction. The experimental IDM emulator (`src/idm/filter.ts`) applies
+  the measured rules and refuses the rest with its own `missing`. The harness
   `check idm.query` (`src/harness/idm.ts`, exact `JSON.stringify` equality)
-  compare strings exactly. `docs/api/10-managed-objects.md` measured `eq` on
-  `alpha_user` ignoring letter case and leading/trailing spaces, so
-  `mail eq "Alice@example.com"` finds a stored `alice@example.com` on AIC and
-  nothing locally. A test that asserts a case-different value is _not_ found
-  (for example "this is a new account") can pass locally and fail live. The
-  experimental IDM emulator (`src/idm/filter.ts`) applies the measured rules
-  and refuses the unmeasured ones; the script tester does not yet route through
-  them.
+  still compares exactly.
 - **`httpClient.send` converts an object body as AIC measured, and fails on
   what it cannot reproduce.** `docs/api/12` §5 (2026-11-04) measured AIC's
   serializer. The recorded body is a snapshot taken at send time, and it

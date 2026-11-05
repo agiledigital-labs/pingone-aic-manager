@@ -11,12 +11,18 @@
  */
 export const records = [
   { _id: "a", text: "alpha", count: 1, flag: true, nested: { "a/b": "match" } },
-  { _id: "b", text: "beta", count: 2, flag: false },
+  { _id: "b", text: "beta", count: 2, flag: false, other: 'say "hi"' },
   { _id: "c", text: "alpine", count: 1000 },
 ] as const;
 
 /** What a lane answers: matching ids, AIC's parse error, or the fault. */
 export type Answer = string[] | "parse" | "fault";
+/**
+ * The IDM emulator's own refusal when a record's answer turns on an unmeasured
+ * case or space rule: an id-less `missing` with this cause, which fails the run
+ * as the fault does. Only the emulator lanes give it.
+ */
+export type Missing = { missing: string };
 
 export interface FilterRow {
   filter: unknown;
@@ -25,9 +31,9 @@ export interface FilterRow {
   /** The script tester (AM lane). */
   am: Answer;
   /** The IDM emulator for a script's host call (journey lane). */
-  script: Answer;
+  script: Answer | Missing;
   /** The IDM emulator over REST, where `ne`'s 400 text is measured. */
-  rest: Answer | "ne";
+  rest: Answer | Missing | "ne";
   why: string;
 }
 
@@ -55,6 +61,10 @@ export const filterTable: FilterRow[] = [
   same("count eq 9007199254740991", "ast", [], "2^53 - 1: the largest integer a JS number holds exactly"),
   same("count eq 2", "ast", ["b"], "integer"),
   same('text eq "a\\"b"', "ast", [], "escaped quote parses, measured"),
+  // Round-3 P2-2: record b really holds a quote, so only the measured
+  // never-matches rule (docs/api/10) gives [] here; plain equality gives ["b"].
+  same('other eq "say \\"hi\\""', "ast", [], "an escaped quote never matches, measured, even when the record holds it"),
+  same('other sw "say"', "ast", ["b"], "control: the quoted record is reachable"),
   // AIC's parse error.
   same("name eq", "parse", "parse", "missing value, script text measured"),
   same("not (text pr)", "parse", "parse", "word-form not, measured"),
@@ -104,6 +114,30 @@ export const filterTable: FilterRow[] = [
   same("text pr or!(count pr)", "unsupported", "fault", "! glued to or"),
   // Lanes differ only where the harness does: ordering is evaluated by the
   // IDM emulator only; ne's text is measured over REST only.
+  // Round-3 P3-1: AIC folds case and spaces for some fields (measured on
+  // alpha_user) and nothing measured the rest. A record whose answer turns on
+  // that is refused in every lane: the AM lane's fault, the emulator's own
+  // missing. Kleene logic: a false operand decides an `and` without it.
+  {
+    filter: 'text eq "ALPHA"', grammar: "ast", am: "fault",
+    script: { missing: "query eq whose match turns on letter case: widget text" },
+    rest: { missing: "query eq whose match turns on letter case: widget text" },
+    why: "letter case decides record a; unmeasured for this type",
+  },
+  {
+    filter: 'text eq "alpha "', grammar: "ast", am: "fault",
+    script: { missing: "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: widget text" },
+    rest: { missing: "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: widget text" },
+    why: "a trailing space decides record a; unmeasured",
+  },
+  same('text eq "ALPHA" and count eq 2', "ast", [], "unknown and false is false: no record is undecided"),
+  {
+    filter: 'text sw "AL" or count eq 1000', grammar: "ast", am: "fault",
+    script: { missing: "query sw whose match turns on letter case: widget text" },
+    rest: { missing: "query sw whose match turns on letter case: widget text" },
+    why: "unknown or false is unknown for record a",
+  },
+  same('text eq "ALPHA" or count eq 1', "ast", ["a"], "unknown or true is true for record a"),
   { filter: "count gt 1", grammar: "ast", am: "fault", script: ["b", "c"], rest: ["b", "c"], why: "ordering: not evaluated in the AM lane" },
   { filter: 'text ne "x"', grammar: "ast", am: "fault", script: "fault", rest: "ne", why: "ne: REST 400 measured, script text unmeasured" },
 ];
