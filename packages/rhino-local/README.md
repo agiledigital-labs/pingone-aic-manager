@@ -10,7 +10,9 @@ Two jobs, one package:
 The generator emits presence, not behaviour: every method throws
 `rhino-local: not mocked: <binding>.<method> arity=N overload=[…]` until the
 handwritten overlay in `src/bindings/rhino/runtime.cjs` replaces it. A mock
-that returned `undefined` would turn a missing feature into a passing test.
+that returned `undefined` would turn a missing feature into a passing test. That
+throw is a [harness fault](#harness-faults-refusals-a-script-cannot-catch)
+(`not-mocked/<binding>.<method>`), so catching it does not rescue the case.
 
 Implemented (still fail-loud for missing fixtures and for every method the
 overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
@@ -90,6 +92,58 @@ setTenantProvider(
     logKeys: { id: process.env.LOG_KEY_ID!, secret: process.env.LOG_KEY_SECRET! },
   })
 );
+```
+
+### Harness faults: refusals a script cannot catch
+
+When a script does something the harness does not emulate, the harness refuses
+it with a **harness fault** rather than guessing. Examples are an unmocked
+binding method, an unseeded fixture, an unexpected arity, or a JS `Date` in an
+`httpClient.send` body. A harness fault **fails the case even if the script
+catches it and then succeeds**, because AIC would not have thrown there: a
+`try`/`catch` around it must not turn a gap in the harness into a passing test.
+
+```text
+rhino-local harness fault send-body-js-date: httpClient.send body.d is a JS Date: … (not emulated: this fails the run even if the script caught it)
+```
+
+Every fault has a stable id: a kebab-case slug, or a family prefix such as
+`arity/<binding.method>`, `not-mocked/<binding.method>` or `fixture/<kind>`.
+Ids are never derived from line numbers or message text, so they survive a
+release. [`docs/rhino-local-gaps.md`](../../docs/rhino-local-gaps.md#harness-faults)
+lists them.
+
+Errors that AIC itself raises and the harness emulates stay ordinary,
+catchable script errors. One example is `Entry Already Exists` from a
+colliding `openidm.create`. A script that catches one of those passes, just as
+it would on the tenant.
+
+**The fault tally.** At the end of a run the package's Vitest reporter prints a
+per-id summary to stderr. It shows how many cases hit each fault and in how
+many files, and counts a case once per id however often it hit it. Each run
+also writes the tally as JSON, even when it is empty. The default path is
+`<state dir>/harness-faults/tally.json`, where the state dir is
+`AIC_SCRIPT_TESTER_STATE_DIR` or else `<project>/.aic-script-tester`. Set
+`AIC_SCRIPT_TESTER_FAULT_TALLY` to write it somewhere else. The tally covers
+every file, worker and pooled JVM in the run, and each fault is attributed to
+the case whose job raised it. Missing journey and IDM behaviour that has no id
+yet is listed separately, under its cause text.
+
+```json
+{ "version": 1,
+  "faults": [{ "id": "send-body-js-date", "cases": 2, "failed": 2,
+               "files": ["test/a.test.ts", "test/b.test.ts"], "message": "…" }],
+  "unidentified": [] }
+```
+
+`failed` is the number of cases the fault failed. The rest declared it on
+purpose with `expectHarnessFault(id)`, which is how a test that exercises the
+refusal itself asserts it:
+
+```ts
+import { expectHarnessFault } from "@agiledigital/pingone-aic-script-tester";
+expectHarnessFault("send-body-js-date");
+await expect(lease.run().expect({ outcome: "done" })).rejects.toThrow(/harness fault send-body-js-date/);
 ```
 
 ### Libraries used by `require()`
