@@ -133,8 +133,9 @@ but a bare `eq` joined by `and` alone, and a record whose match turns on letter 
 (AIC folds them for some fields, unmeasured for the rest), on a type mismatch (a number field against a quoted
 integer such as `"7"` is measured on `alpha_user` only, and this lane knows no types), on a decimal literal against a
 number, on `pr` of `""`, `[]` or `{}`, on a pointer through an array (except a bare `eq` joined by `and` alone), or on
-an `alpha_user`/`bravo_user` field DS does not compare by caseIgnoreMatch (`telephoneNumber`, `frIndexedDate1`–`5`,
-`frUnindexedDate1`–`5`) are the harness fault `openidm-query-filter` instead: AIC may well parse a filter the harness cannot. A script
+an `alpha_user`/`bravo_user` field DS does not compare by caseIgnoreMatch (`telephoneNumber`, the date and integer
+families: refused before any record is read, since this lane was not part of the 2026-11-06 probe that measured them
+over REST and IDM scripts) are the harness fault `openidm-query-filter` instead: AIC may well parse a filter the harness cannot. A script
 that catches one of those passes, just as it would on the tenant. `openidm.read`
 of an undeclared type returns `null`, as AIC's does. A profile speaks only for `managed/<type>`: any other unseeded
 resource (`internal/role`, `config/…`, a relationship collection) is the fault `fixture/managed` with or without one.
@@ -143,16 +144,21 @@ resource (`internal/role`, `config/…`, a relationship collection) is the fault
 refused the way Rhino refuses it on AIC — a catchable
 `InternalError: Can't find method <java class>.<method>(<argument types>).` —
 wherever the accepted counts have a basis: measured on AIC
-(`existingSession.get`, `utils.crypto.randomUUID`) or read from AIC's binding
+(`existingSession.get`, `utils.crypto.randomUUID`, `nodeState.mergeShared`) or read from AIC's binding
 introspection (`docs/api/bindings/scripted-decision-next.json`). Where the
 harness's range is its own guess, the call is the harness fault
 `arity-unknown/<binding.method>` instead, and so is every argument-count check
 on the legacy engine, which has no introspection. The same fault covers a count
 that only a reading of the introspection decides: where an overload's last
 parameter is listed as an `array`, it may be Java varargs, which Rhino calls
-with any count from one fewer upwards. So `logger.info` with four or more
+with any count from one fewer upwards. So `logger.trace` with four or more
 arguments and `openidm.read(r, null, ["_id"], "x")` fault rather than pass or
-throw. The class named in an introspection-based refusal is the introspection's
+throw. `logger.debug`/`info`/`warn`/`error` were measured true varargs on
+2026-11-06: any count is accepted, each argument fills a `{}`, and a number
+prints as Java's `Double` text (`1.0`). `nodeState.mergeShared`/`mergeTransient`
+with a non-object throws AIC's measured catchable `InternalError`, leaving state
+unchanged; only a function argument is still the fault
+`node-state-merge-non-object`. The class named in an introspection-based refusal is the introspection's
 declaring class; that Rhino names that class, and not an implementation
 subclass, is measured for `existingSession.get` and `randomUUID` only.
 
@@ -1044,6 +1050,15 @@ undefined means no endpoint snapshot was supplied. Namespace containers must be
 plain objects (ordinary or null prototype); null, arrays, primitives and class
 instances are configuration errors at construction, before normalization.
 
+`repo` takes the tenant's `config/repo.ds` document, optionally. It is how the
+emulator knows a type's storage kind (`IdmConfig.storage`): a type that
+`genericMapping` names, or that `managed/*` covers without an
+`explicitMapping` entry, is stored as JSON. There a quoted literal never matches
+a number and numbers compare by value, `7.5` included, as measured on
+2026-11-06. A property that the type's `genericMapping` entry maps to an
+attribute of its own is excluded. Without `repo`, or for a type in both
+sections, those queries stay the `openidm-query-filter` fault.
+
 With explicit completeness, an unlisted name reads as null internally and queries
 throw NotFoundException. Each such absence carries `assumed: caller declared
 managed namespace complete` or `assumed: caller declared endpoints namespace
@@ -1656,9 +1671,11 @@ so Identify finds a mixed-case or space-padded input and `username` takes the
 stored case. A query whose answer for a record turns on an unmeasured case or
 space rule (another managed type, `sw`, `co`, non-ASCII folding, repeated
 interior spaces), on Unicode normalisation, on an unmeasured type mismatch (a
-quoted integer is decided only on `alpha_user`), on a decimal literal against a
+quoted integer is decided only on `alpha_user`, and a quoted literal against a
+number only on a type `repo` declares generic), on a decimal literal against a
 number, on `pr` of an explicitly empty string, array or object, on a pointer
-through an array, or on `telephoneNumber` or a date attribute is the
+through an array, or on `telephoneNumber`, a date or an integer attribute beyond
+what the 2026-11-06 probe measured on `alpha_user` (`docs/rhino-local-gaps.md`) is the
 `openidm-query-filter` fault, since either answer could be a false pass; one
 whose answer does not turn on it, in any operand order, is not. CreateObject uses that
 emulator's create path (including managed hooks and the caller-supplied IDM

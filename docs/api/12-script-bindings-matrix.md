@@ -1225,6 +1225,27 @@ there was no formatted line to read. Open question: what makes IDM ship script
 log output. Until that is answered, an IDM formatting surprise lands as a
 compile error in a client workspace, and this paragraph is the thing to read.
 
+### `logger` argument count and value text — next-gen (verified 2026-11-06)
+
+E19 live probe, next-gen scripted decision (`AUTHENTICATION_TREE_DECISION_NODE`,
+`evaluatorVersion 2.0`), a throwaway script and journey created and deleted
+the same day. Each call ran in its own `try`/`catch`; lines read back from
+`am-core` with `aic logs tx`. Control for "a refusal would be visible":
+`openidm.read(path, null, [], "extra")` (no four-argument overload) threw
+the catchable `InternalError: Can't find method …IdmIntegrationServiceScriptWrapper.read(string,null,object,string).`
+
+- **`info`, `error`, `warn` and `debug` are true varargs.** 4, 5 and 6
+  arguments returned normally at every level, and each line reached
+  `am-core` at its level with every argument bound to a `{}`
+  (`ZZEMU-L T6 warn A B C D E`). The `(format, [A, B, C])` form binds the
+  array's elements too. `debug` lines do reach the log on the sandbox.
+  `trace` was not probed.
+- **A JS number argument prints as a Java `Double`** and an object as
+  `[object Object]`: `(1, true, null, {k: "v"})` logged
+  `1.0 true null [object Object]`.
+- **`logger.warning` does not exist** on next-gen: a catchable
+  `TypeError: Cannot find function warning`, with 1 argument or 5.
+
 ### Legacy access-token modification: the whole binding surface (verified 2026-08-27)
 
 `OAUTH2_ACCESS_TOKEN_MODIFICATION` (evaluatorVersion `1.0`). Until this run
@@ -1828,6 +1849,17 @@ cookie would measure the completed session (see `09-journeys.md`).
   which `get` then returns as a Java map (it prints `{ "rlOa": 1.0 }`, where a
   `putShared` object prints `[object Object]`). `mergeTransient` refuses a
   nested object with the same message.
+- **`mergeShared` with a non-object is a catchable `InternalError`, and
+  state is unchanged** (verified 2026-11-06, E19 live probe; controls: a flat
+  merge and `putShared` both landed and survived every refusal):
+  `"x"`, `42`, `true`, `undefined` and no argument give
+  `Can't find method org.forgerock.openam.auth.node.api.NodeStateScriptWrapper.mergeShared(<type>).`
+  with `string`, `number`, `boolean`, `org.mozilla.javascript.Undefined` and
+  nothing as the type; `null` gives `InternalError: null` (a wrapped Java
+  NPE, no line suffix); an array gives
+  `Cannot convert org.mozilla.javascript.NativeArray@<hash> to java.util.Map`,
+  and adds no `"0"` key. `mergeTransient("x")` is the same refusal naming
+  `mergeTransient(string)`; its other shapes were not probed.
 - `getObject` returns a Java map: it prints as `{ "a": 1.0, … }`, and
   `containsKey`, `size` and `keySet` are functions on it. `keys()` is
   a Java collection, iterated with `iterator()`, that includes **transient**
