@@ -291,10 +291,8 @@ returned four events, all stored under `<root>/0`:
   events in 171 s on the sandbox. A message tagged with the transaction id still
   has to be found by a time-window scan, not by `logs tx`.
 
-Not yet measured: what `idm-activity` shows under contention — whether a CAS
-attempt that lost and retried leaves any event (expected not: only the committed
-write is a write), and whether retried `onUpdate` side effects each appear
-(expected yes, as E6's sinks did).
+What `idm-activity` shows under contention — retried runs, and whether a lost
+CAS attempt leaves a write — is measured in "E20 under contention" below.
 
 ## E16 — a no-op patch
 
@@ -435,3 +433,49 @@ is the sink, and these rows do not say the retry stopped happening.
 - Not measured: N above 200, a failure mode, and the retry counts for the
   untraced rows. `derived.runs` equalled N on those rows, which counts committed
   folds only.
+
+## E20 under contention — one transaction id per request, N = 10
+
+Ten concurrent revision-less `PATCH add /inbox/-` on one fold-mode parent,
+`trace: true`, `postMode: "sink"`. Each request carried its own
+`X-ForgeRock-TransactionId`, `<stem>-00` … `<stem>-09`, so no id is a prefix of
+another. `aic logs tx <stem> --source idm-access,idm-activity --wait` returned
+all ten; `aic logs tx <stem>-03` returned only that request (one stored id).
+`node trace.mjs <stem>-03` prints the same counts.
+
+All ten HTTP responses were 200 (p50 / p90 / max 479 / 555 / 555 ms). All ten
+entries stored, `derived` consistent. Sink records: 55 `onUpdate` + 10
+`postUpdate` = 65. Log `CREATE`s of `alpha_poc_sink`: 65.
+
+| request | `onUpdate` sinks | activity sink `CREATE`s | activity parent `PATCH`es | access                       |
+| ------- | ---------------- | ----------------------- | ------------------------- | ---------------------------- |
+| 00      | 3                | 4                       | 1                         | PATCH SUCCESSFUL 200, 228 ms |
+| 01      | 7                | 8                       | 1                         | PATCH SUCCESSFUL 200, 342 ms |
+| 02      | 5                | 6                       | 1                         | PATCH SUCCESSFUL 200, 297 ms |
+| 03      | 1                | 2                       | 1                         | PATCH SUCCESSFUL 200, 175 ms |
+| 04      | 8                | 9                       | 1                         | PATCH SUCCESSFUL 200, 362 ms |
+| 05      | 6                | 7                       | 1                         | PATCH SUCCESSFUL 200, 307 ms |
+| 06      | 2                | 3                       | 1                         | PATCH SUCCESSFUL 200, 196 ms |
+| 07      | 10               | 11                      | 1                         | PATCH SUCCESSFUL 200, 392 ms |
+| 08      | 9                | 10                      | 1                         | PATCH SUCCESSFUL 200, 373 ms |
+| 09      | 4                | 5                       | 1                         | PATCH SUCCESSFUL 200, 238 ms |
+
+Every stored id was `<root>/0`. No request produced a second stored id. Every
+parent `PATCH` was `SUCCESS` and named the one parent. No other write appeared.
+
+- Each request's `idm-activity` shows **exactly one** `PATCH` of the parent,
+  however many times `onUpdate` ran. A CAS attempt that lost leaves no write
+  event. The access event is the outer call only; server elapsed time is the
+  access event's, and it is lower than the client's round trip.
+- Retried `onUpdate` side effects **do** appear: sink `CREATE`s equal the
+  `onUpdate` sink records plus one `postUpdate` create, on every request,
+  including the one whose hook ran ten times. The log and the sink query agree
+  at 65.
+- `trace.mjs` is the measuring tool: `node trace.mjs <txid-or-stem>`. It cannot
+  see reads. A hook counts a read by logging
+  `context.transactionId.transactionId.value` next to what it read;
+  `aic logs tx` still will not return that line (`idm-core` has no transaction
+  id), so the count has to be something the hook writes down, or a later
+  time-window grep of `idm-core`.
+- Not measured: a failed HTTP request's transaction (every call here was 200),
+  and a revision-bearing `PATCH` that returns 412.
