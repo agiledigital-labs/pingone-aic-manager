@@ -1510,14 +1510,20 @@ issued).
 
 Consequences:
 
-- Context-specific bindings (`accessToken`, and by the same rule `identity`,
-  `scopes`, `requestProperties`, `clientProperties`) stay **outside** library
-  scope — same behaviour already recorded for the scripted-decision globals.
+- Context-specific bindings stay **outside** library scope. Measured for
+  `accessToken` only; `identity`, `scopes`, `requestProperties` and
+  `clientProperties` are inferred by the same rule, not probed. The
+  scripted-decision globals (`nodeState`, `callbacksBuilder`, `action`, …) are
+  _typed_ as absent from library scope (`library.d.ts`), which is consistent
+  with this measurement but is a typing decision, not a probe of its own.
   Pass them in as arguments, or have the library return a value the caller
   applies with `accessToken.setField(...)`.
-- The library's own next-gen common bindings (`openidm`, `httpClient`, `logger`,
-  `secrets`, `utils`, …) are available, so shared code that reads managed
-  objects or calls out over HTTP works unchanged in a token-mod call path.
+- `openidm` and `httpClient` are measured available in library scope, so
+  shared code that reads managed objects or calls out over HTTP works unchanged
+  in a token-mod call path. The other next-gen common bindings (`logger`,
+  `secrets`, `utils`, `systemEnv`, `cacheManager`, `idRepository`) are
+  **assumed** available, not probed; so are nested `require` from inside a
+  library and whether caller and library share builtins (`Array.prototype`).
 - To use a library from an existing token-mod script you must first migrate that
   script to the `…_NEXT_GEN` context (`evaluatorVersion 2.0`) — the two contexts
   are separate ids, so this is a rewrite of the script's bindings, not a flag
