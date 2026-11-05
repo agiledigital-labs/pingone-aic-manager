@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { IdmConfig, IdmEmulator, type ConfigInput, type Document } from "../../src/idm/index.ts";
-import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
+import { expectEmulationFailure, expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { js } from "./fixtures.ts";
 let runner: RhinoRunner;
@@ -28,14 +28,15 @@ it("A3 #1 managed configuration is required rather than defaulted to authoritati
   expect(() => new IdmConfig({} as ConfigInput)).toThrow();
 });
 it.each(["patch", "update"])("A3 #3 stale/current %s both reach unsupported retrieval before revisions", async (method) => {
-  expectEmulationFailure("script file reference: unsupported.js");
+  // E15: a file reference is an IDM runtime script; with no provider it is the harness fault.
+  expectHarnessFault("idm-runtime-script/unsupported.js");
   const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: { text: { type: "string" } } }, onRetrieve: { type: "text/javascript", file: "unsupported.js" } }] } }), runner);
   await emu.request({ method: "PUT", path: "managed/widget/a", body: { text: "old" } });
   for (const revision of ["stale", "0"]) {
     const body = method === "patch" ? "[{operation:'replace',field:'/text',value:'new'}]" : "{text:'new'}";
     const result = await runner.eval({ engine: "idm", source: `try {openidm.${method}('managed/widget/a','${revision}',${body})} catch(e) {412;}` }, { onCall: emu.onCall });
     expect(result.outcome).not.toBe("ok");
-    expect(result.emulation?.missing).toContain("script file reference: unsupported.js");
+    expect(result.emulation?.missing?.some((cause) => cause.startsWith("idm-runtime-script/unsupported.js: "))).toBe(true);
   }
 });
 it("A3 #3 stale order is assumed and a supported retrieval runs before 412", async () => {

@@ -41,6 +41,12 @@ export interface JobRequest {
   reportMissing?: boolean;
   /** Wrap request/context bindings with CREST request tags and HTTP header lookup. */
   crestBindings?: boolean;
+  /**
+   * IDM only: `require(id)` asks the host for the module's source with a
+   * `require` host call, instead of refusing as missing `require`. The IDM
+   * emulator sets it; it answers from its runtime-script provider (E15).
+   */
+  idmRequire?: boolean;
   /** Author's file path; becomes Rhino's source name (not `<eval>`). */
   sourceName?: string;
   /** Rhino language version. Default 0 (`VERSION_DEFAULT`). */
@@ -98,7 +104,8 @@ export interface JobError {
   lineSource: string | null;
 }
 
-export type HostMethod = "read" | "create" | "update" | "patch" | "delete" | "query" | "action" | "http";
+/** `require` is the IDM engine's module load, sent only by jobs with `idmRequire` (E15). */
+export type HostMethod = "read" | "create" | "update" | "patch" | "delete" | "query" | "action" | "http" | "require";
 
 export interface HostCall {
   type: "call";
@@ -291,6 +298,7 @@ const HOST_METHODS: ReadonlySet<string> = new Set([
   "query",
   "action",
   "http",
+  "require",
 ]);
 
 export function parseHostCall(raw: unknown): HostCall | undefined {

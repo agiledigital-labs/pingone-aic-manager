@@ -25,6 +25,10 @@ final class IdmRuntime {
   private final Map<String, Object> bindings;
   private final Map<String, Object> properties;
   private final java.util.Set<String> assumed = new java.util.concurrent.ConcurrentSkipListSet<String>();
+  /** E15: require() asks the host for IDM runtime-script sources instead of refusing. */
+  private final boolean hostRequire;
+  /** Module objects by IDM path, for this invocation only (IDM's module cache scope). */
+  private final Map<String, Scriptable> modules = new java.util.concurrent.ConcurrentHashMap<String, Scriptable>();
 
   private IdmRuntime(Context cx, HostCalls calls, Map<String, Object> job, IdmContextFactory factory) {
     scope = IdmScope.create(cx, factory);
@@ -40,6 +44,7 @@ final class IdmRuntime {
         bindings.put(alias.getKey(), bindings.get(target));
       }
     }
+    hostRequire = Boolean.TRUE.equals(job.get("idmRequire"));
     List<String> resourceNames = Json.optionalStringList(job, "resourceNameBindings");
     boolean crestBindings = Boolean.TRUE.equals(job.get("crestBindings"));
     for (Map.Entry<String, Object> e : bindings.entrySet()) {
@@ -228,7 +233,13 @@ final class IdmRuntime {
       return args.length > 1 ? values.wrap(IdmValues.javaValue(args[1])) : null;
     }));
     bind("identityServer", surface(identity));
-    bind("require", function("require", args -> { throw missing("require"); }));
+    if (hostRequire) {
+      BaseFunction[] require = new BaseFunction[1];
+      require[0] = function("require", args -> requireModule(require[0], args));
+      bind("require", require[0]);
+    } else {
+      bind("require", function("require", args -> { throw missing("require"); }));
+    }
     bind("btoa", function("btoa", args -> java.util.Base64.getEncoder().encodeToString(Context.toString(args[0]).getBytes(java.nio.charset.StandardCharsets.ISO_8859_1))));
     bind("atob", function("atob", args -> new String(java.util.Base64.getDecoder().decode(Context.toString(args[0])), java.nio.charset.StandardCharsets.ISO_8859_1)));
     bind("secureRandom", Context.javaToJS(new java.security.SecureRandom(), scope));
@@ -272,6 +283,53 @@ final class IdmRuntime {
       reply = query;
     }
     return values.wrap(reply);
+  }
+
+  /**
+   * CommonJS require over the host's runtime-script provider (E15). The module
+   * runs in its own scope whose prototype is the caller's top scope, so it sees
+   * the caller's bindings and keeps its top-level vars (IDM 9.0.0's ModuleScope,
+   * read from bytecode). Exports are cached for this invocation only; a module
+   * that throws is not cached. The host answers {path, source} or fails the job
+   * with the idm-runtime-script fault.
+   */
+  private Object requireModule(BaseFunction require, Object[] args) {
+    String id = args.length > 0 ? Context.toString(args[0]) : "undefined";
+    String path = id.endsWith(".js") ? id : id + ".js";
+    Scriptable cached = modules.get(path);
+    if (cached != null) return ScriptableObject.getProperty(cached, "exports");
+    List<Object> callArgs = new ArrayList<Object>();
+    callArgs.add(id);
+    Map<String, Object> loaded = Json.asObject(calls.call("require", callArgs), "require reply");
+    if (!path.equals(loaded.get("path"))) throw calls.fail(new EmulationFailure("protocol", "rhino-local: require reply names " + loaded.get("path") + ", expected " + path));
+    String text = Json.asString(loaded.get("source"), "require source");
+    Context cx = Context.getCurrentContext();
+    org.mozilla.javascript.NativeObject moduleScope = new org.mozilla.javascript.NativeObject();
+    moduleScope.setPrototype(scope);
+    moduleScope.setParentScope(null);
+    Scriptable exports = cx.newObject(scope);
+    Scriptable module = cx.newObject(scope);
+    ScriptableObject.putProperty(module, "id", id);
+    ScriptableObject.putProperty(module, "exports", exports);
+    ScriptableObject.putProperty(moduleScope, "exports", exports);
+    ScriptableObject.putProperty(moduleScope, "module", module);
+    ScriptableObject.putProperty(moduleScope, "require", require);
+    org.mozilla.javascript.Script script;
+    try {
+      script = ScriptCache.compile(cx, "idm-module:" + ScriptCache.sha256(text), () -> text, path, 1);
+    } catch (org.mozilla.javascript.EvaluatorException e) {
+      throw org.mozilla.javascript.ScriptRuntime.constructError("SyntaxError", e.details(), e.sourceName(), e.lineNumber(), e.lineSource(), e.columnNumber());
+    }
+    // Cached before it runs, so a cycle sees the partial exports, as CommonJS does.
+    modules.put(path, module);
+    boolean done = false;
+    try {
+      script.exec(cx, moduleScope);
+      done = true;
+    } finally {
+      if (!done) modules.remove(path);
+    }
+    return ScriptableObject.getProperty(module, "exports");
   }
 
   private static boolean nullableMap(Object value) { return value == null || value instanceof Map; }

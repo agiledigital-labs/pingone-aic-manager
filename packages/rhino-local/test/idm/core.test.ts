@@ -1,4 +1,4 @@
-import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
+import { expectEmulationFailure, expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 /** Store, provenance, host errors and nested execution exercised via the JVM. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IdmConfig, IdmEmulator, type Document, type ManagedType } from "../../src/idm/index.ts";
@@ -154,11 +154,12 @@ describe("provenance and explicit boundaries", () => {
   });
 
   it("script file references fail on use with their filename", async () => {
-    expectEmulationFailure("script file reference: scripts/widget-create.js");
+    // E15: with no runtime-script provider, the file is the harness fault naming it.
+    expectHarnessFault("idm-runtime-script/scripts/widget-create.js");
     const emu = emulator(runner, { ...simple, onCreate: { type: "text/javascript", file: "scripts/widget-create.js" } });
     const result = await emu.request({ method: "POST", path: "managed/widget", query: { _action: "create" }, body: {} });
     expect(result.status).toBe(501);
-    expect(result.body).toMatchObject({ message: "Missing IDM behavior: script file reference: scripts/widget-create.js" });
+    expect(String((result.body as { message: string }).message)).toMatch(/^Missing IDM behavior: idm-runtime-script\/scripts\/widget-create\.js: IDM runs its runtime script scripts\/widget-create\.js /);
   });
 
   it("missing behavior in a nested call cannot be hidden by a script catch", async () => {
@@ -187,13 +188,16 @@ describe("provenance and explicit boundaries", () => {
   });
 
   it.each(["require('lib/lodash')", "openidm.hash('x','SHA-256')"])("caught unsupported %s still reports missing", async (call) => {
-    expectEmulationFailure(call.startsWith("require") ? /require/ : /openidm\.hash/);
+    if (call.startsWith("require")) expectHarnessFault("idm-runtime-script/lib/lodash.js");
+    else expectEmulationFailure(/openidm\.hash/);
     const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {
       example: js(`try { ${call}; } catch(e) {} ({});`),
     } }), runner);
     const result = await emu.request({ method: "GET", path: "endpoint/example" });
     expect(result.status).toBe(501);
-    expect(result.provenance).toContainEqual({ kind: "missing", behavior: `runtime helper: ${call.split("(")[0]}` });
+    // E15: the emulator's require asks the provider; with none, lib/lodash.js is the harness fault.
+    if (call.startsWith("require")) expect(result.provenance.some((entry) => entry.kind === "missing" && entry.behavior.startsWith("idm-runtime-script/lib/lodash.js: "))).toBe(true);
+    else expect(result.provenance).toContainEqual({ kind: "missing", behavior: `runtime helper: ${call.split("(")[0]}` });
   });
 
   it("policy seam can reject with CREST detail without storing an object", async () => {
