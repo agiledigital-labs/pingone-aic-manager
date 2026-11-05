@@ -48,6 +48,14 @@ export type ConfigInput = {
    * the undecided faults the JSON-storage measurement would otherwise retire.
    */
   readonly repo?: Readonly<Record<string, JsonValue>>;
+  /**
+   * The tenant's `config/sync`, as read (`{ mappings: [...] }`). Optional: it is how the emulator
+   * learns which managed types are a mapping's source. A committed write on such a type runs the
+   * mapping on AIC (implicit sync, docs/api/16-sync-mappings.md), which the emulator does not
+   * model, so that write is the harness fault `idm-implicit-sync/<mapping>`. Without it every
+   * write records the assumption that no mapping has the type as its source.
+   */
+  readonly sync?: Readonly<Record<string, JsonValue>>;
 };
 export type RestRequest = {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

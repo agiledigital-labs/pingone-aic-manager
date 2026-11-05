@@ -44,6 +44,8 @@ export class IdmConfig {
   readonly complete: Readonly<{ managed: boolean; endpoints: boolean }>;
   private readonly types: ReadonlyMap<string, ManagedType>;
   private readonly repo: Readonly<Record<string, JsonValue>> | undefined;
+  /** Mapping names by source resource (`managed/<type>`), or undefined without a `sync` input. */
+  private readonly syncSources: ReadonlyMap<string, readonly string[]> | undefined;
 
   constructor(input: ConfigInput) {
     plainObject(input, "input");
@@ -55,6 +57,17 @@ export class IdmConfig {
     }
     if (input.endpoints !== undefined) plainObject(input.endpoints, "endpoints");
     if (input.repo !== undefined) plainObject(input.repo, "repo");
+    if (input.sync !== undefined) {
+      plainObject(input.sync, "sync");
+      if (!Array.isArray(input.sync.mappings)) throw new TypeError("Invalid IDM configuration: sync.mappings must be an array");
+      for (const [index, mapping] of input.sync.mappings.entries()) {
+        plainObject(mapping, `sync.mappings[${index}]`);
+        const { name, source } = mapping as Record<string, JsonValue>;
+        if (typeof name !== "string" || name.length === 0 || typeof source !== "string" || source.length === 0) {
+          throw new TypeError(`Invalid IDM configuration: sync.mappings[${index}] needs a nonempty string name and source`);
+        }
+      }
+    }
     if (input.complete !== undefined) {
       plainObject(input.complete, "complete");
       for (const [namespace, value] of Object.entries(input.complete)) {
@@ -72,6 +85,15 @@ export class IdmConfig {
     this.endpointsSupplied = snapshot.endpoints !== undefined;
     this.endpoints = snapshot.endpoints ?? Object.freeze({});
     this.repo = snapshot.repo;
+    if (snapshot.sync === undefined) this.syncSources = undefined;
+    else {
+      const sources = new Map<string, string[]>();
+      for (const mapping of snapshot.sync.mappings as Array<Record<string, JsonValue>>) {
+        const source = (mapping.source as string).replace(/^\/+|\/+$/g, "");
+        sources.set(source, [...(sources.get(source) ?? []), mapping.name as string]);
+      }
+      this.syncSources = sources;
+    }
     this.complete = Object.freeze({ managed: snapshot.complete?.managed === true, endpoints: snapshot.complete?.endpoints === true });
     const types = new Map<string, ManagedType>();
     for (const type of this.managed.objects) {
@@ -84,6 +106,14 @@ export class IdmConfig {
 
   managedType(name: string): ManagedType | undefined {
     return this.types.get(name);
+  }
+
+  /**
+   * The sync mappings whose source is `managed/<type>`, in config order: empty when the supplied
+   * `config/sync` has none, undefined when no `sync` was supplied.
+   */
+  syncMappings(type: string): readonly string[] | undefined {
+    return this.syncSources === undefined ? undefined : this.syncSources.get(`managed/${type}`) ?? [];
   }
 
   /** The type's storage kind, read from the supplied `config/repo.ds` (see `StorageKind`). */
