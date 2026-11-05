@@ -229,6 +229,12 @@ async function teardown() {
       console.log(`${t}: delete failed: ${e.message}`);
     }
   }
+  for (const name of ["pocagg", "poctrace"]) {
+    const deleted = await call("DELETE", `/openidm/config/endpoint/${name}`);
+    const gone = deleted.status === 200 || deleted.status === 204 || deleted.status === 404;
+    console.log(`endpoint ${name}: ${deleted.status}${gone ? "" : " " + JSON.stringify(deleted.json)?.slice(0, 200)}`);
+    if (!gone) process.exitCode = 1;
+  }
   const after = await managed();
   const before = JSON.parse(readFileSync(BACKUP, "utf8"));
   writeFileSync(join(STATE, "managed-after.json"), JSON.stringify(after, null, 2));
