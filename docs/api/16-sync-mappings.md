@@ -139,8 +139,10 @@ already applied). Consequences:
 - To observe a recon-driven CREATE/UPDATE/DELETE you must create drift that
   implicit sync did **not** already resolve (e.g. delete a _target_ row, or
   mutate a value that changes the mapped result), not just edit the source.
-- `onSync` is a post-sync hook and did **not** fire under either recon or
-  implicit update (still open below).
+- The mapping's `onSync` slot is a post-sync hook and did **not** fire under
+  either recon or implicit update (still open below). The managed-object
+  `onSync` hook is a different slot: it runs after every managed create,
+  update and delete (`24-idm-script-runtime.md`).
 - A terminal recon's `durationSummary` lists exactly which slots ran, as
   `<slot>Script` keys (`validSourceScript`, `correlationScript`,
   `propertyMappingScript`, `onCreateScript`, `onUpdateScript`, `resultScript`,
@@ -425,9 +427,12 @@ Notes:
   precision is a future refinement.
 - **`condition`** exposes the source object as **`object`** (not `source`), plus
   `target`/`oldTarget`.
-- `onSync` did **not** fire under recon or implicit update — it's a post-sync
-  result hook. **Not yet runtime-probed** (open question below). Until verified,
-  type it conservatively as the union of the behaviour-script bindings.
+- The mapping's `onSync` slot did **not** fire under recon or implicit update
+  — it's a post-sync result hook. (The managed-object `onSync` hook is a
+  different slot: it runs after every managed create, update and delete,
+  `24-idm-script-runtime.md`.) **Not yet runtime-probed** (open question
+  below). Until verified, type it conservatively as the union of the
+  behaviour-script bindings.
 
 ## Typing (`source`/`target` → managed interfaces)
 
@@ -548,9 +553,10 @@ curl -s -X POST -H "Authorization: Bearer ${TOKEN}" \
 
 ## Open questions
 
-- **`onSync` bindings** — not yet runtime-probed (didn't fire under recon or
-  implicit update). Needs a dedicated trigger (e.g. `notifyChange`/targeted
-  sync).
+- **The mapping's `onSync` slot bindings** — not yet runtime-probed (didn't
+  fire under recon or implicit update; the managed-object `onSync` hook is a
+  different slot, see `24-idm-script-runtime.md`). Needs a dedicated trigger
+  (e.g. `notifyChange`/targeted sync).
 - **`reconById` / single-record sync** binding deltas vs full recon — not
   probed.
 - **Multiple `linkQualifier`s** — only `default` exercised; per-qualifier
