@@ -142,9 +142,14 @@ export function useLease<TSchema extends z.ZodType>(
   // eslint-disable-next-line no-empty-pattern
   beforeAll(async ({}, scope) => {
     // Borrow this worker slot's warm JVM from the reporter's pool when there is
-    // one (src/pool.ts); otherwise start a JVM for this lease, as before.
+    // one (src/pool.ts); otherwise start a JVM for this lease, as before. With
+    // no worker slot id a pooled JVM could never be found again, and would sit
+    // idle until the run ended, so spawn and close instead.
     const pool = inject(JVM_POOL_CONTEXT);
-    runner = pool === undefined ? await RhinoRunner.spawn() : await RhinoRunner.borrow(pool);
+    runner =
+      pool === undefined || process.env.VITEST_POOL_ID === undefined
+        ? await RhinoRunner.spawn()
+        : await RhinoRunner.borrow(pool);
     lease.open();
     if (options.aic !== undefined) {
       claimAicLeaseForFile(vitestFilePath(scope), options.aic.id);

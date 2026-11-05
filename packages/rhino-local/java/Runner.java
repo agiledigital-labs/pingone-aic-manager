@@ -54,6 +54,23 @@ public final class Runner {
 
   private static final Map<String, Boolean> ACTIVE = new ConcurrentHashMap<String, Boolean>();
 
+  /**
+   * The JVM pool asks this before lending a JVM to another client: a JVM with
+   * a job still running, or one that retired itself, must never be reused.
+   * Read from the same flags that refuse jobs, so it cannot disagree with
+   * them the way a scan of stderr for {@link #RETIRED_MARKER} can.
+   */
+  static final String POOL_STATUS_OP = "pool-status";
+
+  private static Map<String, Object> poolStatus(String id) {
+    Map<String, Object> status = new LinkedHashMap<String, Object>();
+    status.put("type", POOL_STATUS_OP);
+    status.put("id", id);
+    status.put("active", Integer.valueOf(ACTIVE.size()));
+    status.put("retired", Boolean.valueOf(retired));
+    return status;
+  }
+
   public static void main(String[] args) throws Exception {
     int maxJobs = 128;
     long shutdownWaitMs = 5000;
@@ -103,6 +120,9 @@ public final class Runner {
           write(refusal(id, "rhino-local: " + sourceError));
         } else if (shuttingDown) {
           write(refusal(id, "rhino-local: runner is shutting down"));
+        } else if (POOL_STATUS_OP.equals(job.get("op"))) {
+          // Answered on the reader, so it cannot queue behind (or be refused like) a job.
+          write(poolStatus(id));
         } else if (Boolean.TRUE.equals(job.get("shutdown")) || "shutdown".equals(job.get("op"))) {
           shuttingDown = true;
           shutdown(workers, shutdownWaitMs, id);

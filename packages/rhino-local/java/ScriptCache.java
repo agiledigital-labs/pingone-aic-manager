@@ -86,7 +86,8 @@ final class ScriptCache {
     // Everything that changes the icode Rhino emits, plus the name and line it bakes in.
     String key = identity + '\0' + name + '\0' + line + '\0' + cx.getLanguageVersion() + '\0'
         + cx.getOptimizationLevel() + '\0' + (cx.getInstructionObserverThreshold() > 0) + '\0'
-        + cx.isGeneratingDebug() + '\0' + cx.isGeneratingSource();
+        + cx.isGeneratingDebug() + '\0' + cx.isGeneratingSource() + '\0' + cx.getFactory().getClass().getName()
+        + '\0' + features(cx);
     synchronized (COMPILED) {
       Script hit = COMPILED.get(key);
       if (hit != null) {
@@ -102,6 +103,24 @@ final class ScriptCache {
       }
     }
     return script;
+  }
+
+  /**
+   * Every feature bit the factory answers, as a bit string. The compiler reads
+   * several (strict mode, reserved keywords, E4X, …); none varies per job
+   * today, but one that did must not share icode. An index the factory does
+   * not know throws, and ends the scan.
+   */
+  private static String features(Context cx) {
+    StringBuilder bits = new StringBuilder(24);
+    for (int feature = 1; feature < 64; feature += 1) {
+      try {
+        bits.append(cx.hasFeature(feature) ? '1' : '0');
+      } catch (IllegalArgumentException unknown) {
+        break;
+      }
+    }
+    return bits.toString();
   }
 
   private static final Field IDATA;

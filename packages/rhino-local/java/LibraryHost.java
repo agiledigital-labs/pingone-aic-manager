@@ -1,7 +1,9 @@
 import java.util.Map;
 import org.mozilla.javascript.BaseFunction;
 import org.mozilla.javascript.Context;
+import org.mozilla.javascript.EvaluatorException;
 import org.mozilla.javascript.Script;
+import org.mozilla.javascript.ScriptRuntime;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Undefined;
@@ -37,7 +39,15 @@ final class LibraryHost extends BaseFunction {
     String hash = refs.get(id);
     if (hash == null) return Undefined.instance;
     ScriptCache.Source source = ScriptCache.source(hash);
-    Script loader = ScriptCache.compile(cx, "library:" + hash, () -> PREFIX + source.text + SUFFIX, id, 1);
+    Script loader;
+    try {
+      // Line 0: PREFIX ends in a newline, so the body's first line is reported as line 1.
+      loader = ScriptCache.compile(cx, "library:" + hash, () -> PREFIX + source.text + SUFFIX, id, 0);
+    } catch (EvaluatorException e) {
+      // What the runtime's eval path threw before the cache: a catchable SyntaxError.
+      throw ScriptRuntime.constructError("SyntaxError", e.details(), e.sourceName(), e.lineNumber(),
+          e.lineSource(), e.columnNumber());
+    }
     return loader.exec(cx, ScriptableObject.getTopLevelScope(this));
   }
 }

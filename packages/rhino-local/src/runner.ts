@@ -275,20 +275,37 @@ class JvmProcess {
       return Promise.reject(new Error(`rhino-local: duplicate active job id: ${id}`));
     }
     return new Promise<JobResponse>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject, onCall });
-      const ok = this.#child.stdin.write(`${stringifyProtocol(this.#sources.address(payload))}\n`);
-      if (!ok) {
-        const onError = (error: Error): void => {
-          this.#child.stdin.off("drain", onDrain);
-          this.#pending.delete(id);
-          reject(error);
-        };
-        const onDrain = (): void => {
-          this.#child.stdin.off("error", onError);
-        };
-        this.#child.stdin.once("error", onError);
-        this.#child.stdin.once("drain", onDrain);
-      }
+      const write = (): void => {
+        const ok = this.#child.stdin.write(`${stringifyProtocol(this.#sources.address(payload))}\n`);
+        if (!ok) {
+          const onError = (error: Error): void => {
+            this.#child.stdin.off("drain", onDrain);
+            this.#pending.delete(id);
+            reject(error);
+          };
+          const onDrain = (): void => {
+            this.#child.stdin.off("error", onError);
+          };
+          this.#child.stdin.once("error", onError);
+          this.#child.stdin.once("drain", onDrain);
+        }
+      };
+      let resent = false;
+      const settle = (response: JobResponse): void => {
+        // The JVM lost a source this side counted as shipped (a line it could
+        // not decode is skipped before its sources are registered). Ship
+        // everything again, once, rather than failing every later job.
+        if (!resent && unknownSource(response)) {
+          resent = true;
+          this.#sources.forget();
+          this.#pending.set(id, { resolve: settle, reject, onCall });
+          write();
+          return;
+        }
+        resolve(response);
+      };
+      this.#pending.set(id, { resolve: settle, reject, onCall });
+      write();
     });
   }
 
@@ -304,7 +321,21 @@ class JvmProcess {
     }
     this.#closed = true;
     if (this.#pooled !== undefined) {
-      this.#pooled.release();
+      if (this.#pending.size > 0) {
+        // A job still running would keep running in whichever file borrowed
+        // this JVM next. The unpooled path shuts the JVM down, which bounds it;
+        // here the JVM is discarded instead, and the pool starts a fresh one.
+        const error = new Error(
+          `rhino-local: lease closed with ${this.#pending.size} job(s) still pending; JVM discarded`
+        );
+        for (const [id, pending] of this.#pending) {
+          this.#pending.delete(id);
+          pending.reject(error);
+        }
+        this.#pooled.kill();
+      } else {
+        this.#pooled.release();
+      }
     } else {
       try {
         this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
@@ -454,6 +485,10 @@ class JvmProcess {
 class ShippedSources {
   readonly #sent = new Set<string>();
 
+  forget(): void {
+    this.#sent.clear();
+  }
+
   address(payload: Record<string, unknown>): Record<string, unknown> {
     const { prelude, libraries, ...rest } = payload as {
       prelude?: string;
@@ -479,6 +514,14 @@ class ShippedSources {
     if (Object.keys(sources).length > 0) out.sources = sources;
     return out;
   }
+}
+
+function unknownSource(response: JobResponse): boolean {
+  return (
+    response.outcome === "protocol_error" &&
+    typeof response.error?.message === "string" &&
+    /(?:^|: )unknown source [0-9a-f]{64}$/.test(response.error.message)
+  );
 }
 
 const HASH_MEMO_LIMIT = 4096;
@@ -557,7 +600,7 @@ export class RhinoRunner {
    * A runner on JVMs borrowed from a {@link JvmPool}; `close()` returns them.
    * @internal Used by `useLease`; the pool's address comes from the package reporter.
    */
-  static async borrow(address: PoolAddress, options: Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs"> = {}): Promise<RhinoRunner> {
+  static async borrow(address: PoolAddress, options: Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs" | "shutdownWaitMs"> = {}): Promise<RhinoRunner> {
     const lane = options.lane ?? laneFromEnv();
     const cache = options.cache ?? cacheDir();
     const slot = process.env.VITEST_POOL_ID ?? `pid-${process.pid}`;
@@ -571,7 +614,7 @@ export class RhinoRunner {
     }
     const [primary, shadow] = processes;
     if (primary === undefined) throw new Error("rhino-local: no runner lane selected");
-    return new RhinoRunner(lane, primary, shadow, 5000);
+    return new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
   }
 
   /** What the (primary) JVM reported at startup. */

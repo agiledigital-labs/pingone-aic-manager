@@ -16,82 +16,14 @@ import { runCase } from "../../src/bindings/index.ts";
 import { defineCase } from "../../src/case/index.ts";
 import type { Given } from "../../src/case/types.ts";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
-import { JvmPool } from "../../src/pool.ts";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { cacheDir, ensureRhinoJar, ensureRunnerClasses } from "../../src/jvm.ts";
+import { JvmPool, PooledChild } from "../../src/pool.ts";
 import { RhinoRunner } from "../../src/runner.ts";
+import { FRESH, LIBRARIES, POLLUTER, PROBE } from "./isolation-scripts.ts";
 
-const LIBRARIES = {
-  // Module state, a regex literal, and a function that reads a global through
-  // the library's own scope chain.
-  stateful: [
-    "var counter = 0;",
-    "var re = /a/g;",
-    "exports.bump = function () { counter += 1; return counter; };",
-    "exports.re = re;",
-    "exports.arrayLeak = function () { return [].leakArray; };",
-  ].join("\n"),
-  // A tagged template: Rhino caches its call-site array inside the compiled script.
-  tagged: "function tag(strings) { return strings; }\nexports.site = function () { return tag`a${1}b`; };",
-};
-
-/** Everything a script can reach, vandalised. Non-enumerable so the case's own harvest survives. */
-const POLLUTER = `
-leakGlobal = 1;
-Object.defineProperty(Array.prototype, "leakArray", { value: 1, configurable: true });
-Object.defineProperty(Object.prototype, "leakObject", { value: 1, configurable: true });
-String.prototype.trim = function () { return "poisoned"; };
-var lib = require("stateful");
-lib.bump();
-lib.bump();
-lib.re.lastIndex = 7;
-lib.re.leak = 1;
-require("tagged").site();
-nodeState.leak = 1;
-callbacksBuilder.leak = 1;
-utils.crypto.randomUUID = function () { return "poisoned"; };
-logger.error("polluter log");
-nodeState.putShared("polluted", true);
-JSON.leak = 1;
-// Replaced, not broken: the case's own harvest still has to parse.
-JSON.parse = (function (parse) { var f = function () { return parse.apply(JSON, arguments); }; f.poisoned = true; return f; })(JSON.parse);
-action.goTo("done");
-`;
-
-const PROBE = `
-var lib = require("stateful");
-var probe = {
-  leakGlobal: typeof leakGlobal,
-  arrayProto: [].leakArray === undefined,
-  objectProto: ({}).leakObject === undefined,
-  trim: " a ".trim(),
-  json: JSON.leak === undefined && JSON.parse.poisoned === undefined,
-  nodeState: nodeState.leak === undefined,
-  callbacksBuilder: callbacksBuilder.leak === undefined,
-  uuid: utils.crypto.randomUUID() !== "poisoned",
-  moduleState: lib.bump(),
-  regexLastIndex: lib.re.lastIndex,
-  regexProps: lib.re.leak === undefined,
-  libraryGlobals: lib.arrayLeak() === undefined,
-  taggedSite: require("tagged").site().leakArray === undefined,
-};
-nodeState.putShared("probe", JSON.stringify(probe));
-action.goTo("done");
-`;
-
-const FRESH = {
-  leakGlobal: "undefined",
-  arrayProto: true,
-  objectProto: true,
-  trim: "a",
-  json: true,
-  nodeState: true,
-  callbacksBuilder: true,
-  uuid: true,
-  moduleState: 1,
-  regexLastIndex: 0,
-  regexProps: true,
-  libraryGlobals: true,
-  taggedSite: true,
-};
 
 async function runScript(runner: RhinoRunner, script: string, given: Given = { libraries: LIBRARIES }) {
   const kase = defineCase({ name: "isolation", script, outcomes: ["done"], given, expect: { outcome: "done" } });
@@ -210,6 +142,76 @@ describe("case isolation across files on a pooled JVM", () => {
     });
     expect(second).toBe(first);
   });
+
+  it("a lease closed with a job still running discards that JVM", async () => {
+    // timeoutMs 0: nothing inside the JVM ends this job, as with a Vitest
+    // test timeout that fires before the harness's own.
+    const runner = await RhinoRunner.borrow(pool.address, { lane: "host", shutdownWaitMs: 200 });
+    const pid = await jvmPid(runner);
+    expectEmulationFailure(/(?:Error: )?rhino-local: lease closed with 1 job\(s\) still pending; JVM discarded/);
+    const outcome = runner.eval({ timeoutMs: 0, source: "for (;;) {}" }).then(
+      () => "resolved",
+      (error: unknown) => String(error)
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await runner.close();
+    expect(await outcome).toMatch(/lease closed with 1 job\(s\) still pending; JVM discarded/);
+    expect(await file(jvmPid)).not.toBe(pid);
+  });
+
+  it("a JVM handed back with a job still running is not lent again", async () => {
+    // A client that vanishes without killing its JVM (a worker that died):
+    // only the pool's own status check stands between that job and the next file.
+    const child = new PooledChild(pool.address, "host", process.env.VITEST_POOL_ID ?? `pid-${process.pid}`, cacheDir());
+    const lines: string[] = [];
+    let buffer = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      buffer += chunk;
+      for (let nl = buffer.indexOf("\n"); nl !== -1; nl = buffer.indexOf("\n")) {
+        lines.push(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    });
+    child.stdin.write(`${JSON.stringify({ id: "pid", source: "Number(java.lang.ProcessHandle.current().pid())" })}\n`);
+    while (lines.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+    const pid = (JSON.parse(lines[0] as string) as { value: number }).value;
+    child.stdin.write(`${JSON.stringify({ id: "busy", timeoutMs: 0, source: "for (;;) {}" })}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const gone = new Promise((resolve) => child.once("exit", resolve));
+    child.release();
+    await gone;
+    expect(pid).toBeGreaterThan(0);
+    expect(await file(jvmPid)).not.toBe(pid);
+  });
+
+  it("a JVM is not reused by a client on another runner build", async () => {
+    const jar = await ensureRhinoJar();
+    const current = await ensureRunnerClasses(jar);
+    const dir = mkdtempSync(join(tmpdir(), "rhino-build-"));
+    const edited = join(dir, "classes");
+    cpSync(current, edited, { recursive: true });
+    let build = current;
+    const builds = await JvmPool.start({ classes: () => Promise.resolve(build) });
+    const pidOn = async (): Promise<number> => {
+      const runner = await RhinoRunner.borrow(builds.address, { lane: "host" });
+      try {
+        return await jvmPid(runner);
+      } finally {
+        await runner.close();
+      }
+    };
+    try {
+      const first = await pidOn();
+      // Control: same build, same JVM.
+      expect(await pidOn()).toBe(first);
+      build = edited;
+      expect(await pidOn()).not.toBe(first);
+    } finally {
+      await builds.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it("a JVM that crashed is replaced, not lent again", async () => {
     const crashed = await file(async (runner) => {
