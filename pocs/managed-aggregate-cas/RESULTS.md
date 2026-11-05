@@ -528,11 +528,18 @@ The child's reverse is addressable. `PATCH <child>/<rel>` replacing
 - Round 1 left child-delete blank for default and `NOTIFY=2`, and reported
   parent `onUpdate` + `postUpdate` for `NOTIFY=1`. This run fills all three: the
   child's `onDelete` runs, and the parent's hooks do not, in either storage
-  mode. That **disagrees with round 1** on `NOTIFY=1`. The flags are the same
-  placement, and the same configuration's edge patch through the parent did run
-  the parent hooks, so the flag path is live. The 6 s settle already matched the
-  response. A 30 s wait, and one delete with the child's scripts removed, is a
-  separate run and is not in this table.
+  mode. That **disagrees with round 1** on `NOTIFY=1`. The disagreement survived
+  a second run (`deletewait`, 112 s). `config/managed` then had
+  `notifySelf: true` on the parent's relationship node and `notify: true` on the
+  child's, and nothing on `resourceCollection`. The same configuration's edge
+  patch through the parent did run the parent hooks, so the flag path is live.
+  Waiting 30 s after the delete added no parent hook, mapped or generic.
+  Stripping the child's scripts and deleting again (mapped, another 30 s) still
+  ran no parent hook, and the mapped parent's `_rev` still moved. The child's
+  `onDelete` is not what suppresses the notification. The delete measured here
+  is `DELETE` of the child record. Ping's relationship-notification page
+  describes a DELETE of the relationship URL (`…/manager`), which is not this
+  row.
 - `NOTIFY=2` makes a child-side edge patch run the child's own update hooks. It
   does not notify the parent. `NOTIFY=1` does not make a child-side edge patch
   run either side.
