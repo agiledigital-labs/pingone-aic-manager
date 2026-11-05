@@ -1787,3 +1787,16 @@ equaled the backup taken before the POC. `genericMapping` still has those two
 keys and no others beyond the backup; their only properties are `children` and
 `parent`. Both endpoint deletes returned 200, and a later read of each is 404.
 No `PUT` of either config document was sent after the script stopped.
+
+The same day's first relationship-notification pass reported that `DELETE` of a
+linked child ran the parent's hooks when `notifySelf` was on the parent's
+relationship and `notify` was on the child's. The script put `notify` on the
+relationship node. A remeasure with the flag there did not run the parent
+hooks: not at 6 s, not at 30 s, not with the child's scripts removed. The same
+delete with `notify` on the child's `resourceCollection` did run them, mapped
+and generic, which is where Ping's relationship-notification page says to put
+`notify`
+(`docs.pingidentity.com/pingidm/8/objects-guide/relationships-notification.html`).
+The first pass's result matches the `resourceCollection` placement, not the
+node placement its script wrote. Detail:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21".

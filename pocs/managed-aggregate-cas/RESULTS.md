@@ -587,9 +587,44 @@ deletion is not counted as a revision move.
   waited for the notified run. Whether that run shares the caller's transaction
   id is a later part.
 
-Not in this section yet: `notifyRelationships` (object-level and the tenant's
-property-level shape), a has-many reverse, `notify` on a has-one forward,
-whether `status` is readable and present in `object` from the other side,
+### `notify` on `resourceCollection`
+
+Ping puts `notify` on `resourceCollection`, not on the relationship node. The
+same writes, both storage modes (`placement`, 119 s). The live document matched:
+`NOTIFY=1` had `notify: true` only on the child's `resourceCollection` and
+`notifySelf: true` on the parent's relationship node; `NOTIFY=2` swapped those.
+A direct patch still fired both ends first.
+
+| Write                             | `NOTIFY=1` collection              | `NOTIFY=2` collection          |
+| --------------------------------- | ---------------------------------- | ------------------------------ |
+| child `PATCH` of its reverse link | parent update and child update     | child update; no parent        |
+| child `PATCH` of a plain field    | child update; no parent            | child update; no parent        |
+| child record `DELETE`             | parent update and child `onDelete` | child `onDelete`; no parent    |
+| edge `PATCH` through the parent   | parent update                      | child update; no parent        |
+| edge `PATCH` through the child    | parent update; no child            | child update; no parent        |
+| parent `PATCH add /<rel>/-`       | parent, once; no child             | parent, once, and child update |
+
+Same hooks in both storage modes. Where the parent was notified, the generic
+parent's `_rev` moved as well, because the notification commits a parent update.
+Where it was not, a generic membership or edge change still left that `_rev`
+put, and a mapped one still moved it.
+
+- This is the placement that notifies the referenced object, which is what
+  Ping's page says `notify` does. It does it for a `DELETE` of the child record
+  as well as for a relationship write. Round 1's parent-hook-on-delete result
+  matches this placement. It does not match `notify` on the relationship node,
+  which is where round 1's script wrote the flag and where the table above
+  measured no parent hook.
+- A plain field change still does not cross, in either placement.
+- `NOTIFY=2` on `resourceCollection` notifies the child when the parent writes
+  the relationship (edge patch or link add). The parent's own link add is then
+  its own run plus the child's update. Node placement of the same flag did not
+  run the child's hooks for that add.
+
+Not in this section yet: `notifyRelationships` (the first three child-object
+configs stored `["parent","gparent"]` on the child and did not notify the
+parent; the rest of that matrix is still running), a has-many reverse, `notify`
+on a has-one forward, whether `status` is readable from the other side,
 `returnByDefault`, the activity log for a notified run, concurrent notified edge
 patches, and `GET /openidm/repo/relationships`. What a console-created pair
 stores still needs the console.
