@@ -1,6 +1,6 @@
 // E21 — relationship notification, both ends.
 //
-//   node e21.mjs repo|table|deletewait|placement|fanout|peers|owner|attrs|trace|cas|all
+//   node e21.mjs repo|table|deletewait|placement|fanout|shape|peers|owner|attrs|trace|cas|all
 //
 // Requires `node setup.mjs install` first. Each part configures the POC
 // types, proves a direct PATCH fires the hooks it counts, then measures.
@@ -602,6 +602,12 @@ async function partFanout() {
       console.log(`skip ${cfg.name}`);
       continue;
     }
+    // notifyRelationships naming its own relationship 404s that managed
+    // resource. Measured in partShape, not by driving the matrix at a dead type.
+    if (cfg.name.startsWith("rel-child") || cfg.name.startsWith("rel-parent")) {
+      console.log(`skip self-ref ${cfg.name}`);
+      continue;
+    }
     const set = configure(cfg.env);
     const shape = await liveShape().catch((e) => ({ error: scrub(e.message) }));
     stored.push({ flags: cfg.name, mirror: cfg.mirror, configure: set.ok ? "ok" : "failed", shape });
@@ -634,6 +640,310 @@ async function partFanout() {
   }
   const data = { controls, rows, shapes: stored };
   save("fanout", data);
+  return data;
+}
+
+const ZERO = { parentOn: 0, parentPost: 0, childOn: 0, childPost: 0, childDel: 0 };
+
+async function typeQuery(type) {
+  const r = await call("GET", `/openidm/managed/${type}?_queryFilter=true&_pageSize=1`);
+  return {
+    status: r.status,
+    detail: r.status === 200 ? null : scrub(JSON.stringify(r.json)?.slice(0, 180)),
+  };
+}
+
+// A config/managed write 404s the resource for a few seconds. A self-referential
+// notifyRelationships stayed 404 until the property was cleared. Wait long
+// enough to tell those apart.
+async function awaitType(type, want, tries = 8) {
+  let last = null;
+  for (let i = 0; i < tries; i++) {
+    last = await typeQuery(type);
+    if (last.status === want) return { ...last, tries: i + 1 };
+    await sleep(3000);
+  }
+  return { ...last, tries };
+}
+
+async function clearFanoutLive() {
+  const cleared = configure({ FANOUT: "off", NOTIFY: "", NOTIFY_SPEC: "", FLAG_AT: "node", RETURN_BY_DEFAULT: "0" });
+  const child = await awaitType(CHILD, 200, 8);
+  const parent = await awaitType(PARENT, 200, 8);
+  return { cleared: cleared.ok, child, parent };
+}
+
+// Apply one fanout, run `fn`, then always clear it. A type that does not come
+// back is a failed part: later measurements would be against a dead resource.
+async function withFanout(env, fn) {
+  const set = configure(env);
+  let result = { configure: set.ok ? "ok" : "failed" };
+  try {
+    const shape = await liveShape().catch((e) => ({ error: scrub(e.message) }));
+    result.shape = shape;
+    if (!set.ok) {
+      result.detail = set.output;
+      return result;
+    }
+    await sleep(2000);
+    const measured = await fn();
+    result = { ...result, ...measured };
+    return result;
+  } finally {
+    const restored = await clearFanoutLive();
+    result.restored = {
+      configure: restored.cleared,
+      child: restored.child.status,
+      parent: restored.parent.status,
+    };
+    if (restored.child.status !== 200 || restored.parent.status !== 200) {
+      const err = new Error(`POC types stayed down after clearing fanout (child ${restored.child.status}, parent ${restored.parent.status})`);
+      err.result = result;
+      throw err;
+    }
+  }
+}
+
+// Change one has-one on the child. `watchRel` is the other relationship, already
+// linked to `far`. The question is whether that far parent is notified.
+async function changeOtherRel(changedRel, watchRel) {
+  const far = await makeParent(watchRel);
+  const created = await makeChild();
+  if (created.status !== 200 && created.status !== 201) {
+    return { write: `change-${changedRel}`, watch: watchRel, error: "child create", http: created.status };
+  }
+  const child = created.json;
+  const linked = await linkParent(far._id, watchRel, child._id, "active");
+  if (linked.res.status !== 200) {
+    return { write: `change-${changedRel}`, watch: watchRel, error: "watch link", http: linked.res.status };
+  }
+  await settle(far._id, child._id, ZERO, WAIT_MS);
+  const nearRel = changedRel === "parent" ? "children" : "gchildren";
+  const near = await makeParent(nearRel);
+  const beforeFar = await revision(PARENT, far._id);
+  const beforeNear = await revision(PARENT, near._id);
+  const beforeChild = await revision(CHILD, child._id);
+  const baseFar = await tally(far._id, null);
+  const baseNear = await tally(near._id, null);
+  const baseChild = await tally(null, child._id);
+  const res = await setChildLink(child._id, changedRel, false, near._id, "moved");
+  const farHooks = await settle(far._id, null, baseFar, WAIT_MS);
+  const nearHooks = sub(await tally(near._id, null), baseNear);
+  const childHooks = sub(await tally(null, child._id), baseChild);
+  const out = {
+    write: `change-${changedRel}`,
+    watch: watchRel,
+    http: res.status,
+    ms: Math.round(res.ms),
+    farHooks,
+    nearHooks,
+    childHooks,
+    farRev: moved(beforeFar, await revision(PARENT, far._id)),
+    nearRev: moved(beforeNear, await revision(PARENT, near._id)),
+    childRev: moved(beforeChild, await revision(CHILD, child._id)),
+    detail: res.status >= 400 ? scrub(JSON.stringify(res.json)?.slice(0, 180)) : undefined,
+  };
+  console.log(`shape ${out.write} watch ${watchRel} http ${out.http} far ${farHooks.parentOn}/${farHooks.parentPost} near ${nearHooks.parentOn}/${nearHooks.parentPost} child ${childHooks.childOn}/${childHooks.childPost} farRev ${out.farRev}`);
+  return out;
+}
+
+// Same linkage, then a plain field. Names on the relationship must not fire.
+async function plainWhileLinked(watchRel) {
+  const far = await makeParent(watchRel);
+  const created = await makeChild();
+  if (created.status !== 200 && created.status !== 201) {
+    return { write: "child-plain", watch: watchRel, error: "child create", http: created.status };
+  }
+  const child = created.json;
+  const linked = await linkParent(far._id, watchRel, child._id, "active");
+  if (linked.res.status !== 200) {
+    return { write: "child-plain", watch: watchRel, error: "watch link", http: linked.res.status };
+  }
+  await settle(far._id, child._id, ZERO, WAIT_MS);
+  const beforeFar = await revision(PARENT, far._id);
+  const beforeChild = await revision(CHILD, child._id);
+  const baseFar = await tally(far._id, null);
+  const baseChild = await tally(null, child._id);
+  const res = await call("PATCH", rec(CHILD, child._id), {
+    body: [{ operation: "replace", field: "/value", value: 50 }],
+  });
+  const farHooks = await settle(far._id, null, baseFar, WAIT_MS);
+  const childHooks = sub(await tally(null, child._id), baseChild);
+  const out = {
+    write: "child-plain",
+    watch: watchRel,
+    http: res.status,
+    ms: Math.round(res.ms),
+    farHooks,
+    childHooks,
+    farRev: moved(beforeFar, await revision(PARENT, far._id)),
+    childRev: moved(beforeChild, await revision(CHILD, child._id)),
+  };
+  console.log(`shape child-plain watch ${watchRel} http ${out.http} far ${farHooks.parentOn}/${farHooks.parentPost} child ${childHooks.childOn}/${childHooks.childPost} farRev ${out.farRev}`);
+  return out;
+}
+
+// Change one has-many on the parent. `watchRel` already links `farChild`.
+async function changeOtherParentRel(changedRel, watchRel) {
+  const parent = await makeParent("children");
+  const created = await makeChild();
+  if (created.status !== 200 && created.status !== 201) {
+    return { write: `add-${changedRel}`, watch: watchRel, error: "child create", http: created.status };
+  }
+  const farChild = created.json;
+  const linked = await linkParent(parent._id, watchRel, farChild._id, "active");
+  if (linked.res.status !== 200) {
+    return { write: `add-${changedRel}`, watch: watchRel, error: "watch link", http: linked.res.status };
+  }
+  await settle(parent._id, farChild._id, ZERO, WAIT_MS);
+  const nearCreated = await makeChild();
+  if (nearCreated.status !== 200 && nearCreated.status !== 201) {
+    return { write: `add-${changedRel}`, watch: watchRel, error: "near child create", http: nearCreated.status };
+  }
+  const beforeFar = await revision(CHILD, farChild._id);
+  const beforeParent = await revision(PARENT, parent._id);
+  const baseFar = await tally(null, farChild._id);
+  const baseParent = await tally(parent._id, null);
+  const res = await linkParent(parent._id, changedRel, nearCreated.json._id, "active");
+  const farHooks = await settle(null, farChild._id, baseFar, WAIT_MS);
+  const parentHooks = sub(await tally(parent._id, null), baseParent);
+  const out = {
+    write: `add-${changedRel}`,
+    watch: watchRel,
+    http: res.res.status,
+    ms: Math.round(res.res.ms),
+    farHooks,
+    parentHooks,
+    farRev: moved(beforeFar, await revision(CHILD, farChild._id)),
+    parentRev: moved(beforeParent, await revision(PARENT, parent._id)),
+    detail: res.res.status >= 400 ? scrub(JSON.stringify(res.res.json)?.slice(0, 180)) : undefined,
+  };
+  console.log(`shape ${out.write} watch ${watchRel} http ${out.http} farChild ${farHooks.childOn}/${farHooks.childPost} parent ${parentHooks.parentOn}/${parentHooks.parentPost} farRev ${out.farRev}`);
+  return out;
+}
+
+async function parentPlainWhileLinked(watchRel) {
+  const parent = await makeParent("children");
+  const created = await makeChild();
+  if (created.status !== 200 && created.status !== 201) {
+    return { write: "parent-plain", watch: watchRel, error: "child create", http: created.status };
+  }
+  const farChild = created.json;
+  const linked = await linkParent(parent._id, watchRel, farChild._id, "active");
+  if (linked.res.status !== 200) {
+    return { write: "parent-plain", watch: watchRel, error: "watch link", http: linked.res.status };
+  }
+  await settle(parent._id, farChild._id, ZERO, WAIT_MS);
+  const beforeFar = await revision(CHILD, farChild._id);
+  const baseFar = await tally(null, farChild._id);
+  const baseParent = await tally(parent._id, null);
+  const res = await call("PATCH", rec(PARENT, parent._id), {
+    body: [{ operation: "replace", field: "/name", value: `plain-${Date.now()}` }],
+  });
+  const farHooks = await settle(null, farChild._id, baseFar, WAIT_MS);
+  const parentHooks = sub(await tally(parent._id, null), baseParent);
+  const out = {
+    write: "parent-plain",
+    watch: watchRel,
+    http: res.status,
+    ms: Math.round(res.ms),
+    farHooks,
+    parentHooks,
+    farRev: moved(beforeFar, await revision(CHILD, farChild._id)),
+  };
+  console.log(`shape parent-plain watch ${watchRel} http ${out.http} farChild ${farHooks.childOn}/${farHooks.childPost} parent ${parentHooks.parentOn}/${parentHooks.parentPost}`);
+  return out;
+}
+
+async function relOtherChild(label, env) {
+  return withFanout(env, async () => {
+    const child = await awaitType(CHILD, 200, 8);
+    const parent = await typeQuery(PARENT);
+    if (child.status !== 200 || parent.status !== 200) {
+      console.log(`shape ${label} offline child ${child.status} parent ${parent.status}`);
+      return { label, offline: true, child, parent };
+    }
+    const control = await requireControl();
+    const rows = [];
+    for (const fn of [
+      () => changeOtherRel("parent", "gchildren"),
+      () => plainWhileLinked("gchildren"),
+      () => changeOtherRel("gparent", "children"),
+    ]) {
+      try {
+        rows.push(await fn());
+      } catch (e) {
+        rows.push({ error: scrub(e.message) });
+      }
+    }
+    return { label, offline: false, control: { ok: control.ok, parentHttp: control.parentHttp, childHttp: control.childHttp }, rows };
+  });
+}
+
+async function relOtherParent(label, env) {
+  return withFanout(env, async () => {
+    const parent = await awaitType(PARENT, 200, 8);
+    const child = await typeQuery(CHILD);
+    if (child.status !== 200 || parent.status !== 200) {
+      console.log(`shape ${label} offline child ${child.status} parent ${parent.status}`);
+      return { label, offline: true, child, parent };
+    }
+    const control = await requireControl();
+    const rows = [];
+    for (const fn of [
+      () => changeOtherParentRel("children", "gchildren"),
+      () => parentPlainWhileLinked("gchildren"),
+      () => changeOtherParentRel("gchildren", "children"),
+    ]) {
+      try {
+        rows.push(await fn());
+      } catch (e) {
+        rows.push({ error: scrub(e.message) });
+      }
+    }
+    return { label, offline: false, control: { ok: control.ok, parentHttp: control.parentHttp, childHttp: control.childHttp }, rows };
+  });
+}
+
+// Self-naming notifyRelationships took the resource offline in the fanout run.
+// Probe it once per end, always clear it, then measure the tenant's shape:
+// the relationship names the OTHER relationship (alpha_organization.parent
+// names children, not itself).
+async function partShape() {
+  const rows = [];
+  const record = async (label, fn) => {
+    try {
+      rows.push(await fn());
+      save("shape", { rows, partial: true });
+    } catch (e) {
+      rows.push({ label, error: scrub(e.message), control: e.control || null });
+      save("shape", { rows, partial: true, void: label });
+      throw e;
+    }
+  };
+  await record("self-ref-child", () => withFanout({ FANOUT: "rel-child", NOTIFY: "" }, async () => {
+    const during = await awaitType(CHILD, 200, 8);
+    const other = await typeQuery(PARENT);
+    console.log(`shape self-ref child ${during.status} after ${during.tries} parent ${other.status}`);
+    return { label: "self-ref-child", during, other };
+  }));
+  await record("self-ref-parent", () => withFanout({ FANOUT: "rel-parent", NOTIFY: "" }, async () => {
+    const during = await awaitType(PARENT, 200, 8);
+    const other = await typeQuery(CHILD);
+    console.log(`shape self-ref parent ${during.status} after ${during.tries} child ${other.status}`);
+    return { label: "self-ref-parent", during, other };
+  }));
+  await record("rel-other-child", () => relOtherChild("rel-other-child", { FANOUT: "rel-other-child", NOTIFY: "" }));
+  await record("rel-other-child/org-mirror", () => relOtherChild("rel-other-child/org-mirror", {
+    FANOUT: "rel-other-child",
+    NOTIFY_SPEC: JSON.stringify({
+      parent: { notify: true, notifySelf: true, at: "collection" },
+      gparent: { notify: true, notifySelf: true, at: "collection" },
+    }),
+  }));
+  await record("rel-other-parent", () => relOtherParent("rel-other-parent", { FANOUT: "rel-other-parent", NOTIFY: "" }));
+  const data = { rows };
+  save("shape", data);
   return data;
 }
 
@@ -952,6 +1262,7 @@ const PARTS = {
   deletewait: partDeleteWait,
   placement: partPlacement,
   fanout: partFanout,
+  shape: partShape,
   peers: partPeers,
   owner: partOwner,
   attrs: partAttrs,
@@ -961,7 +1272,7 @@ const PARTS = {
 
 const asked = process.argv.slice(2);
 const list = asked.length === 0 || asked.includes("all")
-  ? ["repo", "table", "deletewait", "placement", "fanout", "peers", "owner", "attrs", "trace", "cas"]
+  ? ["repo", "table", "deletewait", "placement", "fanout", "shape", "peers", "owner", "attrs", "trace", "cas"]
   : asked;
 for (const name of list) {
   if (!PARTS[name]) {
