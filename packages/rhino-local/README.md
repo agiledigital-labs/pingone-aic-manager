@@ -124,14 +124,16 @@ lists them.
 Errors that AIC itself raises and the harness emulates stay ordinary,
 catchable script errors. One example is `Entry Already Exists` from a
 colliding `openidm.create`, `Resource 'managed/<type>' not found` from
-`openidm.query` on a type the environment profile (from
+`openidm.query` on a `managed/<type>` the environment profile (from
 `aic-script-tester-pull-profile`) does not declare, or the `_queryFilter` parse error for a filter AIC is measured (or
 certain) to reject, such as `name eq` or the word form `not (…)` (raised before any record is read, so an empty
 collection does not hide it). A filter the harness's CREST grammar cannot read, an operator it does not evaluate
-(`gt`/`ge`/`lt`/`le`), `ne` (refused by AIC, in words not measured from a script) and an empty or `null` filter are the
+(`gt`/`ge`/`lt`/`le`), `ne` (refused by AIC, in words not measured from a script), an empty or `null` filter, and a
+record whose match turns on letter case or spaces (AIC folds them for some fields, unmeasured for the rest) are the
 harness fault `openidm-query-filter` instead: AIC may well parse a filter the harness cannot. A script
 that catches one of those passes, just as it would on the tenant. `openidm.read`
-of an undeclared type returns `null`, as AIC's does.
+of an undeclared type returns `null`, as AIC's does. A profile speaks only for `managed/<type>`: any other unseeded
+resource (`internal/role`, `config/…`, a relationship collection) is the fault `fixture/managed` with or without one.
 
 **Argument counts.** A call with an argument count AIC has no overload for is
 refused the way Rhino refuses it on AIC — a catchable
