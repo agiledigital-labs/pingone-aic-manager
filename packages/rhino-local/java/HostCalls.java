@@ -18,7 +18,7 @@ public final class HostCalls {
   IdmValues values;
   private int sequence;
   private final java.util.SortedMap<String, Map<String, Object>> evidence = new java.util.TreeMap<String, Map<String, Object>>();
-  private synchronized void collectEvidence(Object raw) {
+  private synchronized void collectEvidence(Object raw, boolean failOnMissing) {
     if (raw == null) return;
     try {
       if (!(raw instanceof java.util.List)) throw new IllegalArgumentException("expected array");
@@ -34,7 +34,7 @@ public final class HostCalls {
       }
       // Even an adapter that returns a failed REST body's JSON cannot demote a
       // missing record to tenant data merely by ignoring the result status.
-      if (!absent.isEmpty()) {
+      if (failOnMissing && !absent.isEmpty()) {
         EmulationFailure error = new EmulationFailure("missing", "Missing IDM behavior: " + String.join(", ", absent));
         error.info.put("missing", absent);
         throw fail(error);
@@ -88,7 +88,11 @@ public final class HostCalls {
       long remaining = factory.remainingMillis();
       Map<String, Object> reply = remaining == 0 ? future.get() : future.get(remaining, TimeUnit.MILLISECONDS);
       unanswered.remove(seq); // Authoritative: this worker consumed the reply, not merely received stdin.
-      collectEvidence(reply.get("provenance"));
+      // A failed reply's own emulation map wins over one rebuilt from its missing evidence:
+      // it carries the harness-fault ids (`faults`), which the behaviour strings do not.
+      Object replyError = reply.get("error");
+      boolean emulated = replyError instanceof Map && ((Map<?, ?>) replyError).get("emulation") instanceof Map;
+      collectEvidence(reply.get("provenance"), !emulated);
       if (reply.get("error") != null) {
         Map<String, Object> error = Json.asObject(reply.get("error"), "host error");
         java.util.List<String> absent = Json.optionalStringList(error, "missing");

@@ -26,30 +26,32 @@ export class IdmEmulator {
   private readonly scripts: Scripts;
   private readonly managed: ManagedStore;
 
-  private readonly runtimeScripts: RuntimeScriptProvider | undefined;
+  /** Built once (a directory provider is indexed at construction) and shared with forks. */
+  private readonly runtimeScripts: RuntimeScripts;
 
   /**
    * `runtimeScripts` supplies IDM's own runtime scripts (a hook's `file`, a
    * `require(id)`): a directory named by IDM's relative paths, or a loader
    * `(scriptPath) => string | undefined`. One it does not supply is the harness
-   * fault `idm-runtime-script/<path>`.
+   * fault `idm-runtime-script/<path>`. A directory must be absolute or a `file:`
+   * URL, and is validated and indexed here.
    */
-  constructor(config: IdmConfig, runner: RhinoRunner, options: { policy?: PolicyEvaluator; properties?: Record<string, JsonValue>; runtimeScripts?: RuntimeScriptProvider } = {}) {
+  constructor(config: IdmConfig, runner: RhinoRunner, options: { policy?: PolicyEvaluator; properties?: Record<string, JsonValue>; runtimeScripts?: RuntimeScriptProvider | RuntimeScripts } = {}) {
     this.config = config;
     this.runner = runner;
     this.policy = options.policy;
     this.properties = structuredClone(options.properties ?? {});
-    this.runtimeScripts = options.runtimeScripts;
+    this.runtimeScripts = options.runtimeScripts instanceof RuntimeScripts ? options.runtimeScripts : new RuntimeScripts(options.runtimeScripts);
     this.records = new Map();
     this.scripts = new Scripts(runner, this.evidence, (call, context) => this.chain.run(context, () => this.host(call)), this.properties,
-      new RuntimeScripts(options.runtimeScripts));
+      this.runtimeScripts);
     this.managed = new ManagedStore(this.records, this.scripts, this.evidence, this.policy, (type, field) => config.jsonStored(type, field));
   }
 
   /** Shares frozen config and runner; copies all records, including nested JSON values. */
   fork(): IdmEmulator {
     const fork = new IdmEmulator(this.config, this.runner, { ...(this.policy ? { policy: this.policy } : {}), properties: this.properties,
-      ...(this.runtimeScripts === undefined ? {} : { runtimeScripts: this.runtimeScripts }) });
+      runtimeScripts: this.runtimeScripts });
     for (const [key, value] of this.records) fork.records.set(key, structuredClone(value));
     fork.managed.inheritCookies(this.managed);
     fork.managed.inheritMaterialized(this.managed);

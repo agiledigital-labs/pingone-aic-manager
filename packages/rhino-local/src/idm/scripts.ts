@@ -1,4 +1,5 @@
 /** Hook binding graphs and IDM evaluations. Host calls re-enter the owning emulator. */
+import { EmulationFailure, responseFailure } from "../emulation.ts";
 import type { EvalOptions, RhinoRunner } from "../runner.ts";
 import type { HostCall, JsonValue, JobResponse } from "../protocol.ts";
 import { isDocument, own, replaceDocument, setOwn } from "./document.ts";
@@ -38,7 +39,7 @@ export class Scripts {
 
   async evaluate(script: Script, bindings: Document, context: string, bindingAliases?: Record<string, string>): Promise<JobResponse> {
     if (script.type !== "text/javascript") missing(this.evidence, `script type: ${script.type}`);
-    if (script.file !== undefined && script.source !== undefined) missing(this.evidence, `script declaring both source and file: ${script.file}`);
+    if (script.file !== undefined && script.source !== undefined) missing(this.evidence, `script declaring both source and file: ${script.file}`, "idm-script-file-and-source");
     // A `file` names one of IDM's own runtime scripts (AIC has no customer script directory).
     const source = script.file === undefined ? script.source :
       await this.runtime.source(script.file, `${context} file reference`, this.evidence);
@@ -57,6 +58,10 @@ export class Scripts {
     for (const entry of response.provenance ?? []) if (entry.kind !== "missing") this.evidence.add(entry.kind, entry.behavior, entry.source);
     for (const assumption of response.assumed ?? []) this.evidence.assumed(assumption);
     for (const helper of response.missing ?? []) this.evidence.add("missing", `runtime helper: ${helper}`);
+    // The job's own failure first: it carries the harness-fault ids (a nested fault's
+    // `faults`), which re-raising the first missing evidence entry as text would drop.
+    const fatal = responseFailure(response);
+    if (fatal) throw new EmulationFailure(fatal);
     const absent = this.evidence.firstMissing();
     if (absent) missing(this.evidence, absent.behavior);
     if (response.outcome !== "ok") scriptError(response, context, this.evidence);
@@ -71,10 +76,10 @@ export class Scripts {
     const id = args[0];
     if (typeof id !== "string" || args.length !== 1) missing(this.evidence, "require host call without one string id");
     this.evidence.assumed("require(id) loads <id>.js under the script root; IDM 9.0.0 bytecode, not measured on AIC");
-    this.evidence.assumed("a required module runs once per script invocation, sees the caller's bindings and keeps its top-level vars; IDM 9.0.0 bytecode, not measured on AIC");
+    this.evidence.assumed("a required module runs once per id string per script invocation (require('x') and require('x.js') are two instances), sees the caller's bindings and keeps its top-level vars; a cycle sees the original exports object; IDM 9.0.0 bytecode, not measured on AIC");
     const path = modulePath(id);
     if (["lib/lodash.js", "lib/handlebars.js", "lib/validator.js"].includes(path)) {
-      this.evidence.assumed("engine-preloaded lib/lodash, lib/handlebars and lib/validator run per invocation here; IDM shares one exports object across invocations");
+      this.evidence.assumed("engine-preloaded lib/lodash, lib/handlebars and lib/validator run per invocation here and see the caller's bindings; IDM shares one exports object across invocations and runs them in a scope without the caller's bindings");
     }
     return { path, source: await this.runtime.source(path, `require(${JSON.stringify(id)})`, this.evidence) };
   }
