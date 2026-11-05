@@ -101,7 +101,7 @@ TS
 cat >"$consumer/test/smoke.test.ts" <<TS
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { defineSuite, useLease } from "$name";
+import { defineSuite, expectHarnessFault, useLease } from "$name";
 import { validateCase } from "$name/case";
 import { RhinoRunner } from "$name/runner";
 import { mockPreamble, withHarvest, parseHarvest } from "$name/bindings";
@@ -148,6 +148,7 @@ describe("installed rhino-local", () => {
     })).toThrow(/collides with/);
     const runner = await RhinoRunner.spawn();
     try {
+      expectHarnessFault("identity-bag-key-collision");
       const response = await runner.eval({
         preamble: mockPreamble({ ...seed, identityCustomAttrsOwnedKeys: { [resource]: ["plain"] } }),
         source: withHarvest([
@@ -157,13 +158,11 @@ describe("installed rhino-local", () => {
           '__rhinoLocal.identityCustomAttrsOwnedKeys["managed/alpha_user/example"] = ["plain"];',
         ].join("\\n")),
       });
-      expect(response.outcome, JSON.stringify(response)).toBe("ok");
-      if (typeof response.value !== "string") throw new Error("missing harvest");
-      const effects = parseHarvest(response.value);
-      expect(effects.sharedState.final.error).toMatch(/openidm.patch:.*collides with/);
-      expect(effects.managedStore).toEqual(managed);
-      expect(effects.identityCustomAttrs).toEqual(seed.identityCustomAttrs);
-      expect(effects.identityCustomAttrsOwnedKeys).toEqual({ [resource]: ["plain"] });
+      // The script catches the refusal, but it is a harness fault (E19), so
+      // the job fails naming it, and expectHarnessFault is reachable from the
+      // installed package.
+      expect(response.outcome, JSON.stringify(response)).toBe("runtime_error");
+      expect(response.error?.message).toMatch(/^rhino-local harness fault identity-bag-key-collision: openidm.patch:.*collides with/);
     } finally { await runner.close(); }
   });
 
@@ -178,6 +177,7 @@ describe("installed rhino-local", () => {
 
   it("exports the case, provider, diagnostics and profile surfaces", () => {
     expect(typeof validateCase).toBe("function");
+    expect(typeof parseHarvest).toBe("function");
     expect(typeof readFailures).toBe("function");
     expect(typeof runShowLog).toBe("function");
     expect(profilePath("sandbox")).toMatch(/[.]aic-script-tester[/]profiles[/]sandbox[.]json$/);
