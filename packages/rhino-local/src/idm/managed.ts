@@ -4,6 +4,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { HostCallError } from "../runner.ts";
 import type { JsonValue } from "../protocol.ts";
+import type { JsonStorage } from "./config.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
@@ -40,8 +41,8 @@ export class ManagedStore {
   private readonly scripts: Scripts;
   private readonly evidence: Evidence;
   private readonly policy: PolicyEvaluator | undefined;
-  /** Whether a type's top-level property is JSON in DS (`IdmConfig.jsonStored`). */
-  private readonly jsonStored: (type: string, field: string) => boolean;
+  /** Whether a type's top-level property is JSON in DS, and through which mapping (`IdmConfig.jsonStored`). */
+  private readonly jsonStored: (type: string, field: string) => JsonStorage;
   /** The sync mappings with this type as source (`IdmConfig.syncMappings`). */
   private readonly syncMappings: (type: string) => readonly string[] | undefined;
   constructor(
@@ -49,7 +50,7 @@ export class ManagedStore {
     scripts: Scripts,
     evidence: Evidence,
     policy?: PolicyEvaluator,
-    jsonStored: (type: string, field: string) => boolean = () => false,
+    jsonStored: (type: string, field: string) => JsonStorage = () => false,
     syncMappings: (type: string) => readonly string[] | undefined = () => undefined,
   ) {
     this.records = records;
@@ -542,7 +543,7 @@ const ORDERING = ["gt", "ge", "lt", "le"];
  * probed, and either guess can be a false pass there (a folding guess passes a "not found" test,
  * an exact guess a `false`-branch test), so a record whose answer turns on them is missing.
  */
-function stringPolicy(type: string, evidence: Evidence, jsonStored: (field: string) => boolean): StringPolicy {
+function stringPolicy(type: string, evidence: Evidence, jsonStored: (field: string) => JsonStorage): StringPolicy {
   const name = (field: string) => field.replace(/^\//, "");
   return {
     rules(_field, op): Record<RuleDimension, StringRule> {
@@ -574,8 +575,12 @@ function stringPolicy(type: string, evidence: Evidence, jsonStored: (field: stri
       }
     },
     // telephoneNumber, the time and integer attributes, the multivalued `pr` rule
-    // (crest-filter.cjs `fieldRule`), and a generic type's JSON-stored property.
-    rule: (field) => fieldRule(type, name(field)) ?? (jsonStored(name(field)) ? "json" : null),
+    // (crest-filter.cjs `fieldRule`), and a generic type's JSON-stored property: `json` for the
+    // measured `managed/*` shape, `jsonOwn` for a type with its own genericMapping entry.
+    rule: (field) => {
+      const stored = jsonStored(name(field));
+      return fieldRule(type, name(field)) ?? (stored === "wildcard" ? "json" : stored === "own" ? "jsonOwn" : null);
+    },
     label(provenance, behavior, source) {
       if (provenance === "measured") evidence.measured(behavior, source);
       else evidence.assumed(behavior);

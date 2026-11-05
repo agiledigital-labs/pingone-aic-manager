@@ -510,10 +510,13 @@ var __rhinoLocalNativeArrayHash = 0x69fd8b92;
 // null is accepted by overload resolution and fails inside as `null`, and an
 // array resolves to the Map overload and fails conversion. Measured on
 // mergeShared, and on mergeTransient for a string; the same wrapper's other
-// mergeTransient cases are taken to match. Anything else (a function) is
-// unmeasured and stays the fault.
+// mergeTransient cases are taken to match where the refusal is Rhino's own
+// (overload resolution, Map conversion). mergeTransient(null) is not: null
+// gets past resolution and fails inside AM's method body, which was never
+// observed for mergeTransient, so it stays the fault (review pf-01 P3-3), as
+// does anything else (a function).
 function __rhinoLocalMergeRefusal(method, object) {
-  if (object === null) {
+  if (object === null && method === "mergeShared") {
     return __rhinoLocalInternalError("null");
   }
   if (Array.isArray(object)) {
@@ -527,7 +530,7 @@ function __rhinoLocalMergeRefusal(method, object) {
       method + "(" + __rhinoLocalScriptSignature([object]) + ").");
   }
   return __rhinoLocalFault("node-state-merge-non-object",
-    "rhino-local: nodeState." + method + ": what AIC does with a " + typeof object + " argument is unmeasured");
+    "rhino-local: nodeState." + method + ": what AIC does with a " + (object === null ? "null" : typeof object) + " argument is unmeasured");
 }
 
 function __rhinoLocalMergeBucket(bucketName, object) {
@@ -2334,8 +2337,8 @@ function __rhinoLocalOpenidmRecord(value, id, rev) {
 // nobody measured (round-4 P2-3), the quoted integer included (measured on
 // alpha_user only, round-5 P2-1). A record whose whole answer is unknown is a
 // fault. Runs before any row is read, as AIC parses before it reads.
-function __rhinoLocalParseFilter(filter) {
-  var prepared = __rhinoLocalCrestFilter.prepare(filter, ["eq", "co", "sw"]);
+function __rhinoLocalParseFilter(filter, lane) {
+  var prepared = __rhinoLocalCrestFilter.prepare(filter, lane.admits);
   if (prepared.error === "parse") {
     __rhinoLocalFilterError(filter);
   }
@@ -2348,13 +2351,36 @@ function __rhinoLocalParseFilter(filter) {
   return prepared.ast;
 }
 
+// AIC's 400 for a literal a DS integer or time attribute cannot convert, as
+// AM's openidm.query surfaces it (second probe, 2026-11-06, docs/api/12):
+// a catchable JavaException whose message is the adapter's class and the
+// REST message, HTML escaping included (`&#39;`); no `(script#line)` suffix;
+// `e.javaException` answers getCode() 400 and getReason() "Bad Request", and
+// nothing else (getMessage and getClass are TypeErrors on AIC too). Only a
+// letter-only or decimal literal reaches here, so `'` is the one character
+// REST's error escaping can touch.
+function __rhinoLocalIllegalAssertion(illegal) {
+  var error = new Error(
+    "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: " +
+      "The request cannot be processed because it contained an illegal filter assertion value &#39;" +
+      illegal.value + "&#39; for field &#39;" + illegal.field + "&#39;"
+  );
+  error.name = "JavaException";
+  var adapter = {};
+  __rhinoLocalHide(adapter, "getCode", function () { return 400; });
+  __rhinoLocalHide(adapter, "getReason", function () { return "Bad Request"; });
+  __rhinoLocalHide(adapter, "toString", function () { return error.message; });
+  __rhinoLocalHide(error, "javaException", adapter);
+  return error;
+}
+
 var __rhinoLocalUndecidedWhy = {
   "case": "turns on letter case",
   space: "turns on leading, trailing or repeated spaces or non-U+0020 whitespace",
   unicode: "turns on Unicode normalisation or characters RFC 4518 maps to nothing",
   type: "compares different JSON types, or an object or null element, which nothing measured",
   presence: "asks pr of an empty string, array or object, which nothing measured",
-  rule: "is on a user field whose DS matching rule is not caseIgnoreMatch (telephone, time or integer): AIC's answer was measured over REST and IDM scripts only, never through this binding",
+  rule: "is on a user field whose DS matching rule is not caseIgnoreMatch (telephone, time or integer), and the 2026-11-06 probes measured neither this field nor this operator and literal form",
   path: "reads through an array, measured only as a bare eq reached through and alone",
 };
 
@@ -2436,16 +2462,17 @@ openidm.query = function (resourceName, params, fields) {
   }
   // Parsed before the rows, as AIC parses it before reading any: a malformed
   // filter fails on an empty collection too.
-  var ast = __rhinoLocalParseFilter(filter);
-  var lane = __rhinoLocalCrestFilter.unmeasuredLane(collection);
+  var lane = __rhinoLocalCrestFilter.scriptTesterLane(collection);
+  var ast = __rhinoLocalParseFilter(filter, lane);
   // A leaf AIC judges before reading any record (a field rule, its 400s):
-  // undecided here even on an empty collection, so it cannot pass vacuously.
+  // judged here even on an empty collection, so it cannot pass vacuously.
   var assertion = __rhinoLocalCrestFilter.assertions(ast, lane);
+  if (assertion !== null && assertion.illegal !== undefined) {
+    throw __rhinoLocalIllegalAssertion(assertion.illegal);
+  }
   if (assertion !== null) {
-    var blame = assertion.unknown !== undefined ? assertion.unknown
-      : { op: assertion.illegal.op, field: assertion.illegal.field, dimension: "rule" };
-    __rhinoLocalFilterUnsupported(filter, blame.op + " on " + blame.field + " " +
-      __rhinoLocalUndecidedWhy[blame.dimension]);
+    __rhinoLocalFilterUnsupported(filter, assertion.unknown.op + " on " + assertion.unknown.field + " " +
+      __rhinoLocalUndecidedWhy[assertion.unknown.dimension]);
   }
   var result = [];
   var i;

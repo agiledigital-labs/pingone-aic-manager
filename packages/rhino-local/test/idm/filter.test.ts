@@ -94,7 +94,8 @@ describe("queryFilter grammar", () => {
       alpha_user: { userName: "string", telephoneNumber: "string", frIndexedDate1: "string", frUnindexedDate1: "string", frIndexedDate2: "string",
         frIndexedInteger1: "number", frIndexedInteger2: "number", frUnindexedInteger1: "number",
         frIndexedMultivalued1: "array", frUnindexedMultivalued1: "array", roles: "array", frIndexedMultivalued2: "array" },
-      sink: { count: "number", linked: "number" },
+      sink: { count: "number" },
+      linkedsink: { count: "number", linked: "number" },
       pinned: { count: "number" },
     } as const;
     const schema = (props: Record<string, string>) => ({ properties: Object.fromEntries(Object.entries(props).map(([k, type]) => [k, { type }])) });
@@ -140,7 +141,7 @@ describe("queryFilter grammar", () => {
     });
     it.each(cases)("script %s", async (_name, row) => {
       expectFor(row);
-      const source = "try { JSON.stringify(openidm.query('managed/' + type,{_queryFilter:filter,_fields:['_id']}).result.map(function (r) { return String(r._id).replace(/^00000000-0000-0000-0000-0*/, ''); })); } catch (e) { 'caught:' + e.message; }";
+      const source = "try { JSON.stringify(openidm.query('managed/' + type,{_queryFilter:filter,_fields:['_id']}).result.map(function (r) { return String(r._id).replace(/^00000000-0000-0000-0000-0*/, ''); })); } catch (e) { JSON.stringify([e.name, e.message, String(e), e.javaException.getCode()]); }";
       const response = await runner.eval({ engine: "idm", source, bindings: { filter: row.filter, type: row.collection } }, { onCall: (await fresh()).onCall });
       if (!Array.isArray(row.idm) && "missing" in row.idm) {
         expect(response.outcome, row.why).toBe("runtime_error");
@@ -150,9 +151,10 @@ describe("queryFilter grammar", () => {
       expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
       if (Array.isArray(row.idm)) expect(response.value, row.why).toBe(JSON.stringify(row.idm));
       else {
-        // A catchable BadRequestException with the unescaped text, as measured.
-        expect(String(response.value), row.why).toContain("org.forgerock.json.resource.BadRequestException");
-        expect(String(response.value), row.why).toContain(illegalMessage(row.idm.illegal, row.idm.field));
+        // A catchable JavaException: the class prefix and the unescaped text, as measured (second
+        // probe, 2026-11-06: e.name, e.message and String(e) captured separately).
+        const message = `org.forgerock.json.resource.BadRequestException: ${illegalMessage(row.idm.illegal, row.idm.field)}`;
+        expect(JSON.parse(String(response.value)), row.why).toEqual(["JavaException", message, `JavaException: ${message}`, 400]);
       }
     });
 
@@ -180,8 +182,10 @@ describe("queryFilter grammar", () => {
       const noWildcard = new IdmConfig({ managed: { objects: [] }, repo: { resourceMapping: { genericMapping: { "managed/x": {} } } } });
       expect([noWildcard.storage("x"), noWildcard.storage("y")]).toEqual(["generic", "unknown"]);
       const cfg = config(true);
-      expect([cfg.storage("sink"), cfg.storage("pinned"), cfg.jsonStored("sink", "count"), cfg.jsonStored("sink", "linked"), cfg.jsonStored("sink", "a/b"),
-        cfg.jsonStored("alpha_user", "custom_n")]).toEqual(["generic", "explicit", true, false, false, false]);
+      // sink is covered by managed/* alone (the probe's shape, review P2-1); linkedsink has its own entry (P3-1).
+      expect([cfg.storage("sink"), cfg.storage("linkedsink"), cfg.storage("pinned"), cfg.jsonStored("sink", "count"), cfg.jsonStored("linkedsink", "count"),
+        cfg.jsonStored("linkedsink", "linked"), cfg.jsonStored("sink", "a/b"), cfg.jsonStored("pinned", "count"), cfg.jsonStored("alpha_user", "custom_n")])
+        .toEqual(["generic", "generic", "explicit", "wildcard", "own", false, false, false, false]);
       expect(config(false).storage("sink")).toBe("unknown");
       expect(() => new IdmConfig({ managed: { objects: [] }, repo: [] as never })).toThrow(/repo must be a plain object/);
     });
@@ -189,7 +193,8 @@ describe("queryFilter grammar", () => {
     // Provenance: what the probe measured is labelled measured, the inferred neighbours assumed.
     const PROBE = "docs/api/10-managed-objects.md (E19 live probe, 2026-11-06)";
     it.each([
-      ["alpha_user", 'telephoneNumber eq "+614 9999 9999"', { kind: "measured", behavior: "eq on alpha_user telephoneNumber ignores spaces and hyphens (telephoneNumberMatch)", source: PROBE }],
+      ["alpha_user", 'telephoneNumber eq "+614 9999 9999"', { kind: "measured", behavior: "eq on alpha_user telephoneNumber ignores spaces, hyphens and + (telephoneNumberMatch)", source: PROBE }],
+      ["alpha_user", 'telephoneNumber co "+9999"', { kind: "measured", behavior: "co on alpha_user telephoneNumber ignores spaces, hyphens and + (telephoneNumberMatch)", source: PROBE }],
       ["alpha_user", 'frUnindexedDate1 lt "2026-01-01T00:00:00Z"', { kind: "measured", behavior: "lt on alpha_user frUnindexedDate1 compares instants across offsets", source: PROBE }],
       ["alpha_user", "frIndexedInteger1 eq 7.0", { kind: "measured", behavior: "eq on alpha_user frIndexedInteger1 converts an integral literal of either JSON type to the integer", source: PROBE }],
       ["alpha_user", "frIndexedInteger1 ge 7.0", { kind: "measured", behavior: "ge on alpha_user frIndexedInteger1 converts an integral literal of either JSON type to the integer", source: PROBE }],
@@ -198,6 +203,8 @@ describe("queryFilter grammar", () => {
       ["sink", 'count eq "7"', { kind: "measured", behavior: "eq on a generic (JSON-stored) type: a quoted literal never matches a number", source: PROBE }],
       ["sink", "count gt 6.5", { kind: "measured", behavior: "gt on a generic (JSON-stored) type compares numbers by value, decimals included", source: PROBE }],
       ["sink", "count le 7.5", { kind: "assumed", behavior: "le on a generic (JSON-stored) type compares numbers by value, like eq and gt" }],
+      ["linkedsink", 'count eq "7"', { kind: "assumed", behavior: "eq on a generic (JSON-stored) type: a quoted literal never matches a number, assumed for a type with its own genericMapping entry like managed/*" }],
+      ["linkedsink", "count eq 7.0", { kind: "assumed", behavior: "eq on a generic (JSON-stored) type compares numbers by value, decimals included, assumed for a type with its own genericMapping entry like managed/*" }],
     ])("%s %s is labelled", async (type, filter, label) => {
       const result = await (await fresh()).request({ method: "GET", path: `managed/${type}`, query: { _queryFilter: filter } });
       expect(result.status, JSON.stringify(result.provenance)).toBe(200);
