@@ -14,24 +14,25 @@ const runtimeSource = readFileSync(
 );
 
 interface Element {
-  elementType: string;
+  elementType?: string;
   name: string;
+  javaClass?: string;
   parameters?: unknown[];
   elements?: Element[];
 }
-/** binding.method -> accepted argument counts, from AIC's introspection. */
-function introspectedCounts(): Map<string, Set<number>> {
+/** binding.method -> accepted argument counts and declaring class, from AIC's introspection. */
+function introspected(): Map<string, { counts: Set<number>; javaClass: string | undefined }> {
   const doc = JSON.parse(
     readFileSync(`${repoRoot}docs/api/bindings/scripted-decision-next.json`, "utf8")
   ) as { bindings: Element[] };
-  const out = new Map<string, Set<number>>();
+  const out = new Map<string, { counts: Set<number>; javaClass: string | undefined }>();
   const walk = (node: Element, prefix: string): void => {
     for (const element of node.elements ?? []) {
       if (element.elementType === "method") {
         const key = `${prefix}.${element.name}`;
-        const counts = out.get(key) ?? new Set<number>();
-        counts.add(element.parameters?.length ?? 0);
-        out.set(key, counts);
+        const entry = out.get(key) ?? { counts: new Set<number>(), javaClass: node.javaClass };
+        entry.counts.add(element.parameters?.length ?? 0);
+        out.set(key, entry);
       } else {
         walk(element, `${prefix}.${element.name}`);
       }
@@ -81,7 +82,7 @@ function callWith(fn: (...args: unknown[]) => unknown, args: unknown[]): unknown
 
 describe("arity provenance", () => {
   const basis = loadBehaviour(given).__rhinoLocalArityBasis as Record<string, Basis>;
-  const introspected = introspectedCounts();
+  const table = introspected();
 
   it("names exactly the two measured methods", () => {
     expect(
@@ -94,8 +95,14 @@ describe("arity provenance", () => {
 
   it("takes every assumed range and class from AIC's introspection", () => {
     for (const [path, b] of Object.entries(basis)) {
+      expect(["measured", "assumed"], path).toContain(b.provenance);
       if (b.provenance === "assumed") {
-        expect(introspected.has(path), path).toBe(true);
+        expect(table.has(path), path).toBe(true);
+      }
+      // A measured method AIC's introspection also lists must agree with it;
+      // existingSession's class is known only from the measured refusal.
+      if (table.has(path)) {
+        expect(b.java, path).toBe(table.get(path)!.javaClass);
       }
     }
   });
@@ -114,7 +121,7 @@ describe("arity provenance", () => {
       const sandbox = loadBehaviour(given);
       const fn = resolve(sandbox, path)!;
       expect(fn, path).toBeTypeOf("function");
-      const accepted = introspected.get(path);
+      const accepted = table.get(path)?.counts;
       const method = path.substring(path.lastIndexOf(".") + 1);
       for (let count = 0; count <= 12; count += 1) {
         const ok = path.startsWith("logger.")
