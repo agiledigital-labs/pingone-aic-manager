@@ -27,12 +27,65 @@
 
   logger.info("POC onUpdate run " + runId + " " + id + " mode " + mode);
 
+  // The transaction id string only. Never read or store `context` itself.
+  function txid() {
+    try {
+      return String(context.transactionId.transactionId.value);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function edgeBits(edge) {
+    if (!edge || typeof edge !== "object") return null;
+    var rp = edge._refProperties || null;
+    var rpKeys = [];
+    if (rp) {
+      for (var k in rp) {
+        if (Object.prototype.hasOwnProperty.call(rp, k)) rpKeys.push(k);
+      }
+    }
+    rpKeys.sort();
+    return {
+      hasRef: typeof edge._ref === "string",
+      refPropKeys: rpKeys,
+      status: rp && Object.prototype.hasOwnProperty.call(rp, "status") ? rp.status : null,
+    };
+  }
+
+  function shapeRel(v) {
+    if (v === null || typeof v === "undefined") return { kind: "null" };
+    if (Array.isArray(v)) {
+      return { kind: "array", n: v.length, first: v.length ? edgeBits(v[0]) : null };
+    }
+    if (typeof v === "object") return { kind: "object", edge: edgeBits(v) };
+    return { kind: typeof v };
+  }
+
+  // Which relationship fields this run actually saw on object / oldObject.
+  function snap(rec) {
+    if (!rec) return null;
+    var names = ["children", "gchildren", "parent", "gparent", "peers", "peerOf", "owner", "owned"];
+    var rels = {};
+    var keys = [];
+    var k;
+    for (k in rec) {
+      if (Object.prototype.hasOwnProperty.call(rec, k)) keys.push(k);
+    }
+    keys.sort();
+    for (var i = 0; i < names.length; i++) {
+      if (Object.prototype.hasOwnProperty.call(rec, names[i])) rels[names[i]] = shapeRel(rec[names[i]]);
+    }
+    return { keys: keys, rels: rels };
+  }
+
   function sink(kind, extra) {
     var rec = {
       kind: kind,
       parent: id,
       runId: runId,
       oldRev: oldObject ? String(oldObject._rev) : null,
+      txid: txid(),
       at: Date.now(),
     };
     for (var k in extra) {
@@ -120,8 +173,9 @@
   }
 
   function children() {
-    // `rel` picks the pair: "children" (repo.ds-mapped) or "gchildren" (generic).
-    var rel = object.rel === "gchildren" ? "gchildren" : "children";
+    // `rel` names the has-many this run derives from. "children" is the
+    // repo.ds-mapped pair; the others are generic.
+    var rel = object.rel || "children";
     var res = openidm.query(String(resourceName) + "/" + rel, { _queryFilter: "true" }, [
       "_ref",
       "_refProperties/status",
@@ -140,10 +194,17 @@
   }
 
   if (object.trace) {
+    var seen = null;
+    try {
+      seen = JSON.stringify({ object: snap(object), old: snap(oldObject) });
+    } catch (e) {
+      seen = "snap-failed";
+    }
     sink("onUpdate", {
       inboxLen: (object.inbox || []).length,
       ops: request && request.patchOperations ? JSON.stringify(request.patchOperations) : null,
       oldCount: oldObject && oldObject.derived ? oldObject.derived.count : null,
+      note: seen,
     });
   }
 

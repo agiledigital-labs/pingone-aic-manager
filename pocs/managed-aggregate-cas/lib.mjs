@@ -131,6 +131,10 @@ export async function sinksFor(parentId) {
   return queryAll(SINK, `parent eq "${parentId}"`);
 }
 
+export async function sinksForChild(childId) {
+  return queryAll(SINK, `child eq "${childId}"`);
+}
+
 export async function deleteAll(type) {
   const ids = (await queryAll(type, "true", "_id")).map((r) => r._id);
   for (let i = 0; i < ids.length; i += 20) {
