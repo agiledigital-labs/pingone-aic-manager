@@ -105,7 +105,7 @@ describe("writes that sync nothing", () => {
 
 describe("sync configuration", () => {
   it("refuses a malformed config/sync", () => {
-    const build = (sync: unknown) => () => new IdmConfig({ managed: { objects: [widget] }, sync: sync as ConfigInput["sync"] });
+    const build = (sync: unknown) => () => new IdmConfig({ managed: { objects: [widget] }, sync: sync as NonNullable<ConfigInput["sync"]> });
     expect(build({})).toThrow(/sync.mappings must be an array/);
     expect(build({ mappings: [{ name: "x" }] })).toThrow(/sync.mappings\[0\] needs a nonempty string name and source/);
     expect(build({ mappings: [null] })).toThrow(/sync.mappings\[0\] must be a plain object/);
