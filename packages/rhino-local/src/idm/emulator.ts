@@ -10,6 +10,7 @@ import { endpoint } from "./endpoints.ts";
 import { escapeError, IdmError, invalidInput, missing } from "./errors.ts";
 import { ManagedStore, type Operation, type Reply } from "./managed.ts";
 import { Evidence } from "./provenance.ts";
+import { RuntimeScripts, type RuntimeScriptProvider } from "./runtime-scripts.ts";
 import { Scripts } from "./scripts.ts";
 import type { Document, PolicyEvaluator, RestRequest, RestResult } from "./types.ts";
 
@@ -25,19 +26,30 @@ export class IdmEmulator {
   private readonly scripts: Scripts;
   private readonly managed: ManagedStore;
 
-  constructor(config: IdmConfig, runner: RhinoRunner, options: { policy?: PolicyEvaluator; properties?: Record<string, JsonValue> } = {}) {
+  private readonly runtimeScripts: RuntimeScriptProvider | undefined;
+
+  /**
+   * `runtimeScripts` supplies IDM's own runtime scripts (a hook's `file`, a
+   * `require(id)`): a directory named by IDM's relative paths, or a loader
+   * `(scriptPath) => string | undefined`. One it does not supply is the harness
+   * fault `idm-runtime-script/<path>`.
+   */
+  constructor(config: IdmConfig, runner: RhinoRunner, options: { policy?: PolicyEvaluator; properties?: Record<string, JsonValue>; runtimeScripts?: RuntimeScriptProvider } = {}) {
     this.config = config;
     this.runner = runner;
     this.policy = options.policy;
     this.properties = structuredClone(options.properties ?? {});
+    this.runtimeScripts = options.runtimeScripts;
     this.records = new Map();
-    this.scripts = new Scripts(runner, this.evidence, (call, context) => this.chain.run(context, () => this.host(call)), this.properties);
+    this.scripts = new Scripts(runner, this.evidence, (call, context) => this.chain.run(context, () => this.host(call)), this.properties,
+      new RuntimeScripts(options.runtimeScripts));
     this.managed = new ManagedStore(this.records, this.scripts, this.evidence, this.policy);
   }
 
   /** Shares frozen config and runner; copies all records, including nested JSON values. */
   fork(): IdmEmulator {
-    const fork = new IdmEmulator(this.config, this.runner, { ...(this.policy ? { policy: this.policy } : {}), properties: this.properties });
+    const fork = new IdmEmulator(this.config, this.runner, { ...(this.policy ? { policy: this.policy } : {}), properties: this.properties,
+      ...(this.runtimeScripts === undefined ? {} : { runtimeScripts: this.runtimeScripts }) });
     for (const [key, value] of this.records) fork.records.set(key, structuredClone(value));
     fork.managed.inheritCookies(this.managed);
     fork.managed.inheritMaterialized(this.managed);
@@ -197,6 +209,8 @@ export class IdmEmulator {
   }
 
   private async host(call: HostCall): Promise<JsonValue> {
+    // The engine's module load, not a CREST call (sent only by idmRequire jobs).
+    if (call.method === "require") return this.scripts.require(call.args);
     try {
       validateDeclarations(this.config, this.evidence);
       const args = call.args;

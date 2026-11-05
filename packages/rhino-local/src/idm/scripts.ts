@@ -4,6 +4,7 @@ import type { HostCall, JsonValue, JobResponse } from "../protocol.ts";
 import { isDocument, own, replaceDocument, setOwn } from "./document.ts";
 import { missing, scriptError } from "./errors.ts";
 import type { Evidence } from "./provenance.ts";
+import { modulePath, type RuntimeScripts } from "./runtime-scripts.ts";
 import type { Document, Hook, ManagedType, Script } from "./types.ts";
 
 export type Invocation = {
@@ -19,30 +20,37 @@ export class Scripts {
   private readonly runner: RhinoRunner;
   private readonly evidence: Evidence;
   private readonly environmentProperties: Record<string, JsonValue>;
+  private readonly runtime: RuntimeScripts;
   private readonly onCall: (call: HostCall, context: Document) => ReturnType<NonNullable<EvalOptions["onCall"]>>;
   constructor(
     runner: RhinoRunner,
     evidence: Evidence,
     onCall: (call: HostCall, context: Document) => ReturnType<NonNullable<EvalOptions["onCall"]>>,
     properties: Record<string, JsonValue>,
+    runtime: RuntimeScripts,
   ) {
     this.runner = runner;
+    this.runtime = runtime;
     this.evidence = evidence;
     this.onCall = onCall;
     this.environmentProperties = properties;
   }
 
   async evaluate(script: Script, bindings: Document, context: string, bindingAliases?: Record<string, string>): Promise<JobResponse> {
-    if (script.file !== undefined) missing(this.evidence, `script file reference: ${script.file}`);
     if (script.type !== "text/javascript") missing(this.evidence, `script type: ${script.type}`);
-    if (script.source === undefined) missing(this.evidence, "script without inline source");
+    if (script.file !== undefined && script.source !== undefined) missing(this.evidence, `script declaring both source and file: ${script.file}`);
+    // A `file` names one of IDM's own runtime scripts (AIC has no customer script directory).
+    const source = script.file === undefined ? script.source :
+      await this.runtime.source(script.file, `${context} file reference`, this.evidence);
+    if (source === undefined) missing(this.evidence, "script without inline source");
+    if (script.file !== undefined) this.evidence.assumed("a file-referenced script gets the bindings an inline script in the same place gets");
     this.evidence.measured("scripts execute on the IDM engine with resource-name binding");
     this.evidence.measured("request uses a CREST method request wrapper");
     this.evidence.assumed("Java long values use JavaScript number precision");
     const response = await this.runner.eval({
       ...(bindingAliases ? { bindingAliases } : {}),
       properties: this.environmentProperties, internalValues: true,
-      engine: "idm", source: script.source, sourceName: context,
+      engine: "idm", source, sourceName: script.file ?? context, idmRequire: true,
       bindings: { ...script.globals, ...bindings }, resourceNameBindings: ["resourceName"], reportMissing: true, crestBindings: true,
     }, { onCall: this.evidence.bind((call) => this.onCall(call, isDocument(bindings.context) ? bindings.context : {})) });
     for (const measurement of response.measured ?? []) this.evidence.measured(measurement, "docs/api/24-idm-script-runtime.md");
@@ -53,6 +61,22 @@ export class Scripts {
     if (absent) missing(this.evidence, absent.behavior);
     if (response.outcome !== "ok") scriptError(response, context, this.evidence);
     return response;
+  }
+
+  /**
+   * Answers the engine's `require(id)` host call with the module's IDM path
+   * and source from the runtime-script provider, or the fault naming it.
+   */
+  async require(args: readonly JsonValue[]): Promise<JsonValue> {
+    const id = args[0];
+    if (typeof id !== "string" || args.length !== 1) missing(this.evidence, "require host call without one string id");
+    this.evidence.assumed("require(id) loads <id>.js under the script root; IDM 9.0.0 bytecode, not measured on AIC");
+    this.evidence.assumed("a required module runs once per script invocation, sees the caller's bindings and keeps its top-level vars; IDM 9.0.0 bytecode, not measured on AIC");
+    const path = modulePath(id);
+    if (["lib/lodash.js", "lib/handlebars.js", "lib/validator.js"].includes(path)) {
+      this.evidence.assumed("engine-preloaded lib/lodash, lib/handlebars and lib/validator run per invocation here; IDM shares one exports object across invocations");
+    }
+    return { path, source: await this.runtime.source(path, `require(${JSON.stringify(id)})`, this.evidence) };
   }
 
   async hook(type: ManagedType, hook: Hook, invocation: Invocation): Promise<void> {

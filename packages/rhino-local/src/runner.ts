@@ -691,6 +691,7 @@ export class RhinoRunner {
     if (job.reportMissing !== undefined) payload.reportMissing = job.reportMissing;
     if (job.internalValues !== undefined) payload.internalValues = job.internalValues;
     if (job.crestBindings !== undefined) payload.crestBindings = job.crestBindings;
+    if (job.idmRequire !== undefined) payload.idmRequire = job.idmRequire;
     if (job.sourceName !== undefined) {
       payload.sourceName = job.sourceName;
     }
