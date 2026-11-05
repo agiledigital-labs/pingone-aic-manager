@@ -15,6 +15,13 @@ wrong.
   and the counter guard stops the loop. `onUpdate`'s nested patch races the
   in-flight attempt, commits a gap state (`counter` 1001, `derived.count` 0),
   and the outer attempt retries into the right final state. See RESULTS.
+- **E13** (2026-11-05, `node experiments.mjs E13`, 17 s, plus one identity pair
+  via `aic logs tx`). Endpoint `openidm.patch` matches E1. The activity `userId`
+  / `runAs` match a direct REST `PATCH`. The script patch has no access event of
+  its own.
+- **E18** (2026-11-05, `node experiments.mjs E18`, 11 s). Create and append
+  succeeded at 10, 100, 1000 and 5000 entries. No cap was hit. Concurrent append
+  latency climbs sharply by 5000 (p50 4017 ms for N = 10).
 
 ## Surprises
 

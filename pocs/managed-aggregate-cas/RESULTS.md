@@ -346,3 +346,63 @@ The caller's response already shows the counter the nested patch wrote.
 - Not measured: the unguarded loop (left bounded on purpose), self-patch under
   concurrent callers, and a nested patch that writes a field the outer fold does
   not recompute.
+
+## E13 — the same appends through a custom endpoint
+
+`POST /openidm/endpoint/pocagg?_action=append` runs
+`openidm.patch(parent, null, add /inbox/-)`. The endpoint config `PUT` returned
+`201`. Fold mode, trace on, `postUpdate` creating one sink per run — the same
+parent setup as E1.
+
+| N   | HTTP     | p50 / p90 / max ms | entries | all present | `derived` consistent | `onUpdate` runs | `postUpdate` runs | requests retried | max runs / request | retry saw same base |
+| --- | -------- | ------------------ | ------- | ----------- | -------------------- | --------------- | ----------------- | ---------------- | ------------------ | ------------------- |
+| 10  | 10 × 200 | 556 / 662 / 662    | 10      | yes         | yes                  | 46              | 10                | 8                | 9                  | 0                   |
+| 10  | 10 × 200 | 331 / 418 / 418    | 10      | yes         | yes                  | 55              | 10                | 9                | 10                 | 0                   |
+| 10  | 10 × 200 | 320 / 448 / 448    | 10      | yes         | yes                  | 54              | 10                | 9                | 10                 | 0                   |
+| 50  | 50 × 200 | 2831 / 4124 / 4250 | 50      | yes         | yes                  | 755             | 50                | 47               | 37                 | 0                   |
+| 50  | 50 × 200 | 2908 / 4345 / 4470 | 50      | yes         | yes                  | 807             | 50                | 49               | 37                 | 0                   |
+| 50  | 50 × 200 | 2892 / 4261 / 4377 | 50      | yes         | yes                  | 743             | 50                | 47               | 35                 | 0                   |
+
+- Same outcome as E1: no lost append, no 412, no 5xx, `derived` consistent,
+  `postUpdate` once per commit, `onUpdate` re-run on every retry, and no retry
+  saw the same base. A script `openidm.patch` with a null revision is the same
+  compare-and-swap as the REST `PATCH`.
+- Latency sits inside E1's spread (E1's N = 50 p50 was 3281–6225 ms, with
+  667–836 `onUpdate` runs). The endpoint does not add a visible cost on top of
+  the sink writes the trace makes.
+- Caller identity, one uncontended pair fetched with `aic logs tx` over
+  `idm-activity` and `idm-access`: the endpoint call and a direct REST `PATCH`
+  recorded the same single `userId`, and the same `runAs` on both the parent
+  `PATCH` and the `postUpdate` sink `CREATE`. `userId` equalled `runAs` on the
+  activity events. The access event is the outer call (`POST` 200 for the
+  endpoint, `PATCH` 200 for REST, 28 ms and 29 ms). The script's `openidm.patch`
+  has no access event of its own.
+
+## E18 — array size
+
+One parent per size, created already holding that many `entries` (each entry an
+id, a number, and a 40-character note). Then five sequential `add /inbox/-` and
+ten concurrent ones. Fold mode, trace off. The runner stops at the first create
+that is not 200 or 201; none failed.
+
+| entries at create | entries JSON bytes | create ms | sequential p50 / p90 / max | concurrent 10 p50 / p90 / max | final entries | `derived` consistent |
+| ----------------- | ------------------ | --------- | -------------------------- | ----------------------------- | ------------- | -------------------- |
+| 10                | 721                | 142       | 39 / 188 / 188             | 391 / 430 / 430               | 25            | yes                  |
+| 100               | 7381               | 40        | 43 / 45 / 45               | 160 / 228 / 228               | 115           | yes                  |
+| 1000              | 74791              | 90        | 89 / 99 / 99               | 792 / 1131 / 1131             | 1015          | yes                  |
+| 5000              | 378391             | 256       | 315 / 395 / 395            | 4017 / 5028 / 5028            | 5015          | yes                  |
+
+Every patch was 200. Final count is the seeded array plus 15 appends, and
+`derived` matches a recomputation, at every size.
+
+- Create cost stays small through 5000 entries (~370 KB of array JSON, 256 ms).
+  No size cap was hit. Appending through the fold gets expensive with the array
+  the hook rewrites: a sequential append's p50 goes from about 40 ms at 100
+  entries to 89 ms at 1000 and 315 ms at 5000, and ten concurrent appends at
+  5000 land at p50 4017 ms, all still 200.
+- The size-10 concurrent row is slower than size 100. One run per size, so that
+  inversion is noise; the climb from 1000 to 5000 is not.
+- A sensible cap for an inbox-fold parent is well under 1000 folded entries if
+  writers are concurrent, and the audit-trail pattern (E19) has the same shape
+  once `audit` itself is the large array. Not measured: the size at which create
+  or patch fails, and a parent whose array is larger than 5000.
