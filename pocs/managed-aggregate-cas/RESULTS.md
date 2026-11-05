@@ -174,3 +174,32 @@ parent's `_rev` (the link lives on the parent's entry), so a parent `PATCH` with
 `PATCH` the linked child's `value` 5 → 50: parent `onUpdate` did not run, its
 `_rev` did not move and `derived.sum` stayed 5, in both modes. Anything derived
 from another record is stale from the moment that record changes.
+
+## E10–E12 again, with relationship notification flags
+
+`NOTIFY=1`: `notifySelf: true` on the parent's relationship items, `notify:
+true` on the child's reverse property. `NOTIFY=2` swaps the ends, in case the
+flags were read the wrong way round. The parent has `trace` and `postMode:
+"sink"`, so both hooks' runs are counted. Each row is a single write, waited on
+for 4–8 s.
+
+| Write                                                       | default flags | `NOTIFY=1`              | `NOTIFY=2`              |
+| ----------------------------------------------------------- | ------------- | ----------------------- | ----------------------- |
+| child created with its reverse link set (child side)        | no hook       | no hook                 | no hook                 |
+| child `PATCH replace` of its reverse link                   | no hook       | no hook                 | —                       |
+| child `PATCH` of a plain field (`value`)                    | no hook       | no hook                 | no hook                 |
+| child deleted                                               | —             | `onUpdate` + `postUpdate` | —                     |
+| edge `PATCH <parent>/<rel>/<edgeId>` (`_refProperties`)     | no hook       | `onUpdate` + `postUpdate` | no hook               |
+| parent `PATCH add /<rel>/-`                                 | its own run   | its own run, no extra   | its own run, no extra   |
+
+Same in both storage modes. With `NOTIFY=1` the edge-triggered `onUpdate` saw
+the edge's new state (`active` 0 after the status went to `inactive`) and the
+child's current `value`, so a notification-driven run does derive correctly —
+but it runs only for writes made **through the parent's relationship
+sub-resource**, and for a deleted child. A link made from the child's side and
+a change to a child's own fields never reached the parent's hooks under either
+placement. The parent-side link add (E10) gets no second, post-persist run, so
+its `derived` stays one link behind with or without the flags.
+
+Not covered: notification of a has-many reverse, `notify` on a has-one
+forward, and whatever a console-created pair writes beyond these two flags.

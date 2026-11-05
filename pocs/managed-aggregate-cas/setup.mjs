@@ -130,6 +130,23 @@ function applySchema(o) {
     props.gparent = g;
     if (!o.schema.order.includes("gparent")) o.schema.order.push("gparent");
   }
+  setNotify(o);
+}
+
+// NOTIFY=1: the parent is notified when its relationship changes (notifySelf on
+// its end) and when a linked child changes (notify on the child's end).
+// Anything else removes both, so the toggle can be flipped back.
+// NOTIFY=2 swaps the ends (notify on the parent's items, notifySelf on the
+// child's), to rule out reading the two flags the wrong way round.
+function setNotify(o) {
+  const mode = process.env.NOTIFY;
+  const want = (end, key) => (mode === "1" && ((end === "parent" && key === "notifySelf") || (end === "child" && key === "notify"))) ||
+    (mode === "2" && ((end === "parent" && key === "notify") || (end === "child" && key === "notifySelf")));
+  for (const key of ["notify", "notifySelf"]) {
+    const apply = (prop, end) => (want(end, key) ? (prop[key] = true) : delete prop[key]);
+    if (o.name === PARENT) for (const k of ["children", "gchildren"]) apply(o.schema.properties[k].items, "parent");
+    if (o.name === CHILD) for (const k of ["parent", "gparent"]) apply(o.schema.properties[k], "child");
+  }
 }
 
 async function waitLive() {
@@ -229,4 +246,5 @@ async function teardown() {
 }
 
 const cmd = process.argv[2];
-await ({ install, hooks, schema: () => rmw(applySchema, "schema+hooks").then(waitLive), teardown, live: waitLive }[cmd] || (() => console.error("usage: install|hooks|teardown|live")))();
+await ({ install, hooks, schema: () => rmw(applySchema, "schema+hooks").then(waitLive),
+  notify: () => rmw(setNotify, `notify=${process.env.NOTIFY || "off"}`), teardown, live: waitLive }[cmd] || (() => console.error("usage: install|hooks|teardown|live")))();
