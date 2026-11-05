@@ -189,3 +189,32 @@ property that changes, naming `members`. `notify` on those types sits on
 put both flags on the node. E21 measures both placements. The object-level
 placement the brief named is measured as well, because that is not the shape the
 tenant uses.
+
+### Install
+
+`node setup.mjs preflight` on 2026-11-05: `managedEqualsBackup` true,
+`genericMappingEqualsRun1After` true, no POC types present.
+`genericMappingEqualsRun1Before` false, which is the two known orphans and
+nothing else.
+
+`node setup.mjs install` then printed (the `target tenant: sandbox` lines and
+Node's `NO_COLOR` warning omitted):
+
+```
+managed object alpha_poc_agg created; undo it from the TUI history overlay
+managed object alpha_poc_child created; undo it from the TUI history overlay
+managed object alpha_poc_sink created; undo it from the TUI history overlay
+round 1: present alpha_poc_agg,alpha_poc_child,alpha_poc_sink
+alpha_poc_agg.children already has matching mappings; checking for orphaned values
+mapping configuration verified; runtime storage mode is untested without links (run verify --probe later if appropriate)
+relationship alpha_poc_agg.children set; undo it from the TUI history overlay
+note: managed/alpha_poc_agg has no records to probe alpha_poc_agg.children through; wait a few seconds before writing through it — a write made before it is live is lost
+note: managed/alpha_poc_child has no records to probe alpha_poc_child.parent through; wait a few seconds before writing through it — a write made before it is live is lost
+relationship set left genericMapping equal to run1/repo.ds-after.json
+schema+hooks: confirmed (attempt 1)
+hooks live after 1 probe(s)
+```
+
+No `repo.ds` write. A direct parent `PATCH` and a direct child `PATCH` each ran
+`onUpdate` and `postUpdate` on that record. A parent link add did the same on
+the parent only.
