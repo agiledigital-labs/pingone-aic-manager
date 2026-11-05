@@ -4206,11 +4206,24 @@ function __rhinoLocalSeed(given) {
 
 function __rhinoLocalHarvest() {
   if (__rhinoLocal.faults.length > 0) {
+    // The wording answers for every fault, not only the first one named
+    // (round-3 P3-5): a case can hit a gap and a script defect together.
+    var distinct = __rhinoLocal.faults.filter(function (fault, index, all) {
+      return all.indexOf(fault) === index;
+    });
+    var defects = distinct.filter(function (fault) {
+      return fault.indexOf("script-defect/") === 0;
+    }).length;
+    var gaps = distinct.length - defects;
     throw new Error(
       "rhino-local harness fault " + __rhinoLocal.faults[0] +
-        (__rhinoLocal.faults[0].indexOf("script-defect/") === 0
+        (gaps === 0
           ? " (a script defect: AIC's behaviour here is measured and is not what the script means, so the run fails even though the script caught it)"
-          : " (the script caught this refusal, but the harness cannot say what AIC does there, so the run fails anyway)")
+          : defects === 0
+            ? " (the script caught this refusal, but the harness cannot say what AIC does there, so the run fails anyway)"
+            : " (and " + (distinct.length - 1) + " more: " + defects +
+              " script defect(s), where AIC's behaviour is measured and is not what the script means, and " + gaps +
+              " behaviour(s) the harness cannot say AIC's answer for; the run fails even though the script caught them)")
     );
   }
   var recordedOutcome = __rhinoLocal.outcome;

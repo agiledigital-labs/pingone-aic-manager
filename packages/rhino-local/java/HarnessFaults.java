@@ -45,13 +45,25 @@ final class HarnessFaults extends BaseFunction {
     }
     Map<String, Object> info = new LinkedHashMap<String, Object>();
     info.put("kind", "missing");
-    info.put(
-        "message",
-        "rhino-local harness fault " + causes.get(0)
-            + (causes.get(0).startsWith("script-defect/")
-                ? " (script defect: AIC's behaviour here is measured and is not what the script means;"
-                    + " this fails the run even if the script caught it)"
-                : " (not emulated: this fails the run even if the script caught it)"));
+    // The wording answers for every fault, not only the first one named
+    // (round-3 P3-5): a case can hit a gap and a script defect together.
+    int defects = 0;
+    for (String cause : causes) {
+      if (cause.startsWith("script-defect/")) defects += 1;
+    }
+    int gaps = causes.size() - defects;
+    String why;
+    if (gaps == 0) {
+      why = " (script defect: AIC's behaviour here is measured and is not what the script means;"
+          + " this fails the run even if the script caught it)";
+    } else if (defects == 0) {
+      why = " (not emulated: this fails the run even if the script caught it)";
+    } else {
+      why = " (and " + (causes.size() - 1) + " more: " + defects + " script defect(s), where AIC's"
+          + " behaviour is measured and is not what the script means, and " + gaps
+          + " behaviour(s) the harness does not emulate; this fails the run even if the script caught it)";
+    }
+    info.put("message", "rhino-local harness fault " + causes.get(0) + why);
     info.put("missing", causes);
     info.put("faults", held);
     response.put("emulation", info);
