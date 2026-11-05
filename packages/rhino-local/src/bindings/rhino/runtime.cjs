@@ -2266,182 +2266,33 @@ function __rhinoLocalOpenidmRecord(value, id, rev) {
   return record;
 }
 
-function __rhinoLocalReadField(record, pointer) {
-  var parts = __rhinoLocalCrestFilter.pointerParts(pointer);
-  var cur = record;
-  var i;
-  for (i = 0; i < parts.length; i += 1) {
-    if (cur === null || cur === undefined || typeof cur !== "object") {
-      return undefined;
-    }
-    if (!__rhinoLocalHas(cur, parts[i])) {
-      return undefined;
-    }
-    cur = cur[parts[i]];
-  }
-  return cur;
-}
-
-// Readings of a string comparison AIC might apply. AIC folds letter case and
-// spaces for some fields (docs/api/10: alpha_user eq on mail/userName) and
-// nothing measured the rest, while this lane has no per-field policy. So a
-// leaf whose answer changes under any reading is UNKNOWN, and a record whose
-// whole answer is unknown is a fault (round-3 P3-1). Same transforms as the
-// IDM emulator's (src/idm/filter.ts `variants`).
-var __rhinoLocalUnknown = { unknown: true };
-
-function __rhinoLocalAsciiLower(text) {
-  return text.replace(/[A-Z]/g, function (c) { return c.toLowerCase(); });
-}
-
-function __rhinoLocalToSpace(text) {
-  return text.replace(/[\t-\r\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, " ");
-}
-
-function __rhinoLocalTrim(text) {
-  return text.replace(/^ +| +$/g, "");
-}
-
-var __rhinoLocalCaseReadings = [
-  function (t) { return t; },
-  __rhinoLocalAsciiLower,
-  function (t) { return t.replace(/[a-z]/g, function (c) { return c.toUpperCase(); }); },
-  function (t) { return t.toLowerCase(); },
-  function (t) { return t.toUpperCase().toLowerCase(); },
-];
-
-var __rhinoLocalSpaceReadings = [
-  function (t) { return t; },
-  __rhinoLocalTrim,
-  function (t) { return __rhinoLocalTrim(t).replace(/ {2,}/g, " "); },
-  function (t) { return __rhinoLocalTrim(__rhinoLocalToSpace(t)); },
-  function (t) { return __rhinoLocalTrim(__rhinoLocalToSpace(t)).replace(/ {2,}/g, " "); },
-];
-
-function __rhinoLocalCompareText(left, op, right) {
-  if (op === "eq") {
-    return left === right;
-  }
-  if (op === "co") {
-    return left.indexOf(right) !== -1;
-  }
-  if (op === "sw") {
-    return left.indexOf(right) === 0;
-  }
-  return false;
-}
-
-function __rhinoLocalCompareOne(actual, op, expected) {
-  var left = actual === null || actual === undefined ? "" : String(actual);
-  var right = expected === null || expected === undefined ? "" : String(expected);
-  // AIC parses an escaped quote but never matches it: `sn eq "Twelve\" B"` is
-  // 200 with no rows against a record that holds it (docs/api/10, Query
-  // filter encoding). Same rule as the IDM emulator (src/idm/filter.ts).
-  if (op === "eq" && typeof expected === "string" && expected.indexOf('"') !== -1) {
-    return false;
-  }
-  var answer = __rhinoLocalCompareText(left, op, right);
-  var c;
-  var w;
-  for (c = 0; c < __rhinoLocalCaseReadings.length; c += 1) {
-    for (w = 0; w < __rhinoLocalSpaceReadings.length; w += 1) {
-      var fold = __rhinoLocalCaseReadings[c];
-      var space = __rhinoLocalSpaceReadings[w];
-      if (__rhinoLocalCompareText(fold(space(left)), op, fold(space(right))) !== answer) {
-        return __rhinoLocalUnknown;
-      }
-    }
-  }
-  return answer;
-}
-
-function __rhinoLocalCompareField(record, pointer, op, expected) {
-  var actual = __rhinoLocalReadField(record, pointer);
-  if (op === "pr") {
-    return actual !== undefined && actual !== null;
-  }
-  if (actual === undefined || actual === null) {
-    return false;
-  }
-  if (Array.isArray(actual)) {
-    var i;
-    var undecided = false;
-    for (i = 0; i < actual.length; i += 1) {
-      var one = __rhinoLocalCompareOne(actual[i], op, expected);
-      if (one === true) {
-        return true;
-      }
-      if (one === __rhinoLocalUnknown) {
-        undecided = true;
-      }
-    }
-    return undecided ? __rhinoLocalUnknown : false;
-  }
-  return __rhinoLocalCompareOne(actual, op, expected);
-}
-
-// The shared grammar's verdict, then the operators this matcher evaluates.
-// Runs before any row is read, as AIC parses before it reads.
+// The filter's grammar and evaluation are the shared ones
+// (crest-filter.cjs), which the IDM emulator runs too. This lane has no
+// per-field string policy, so any leaf whose answer moves under a case,
+// space or Unicode reading is unknown (round-3 P3-1), as is a type mismatch
+// nobody measured (round-4 P2-3). A record whose whole answer is unknown is a
+// fault. Runs before any row is read, as AIC parses before it reads.
 function __rhinoLocalParseFilter(filter) {
-  var parsed = __rhinoLocalCrestFilter.parse(filter);
-  if (parsed.error === "parse") {
+  var prepared = __rhinoLocalCrestFilter.prepare(filter, ["eq", "co", "sw"]);
+  if (prepared.error === "parse") {
     __rhinoLocalFilterError(filter);
   }
-  if (parsed.error) {
-    __rhinoLocalFilterUnsupported(filter, parsed.reason);
+  if (prepared.error === "ne") {
+    __rhinoLocalFilterUnsupported(filter, "AIC refuses ne; its script-side text is unmeasured");
   }
-  (function check(node) {
-    if (node.kind === "and" || node.kind === "or") {
-      check(node.left);
-      check(node.right);
-    } else if (node.kind === "not") {
-      check(node.inner);
-    } else if (node.kind === "cmp" && node.op !== "eq" && node.op !== "co" && node.op !== "sw") {
-      __rhinoLocalFilterUnsupported(filter,
-        node.op === "ne"
-          ? "AIC refuses ne; its script-side text is unmeasured"
-          : "operator " + node.op + " is not evaluated by the harness");
-    }
-  })(parsed.ast);
-  return parsed.ast;
+  if (prepared.error) {
+    __rhinoLocalFilterUnsupported(filter, prepared.reason);
+  }
+  return prepared.ast;
 }
 
-function __rhinoLocalEvalFilter(record, ast) {
-  if (ast.kind === "true") {
-    return true;
-  }
-  if (ast.kind === "false") {
-    return false;
-  }
-  // Kleene logic, so operand order cannot change a verdict.
-  if (ast.kind === "not") {
-    var inner = __rhinoLocalEvalFilter(record, ast.inner);
-    return inner === __rhinoLocalUnknown ? inner : !inner;
-  }
-  if (ast.kind === "and") {
-    var andLeft = __rhinoLocalEvalFilter(record, ast.left);
-    if (andLeft === false) {
-      return false;
-    }
-    var andRight = __rhinoLocalEvalFilter(record, ast.right);
-    return andRight === false ? false : andLeft === true ? andRight : andLeft;
-  }
-  if (ast.kind === "or") {
-    var orLeft = __rhinoLocalEvalFilter(record, ast.left);
-    if (orLeft === true) {
-      return true;
-    }
-    var orRight = __rhinoLocalEvalFilter(record, ast.right);
-    return orRight === true ? true : orLeft === false ? orRight : orLeft;
-  }
-  if (ast.kind === "pr") {
-    return __rhinoLocalCompareField(record, ast.field, "pr", null);
-  }
-  if (ast.kind === "cmp") {
-    return __rhinoLocalCompareField(record, ast.field, ast.op, ast.value);
-  }
-  return false;
-}
+var __rhinoLocalUndecidedWhy = {
+  "case": "turns on letter case",
+  space: "turns on leading, trailing or repeated spaces or non-U+0020 whitespace",
+  unicode: "turns on Unicode normalisation or characters RFC 4518 maps to nothing",
+  type: "compares different JSON types, or an object or null element, which nothing measured",
+  presence: "asks pr of an empty string or array, which nothing measured",
+};
 
 openidm.read = function (resourceName, _params, fields) {
   if (arguments.length < 1 || arguments.length > 3) {
@@ -2525,11 +2376,12 @@ openidm.query = function (resourceName, params, fields) {
   var result = [];
   var i;
   for (i = 0; i < rows.length; i += 1) {
-    var verdict = __rhinoLocalEvalFilter(rows[i], ast);
-    if (verdict === __rhinoLocalUnknown) {
+    var verdict = __rhinoLocalCrestFilter.evaluate(ast, rows[i], __rhinoLocalCrestFilter.unmeasuredStrings);
+    if (verdict !== true && verdict !== false) {
       __rhinoLocalFilterUnsupported(filter,
-        "whether record " + JSON.stringify(String(rows[i]._id)) +
-          " matches turns on letter case or spaces; AIC folds them for some fields and is unmeasured for the rest");
+        "whether record " + JSON.stringify(String(rows[i]._id)) + " matches: " +
+          verdict.unknown.op + " on " + verdict.unknown.field + " " +
+          __rhinoLocalUndecidedWhy[verdict.unknown.dimension]);
     }
     if (verdict === true) {
       __rhinoLocalBagAccess("query", collection + "/" + rows[i]._id, rows[i], fields, params);

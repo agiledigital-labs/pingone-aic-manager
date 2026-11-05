@@ -7,7 +7,7 @@ import type { JsonValue } from "../protocol.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
-import { type Dimension, type Operator, type StringPolicy, type StringRule, classifyFilter, fieldValue, matchesFilter } from "./filter.ts";
+import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldValue, matchesFilter } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Invocation, Scripts } from "./scripts.ts";
 import type { Document, ManagedType, PolicyEvaluator, RestRequest } from "./types.ts";
@@ -463,7 +463,7 @@ const ORDERING = ["gt", "ge", "lt", "le"];
 function stringPolicy(type: string, evidence: Evidence): StringPolicy {
   const name = (field: string) => field.replace(/^\//, "");
   return {
-    rules(_field, op): Record<Dimension, StringRule> {
+    rules(_field, op): Record<RuleDimension, StringRule> {
       if (type !== "alpha_user" || op === "co" || op === "sw") return { case: "unknown", space: "unknown" };
       return { case: "fold", space: "fold" };
     },
@@ -491,8 +491,14 @@ function stringPolicy(type: string, evidence: Evidence): StringPolicy {
       // against folded letters and non-ASCII collation were not.
       evidence.assumed("string ordering compares UTF-16 code units after the case and space rules");
     },
-    unknown(field, op: Operator, dimension): never {
-      const what = dimension === "case" ? (ORDERING.includes(op) ? "order" : "match") + " turns on letter case" : "match turns on leading, trailing or repeated spaces or non-U+0020 whitespace";
+    unknown(field, op, dimension): never {
+      const what = {
+        case: `${ORDERING.includes(op as Operator) ? "order" : "match"} turns on letter case`,
+        space: "match turns on leading, trailing or repeated spaces or non-U+0020 whitespace",
+        unicode: "match turns on Unicode normalisation or characters RFC 4518 maps to nothing",
+        type: "match compares different JSON types, or an object or null element, which nothing measured",
+        presence: "answer for an empty string or array is unmeasured",
+      }[dimension];
       return missing(evidence, `query ${op} whose ${what}: ${type} ${field}`);
     },
   };

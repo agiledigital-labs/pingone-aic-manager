@@ -327,7 +327,299 @@ var __rhinoLocalCrestFilter = (function () {
     return parts;
   }
 
-  return { parse: parse, pointerParts: pointerParts };
+  // ---------------------------------------------------------------------
+  // Evaluation, shared by both lanes (E19 fix round 4). Each answer is true,
+  // false, or { unknown: { field, op, dimension } }: a leaf whose answer
+  // turns on something nobody measured. `and`, `or` and `!` are Kleene, so a
+  // record's verdict is unknown only when the unknown leaf decides it, and
+  // the lane then refuses the whole query. A lane supplies only its string
+  // rule (`strings`), because only the IDM emulator knows which fields were
+  // measured to fold case and spaces.
+  var SAFE_INTEGER = 9007199254740991;
+  var ORDERING = { gt: true, ge: true, lt: true, le: true };
+
+  function unknown(field, op, dimension) {
+    return { unknown: { field: field, op: op, dimension: dimension } };
+  }
+
+  function isArray(value) {
+    return Object.prototype.toString.call(value) === "[object Array]";
+  }
+
+  function readField(record, path) {
+    var parts = pointerParts(path);
+    var current = record;
+    var i;
+    for (i = 0; i < parts.length; i += 1) {
+      if (current === null || current === undefined || typeof current !== "object" ||
+          !Object.prototype.hasOwnProperty.call(current, parts[i])) {
+        return undefined;
+      }
+      current = current[parts[i]];
+    }
+    return current;
+  }
+
+  function isSafeInteger(value) {
+    return typeof value === "number" && Math.floor(value) === value && Math.abs(value) <= SAFE_INTEGER;
+  }
+
+  // The one measured type mismatch (docs/api/10, Query filter encoding):
+  // `frIndexedInteger1 eq "7"` matches an integer field holding 7. Only the
+  // canonical spelling of a safe integer is that case; "07", "7.0", " 7",
+  // "1e1" and anything past 2^53 - 1 are not, and stay unknown.
+  function canonicalInteger(text) {
+    var number = Number(text);
+    return isSafeInteger(number) && String(number) === text;
+  }
+
+  function compareText(left, op, right) {
+    switch (op) {
+      case "eq": return left === right;
+      case "co": return left.indexOf(right) !== -1;
+      case "sw": return left.indexOf(right) === 0;
+      case "gt": return left > right;
+      case "ge": return left >= right;
+      case "lt": return left < right;
+      case "le": return left <= right;
+    }
+    return false;
+  }
+
+  // One scalar against the literal. Same JSON type is decided; a different
+  // one is decided only in the measured case above. `co`/`sw` on a number or
+  // boolean and ordering on a boolean are unmeasured too.
+  function compareScalar(actual, op, expected, field, strings) {
+    if (actual === null || typeof actual === "object") {
+      return unknown(field, op, "type");
+    }
+    var actualType = typeof actual;
+    var expectedType = typeof expected;
+    if (actualType === "string" && expectedType === "string") {
+      return strings(field, op, actual, expected);
+    }
+    if (actualType === expectedType) {
+      if (op === "eq") {
+        return actual === expected;
+      }
+      if (actualType === "number" && ORDERING[op]) {
+        return compareText(actual, op, expected);
+      }
+      return unknown(field, op, "type");
+    }
+    if (op === "eq" && actualType === "number" && expectedType === "string" &&
+        isSafeInteger(actual) && canonicalInteger(expected)) {
+      return actual === Number(expected);
+    }
+    return unknown(field, op, "type");
+  }
+
+  function compareField(record, field, op, expected, strings) {
+    var value = readField(record, field);
+    if (op === "pr") {
+      if (value === undefined || value === null) {
+        return false;
+      }
+      // Whether DS stores an empty string or array as present is unmeasured.
+      if (value === "" || (isArray(value) && value.length === 0)) {
+        return unknown(field, op, "presence");
+      }
+      return true;
+    }
+    if (value === undefined || value === null) {
+      return false;
+    }
+    // AIC parses an escaped quote but never matches it: `sn eq "Twelve\" B"`
+    // is 200 with no rows against a record that holds it (docs/api/10). Only
+    // this bare positive `eq` is decided; `prepare` refuses every other place
+    // a `"` can sit, where "the leaf is false" and "the query matches
+    // nothing" give different answers.
+    if (op === "eq" && typeof expected === "string" && expected.indexOf('"') !== -1) {
+      return false;
+    }
+    if (!isArray(value)) {
+      return compareScalar(value, op, expected, field, strings);
+    }
+    // Any-match: a definite element match wins; otherwise any undecided
+    // element leaves the field undecided.
+    var undecided = null;
+    var i;
+    for (i = 0; i < value.length; i += 1) {
+      var one = compareScalar(value[i], op, expected, field, strings);
+      if (one === true) {
+        return true;
+      }
+      if (one !== false && undecided === null) {
+        undecided = one;
+      }
+    }
+    return undecided === null ? false : undecided;
+  }
+
+  function evaluate(ast, record, strings) {
+    switch (ast.kind) {
+      case "true": return true;
+      case "false": return false;
+      case "not": {
+        var inner = evaluate(ast.inner, record, strings);
+        return inner === true ? false : inner === false ? true : inner;
+      }
+      case "and": {
+        var andLeft = evaluate(ast.left, record, strings);
+        if (andLeft === false) {
+          return false;
+        }
+        var andRight = evaluate(ast.right, record, strings);
+        return andRight === false ? false : andLeft === true ? andRight : andLeft;
+      }
+      case "or": {
+        var orLeft = evaluate(ast.left, record, strings);
+        if (orLeft === true) {
+          return true;
+        }
+        var orRight = evaluate(ast.right, record, strings);
+        return orRight === true ? true : orLeft === false ? orRight : orLeft;
+      }
+      case "pr": return compareField(record, ast.field, "pr", null, strings);
+      case "cmp": return compareField(record, ast.field, ast.op, ast.value, strings);
+    }
+    return false;
+  }
+
+  // parse, then what a lane can evaluate. `evaluated` lists the operators the
+  // lane evaluates; `ne` is reported apart because its REST refusal is
+  // measured. Also refuses an escaped quote anywhere but a bare positive `eq`
+  // reached through `and` alone (round-4 P3-2): whether AIC's measured "no
+  // rows" is that leaf being false or the whole query matching nothing is
+  // unknown, and only on that path do the two agree.
+  function prepare(input, evaluated) {
+    var parsed = parse(input);
+    if (parsed.error) {
+      return parsed;
+    }
+    var reason = null;
+    var ne = false;
+    (function check(node, positive) {
+      if (node.kind === "and") {
+        check(node.left, positive);
+        check(node.right, positive);
+      } else if (node.kind === "or") {
+        check(node.left, false);
+        check(node.right, false);
+      } else if (node.kind === "not") {
+        check(node.inner, false);
+      } else if (node.kind === "cmp") {
+        if (node.op === "ne") {
+          ne = true;
+        } else if (evaluated.indexOf(node.op) === -1 && reason === null) {
+          reason = "operator " + node.op + " is not evaluated by the harness";
+        }
+        if (typeof node.value === "string" && node.value.indexOf('"') !== -1 && reason === null &&
+            !(node.op === "eq" && positive)) {
+          reason = "an escaped quote outside a bare eq reached through and alone; AIC's answer there is unmeasured";
+        }
+      }
+    })(parsed.ast, true);
+    if (reason !== null) {
+      return { error: "unsupported", reason: reason };
+    }
+    return ne ? { error: "ne", reason: "AIC refuses ne" } : parsed;
+  }
+
+  // Readings of a string comparison AIC might apply. AIC folds letter case
+  // and edge spaces for some fields (docs/api/10, alpha_user) and nothing
+  // measured the rest. Index 0 of each list is the identity.
+  function asciiLower(text) {
+    return text.replace(/[A-Z]/g, function (c) { return c.toLowerCase(); });
+  }
+  function asciiUpper(text) {
+    return text.replace(/[a-z]/g, function (c) { return c.toUpperCase(); });
+  }
+  function trim(text) {
+    return text.replace(/^ +| +$/g, "");
+  }
+  function collapse(text) {
+    return trim(text).replace(/ {2,}/g, " ");
+  }
+  // RFC 4518 2.2 maps these to SPACE before insignificant-space handling.
+  function toSpace(text) {
+    return text.replace(/[\t-\r\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, " ");
+  }
+  // RFC 4518 2.2 maps these to nothing: soft hyphens, joiners, variation
+  // selectors, zero-width space, other controls and format characters (BMP
+  // only; the astral ones are not read).
+  var MAPPED_TO_NOTHING = /[\u0000-\u0008\u000e-\u001f\u007f-\u0084\u0086-\u009f\u00ad\u034f\u06dd\u070f\u1806\u180b-\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2063\u206a-\u206f\ufe00-\ufe0f\ufeff\ufff9-\ufffc]/g;
+  function mapToNothing(text) {
+    return text.replace(MAPPED_TO_NOTHING, "");
+  }
+  // RFC 4518 2.3: NFKC. Rhino 1.7.14 and V8 both have String.prototype.normalize.
+  function nfkc(text) {
+    return text.normalize("NFKC");
+  }
+  function identity(text) {
+    return text;
+  }
+
+  var transforms = {
+    identity: identity,
+    asciiLower: asciiLower,
+    asciiUpper: asciiUpper,
+    fullLower: function (t) { return t.toLowerCase(); },
+    foldLower: function (t) { return t.toUpperCase().toLowerCase(); },
+    trim: trim,
+    collapse: collapse,
+    wideTrim: function (t) { return trim(toSpace(t)); },
+    wideCollapse: function (t) { return collapse(toSpace(t)); },
+    mapToNothing: mapToNothing,
+    nfkc: nfkc,
+    nfkcMapped: function (t) { return nfkc(mapToNothing(t)); },
+  };
+  var unicodeReadings = [identity, mapToNothing, nfkc, transforms.nfkcMapped];
+
+  // The answer under the first case and space reading (the lane's applied
+  // rule), and the dimension of the first reading that disagrees, if any.
+  function readStrings(candidate, op, expected, cases, spaces) {
+    function run(c, s, u) {
+      return compareText(c(s(u(candidate))), op, c(s(u(expected))));
+    }
+    var answer = run(cases[0], spaces[0], identity);
+    var c, s, u;
+    for (u = 0; u < unicodeReadings.length; u += 1) {
+      for (c = 0; c < cases.length; c += 1) {
+        for (s = 0; s < spaces.length; s += 1) {
+          if (run(cases[c], spaces[s], unicodeReadings[u]) === answer) {
+            continue;
+          }
+          var dimension = run(cases[c], spaces[0], identity) !== answer ? "case"
+            : run(cases[c], spaces[s], identity) !== answer ? "space" : "unicode";
+          return { answer: answer, dimension: dimension };
+        }
+      }
+    }
+    return { answer: answer, dimension: null };
+  }
+
+  var everyCase = [identity, asciiLower, transforms.fullLower, asciiUpper, transforms.foldLower];
+  var everySpace = [identity, trim, collapse, transforms.wideTrim, transforms.wideCollapse];
+
+  // The rule for a lane with no per-field policy: a leaf whose answer moves
+  // under any reading is unknown.
+  function unmeasuredStrings(field, op, candidate, expected) {
+    var read = readStrings(candidate, op, expected, everyCase, everySpace);
+    return read.dimension === null ? read.answer : unknown(field, op, read.dimension);
+  }
+
+  return {
+    parse: parse,
+    pointerParts: pointerParts,
+    prepare: prepare,
+    evaluate: evaluate,
+    readField: readField,
+    readStrings: readStrings,
+    unmeasuredStrings: unmeasuredStrings,
+    compareText: compareText,
+    transforms: transforms,
+  };
 })();
 
 // CommonJS in Node; the same text runs as a global-scope script in Rhino.
