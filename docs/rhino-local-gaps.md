@@ -189,6 +189,7 @@ assumption in `docs/api/`:
 | `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
 | `json-value-constructor`                                                          | `new JsonValue(...)`                                                                                                  |
 | `seed-cache-manager`, `seed-binding`                                              | seeding a binding the harness cannot seed                                                                            |
+| `idm-runtime-script/<path>`, `idm-runtime-script-path`                            | IDM emulator: one of IDM's own runtime scripts (a hook's `file`, or `require(id)` as `<id>.js`) that the project's `runtimeScripts` provider did not supply, or a name that is not a canonical path under the script root (E15; README "IDM runtime scripts") |
 
 **Argument counts, by provenance.** A call with an argument count AIC has no
 overload for fails on AIC as Rhino's catchable
@@ -266,8 +267,9 @@ catchable there too. The ids still reach the tally: a
 generated stub reports `not-mocked/<behaviour>`, and a script-tester refusal
 reports its own id. The IDM emulator's `_queryFilter` refusals, the
 record-level ones included (since E19 round 5), report
-`openidm-query-filter`; its other `missing` sites, and the journey emulator's,
-have no ids yet. The tally lists them under `unidentified`, keyed by cause text, and
+`openidm-query-filter`, and an IDM runtime script the provider did not supply
+reports `idm-runtime-script/<path>` (E15); its other `missing` sites, and the
+journey emulator's, have no ids yet. The tally lists them under `unidentified`, keyed by cause text, and
 giving them ids is a per-site change in `AmHostBridge.java` and
 `src/journey/engine.ts`.
 
