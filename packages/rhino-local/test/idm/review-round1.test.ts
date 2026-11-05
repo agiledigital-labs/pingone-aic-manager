@@ -26,7 +26,7 @@ describe("review round 1 core", () => {
       yes: { type: "boolean", default: true }, list: { type: "array", default: ["a", "b"] },
       empty: { type: "array", default: [] },
     }, required: ["count"] } };
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [type] } }), runner, {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [type] } }), runner, {
       policy: ({ object }) => { seen.push(structuredClone(object)); },
     });
     const first = await create(emu, {});
@@ -88,7 +88,7 @@ describe("review round 1 core", () => {
     let entered!: () => void;
     const waiting = new Promise<void>((resolve) => { entered = resolve; });
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [
       { ...simple, onDelete: js("openidm.create('managed/gate','gate',{});") },
       { name: "gate", schema: { properties: {} } },
     ] } }), runner, { policy: async ({ schema }) => {
@@ -137,7 +137,7 @@ describe("review round 1 caller provenance", () => {
   });
 
   it("#9 properties belong to the emulator, forks inherit them, absent names carry provenance", async () => {
-    const config = new IdmConfig({ managed: { objects: [] }, endpoints: {
+    const config = new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {
       example: js("({present:identityServer.getProperty('esv.feature','off'),absent:identityServer.getProperty('esv.absent',{fallback:true})});"),
     } });
     const properties = { "esv.feature": "on" };

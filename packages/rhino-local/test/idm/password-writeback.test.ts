@@ -11,7 +11,7 @@ const path = `managed/alpha_user/${id}`;
 const prefix = "{PBKDF2-HMAC-SHA256}";
 const source = "orchestrator p25, 2026-11-02; docs/api/10-managed-objects.md";
 const behavior = "alpha_user encoded password survives update, password PATCH and cross-record create verbatim";
-function make() { return new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string" }, sn: { type: "string" } } } }] } }), runner); }
+function make() { return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string" }, sn: { type: "string" } } } }] } }), runner); }
 const setup = `openidm.create('managed/alpha_user','${id}',{password:'submitted-secret',sn:'before'});var first=openidm.read('${path}').password;`;
 it.each([
   ["update", `var object=openidm.read('${path}');object.sn='after';openidm.update('${path}',null,object);`, path],

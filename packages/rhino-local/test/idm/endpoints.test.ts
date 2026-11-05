@@ -9,7 +9,7 @@ beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); }, 30_000);
 
 function endpoint(source: string): IdmEmulator {
-  return new IdmEmulator(new IdmConfig({ managed: { objects: [simple] }, endpoints: { example: js(source) } }), runner);
+  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [simple] }, endpoints: { example: js(source) } }), runner);
 }
 
 describe("endpoint request bindings", () => {
@@ -39,7 +39,7 @@ describe("endpoint request bindings", () => {
   });
 
   it("binds fields, extra parameters and inherited root HTTP context in nested calls", async () => {
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [simple] }, endpoints: {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [simple] }, endpoints: {
       outer: js("openidm.action('endpoint/inner','go',{},{q:'inner'});"),
       inner: js("({path:context.http.path,method:context.http.method,root:context.http.parameters.q,extra:request.additionalParameters.q});"),
     } }), runner);
@@ -48,7 +48,7 @@ describe("endpoint request bindings", () => {
   });
 
   it("supports nested scripted config and globals", async () => {
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {
       example: { type: "scripted", script: { ...js("({answer:configValue});"), globals: { configValue: 42 } } },
     } }), runner);
     expect(await send(emu, { method: "GET", path: "endpoint/example" })).toEqual({ answer: 42, _id: "" });

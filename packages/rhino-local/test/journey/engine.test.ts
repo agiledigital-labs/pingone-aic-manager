@@ -39,7 +39,7 @@ function make(
       scripts: { script: script(source) },
     }),
     runner,
-    new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+    new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
     options,
   );
 }
@@ -179,7 +179,7 @@ it("script openidm creates through the shared IDM core and executes hooks", asyn
     },
   });
   const idm = new IdmEmulator(
-    new IdmConfig({
+    new IdmConfig({ sync: { mappings: [] },
       managed: {
         objects: [
           {
@@ -224,7 +224,7 @@ function graph(
       ),
     }),
     runner,
-    new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+    new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
     options,
   );
 }
@@ -394,7 +394,7 @@ it("unsupported node requires an explicit declared outcome, validated when the t
     nodes: { InventedNode: { one: {} } },
     scripts: {},
   };
-  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
+  const idm = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner);
   expect(await request(new JourneyEmulator(new JourneyConfig(input), runner, idm))).toMatchObject({
     status: 501,
     emulation: { missing: ["node type: InventedNode"] },
@@ -452,7 +452,7 @@ it.each([
     nodes: { [type]: { node: {} } },
     scripts: {},
   });
-  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
+  const idm = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner);
   expect(
     () => new JourneyEmulator(config, runner, idm, { declaredOutcomes: { node: "outcome" } }),
   ).toThrow("declared outcome for emulated node");
@@ -469,7 +469,7 @@ it("declared ValidatedUsernameNode outcome is judged by its measured vocabulary"
     nodes: { ValidatedUsernameNode: { node: {} } },
     scripts: {},
   });
-  const idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner);
+  const idm = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner);
   // In the vocabulary but unwired: empty 500. Outside it: 401.
   expect(
     await request(
@@ -566,7 +566,7 @@ it.each(["noSession", "transactionalOnly", "maximumSessionTime"])(
         new JourneyEmulator(
           config,
           runner,
-          new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+          new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
         ),
       ),
     ).toMatchObject({ status: 501, emulation: { missing: [`tree ${flag}`] } });
@@ -606,7 +606,7 @@ it("the existing AIC driveJourney consumes this engine without a parallel callba
   const emu = new JourneyEmulator(
     config,
     runner,
-    new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+    new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
   );
   const provider = {
     describe: async () => ({ name: "local", baseUrl: "https://tenant.example.com" }),
@@ -703,7 +703,7 @@ it("script cannot catch a missing host failure and perform a managed write", asy
     },
   });
   const idm = new IdmEmulator(
-    new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: {} } }] } }),
+    new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: {} } }] } }),
     runner,
   );
   expect(await request(new JourneyEmulator(config, runner, idm))).toMatchObject({ status: 501 });
@@ -759,7 +759,7 @@ it("unsupported legacy evaluator fails before execution", async () => {
       new JourneyEmulator(
         config,
         runner,
-        new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+        new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
       ),
     ),
   ).toMatchObject({ status: 501, emulation: { missing: ["script evaluatorVersion: 1.0"] } });
@@ -781,7 +781,7 @@ it("tenant IDM conflicts stay catchable while the journey retains their host evi
     },
   });
   const idm = new IdmEmulator(
-    new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: {} } }] } }),
+    new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: {} } }] } }),
     runner,
   );
   const result = await request(new JourneyEmulator(config, runner, idm));
@@ -860,7 +860,7 @@ function chain(sources: string[], options: JourneyOptions = {}) {
       scripts: Object.fromEntries(ids.map((id, index) => [id, script(sources[index] ?? "")])),
     }),
     runner,
-    new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+    new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
     options,
   );
 }
@@ -973,7 +973,7 @@ it("assumptions survive callback round trips into the final result", async () =>
       scripts: {},
     }),
     runner,
-    new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+    new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
     { declaredOutcomes: { risk: "allow" } },
   );
   const call = (body: JsonValue) =>
@@ -1432,7 +1432,7 @@ it("an undefined openidm.create content field is sent as null, so a schema defau
   // docs/api/12 (2026-11-04): omitted gets the default; null and undefined are both refused
   // NOT_NULL. The policy evaluator stands in for the tenant's NOT_NULL guard.
   const idm = new IdmEmulator(
-    new IdmConfig({
+    new IdmConfig({ sync: { mappings: [] },
       managed: {
         objects: [
           {

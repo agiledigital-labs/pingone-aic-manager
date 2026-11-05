@@ -6,7 +6,7 @@ import { js } from "./fixtures.ts";
 let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
-function make() { return new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: {} } }] }, endpoints: { actual: js("({ok:true});") }, complete: { managed: true, endpoints: true } }), runner); }
+function make() { return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: {} } }] }, endpoints: { actual: js("({ok:true});") }, complete: { managed: true, endpoints: true } }), runner); }
 it.each(["managed/notConfigured/abc", "endpoint/notConfigured", "config/endpoint/notConfigured"])("A2 #5 authoritative namespace returns null for %s", async (path) => {
   const emu = make();
   const result = await runner.eval({ engine: "idm", source: `openidm.read(${JSON.stringify(path)})` }, { onCall: emu.onCall });

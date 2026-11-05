@@ -48,7 +48,7 @@ describe("repository and REST seam", () => {
   });
 
   it("forks share immutable config but isolate nested state and subsequent writes", async () => {
-    const input = { managed: { objects: [structuredClone(simple)] } };
+    const input = { sync: { mappings: [] }, managed: { objects: [structuredClone(simple)] } };
     const config = new IdmConfig(input);
     input.managed.objects.length = 0;
     const emu = new IdmEmulator(config, runner);
@@ -70,7 +70,7 @@ describe("nested hooks and host entry point", () => {
       { name: "branch", schema: { properties: { text: { type: "string" } } }, onCreate: js("object.text = openidm.create('managed/leaf', 'l', {}).text + '-branch';") },
       { name: "leaf", schema: { properties: { text: { type: "string" } } }, onCreate: js("object.text = 'leaf';") },
     ];
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: types } }), runner);
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: types } }), runner);
     const result = await send(emu, { method: "POST", path: "managed/root", query: { _action: "create" }, body: { _id: "r" } }, 201);
     expect(result.text).toBe("leaf-branch-root");
     expect((await send(emu, { method: "GET", path: "managed/branch/b" })).text).toBe("leaf-branch");
@@ -102,7 +102,7 @@ describe("nested hooks and host entry point", () => {
 
   it("script create id is separate from hook content and endpoint resourcePath", async () => {
     const type = { ...simple, onCreate: js("object.flag = typeof object._id === 'undefined';") };
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [type] }, endpoints: {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [type] }, endpoints: {
       example: js("({path:request.resourcePath,id:request.newResourceId,content:request.content});"),
     } }), runner);
     const response = await runner.eval({ engine: "idm", source: `({
@@ -174,7 +174,7 @@ describe("provenance and explicit boundaries", () => {
 
   it("concurrent request provenance does not leak between jobs", async () => {
     expectEmulationFailure("named _queryId: unmeasured");
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [simple] }, endpoints: {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [simple] }, endpoints: {
       missing: js("try { openidm.query('managed/widget',{_queryId:'unmeasured'}); } catch(e) {} ({});"),
       normal: js("({ok:true});"),
     } }), runner);
@@ -190,7 +190,7 @@ describe("provenance and explicit boundaries", () => {
   it.each(["require('lib/lodash')", "openidm.hash('x','SHA-256')"])("caught unsupported %s still reports missing", async (call) => {
     if (call.startsWith("require")) expectHarnessFault("idm-runtime-script/lib/lodash.js");
     else expectEmulationFailure(/openidm\.hash/);
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {
       example: js(`try { ${call}; } catch(e) {} ({});`),
     } }), runner);
     const result = await emu.request({ method: "GET", path: "endpoint/example" });
@@ -201,7 +201,7 @@ describe("provenance and explicit boundaries", () => {
   });
 
   it("policy seam can reject with CREST detail without storing an object", async () => {
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [simple] } }), runner, { policy: () => {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [simple] } }), runner, { policy: () => {
       throw new HostCallError({ class: "org.forgerock.json.resource.ForbiddenException", code: 403,
         message: "Policy validation failed", detail: { failedPolicyRequirements: [{ property: "text" }] } });
     } });

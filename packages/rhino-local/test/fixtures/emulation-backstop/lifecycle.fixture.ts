@@ -3,7 +3,7 @@ import { RhinoRunner } from "../../../src/runner.ts";
 import { IdmConfig, IdmEmulator } from "../../../src/idm/index.ts";
 const runner = await RhinoRunner.spawn();
 afterAll(() => runner.close());
-const config = new IdmConfig({ managed: { objects: [{ name: "w", schema: { properties: {} } }] } });
+const config = new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "w", schema: { properties: {} } }] } });
 const emu = new IdmEmulator(config, runner);
 const scenario = process.env.R5_CASE;
 const missing = () => emu.request({ method: "GET", path: "managed/w", query: { _queryId: `${scenario} missing` } });
