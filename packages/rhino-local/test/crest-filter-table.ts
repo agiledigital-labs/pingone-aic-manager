@@ -386,6 +386,9 @@ export const collectionTable: CollectionRow[] = [
   alpha("frIndexedInteger1 eq 7.50000000000000001", illegal("7.5", "/frIndexedInteger1"), illegal("7.5", "/frIndexedInteger1"), "CREST parses it to the Double 7.5: the 400 for 7.5"),
   alpha('frIndexedInteger1 eq "7.0000000000000001"', "fault", missingOn("alpha_user", "eq", "type", "frIndexedInteger1"),
     "quoted, integral only after a Double parse IDM was not measured to make"),
+  alpha('frIndexedInteger1 eq "7.5000000000000001"', "fault", missingOn("alpha_user", "eq", "type", "frIndexedInteger1"),
+    "quoted, not the shortest spelling of its Double: whether IDM echoes it or 7.5 is unmeasured"),
+  alpha('frIndexedInteger1 eq "7.50"', illegal("7.50", "/frIndexedInteger1"), illegal("7.50", "/frIndexedInteger1"), "quoted, trailing zeros aside it is 7.5: the 400, echoed as written"),
   alpha("frIndexedInteger1 eq 7.5 and frIndexedInteger1 eq 7", illegal("7.5", "/frIndexedInteger1"), illegal("7.5", "/frIndexedInteger1"), "the 400 is query-level, whatever the other leaf"),
   // Stored values outside the decided forms (review pf-02 P2-1): each is refused by its own guard.
   offForm({ telephoneNumber: "(02) 9999-9999" }, 'telephoneNumber eq "0299999999"', "eq", "rule", "telephoneNumber", "stored parentheses were not probed"),
