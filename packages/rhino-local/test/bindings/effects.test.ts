@@ -281,7 +281,8 @@ describe("openidm", () => {
 
   // AIC parses the filter before it reads a row, so a malformed one is its
   // catchable parse error even against an empty collection: the reviewer's
-  // false pass was "name eq" over [] returning an empty result.
+  // false pass was "name eq" over [] returning an empty result. Which inputs
+  // count as malformed is the shared table's call (test/crest-filter-table.ts).
   it.each([
     ["an empty collection", []],
     ["a populated one", [{ _id: "alice", name: "alice" }]],
@@ -294,7 +295,7 @@ describe("openidm", () => {
       "name eq [1]",
       'name eq "open',
       "(name pr",
-      "name pr trailing",
+      "name pr)",
       "name",
     ]) {
       const sandbox = loadBehaviour({ managed: { "managed/alpha_user": rows } });

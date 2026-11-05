@@ -2162,10 +2162,11 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
   }
 }
 
-// A filter CREST cannot parse. AIC's script text is measured for "name eq"
-// (docs/api/12); the REST lane measures the same 400 for the word form `not`,
-// `eq null`, `in` and array values (docs/api/10), and the IDM emulator's
-// parser (src/idm/filter.ts) rejects the same grammar. Catchable, as on AIC.
+// A filter AIC rejects with its parse error: crest-filter.cjs answers
+// "parse" only for inputs measured to be rejected (the script text is measured
+// for "name eq", docs/api/12; the REST 400 for `not`, `eq null`, `in` and
+// array values, docs/api/10) or rejected by any grammar CREST could have.
+// Catchable, as on AIC.
 function __rhinoLocalFilterError(filter) {
   throw __rhinoLocalEmulated(
     "rhino-local: openidm.query: The value '" + String(filter) +
@@ -2173,12 +2174,15 @@ function __rhinoLocalFilterError(filter) {
   );
 }
 
-// A filter that parses on AIC but uses an operator this parser does not
-// evaluate (gt/ge/lt/le), or one AIC refuses with a script text never
-// measured (ne). The harness cannot answer it, so it is a fault.
-function __rhinoLocalFilterUnsupported(filter) {
+// Anything else the harness cannot decide: a filter the shared grammar cannot
+// read (AIC may parse it), an operator this matcher does not evaluate
+// (gt/ge/lt/le and any other word), and `ne`, which AIC refuses over REST with
+// a measured 400 but whose script-side text is unmeasured. A fault, never a
+// catchable error, so a script's catch branch cannot pass on a guess.
+function __rhinoLocalFilterUnsupported(filter, reason) {
   throw __rhinoLocalFault("openidm-query-filter",
-    "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
+    "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter) +
+      " (" + reason + ")"
   );
 }
 
@@ -2210,25 +2214,8 @@ function __rhinoLocalOpenidmRecord(value, id, rev) {
   return record;
 }
 
-function __rhinoLocalIsIdentChar(ch) {
-  return (
-    (ch >= "a" && ch <= "z") ||
-    (ch >= "A" && ch <= "Z") ||
-    (ch >= "0" && ch <= "9") ||
-    ch === "_" ||
-    ch === "-"
-  );
-}
-
 function __rhinoLocalReadField(record, pointer) {
-  var path = String(pointer);
-  if (path.charAt(0) === "/") {
-    path = path.substring(1);
-  }
-  if (path === "") {
-    return record;
-  }
-  var parts = path.split("/");
+  var parts = __rhinoLocalCrestFilter.pointerParts(pointer);
   var cur = record;
   var i;
   for (i = 0; i < parts.length; i += 1) {
@@ -2278,246 +2265,30 @@ function __rhinoLocalCompareField(record, pointer, op, expected) {
   return __rhinoLocalCompareOne(actual, op, expected);
 }
 
+// The shared grammar's verdict, then the operators this matcher evaluates.
+// Runs before any row is read, as AIC parses before it reads.
 function __rhinoLocalParseFilter(filter) {
-  var src = String(filter);
-  var i = 0;
-
-  function skipWs() {
-    while (i < src.length) {
-      var ch = src.charAt(i);
-      if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") {
-        break;
-      }
-      i += 1;
-    }
-  }
-
-  function peek() {
-    skipWs();
-    if (i >= src.length) {
-      return "";
-    }
-    return src.charAt(i);
-  }
-
-  function readIdent() {
-    skipWs();
-    var start = i;
-    while (i < src.length && __rhinoLocalIsIdentChar(src.charAt(i))) {
-      i += 1;
-    }
-    if (start === i) {
-      return "";
-    }
-    return src.substring(start, i);
-  }
-
-  function readField() {
-    skipWs();
-    var start = i;
-    if (i < src.length && src.charAt(i) === "/") {
-      i += 1;
-    }
-    if (!__rhinoLocalIsIdentChar(peekCharRaw())) {
-      i = start;
-      return null;
-    }
-    while (i < src.length) {
-      var ch = src.charAt(i);
-      if (__rhinoLocalIsIdentChar(ch) || ch === "/") {
-        i += 1;
-      } else {
-        break;
-      }
-    }
-    var field = src.substring(start, i);
-    if (field === "" || field === "/") {
-      i = start;
-      return null;
-    }
-    return field;
-  }
-
-  function peekCharRaw() {
-    if (i >= src.length) {
-      return "";
-    }
-    return src.charAt(i);
-  }
-
-  function readString() {
-    skipWs();
-    if (src.charAt(i) !== '"') {
-      return null;
-    }
-    i += 1;
-    var out = "";
-    while (i < src.length) {
-      var ch = src.charAt(i);
-      if (ch === "\\") {
-        i += 1;
-        if (i >= src.length) {
-          __rhinoLocalFilterError(filter);
-        }
-        out += src.charAt(i);
-        i += 1;
-      } else if (ch === '"') {
-        i += 1;
-        return out;
-      } else {
-        out += ch;
-        i += 1;
-      }
-    }
-    __rhinoLocalFilterError(filter);
-    return null;
-  }
-
-  function readNumber() {
-    skipWs();
-    var start = i;
-    if (src.charAt(i) === "-") {
-      i += 1;
-    }
-    var digits = 0;
-    while (i < src.length && src.charAt(i) >= "0" && src.charAt(i) <= "9") {
-      digits += 1;
-      i += 1;
-    }
-    if (src.charAt(i) === ".") {
-      i += 1;
-      while (i < src.length && src.charAt(i) >= "0" && src.charAt(i) <= "9") {
-        digits += 1;
-        i += 1;
-      }
-    }
-    if (digits === 0) {
-      i = start;
-      return null;
-    }
-    return Number(src.substring(start, i));
-  }
-
-  function parseValue() {
-    skipWs();
-    var str = readString();
-    if (str !== null) {
-      return str;
-    }
-    var ident = "";
-    var saved = i;
-    ident = readIdent();
-    if (ident === "true") {
-      return true;
-    }
-    if (ident === "false") {
-      return false;
-    }
-    if (ident === "null") {
-      // No null literal: `eq null` is AIC's parse error (docs/api/10).
-      __rhinoLocalFilterError(filter);
-    }
-    i = saved;
-    var num = readNumber();
-    if (num !== null && !isNaN(num)) {
-      return num;
-    }
-    __rhinoLocalFilterError(filter);
-    return null;
-  }
-
-  function parsePrimary() {
-    skipWs();
-    if (peek() === "(") {
-      i += 1;
-      var inner = parseOr();
-      skipWs();
-      if (peek() !== ")") {
-        __rhinoLocalFilterError(filter);
-      }
-      i += 1;
-      return inner;
-    }
-    var saved = i;
-    var ident = readIdent();
-    if (ident === "true") {
-      return { kind: "true" };
-    }
-    if (ident === "false") {
-      return { kind: "false" };
-    }
-    i = saved;
-    var field = readField();
-    if (field === null) {
-      __rhinoLocalFilterError(filter);
-    }
-    skipWs();
-    var op = readIdent();
-    if (op === "pr") {
-      return { kind: "pr", field: field };
-    }
-    if (op === "eq" || op === "co" || op === "sw") {
-      return { kind: "cmp", field: field, op: op, value: parseValue() };
-    }
-    // A missing operator, and `in` (whose array operand CREST cannot parse),
-    // are parse errors; any other word is an operator CREST accepts.
-    if (op === "" || op === "in") {
-      __rhinoLocalFilterError(filter);
-    }
-    __rhinoLocalFilterUnsupported(filter);
-    return null;
-  }
-
-  function parseNot() {
-    skipWs();
-    if (peek() === "!") {
-      i += 1;
-      return { kind: "not", inner: parseNot() };
-    }
-    var saved = i;
-    var ident = readIdent();
-    if (ident === "not") {
-      // AIC rejects the word form (docs/api/10, verified 2026-07-03).
-      __rhinoLocalFilterError(filter);
-    }
-    i = saved;
-    return parsePrimary();
-  }
-
-  function parseAnd() {
-    var left = parseNot();
-    while (true) {
-      var saved = i;
-      var ident = readIdent();
-      if (ident !== "and") {
-        i = saved;
-        break;
-      }
-      left = { kind: "and", left: left, right: parseNot() };
-    }
-    return left;
-  }
-
-  function parseOr() {
-    var left = parseAnd();
-    while (true) {
-      var saved = i;
-      var ident = readIdent();
-      if (ident !== "or") {
-        i = saved;
-        break;
-      }
-      left = { kind: "or", left: left, right: parseAnd() };
-    }
-    return left;
-  }
-
-  var ast = parseOr();
-  skipWs();
-  if (i !== src.length) {
+  var parsed = __rhinoLocalCrestFilter.parse(filter);
+  if (parsed.error === "parse") {
     __rhinoLocalFilterError(filter);
   }
-  return ast;
+  if (parsed.error) {
+    __rhinoLocalFilterUnsupported(filter, parsed.reason);
+  }
+  (function check(node) {
+    if (node.kind === "and" || node.kind === "or") {
+      check(node.left);
+      check(node.right);
+    } else if (node.kind === "not") {
+      check(node.inner);
+    } else if (node.kind === "cmp" && node.op !== "eq" && node.op !== "co" && node.op !== "sw") {
+      __rhinoLocalFilterUnsupported(filter,
+        node.op === "ne"
+          ? "AIC refuses ne; its script-side text is unmeasured"
+          : "operator " + node.op + " is not evaluated by the harness");
+    }
+  })(parsed.ast);
+  return parsed.ast;
 }
 
 function __rhinoLocalEvalFilter(record, ast) {
@@ -2629,10 +2400,7 @@ openidm.query = function (resourceName, params, fields) {
   }
   // Parsed before the rows, as AIC parses it before reading any: a malformed
   // filter fails on an empty collection too.
-  var ast =
-    !filter || filter === "true" ? { kind: "true" }
-      : filter === "false" ? { kind: "false" }
-      : __rhinoLocalParseFilter(filter);
+  var ast = __rhinoLocalParseFilter(filter);
   var result = [];
   var i;
   for (i = 0; i < rows.length; i += 1) {

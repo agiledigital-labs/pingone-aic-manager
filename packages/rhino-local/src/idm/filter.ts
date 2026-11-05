@@ -1,18 +1,23 @@
-/** CREST recursive-descent parser. Grammar stays separate from repository selection. */
+/** The IDM emulator's view of the shared CREST grammar (src/bindings/rhino/crest-filter.cjs). */
+import { createRequire } from "node:module";
 import type { JsonValue } from "../protocol.ts";
-import { IdmError } from "./errors.ts";
+import { bindingsCrestFilterPath } from "../paths.ts";
 
 export type Operator = "eq" | "co" | "sw" | "gt" | "ge" | "lt" | "le";
 type Filter = { op: "literal"; value: boolean } |
   { op: "and" | "or"; left: Filter; right: Filter } |
   { op: "!"; child: Filter } | { op: "pr"; field: string } |
   { op: Operator; field: string; value: string | number | boolean };
-type Token = { text: string; literal?: string | number | boolean };
-const invalid = () => new IdmError(400, "A value could not be parsed as a valid query filter");
 
-export function pointerParts(path: string): string[] {
-  return path.replace(/^\//, "").split("/").map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
-}
+type Ast = { kind: "true" | "false" } | { kind: "and" | "or"; left: Ast; right: Ast } | { kind: "not"; inner: Ast } |
+  { kind: "pr"; field: string } | { kind: "cmp"; field: string; op: string; value: string | number | boolean };
+type Parsed = { ast: Ast; error?: undefined } | { error: "parse" | "unsupported"; reason: string };
+const grammar = createRequire(import.meta.url)(bindingsCrestFilterPath) as {
+  parse(input: unknown): Parsed;
+  pointerParts(path: string): string[];
+};
+
+export const pointerParts = (path: string): string[] => grammar.pointerParts(path);
 
 export function fieldValue(value: JsonValue, path: string): JsonValue | undefined {
   let current: JsonValue | undefined = value;
@@ -23,65 +28,36 @@ export function fieldValue(value: JsonValue, path: string): JsonValue | undefine
   return current;
 }
 
-export function parseFilter(input: string): Filter {
-  const tokens: Token[] = [];
-  const re = /\s*("(?:[^"\\]|\\.)*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|[!()]|[^\s!()"]+)/gy;
-  let offset = 0;
-  while (offset < input.length) {
-    if (input.slice(offset).trim() === "") break;
-    re.lastIndex = offset;
-    const match = re.exec(input);
-    if (!match?.[1]) throw invalid();
-    const text = match[1];
-    offset = re.lastIndex;
-    if (text.startsWith('"')) {
-      try { tokens.push({ text, literal: JSON.parse(text) as string }); }
-      catch { throw invalid(); }
-    } else if (/^-?\d/.test(text)) {
-      const number = Number(text);
-      if (!Number.isFinite(number)) throw invalid();
-      tokens.push({ text, literal: number });
-    } else if (text === "true" || text === "false") tokens.push({ text, literal: text === "true" });
-    else tokens.push({ text });
-  }
-  let index = 0;
-  const take = (text: string) => {
-    if (tokens[index]?.text !== text) return false;
-    index++;
-    return true;
-  };
-  const primary = (): Filter => {
-    if (take("!")) return { op: "!", child: primary() };
-    if (take("(")) {
-      const result = or();
-      if (!take(")")) throw invalid();
-      return result;
+const evaluated: readonly string[] = ["eq", "co", "sw", "gt", "ge", "lt", "le"];
+
+/**
+ * The shared grammar's verdict: a filter this emulator evaluates; `parse`, AIC's measured (or
+ * structurally certain) parse error; `ne`, a word operator AIC parses and then refuses; or
+ * `unsupported`, anything the emulator cannot decide, which the caller must refuse as missing.
+ */
+export type Classified = { filter: Filter } | { error: "parse" } | { error: "ne" } | { error: "unsupported"; reason: string };
+
+export function classifyFilter(input: unknown): Classified {
+  const parsed = grammar.parse(input);
+  if (parsed.error === "parse") return { error: "parse" };
+  if (parsed.error) return { error: "unsupported", reason: parsed.reason };
+  let ne = false;
+  let unknown: string | undefined;
+  const convert = (node: Ast): Filter => {
+    switch (node.kind) {
+      case "true": case "false": return { op: "literal", value: node.kind === "true" };
+      case "and": case "or": return { op: node.kind, left: convert(node.left), right: convert(node.right) };
+      case "not": return { op: "!", child: convert(node.inner) };
+      case "pr": return { op: "pr", field: node.field };
+      case "cmp":
+        if (node.op === "ne") ne = true;
+        else if (!evaluated.includes(node.op)) unknown ??= `operator ${node.op} is not evaluated by the emulator`;
+        return { op: node.op as Operator, field: node.field, value: node.value };
     }
-    const field = tokens[index++];
-    if (!field) throw invalid();
-    if (typeof field.literal === "boolean") return { op: "literal", value: field.literal };
-    if (field.literal !== undefined || !/^(?:\/)?[^\s[\]{}]+$/.test(field.text)) throw invalid();
-    const op = tokens[index++]?.text;
-    if (op === "pr") return { op, field: field.text };
-    if (op === "ne") throw new IdmError(400, "unrecognized or unsupported filter operator 'ne'");
-    if (!op || !["eq", "co", "sw", "gt", "ge", "lt", "le"].includes(op)) throw invalid();
-    const value = tokens[index++]?.literal;
-    if (value === undefined) throw invalid();
-    return { op: op as Operator, field: field.text, value };
   };
-  const and = (): Filter => {
-    let result = primary();
-    while (take("and")) result = { op: "and", left: result, right: primary() };
-    return result;
-  };
-  const or = (): Filter => {
-    let result = and();
-    while (take("or")) result = { op: "or", left: result, right: and() };
-    return result;
-  };
-  const result = or();
-  if (index !== tokens.length) throw invalid();
-  return result;
+  const filter = convert(parsed.ast);
+  if (unknown) return { error: "unsupported", reason: unknown };
+  return ne ? { error: "ne" } : { filter };
 }
 
 /**

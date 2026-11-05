@@ -3,6 +3,8 @@ import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { create, emulator, send } from "./fixtures.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
+import { filterTable, records } from "../crest-filter-table.ts";
 import { type Document, IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
 
 let runner: RhinoRunner;
@@ -39,17 +41,40 @@ describe("queryFilter grammar", () => {
     expect(((response.value as Document).result as Document[]).map((row) => row._id)).toEqual(ids);
   });
 
-  it.each([
-    "", "not (text pr)", "text in [1]", "text eq [1]", "text eq null", "text eq", "(",
-    "text pr trailing", "count eq 1.2.3", 'text eq "unterminated', "count eq 1 and", "true false",
-  ])("unparseable %s has the tenant's 400 message", async (filter) => {
-    const body = await send(seeded, { method: "GET", path: "managed/widget", query: { _queryFilter: filter } }, 400);
-    expect(body).toEqual({ code: 400, reason: "Bad Request", message: "A value could not be parsed as a valid query filter" });
-  });
-
-  it("rejects ne with the measured operator-specific diagnostic", async () => {
-    const body = await send(seeded, { method: "GET", path: "managed/widget", query: { _queryFilter: 'text ne "x"' } }, 400);
-    expect(body.message).toBe("unrecognized or unsupported filter operator 'ne'");
+  // The shared table (test/crest-filter-table.ts), which the script tester runs too.
+  describe("shared table", () => {
+    const table = filterTable.map((row) => [JSON.stringify(row.filter), row] as const);
+    const fresh = async () => {
+      const emu = emulator(runner);
+      for (const { _id, ...record } of records) await create(emu, structuredClone(record) as Document, _id);
+      return emu;
+    };
+    it.each(table)("REST %s", async (_name, row) => {
+      if (row.rest === "fault") expectHarnessFault("openidm-query-filter");
+      const result = await (await fresh()).request({ method: "GET", path: "managed/widget", query: { _queryFilter: row.filter as string } });
+      const body = result.body as Document;
+      if (row.rest === "parse") expect(body, row.why).toEqual({ code: 400, reason: "Bad Request", message: "A value could not be parsed as a valid query filter" });
+      else if (row.rest === "ne") expect(body.message, row.why).toBe("unrecognized or unsupported filter operator 'ne'");
+      else if (row.rest === "fault") {
+        expect(result.status, row.why).toBe(501);
+        expect(result.emulation?.faults?.map((fault) => fault.id)).toEqual(["openidm-query-filter"]);
+      } else expect(((body.result ?? []) as Document[]).map((r) => r._id), row.why).toEqual(row.rest);
+    });
+    it.each(table)("script %s", async (_name, row) => {
+      if (row.script === "fault") expectHarnessFault("openidm-query-filter");
+      const source = "try { JSON.stringify(openidm.query('managed/widget',{_queryFilter:filter,_fields:['_id']}).result.map(function (r) { return r._id; })); } catch (e) { 'caught:' + e.message; }";
+      const response = await runner.eval({ engine: "idm", source, bindings: { filter: row.filter as never } }, { onCall: (await fresh()).onCall });
+      if (row.script === "fault") {
+        expect(response.outcome, row.why).toBe("runtime_error");
+        // The JVM's IDM response rebuilds `emulation` from causes, so the id is in the cause here;
+        // the host callback's audit entry carries it as a fault (fault-tally.test.ts).
+        expect(response.emulation?.missing?.[0], row.why).toMatch(/^openidm-query-filter: /);
+        return;
+      }
+      expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+      if (row.script === "parse") expect(String(response.value), row.why).toContain("A value could not be parsed as a valid query filter");
+      else expect(response.value, row.why).toBe(JSON.stringify(row.script));
+    });
   });
 
   it("no selector and multiple selectors have the measured 400", async () => {

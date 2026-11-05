@@ -60,9 +60,15 @@ export function invalidInput(message: string): IdmError {
   return new IdmError(400, message, undefined, undefined, false, "invalid request shape uses local 400 status and diagnostic");
 }
 
-export function missing(evidence: Evidence, behavior: string): never {
-  evidence.add("missing", behavior);
-  throw new EmulationFailure({ kind: "missing", message: `Missing IDM behavior: ${behavior}`, missing: [behavior] });
+/**
+ * `id`, when given, is the harness-fault id the tally ranks this refusal under (E19); the cause then
+ * reads `<id>: <behavior>`, as the AM runner's does, so `expectHarnessFault(id)` matches it.
+ */
+export function missing(evidence: Evidence, behavior: string, id?: string): never {
+  const cause = id ? `${id}: ${behavior}` : behavior;
+  evidence.add("missing", cause);
+  throw new EmulationFailure({ kind: "missing", message: `Missing IDM behavior: ${cause}`, missing: [cause],
+    ...(id ? { faults: [{ id, message: behavior }] } : {}) });
 }
 
 export function scriptError(response: JobResponse, context: string, evidence: Evidence): never {

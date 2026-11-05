@@ -47,7 +47,8 @@ export interface FaultTally {
 interface Acc { cases: Set<string>; failed: Set<string>; files: Set<string>; message: string }
 
 /** `root`, when given, makes file paths under it relative (the reporter passes Vitest's root). */
-export function tallyFaults(audits: Iterable<EmulationAudit>, root?: string): FaultTally {
+export function tallyFaults(source: Iterable<EmulationAudit>, root?: string): FaultTally {
+  const audits = [...source];
   const shown = (file: string): string => {
     if (root === undefined) return file;
     const path = relative(root, file);
@@ -62,6 +63,16 @@ export function tallyFaults(audits: Iterable<EmulationAudit>, root?: string): Fa
     if (failed) acc.failed.add(kase);
     if (file !== undefined) acc.files.add(shown(file));
   };
+  // An id'd fault raised inside a host call is recorded twice: once by the host
+  // callback with its id, and again by the job's own response, which carries
+  // the cause ("<id>: <message>") but not the id. Same case, same cause: one fault.
+  const identified = new Set<string>();
+  for (const audit of audits) {
+    for (const entry of audit.failures) {
+      const kase = entry.owner?.id ?? `unowned:${entry.file ?? entry.owner?.file ?? ""}`;
+      for (const fault of entry.faults ?? []) identified.add(`${kase}\0${fault.id}: ${fault.message}`);
+    }
+  }
   for (const audit of audits) {
     for (const entry of audit.failures) {
       const file = entry.file ?? entry.owner?.file;
@@ -75,7 +86,9 @@ export function tallyFaults(audits: Iterable<EmulationAudit>, root?: string): Fa
           add(byId, fault.id, kase, file, fault.message, entry.causes.some((cause) => cause.startsWith(`${fault.id}: `)));
         }
       } else if (entry.kind === "missing") {
-        for (const cause of entry.observed ?? []) add(byCause, cause, kase, file, cause, entry.causes.includes(cause));
+        for (const cause of entry.observed ?? []) {
+          if (!identified.has(`${kase}\0${cause}`)) add(byCause, cause, kase, file, cause, entry.causes.includes(cause));
+        }
       }
     }
   }
