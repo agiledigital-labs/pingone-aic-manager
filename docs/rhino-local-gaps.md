@@ -94,8 +94,18 @@ recording anything about the mapping; on AIC that write runs the mapping
 cannot tell which writes those are (review e15-02 P3-D; the open E15 round-1
 Q2 proposes routing these writes through an `IdmEmulator`).
 
-Only the SET of declared type names crosses into the sandbox. Every schema
-rule — properties, `required`, `enum` — is checked in the Node layer, so each
+**Hooks and policies are not run in this lane (E15b).** A write here that
+reaches the lane's store, on a type whose profile declares script hooks or
+policies, is a harness fault: `openidm-managed-hook/<type>.<hook>` or
+`openidm-managed-policy/<type>` (table below). The profile records hook
+names only, never bodies. A write a test stubs with `given.openidmFailures` is
+the test's own claim and does not fault; a type with neither keeps writing.
+Unstubbed managed-collection actions (`patch`, `triggerSyncCheck`,
+`updateLastSync`) used to return an invented `{}` and now fault too.
+
+Only the SET of declared type names, and the per-type write faults that
+`src/profile/write-guard.ts` decides, cross into the sandbox. Every schema
+rule — properties, `required`, `enum` — is decided in the Node layer, so each
 rule has one implementation rather than an AM-safe second copy that could
 drift from it.
 
@@ -132,7 +142,8 @@ until that row is measured.
 The downstream 0.2.0 gaps D9/D11 are now explicit input choices. Action replies
 use `given.openidmActions` like local HTTP stubs and have the same AIC
 ineligibility/observation gap. Unstubbed non-collection actions throw rather
-than invent `{}`; measured managed-collection actions retain their default.
+than invent `{}`; so, since E15b, do unstubbed managed-collection actions, whose
+names are measured but whose results are not (`openidm-managed-collection-action/<action>`).
 Undeclared ESVs still throw by default; `esvUndeclared: "absent"` opts into AM's
 null/default path and remains AIC-eligible. Comma-joined read/query field elements
 and params `_fields` share projection without trimming (2026-10-02 measurement).
@@ -199,6 +210,13 @@ assumption in `docs/api/`:
 | `seed-cache-manager`, `seed-binding`                                              | seeding a binding the harness cannot seed                                                                            |
 | `idm-runtime-script/<path>`, `idm-runtime-script-path`, `idm-runtime-script-provider` | IDM emulator: one of IDM's own runtime scripts (a hook's `file`, or `require(id)` as `<id>.js`) that the project's `runtimeScripts` provider did not supply — including a name that matches a provider file only case-insensitively, or names a directory; a name that is not a canonical path under the script root (absolute, `.`/`..`/empty segment, trailing slash, backslash, NUL) or reaches a symbolic link in a provider directory, including a file or directory replaced by one after construction (checked at read); a loader that throws or returns a non-string, or a listed file that cannot be read (E15; README "IDM runtime scripts") |
 | `idm-script-file-and-source`                                                      | IDM emulator: a script declaring both `file` and `source`                                                            |
+| `idm-policy/not-null`                                                             | IDM emulator, no `policy` evaluator (E15a): an explicit `null` on a property with a non-null `default`, except the measured case (a create of a new record, the schema's `required` an array), which is emulated as AIC's `403 NOT_NULL`. Covers an update, a PUT over an existing record, several such nulls at once, and a schema with no `required` array |
+| `idm-policy/valid-type`                                                           | IDM emulator, no `policy` evaluator (E15a): a value whose JSON type is not the declared `type`; a nested declared property of the wrong type or `null`; any value for a property with no `type`; a `null` on an undefaulted property when the schema has no `required` array. Unmeasured on AIC. A `null` on an undefaulted property with a `required` array is accepted (stock `policy.js`), with the assumption |
+| `idm-policy/valid-array-items`                                                    | IDM emulator, no `policy` evaluator (E15a): an array item whose JSON type is not the declared `items.type`. Unmeasured; stock `policy.js` adds no implicit item check |
+| `openidm-managed-hook/<type>.<hook>`                                              | script tester (E15b): an unstubbed `openidm.create`/`update`/`patch`/`delete` on a type whose environment profile declares a hook that write runs on AIC. `<hook>` is the first in chain order, or `<property>.<hook>` for a property hook; read hooks and unknown hook names count for every write |
+| `openidm-managed-policy/<type>`                                                   | script tester (E15b): the same, on a type that declares no such hook but declares policies (`required`, an `enum`, or property `policies`). A delete is not judged on policy |
+| `openidm-managed-profile-stale`                                                   | script tester (E15b): a write under a profile pulled before hook names were recorded, which cannot say whether the type has hooks. Re-pull the profile |
+| `openidm-managed-collection-action/<action>`                                      | script tester (E15b): `patch`, `triggerSyncCheck` or `updateLastSync` on `managed/<type>` with no `given.openidmActions` reply. The names are measured; the result, and the write chain or sync it runs on AIC, are not |
 | `idm-implicit-sync/<mapping>`                                                     | IDM emulator: a committed managed create, update, changed patch or delete on a type that is the `source` of a mapping in the supplied `config/sync` (`ConfigInput.sync`). On AIC that write runs the mapping (implicit sync, docs/api/16-sync-mappings.md): synchronously by default (measured 2026-06-19), asynchronously from the sync queue when the mapping enables `queuedSync` (measured 2026-07-29); what `enableSync: false` does is unmeasured. The emulator models none of these, so the write faults before the store changes, and the message names which case each mapping is. `sync` is a required input (E15c); `{ mappings: [] }` is the caller's explicit none. **The script tester's AM lane is silent here**: `runtime.cjs`'s `openidm.create`/`update`/`patch`/`delete` write `given.managed` with no implicit-sync check and record nothing, so a write there on a mapping's source passes; routing those writes through an `IdmEmulator` (E15 round-1 Q2) would inherit this fault |
 
 **Argument counts, by provenance.** A call with an argument count AIC has no

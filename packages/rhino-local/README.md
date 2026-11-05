@@ -628,9 +628,12 @@ defaults, and resource accepts a string or regex. Match uses resource and action
 name; HTTP reply matching also does not inspect request content. The unchanged
 call effect is judged by `expect.openidm` (`actionName`, `body`). Failure stubs
 win over reply stubs. Unmatched actions now throw naming `given.openidmActions`
-(**breaking for 0.2.0**), instead of inventing `{}`. The exception is the measured
-managed-collection actions `patch`, `triggerSyncCheck`, `updateLastSync`, which
-still return `{}` by default; an explicit reply overrides that default. Other
+(**breaking for 0.2.0**), instead of inventing `{}`. The managed-collection
+actions `patch`, `triggerSyncCheck` and `updateLastSync` are the names AIC's
+refusal lists (measured); what they return was not measured, and on AIC they
+run the records' write chain or the type's sync mappings. Unstubbed, each is
+the harness fault `openidm-managed-collection-action/<action>` (E15b; it used
+to return an invented `{}`). An explicit reply answers it. Other
 managed-collection actions still throw the measured refusal, even with a reply.
 Action replies are local only: like HTTP replies, they make cases AIC-ineligible
 and report the same observation gap (`aic.unsupported: "skip"` opts into skipping).
@@ -768,7 +771,31 @@ default export is a `TenantProvider`. It exists because a bin runs in its own
 process, where the Vitest registration does not reach.
 
 - `aic-script-tester-pull-profile [--tenant <name>]` writes
-  `.aic-script-tester/profiles/<tenant>.json`. It prints only counts.
+  `.aic-script-tester/profiles/<tenant>.json`. It prints only counts. The
+  profile records each type's properties, `required`, `enum`s, the `policyId`s
+  of declared `policies`, and the **names** of its script hooks (object-level
+  `onCreate`, `postUpdate`, …, and property-level `onStore`, …), never their
+  source.
+
+**Writes on types with hooks or policies (E15b).** The script tester's
+`openidm.create`/`update`/`patch`/`delete` write `given.managed` directly: they
+run no hook and evaluate no policy. On AIC the same write runs both, so for a
+type whose profile declares either, a local pass says nothing (an `alpha_user`
+create without `mail`/`givenName`/`sn` is a measured 403 there). Such a write
+is a harness fault: `openidm-managed-hook/<type>.<hook>`, naming the first hook
+the write would run (a create runs `onCreate`, property `onValidate`,
+`onValidate`, property `onStore`, `onStore`, `postCreate`, `onSync`; an update
+or patch the `onUpdate`/`postUpdate` equivalents; a delete `onDelete`,
+`postDelete`, `onSync`; read hooks and hook names the harness does not know
+count for every write), or `openidm-managed-policy/<type>` when the type
+declares only policies (`required`, an `enum`, or property `policies`; a delete
+is not judged on policy). A write a test stubs with `given.openidmFailures`
+never reaches the store and does not fault. A type with neither keeps writing
+silently, and without a profile nothing changes. A profile pulled before hook
+names were recorded cannot tell, so its writes are
+`openidm-managed-profile-stale` until it is pulled again. Expect this to fail
+client tests that write without stubs; the fault tally counts them, by type
+and hook (E19).
 - `aic-script-tester-show-log [--stdout]` fetches the logs of recorded failures. It
   writes them to `.aic-script-tester/failures/latest-logs.json`, and opens that in
   `$LOGS_EDITOR` or `$EDITOR` if one is set. `--stdout` prints them instead;
@@ -1135,8 +1162,8 @@ array items; they conservatively refuse the declared capability even if that
 request supplies no value. Relationships remain missing. `searchable` is the
 measured UI/schema setting, not an index declaration. Display metadata and supported immediate defaults/hooks remain implemented. Declared `enum`, `required` and `policies` require the
 explicit policy evaluator on writes; without one they are missing rather than
-silently accepted. The generic policy omission assumption remains for schemas
-without such declarations. HTTP reads/queries omit `alpha_user.password`;
+silently accepted. Schemas without such declarations get the implicit checks
+described under "Policy" below (E15a). HTTP reads/queries omit `alpha_user.password`;
 internal calls expose a 90-character `{PBKDF2-HMAC-SHA256}`-prefixed string
 (orchestrator p22/p23, 2026-11-02). Its opaque body is assumed: 70 hex characters
 from a randomly keyed HMAC-SHA512, stored at commit. Orchestrator p25 (2026-11-02)
@@ -1346,9 +1373,36 @@ Constructor options can supply `{properties: {"esv.feature": "on"}}`. Each
 emulator copies this map; forks inherit the snapshot. Property lookups missing
 from that map carry the absence assumption on the request's provenance.
 
-Policy is **not evaluated** by default: every validated create/update/changed
-patch reports `assumed: policy not evaluated`. The optional constructor
-`{policy: evaluator}` seam runs between validation hooks and store hooks. It can
+Policy: `policy.js` is **not run**. Without an evaluator, a validated
+create/update/changed patch is checked against IDM's implicit schema policies
+where they were measured, and faults where they were not (E15a,
+`src/idm/policy.ts`):
+
+- A create of a new record sending `null` for a property with a non-null
+  `default` is AIC's measured `403 Policy validation failed`, `NOT_NULL` on that
+  property (`docs/api/10-managed-objects.md`), in doc 10's envelope:
+  `{"code":403,"reason":"Forbidden","message":"Policy validation failed","detail":{"result":false,"failedPolicyRequirements":[{"policyRequirements":[{"policyRequirement":"NOT_NULL"}],"property":"<name>"}]}}`.
+  It needs the schema's `required` to be an array (which, without an
+  evaluator, can only be empty); that the detail then lists `NOT_NULL` alone
+  is read from stock `policy.js`, and recorded as assumed.
+- Any other `null` on a defaulted property (an update, a PUT over an existing
+  record, two at once, or no `required` array) is `idm-policy/not-null`. Both
+  measurements used a defaulted property, and stock `policy.js` adds
+  `not-null` only there.
+- A `null` on an undefaulted property is accepted with the assumption below
+  when the schema has a `required` array (stock `policy.js` lets an optional
+  property be null), and is `idm-policy/valid-type` when it has none.
+- A value whose JSON type is not the declared `type`, a nested declared
+  property of the wrong type or `null`, or any value for a property with no
+  `type`, is `idm-policy/valid-type`; an array item that is not the declared
+  `items.type` is `idm-policy/valid-array-items`. None was measured.
+- A PATCH is checked only on the properties its operations name or whose value
+  changed, as AIC's enum check is measured to do.
+
+Everything else carries `assumed: policy.js not run: no config/policy resource
+policies apply to this write; the implicit not-null, valid-type and array-item
+rules were checked locally`. The optional constructor
+`{policy: evaluator}` seam replaces all of this, and runs between validation hooks and store hooks. It can
 throw `HostCallError` to reject with a CREST status and detail; its provenance is
 `assumed: caller-supplied policy evaluator`. It is intended for the real
 `policy.js`, not a TypeScript reconstruction of it.
@@ -1439,8 +1493,8 @@ throws or returns something other than a string or `undefined`, or a listed
 file that cannot be read, is `idm-runtime-script-provider`. A script declaring
 both `file` and `source` is `idm-script-file-and-source`. Supplying a
 script does not make the behaviour around it emulated: `policy.js` in
-particular is not wired. Writes go through the `policy` evaluator seam or carry
-`assumed: policy not evaluated`.
+particular is not wired. Writes go through the `policy` evaluator seam or the
+implicit checks under "Policy" above.
 
 `runner.eval({ engine: "idm" })` called directly, outside the emulator, keeps
 the old behaviour: `require` is the `missing` behaviour `require`. The emulator
