@@ -1715,3 +1715,75 @@ signal. `request`/`context` are plain objects without `getClass`. Measured with
 a throwaway type; `onDelete`/`postDelete` are unmeasured. Dumping `context`
 leaks the caller's bearer token. Detail: `docs/api/10-managed-objects.md`
 ("Hook bindings").
+
+## 2026-11-05 — revision-less `PATCH` matches the OpenIDM retry; a confirmed managed create can still vanish
+
+AIC does not run the open-source fork. The four claims below are from
+`OpenIdentityPlatform/OpenIDM`, `openidm-core/.../managed/ManagedObjectSet.java`
+(`patchResource` and `update`), and were measured on a sandbox on 2026-11-05
+with throwaway managed objects. Tables: `docs/api/10-managed-objects.md`
+("Concurrent `PATCH` and hooks") and `pocs/managed-aggregate-cas/RESULTS.md`.
+
+1. A `PATCH` with no revision reads the record, applies the operations, runs
+   `onUpdate`, writes conditional on the revision it read, and on conflict
+   re-reads and repeats, including `onUpdate`, with no obvious retry bound.
+   **Matches.** No lost append through 200 concurrent writers, no `412`, no 5xx.
+   `onUpdate` re-ran on every retry (up to 50 times for one request, 1670 runs
+   for 100 commits with a side effect inside the hook). Every traced retry saw a
+   newer `oldObject`. No bound appeared inside that range. N above 200 was not
+   run.
+2. A `PATCH` with `If-Match` does not retry. A conflict is `412`. **Matches.**
+   The second call with the stale revision was `412` and stored nothing.
+3. Relationship fields are stripped before the conditional write and persisted
+   afterwards. `postUpdate` runs after that, once per successful write.
+   **Matches, with a storage difference the fork note does not spell out.**
+   `onUpdate` during a link add does not see the link that request is adding,
+   mapped or generic, so a derivation from the relationship is stale and which
+   subset it sees changes run to run. `postUpdate` ran once per committed parent
+   revision, including at 200 writers. An edge `_refProperties` write does not
+   run the parent's hooks. On a mapped pair it does move the parent's `_rev`
+   (the link lives on the parent's entry); on a generic pair the `_rev` stays
+   put. `notify` / `notifySelf` do not add a second, post-persist parent run for
+   the link add. The strip itself was not observed by reading AIC's bytes; the
+   hook timing and the `_rev` split are what was measured.
+4. `update` (`PUT`) passes the request's revision straight through, and with no
+   revision is an unconditional last-writer-wins. **The no-revision half
+   matches.** Concurrent revision-less `PUT`s all returned `200` and kept one or
+   two of twenty updates. `PUT` with a revision was not measured, so "passed
+   straight through" is still only the fork's claim.
+
+The same day, during install of those throwaway types, three sequential
+`aic managed object create` calls each confirmed, and the second type was gone
+after the third. Same family as Q14. `replace_managed_confirmed` retries until
+its own conditions hold, and object create's only condition is that the new name
+is present (`ObjectPresent` in `create_object_request`). A later create whose
+read is missing an earlier type can `PUT` a document without it and still return
+success. The installer waits until all three names survive three consecutive
+reads (`pocs/managed-aggregate-cas/setup.mjs`). This pass did not re-run the
+lost-create sequence.
+
+Teardown the same day did not restore `config/repo.ds`. `aic managed
+relationship delete alpha_poc_agg.children --remove-mapping` wrote nothing.
+`repair::plan_sequence` refuses to remove `alpha_poc_agg.children` because
+`config/repo.ds` reads through it from `alpha_poc_child.parent`, and refuses
+that reverse end because it is the last mapped property of
+`managed/alpha_poc_child`. Removing a mapping another one reads through, and
+removing an object's last mapping, are both unmeasured
+(`src/managed/repair.rs`). The refusal is judged on the managed document the
+delete would write, so both ends already look stale while the live objects are
+still there, and the command returns before either write. The three object
+deletes then removed the types from `config/managed` and left the two
+`genericMapping` entries. The script's compare printed `config equals backup:
+false` (leftover type `alpha_poc_sink`) and `genericMapping equals backup:
+false` (keys `managed/alpha_poc_agg`, `managed/alpha_poc_child`).
+
+The sink type coming back is the delete-shaped sibling of the lost create
+above. `delete_object_request` confirms only `ObjectAbsent` for the name it is
+deleting (`src/managed/ops.rs`). The child delete's document still contained
+`alpha_poc_sink`. The teardown's read, after the sink delete had printed
+success, still listed that type. One more `aic managed object delete
+alpha_poc_sink` removed it, and the whole `config/managed` document then
+equaled the backup taken before the POC. `genericMapping` still has those two
+keys and no others beyond the backup; their only properties are `children` and
+`parent`. Both endpoint deletes returned 200, and a later read of each is 404.
+No `PUT` of either config document was sent after the script stopped.
