@@ -42,18 +42,44 @@ export class ManagedStore {
   private readonly policy: PolicyEvaluator | undefined;
   /** Whether a type's top-level property is JSON in DS (`IdmConfig.jsonStored`). */
   private readonly jsonStored: (type: string, field: string) => boolean;
+  /** The sync mappings with this type as source (`IdmConfig.syncMappings`). */
+  private readonly syncMappings: (type: string) => readonly string[] | undefined;
   constructor(
     records: Map<string, Document>,
     scripts: Scripts,
     evidence: Evidence,
     policy?: PolicyEvaluator,
     jsonStored: (type: string, field: string) => boolean = () => false,
+    syncMappings: (type: string) => readonly string[] | undefined = () => undefined,
   ) {
     this.records = records;
     this.scripts = scripts;
     this.evidence = evidence;
     this.policy = policy;
     this.jsonStored = jsonStored;
+    this.syncMappings = syncMappings;
+  }
+
+  /**
+   * Implicit sync, checked immediately before a write commits. On AIC a committed managed write
+   * on a mapping's source runs that mapping (its onCreate/onUpdate/onDelete/onLink scripts and
+   * the target write) synchronously, measured 2026-06-19 (docs/api/16-sync-mappings.md, "Recon vs.
+   * implicit (live) sync"). Nothing here runs a mapping, so a write that would is a fault; it is
+   * raised before the store changes.
+   */
+  private implicitSync(type: ManagedType, method: string): void {
+    const mappings = this.syncMappings(type.name);
+    if (mappings === undefined) {
+      this.evidence.assumed("no config/sync supplied: no sync mapping is assumed to have this type as its source, so no implicit sync runs");
+      return;
+    }
+    if (mappings.length === 0) {
+      this.evidence.assumed("the supplied config/sync has no mapping with this type as its source, so no implicit sync runs");
+      return;
+    }
+    missing(this.evidence, `implicit sync: managed/${type.name} is the source of sync mapping${mappings.length > 1 ? "s" : ""} ${mappings.join(", ")}; ` +
+      `a committed ${method} runs ${mappings.length > 1 ? "them" : "it"} on AIC (docs/api/16-sync-mappings.md), and the emulator does not model sync`,
+    `idm-implicit-sync/${mappings[0]}`);
   }
 
   /** Forks retain continuation credentials; offset cookies use each fork's current rows. */
@@ -296,6 +322,7 @@ export class ManagedStore {
     this.evidence.measured("server-assigned managed ids are UUIDs", "docs/api/10-managed-objects.md");
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
     this.evidence.assumed("recreated records restart revision at 0");
+    this.implicitSync(type, "create");
     this.encodePassword(type, object);
     const injected = new Set<string>();
     const record = this.materialize(type, { ...object, _id: id, _rev: "0" }, injected);
@@ -329,6 +356,7 @@ export class ManagedStore {
       throw new IdmError(412, "Revision mismatch");
     }
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
+    this.implicitSync(type, "update");
     this.encodePassword(type, object);
     const injected = new Set<string>();
     const record = this.materialize(type, { ...object, _id: id, _rev: String(Number(oldObject._rev) + 1) }, injected);
@@ -363,6 +391,7 @@ export class ManagedStore {
       this.evidence.assumed("concurrent writes are checked again after hooks");
       throw new IdmError(412, "Revision mismatch");
     }
+    this.implicitSync(type, "delete");
     this.records.delete(this.key(type, id));
     this.materialized.delete(this.key(type, id));
     this.evidence.assumed("post-hook mutations affect responses only");
