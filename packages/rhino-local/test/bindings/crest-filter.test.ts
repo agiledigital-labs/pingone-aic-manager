@@ -43,6 +43,34 @@ describe("openidm.query in node:vm", () => {
   });
 });
 
+// E19 round 5: rows the widget table cannot hold, because they turn on the collection's name.
+const users = { managed: { "managed/alpha_user": [{ _id: "u1", userName: "ub", frIndexedInteger1: 7, telephoneNumber: "+61-2-9999-9999", frIndexedDate1: "2026-01-01T10:00:00+11:00" }],
+  "managed/widget": [{ _id: "w1", telephoneNumber: "+61-2-9999-9999" }] } };
+const userRows: Array<[string, string, string[] | "fault", string]> = [
+  // P2-1: measured on alpha_user frIndexedInteger1, but this lane has no per-field knowledge.
+  ['frIndexedInteger1 eq "7"', "managed/alpha_user", "fault", "quoted integer: the AM lane never decides it"],
+  ["frIndexedInteger1 eq 7", "managed/alpha_user", ["u1"], "control: an unquoted integer is decided"],
+  // P2-3: telephoneNumberMatch / GeneralizedTime are not readings this lane has.
+  ['telephoneNumber eq "+61 2 9999 9999"', "managed/alpha_user", "fault", "telephoneNumberMatch ignores spaces and hyphens"],
+  ['frIndexedDate1 gt "2026-01-01T00:00:00Z"', "managed/alpha_user", "fault", "GeneralizedTime compares instants"],
+  ['telephoneNumber eq "+61 2 9999 9999"', "managed/widget", [], "control: a generic type's property is not a DS user attribute"],
+  ['userName eq "ub"', "managed/alpha_user", ["u1"], "control: other alpha_user fields are decided"],
+];
+describe("openidm.query by collection (node:vm)", () => {
+  it.each(userRows)("%s on %s", (filter, collection, answer, why) => {
+    const sandbox = loadBehaviour(structuredClone(users));
+    const openidm = sandbox.openidm as { query: (r: string, p: unknown) => { result: Array<{ _id: string }> } };
+    const call = () => openidm.query(collection, { _queryFilter: filter }).result.map((r) => r._id);
+    if (answer === "fault") {
+      expect(call, why).toThrow(/unmocked filter/);
+      expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["openidm-query-filter"]);
+    } else {
+      expect(call(), why).toEqual(answer);
+      expect(sandboxFaults(sandbox)).toEqual([]);
+    }
+  });
+});
+
 describe("openidm.query on the JVM", () => {
   let runner: RhinoRunner;
   beforeAll(async () => {
@@ -65,5 +93,18 @@ describe("openidm.query on the JVM", () => {
     expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
     const shared = parseHarvest(response.value as string).sharedState.final as Record<string, unknown>;
     expect(shared.r, row.why).toBe(row.am === "parse" ? `caught:${parseText(row.filter)}` : JSON.stringify(rows(row.am)));
+  });
+
+  it.each(userRows)("by collection: %s on %s", async (filter, collection, answer, why) => {
+    const script = `try { nodeState.putShared("r", JSON.stringify(openidm.query(${JSON.stringify(collection)}, { _queryFilter: ${JSON.stringify(filter)} }).result.map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", "caught:" + e.message); }`;
+    if (answer === "fault") expectHarnessFault("openidm-query-filter");
+    const response = await runner.eval({ preamble: mockPreamble(users), source: withHarvest(script) });
+    if (answer === "fault") {
+      expect(response.outcome, why).toBe("runtime_error");
+      expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-query-filter"]);
+      return;
+    }
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect((parseHarvest(response.value as string).sharedState.final as Record<string, unknown>).r, why).toBe(JSON.stringify(answer));
   });
 });

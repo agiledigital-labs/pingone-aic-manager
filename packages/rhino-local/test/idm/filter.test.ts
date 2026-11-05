@@ -21,7 +21,7 @@ afterAll(async () => { await runner?.close(); }, 30_000);
 describe("queryFilter grammar", () => {
   it.each([
     ["true", ["a", "b", "c"]], ["false", []],
-    ['text eq "alpha"', ["a"]], ['count eq "2"', ["b"]],
+    ['text eq "alpha"', ["a"]], ['count eq 2', ["b"]],
     ['text co "ph"', ["a"]], ['text sw "al"', ["a", "c"]],
     ["count gt 2", ["c"]], ["count ge 2", ["b", "c"]],
     ["count lt 2", ["a"]], ["count le 2", ["a", "b"]],
@@ -32,7 +32,7 @@ describe("queryFilter grammar", () => {
     ['(text eq "alpha" or text eq "beta") and count eq 3', []],
     ['!(count lt 2 or count gt 2)', ["b"]],
     ['/nested/name eq "Able"', ["b"]], ['/nested/a~1b eq "match"', ["a"]],
-    ['count gt 1.5', ["b", "c"]], ['text co ""', ["a", "b", "c"]],
+    ['count gt 1', ["b", "c"]], ['text co ""', ["a", "b", "c"]],
   ])("%s", async (filter, ids) => {
     const emu = seeded.fork();
     // Going through an endpoint also verifies query parameters across the host bridge.
@@ -142,10 +142,10 @@ describe("queryFilter grammar", () => {
       expect(result.provenance).not.toContainEqual(CASE);
     });
     it.each([
-      ['mail sw "MA@"', "alpha_user", "query sw whose match turns on letter case: alpha_user mail"],
-      ['mail co "EXAMPLE"', "alpha_user", "query co whose match turns on letter case: alpha_user mail"],
-      ['mail eq "MA@example.com"', "bravo_user", "query eq whose match turns on letter case: bravo_user mail"],
-      ['userName eq "UA"', "bravo_user", "query eq whose match turns on letter case: bravo_user userName"],
+      ['mail sw "MA@"', "alpha_user", "openidm-query-filter: query sw whose match turns on letter case: alpha_user mail"],
+      ['mail co "EXAMPLE"', "alpha_user", "openidm-query-filter: query co whose match turns on letter case: alpha_user mail"],
+      ['mail eq "MA@example.com"', "bravo_user", "openidm-query-filter: query eq whose match turns on letter case: bravo_user mail"],
+      ['userName eq "UA"', "bravo_user", "openidm-query-filter: query eq whose match turns on letter case: bravo_user userName"],
     ])("%s on %s is missing: case sensitivity there is unmeasured", async (filter, type, cause) => {
       expectEmulationFailure(cause);
       const result = await (await users()).request({ method: "GET", path: `managed/${type}`, query: { _queryFilter: filter } });
@@ -153,7 +153,7 @@ describe("queryFilter grammar", () => {
       expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
     });
     it("a non-ASCII case difference on a measured field is missing", async () => {
-      const cause = "query eq whose match turns on letter case: alpha_user userName";
+      const cause = "openidm-query-filter: query eq whose match turns on letter case: alpha_user userName";
       expectEmulationFailure(cause);
       const emu = await users();
       await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a2", headers: { "If-None-Match": "*" }, body: { userName: "émile" } }, 201);
@@ -194,9 +194,9 @@ describe("queryFilter grammar", () => {
       expect(result.provenance).not.toContainEqual(SPACE);
     });
     it.each([
-      ['mail eq " ma@example.com"', "bravo_user", "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: bravo_user mail"],
-      ['mail sw " ma"', "alpha_user", "query sw whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user mail"],
-      ['userName gt "UA"', "bravo_user", "query gt whose order turns on letter case: bravo_user userName"],
+      ['mail eq " ma@example.com"', "bravo_user", "openidm-query-filter: query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: bravo_user mail"],
+      ['mail sw " ma"', "alpha_user", "openidm-query-filter: query sw whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user mail"],
+      ['userName gt "UA"', "bravo_user", "openidm-query-filter: query gt whose order turns on letter case: bravo_user userName"],
     ])("%s on %s is missing", async (filter, type, cause) => {
       expectEmulationFailure(cause);
       const result = await query(await users(), type, filter);
@@ -204,7 +204,7 @@ describe("queryFilter grammar", () => {
       expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
     });
     it("a run of interior spaces is missing on a measured field: whether DS collapses it is unmeasured", async () => {
-      const cause = "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user givenName";
+      const cause = "openidm-query-filter: query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user givenName";
       expectEmulationFailure(cause);
       const emu = await users();
       await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a4", headers: { "If-None-Match": "*" }, body: { givenName: "mary ann" } }, 201);
@@ -214,7 +214,7 @@ describe("queryFilter grammar", () => {
     });
     it("an ordering whose answer turns on the fold direction is missing", async () => {
       // "u_" vs "uA": lower-cased "u_" < "ua", upper-cased "U_" > "UA".
-      const cause = "query gt whose order turns on letter case: alpha_user userName";
+      const cause = "openidm-query-filter: query gt whose order turns on letter case: alpha_user userName";
       expectEmulationFailure(cause);
       const emu = await users();
       await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a3", headers: { "If-None-Match": "*" }, body: { userName: "u_" } }, 201);
@@ -231,7 +231,7 @@ describe("queryFilter grammar", () => {
       expect((result.body as Document).resultCount).toBe(count);
     });
     it.each([['givenName eq "ALICE" and sn eq "doe"'], ['sn eq "doe" and givenName eq "ALICE"'], ['givenName eq "ALICE" or sn eq "smith"']])("bravo_user %s turns on case and is missing", async (filter) => {
-      const cause = "query eq whose match turns on letter case: bravo_user givenName";
+      const cause = "openidm-query-filter: query eq whose match turns on letter case: bravo_user givenName";
       expectEmulationFailure(cause);
       const result = await query(await users(), "bravo_user", filter);
       expect(result.status).toBe(501);
@@ -239,14 +239,14 @@ describe("queryFilter grammar", () => {
     });
     // R6-1: negation and array elements are the two arms that could turn `unknown` into a definite answer.
     it("bravo_user !(case-only leaf) is missing, not the negation of a guess", async () => {
-      const cause = "query eq whose match turns on letter case: bravo_user givenName";
+      const cause = "openidm-query-filter: query eq whose match turns on letter case: bravo_user givenName";
       expectEmulationFailure(cause);
       const result = await query(await users(), "bravo_user", '!(givenName eq "ALICE")');
       expect(result.status).toBe(501);
       expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
     });
     it("a case-only match against an array element on bravo_user is missing, not dropped", async () => {
-      const cause = "query eq whose match turns on letter case: bravo_user tags";
+      const cause = "openidm-query-filter: query eq whose match turns on letter case: bravo_user tags";
       expectEmulationFailure(cause);
       const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "bravo_user", schema: { properties: { tags: { type: "array", items: { type: "string" } } } } }] } }), runner);
       await send(emu, { method: "PUT", path: `managed/bravo_user/${user}`, headers: { "If-None-Match": "*" }, body: { tags: ["beta", "Alpha"] } }, 201);
@@ -258,7 +258,7 @@ describe("queryFilter grammar", () => {
     });
     // R6-2: "space" was U+0020 only, and no case variant differed on ß. Neither is measured, so an
     // answer that turns on other whitespace or on a non-ASCII fold is missing, not a definite guess.
-    const SPACE_CAUSE = (field: string) => `query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user ${field}`;
+    const SPACE_CAUSE = (field: string) => `openidm-query-filter: query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: alpha_user ${field}`;
     it.each([
       ["a trailing no-break space", "mail", "ma@example.com", "ma@example.com\u00a0"],
       ["a trailing tab", "mail", "ma@example.com", "ma@example.com\t"],
@@ -274,7 +274,7 @@ describe("queryFilter grammar", () => {
       expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
     });
     it.each([["givenName", "stra\u00dfe", "STRASSE"], ["givenName", "STRASSE", "stra\u00dfe"]])("alpha_user %s %s eq %s turns on a non-ASCII fold and is missing", async (field, stored, expected) => {
-      const cause = "query eq whose match turns on letter case: alpha_user givenName";
+      const cause = "openidm-query-filter: query eq whose match turns on letter case: alpha_user givenName";
       expectEmulationFailure(cause);
       const emu = await users();
       await send(emu, { method: "PUT", path: "managed/alpha_user/00000000-0000-0000-0000-0000000000a6", headers: { "If-None-Match": "*" }, body: { [field]: stored } }, 201);
@@ -284,7 +284,7 @@ describe("queryFilter grammar", () => {
     });
     // R7-4: on a type with no measured rule the wide variants are what make a trailing NBSP undecided.
     it("bravo_user eq differing only by a trailing no-break space is missing, not a definite 0", async () => {
-      const cause = "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: bravo_user mail";
+      const cause = "openidm-query-filter: query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: bravo_user mail";
       expectEmulationFailure(cause);
       const result = await query(await users(), "bravo_user", 'mail eq "ma@example.com\u00a0"');
       expect(result.status).toBe(501);
@@ -299,7 +299,7 @@ describe("queryFilter grammar", () => {
     });
     // R6-3: the refusal names the leaf that left the answer undecided, not the first unknown one.
     it("the missing message names the deciding leaf, not one an or already made irrelevant", async () => {
-      const cause = "query eq whose match turns on letter case: bravo_user city";
+      const cause = "openidm-query-filter: query eq whose match turns on letter case: bravo_user city";
       expectEmulationFailure(cause);
       const result = await query(await users(), "bravo_user", '(givenName eq "ALICE" or sn eq "doe") and city eq "PERTH"');
       expect(result.status).toBe(501);
@@ -313,10 +313,110 @@ describe("queryFilter grammar", () => {
       }
     });
     it("a case-only eq on an unprobed managed type is missing", async () => {
-      const cause = "query eq whose match turns on letter case: widget text";
+      const cause = "openidm-query-filter: query eq whose match turns on letter case: widget text";
       expectEmulationFailure(cause);
       const result = await seeded.fork().request({ method: "GET", path: "managed/widget", query: { _queryFilter: 'text eq "ALPHA"' } });
       expect(result.status).toBe(501);
+    });
+  });
+
+  // E19 round 5. Each row drives the real emulator; the tally id rides every refusal.
+  describe("round 5: types, DS matching rules, labels, injected arrays", () => {
+    const id = "00000000-0000-0000-0000-0000000000b1";
+    const DOC10 = "docs/api/10-managed-objects.md (A number matches quoted or unquoted)";
+    const refusal = (op: string, what: string, type: string, field: string) => `openidm-query-filter: query ${op} whose ${what}: ${type} ${field}`;
+    const TYPE = "match compares different JSON types, or an object or null element, which nothing measured";
+    const RULE = "field's DS matching rule is not caseIgnoreMatch, which nothing measured";
+    const people = async () => {
+      const props = { userName: { type: "string" }, givenName: { type: "string" }, telephoneNumber: { type: "string" },
+        frIndexedDate1: { type: "string" }, frUnindexedDate2: { type: "string" }, frIndexedInteger1: { type: "number" },
+        frIndexedInteger2: { type: "number" }, custom_n: { type: "number" } };
+      const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: props } }, { name: "bravo_user", schema: { properties: props } }] } }), runner);
+      for (const type of ["alpha_user", "bravo_user"]) await send(emu, { method: "PUT", path: `managed/${type}/${id}`, headers: { "If-None-Match": "*" }, body: {
+        userName: "ub", givenName: "alice", telephoneNumber: "+61-2-9999-9999", frIndexedDate1: "2026-01-01T10:00:00+11:00",
+        frUnindexedDate2: "2026-01-01T00:00:00Z", frIndexedInteger1: 7, frIndexedInteger2: 7, custom_n: 7 } }, 201);
+      return emu;
+    };
+    const query = async (emu: IdmEmulator, type: string, filter: string) => emu.request({ method: "GET", path: `managed/${type}`, query: { _queryFilter: filter } });
+
+    // P2-1: measured on alpha_user frIndexedInteger1 only; P3-5: the unquoted form is labelled too.
+    it.each([
+      ['frIndexedInteger1 eq "7"', 1, { kind: "measured", behavior: "eq on alpha_user frIndexedInteger1 matches a quoted integer", source: DOC10 }],
+      ['frIndexedInteger1 eq "8"', 0, { kind: "measured", behavior: "eq on alpha_user frIndexedInteger1 matches a quoted integer", source: DOC10 }],
+      ['frIndexedInteger2 eq "7"', 1, { kind: "assumed", behavior: "eq on alpha_user frIndexedInteger2 matches a quoted integer like frIndexedInteger1" }],
+      ["frIndexedInteger1 eq 7", 1, { kind: "measured", behavior: "eq on alpha_user frIndexedInteger1 matches an unquoted integer", source: DOC10 }],
+      ["frIndexedInteger2 gt 6", 1, { kind: "assumed", behavior: "gt on a number property compares JSON numbers numerically" }],
+    ])("alpha_user %s answers %i, labelled", async (filter, count, label) => {
+      const result = await query(await people(), "alpha_user", filter as string);
+      expect(result.status, JSON.stringify(result.provenance)).toBe(200);
+      expect((result.body as Document).resultCount).toBe(count);
+      expect(result.provenance).toContainEqual(label);
+    });
+    it.each([
+      ['custom_n eq "7"', "alpha_user", "eq", "custom_n", TYPE, "a custom_* property is JSON in DS: coercion unmeasured"],
+      ['frIndexedInteger1 eq "7"', "bravo_user", "eq", "frIndexedInteger1", TYPE, "measured on alpha_user only"],
+      ['!(frIndexedInteger1 eq "7")', "bravo_user", "eq", "frIndexedInteger1", TYPE, "and not its negation either"],
+      ["frIndexedInteger1 eq 7.0", "alpha_user", "eq", "frIndexedInteger1", TYPE, "P2-2: a decimal literal against a number"],
+      ["frIndexedInteger1 gt 6.5", "alpha_user", "gt", "frIndexedInteger1", TYPE, "P2-2: a decimal literal under ordering"],
+      // P2-3: telephoneNumberMatch ignores spaces and hyphens; dates compare as GeneralizedTime instants.
+      ['telephoneNumber eq "+61 2 9999 9999"', "alpha_user", "eq", "telephoneNumber", RULE, "telephoneNumberMatch would match"],
+      ['telephoneNumber eq "+61-2-9999-9999"', "alpha_user", "eq", "telephoneNumber", RULE, "refused by name, even byte-equal"],
+      ['telephoneNumber eq "+61 2 9999 9999"', "bravo_user", "eq", "telephoneNumber", RULE, "the same DS attribute on bravo_user"],
+      ['frIndexedDate1 gt "2026-01-01T00:00:00Z"', "alpha_user", "gt", "frIndexedDate1", RULE, "an earlier instant that sorts later as text"],
+      ['frUnindexedDate2 eq "2026-01-01T11:00:00+11:00"', "alpha_user", "eq", "frUnindexedDate2", RULE, "the same instant spelt with an offset"],
+    ])("%s on %s is refused with the fault id", async (filter, type, op, field, what) => {
+      const cause = refusal(op, what, type, field);
+      expectEmulationFailure(cause);
+      const result = await query(await people(), type, filter);
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+      expect(result.emulation?.faults?.map((fault) => fault.id)).toEqual(["openidm-query-filter"]);
+    });
+    it.each([["telephoneNumber pr", 1], ['givenName eq "ALICE"', 1], ['userName eq "ub" and !(frIndexedDate1 pr)', 0]])("control: alpha_user %s is decided", async (filter, count) => {
+      const result = await query(await people(), "alpha_user", filter as string);
+      expect(result.status, JSON.stringify(result.provenance)).toBe(200);
+      expect((result.body as Document).resultCount).toBe(count);
+    });
+    it("a refused field decides nothing in the AM lane's collection either", async () => {
+      // The emulator's own script host call: same evaluator, same refusal.
+      const cause = refusal("eq", RULE, "alpha_user", "telephoneNumber");
+      expectEmulationFailure(cause);
+      const emu = await people();
+      const response = await runner.eval({ engine: "idm", source: "openidm.query('managed/alpha_user',{_queryFilter:filter}).resultCount;", bindings: { filter: 'telephoneNumber eq "x"' } }, { onCall: emu.onCall });
+      expect(response.outcome).toBe("runtime_error");
+      expect(response.emulation?.missing?.[0]).toBe(cause);
+    });
+
+    // P3-5: number ordering and boolean eq carry a label.
+    it.each([
+      ["count gt 1", { kind: "assumed", behavior: "gt on a number property compares JSON numbers numerically" }],
+      ["flag eq true", { kind: "assumed", behavior: "eq on a boolean property compares JSON booleans" }],
+      ["count eq 2", { kind: "assumed", behavior: "eq on a number property compares JSON numbers numerically" }],
+    ])("widget %s is labelled", async (filter, label) => {
+      const result = await query(seeded.fork(), "widget", filter as string);
+      expect(result.status).toBe(200);
+      expect(result.provenance).toContainEqual(label);
+    });
+
+    // P3-6: an array the emulator injected reads as absent, through a PATCH and a fork; one a
+    // write names (even as []) is the unmeasured explicit case again.
+    it("an injected [] stays absent until a write names it", async () => {
+      const emu = emulator(runner);
+      await create(emu, { text: "t" }, "w");
+      const absent = async (target: IdmEmulator) => ((await query(target, "widget", "!(list pr)")).body as Document).resultCount;
+      expect(await absent(emu)).toBe(1);
+      await send(emu, { method: "PATCH", path: "managed/widget/w", body: [{ operation: "replace", field: "/text", value: "u" }] });
+      expect(await absent(emu)).toBe(1);
+      expect(await absent(emu.fork())).toBe(1);
+      await send(emu, { method: "PUT", path: "managed/widget/w", body: { text: "v" } });
+      expect(await absent(emu)).toBe(1);
+      // A PATCH to [] over the injected [] is a measured no-op, so write a value first.
+      await send(emu, { method: "PATCH", path: "managed/widget/w", body: [{ operation: "replace", field: "/list", value: ["q"] }] });
+      expect(await absent(emu)).toBe(0);
+      await send(emu, { method: "PATCH", path: "managed/widget/w", body: [{ operation: "replace", field: "/list", value: [] }] });
+      const cause = "openidm-query-filter: query pr whose answer for an empty string, array or object is unmeasured: widget list";
+      expectEmulationFailure(cause);
+      expect((await query(emu, "widget", "!(list pr)")).status).toBe(501);
     });
   });
 });

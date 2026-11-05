@@ -365,7 +365,10 @@ var __rhinoLocalCrestFilter = (function () {
     var i;
     for (i = 0; i < parts.length; i += 1) {
       if (isArray(current)) {
-        return { value: undefined, throughArray: true };
+        // An index (or `length`) the array holds was read as that element
+        // before round 5; nothing measured it either, so it is never decided.
+        return { value: undefined, throughArray: true,
+          own: Object.prototype.hasOwnProperty.call(current, parts[i]) };
       }
       if (current === null || current === undefined || typeof current !== "object" ||
           !Object.prototype.hasOwnProperty.call(current, parts[i])) {
@@ -469,7 +472,7 @@ var __rhinoLocalCrestFilter = (function () {
     var decimal = node.spelling !== undefined && /[.eE]/.test(node.spelling);
     var read = walk(record, field);
     if (read.throughArray) {
-      return op === "eq" && node.positive === true ? false : unknown(field, op, "path");
+      return op === "eq" && node.positive === true && !read.own ? false : unknown(field, op, "path");
     }
     var value = read.value;
     if (op === "pr") {
@@ -695,7 +698,7 @@ var __rhinoLocalCrestFilter = (function () {
   // The script tester's lane: every reading, no measured type coercion, and
   // the user fields above refused, for a collection it knows by name only.
   function unmeasuredLane(collection) {
-    var type = String(collection).replace(/^\/+|\/+$/g, "").replace(/^managed\//, "");
+    var type = String(collection).replace(/^managed\//, "");
     return {
       strings: function (field, op, candidate, expected) {
         return otherRule(type, field) ? unknown(field, op, "rule") : unmeasuredStrings(field, op, candidate, expected);
