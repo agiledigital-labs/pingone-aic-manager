@@ -409,6 +409,17 @@ function applyFanout(o) {
     o.schema.properties.children.notifyRelationships = ["children"];
     o.schema.properties.gchildren.notifyRelationships = ["gchildren"];
   }
+  // Names the other relationship, the way alpha_organization.parent names
+  // children. Naming a relationship from itself (rel-child / rel-parent)
+  // took that managed resource offline: config still listed it, GET 404.
+  if (mode === "rel-other-child" && o.name === CHILD) {
+    o.schema.properties.parent.notifyRelationships = ["gparent"];
+    o.schema.properties.gparent.notifyRelationships = ["parent"];
+  }
+  if (mode === "rel-other-parent" && o.name === PARENT) {
+    o.schema.properties.children.notifyRelationships = ["gchildren"];
+    o.schema.properties.gchildren.notifyRelationships = ["children"];
+  }
   if (mode === "field-owner" && o.name === CHILD && o.schema.properties.owner) {
     o.schema.properties.value.notifyRelationships = ["owner"];
   }
