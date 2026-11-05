@@ -183,7 +183,7 @@ assumption in `docs/api/`:
 | `action-suspend-additional-logic`                                                 | `action.suspend` with a non-function `additionalLogic`                                                               |
 | `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
 | `openidm-unknown-managed-type`                                                    | a write (`create`, `update`, `patch`, `delete`, `action`) to a managed type the environment profile does not declare |
-| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the harness cannot decide: one the shared CREST grammar (`src/bindings/rhino/crest-filter.cjs`) cannot read, an empty or non-string one, an operator the matcher does not evaluate (`gt`/`ge`/`lt`/`le` in the script tester), or `ne` from a script (its script text is unmeasured); in the script tester, a record whose answer turns on letter case, spaces, Unicode normalisation, a type mismatch other than the measured quoted integer, or `pr` on `""`/`[]`; an escaped quote anywhere but a bare `eq` reached through `and` alone; a `_queryId` other than the measured ones. Only measured or certain rejections are the catchable parse error, in both lanes |
+| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the harness cannot decide: one the shared CREST grammar (`src/bindings/rhino/crest-filter.cjs`) cannot read, an empty or non-string one, an operator the matcher does not evaluate (`gt`/`ge`/`lt`/`le` in the script tester), or `ne` from a script (its script text is unmeasured); in either lane, a record whose answer turns on letter case, spaces, Unicode normalisation, a type mismatch (the quoted integer is decided only on an IDM-emulator `alpha_user` property), a decimal literal against a number, `pr` on `""`/`[]`/`{}`, a pointer through an array anywhere but a bare `eq` reached through `and` alone, or an `alpha_user`/`bravo_user` field whose DS matching rule is not caseIgnore (`telephoneNumber`, `frIndexedDate1`–`5`, `frUnindexedDate1`–`5`); an escaped quote anywhere but a bare `eq` reached through `and` alone; a `_queryId` other than the measured ones. Only measured or certain rejections are the catchable parse error, in both lanes |
 | `openidm-fields-wildcard-with-path`, `openidm-fields-non-object-parent`, `openidm-fields-unresolved-ref` | `_fields` projections that were not measured                                                  |
 | `identity-attribute-layout`, `identity-write-idm-field-name`, `identity-write-cn`, `identity-set-attribute-non-array`, `identity-date-rendering`, `identity-wrapper-after-recreate` | `idRepository.getIdentity()` reads and writes outside the measured mapping |
 | `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
@@ -264,7 +264,8 @@ stays a fault until a probe on AIC decides it:
 with its uncatchable `unsupported` refusal. The emulated AIC errors above stay
 catchable there too. The ids still reach the tally: a
 generated stub reports `not-mocked/<behaviour>`, and a script-tester refusal
-reports its own id. The IDM emulator's `_queryFilter` refusal reports
+reports its own id. The IDM emulator's `_queryFilter` refusals, the
+record-level ones included (since E19 round 5), report
 `openidm-query-filter`; its other `missing` sites, and the journey emulator's,
 have no ids yet. The tally lists them under `unidentified`, keyed by cause text, and
 giving them ids is a per-site change in `AmHostBridge.java` and
@@ -423,18 +424,27 @@ and neither carries a label:
   `openidm.query` over `given.managed` in `runtime.cjs`, and the IDM emulator
   through `src/idm/filter.ts`, which adds only its per-field string policy. A
   leaf is undecided when its answer changes under any case, space or Unicode
-  reading; when it compares different JSON types, other than a number field
-  against the canonical spelling of a safe integer; when it reads an object or
-  a `null` array element; or when it asks `pr` of `""` or `[]`. `and`/`or`/`!`
+  reading; when it compares different JSON types; when it reads an object or
+  a `null` array element; when it asks `pr` of `""`, `[]` or `{}`; when a
+  decimal literal (`7.0`, `6.5`, `1.5e3`; the parsed node keeps its spelling)
+  meets a number; when its pointer steps through an array, except a bare `eq`
+  reached through `and` alone, the measured shape; or when the field is one of
+  the user attributes below. The one decided type mismatch is a number field
+  against the canonical spelling of a safe integer, and only in the IDM
+  emulator on `alpha_user` (not `custom_*`), where it was measured; the
+  script tester knows no types and leaves it undecided. `and`/`or`/`!`
   follow Kleene logic, and a record left undecided is the
-  `openidm-query-filter` fault in the script tester and the emulator's own
-  id-less `missing`. An escaped quote is decided `false` only in an `eq`
+  `openidm-query-filter` fault in both lanes (the emulator's refusal carries
+  the id since round 5). An escaped quote is decided `false` only in an `eq`
   reached from the root through `and` alone, where "the leaf is false" and "the
   whole query matches nothing" agree; anywhere else the filter is the fault.
   The script tester has no per-field policy, so a case-different value that AIC
   is measured to match is a fault there too, in the safe direction. The
-  emulator materialises an absent array property as `[]`, so there `pr` on an
-  array property is undecided for every record that lacks it. The harness
+  emulator materialises an absent array property as `[]` and remembers which
+  ones it injected; a query reads those as absent, as DS reads an unset
+  multi-valued attribute, so only an explicitly written `[]` is undecided under
+  `pr`. Same-type number and boolean decisions carry an `assumed` label, except
+  `eq` on `alpha_user` `frIndexedInteger1`, which is measured. The harness
   `check idm.query` (`src/harness/idm.ts`, exact `JSON.stringify` equality)
   still compares exactly.
 
@@ -447,7 +457,39 @@ and neither carries a label:
   bidirectional checks. A value holding one of those is compared as it is, so
   a filter whose answer would turn on one is decided rather than refused.
   None of these readings is measured on AIC; each is a reason to refuse, not a
-  rule that is applied.
+  rule that is applied. Since round 5 the case readings also include Java's
+  per-character lower-casing (U+0130 to `i`) and a full fold (U+1E9E to `ss`).
+
+  **User attributes refused by name (E19 round 5).** DS's core schema
+  (opendj-core 8.1.1 `Schema.getCoreSchema()`, read from the AM 8.1.1 image;
+  RFC 4519) gives `telephoneNumber` `EQUALITY telephoneNumberMatch`, which
+  ignores spaces and hyphens. It is the only phone attribute an `alpha_user`
+  can hold, because a property added there must be `custom_*`. Every other
+  DS-mapped string on it is `caseIgnoreMatch` or `caseIgnoreIA5Match`
+  (`uid`, `mail`, `givenName`, `sn`, `cn`, `description`, `street`, `l`,
+  `postalCode`, `co`, `st`). `frIndexedDate1`–`5` and `frUnindexedDate1`–`5`
+  are `fr-attr-idateN` / `fr-attr-dateN`, which refuse anything but
+  GeneralizedTime (`docs/api/14`), so they compare as instants. None of the
+  string readings describes either rule, so every string comparison on these
+  fields of `alpha_user` or `bravo_user` is undecided, in both lanes.
+
+  **One live probe settles each round-5 refusal:**
+  - `telephoneNumber eq "+61 2 9999 9999"` against a user holding
+    `+61-2-9999-9999`: a match confirms `telephoneNumberMatch`.
+  - `frIndexedDate1 gt "2026-01-01T00:00:00Z"` against a user holding
+    `2026-01-01T10:00:00+11:00` (an earlier instant that sorts later as
+    text): no match confirms instant ordering. The same probe on
+    `frUnindexedDate1` settles the unindexed family.
+  - `count eq "7"` on a generic type holding `7`, and `custom_n eq "7"` on
+    `alpha_user`: whether JSON storage coerces a quoted integer.
+  - `frIndexedInteger1 eq 7.0` against `7`: whether a decimal literal matches
+    an integer attribute.
+  - `roles pr` on a user whose `roles` was written as `[]`: whether an
+    explicit empty array is present.
+  - `!(/<rel>/_refResourceId eq "<id>")`: whether the negated pointer through
+    an array returns every record or none.
+  - `givenName eq "istanbul"` against `\u0130stanbul` (written by code point):
+    which lower-casing DS applies.
 - **`httpClient.send` converts an object body as AIC measured, and fails on
   what it cannot reproduce.** `docs/api/12` §5 (2026-11-04) measured AIC's
   serializer. The recorded body is a snapshot taken at send time, and it

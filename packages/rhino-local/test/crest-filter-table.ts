@@ -12,17 +12,18 @@ import type { JsonObject } from "../src/case/types.ts";
  * `openidm-query-filter` harness fault: the harness cannot say what AIC does.
  */
 export const records: Array<JsonObject & { _id: string }> = [
-  { _id: "a", text: "alpha", count: 1, flag: true, nested: { "a/b": "match" }, list: ["Red", "x"], spaced: "al  pha", word: "al\u00adpha" },
-  { _id: "b", text: "beta", count: 2, flag: false, other: 'say "hi"', spaced: "ga\tma", label: "", list: [] },
-  { _id: "c", text: "alpine", count: 1000, spaced: "be\u00a0ta", label: "1000", nulls: [null, "y"], word: "jose\u0301" },
+  { _id: "a", text: "alpha", count: 1, flag: true, nested: { "a/b": "match" }, list: ["Red", "x"], spaced: "al  pha", word: "al\u00adpha", other: "\u0130stanbul" },
+  { _id: "b", text: "beta", count: 2, flag: false, other: 'say "hi"', spaced: "ga\tma", label: "", list: [], word: "STRA\u1e9eE" },
+  { _id: "c", text: "alpine", count: 1000, spaced: "be\u00a0ta", label: "1000", nulls: [null, "y"], word: "jose\u0301", nested: {} },
 ];
 
 /** What a lane answers: matching ids, AIC's parse error, or the fault. */
 export type Answer = string[] | "parse" | "fault";
 /**
- * The IDM emulator's own refusal when a record's answer turns on an unmeasured
- * case or space rule: an id-less `missing` with this cause, which fails the run
- * as the fault does. Only the emulator lanes give it.
+ * The IDM emulator's own refusal when a record's answer turns on something
+ * unmeasured: a `missing` with this cause, which since round 5 carries the
+ * `openidm-query-filter` id, so the tally groups it with the AM lane's fault.
+ * Only the emulator lanes give it.
  */
 export type Missing = { missing: string };
 
@@ -47,11 +48,16 @@ const causes = {
   space: "match turns on leading, trailing or repeated spaces or non-U+0020 whitespace",
   unicode: "match turns on Unicode normalisation or characters RFC 4518 maps to nothing",
   type: "match compares different JSON types, or an object or null element, which nothing measured",
-  presence: "answer for an empty string or array is unmeasured",
+  presence: "answer for an empty string, array or object is unmeasured",
+  rule: "field's DS matching rule is not caseIgnoreMatch, which nothing measured",
+  path: "pointer reads through an array, measured only as a bare eq reached through and alone",
 } as const;
+/** The emulator's record-level refusal, with the fault id it carries. */
+const refusal = (op: string, why: keyof typeof causes, field: string): Missing =>
+  ({ missing: `openidm-query-filter: query ${op} whose ${causes[why]}: widget ${field}` });
 /** A row whose answer for some record turns on something unmeasured: the AM fault, the emulator's missing. */
 const undecided = (filter: string, why: keyof typeof causes, field: string, note: string, op = "eq"): FilterRow => {
-  const missing = { missing: `query ${op} whose ${causes[why]}: widget ${field}` };
+  const missing = refusal(op, why, field);
   return { filter, grammar: "ast", am: "fault", script: missing, rest: missing, why: note };
 };
 
@@ -72,7 +78,8 @@ export const filterTable: FilterRow[] = [
   same('nomé eq "x"', "ast", [], "reviewer repro: non-ASCII pointer"),
   // Round 3 wrongly had `count eq 1e3` here as certainly valid; CREST 27.1.1
   // rejects it (see the fault rows). A `.` makes it a double there.
-  same("count eq 1.5e3", "ast", [], "exponent with a `.`: CREST 27.1.1 parses it as a double"),
+  // Round 5 P2-2: it parses, but a decimal against a number field is unknown (see below).
+  undecided("count eq 1.5e3", "type", "count", "exponent with a `.`: CREST 27.1.1 parses it as a double; against a number, unmeasured"),
   same("count eq 9007199254740991", "ast", [], "2^53 - 1: the largest integer a JS number holds exactly"),
   same("count eq 2", "ast", ["b"], "integer"),
   same('text eq "a\\"b"', "ast", [], "escaped quote parses, measured"),
@@ -135,21 +142,21 @@ export const filterTable: FilterRow[] = [
   // missing. Kleene logic: a false operand decides an `and` without it.
   {
     filter: 'text eq "ALPHA"', grammar: "ast", am: "fault",
-    script: { missing: "query eq whose match turns on letter case: widget text" },
-    rest: { missing: "query eq whose match turns on letter case: widget text" },
+    script: refusal("eq", "case", "text"),
+    rest: refusal("eq", "case", "text"),
     why: "letter case decides record a; unmeasured for this type",
   },
   {
     filter: 'text eq "alpha "', grammar: "ast", am: "fault",
-    script: { missing: "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: widget text" },
-    rest: { missing: "query eq whose match turns on leading, trailing or repeated spaces or non-U+0020 whitespace: widget text" },
+    script: refusal("eq", "space", "text"),
+    rest: refusal("eq", "space", "text"),
     why: "a trailing space decides record a; unmeasured",
   },
   same('text eq "ALPHA" and count eq 2', "ast", [], "unknown and false is false: no record is undecided"),
   {
     filter: 'text sw "AL" or count eq 1000', grammar: "ast", am: "fault",
-    script: { missing: "query sw whose match turns on letter case: widget text" },
-    rest: { missing: "query sw whose match turns on letter case: widget text" },
+    script: refusal("sw", "case", "text"),
+    rest: refusal("sw", "case", "text"),
     why: "unknown or false is unknown for record a",
   },
   same('text eq "ALPHA" or count eq 1', "ast", ["a"], "unknown or true is true for record a"),
@@ -186,19 +193,23 @@ export const filterTable: FilterRow[] = [
   // Round-4 P2-2: CREST holds the long; Number() rounds it onto 2^53, a false pass.
   undecided('count eq "9007199254740993"', "type", "count", "quoted integer beyond 2^53 - 1"),
   undecided('count eq "9007199254740992"', "type", "count", "2^53 is spelt canonically, but a fixture value past 2^53 - 1 may already be rounded onto it"),
-  same('count eq "1000"', "ast", ["c"], "number field, canonical quoted integer: measured"),
+  // Round-5 P2-1: measured on alpha_user frIndexedInteger1 (an LDAP integer
+  // attribute) only. A generic type is JSON in DS, and the script tester knows
+  // no types, so here it is unknown in every lane (alpha_user: test/idm/filter.test.ts).
+  undecided('count eq "1000"', "type", "count", "quoted integer on a generic type: measured on alpha_user only"),
   same('flag eq "true" and count eq 5', "ast", [], "unknown and false is false: no record is undecided"),
-  { filter: 'count gt "5"', grammar: "ast", am: "fault", script: { missing: `query gt whose ${causes.type}: widget count` },
-    rest: { missing: `query gt whose ${causes.type}: widget count` }, why: "ordering a number field against a quoted literal: unmeasured" },
+  { filter: 'count gt "5"', grammar: "ast", am: "fault", script: refusal("gt", "type", "count"),
+    rest: refusal("gt", "type", "count"), why: "ordering a number field against a quoted literal: unmeasured" },
   // Round-4 P3-1: whether DS stores an empty string or array as present is unmeasured.
   undecided("label pr", "presence", "label", "pr on an empty string", "pr"),
   undecided("list pr", "presence", "list", "pr on an empty array", "pr"),
   same('nulls pr and text eq "alpine"', "ast", ["c"], "control: a non-empty array is present"),
   // The emulator materialises an absent array property as [] (its read
-  // shape), so there `pr` on any array property is unknown for every record
-  // that lacks it. The script tester reads the fixture as given.
-  { filter: "nulls pr", grammar: "ast", am: ["c"], script: { missing: `query pr whose ${causes.presence}: widget nulls` },
-    rest: { missing: `query pr whose ${causes.presence}: widget nulls` }, why: "emulator: absent array reads as [], whose pr is unmeasured" },
+  // shape). Since round 5 (P3-6) it remembers which [] it injected and a query
+  // reads those as absent, as DS reads an unset multi-valued attribute; an
+  // explicitly written [] (record b's `list`) stays unknown.
+  same("nulls pr", "ast", ["c"], "the emulator's injected [] reads as absent, as the fixture does in the AM lane"),
+  same("!(nulls pr)", "ast", ["a", "b"], "control: negation of an injected-absent array"),
   // Round-4 P3-2: the escaped-quote rule decides only a bare positive eq
   // reached through `and` alone, where "the leaf is false" and "the query
   // matches nothing" agree. Elsewhere they differ, so the filter is refused.
@@ -207,6 +218,26 @@ export const filterTable: FilterRow[] = [
   same('text eq "beta" or other eq "say \\"hi\\""', "ast", "fault", "escaped quote under or: unmeasured"),
   same('other co "\\""', "ast", "fault", "escaped quote in co: unmeasured"),
   same('other sw "say \\""', "ast", "fault", "escaped quote in sw: unmeasured"),
+  // Round-5 P2-2: a decimal literal keeps its spelling. Against a number
+  // field it is unknown: `2.0` may reach an LDAP integer attribute as text
+  // integer syntax refuses (filter Undefined), or a JSON number compares it.
+  undecided("count eq 2.0", "type", "count", "decimal literal equal to an integer: numerically 2, unmeasured"),
+  undecided("count gt 1.5", "type", "count", "decimal literal under ordering: unmeasured", "gt"),
+  undecided("!(count eq 2.5)", "type", "count", "decimal under !: !Undefined is Undefined on DS, not true"),
+  same("count eq 2", "ast", ["b"], "control: an integer literal is decided"),
+  // Round-5 P3-1: per-char lower-casing (U+0130 to i) and a full fold (U+1E9E to ss).
+  undecided('other eq "istanbul"', "case", "other", "U+0130: Java's per-char toLowerCase gives i, String toLowerCase i + U+0307"),
+  undecided('word eq "strasse"', "case", "word", "U+1E9E: only lower-upper-lower folds it to ss"),
+  same('other eq "ankara"', "ast", [], "control: differs under every reading"),
+  // Round-5 P3-3: `{}` is the object form of the empty-value question.
+  undecided("nested pr", "presence", "nested", "pr on {}", "pr"),
+  // Round-5 P3-4: a pointer through an array. Only the bare positive eq form
+  // is measured (doc 10: no rows); elsewhere "leaf false" and "query matches
+  // nothing" differ. An index the array holds was never measured.
+  same('list/ref eq "r1"', "ast", [], "through an array, bare positive eq: no rows, measured"),
+  undecided('!(list/ref eq "r1")', "path", "list/ref", "through an array under !: unmeasured"),
+  undecided('text eq "beta" or list/ref eq "r1"', "path", "list/ref", "through an array under or: unmeasured"),
+  undecided('list/0 eq "Red"', "path", "list/0", "an index into an array: unmeasured"),
   { filter: "count gt 1", grammar: "ast", am: "fault", script: ["b", "c"], rest: ["b", "c"], why: "ordering: not evaluated in the AM lane" },
   { filter: 'text ne "x"', grammar: "ast", am: "fault", script: "fault", rest: "ne", why: "ne: REST 400 measured, script text unmeasured" },
 ];

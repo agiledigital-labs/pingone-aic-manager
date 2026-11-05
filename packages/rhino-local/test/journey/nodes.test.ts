@@ -968,7 +968,7 @@ it.each([
   else expect(next.provenance).not.toContainEqual(space);
 });
 it("Identify on an unprobed type whose match turns on letter case is missing", async () => {
-  const cause = "query eq whose match turns on letter case: widget mail";
+  const cause = "openidm-query-filter: query eq whose match turns on letter case: widget mail";
   expectEmulationFailure(cause);
   const next = await request(
     make(
