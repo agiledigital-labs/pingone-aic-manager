@@ -107,6 +107,16 @@ it("a caught Date refusal still fails the run by id, and says the script may hav
     /rhino-local harness fault script-defect\/send-body-js-date: httpClient\.send body\.d is a JS Date[\s\S]*script defect: AIC's behaviour here is measured[\s\S]*this fails the run even if the script caught it/,
   );
 });
+// Round-3 P3-5: the wording answers for the whole set, not the first fault.
+// A gap first and a script defect second used to print the gap wording alone.
+it.each([
+  ["a gap, then a script defect", 'try { nodeState.putShared("u", undefined); } catch (e) {}', `try { ${SEND("{ d: new Date(0) }")} } catch (e) {}`, /harness fault state-put-undefined: [^(]*\(and 1 more: 1 script defect\(s\), where AIC's behaviour is measured[^)]*and 1 behaviour\(s\) the harness/],
+  ["a script defect, then a gap", `try { ${SEND("{ d: new Date(0) }")} } catch (e) {}`, 'try { nodeState.putShared("u", undefined); } catch (e) {}', /harness fault script-defect\/send-body-js-date: [\s\S]*\(and 1 more: 1 script defect\(s\)[^)]*and 1 behaviour\(s\) the harness/],
+])("a case with %s names both kinds", async (_name, first, second, message) => {
+  expectHarnessFault("state-put-undefined");
+  expectHarnessFault("script-defect/send-body-js-date");
+  await expect(run(`${first}\n${second}`)).rejects.toThrow(message);
+});
 it.each([
   ["a shared, acyclic sub-object", "(function () { var s = { k: 1 }; return { a: s, b: s }; })()", { a: { k: 1 }, b: { k: 1 } }],
   ["a Java String", "new java.lang.String('x')", "x"],
