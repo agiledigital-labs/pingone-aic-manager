@@ -45,7 +45,9 @@ export type ConfigInput = {
   /**
    * The tenant's `config/repo.ds`, as read. Optional: it is how the emulator learns a managed
    * type's storage kind (`IdmConfig.storage`). Without it a generic type's number queries keep
-   * the undecided faults the JSON-storage measurement would otherwise retire.
+   * the undecided faults the JSON-storage measurement would otherwise retire. Pass the whole
+   * document: a partial one holding only `managed/*` makes every non-user type generic, including
+   * types the tenant maps under `explicitMapping`, and nothing here can tell (review pf-01 P3-7).
    */
   readonly repo?: Readonly<Record<string, JsonValue>>;
   /**

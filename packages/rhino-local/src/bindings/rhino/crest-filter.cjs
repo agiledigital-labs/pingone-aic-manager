@@ -705,7 +705,8 @@ var __rhinoLocalCrestFilter = (function () {
   // frIndexedDate1-5 / frUnindexedDate1-5 are fr-attr-idateN / fr-attr-dateN,
   // GeneralizedTime (docs/api/14); frIndexedInteger1-5 / frUnindexedInteger1-5
   // are fr-attr-iintN / fr-attr-intN, integers. No string reading describes
-  // the first two. Measured, on alpha_user, over REST and IDM's openidm.query:
+  // the first two. Measured, on alpha_user, over REST and IDM's openidm.query
+  // (and, for the rows the second probe ran, AM's):
   //   phone        telephoneNumber: spaces, hyphens and `+` ignored anywhere,
   //                in the stored value and the literal, for eq, sw and co
   //                (`+` settled by the second probe, 2026-11-06: `eq

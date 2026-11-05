@@ -1531,20 +1531,33 @@ same day. Every filter ran ANDed with a prefix on the probe's own records, over
 IDM REST and from an IDM script (`openidm.query` via `script?_action=eval`);
 **the two agreed on every case**, and where REST answered 400 the script got a
 catchable `JavaException: org.forgerock.json.resource.BadRequestException`
-with the same message. Not probed: AM's `openidm` binding.
+with the same message. A second probe the same day (below) ran the open
+cases again through REST, the IDM script and AM's next-gen `openidm.query`.
 
 `telephoneNumber` (a stores `+614-9999-9999`; the sandbox's phone policy
-needs a mobile shape) is DS `telephoneNumberMatch` — **spaces and hyphens
-are ignored anywhere, in the value and the literal**, for `eq`, `sw` and
-`co`:
+needs a mobile shape) is DS `telephoneNumberMatch` — **spaces, hyphens and
+`+` are ignored anywhere, in the value and the literal**, for `eq`, `sw` and
+`co` (`+` settled by the second probe; b stores `+614-1111-1111`):
 
 | Filter | Rows |
 | --- | --- |
 | `eq "+614-9999-9999"` / `eq "+614-9999-9998"` (controls) | a / — |
 | `eq "+614 9999 9999"`, `eq "+61499999999"`, `eq "+61 4 9999 9999"`, `eq "+6 1-4 99 99-9999"` | a |
 | `sw "+6149"`, `co "99 99"` | a |
+| `eq "61499999999"`, `eq "614-9999-9999"`, `eq "6+1499999999"`, `co "+9999"`, `co "9999"` (second probe) | a |
+| `sw "614"`, `sw "+614"` (second probe) | a, b |
+| `eq "61499999998"`, `eq "+61499999998"` (second probe, negative controls) | — |
 
 Other separators (`(`, `)`, `.`) and ordering were not probed.
+
+**AM's next-gen `openidm.query` returns the same rows** (second probe,
+2026-11-06). The same three records, the same filters, from a throwaway
+next-gen scripted decision node: every phone row above, `frIndexedDate1`
+`gt`/`lt` `"2026-01-01T00:00:00Z"` and `eq "2025-12-31T23:00:00Z"`,
+`frIndexedInteger1` `eq 7`, `eq "7"` and `eq 7.0`, and `pr` / `!(… pr)` on
+`frIndexedMultivalued1` gave exactly the REST and IDM-script rows. `eq 7.5`
+and `eq "notadate"` threw; that surface differs from IDM's and is in
+`docs/api/12` (`openidm`).
 
 `frIndexedDate1` and `frUnindexedDate1` (a stores
 `2026-01-01T10:00:00+11:00`, an earlier instant than `2026-01-01T00:00:00Z`
@@ -1791,6 +1804,19 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-11-06 — E19 second live probe (orchestrator probe note 2 and
+  its captures `compare.out`, `am-errshape.out`; read by the fix-round writer,
+  not re-run): three throwaway `alpha_user` records (`zzemu-e19b-` prefix),
+  every filter in three lanes — `GET /openidm/managed/alpha_user?_queryFilter=…`,
+  `POST /openidm/script?_action=eval` (`openidm.query`), and a throwaway
+  next-gen scripted decision node (`openidm.query`) — rows identical on all
+  21 row-returning filters: `telephoneNumber` `eq "61499999999"`,
+  `eq "614-9999-9999"`, `eq "6+1499999999"`, `sw "614"`, `co "+9999"` (match:
+  `+` ignored), `eq "61499999998"`, `eq "+61499999998"` (no match);
+  `frIndexedDate1` `gt`/`lt`/`eq`; `frIndexedInteger1` `eq 7`/`"7"`/`7.0`;
+  `frIndexedMultivalued1` `pr`/`!pr`. `eq 7.5` and `eq "notadate"` threw in
+  both script lanes (surfaces in `docs/api/12`). Records, script, node and
+  journey deleted, each confirmed by a 404 read.
 - Date: 2026-11-06 — E19 live probe (orchestrator probe note, §3–§4;
   throwaway records, every delete confirmed by a 404 read):
   `POST /openidm/managed/alpha_user?_action=create` ×3 (a, b, c);
@@ -1799,8 +1825,8 @@ on create, or when actually rotating it.
   identical: `telephoneNumber` `eq`/`sw`/`co` with spaces and hyphens (match),
   `frIndexedDate1` / `frUnindexedDate1` `gt`/`lt`/`eq` across offsets
   (instant order), `eq "notadate"` (400), `frIndexedInteger1` with `7`,
-  `"7"`, `7.0`, `7.00`, `"7.0"`, `ge 7.0` (match) and `7.5`, `"7.5"`, `"abc"`
-  under `eq`/`lt`/`gt` (400), `pr` and `!(… pr)` on `frIndexedMultivalued1`,
+  `"7"`, `7.0`, `7.00`, `"7.0"`, `ge 7.0` (match) and `eq 7.5`, `lt 7.5`,
+  `gt 6.5`, `eq "7.5"`, `eq "abc"` (400), `pr` and `!(… pr)` on `frIndexedMultivalued1`,
   `frUnindexedMultivalued1` and `roles` written as `[]` (absent);
   `POST /openidm/managed/<generic type>?_action=create` ×3 and `count` with
   `7`, `"7"`, `7.0`, `"7.0"`, `7.5`, `"7.5"`, `gt 6.5`, `gt "6"`, `lt "10"`.
