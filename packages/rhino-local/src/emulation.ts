@@ -1,7 +1,7 @@
 /** Harness/fidelity failures are never tenant CREST exceptions. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import type { EmulationFailureInfo, JobResponse } from "./protocol.ts";
+import type { EmulationFailureInfo, HarnessFault, JobResponse } from "./protocol.ts";
 
 export class EmulationFailure extends Error {
   readonly emulation: EmulationFailureInfo;
@@ -201,7 +201,13 @@ export function verifyEmulationOwner(owner: EmulationOwner): void {
 export interface EmulationAudit {
   id: string;
   revision: number;
-  failures: Array<{ sequence: number; context: string; owner?: EmulationOwner; file?: string; causes: string[] }>;
+  /**
+   * `causes` are the unexpected ones, which fail the run; `observed` and
+   * `faults` are every cause and harness fault the entry carried, expected or
+   * not, for the run's fault tally (src/harness/fault-tally.ts).
+   */
+  failures: Array<{ sequence: number; context: string; owner?: EmulationOwner; file?: string; causes: string[];
+    kind?: EmulationFailureInfo["kind"]; observed?: string[]; faults?: HarnessFault[] }>;
   outstanding: Array<{ context: string; owner?: EmulationOwner; file?: string }>;
 }
 function changed(): void {
@@ -211,7 +217,8 @@ function changed(): void {
 export function emulationAudit(): EmulationAudit {
   return { id: registry.id, revision: registry.revision,
     failures: history.map((entry) => ({ sequence: entry.sequence, context: entry.context,
-      ...(entry.owner ? { owner: entry.owner } : {}), ...(entry.file ? { file: entry.file } : {}), causes: unexpected(entry) })),
+      ...(entry.owner ? { owner: entry.owner } : {}), ...(entry.file ? { file: entry.file } : {}), causes: unexpected(entry),
+      kind: entry.failure.kind, observed: causes(entry.failure), ...(entry.failure.faults?.length ? { faults: structuredClone(entry.failure.faults) } : {}) })),
     outstanding: [...outstanding].map((work) => ({ context: work.context,
       ...(work.owner ? { owner: work.owner } : {}), ...(work.file ? { file: work.file } : {}) })),
   };

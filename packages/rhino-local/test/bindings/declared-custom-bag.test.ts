@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runScript } from "./load-behaviour.ts";
+import { expectCaughtFault, runScript, runScriptWithFaults } from "./load-behaviour.ts";
 import type { Given, RecordedEffects } from "../../src/case/types.ts";
 
 const resource = "managed/alpha_user/example";
@@ -59,7 +59,7 @@ describe("declared layouts and coherent custom bags (round 4)", () => {
   ])("refuses bag key %s while neighbouring key %s works", (bad, good) => {
     const text = (key: string) =>
       JSON.stringify(Object.fromEntries([[key, "value"]]));
-    const effects = runScript(
+    const { effects, faults } = runScriptWithFaults(
       identity +
         stageBag([text(bad)]) +
         catchStore +
@@ -72,6 +72,7 @@ describe("declared layouts and coherent custom bags (round 4)", () => {
     expect(effects.sharedState.final.error).toMatch(
       /collides with .+; this identity mapping is unmeasured/,
     );
+    expectCaughtFault({ effects, faults }, "identity-bag-key-collision");
     expect(effects.sharedState.final.before).toEqual(row);
     expect(bagOf(effects)).toEqual({ [good]: "value" });
     expect(effects.managedStore).toEqual({
@@ -83,7 +84,7 @@ describe("declared layouts and coherent custom bags (round 4)", () => {
   });
 
   it("the guard-only documented inventory does not enable a write layout", () => {
-    const effects = runScript(
+    const { effects, faults } = runScriptWithFaults(
       identity +
         'try { identity.setAttribute("displayName", ["Changed"]); } catch (e) { nodeState.putShared("error", String(e)); }',
       given,
@@ -91,6 +92,7 @@ describe("declared layouts and coherent custom bags (round 4)", () => {
     expect(effects.sharedState.final.error).toMatch(
       /how AM stores "displayName" in IDM is unmeasured/,
     );
+    expectCaughtFault({ effects, faults }, "identity-attribute-layout");
     expect(effects.managedStore).toEqual(given.managed);
     expect(effects.identityWrites).toEqual([]);
   });
@@ -285,7 +287,7 @@ describe("declared layouts and coherent custom bags (round 4)", () => {
         const alias = 'identity.setAttribute("alias", ["changed"]);';
         const ordinary = 'identity.setAttribute("givenName", ["Changed"]);';
         const seeded = { _id: "example", givenName: "Original" };
-        const effects = runScript(
+        const { effects, faults } = runScriptWithFaults(
           identity +
             (first === "alias" ? alias + ordinary : ordinary + alias) +
             catchStore +
@@ -299,6 +301,7 @@ describe("declared layouts and coherent custom bags (round 4)", () => {
         expect(effects.sharedState.final.error).toMatch(
           /replacing "custom_example" within a non-object.*unmeasured/,
         );
+        expectCaughtFault({ effects, faults }, "identity-store-non-object-bag");
         expect(effects.identityWrites).toEqual([]);
         expect(effects.managedStore).toEqual({
           "managed/alpha_user": [seeded],
@@ -334,7 +337,7 @@ describe("declared layouts and coherent custom bags (round 4)", () => {
   it.each(["example", "changed"])(
     "an _id declaration keeps %s only when the resource stays unchanged",
     (value) => {
-      const effects = runScript(
+      const { effects, faults } = runScriptWithFaults(
         identity +
           'identity.setAttribute("givenName", ["Changed"]);' +
           `identity.setAttribute("identifier", [${JSON.stringify(value)}]);` +
@@ -350,9 +353,11 @@ describe("declared layouts and coherent custom bags (round 4)", () => {
         expect(effects.sharedState.final.error).toMatch(
           /changing the identity resource.*unmeasured/,
         );
+        expectCaughtFault({ effects, faults }, "identity-store-id-layout-change");
         expect(effects.managedStore).toEqual(given.managed);
         expect(effects.identityWrites).toEqual([]);
       } else {
+        expect(faults).toEqual([]);
         expect(effects.sharedState.final.error).toBeUndefined();
         expect(effects.managedStore).toEqual({
           "managed/alpha_user": [{ ...row, givenName: "Changed" }],
