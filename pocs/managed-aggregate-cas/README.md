@@ -100,7 +100,7 @@ re-run that prints either line `false` stops the same way.
 | `lib.mjs`                  | HTTP helper. Mints a bearer with `aic whoami --token` and refuses a non-sandbox context.                         |
 | `setup.mjs`                | Install, hook push, notification flags, `notifyRelationships`, teardown.                                         |
 | `experiments.mjs`          | E1–E16, E18–E20.                                                                                                 |
-| `e21.mjs`                  | E21, both ends of a relationship. Parts: `table`, `fanout`, `peers`, `owner`, `attrs`, `trace`, `cas`, `repo`.   |
+| `e21.mjs`                  | E21, both ends of a relationship. Parts: `table`, `deletewait`, `placement`, `fanout`, `shape`, `peers`, `owner`, `attrs`, `trace`, `cas`, `repo`. |
 | `trace.mjs`                | Write summary for one transaction id or stem.                                                                    |
 | `hooks/onUpdate.js`        | Parent hook. Modes `fold`, `audit`, `children`, `selfpatch`, `plain`.                                            |
 | `hooks/postUpdate.js`      | Parent `postUpdate`: `sink`, `throw`, or a guarded self-patch.                                                   |

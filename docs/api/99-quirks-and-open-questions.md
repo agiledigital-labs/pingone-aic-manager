@@ -1800,3 +1800,26 @@ and generic, which is where Ping's relationship-notification page says to put
 The first pass's result matches the `resourceCollection` placement, not the
 node placement its script wrote. Detail:
 `pocs/managed-aggregate-cas/RESULTS.md`, "E21".
+
+The same measurement found two further disagreements with that page, and one
+hazard the page does not mention.
+
+Putting `notifyRelationships` on a relationship property and naming that same
+property (`parent` set to `["parent"]`) made `GET` and `POST` of the managed
+type return 404, `Resource 'managed/<type>' not found`, while `config/managed`
+still listed it. The other type stayed 200. Clearing the property restored
+the type on the next read. The page's examples name a different relationship
+(`attributes` names `roles`; `assignments` names `members`). They do not say
+that naming itself removes the resource.
+
+The page's `notifyRelationships` example is a property of the object. Setting
+the array on the managed object itself stored it and did not notify the other
+side, for a plain field change or a link change, with and without the
+`notify` flags.
+
+The page says relationship auditing is independent of `notify` and
+`notifySelf`. A fetch of the caller's transaction for an edge patch contained
+`relationshipUpdated` when `NOTIFY=1` was on the relationship node, and no
+activity events when the flags were off. An audit under an id that does not
+start with the caller's id was not searched for, so this is not a proof the
+audit was skipped.

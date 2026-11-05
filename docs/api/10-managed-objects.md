@@ -515,11 +515,29 @@ A relationship property was observed in one of two modes, and both can work:
 - **Generic.** No mapping, and `_refProperties._id` is a plain UUID. Where
   those links are stored is inference — presumably IDM's generic relationships
   table, but `/openidm/repo/relationships` is 403 to the service account.
+  E21 on 2026-11-05 got the same 403, body `Access denied`. What a
+  console-created pair writes was not measured.
 
 Either way, the forward and reverse sides report the **same**
 `_refProperties._id` for a link. The id shape matched the mapping mode on every
 link probed, but that is an observed association over a handful of links, not a
 documented allocation rule; treat it as a hint, never as a classifier.
+
+A custom attribute declared on one side only is one value on that shared edge
+(verified 2026-11-05, E21). `status` was declared on the parent end of
+`children` / `gchildren` and not on the child's reverse. Both sides'
+relationship reads returned `_refProperties` keys `_id`, `_rev` and `status`.
+A patch of the child's has-one subresource changed the status the parent
+read, and a patch through the parent changed the status the child read,
+mapped and generic. The write moved the mapped parent's `_rev` and not the
+generic parent's, and not the child's, from either side. `GET` of the object
+omits relationship fields unless `returnByDefault` is true. `GET` with
+`_fields=<rel>` returns the edge either way. With `returnByDefault` false, a
+plain-field `onUpdate` on either object saw no relationship field in
+`object` or `oldObject`. With it true, both sides' plain-field hooks saw the
+edge, including `status`. The schema note above still holds: the declaration
+is per side. The stored value is not. Detail:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21".
 
 **`PUT config/managed` did not write `repo.ds` in either operation tried** —
 creating a pair, and renaming a mapped property (below). A has-many ↔ has-one
@@ -1569,12 +1587,47 @@ notification commits a parent update. Replacing the child's reverse link with
 the flag on the node moves `_rev` on both mapped parents and on neither
 generic parent.
 
-Not covered here yet: `notifyRelationships`, a has-many reverse, `notify` on a
-has-one forward, whether a one-sided `_refProperties` attribute is visible
-from the other side and inside `object`, the activity-log transaction of a
-notified run, and concurrent notified edge patches. A console-created pair
-still needs the console. Tables: `pocs/managed-aggregate-cas/RESULTS.md`,
-"E21".
+`notifyRelationships` on the object is stored and does not notify anyone
+(verified 2026-11-05). On the field that changes, it does, with no `notify`
+flag: a child `value` change that names `parent` and `gparent` ran the
+parent's hooks, both storage modes, and moved the generic parent's `_rev`.
+A parent `name` change that names `children` and `gchildren` ran the child's
+hooks, and the child's `_rev` stayed put. The child script does not assign
+to `object`. A change to a different field did not propagate. The tenant
+puts this on the field (`alpha_role.temporalConstraints` names `members`).
+`alpha_user` declares none.
+
+On the relationship property, naming that same relationship 404'd the
+managed resource (`Resource 'managed/<type>' not found`) for about 24 s
+while `config/managed` still listed the type. The other POC type stayed
+200. Clearing the property brought it back. Naming the other relationship,
+which is what `alpha_organization.parent` does, did not notify that other
+relationship's objects. The referenced object was notified only when
+`notify` was also on `resourceCollection`.
+
+A has-many / has-many generic pair (`peers` / `peerOf`) matched the
+node-placement table above, including no parent hook on child `DELETE`
+under `NOTIFY=1`. `notify` on a has-one forward's relationship node changed
+nothing. On that forward's `resourceCollection` it notified the referenced
+parent for a create-with-link, a reverse-link replace, a child-side edge
+patch and a child `DELETE`, and not for a plain field. `notifySelf` on the
+forward notified the child for a child-side edge patch.
+
+The notified hook's transaction id was the id the client sent plus `/0`.
+The sink creates were in the one `idm-activity` transaction that
+`aic logs tx` returned for the sent id, along with `relationshipUpdated`
+on the parent and no separate parent `UPDATE`. The client waited: three
+samples went from 46–48 ms with the flags off to 72–85 ms with `NOTIFY=1`
+on the node, and the sink was already in the response. Ten concurrent
+notified edge patches ran `onUpdate` 38 times and `postUpdate` 9 (mapped)
+or 10 (generic), with a repeated `oldRev`. The generic final `derived`
+matched the ten edges. The mapped pair returned one 404, finished with
+nine edges, and its `derived.sum` was 50 rather than 55.
+
+`DELETE` of the relationship URL, as distinct from `DELETE` of the child
+record, was not its own row. A notification received through one
+relationship and propagated out along another was not isolated. Tables:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21".
 
 ## Examples
 
@@ -2094,7 +2147,12 @@ on create, or when actually rotating it.
   `notifySelf`. E21 the same day counted hooks on both ends. `notify` on the
   relationship node did not run the parent hooks on `DELETE` of the child
   record; `notify` on the child's `resourceCollection` did, and that
-  notification moves a generic parent's `_rev`. An in-memory audit trail stays
+  notification moves a generic parent's `_rev`. Field-level
+  `notifyRelationships` notified the other side on a change of that field;
+  the same key on the object did not. A relationship property that named
+  itself 404'd that managed type until the property was cleared. Concurrent
+  notified edge patches retried `onUpdate` several times per commit. An
+  in-memory audit trail stays
   exact under contention;
   `idm-activity` shows the committed parent write once and every retried hook
   side effect. See "Concurrent `PATCH` and hooks".
