@@ -98,8 +98,8 @@ setTenantProvider(
 
 When a script does something the harness does not emulate, the harness refuses
 it with a **harness fault** rather than guessing. Examples are an unmocked
-binding method, an unseeded fixture, an unexpected arity, or a JS `Date` in an
-`httpClient.send` body. A harness fault **fails the case even if the script
+binding method, an unseeded fixture, an argument count whose accepted range is
+the harness's guess, or a JS `Date` in an `httpClient.send` body. A harness fault **fails the case even if the script
 catches it and then succeeds**, because AIC would not have thrown there: a
 `try`/`catch` around it must not turn a gap in the harness into a passing test.
 
@@ -108,15 +108,30 @@ rhino-local harness fault send-body-js-date: httpClient.send body.d is a JS Date
 ```
 
 Every fault has a stable id: a kebab-case slug, or a family prefix such as
-`arity/<binding.method>`, `not-mocked/<binding.method>` or `fixture/<kind>`.
+`arity-unknown/<binding.method>`, `not-mocked/<binding.method>` or
+`fixture/<kind>`.
 Ids are never derived from line numbers or message text, so they survive a
 release. [`docs/rhino-local-gaps.md`](../../docs/rhino-local-gaps.md#harness-faults)
 lists them.
 
 Errors that AIC itself raises and the harness emulates stay ordinary,
 catchable script errors. One example is `Entry Already Exists` from a
-colliding `openidm.create`. A script that catches one of those passes, just as
-it would on the tenant.
+colliding `openidm.create`, `Resource 'managed/<type>' not found` from
+`openidm.query` on a type the environment profile (from
+`aic-script-tester-pull-profile`) does not declare, or the `_queryFilter` parse error for a malformed filter (raised
+before any record is read, so an empty collection does not hide it). A script
+that catches one of those passes, just as it would on the tenant. `openidm.read`
+of an undeclared type returns `null`, as AIC's does.
+
+**Argument counts.** A call with an argument count AIC has no overload for is
+refused the way Rhino refuses it on AIC — a catchable
+`InternalError: Can't find method <java class>.<method>(<argument types>).` —
+wherever the accepted counts have a basis: measured on AIC
+(`existingSession.get`, `utils.crypto.randomUUID`) or read from AIC's binding
+introspection (`docs/api/bindings/scripted-decision-next.json`). Where the
+harness's range is its own guess, the call is the harness fault
+`arity-unknown/<binding.method>` instead, and so is every argument-count check
+on the legacy engine, which has no introspection.
 
 **The fault tally.** At the end of a run the package's Vitest reporter prints a
 per-id summary to stderr. It shows how many cases hit each fault and in how
@@ -127,7 +142,9 @@ also writes the tally as JSON, even when it is empty. The default path is
 `AIC_SCRIPT_TESTER_FAULT_TALLY` to write it somewhere else. The tally covers
 every file, worker and pooled JVM in the run, and each fault is attributed to
 the case whose job raised it. Missing journey and IDM behaviour that has no id
-yet is listed separately, under its cause text.
+yet is listed separately, under its cause text. In watch mode with
+`isolate: false` the audit history spans reruns, so a rerun's tally can count
+cases from earlier runs; read the tally from a plain `vitest run`.
 
 ```json
 { "version": 1,
@@ -1438,10 +1455,13 @@ exceptions, callbacks and nested inner trees remain missing. Legacy scripts,
 unsupported bindings, session-property actions, `noSession`, unsupported tree
 flags and unmocked HTTP are fatal missing behavior, even if script catches or
 `finally` tries to hide the failure. So is every `rhino-local:` diagnostic the
-binding runtime raises (an arity it does not model, `new JsonValue(...)`, and so
-on): in a journey the runtime's one diagnostic constructor, `__rhinoLocalFail`,
-is a Java function that fails the run, so the decision never depends on an
-error's text. `utils` members measured in `docs/api/12` run locally and record
+binding runtime raises for behaviour it does not model (an argument count whose
+range is a guess, `new JsonValue(...)`, and so on): in a journey the runtime's
+diagnostic constructor, `__rhinoLocalFail`, is a Java function that fails the
+run, so the decision never depends on an error's text. Errors the runtime
+emulates from AIC (`keySet()` on a request map, a `consentMappingCallback`
+field refusal, an argument count AIC itself refuses) stay catchable in a
+journey, as they are on the tenant. `utils` members measured in `docs/api/12` run locally and record
 that provenance; any other `utils` member is refused.
 
 Node effects are serialized in Java from the values themselves, never through a

@@ -62,27 +62,27 @@ What a profile buys, and it is one thing: **type existence**. AIC returns
 `null` both for a real type whose record is absent and for a type that does
 not exist (`docs/api/10`), so a fixture typo is invisible on the tenant. With
 a profile the harness separates them — a declared-but-unseeded type reads as
-an empty collection (`null`, matching AIC), an undeclared one throws naming
-the environment and the pull date. Without a profile the pre-existing
-behaviour is unchanged: any unseeded collection is a missing fixture.
+an empty collection (`null`, matching AIC), and an undeclared one is answered
+as AIC answers it: `openidm.read` returns `null` and `openidm.query` throws AIC's
+catchable `Resource 'managed/<type>' not found` (`docs/api/12`). A record write
+(`create`/`update`/`patch`/`delete`) to an undeclared type is the harness fault
+`openidm-unknown-managed-type`, naming the environment and the pull date,
+because what AIC does there is unmeasured. Without a profile the pre-existing
+behaviour is unchanged: any unseeded collection is the fault `fixture/managed`.
 
 Only the SET of declared type names crosses into the sandbox. Every schema
 rule — properties, `required`, `enum` — is checked in the Node layer, so each
 rule has one implementation rather than an AM-safe second copy that could
 drift from it.
 
-### A deliberate divergence, in the safe direction
+### Typos without a profile
 
-An undeclared type throwing is **stricter than AIC**, which returns `null`.
-That is a false fail, not a false pass, and it is the point: the alternative
-is a test that reads nothing and passes. `lib-openidm-miss-consumer` encodes
-the live `null` and therefore cannot pass with a profile loaded. Retire or
-re-scope that case rather than relaxing the check.
-
-Since E19 (2026-11-05) the throw is the harness fault
-`openidm-unknown-managed-type` (see [Harness faults](#harness-faults)). A script
-that catches it no longer passes, because AIC would have returned `null`
-rather than thrown. Without a profile, the same miss is `fixture/managed`.
+A read of an undeclared type returning `null` is what AIC does, and it is also
+how a fixture typo hides. The profile is what tells a typo from a real absent
+type, so without one the harness still refuses the read as `fixture/managed`
+(a false fail, not a false pass). `lib-openidm-miss-consumer` runs under a
+profile that declares its two real types, and its nonexistent-type read
+returns the live `null`.
 
 ### What strict checking found on its first run
 
@@ -138,6 +138,14 @@ assumption in `docs/api/`:
 - `No Such Entry`.
 - the two query-parameter errors (`You must use exactly one of …` and
   `Query Expressions are not supported …`).
+- a malformed `_queryFilter`: `The value '<filter>' for parameter
+  '_queryFilter' could not be parsed as a valid query filter` (script text
+  measured for `name eq`; the REST lane measures the same rejection for the word
+  form `not`, `eq null`, `in` and array values). The filter is parsed before any
+  record is read, so an empty collection does not hide it.
+- `Resource 'managed/<type>' not found` from `openidm.query` on a type the
+  profile does not declare.
+- a wrong argument count where AIC's accepted counts have a basis (below).
 - `Entry Already Exists` on a colliding `create`.
 - invalid JSON patch.
 - `Assertion Failed`.
@@ -150,29 +158,52 @@ assumption in `docs/api/`:
 | Id                                                                                | Refusal                                                                                                               |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `not-mocked/<binding>.<method>`                                                   | a generated binding method the overlay does not implement                                                            |
-| `arity/<binding>.<method>`                                                        | an overlay method called with an argument count AIC's overload set was not measured with (see below)                  |
-| `fixture/<kind>`                                                                  | an unseeded fixture: `managed`, `http`, `esv`, `secrets`, `library`, `callbacks`, `callback-value`, `openidm-action`, `cacheManager`, `journey`, `match-pattern-type` |
+| `arity-unknown/<binding>.<method>`                                                | an argument count outside the harness's own guessed range, where AIC's accepted counts are unknown (see below)      |
+| `fixture/<kind>`                                                                  | an unseeded fixture: `managed`, `http`, `esv`, `secrets`, `library`, `callbacks`, `callback-value`, `openidm-action`, `cache-manager`, `journey`, `match-pattern-type` |
 | `send-body-js-date`, `send-body-regexp`, `send-body-function`, `send-body-error`, `send-body-array-cycle` | an `httpClient.send` body AIC sends as a Rhino object dump, or whose error is unmeasured                     |
 | `state-put-undefined`                                                             | `nodeState.put*` / `sharedState.put` / `transientState.put` with `undefined`                                         |
-| `nodeState-merge-non-object`                                                      | `nodeState.mergeShared`/`mergeTransient` with a non-object                                                           |
+| `node-state-merge-non-object`                                                     | `nodeState.mergeShared`/`mergeTransient` with a non-object                                                           |
 | `action-suspend-additional-logic`                                                 | `action.suspend` with a non-function `additionalLogic`                                                               |
 | `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
-| `openidm-unknown-managed-type`                                                    | a managed type the environment profile does not declare                                                              |
-| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the local matcher cannot evaluate; a `_queryId` other than the measured ones                         |
+| `openidm-unknown-managed-type`                                                    | a record write to a managed type the environment profile does not declare                                            |
+| `openidm-query-filter`, `openidm-query-id`                                        | a well-formed `_queryFilter` the local matcher cannot evaluate (`gt`/`ge`/`lt`/`le`, or `ne`, whose script text is unmeasured); a `_queryId` other than the measured ones |
 | `openidm-fields-wildcard-with-path`, `openidm-fields-non-object-parent`, `openidm-fields-unresolved-ref` | `_fields` projections that were not measured                                                  |
 | `identity-attribute-layout`, `identity-write-idm-field-name`, `identity-write-cn`, `identity-set-attribute-non-array`, `identity-date-rendering`, `identity-wrapper-after-recreate` | `idRepository.getIdentity()` reads and writes outside the measured mapping |
-| `identity-bag-key-collision`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
+| `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
 | `json-value-constructor`                                                          | `new JsonValue(...)`                                                                                                  |
 | `seed-cache-manager`, `seed-binding`                                              | seeding a binding the harness cannot seed                                                                            |
 
-`arity/…` is the disputed class. Only `session.get()` throwing
-`Can't find method` was measured (`docs/api/12`). The other arity checks
-assume AIC refuses an unlisted overload the same way. If it does, these are
-emulated errors (with an unmeasured message) and should be catchable. The ids
-make reclassifying any of them a one-site change.
+**Argument counts, by provenance.** A call with an argument count AIC has no
+overload for fails on AIC as Rhino's catchable
+`InternalError: Can't find method <java class>.<method>(<argument types>).`
+The harness reproduces that, with Rhino's argument-type naming, wherever the
+accepted counts have a basis:
+
+- **measured** on AIC: `existingSession.get` (`docs/api/12`) and
+  `utils.crypto.randomUUID` (corpus `binding-utils-interop`). The tenant's other
+  measured `Can't find method` refusals (`getMemberships()`, `setAct(object)`,
+  `getRandomValues(object)`) are type refusals, not argument counts.
+- **assumed** from AIC's binding introspection
+  (`docs/api/bindings/scripted-decision-next.json`): the overload set of each
+  `nodeState`, `action`, `callbacksBuilder`, `callbacks`, `secrets`, `journey`,
+  `openidm`, `cacheManager`, `logger`, `httpClient.send`,
+  `systemEnv.getProperty`, `idRepository.getIdentity` and
+  `utils.crypto.getRandomValues` method the overlay checks. That Rhino refuses an
+  unlisted count there is assumed from the measured cases, not measured per
+  method.
+
+Everywhere else the accepted range is the harness's own guess — the request
+maps' `get`/`containsKey`, `existingSession.put`/`containsKey`, the identity
+wrapper's `setAttribute`/`addAttribute`/`store`, `secret.getAsUtf8`, `require`,
+the legacy `sharedState`/`transientState`, and every check on the legacy
+engine, which has no introspection — and a count outside it is the harness
+fault `arity-unknown/<path>`. The basis table (`__rhinoLocalArityBasis` in
+`runtime.cjs`) is pinned against the introspection file by
+`test/bindings/arity-provenance.test.ts`.
 
 **Journey lane.** In a journey, AM's host bridge replaces the fault channel
-with its uncatchable `unsupported` refusal. The ids still reach the tally: a
+with its uncatchable `unsupported` refusal. The emulated AIC errors above stay
+catchable there too. The ids still reach the tally: a
 generated stub reports `not-mocked/<behaviour>`, and a script-tester refusal
 reports its own id. The journey and IDM emulators' own `missing` sites have no
 ids yet. The tally lists them under `unidentified`, keyed by cause text, and
@@ -191,7 +222,6 @@ Each is a `gap` entry with its reason; this is the index.
 | `request-headers-dump`        | same, plus Java map formatting from `String()`                                               | JS object                                                          |
 | `httpclient-body-coercion`    | `java.lang.Integer`/`Long` body fields are sent                                              | the mock drops them                                                |
 | `java-collections`            | `new (JavaImporter(java.util)).HashSet()` works                                              | throws                                                             |
-| `lib-openidm-miss-consumer`   | read of a nonexistent managed **type** → `null`                                              | throws `no given.managed entry` (deliberate — see above)           |
 | `identity-resolve-diag`       | `getIdentity` resolves a UUID only; payload committed abbreviated                            | same resolution; emits the full `attr-error: <message>` text       |
 | `identity-getattribute-shape` | Java collection: no `includes` member (`Cannot find function`), prints `[{}]`                | `toArray`/`contains`/`[{}]` match; shadowed `includes` (`Cannot call property`) |
 | `identity-enum-attrs`         | **not measured** — every count came back `err`; the probe's IDM setup users are gone         | —                                                                  |
@@ -400,9 +430,9 @@ them as REST JSON).
 | `binding-callbacks-getters` | 19/21        | `getChoiceCallbacks` is `int[]` on AIC (unconstructible through the shutter); `getConsentMappingCallbacks` has no seedable body     |
 | `binding-utils`             | 24/29        | error suffixes name the mock, not the script; `checkBcrypt` unmocked (no bcrypt in the JDK); PBKDF2 JS-array salt message          |
 | `binding-action`            | 13/16        | a mock-thrown `InternalError` carries no `(name#line)`                                                                              |
-| `binding-utils-interop`     | 17/20        | AIC wraps as `JavaException ScriptCryptoException`; arity and `(name#line)` wording                                                 |
+| `binding-utils-interop`     | 17/20        | AIC wraps as `JavaException ScriptCryptoException`; the arity refusal's text matches but lacks AIC's `(name#line)` suffix          |
 | `binding-services`          | 57/80        | tenant-backed JWT and policy results; absent-user `getIdentity` wrapper's Java members; secret `JavaException`s; tenant script id in `getName`     |
-| `binding-openidm-writes`    | 18/36        | AIC throws `JavaException` wrappers carrying the LDAP DN; `validateObject` answers from tenant policy; unsupported query filters     |
+| `binding-openidm-writes`    | 18/36        | AIC throws `JavaException` wrappers carrying the LDAP DN; `validateObject` answers from tenant policy; query errors as `Error`, not `JavaException` |
 
 Two conventions keep these honest. An AIC `InternalError:` is reproduced with
 `throw new InternalError(msg)`. An AIC `JavaException: …Adapter: <msg>` becomes
