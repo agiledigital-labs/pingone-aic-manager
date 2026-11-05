@@ -116,12 +116,22 @@ describe("environment profile through the JVM runner", () => {
     });
   });
 
-  it("an update of an UNdeclared type is a harness fault naming the environment: unmeasured on AIC", async () => {
+  // Every write, create and action included (round-2 P2-2: those two used to
+  // succeed, so a typo'd type passed locally). The record-level action would
+  // otherwise be fixture/openidm-action, so it discriminates the check's order.
+  it.each([
+    ["update", 'openidm.update("managed/zzz_not_a_type/anything", null, {})'],
+    ["patch", 'openidm.patch("managed/zzz_not_a_type/anything", null, [])'],
+    ["delete", 'openidm.delete("managed/zzz_not_a_type/anything", null)'],
+    ["create", 'openidm.create("managed/zzz_not_a_type", "a", { k: 1 })'],
+    ["create", 'openidm.create("managed/zzz_not_a_type", null, { k: 1 })'],
+    ["action", 'openidm.action("managed/zzz_not_a_type", "patch", [])'],
+    ["action", 'openidm.action("managed/zzz_not_a_type", "nosuchaction", {})'],
+    ["action", 'openidm.action("managed/zzz_not_a_type/anything", "custom", {})'],
+  ])("an %s of an UNdeclared type is a harness fault naming the environment: unmeasured on AIC (%s)", async (method, call) => {
     expectHarnessFault("openidm-unknown-managed-type");
-    await expect(
-      probeCall('openidm.update("managed/zzz_not_a_type/anything", null, {})')
-    ).rejects.toThrow(
-      /harness fault openidm-unknown-managed-type: openidm\.update: "managed\/zzz_not_a_type" is not a managed object in environment "sandbox"/
+    await expect(probeCall(call)).rejects.toThrow(
+      new RegExp(`harness fault openidm-unknown-managed-type: openidm\\.${method}: "managed\\/zzz_not_a_type" is not a managed object in environment "sandbox"`)
     );
   });
 
