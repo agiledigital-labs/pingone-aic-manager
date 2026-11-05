@@ -189,7 +189,9 @@ assumption in `docs/api/`:
 | `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
 | `json-value-constructor`                                                          | `new JsonValue(...)`                                                                                                  |
 | `seed-cache-manager`, `seed-binding`                                              | seeding a binding the harness cannot seed                                                                            |
-| `idm-runtime-script/<path>`, `idm-runtime-script-path`                            | IDM emulator: one of IDM's own runtime scripts (a hook's `file`, or `require(id)` as `<id>.js`) that the project's `runtimeScripts` provider did not supply, or a name that is not a canonical path under the script root (E15; README "IDM runtime scripts") |
+| `idm-runtime-script/<path>`, `idm-runtime-script-path`, `idm-runtime-script-provider` | IDM emulator: one of IDM's own runtime scripts (a hook's `file`, or `require(id)` as `<id>.js`) that the project's `runtimeScripts` provider did not supply — including a name that matches a provider file only case-insensitively, or names a directory; a name that is not a canonical path under the script root (absolute, `.`/`..`/empty segment, trailing slash, backslash, NUL) or reaches a symbolic link in a provider directory; a loader that throws or returns a non-string, or a listed file that cannot be read (E15; README "IDM runtime scripts") |
+| `idm-script-file-and-source`                                                      | IDM emulator: a script declaring both `file` and `source`                                                            |
+| `idm-implicit-sync/<mapping>`                                                     | IDM emulator: a committed managed create, update, changed patch or delete on a type that is the `source` of a mapping in the supplied `config/sync` (`ConfigInput.sync`). AIC runs the mapping synchronously (implicit sync, docs/api/16-sync-mappings.md, measured 2026-06-19); the emulator models no sync, so the write faults before the store changes. Without `sync`, every write records `assumed: no config/sync supplied …` instead |
 
 **Argument counts, by provenance.** A call with an argument count AIC has no
 overload for fails on AIC as Rhino's catchable
@@ -276,7 +278,8 @@ generated stub reports `not-mocked/<behaviour>`, and a script-tester refusal
 reports its own id. The IDM emulator's `_queryFilter` refusals, the
 record-level ones included (since E19 round 5), report
 `openidm-query-filter`, and an IDM runtime script the provider did not supply
-reports `idm-runtime-script/<path>` (E15); its other `missing` sites, and the
+reports `idm-runtime-script/<path>` (E15), and a write that would run a sync
+mapping reports `idm-implicit-sync/<mapping>`; its other `missing` sites, and the
 journey emulator's, have no ids yet. The tally lists them under `unidentified`, keyed by cause text, and
 giving them ids is a per-site change in `AmHostBridge.java` and
 `src/journey/engine.ts`.
