@@ -77,8 +77,12 @@ it("a caught true refusal fails its case, a caught emulated error passes, and th
     for (const name of ["a", "b"]) {
       const refusal = status[`${name} refusal caught refusal then success`];
       expect(refusal?.status).toBe("failed");
+      // File b's case also hits state-put-undefined, a gap: the wording then
+      // answers for both kinds (round-3 P3-5), where file a's is a defect alone.
       expect(refusal?.failureMessages.join("\n")).toMatch(
-        /rhino-local harness fault script-defect\/send-body-js-date: httpClient\.send body\.d is a JS Date[\s\S]*script defect: AIC's behaviour here is measured[\s\S]*this fails the run even if the script caught it/
+        name === "a"
+          ? /rhino-local harness fault script-defect\/send-body-js-date: httpClient\.send body\.d is a JS Date[^\n]*\(script defect: AIC's behaviour here is measured[^\n]*this fails the run even if the script caught it\)/
+          : /rhino-local harness fault script-defect\/send-body-js-date: httpClient\.send body\.d is a JS Date[^\n]*\(and 1 more: 1 script defect\(s\)[^\n]*and 1 behaviour\(s\) the harness does not emulate; this fails the run even if the script caught it\)/
       );
       expect(status[`${name} collide caught emulated error`]?.status).toBe("passed");
       expect(status[`${name} clean clean after a fault`]?.status).toBe("passed");
