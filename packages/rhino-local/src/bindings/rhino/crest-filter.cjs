@@ -23,8 +23,21 @@
 // strings, numbers outside JSON's grammar (`+5`, `05`, `1.2.3`), `!` not
 // followed by `(`, trailing text, a quoted pointer, `null`/arrays after any
 // operator but the measured ones, and pointers holding `[]{}` or a bad `~`.
+//
+// Also `unsupported`, from E19 fix round 3, because the on-prem CREST 27.1.1
+// parser (QueryFilters.parse, run by the round-3 reviewer over 112 inputs)
+// rejects them and AIC is unmeasured. The jar is a hypothesis here, not an AIC
+// measurement, so these are faults, not catchable: an exponent with no `.`
+// (`1e3`; CREST hands a value without `.` to Long.parseLong), an integer
+// beyond 2^53 - 1 (past Java long CREST refuses it; below that and past 2^53
+// a JS number cannot hold the long CREST compares), any separator but U+0020
+// (CREST splits on space and parentheses only, so a tab or newline is part of
+// a token there), and a `!` glued to the word or string before it (`and!(`).
 var __rhinoLocalCrestFilter = (function () {
   var NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
+  // Written out rather than `\s`, whose membership differs between Rhino and
+  // V8 at the edges; both lanes must give one verdict.
+  var OTHER_SPACE = /[\t\n\v\f\r\u0085\u00a0\u1680\u180e\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
 
   function Rejection(kind, reason) {
     this.kind = kind;
@@ -35,12 +48,19 @@ var __rhinoLocalCrestFilter = (function () {
     throw new Rejection(kind, reason);
   }
 
-  function isSpace(ch) {
-    return /\s/.test(ch);
+  function isDelimiter(ch) {
+    return ch === "(" || ch === ")" || ch === "!" || ch === '"' || ch === " " || OTHER_SPACE.test(ch);
   }
 
-  function isDelimiter(ch) {
-    return ch === "(" || ch === ")" || ch === "!" || ch === '"' || isSpace(ch);
+  function numberValue(text) {
+    if (/[eE]/.test(text) && text.indexOf(".") < 0) {
+      reject("unsupported", "an exponent with no . (CREST 27.1.1 reads it as a long): " + text);
+    }
+    var number = Number(text);
+    if (text.indexOf(".") < 0 && Math.abs(number) > 9007199254740991) {
+      reject("unsupported", "an integer beyond 2^53 - 1: " + text);
+    }
+    return number;
   }
 
   function tokenize(src) {
@@ -49,10 +69,16 @@ var __rhinoLocalCrestFilter = (function () {
     var gap = true;
     while (i < src.length) {
       var ch = src.charAt(i);
-      if (isSpace(ch)) {
+      if (ch === " ") {
         i += 1;
         gap = true;
         continue;
+      }
+      if (OTHER_SPACE.test(ch)) {
+        reject("unsupported", "a separator other than a space (CREST 27.1.1 splits on U+0020 only): " + JSON.stringify(ch));
+      }
+      if (ch === "!" && !gap && tokens.length > 0 && tokens[tokens.length - 1].type !== "punct") {
+        reject("unsupported", "a ! with no space before it: " + tokens[tokens.length - 1].text + "!");
       }
       if (ch === "(" || ch === ")" || ch === "!") {
         tokens.push({ type: "punct", text: ch });
@@ -128,7 +154,7 @@ var __rhinoLocalCrestFilter = (function () {
     if (typeof input !== "string") {
       return { error: "unsupported", reason: "a non-string _queryFilter (" + (input === null ? "null" : typeof input) + ")" };
     }
-    if (!/\S/.test(input)) {
+    if (!/[^ ]/.test(input)) {
       return { error: "unsupported", reason: "an empty _queryFilter" };
     }
     var tokens;
@@ -177,7 +203,7 @@ var __rhinoLocalCrestFilter = (function () {
         reject("parse", "an array value");
       }
       if (NUMBER.test(text)) {
-        return Number(text);
+        return numberValue(text);
       }
       return reject("unsupported", "a value this grammar does not read: " + text);
     }
