@@ -1624,10 +1624,24 @@ or 10 (generic), with a repeated `oldRev`. The generic final `derived`
 matched the ten edges. The mapped pair returned one 404, finished with
 nine edges, and its `derived.sum` was 50 rather than 55.
 
+Repeated the same day, five fresh bursts of those ten patches lost mapped
+edges every time (two to six of the ten). The same loss happened with the
+flags off and with `notify` on `resourceCollection`. The generic pair kept
+all ten edges in five bursts with the flag and five without. The ten mapped
+patches sent one at a time kept every edge, and two concurrent mapped
+patches kept both, five times each. The 404 body was `Resource '<id>' not
+found` for an edge both sides had listed immediately before the burst. The
+child record stayed. The edge was gone from the parent and from the child,
+and a read about 30 s later did not bring it back. The 404's transaction had
+an access event and no activity: no `DELETE`, no relationship-removed event.
+`idm-core` in that window had no `ERROR` line. Where the notification ran,
+`derived` matched the edges still stored. Where it did not, `derived` stayed
+at the value the link-adds had left. (verified 2026-11-05)
+
 `DELETE` of the relationship URL, as distinct from `DELETE` of the child
 record, was not its own row. A notification received through one
 relationship and propagated out along another was not isolated. Tables:
-`pocs/managed-aggregate-cas/RESULTS.md`, "E21".
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21" and "E21 `cas` repeated".
 
 ## Examples
 
@@ -2151,9 +2165,11 @@ on create, or when actually rotating it.
   `notifyRelationships` notified the other side on a change of that field;
   the same key on the object did not. A relationship property that named
   itself 404'd that managed type until the property was cleared. Concurrent
-  notified edge patches retried `onUpdate` several times per commit. An
-  in-memory audit trail stays
-  exact under contention;
+  notified edge patches retried `onUpdate` several times per commit. A repeat
+  lost mapped edges on every burst of ten, with the node flags, with `notify`
+  on `resourceCollection`, and with the flags off; the generic pair did not,
+  and the same ten mapped patches sent one at a time did not. An in-memory
+  audit trail stays exact under contention;
   `idm-activity` shows the committed parent write once and every retried hook
   side effect. See "Concurrent `PATCH` and hooks".
 - Date: 2026-10-31 — `config/repo.ds` repair, sandbox `test_from` / `test_to`

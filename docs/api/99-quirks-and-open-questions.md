@@ -1823,3 +1823,18 @@ The page says relationship auditing is independent of `notify` and
 activity events when the flags were off. An audit under an id that does not
 start with the caller's id was not searched for, so this is not a proof the
 audit was skipped.
+
+**2026-11-05 — concurrent edge patches on a mapped relationship drop edges.**
+Ten concurrent `PATCH`es of `_refProperties` on ten different edges of one
+mapped parent lost edges on every repetition (two to six), with `notify` /
+`notifySelf` on the relationship node, with those flags off, and with
+`notify` on `resourceCollection`. The generic pair, written the same way,
+kept all ten edges in both flag states. The same ten mapped patches sent one
+at a time kept every edge, and two concurrent mapped patches kept both. The
+404 names an edge id that both sides listed immediately before the burst. The
+child record stays. The edge is gone from the parent and from the child, and
+is still gone about 30 s later. The 404 transaction has an access event and
+no activity write: no `DELETE`, no relationship-removed event. `idm-core` in
+the window had no `ERROR` line. Nothing in Ping's relationship-notification
+page describes this. Detail: `pocs/managed-aggregate-cas/RESULTS.md`, "E21
+`cas` repeated".
