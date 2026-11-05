@@ -58,6 +58,20 @@ describe("tallyFaults", () => {
     expect(tally.unidentified).toEqual([{ id: "resource route: x", cases: 1, failed: 1, files: ["c.test.ts"], message: "resource route: x" }]);
   });
 
+  it("does not count a job's echo of a host-call fault as unidentified, but keeps another case's", () => {
+    // The IDM emulator raises an id'd fault inside a host call; the JVM's job response then
+    // repeats its cause without the id. Same case: one fault. Control: the bare cause in a
+    // case that never saw the id stays unidentified.
+    const t1 = owner("t1", "/r/a.test.ts");
+    const t2 = owner("t2", "/r/a.test.ts");
+    const cause = "openidm-query-filter: openidm-query-filter message";
+    const echo = (o: EmulationOwner): Failure => ({ sequence: ++sequence, context: "job", owner: o, file: o.file,
+      causes: [cause], kind: "missing", observed: [cause] });
+    const tally = tallyFaults([audit("w", [entry(t1, [fault("openidm-query-filter")]), echo(t1), echo(t2)])], "/r");
+    expect(tally.faults.map((row) => [row.id, row.cases])).toEqual([["openidm-query-filter", 1]]);
+    expect(tally.unidentified.map((row) => [row.id, row.cases])).toEqual([[cause, 1]]);
+  });
+
   it("orders by cases, then id", () => {
     const tally = tallyFaults([audit("w", [
       entry(owner("t1", "/f"), [fault("b")]), entry(owner("t2", "/f"), [fault("c"), fault("a")]), entry(owner("t3", "/f"), [fault("c")]),

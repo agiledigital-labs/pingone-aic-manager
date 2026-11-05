@@ -7,7 +7,7 @@ import type { JsonValue } from "../protocol.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
-import { type Dimension, type Operator, type StringPolicy, type StringRule, fieldValue, matchesFilter, parseFilter } from "./filter.ts";
+import { type Dimension, type Operator, type StringPolicy, type StringRule, classifyFilter, fieldValue, matchesFilter } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Invocation, Scripts } from "./scripts.ts";
 import type { Document, ManagedType, PolicyEvaluator, RestRequest } from "./types.ts";
@@ -362,10 +362,24 @@ export class ManagedStore {
       throw new IdmError(405, "Query Expressions are not supported when using DS as the repo");
     }
     if (query._queryId !== undefined) missing(this.evidence, `named _queryId: ${String(query._queryId)}`);
-    if (typeof query._queryFilter !== "string") throw new IdmError(400, "A value could not be parsed as a valid query filter");
+    // One grammar for both lanes (src/bindings/rhino/crest-filter.cjs): a catchable 400 only where
+    // AIC's rejection is measured or certain; anything else it cannot decide is missing.
+    const classified = classifyFilter(query._queryFilter);
+    if ("error" in classified) {
+      if (classified.error === "parse") {
+        this.evidence.measured("CREST filter syntax and documented parse failures", "docs/api/10-managed-objects.md");
+        throw new IdmError(400, "A value could not be parsed as a valid query filter");
+      }
+      if (classified.error === "ne" && !op.internal) {
+        this.evidence.measured("ne is refused with an operator-specific 400 over REST", "docs/api/10-managed-objects.md");
+        throw new IdmError(400, "unrecognized or unsupported filter operator 'ne'");
+      }
+      const reason = classified.error === "ne" ? "ne from a script (AIC refuses it; the script-side text is unmeasured)" : classified.reason;
+      missing(this.evidence, `_queryFilter the emulator cannot decide: ${JSON.stringify(query._queryFilter) ?? "undefined"}: ${reason}`, "openidm-query-filter");
+    }
     this.evidence.measured("CREST filter syntax and documented parse failures", "docs/api/10-managed-objects.md");
     this.evidence.assumed("CREST comparison uses existential array matching");
-    const filter = parseFilter(query._queryFilter);
+    const filter = classified.filter;
     checkCapabilities(type, false, this.evidence, this.policy !== undefined);
     const policy = stringPolicy(type.name, this.evidence);
     let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, row, policy)).map(([, row]) => structuredClone(row));
