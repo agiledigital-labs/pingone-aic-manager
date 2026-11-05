@@ -67,7 +67,8 @@
     "LICENSE-APACHE",
     "LICENSE-MIT",
     "src/bindings/rhino/runtime.cjs",
-    "src/bindings/rhino/identity-policy.cjs"
+    "src/bindings/rhino/identity-policy.cjs",
+    "src/bindings/rhino/crest-filter.cjs"
   ],
   "engines": {
     "node": ">=24"

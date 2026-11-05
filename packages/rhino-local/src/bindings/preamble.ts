@@ -2,7 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
 import type { EnvProfile } from "../profile/types.ts";
-import { bindingsIdentityPolicyPath, bindingsRuntimePath, generatedJsPath } from "../paths.ts";
+import { bindingsCrestFilterPath, bindingsIdentityPolicyPath, bindingsRuntimePath, generatedJsPath } from "../paths.ts";
 
 export interface MockPreambleOptions {
   /**
@@ -91,11 +91,11 @@ function seedAndOverrides(
 let preludeMemo: { stamp: string; text: string } | undefined;
 
 /**
- * The three package files, read once per process. Their size and mtime are
+ * The four package files, read once per process. Their size and mtime are
  * checked each call, so an edit during a watch run is still picked up.
  */
 function prelude(): string {
-  const files = [generatedJsPath, bindingsIdentityPolicyPath, bindingsRuntimePath];
+  const files = [generatedJsPath, bindingsIdentityPolicyPath, bindingsCrestFilterPath, bindingsRuntimePath];
   const stamp = files
     .map((file) => {
       const stat = statSync(file);
@@ -103,8 +103,8 @@ function prelude(): string {
     })
     .join("|");
   if (preludeMemo?.stamp !== stamp) {
-    const [generated, policy, runtime] = files.map((file) => readFileSync(file, "utf8"));
-    preludeMemo = { stamp, text: `${generated}\n${policy}\n${runtime}\n` };
+    const [generated, policy, filter, runtime] = files.map((file) => readFileSync(file, "utf8"));
+    preludeMemo = { stamp, text: `${generated}\n${policy}\n${filter}\n${runtime}\n` };
   }
   return preludeMemo.text;
 }
