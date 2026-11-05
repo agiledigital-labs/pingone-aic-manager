@@ -183,7 +183,7 @@ assumption in `docs/api/`:
 | `action-suspend-additional-logic`                                                 | `action.suspend` with a non-function `additionalLogic`                                                               |
 | `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
 | `openidm-unknown-managed-type`                                                    | a write (`create`, `update`, `patch`, `delete`, `action`) to a managed type the environment profile does not declare |
-| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the harness cannot decide: one the shared CREST grammar (`src/bindings/rhino/crest-filter.cjs`) cannot read, an empty or non-string one, an operator the matcher does not evaluate (`gt`/`ge`/`lt`/`le` in the script tester), or `ne` from a script (its script text is unmeasured); in the script tester, a record whose answer turns on letter case or spaces; a `_queryId` other than the measured ones. Only measured or certain rejections are the catchable parse error, in both lanes |
+| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the harness cannot decide: one the shared CREST grammar (`src/bindings/rhino/crest-filter.cjs`) cannot read, an empty or non-string one, an operator the matcher does not evaluate (`gt`/`ge`/`lt`/`le` in the script tester), or `ne` from a script (its script text is unmeasured); in the script tester, a record whose answer turns on letter case, spaces, Unicode normalisation, a type mismatch other than the measured quoted integer, or `pr` on `""`/`[]`; an escaped quote anywhere but a bare `eq` reached through `and` alone; a `_queryId` other than the measured ones. Only measured or certain rejections are the catchable parse error, in both lanes |
 | `openidm-fields-wildcard-with-path`, `openidm-fields-non-object-parent`, `openidm-fields-unresolved-ref` | `_fields` projections that were not measured                                                  |
 | `identity-attribute-layout`, `identity-write-idm-field-name`, `identity-write-cn`, `identity-set-attribute-non-array`, `identity-date-rendering`, `identity-wrapper-after-recreate` | `idRepository.getIdentity()` reads and writes outside the measured mapping |
 | `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
@@ -414,20 +414,40 @@ expectation that was incomplete). The five legacy cases were dropped on
 Two script-tester behaviours disagree with, or go beyond, what was measured,
 and neither carries a label:
 
-- **Query filters and letter case or spaces.** `docs/api/10-managed-objects.md`
-  measured `eq` on `alpha_user` ignoring letter case and leading/trailing
-  spaces, so `mail eq "Alice@example.com"` finds a stored `alice@example.com`
-  on AIC. Since E19 fix round 3, `openidm.query` over `given.managed`
-  (`__rhinoLocalCompareOne` in `runtime.cjs`) no longer answers that `[]`: a
-  record whose answer changes under any case or space reading (the IDM
-  emulator's transform set) is undecided, `and`/`or`/`!` follow Kleene logic,
-  and a record left undecided is the `openidm-query-filter` fault. It does not
-  apply the measured `alpha_user` fold either — it has no per-field policy — so
-  a case-different value that AIC is measured to match is a fault too, in the
-  safe direction. The experimental IDM emulator (`src/idm/filter.ts`) applies
-  the measured rules and refuses the rest with its own `missing`. The harness
+- **Query filters: case, spaces, Unicode, types, presence and quotes.**
+  `docs/api/10-managed-objects.md` measured `eq` on `alpha_user` ignoring
+  letter case and leading/trailing spaces, a number field matching a quoted
+  integer (`frIndexedInteger1 eq "7"`), and an escaped quote never matching
+  in a bare `eq`. Since E19 fix round 4 both lanes run one evaluator
+  (`src/bindings/rhino/crest-filter.cjs`, which also holds the grammar):
+  `openidm.query` over `given.managed` in `runtime.cjs`, and the IDM emulator
+  through `src/idm/filter.ts`, which adds only its per-field string policy. A
+  leaf is undecided when its answer changes under any case, space or Unicode
+  reading; when it compares different JSON types, other than a number field
+  against the canonical spelling of a safe integer; when it reads an object or
+  a `null` array element; or when it asks `pr` of `""` or `[]`. `and`/`or`/`!`
+  follow Kleene logic, and a record left undecided is the
+  `openidm-query-filter` fault in the script tester and the emulator's own
+  id-less `missing`. An escaped quote is decided `false` only in an `eq`
+  reached from the root through `and` alone, where "the leaf is false" and "the
+  whole query matches nothing" agree; anywhere else the filter is the fault.
+  The script tester has no per-field policy, so a case-different value that AIC
+  is measured to match is a fault there too, in the safe direction. The
+  emulator materialises an absent array property as `[]`, so there `pr` on an
+  array property is undecided for every record that lacks it. The harness
   `check idm.query` (`src/harness/idm.ts`, exact `JSON.stringify` equality)
   still compares exactly.
+
+  The Unicode readings follow RFC 4518, which DS's `caseIgnoreMatch` cites:
+  NFKC, and the characters it maps to nothing (soft hyphen, zero-width space,
+  joiners, variation selectors, other controls and format characters).
+  **Omitted:** the astral-plane characters in that map-to-nothing list (for
+  example U+E0001 and the U+1D173 musical controls), because the reading
+  works on UTF-16 code units, and RFC 4518's prohibited-character and
+  bidirectional checks. A value holding one of those is compared as it is, so
+  a filter whose answer would turn on one is decided rather than refused.
+  None of these readings is measured on AIC; each is a reason to refuse, not a
+  rule that is applied.
 - **`httpClient.send` converts an object body as AIC measured, and fails on
   what it cannot reproduce.** `docs/api/12` §5 (2026-11-04) measured AIC's
   serializer. The recorded body is a snapshot taken at send time, and it
