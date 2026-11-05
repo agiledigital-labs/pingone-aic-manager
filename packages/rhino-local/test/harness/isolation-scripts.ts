@@ -77,3 +77,13 @@ export const FRESH = {
   taggedSite: true,
 };
 
+
+/**
+ * The JVM's pid, read behind a class shutter. A job with no shutter would
+ * itself make the JVM unlendable (src/pool.ts), so a reuse control must not
+ * be one.
+ */
+export const PID_PROBE = {
+  source: "Number(java.lang.ProcessHandle.current().pid())",
+  classAllowList: ["java.lang.ProcessHandle", "java.lang.ProcessHandleImpl"],
+};
