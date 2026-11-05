@@ -42,6 +42,12 @@ export type ConfigInput = {
   readonly endpoints?: Readonly<Record<string, EndpointConfig>>;
   /** Maps are partial unless the caller explicitly declares the namespace complete. */
   readonly complete?: { readonly managed?: boolean; readonly endpoints?: boolean };
+  /**
+   * The tenant's `config/repo.ds`, as read. Optional: it is how the emulator learns a managed
+   * type's storage kind (`IdmConfig.storage`). Without it a generic type's number queries keep
+   * the undecided faults the JSON-storage measurement would otherwise retire.
+   */
+  readonly repo?: Readonly<Record<string, JsonValue>>;
 };
 export type RestRequest = {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

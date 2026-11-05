@@ -43,13 +43,13 @@ export interface FilterRow {
 const same = (filter: unknown, grammar: FilterRow["grammar"], answer: Answer, why: string): FilterRow =>
   ({ filter, grammar, am: answer, script: answer, rest: answer, why });
 
-const causes = {
+export const causes = {
   case: "match turns on letter case",
   space: "match turns on leading, trailing or repeated spaces or non-U+0020 whitespace",
   unicode: "match turns on Unicode normalisation or characters RFC 4518 maps to nothing",
   type: "match compares different JSON types, or an object or null element, which nothing measured",
   presence: "answer for an empty string, array or object is unmeasured",
-  rule: "field's DS matching rule is not caseIgnoreMatch, which nothing measured",
+  rule: "field's DS matching rule is not caseIgnoreMatch (telephone, time or integer), and the 2026-11-06 probe measured neither this field nor this operator and literal form",
   path: "pointer reads through an array, measured only as a bare eq reached through and alone",
 } as const;
 /** The emulator's record-level refusal, with the fault id it carries. */
@@ -240,4 +240,153 @@ export const filterTable: FilterRow[] = [
   undecided('list/0 eq "Red"', "path", "list/0", "an index into an array: unmeasured"),
   { filter: "count gt 1", grammar: "ast", am: "fault", script: ["b", "c"], rest: ["b", "c"], why: "ordering: not evaluated in the AM lane" },
   { filter: 'text ne "x"', grammar: "ast", am: "fault", script: "fault", rest: "ne", why: "ne: REST 400 measured, script text unmeasured" },
+];
+
+/**
+ * E19 live probe (docs/api/10, 2026-11-06): rows that turn on the collection,
+ * because the answer depends on a field's DS matching rule or on how DS stores
+ * the type. Records mirror the probe's (`a`, `b`, `c` on alpha_user, §3; `s7`,
+ * `s8`, `s75` on a generic type, §4), invented values only. `sink` is declared
+ * generic through `repo` (the `managed/*` mapping, as the probe's type was);
+ * `pinned` is under `explicitMapping`, which the probe did not reach. The AM
+ * lane knows collections by name only and was not part of the probe, so every
+ * measured rule stays its fault there.
+ */
+const user = (extra: JsonObject) => ({ userName: "u", ...extra });
+export const collectionRecords: Record<string, Array<JsonObject & { _id: string }>> = {
+  alpha_user: [
+    { _id: "a", ...user({ telephoneNumber: "+614-9999-9999", frIndexedDate1: "2026-01-01T10:00:00+11:00", frUnindexedDate1: "2026-01-01T10:00:00+11:00",
+      frIndexedDate2: "2026-01-01T10:00:00+11:00", frIndexedInteger1: 7, frIndexedInteger2: 7, frUnindexedInteger1: 7,
+      frIndexedMultivalued1: [], frUnindexedMultivalued1: [], roles: [], frIndexedMultivalued2: [] }) },
+    { _id: "b", ...user({ telephoneNumber: "+614-1111-1111", frIndexedDate1: "2026-01-02T00:00:00Z", frUnindexedDate1: "2026-01-02T00:00:00Z",
+      frIndexedInteger1: 8, frIndexedMultivalued1: ["x"], frUnindexedMultivalued1: ["x"], roles: ["r"] }) },
+    { _id: "c", ...user({}) },
+  ],
+  bravo_user: [
+    { _id: "a", ...user({ telephoneNumber: "+614-9999-9999", frIndexedDate1: "2026-01-01T10:00:00+11:00", frIndexedInteger1: 7, frIndexedMultivalued1: [] }) },
+  ],
+  sink: [{ _id: "s7", count: 7, linked: 7 }, { _id: "s8", count: 8 }, { _id: "s75", count: 7.5 }],
+  pinned: [{ _id: "p7", count: 7 }],
+};
+/** The `config/repo.ds` shape the emulator reads storage from (doc 10; invented entries). */
+export const repo = {
+  resourceMapping: {
+    explicitMapping: { "managed/pinned": { objectClasses: ["top", "frPinned"] } },
+    genericMapping: { "managed/*": { objectClasses: ["uidObject", "fr-idm-managed-object"] },
+      "managed/sink": { objectClasses: ["uidObject", "fr-idm-managed-object"], properties: { linked: { type: "simple", ldapAttribute: "fr-idm-linked" } } } },
+  },
+};
+
+/** AIC's 400 for a literal the field's DS syntax cannot take (measured over REST and IDM scripts). */
+export type Illegal = { illegal: string; field: string };
+export const illegalMessage = (value: string, field: string) =>
+  `The request cannot be processed because it contained an illegal filter assertion value '${value}' for field '${field}'`;
+export interface CollectionRow {
+  collection: string;
+  filter: string;
+  /** The script tester (AM lane). */
+  am: Answer;
+  /** The IDM emulator, over REST and from a script alike (the probe found them identical). */
+  idm: string[] | Missing | Illegal;
+  why: string;
+}
+const missingOn = (type: string, op: string, why: keyof typeof causes, field: string): Missing =>
+  ({ missing: `openidm-query-filter: query ${op} whose ${causes[why]}: ${type} ${field}` });
+const alpha = (filter: string, am: Answer, idm: CollectionRow["idm"], why: string): CollectionRow => ({ collection: "alpha_user", filter, am, idm, why });
+const on = (collection: string) => (filter: string, am: Answer, idm: CollectionRow["idm"], why: string): CollectionRow => ({ collection, filter, am, idm, why });
+const bravo = on("bravo_user"), sink = on("sink"), pinned = on("pinned");
+const illegal = (value: string, field: string): Illegal => ({ illegal: value, field });
+
+export const collectionTable: CollectionRow[] = [
+  // §3a telephoneNumberMatch: spaces and hyphens ignored anywhere, eq/sw/co.
+  alpha('telephoneNumber eq "+614-9999-9999"', "fault", ["a"], "exact control (measured)"),
+  alpha('telephoneNumber eq "+614-9999-9998"', "fault", [], "negative control (measured)"),
+  alpha('telephoneNumber eq "+614 9999 9999"', "fault", ["a"], "spaces for hyphens (measured)"),
+  alpha('telephoneNumber eq "+61499999999"', "fault", ["a"], "no separators (measured)"),
+  alpha('telephoneNumber eq "+61 4 9999 9999"', "fault", ["a"], "spaces anywhere (measured)"),
+  alpha('telephoneNumber eq "+6 1-4 99 99-9999"', "fault", ["a"], "mixed, anywhere (measured)"),
+  alpha('telephoneNumber sw "+6149"', "fault", ["a"], "sw ignores the stored hyphen (measured)"),
+  alpha('telephoneNumber co "99 99"', "fault", ["a"], "co ignores both (measured)"),
+  alpha("telephoneNumber pr", ["a", "b"], ["a", "b"], "pr control (measured)"),
+  alpha('telephoneNumber eq "(04) 9999 9999"', "fault", missingOn("alpha_user", "eq", "rule", "telephoneNumber"), "parentheses were not probed"),
+  alpha('telephoneNumber gt "+614"', "fault", missingOn("alpha_user", "gt", "rule", "telephoneNumber"), "ordering on a phone was not probed"),
+  alpha('telephoneNumber eq "+614-9999-9999" or userName eq "u"', "fault", ["a", "b", "c"],
+    "AM: the leaf is refused before any record, even where or makes it irrelevant"),
+  // §3b GeneralizedTime: instants, both families; a non-date literal is the 400.
+  alpha('frIndexedDate1 gt "2025-06-01T00:00:00Z"', "fault", ["a", "b"], "control: both later (measured)"),
+  alpha('frIndexedDate1 gt "2026-01-01T00:00:00Z"', "fault", ["b"], "a's offset instant is earlier though it sorts later (measured)"),
+  alpha('frIndexedDate1 lt "2026-01-01T00:00:00Z"', "fault", ["a"], "measured"),
+  alpha('frUnindexedDate1 gt "2026-01-01T00:00:00Z"', "fault", ["b"], "unindexed family (measured)"),
+  alpha('frUnindexedDate1 lt "2026-01-01T00:00:00Z"', "fault", ["a"], "unindexed family (measured)"),
+  alpha('frIndexedDate1 eq "2026-01-01T10:00:00+11:00"', "fault", ["a"], "as written (measured)"),
+  alpha('frIndexedDate1 eq "2025-12-31T23:00:00Z"', "fault", ["a"], "same instant, other offset (measured)"),
+  alpha('frUnindexedDate1 eq "2025-12-31T23:00:00Z"', "fault", ["a"], "same instant, unindexed (measured)"),
+  alpha('frIndexedDate1 eq "2026-01-02T00:00:00Z"', "fault", ["b"], "control b (measured)"),
+  alpha('frIndexedDate1 gt "2026-01-01T09:00:00+11:00"', "fault", ["a", "b"], "offset literal (measured)"),
+  alpha('frIndexedDate1 lt "2026-01-01T09:00:00+11:00"', "fault", [], "offset literal (measured)"),
+  alpha('frIndexedDate1 eq "notadate"', "fault", illegal("notadate", "/frIndexedDate1"), "a non-date literal is a 400 (measured)"),
+  alpha('frUnindexedDate1 eq "notadate"', "fault", illegal("notadate", "/frUnindexedDate1"), "a non-date literal is a 400 (measured)"),
+  alpha('frIndexedDate1 ge "2026-01-01T00:00:00Z"', "fault", missingOn("alpha_user", "ge", "rule", "frIndexedDate1"), "ge was not probed"),
+  alpha('frIndexedDate1 eq "2026-01-01"', "fault", missingOn("alpha_user", "eq", "rule", "frIndexedDate1"), "date-only literal was not probed"),
+  alpha('frIndexedDate1 eq "2025-12-31T23:00:00.000Z"', "fault", missingOn("alpha_user", "eq", "rule", "frIndexedDate1"), "fractional seconds were not probed"),
+  alpha('frIndexedDate1 eq "20251231230000Z"', "fault", missingOn("alpha_user", "eq", "rule", "frIndexedDate1"), "GeneralizedTime form was not probed"),
+  alpha('frIndexedDate1 eq "2025-12-31T23:00:00"', "fault", missingOn("alpha_user", "eq", "rule", "frIndexedDate1"), "no zone: not probed, and not alphabetic, so not the measured 400"),
+  alpha('frIndexedDate2 eq "2025-12-31T23:00:00Z"', "fault", missingOn("alpha_user", "eq", "rule", "frIndexedDate2"), "date 2-5 were not probed"),
+  alpha('frIndexedDate1 eq "notadate" and frIndexedDate2 eq "x"', "fault", missingOn("alpha_user", "eq", "rule", "frIndexedDate2"),
+    "an undecided leaf outranks a 400 elsewhere: which AIC reports first is unmeasured"),
+  // §3e frIndexedInteger1: the literal is converted to the DS integer syntax.
+  alpha("frIndexedInteger1 eq 7", ["a"], ["a"], "control (measured)"),
+  alpha('frIndexedInteger1 eq "7"', "fault", ["a"], "quoted integer (measured)"),
+  alpha("frIndexedInteger1 eq 7.0", "fault", ["a"], "integral decimal (measured)"),
+  alpha("frIndexedInteger1 eq 7.00", "fault", ["a"], "integral decimal (measured)"),
+  alpha('frIndexedInteger1 eq "7.0"', "fault", ["a"], "quoted integral decimal (measured)"),
+  alpha("frIndexedInteger1 ge 7.0", "fault", ["a", "b"], "ordering with an integral decimal (measured)"),
+  alpha("frIndexedInteger1 gt 7", "fault", ["b"], "ordering with an integer (assumed; AM does not evaluate gt)"),
+  alpha("frIndexedInteger1 eq 7.5", "fault", illegal("7.5", "/frIndexedInteger1"), "non-integral: 400 (measured)"),
+  alpha("frIndexedInteger1 lt 7.5", "fault", illegal("7.5", "/frIndexedInteger1"), "non-integral under ordering: 400 (measured)"),
+  alpha("frIndexedInteger1 gt 6.5", "fault", illegal("6.5", "/frIndexedInteger1"), "non-integral under ordering: 400 (measured)"),
+  alpha('frIndexedInteger1 eq "7.5"', "fault", illegal("7.5", "/frIndexedInteger1"), "quoted non-integral: 400 (measured)"),
+  alpha('frIndexedInteger1 eq "abc"', "fault", illegal("abc", "/frIndexedInteger1"), "non-numeric: 400 (measured)"),
+  alpha("frIndexedInteger1 ge 7.5", "fault", missingOn("alpha_user", "ge", "type", "frIndexedInteger1"), "ge and le with a fraction were not probed"),
+  alpha("frIndexedInteger1 eq 7.0e0", "fault", missingOn("alpha_user", "eq", "type", "frIndexedInteger1"), "an exponent was not probed"),
+  alpha('frIndexedInteger1 gt "6"', "fault", missingOn("alpha_user", "gt", "type", "frIndexedInteger1"), "a quoted literal under ordering was not probed"),
+  alpha('frIndexedInteger1 co "7"', "fault", missingOn("alpha_user", "co", "type", "frIndexedInteger1"), "substring on an integer was not probed"),
+  alpha("frIndexedInteger1 eq true", "fault", missingOn("alpha_user", "eq", "type", "frIndexedInteger1"), "a boolean literal was not probed"),
+  alpha("frIndexedInteger1 eq 7.5 and frIndexedInteger1 eq 7", "fault", illegal("7.5", "/frIndexedInteger1"), "the 400 is query-level, whatever the other leaf"),
+  // Integer 2-5 and unindexed: the existing quoted-integer reading; other literals are refused before any record.
+  alpha('frIndexedInteger2 eq "7"', "fault", ["a"], "assumed like frIndexedInteger1 (round 5)"),
+  alpha("frIndexedInteger2 eq 7.0", "fault", missingOn("alpha_user", "eq", "type", "frIndexedInteger2"), "integer 2-5 were not probed with decimals"),
+  alpha('frUnindexedInteger1 eq "abc"', "fault", missingOn("alpha_user", "eq", "type", "frUnindexedInteger1"), "whether this is a 400 too was not probed"),
+  // §3d: an explicitly written [] is not present.
+  alpha("frIndexedMultivalued1 pr", "fault", ["b"], "explicit [] reads as absent (measured)"),
+  alpha("!(frIndexedMultivalued1 pr)", "fault", ["a", "c"], "measured"),
+  alpha("frUnindexedMultivalued1 pr", "fault", ["b"], "measured"),
+  alpha("!(frUnindexedMultivalued1 pr)", "fault", ["a", "c"], "measured"),
+  alpha("roles pr", "fault", ["b"], "measured (roles is a relationship on AIC; a plain array here)"),
+  alpha("!(roles pr)", "fault", ["a", "c"], "measured"),
+  alpha("frIndexedMultivalued2 pr", "fault", missingOn("alpha_user", "pr", "presence", "frIndexedMultivalued2"), "multivalued 2-5 were not probed"),
+  // bravo_user: nothing in §3 was probed there.
+  bravo('telephoneNumber eq "+614 9999 9999"', "fault", missingOn("bravo_user", "eq", "rule", "telephoneNumber"), "not probed on bravo_user"),
+  bravo('telephoneNumber eq "+614-9999-9999"', "fault", missingOn("bravo_user", "eq", "rule", "telephoneNumber"), "refused by name, even byte-equal"),
+  bravo('frIndexedDate1 eq "2025-12-31T23:00:00Z"', "fault", missingOn("bravo_user", "eq", "rule", "frIndexedDate1"), "not probed on bravo_user"),
+  bravo("frIndexedInteger1 eq 7.0", "fault", missingOn("bravo_user", "eq", "type", "frIndexedInteger1"), "not probed on bravo_user"),
+  bravo("frIndexedInteger1 eq 7", ["a"], ["a"], "control: a plain integer is decided"),
+  bravo("frIndexedMultivalued1 pr", "fault", missingOn("bravo_user", "pr", "presence", "frIndexedMultivalued1"), "not probed on bravo_user"),
+  // §4 generic (JSON) storage: a quoted literal never matches a number; numbers compare by value.
+  sink("count eq 7", ["s7"], ["s7"], "control (measured)"),
+  sink('count eq "7"', "fault", [], "quoted never matches a number (measured)"),
+  sink("count eq 7.0", "fault", ["s7"], "by value (measured)"),
+  sink('count eq "7.0"', "fault", [], "measured"),
+  sink("count eq 7.5", "fault", ["s75"], "a fraction is an ordinary value (measured)"),
+  sink('count eq "7.5"', "fault", [], "measured"),
+  sink("count gt 6.5", "fault", ["s7", "s8", "s75"], "measured"),
+  sink('count gt "6"', "fault", [], "measured"),
+  sink('count lt "10"', "fault", [], "measured"),
+  sink("count le 7.5", "fault", ["s7", "s75"], "le by value (assumed like eq and gt)"),
+  sink('!(count eq "7")', "fault", missingOn("sink", "eq", "type", "count"), "only a positive leaf was probed"),
+  sink('count ge "7"', "fault", missingOn("sink", "ge", "type", "count"), "ge with a quoted literal was not probed"),
+  sink('linked eq "7"', "fault", missingOn("sink", "eq", "type", "linked"), "a property the type's mapping stores in its own attribute is not JSON"),
+  pinned('count eq "7"', "fault", missingOn("pinned", "eq", "type", "count"), "an explicitly mapped type is not JSON-stored"),
+  pinned("count eq 7.0", "fault", missingOn("pinned", "eq", "type", "count"), "an explicitly mapped type is not JSON-stored"),
+  pinned("count eq 7", ["p7"], ["p7"], "control"),
 ];

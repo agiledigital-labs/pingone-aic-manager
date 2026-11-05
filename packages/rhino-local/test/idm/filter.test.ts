@@ -4,7 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { create, emulator, send } from "./fixtures.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
-import { filterTable, records } from "../crest-filter-table.ts";
+import { type CollectionRow, causes, collectionRecords, collectionTable, filterTable, illegalMessage, records, repo } from "../crest-filter-table.ts";
+import { escapeError } from "../../src/idm/errors.ts";
 import { type Document, IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
 
 let runner: RhinoRunner;
@@ -84,6 +85,123 @@ describe("queryFilter grammar", () => {
       expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
       if (row.script === "parse") expect(String(response.value), row.why).toContain("A value could not be parsed as a valid query filter");
       else expect(response.value, row.why).toBe(JSON.stringify(row.script));
+    });
+  });
+
+  // E19 live probe (2026-11-06): the collection-keyed table, over REST and from a script.
+  describe("probe table by collection", () => {
+    const types = {
+      alpha_user: { userName: "string", telephoneNumber: "string", frIndexedDate1: "string", frUnindexedDate1: "string", frIndexedDate2: "string",
+        frIndexedInteger1: "number", frIndexedInteger2: "number", frUnindexedInteger1: "number",
+        frIndexedMultivalued1: "array", frUnindexedMultivalued1: "array", roles: "array", frIndexedMultivalued2: "array" },
+      sink: { count: "number", linked: "number" },
+      pinned: { count: "number" },
+    } as const;
+    const schema = (props: Record<string, string>) => ({ properties: Object.fromEntries(Object.entries(props).map(([k, type]) => [k, { type }])) });
+    const config = (withRepo: boolean) => new IdmConfig({
+      managed: { objects: [...Object.entries(types).map(([name, props]) => ({ name, schema: schema(props) })), { name: "bravo_user", schema: schema(types.alpha_user) }] },
+      ...(withRepo ? { repo } : {}),
+    });
+    // alpha_user and bravo_user ids must be UUIDs (measured), so the table's letters are mapped.
+    const uuid = (type: string, id: string) => type.endsWith("_user") ? `00000000-0000-0000-0000-${id.padStart(12, "0")}` : id;
+    const letter = (id: unknown) => String(id).replace(/^00000000-0000-0000-0000-0*/, "");
+    const fresh = async (withRepo = true, only?: string) => {
+      const emu = new IdmEmulator(config(withRepo), runner);
+      for (const [type, rows] of Object.entries(collectionRecords)) {
+        if (only !== undefined) continue;
+        for (const { _id, ...record } of rows) {
+          await send(emu, { method: "PUT", path: `managed/${type}/${uuid(type, _id)}`, headers: { "If-None-Match": "*" }, body: structuredClone(record) as Document }, 201);
+        }
+      }
+      return emu;
+    };
+    const cases = collectionTable.map((row) => [`${row.collection} ${row.filter}`, row] as const);
+    const expectFor = (row: CollectionRow) => {
+      if (!Array.isArray(row.idm) && "missing" in row.idm) expectEmulationFailure(row.idm.missing);
+    };
+    it.each(cases)("REST %s", async (_name, row) => {
+      expectFor(row);
+      const result = await (await fresh()).request({ method: "GET", path: `managed/${row.collection}`, query: { _queryFilter: row.filter } });
+      const body = result.body as Document;
+      if (Array.isArray(row.idm)) {
+        expect(result.status, JSON.stringify(result.provenance)).toBe(200);
+        expect(((body.result ?? []) as Document[]).map((r) => letter(r._id)), row.why).toEqual(row.idm);
+      } else if ("missing" in row.idm) {
+        expect(result.status, row.why).toBe(501);
+        expect(result.provenance, row.why).toContainEqual({ kind: "missing", behavior: row.idm.missing });
+        expect(result.emulation?.faults?.map((fault) => fault.id)).toEqual(["openidm-query-filter"]);
+      } else {
+        // HTML-escaped over REST, as measured (`&#39;`).
+        expect(result.status, row.why).toBe(400);
+        expect(body, row.why).toEqual(escapeError({ code: 400, reason: "Bad Request", message: illegalMessage(row.idm.illegal, row.idm.field) }));
+        expect(result.provenance).toContainEqual({ kind: "measured", behavior: "a literal a DS integer or time attribute cannot convert is a 400 illegal filter assertion value",
+          source: "docs/api/10-managed-objects.md (E19 live probe, 2026-11-06)" });
+      }
+    });
+    it.each(cases)("script %s", async (_name, row) => {
+      expectFor(row);
+      const source = "try { JSON.stringify(openidm.query('managed/' + type,{_queryFilter:filter,_fields:['_id']}).result.map(function (r) { return String(r._id).replace(/^00000000-0000-0000-0000-0*/, ''); })); } catch (e) { 'caught:' + e.message; }";
+      const response = await runner.eval({ engine: "idm", source, bindings: { filter: row.filter, type: row.collection } }, { onCall: (await fresh()).onCall });
+      if (!Array.isArray(row.idm) && "missing" in row.idm) {
+        expect(response.outcome, row.why).toBe("runtime_error");
+        expect(response.emulation?.missing?.[0], row.why).toBe(row.idm.missing);
+        return;
+      }
+      expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+      if (Array.isArray(row.idm)) expect(response.value, row.why).toBe(JSON.stringify(row.idm));
+      else {
+        // A catchable BadRequestException with the unescaped text, as measured.
+        expect(String(response.value), row.why).toContain("org.forgerock.json.resource.BadRequestException");
+        expect(String(response.value), row.why).toContain(illegalMessage(row.idm.illegal, row.idm.field));
+      }
+    });
+
+    // AIC converts assertions before reading records: on an empty collection the 400 and the
+    // query-level refusal still happen, so a script cannot pass on an empty fixture.
+    it.each([["frIndexedInteger1 eq 7.5", 400], ['frIndexedDate1 eq "notadate"', 400], ['telephoneNumber eq "(04) 9999 9999"', 501],
+      ["frIndexedInteger1 ge 7.5", 501], ['frIndexedDate2 eq "2026-01-01T00:00:00Z"', 501], ['frIndexedInteger1 eq "7"', 200]])(
+      "empty alpha_user: %s is %i", async (filter, status) => {
+        if (status === 501) expectHarnessFault("openidm-query-filter");
+        const result = await (await fresh(true, "none")).request({ method: "GET", path: "managed/alpha_user", query: { _queryFilter: filter as string } });
+        expect(result.status, JSON.stringify(result.body)).toBe(status);
+      });
+
+    // How storage kind is known: the opt-in repo. Without it a generic type's coercion is refused.
+    it.each([['count eq "7"', "eq"], ["count eq 7.5", "eq"]])("without repo, sink %s is refused", async (filter, op) => {
+      const cause = `openidm-query-filter: query ${op} whose ${causes.type}: sink count`;
+      expectEmulationFailure(cause);
+      const result = await (await fresh(false)).request({ method: "GET", path: "managed/sink", query: { _queryFilter: filter } });
+      expect(result.status).toBe(501);
+      expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
+    });
+    it("the storage kind comes from repo's mappings", () => {
+      const both = new IdmConfig({ managed: { objects: [] }, repo: { resourceMapping: { explicitMapping: { "managed/x": {} }, genericMapping: { "managed/x": {}, "managed/*": {} } } } });
+      expect([both.storage("x"), both.storage("y"), both.storage("alpha_user")]).toEqual(["unknown", "generic", "explicit"]);
+      const noWildcard = new IdmConfig({ managed: { objects: [] }, repo: { resourceMapping: { genericMapping: { "managed/x": {} } } } });
+      expect([noWildcard.storage("x"), noWildcard.storage("y")]).toEqual(["generic", "unknown"]);
+      const cfg = config(true);
+      expect([cfg.storage("sink"), cfg.storage("pinned"), cfg.jsonStored("sink", "count"), cfg.jsonStored("sink", "linked"), cfg.jsonStored("sink", "a/b"),
+        cfg.jsonStored("alpha_user", "custom_n")]).toEqual(["generic", "explicit", true, false, false, false]);
+      expect(config(false).storage("sink")).toBe("unknown");
+      expect(() => new IdmConfig({ managed: { objects: [] }, repo: [] as never })).toThrow(/repo must be a plain object/);
+    });
+
+    // Provenance: what the probe measured is labelled measured, the inferred neighbours assumed.
+    const PROBE = "docs/api/10-managed-objects.md (E19 live probe, 2026-11-06)";
+    it.each([
+      ["alpha_user", 'telephoneNumber eq "+614 9999 9999"', { kind: "measured", behavior: "eq on alpha_user telephoneNumber ignores spaces and hyphens (telephoneNumberMatch)", source: PROBE }],
+      ["alpha_user", 'frUnindexedDate1 lt "2026-01-01T00:00:00Z"', { kind: "measured", behavior: "lt on alpha_user frUnindexedDate1 compares instants across offsets", source: PROBE }],
+      ["alpha_user", "frIndexedInteger1 eq 7.0", { kind: "measured", behavior: "eq on alpha_user frIndexedInteger1 converts an integral literal of either JSON type to the integer", source: PROBE }],
+      ["alpha_user", "frIndexedInteger1 ge 7.0", { kind: "measured", behavior: "ge on alpha_user frIndexedInteger1 converts an integral literal of either JSON type to the integer", source: PROBE }],
+      ["alpha_user", "frIndexedInteger1 gt 7", { kind: "assumed", behavior: "gt on alpha_user frIndexedInteger1 compares an integral literal numerically, like eq and ge" }],
+      ["alpha_user", "roles pr", { kind: "measured", behavior: "pr reads an explicitly written [] on alpha_user roles as absent", source: PROBE }],
+      ["sink", 'count eq "7"', { kind: "measured", behavior: "eq on a generic (JSON-stored) type: a quoted literal never matches a number", source: PROBE }],
+      ["sink", "count gt 6.5", { kind: "measured", behavior: "gt on a generic (JSON-stored) type compares numbers by value, decimals included", source: PROBE }],
+      ["sink", "count le 7.5", { kind: "assumed", behavior: "le on a generic (JSON-stored) type compares numbers by value, like eq and gt" }],
+    ])("%s %s is labelled", async (type, filter, label) => {
+      const result = await (await fresh()).request({ method: "GET", path: `managed/${type}`, query: { _queryFilter: filter } });
+      expect(result.status, JSON.stringify(result.provenance)).toBe(200);
+      expect(result.provenance).toContainEqual(label);
     });
   });
 
@@ -323,10 +441,11 @@ describe("queryFilter grammar", () => {
   // E19 round 5. Each row drives the real emulator; the tally id rides every refusal.
   describe("round 5: types, DS matching rules, labels, injected arrays", () => {
     const id = "00000000-0000-0000-0000-0000000000b1";
-    const DOC10 = "docs/api/10-managed-objects.md (A number matches quoted or unquoted)";
     const refusal = (op: string, what: string, type: string, field: string) => `openidm-query-filter: query ${op} whose ${what}: ${type} ${field}`;
     const TYPE = "match compares different JSON types, or an object or null element, which nothing measured";
-    const RULE = "field's DS matching rule is not caseIgnoreMatch, which nothing measured";
+    const RULE = causes.rule;
+    const PROBE = "docs/api/10-managed-objects.md (E19 live probe, 2026-11-06)";
+    const CONVERTS = "eq on alpha_user frIndexedInteger1 converts an integral literal of either JSON type to the integer";
     const people = async () => {
       const props = { userName: { type: "string" }, givenName: { type: "string" }, telephoneNumber: { type: "string" },
         frIndexedDate1: { type: "string" }, frUnindexedDate2: { type: "string" }, frIndexedInteger1: { type: "number" },
@@ -341,10 +460,10 @@ describe("queryFilter grammar", () => {
 
     // P2-1: measured on alpha_user frIndexedInteger1 only; P3-5: the unquoted form is labelled too.
     it.each([
-      ['frIndexedInteger1 eq "7"', 1, { kind: "measured", behavior: "eq on alpha_user frIndexedInteger1 matches a quoted integer", source: DOC10 }],
-      ['frIndexedInteger1 eq "8"', 0, { kind: "measured", behavior: "eq on alpha_user frIndexedInteger1 matches a quoted integer", source: DOC10 }],
+      ['frIndexedInteger1 eq "7"', 1, { kind: "measured", behavior: CONVERTS, source: PROBE }],
+      ['frIndexedInteger1 eq "8"', 0, { kind: "measured", behavior: CONVERTS, source: PROBE }],
       ['frIndexedInteger2 eq "7"', 1, { kind: "assumed", behavior: "eq on alpha_user frIndexedInteger2 matches a quoted integer like frIndexedInteger1" }],
-      ["frIndexedInteger1 eq 7", 1, { kind: "measured", behavior: "eq on alpha_user frIndexedInteger1 matches an unquoted integer", source: DOC10 }],
+      ["frIndexedInteger1 eq 7", 1, { kind: "measured", behavior: CONVERTS, source: PROBE }],
       ["frIndexedInteger2 gt 6", 1, { kind: "assumed", behavior: "gt on a number property compares JSON numbers numerically" }],
     ])("alpha_user %s answers %i, labelled", async (filter, count, label) => {
       const result = await query(await people(), "alpha_user", filter as string);
@@ -356,13 +475,10 @@ describe("queryFilter grammar", () => {
       ['custom_n eq "7"', "alpha_user", "eq", "custom_n", TYPE, "a custom_* property is JSON in DS: coercion unmeasured"],
       ['frIndexedInteger1 eq "7"', "bravo_user", "eq", "frIndexedInteger1", TYPE, "measured on alpha_user only"],
       ['!(frIndexedInteger1 eq "7")', "bravo_user", "eq", "frIndexedInteger1", TYPE, "and not its negation either"],
-      ["frIndexedInteger1 eq 7.0", "alpha_user", "eq", "frIndexedInteger1", TYPE, "P2-2: a decimal literal against a number"],
-      ["frIndexedInteger1 gt 6.5", "alpha_user", "gt", "frIndexedInteger1", TYPE, "P2-2: a decimal literal under ordering"],
-      // P2-3: telephoneNumberMatch ignores spaces and hyphens; dates compare as GeneralizedTime instants.
-      ['telephoneNumber eq "+61 2 9999 9999"', "alpha_user", "eq", "telephoneNumber", RULE, "telephoneNumberMatch would match"],
-      ['telephoneNumber eq "+61-2-9999-9999"', "alpha_user", "eq", "telephoneNumber", RULE, "refused by name, even byte-equal"],
+      ["frIndexedInteger1 eq 7.0", "bravo_user", "eq", "frIndexedInteger1", TYPE, "P2-2: decided on alpha_user since 2026-11-06, not on bravo_user"],
+      // P2-3: the alpha_user telephone and date-1 rules were measured on 2026-11-06 (the probe table
+      // above); bravo_user and date 2-5 were not.
       ['telephoneNumber eq "+61 2 9999 9999"', "bravo_user", "eq", "telephoneNumber", RULE, "the same DS attribute on bravo_user"],
-      ['frIndexedDate1 gt "2026-01-01T00:00:00Z"', "alpha_user", "gt", "frIndexedDate1", RULE, "an earlier instant that sorts later as text"],
       ['frUnindexedDate2 eq "2026-01-01T11:00:00+11:00"', "alpha_user", "eq", "frUnindexedDate2", RULE, "the same instant spelt with an offset"],
     ])("%s on %s is refused with the fault id", async (filter, type, op, field, what) => {
       const cause = refusal(op, what, type, field);

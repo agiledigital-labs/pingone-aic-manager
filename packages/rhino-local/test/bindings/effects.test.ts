@@ -27,7 +27,8 @@ describe("logger", () => {
         "error:a {} b",
         "error:a \\X b",
         "info:plain",
-        "warn:two 1 and true",
+        // A JS number reaches SLF4J as a java.lang.Double: `1.0` (E19 live probe, 2026-11-06).
+        "warn:two 1.0 and true",
         "debug:one alice bound",
       ],
     );

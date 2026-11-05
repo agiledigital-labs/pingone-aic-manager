@@ -439,9 +439,19 @@ var __rhinoLocalCrestFilter = (function () {
   // ordering on a boolean, and a decimal literal against a number (round-5
   // P2-2: `7.0` may reach an LDAP integer attribute as text it refuses) are
   // unmeasured too.
-  function compareScalar(actual, op, expected, field, lane, decimal) {
+  function compareScalar(actual, op, expected, field, lane, decimal, positive) {
     if (actual === null || typeof actual === "object") {
       return unknown(field, op, "type");
+    }
+    var rule = lane.rule ? lane.rule(field) : null;
+    if (rule === "dsRefused" || ((rule === "phone" || rule === "instant") && !lane.decides)) {
+      return unknown(field, op, "rule");
+    }
+    if (rule !== null && lane.decides) {
+      var decided = compareByRule(rule, actual, op, expected, field, lane, positive);
+      if (decided !== undefined) {
+        return decided;
+      }
     }
     var actualType = typeof actual;
     var expectedType = typeof expected;
@@ -481,6 +491,10 @@ var __rhinoLocalCrestFilter = (function () {
       }
       // Whether DS stores an empty string, array or object as present is
       // unmeasured (round-5 P3-3 added `{}`).
+      if (isArray(value) && value.length === 0 && lane.decides && lane.rule && lane.rule(field) === "emptyAbsent") {
+        lane.label("measured", "pr reads an explicitly written [] on alpha_user " + fieldName(field) + " as absent", PROBE);
+        return false;
+      }
       if (value === "" || (isArray(value) && value.length === 0) || isEmptyObject(value)) {
         return unknown(field, op, "presence");
       }
@@ -498,14 +512,14 @@ var __rhinoLocalCrestFilter = (function () {
       return false;
     }
     if (!isArray(value)) {
-      return compareScalar(value, op, expected, field, lane, decimal);
+      return compareScalar(value, op, expected, field, lane, decimal, node.positive === true);
     }
     // Any-match: a definite element match wins; otherwise any undecided
     // element leaves the field undecided.
     var undecided = null;
     var i;
     for (i = 0; i < value.length; i += 1) {
-      var one = compareScalar(value[i], op, expected, field, lane, decimal);
+      var one = compareScalar(value[i], op, expected, field, lane, decimal, node.positive === true);
       if (one === true) {
         return true;
       }
@@ -679,32 +693,269 @@ var __rhinoLocalCrestFilter = (function () {
     return read.dimension === null ? read.answer : unknown(field, op, read.dimension);
   }
 
-  // Round-5 P2-3: alpha_user/bravo_user properties whose DS attribute is not
-  // compared by caseIgnoreMatch, so no reading above describes them.
-  // telephoneNumber is 2.5.4.20, EQUALITY telephoneNumberMatch (2.5.13.20),
-  // in DS's core schema (opendj-core 8.1.1 `Schema.getCoreSchema()`, read
-  // from the AM 8.1.1 image; RFC 4519 2.35): it ignores spaces and hyphens.
-  // No other alpha_user phone attribute exists (a new property there must be
-  // custom_*). frIndexedDate1-5 / frUnindexedDate1-5 are fr-attr-idateN /
-  // fr-attr-dateN, which refuse anything but GeneralizedTime (docs/api/14),
-  // so they compare as instants (generalizedTimeMatch and
-  // generalizedTimeOrderingMatch, RFC 4517), not as text. Every other mapped
-  // string there is caseIgnoreMatch or caseIgnoreIA5Match. Unprobed on AIC.
-  var OTHER_RULE = /^\/?(?:telephoneNumber|fr(?:Indexed|Unindexed)Date[1-5])$/;
-  function otherRule(type, field) {
-    return (type === "alpha_user" || type === "bravo_user") && OTHER_RULE.test(String(field));
+  // ---------------------------------------------------------------------
+  // Field rules (E19 round 5 named them; the live probe of 2026-11-06,
+  // docs/api/10, measured the alpha_user ones). DS's core schema (opendj-core
+  // 8.1.1, RFC 4519) gives telephoneNumber EQUALITY telephoneNumberMatch, and
+  // frIndexedDate1-5 / frUnindexedDate1-5 are fr-attr-idateN / fr-attr-dateN,
+  // GeneralizedTime (docs/api/14); frIndexedInteger1-5 / frUnindexedInteger1-5
+  // are fr-attr-iintN / fr-attr-intN, integers. No string reading describes
+  // the first two. Measured, on alpha_user, over REST and IDM's openidm.query:
+  //   phone        telephoneNumber: spaces and hyphens ignored anywhere, for
+  //                eq, sw and co.
+  //   instant      frIndexedDate1, frUnindexedDate1: eq, gt and lt compare
+  //                instants; `eq "notadate"` is a 400.
+  //   integer      frIndexedInteger1: an integral literal of either JSON type
+  //                equals the integer; 7.5, "7.5" and "abc" are a 400.
+  //   emptyAbsent  frIndexedMultivalued1, frUnindexedMultivalued1, roles: an
+  //                explicitly written [] is not present.
+  // The other members of each family, and every one on bravo_user, were not
+  // probed: dsInteger (an integer attribute whose 400s are unmeasured) and
+  // dsRefused (no comparison is decided). A lane that does not decide the
+  // measured rules (the script tester: its openidm surface was not probed)
+  // refuses them too.
+  var PROBE = "docs/api/10-managed-objects.md (E19 live probe, 2026-11-06)";
+  var PHONE_OPS = { eq: true, sw: true, co: true };
+  var INSTANT_OPS = { eq: true, gt: true, lt: true };
+  var DECIDED_INTEGER_OPS = { eq: true, gt: true, ge: true, lt: true, le: true };
+  var ILLEGAL_NUMBER_OPS = { eq: true, gt: true, lt: true };
+
+  function fieldName(field) {
+    return String(field).replace(/^\//, "");
   }
 
-  // The script tester's lane: every reading, no measured type coercion, and
-  // the user fields above refused, for a collection it knows by name only.
+  function fieldRule(type, field) {
+    if (type !== "alpha_user" && type !== "bravo_user") {
+      return null;
+    }
+    var f = fieldName(field);
+    var alpha = type === "alpha_user";
+    if (f === "telephoneNumber") {
+      return alpha ? "phone" : "dsRefused";
+    }
+    if (/^fr(?:Indexed|Unindexed)Date[1-5]$/.test(f)) {
+      return alpha && /Date1$/.test(f) ? "instant" : "dsRefused";
+    }
+    if (/^fr(?:Indexed|Unindexed)Integer[1-5]$/.test(f)) {
+      return alpha && f === "frIndexedInteger1" ? "integer" : "dsInteger";
+    }
+    if (alpha && (f === "frIndexedMultivalued1" || f === "frUnindexedMultivalued1" || f === "roles")) {
+      return "emptyAbsent";
+    }
+    return null;
+  }
+
+  function phoneDigits(text) {
+    return text.replace(/[ -]/g, "");
+  }
+  // Only the characters the probe stored and asserted: other separators
+  // (`(`, `)`, `.`), other dashes and spaces, and letters were not probed.
+  function phoneText(text) {
+    return /^[0-9+ -]*$/.test(text);
+  }
+
+  // The measured literal forms: seconds precision, `Z` or a `+hh:mm` offset.
+  var INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:Z|([+-])(\d{2}):(\d{2}))$/;
+  function instant(text) {
+    var m = INSTANT.exec(text);
+    if (m === null) {
+      return null;
+    }
+    var n = [];
+    var i;
+    for (i = 1; i <= 9; i += 1) {
+      n.push(m[i] === undefined || m[i] === "+" || m[i] === "-" ? m[i] : Number(m[i]));
+    }
+    var ms = Date.UTC(n[0], n[1] - 1, n[2], n[3], n[4], n[5]);
+    var check = new Date(ms);
+    if (n[1] < 1 || n[1] > 12 || check.getUTCDate() !== n[2] || n[3] > 23 || n[4] > 59 || n[5] > 59 ||
+        (n[6] !== undefined && (n[7] > 23 || n[8] > 59))) {
+      return null;
+    }
+    if (n[6] !== undefined) {
+      ms -= (n[6] === "-" ? -1 : 1) * (n[7] * 60 + n[8]) * 60000;
+    }
+    return ms;
+  }
+
+  function integralDecimal(text) {
+    return /^-?(?:0|[1-9][0-9]*)(?:\.0+)?$/.test(text) && Math.abs(Number(text)) <= SAFE_INTEGER;
+  }
+  function fractionalDecimal(text) {
+    return /^-?(?:0|[1-9][0-9]*)\.[0-9]+$/.test(text) && !integralDecimal(text);
+  }
+
+  function compareNumbers(actual, op, expected) {
+    switch (op) {
+      case "eq": return actual === expected;
+      case "gt": return actual > expected;
+      case "ge": return actual >= expected;
+      case "lt": return actual < expected;
+      case "le": return actual <= expected;
+    }
+    return undefined;
+  }
+
+  // A deciding lane's answer for a field with a measured rule, or undefined
+  // to fall through to the ordinary comparison. `assertions` has already
+  // refused or 400'd every literal these do not decide.
+  function compareByRule(rule, actual, op, expected, field, lane, positive) {
+    var f = fieldName(field);
+    if (rule === "phone") {
+      if (typeof actual !== "string" || typeof expected !== "string") {
+        return unknown(field, op, "type");
+      }
+      if (!phoneText(actual)) {
+        return unknown(field, op, "rule");
+      }
+      lane.label("measured", op + " on alpha_user telephoneNumber ignores spaces and hyphens (telephoneNumberMatch)", PROBE);
+      return compareText(phoneDigits(actual), op, phoneDigits(expected));
+    }
+    if (rule === "instant") {
+      if (typeof actual !== "string" || typeof expected !== "string") {
+        return unknown(field, op, "type");
+      }
+      var stored = instant(actual);
+      if (stored === null) {
+        return unknown(field, op, "rule");
+      }
+      lane.label("measured", op + " on alpha_user " + f + " compares instants across offsets", PROBE);
+      return compareNumbers(stored, op, instant(expected));
+    }
+    if (rule === "integer") {
+      if (!isSafeInteger(actual)) {
+        return unknown(field, op, "type");
+      }
+      var literal = typeof expected === "number" ? expected : Number(expected);
+      var measured = op === "eq" || (op === "ge" && typeof expected === "number");
+      lane.label(measured ? "measured" : "assumed", measured
+        ? op + " on alpha_user frIndexedInteger1 converts an integral literal of either JSON type to the integer"
+        : op + " on alpha_user frIndexedInteger1 compares an integral literal numerically, like eq and ge", PROBE);
+      return compareNumbers(actual, op, literal);
+    }
+    if (rule === "json" && typeof actual === "number") {
+      if (typeof expected === "string") {
+        if (positive && INSTANT_OPS[op]) {
+          lane.label("measured", op + " on a generic (JSON-stored) type: a quoted literal never matches a number", PROBE);
+          return false;
+        }
+        return unknown(field, op, "type");
+      }
+      if (typeof expected === "number" && DECIDED_INTEGER_OPS[op]) {
+        var probed = op === "eq" || op === "gt";
+        lane.label(probed ? "measured" : "assumed", probed
+          ? op + " on a generic (JSON-stored) type compares numbers by value, decimals included"
+          : op + " on a generic (JSON-stored) type compares numbers by value, like eq and gt", PROBE);
+        return compareNumbers(actual, op, expected);
+      }
+    }
+    return undefined;
+  }
+
+  // Filter-level: the leaves AIC answers before reading a record. A literal a
+  // measured rule refuses is AIC's 400 (`illegal`); any other literal on a
+  // ruled field that the lane cannot decide is `unknown`, so an empty
+  // collection cannot pass where AIC would throw. Unknown wins over illegal,
+  // because which leaf AIC names first is unmeasured.
+  function assertions(ast, lane) {
+    var found = null;
+    var illegal = null;
+    (function visit(node) {
+      if (found !== null) {
+        return;
+      }
+      if (node.kind === "and" || node.kind === "or") {
+        visit(node.left);
+        visit(node.right);
+        return;
+      }
+      if (node.kind === "not") {
+        visit(node.inner);
+        return;
+      }
+      if (node.kind !== "cmp" || !lane.rule) {
+        return;
+      }
+      var rule = lane.rule(node.field);
+      var verdict = rule === null ? null : leafAssertion(rule, node, lane.decides === true);
+      if (verdict === null) {
+        return;
+      }
+      if (verdict.unknown) {
+        found = verdict;
+      } else if (illegal === null) {
+        illegal = verdict;
+      }
+    })(ast);
+    return found !== null ? found : illegal;
+  }
+
+  function leafAssertion(rule, node, decides) {
+    var op = node.op;
+    var value = node.value;
+    var field = node.field;
+    var plainInteger = typeof value === "number" && /^-?(?:0|[1-9][0-9]*)$/.test(node.spelling);
+    var illegal = function (text) {
+      return { illegal: { field: "/" + fieldName(field), value: text, op: op } };
+    };
+    switch (rule) {
+      case "dsRefused":
+        return unknown(field, op, "rule");
+      case "phone":
+        return decides && PHONE_OPS[op] && typeof value === "string" && phoneText(value) && /[0-9+]/.test(value)
+          ? null : unknown(field, op, "rule");
+      case "instant":
+        if (!decides || typeof value !== "string") {
+          return unknown(field, op, typeof value === "string" ? "rule" : "type");
+        }
+        if (instant(value) !== null && INSTANT_OPS[op]) {
+          return null;
+        }
+        return op === "eq" && /^[A-Za-z]+$/.test(value) ? illegal(value) : unknown(field, op, "rule");
+      case "integer":
+        if (!DECIDED_INTEGER_OPS[op]) {
+          return unknown(field, op, "type");
+        }
+        if (!decides) {
+          return plainInteger ? null : unknown(field, op, "type");
+        }
+        if (typeof value === "number") {
+          if (integralDecimal(node.spelling)) {
+            return null;
+          }
+          var abs = Math.abs(value);
+          return fractionalDecimal(node.spelling) && ILLEGAL_NUMBER_OPS[op] && abs >= 1e-3 && abs < 1e7
+            ? illegal(String(value)) : unknown(field, op, "type");
+        }
+        if (typeof value === "string" && op === "eq") {
+          if (integralDecimal(value)) {
+            return null;
+          }
+          return fractionalDecimal(value) || /^[A-Za-z]+$/.test(value) ? illegal(value) : unknown(field, op, "type");
+        }
+        return unknown(field, op, "type");
+      case "dsInteger":
+        if (plainInteger && DECIDED_INTEGER_OPS[op]) {
+          return null;
+        }
+        return op === "eq" && typeof value === "string" && canonicalInteger(value) ? null : unknown(field, op, "type");
+    }
+    return null;
+  }
+
+  // The script tester's lane: every reading, no measured type coercion and no
+  // measured field rule, for a collection it knows by name only. Its
+  // openidm.query was not part of the 2026-11-06 probe (REST and IDM's
+  // openidm.query were), so the ruled user fields stay refused here.
   function unmeasuredLane(collection) {
     var type = String(collection).replace(/^managed\//, "");
     return {
-      strings: function (field, op, candidate, expected) {
-        return otherRule(type, field) ? unknown(field, op, "rule") : unmeasuredStrings(field, op, candidate, expected);
-      },
+      strings: unmeasuredStrings,
       quotedInteger: function () { return false; },
       scalar: function () {},
+      rule: function (field) { return fieldRule(type, field); },
+      decides: false,
+      label: function () {},
     };
   }
 
@@ -717,7 +968,8 @@ var __rhinoLocalCrestFilter = (function () {
     readStrings: readStrings,
     unmeasuredStrings: unmeasuredStrings,
     unmeasuredLane: unmeasuredLane,
-    otherRule: otherRule,
+    fieldRule: fieldRule,
+    assertions: assertions,
     compareText: compareText,
     transforms: transforms,
   };

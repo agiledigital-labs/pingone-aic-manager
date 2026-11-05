@@ -7,7 +7,7 @@ import type { JsonValue } from "../protocol.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
-import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldValue, matchesFilter, otherRule } from "./filter.ts";
+import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldRule, fieldValue, illegalAssertion, matchesFilter } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Invocation, Scripts } from "./scripts.ts";
 import type { Document, ManagedType, PolicyEvaluator, RestRequest } from "./types.ts";
@@ -40,16 +40,20 @@ export class ManagedStore {
   private readonly scripts: Scripts;
   private readonly evidence: Evidence;
   private readonly policy: PolicyEvaluator | undefined;
+  /** Whether a type's top-level property is JSON in DS (`IdmConfig.jsonStored`). */
+  private readonly jsonStored: (type: string, field: string) => boolean;
   constructor(
     records: Map<string, Document>,
     scripts: Scripts,
     evidence: Evidence,
     policy?: PolicyEvaluator,
+    jsonStored: (type: string, field: string) => boolean = () => false,
   ) {
     this.records = records;
     this.scripts = scripts;
     this.evidence = evidence;
     this.policy = policy;
+    this.jsonStored = jsonStored;
   }
 
   /** Forks retain continuation credentials; offset cookies use each fork's current rows. */
@@ -421,7 +425,16 @@ export class ManagedStore {
     this.evidence.assumed("CREST comparison uses existential array matching");
     const filter = classified.filter;
     checkCapabilities(type, false, this.evidence, this.policy !== undefined);
-    const policy = stringPolicy(type.name, this.evidence);
+    const policy = stringPolicy(type.name, this.evidence, (field) => this.jsonStored(type.name, field));
+    // AIC converts each assertion to its attribute's syntax before reading a record, so a literal
+    // it cannot convert is a 400 on an empty collection too (docs/api/10, 2026-11-06).
+    const illegal = illegalAssertion(filter, policy);
+    if (illegal !== null) {
+      this.evidence.measured("a literal a DS integer or time attribute cannot convert is a 400 illegal filter assertion value",
+        "docs/api/10-managed-objects.md (E19 live probe, 2026-11-06)");
+      throw new IdmError(400, `The request cannot be processed because it contained an illegal filter assertion value '${illegal.value}' for field '${illegal.field}'`,
+        undefined, undefined, true);
+    }
     let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, this.queried(key, row), policy)).map(([, row]) => structuredClone(row));
     if (query._sortKeys !== undefined) {
       this.evidence.measured("nested query sort keys", "docs/api/10-managed-objects.md");
@@ -500,7 +513,7 @@ const ORDERING = ["gt", "ge", "lt", "le"];
  * probed, and either guess can be a false pass there (a folding guess passes a "not found" test,
  * an exact guess a `false`-branch test), so a record whose answer turns on them is missing.
  */
-function stringPolicy(type: string, evidence: Evidence): StringPolicy {
+function stringPolicy(type: string, evidence: Evidence, jsonStored: (field: string) => boolean): StringPolicy {
   const name = (field: string) => field.replace(/^\//, "");
   return {
     rules(_field, op): Record<RuleDimension, StringRule> {
@@ -531,7 +544,13 @@ function stringPolicy(type: string, evidence: Evidence): StringPolicy {
         evidence.assumed("eq on a boolean property compares JSON booleans");
       }
     },
-    refused: (field) => otherRule(type, name(field)),
+    // telephoneNumber, the time and integer attributes, the multivalued `pr` rule
+    // (crest-filter.cjs `fieldRule`), and a generic type's JSON-stored property.
+    rule: (field) => fieldRule(type, name(field)) ?? (jsonStored(name(field)) ? "json" : null),
+    label(provenance, behavior, source) {
+      if (provenance === "measured") evidence.measured(behavior, source);
+      else evidence.assumed(behavior);
+    },
     used(field, op, dimension) {
       const f = name(field);
       if (dimension === "case") {
@@ -563,7 +582,7 @@ function stringPolicy(type: string, evidence: Evidence): StringPolicy {
         unicode: "match turns on Unicode normalisation or characters RFC 4518 maps to nothing",
         type: "match compares different JSON types, or an object or null element, which nothing measured",
         presence: "answer for an empty string, array or object is unmeasured",
-        rule: "field's DS matching rule is not caseIgnoreMatch, which nothing measured",
+        rule: "field's DS matching rule is not caseIgnoreMatch (telephone, time or integer), and the 2026-11-06 probe measured neither this field nor this operator and literal form",
         path: "pointer reads through an array, measured only as a bare eq reached through and alone",
       }[dimension];
       return missing(evidence, `query ${op} whose ${what}: ${type} ${field}`, "openidm-query-filter");
