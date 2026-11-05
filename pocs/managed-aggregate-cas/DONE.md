@@ -233,3 +233,63 @@ removed. Still no parent hook, and the mapped parent's `_rev` still moved.
 `peers` and `owned` now declare `status` on the parent end, the same as
 `children`, so their edge patch is the same write. The reverse schema does not
 declare it.
+
+### What the rest of E21 found
+
+`placement` (119 s) put `notify` on `resourceCollection`. That is the placement
+that notifies the other side, including on `DELETE` of the child record, and it
+is the placement Ping's page describes. Round 1's parent-hook-on-delete result
+matches it. Round 1's script wrote `notify` on the relationship node, and the
+table at that placement does not reproduce the parent hook. Both are in
+`RESULTS.md`. The round-1 tables were not overwritten.
+
+`notifyRelationships` on the object is stored and does not fan out. On the
+field that changes, it notifies the linked objects with no `notify` flag, and
+a different field's change does not. That is where `alpha_role` puts it.
+`alpha_user` declares none. Naming a relationship from itself (`parent` set
+to `["parent"]`) made `GET` of that managed type return 404 while
+`config/managed` still listed it. The other type stayed 200. Clearing the
+property restored the type, and the hook control then fired. The fanout matrix
+skipped those configs after one probe of each end. Naming the other
+relationship, which is the `alpha_organization.parent` shape, did not notify
+the far object. The near object was notified only when `notify` was also on
+`resourceCollection`.
+
+`peers` / `peerOf` (generic, both has-many) matched the node-placement hook
+table. `owner` / `owned` (generic, has-one forward) followed Ping's rule:
+`notify` on the forward's `resourceCollection` notifies the parent, `notify`
+on the node does not, `notifySelf` notifies the origin of a write through
+that URL.
+
+`status`, declared on the parent end only, is one value on the shared edge.
+Both sides can read it and write it, mapped and generic. A child-side edge
+write moves the mapped parent's `_rev` and not the generic parent's, and not
+the child's. `returnByDefault` false omits relationships from `GET` and from
+a plain-field `onUpdate`'s `object` / `oldObject`. True includes them, and
+the hook then sees `status`. The first parent snapshot at false was a no-op
+`counter` patch and was discarded; a 0-to-7 patch is the one recorded.
+
+The notified hook's transaction id was the caller's id plus `/0`. The sink
+creates were in the one activity transaction `aic logs tx` returned for the
+sent id. The client waited (about 46 ms without the flag, about 72–85 ms
+with it). Ten concurrent notified edge patches ran `onUpdate` 38 times
+against 9 and 10 commits, with a repeated `oldRev`. The generic `derived`
+ended correct. The mapped pair returned one 404, kept nine edges, and
+`derived.sum` was 50 rather than 55.
+
+`GET /openidm/repo/relationships` returned 403 `Access denied`. Where a
+generic link is stored, and what a console-created pair writes, were not
+measured. `DELETE` of the relationship URL was not a separate row from
+`DELETE` of the child record. A notification received through one
+relationship and propagated out along another was not isolated.
+
+The harness diverged from the brief in three places. The brief's object-level
+`notifyRelationships` is not the tenant's shape, so both were run. The
+self-named relationship form was probed once and then skipped, because driving
+the matrix at a 404'd type voided the control. The role-mirror and the
+non-self organization shape were the positive controls.
+
+### Teardown
+
+Not run yet in this note. The success lines are `config equals backup: true`
+and `genericMapping equals run1/repo.ds-after.json: true`.

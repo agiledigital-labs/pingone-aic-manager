@@ -623,42 +623,195 @@ put, and a mapped one still moved it.
 
 ### `notifyRelationships`
 
-Object-level, which is what the brief asked to set and what the tenant does
-not use. The live document stored `["parent","gparent"]` on the child object
-and `["children","gchildren"]` on the parent object. With default flags,
-`NOTIFY=1` on the node, and `NOTIFY=2` on the node, a child plain-field change
-and a child reverse-link replace did not run the parent's hooks, and a parent
-plain-field change and a parent link add did not run the child's. Both storage
-modes. The key is accepted and ignored for these writes.
+Object-level, which is what the brief asked to set and what the tenant does not
+use. The live document stored `["parent","gparent"]` on the child object and
+`["children","gchildren"]` on the parent object. With default flags, `NOTIFY=1`
+on the node, and `NOTIFY=2` on the node, a child plain-field change and a child
+reverse-link replace did not run the parent's hooks, and a parent plain-field
+change and a parent link add did not run the child's. Both storage modes. The
+key is accepted and ignored for these writes.
 
 On the field that changes, which is where `alpha_role.temporalConstraints` and
-`alpha_assignment.attributes` put it. No `notify` flag was set for the first
-row of each pair, and adding the flags did not change that row.
+`alpha_assignment.attributes` put it. No `notify` flag was set for the first row
+of each pair, and adding the flags did not change that row.
 
-| Changed field | names | Write | other side | other `_rev` |
-| ------------- | ----- | ----- | ---------- | ------------ |
-| child `value` | `parent`, `gparent` | child plain field | parent update, both modes | generic parent moves |
-| child `value` | `parent`, `gparent` | reverse-link replace | no parent | generic parent stays |
-| parent `name` | `children`, `gchildren` | parent plain field | child update, both modes | child stays |
-| parent `name` | `children`, `gchildren` | parent link add | no child | — |
+| Changed field | names                   | Write                | other side                | other `_rev`         |
+| ------------- | ----------------------- | -------------------- | ------------------------- | -------------------- |
+| child `value` | `parent`, `gparent`     | child plain field    | parent update, both modes | generic parent moves |
+| child `value` | `parent`, `gparent`     | reverse-link replace | no parent                 | generic parent stays |
+| parent `name` | `children`, `gchildren` | parent plain field   | child update, both modes  | child stays          |
+| parent `name` | `children`, `gchildren` | parent link add      | no child                  | —                    |
 
 The reverse-link replace did notify the parent when `notify` was also on the
-child's `resourceCollection`. That is the `notify` result above, not this
-field: the same replace with the field set and no `notify` flag did not. A
-child `value` patch took 91–114 ms against about 52 ms with no
-`notifyRelationships`, and the sink was in the response. The parent script
-assigns `object.derived`, so that notified run has a document change to
-commit. The child script does not assign to `object`; its hooks ran and its
-`_rev` did not move. A child script that mutates `object` was not the one
-measured.
+child's `resourceCollection`. That is the `notify` result above, not this field:
+the same replace with the field set and no `notify` flag did not. A child
+`value` patch took 91–114 ms against about 52 ms with no `notifyRelationships`,
+and the sink was in the response. The parent script assigns `object.derived`, so
+that notified run has a document change to commit. The child script does not
+assign to `object`; its hooks ran and its `_rev` did not move. A child script
+that mutates `object` was not the one measured.
 
-`alpha_user` declares no `notifyRelationships`. The field placement above is
-the tenant's. The copies that put `notify` only on the named relationship's
-`resourceCollection`, and the form that sets `notifyRelationships` on the
-relationship itself, are still running.
+`alpha_user` declares no `notifyRelationships`. The field placement above is the
+shape on `alpha_role.temporalConstraints` and `alpha_assignment.attributes`.
 
-Not in this section yet: the rest of that matrix, a has-many reverse, `notify`
-on a has-one forward, whether `status` is readable from the other side,
-`returnByDefault`, the activity log for a notified run, concurrent notified
-edge patches, and `GET /openidm/repo/relationships`. What a console-created
-pair stores still needs the console.
+The role copy puts `notify` only on the named relationship's
+`resourceCollection` and `notifyRelationships` on `value`. A child plain-field
+change still ran the parent's hooks, both modes (101 ms mapped, 110 ms generic),
+and the generic parent's `_rev` moved. A reverse-link replace also ran both
+parents' hooks, the one the child left and the one it joined, and moved both
+generic parents' `_rev`. That replace did not do so without the
+`resourceCollection` flag, so the extra parent runs are the `notify` result, not
+the field. Under `NOTIFY=1` on `resourceCollection` alone, that replace already
+ran both parents; the node-placement table's destination cell stayed at no
+hooks.
+
+### Naming a relationship from a relationship
+
+`notifyRelationships` on the relationship property, set to its own name
+(`parent` to `["parent"]`, `gparent` to `["gparent"]`), took that managed
+resource offline. `GET` of `alpha_poc_child` returned 404,
+`Resource 'managed/alpha_poc_child' not found`, for eight tries, about 24 s.
+`config/managed` still listed the type. The parent resource stayed 200. The
+mirror on the parent 404'd the parent and left the child at 200. Clearing the
+property returned each type to 200, and the hook control fired again. The fanout
+matrix was not driven at those configs. No "no hook" cell comes from them.
+
+Naming the other relationship, which is what `alpha_organization.parent` does
+(`children` and `members`, not itself): `parent` names `gparent` and `gparent`
+names `parent`. The live document stored that. The hook control fired. Changing
+the named relationship did not run the far object's hooks, and did not move the
+far parent's `_rev`. A plain field change did not either.
+
+| Config                                                                      | Write                                         | Far object     | Referenced object            |
+| --------------------------------------------------------------------------- | --------------------------------------------- | -------------- | ---------------------------- |
+| no flags                                                                    | replace `parent`, watch the `gparent` parent  | no hooks       | no hooks                     |
+| no flags                                                                    | replace `gparent`, watch the `parent` parent  | no hooks       | no hooks                     |
+| no flags                                                                    | child plain field, watch the `gparent` parent | no hooks       | —                            |
+| `notifySelf` on the node, `notify` on `resourceCollection`, names the other | replace `parent`                              | no hooks       | parent update                |
+| same                                                                        | replace `gparent`                             | no hooks       | parent update                |
+| same                                                                        | child plain field                             | no hooks       | —                            |
+| parent side, no flags: `children` names `gchildren`                         | add `children`, watch the `gchildren` child   | no child hooks | parent update, its own patch |
+| same                                                                        | parent plain field                            | no child hooks | parent update                |
+| same                                                                        | add `gchildren`, watch the `children` child   | no child hooks | parent update                |
+
+The referenced-object update in the flagged rows is `notify` on
+`resourceCollection` of the relationship that changed. The far object, the one
+`notifyRelationships` names, was not told. On the generic direction the
+referenced parent's `_rev` stayed put with no flags and moved once `notify` was
+on `resourceCollection`. Ping's page also says a notification received through a
+field propagates out along that field's `notifyRelationships`. That second hop
+was not isolated: no config both notified an object through one relationship and
+named a further relationship on the field that received it.
+
+### Has-many reverse, and `notify` on a has-one forward
+
+`peers` / `peerOf` is generic on both ends, both has-many, `status` declared on
+the parent end only. Node placement, three flag modes, the same writes as the
+first table. The hook cells match that table, including child `onDelete` only on
+delete under `NOTIFY=1`. The `_rev` cells match its generic column: the parent's
+`_rev` moves on its own patch, and on the `NOTIFY=1` edge patch through the
+parent, and not on a child-side edge or link write. The child-side edge write
+was `PATCH <child>/peerOf/<edgeId>` of `/_refProperties/status` and
+returned 200. The value was not read back in this part.
+
+`owner` (has-one on the child) / `owned` (has-many on the parent) is generic.
+`status` is on `owned` only. `none` matches the node-placement table's generic
+column. `notify` on the `owner` relationship node changed nothing. `notifySelf`
+on `owner` made a child-side edge patch run the child's hooks and not the
+parent's. `notify` on `owner`'s `resourceCollection` notified the parent on
+create-with-link, reverse-link replace, child-side edge patch, and child
+`DELETE`, and not on a plain field or a parent-side edge patch. The parent's
+`_rev` moved on those notified rows. `notify` on `owned`'s `resourceCollection`
+notified the child on a parent-side edge patch and on the parent's link add, and
+the child's `_rev` stayed put. `notifySelf` on `owned` made the parent-side edge
+patch run the parent's hooks and move its `_rev`.
+
+Both ends in the tenant shape (`notifySelf` on the node, `notify` on
+`resourceCollection`): a relationship write ran both objects' hooks, a plain
+field did not cross, and child `DELETE` ran the parent's hooks plus the child's
+`onDelete`. Create-with-link ran the parent once and the child not at all.
+
+`value.notifyRelationships` of `["owner"]` plus `notify` on `owner`'s
+`resourceCollection`: a child plain-field change ran the parent (the field, not
+the flag). Create-with-link ran the parent twice. Every other create with
+`notify` on that collection and no `notifyRelationships` ran the parent once.
+The two runs were not separated.
+
+### Where `status` is, and `returnByDefault`
+
+`status` is declared on the parent end only. Both sides' relationship reads
+returned `_refProperties` keys `_id`, `_rev` and `status`, mapped and generic.
+`PATCH` of the child's has-one subresource (`PATCH <child>/<rel>` of
+`/_refProperties/status`) returned 200 and the parent then read the new value. A
+patch through the parent returned 200 and the child then read that value. One
+value on the shared edge, not a copy per side. The child-side write moved the
+mapped parent's `_rev`, not the generic parent's, and not the child's. The
+parent-side write did the same. That repeats the `_rev` table above.
+
+`GET` of either object omits every relationship when `returnByDefault` is false,
+and includes them when it is true. `GET` with `_fields=<rel>` returns the edge
+either way, including `status`. A plain-field `onUpdate` with `returnByDefault`
+false saw no relationship field in `object` or `oldObject`, on the child (a
+`label` change) and on the parent (a `counter` change from 0 to 7). With it
+true, both sides' plain-field hooks saw the edge, and `status` was in it. The
+first parent snapshot at `returnByDefault` false was the link-add, not a
+plain-field run: the harness replaced `counter` 0 with 0, which does not run
+`onUpdate`. The 0-to-7 patch is the one that counts. On that link-add, `object`
+did contain `children`. That is the relationship being written, and it is not
+the plain-field result.
+
+### The notified run and the caller's request
+
+Edge patch through the mapped parent, `NOTIFY=1` on the node, three samples,
+then the same with the flags cleared. The hook control fired in both
+configurations. The sink was in the response, and the 6 s settle added nothing.
+
+| Flags | Client time   | Access event       | Activity under that fetch                                             |
+| ----- | ------------- | ------------------ | --------------------------------------------------------------------- |
+| on    | 85, 72, 77 ms | `PATCH` 200, 67 ms | two `alpha_poc_sink` creates, one `relationshipUpdated` on the parent |
+| off   | 46, 48, 47 ms | `PATCH` 200, 30 ms | no activity events                                                    |
+
+The id the hook stored was the id the client sent plus `/0`, one value, not a
+second transaction. `aic logs tx` prefix-matches, so the fetch was by the id the
+client sent and the stored row's id was longer than that. The summary kept the
+relation and not the activity row's id, so equality with `<sent>/0` was checked
+for the hook and not for the activity row. The two sink creates were in the one
+transaction that fetch returned. There was no separate parent `UPDATE` event in
+it. With the flags off, the same fetch returned the access event and no
+activity. Ping's page says relationship auditing is independent of these flags.
+This fetch did not see a `relationshipUpdated` without the flag. An audit under
+an id that does not start with the one the client sent would not be in the
+fetch, and was not searched for.
+
+### Notified edge patches under contention
+
+`NOTIFY=1` on the node, ten concurrent edge patches of ten different edges,
+`children` mode, `trace` on. Setup's own link-add hook had already left
+`derived` at count 9, sum 45: the hook runs before the link it is adding is
+visible, which is the round-1 result. The burst then recomputed.
+
+| Pair    | HTTP         | `onUpdate` | `postUpdate` | distinct `oldRev`                       | final edges        | final `derived`            |
+| ------- | ------------ | ---------- | ------------ | --------------------------------------- | ------------------ | -------------------------- |
+| mapped  | 9×200, 1×404 | 38         | 9            | 16, and a repeated consecutive `oldRev` | 9, all `inactive`  | count 9, sum 50, active 0  |
+| generic | 10×200       | 38         | 10           | 10, and a repeated consecutive `oldRev` | 10, all `inactive` | count 10, sum 55, active 0 |
+
+The counts at the moment the calls returned were the settled counts. Every run
+recorded the same `request.patchOperations` text, so that field did not
+distinguish the ten patches. Not every `onUpdate` committed: 38 runs against 9
+and 10 `postUpdate`s, with a repeated `oldRev`, which is the revision-less
+`PATCH` retry. The generic final `derived` matches the ten children (values 1
+through 10, all inactive). The mapped final `derived` matches a nine-edge
+relationship in count and active state, and the sum is 50 rather than 55. One
+mapped edge was absent at the end. The 404 body was not kept. The wanted count
+of 10 was not what the mapped pair stored.
+
+### Not measured
+
+`GET /openidm/repo/relationships?_queryFilter=true&_pageSize=1` returned 403,
+body `Access denied`. Where a generic link is stored was not visible to this
+service account. What a console-created pair writes still needs the console.
+`DELETE` of the relationship URL, as opposed to `DELETE` of the child record,
+was not its own row. The propagation of a notification received through one
+relationship out along another was not isolated. A child script that assigns to
+`object` was not the script measured, so a notified child run that would move
+the child's `_rev` was not measured.

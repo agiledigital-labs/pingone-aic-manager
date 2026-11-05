@@ -747,7 +747,8 @@ async function changeOtherRel(changedRel, watchRel) {
   return out;
 }
 
-// Same linkage, then a plain field. Names on the relationship must not fire.
+// Same linkage, then a plain field. The relationship's notifyRelationships
+// names the far side; this write does not touch that relationship.
 async function plainWhileLinked(watchRel) {
   const far = await makeParent(watchRel);
   const created = await makeChild();
