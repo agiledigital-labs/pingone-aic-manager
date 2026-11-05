@@ -120,13 +120,16 @@ function __rhinoLocalSendBody(value, path, ancestors) {
     return value;
   }
   kind = Object.prototype.toString.call(value);
+  // The script-defect/ family: AIC's behaviour is measured (it sends a dump
+  // and carries on), and faulting is a deliberate refusal to pass a script
+  // that would misbehave there, not a gap in the emulation.
   if (kind === "[object Date]") {
-    throw __rhinoLocalFault("send-body-js-date", 
+    throw __rhinoLocalFault("script-defect/send-body-js-date", 
       "rhino-local: httpClient.send " + path + " is a JS Date: AIC sends a ~1 KB dump of the Rhino NativeDate object without the time value, not the date (docs/api/12 §5); send date.toISOString() or date.getTime()"
     );
   }
   if (kind === "[object RegExp]") {
-    throw __rhinoLocalFault("send-body-regexp", 
+    throw __rhinoLocalFault("script-defect/send-body-regexp", 
       "rhino-local: httpClient.send " + path + " is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags (docs/api/12 §5); send regexp.source as a string"
     );
   }
@@ -136,7 +139,7 @@ function __rhinoLocalSendBody(value, path, ancestors) {
     );
   }
   if (typeof value === "function") {
-    throw __rhinoLocalFault("send-body-function", 
+    throw __rhinoLocalFault("script-defect/send-body-function", 
       "rhino-local: httpClient.send " + path + " is a function: AIC sends a ~1.7 KB dump of the Rhino function object, which exposes the script's name, its encoded source and the name of every binding and variable in the script (docs/api/12 §5); leave it out of the body"
     );
   }
@@ -486,12 +489,17 @@ function __rhinoLocalAssignPlain(target, source) {
   }
 }
 
+// A non-object merge is a fault, not Rhino's catchable "Can't find method"
+// (E19 P3-6, considered and kept): introspection types the parameter
+// `object`, as it does putShared's value, which takes a string, so whether
+// overload resolution refuses "x" here or AIC accepts and fails later is
+// unmeasured. Only the nested-object refusal is measured (docs/api/12).
 function __rhinoLocalMergeBucket(bucketName, object) {
   if (!__rhinoLocalIsPlainObject(object)) {
     throw __rhinoLocalFault("node-state-merge-non-object", 
       "rhino-local: nodeState.merge" +
         (bucketName === "shared" ? "Shared" : "Transient") +
-        ": expected an object"
+        ": what AIC does with a non-object argument is unmeasured"
     );
   }
   var bucket = __rhinoLocal[bucketName];
@@ -4105,7 +4113,9 @@ function __rhinoLocalHarvest() {
   if (__rhinoLocal.faults.length > 0) {
     throw new Error(
       "rhino-local harness fault " + __rhinoLocal.faults[0] +
-        " (the script caught this refusal, but the harness cannot say what AIC does there, so the run fails anyway)"
+        (__rhinoLocal.faults[0].indexOf("script-defect/") === 0
+          ? " (a script defect: AIC's behaviour here is measured and is not what the script means, so the run fails even though the script caught it)"
+          : " (the script caught this refusal, but the harness cannot say what AIC does there, so the run fails anyway)")
     );
   }
   var recordedOutcome = __rhinoLocal.outcome;

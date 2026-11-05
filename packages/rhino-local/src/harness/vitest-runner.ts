@@ -171,9 +171,10 @@ export default class EmulationTestRunner extends TestRunner {
       // failure. When something is still buffered, fail the flush's send
       // instead, after the main process has taken it. If no send carries it,
       // the throw is lost — and so would a fallback's: a timer throwing here
-      // after the run is not reported by Vitest (tried, 2026-11-05). The main
-      // reporter fails the run from its own audit copy regardless (R5
-      // reporter-only, R9 dropped-flush in emulation-backstop.e2e.test.ts).
+      // after the run is not reported by Vitest (tried, 2026-11-05). The run
+      // still fails, and the main reporter prints the message from its own
+      // audit copy (R5 reporter-only, R9 dropped-flush in
+      // emulation-backstop.e2e.test.ts).
       if (this.#tracked && files.some((file) => !this.#finishedSuites.has(file.id))) {
         this.#backstop = backstop;
         return;

@@ -40,8 +40,10 @@ it.each(modes)("R5 main reporter enforces discarded worker verdict in $pool isol
   expect(report.testResults[0]?.assertionResults[0]?.status).toBe("passed");
 }, 30_000);
 // The worker's run backstop is deferred to Vitest's final flush. When no flush
-// send carries it the worker's throw is lost, so the run must still fail, with
-// the message, from the main reporter's own audit copy.
+// send carries it the worker's throw is lost, and the run must still fail with
+// the message. The message is the main reporter's, from its own audit copy; the
+// exit code is not shown to depend on it (E19 review: it survived with the
+// reporter removed), so this pins the outcome, not which part produces it.
 it.each(modes)("R9 deferred backstop survives a dropped flush in $pool isolate=$isolate", async ({ pool, isolate }) => {
   const result = await runChild("fails", pool, isolate, { R9_FLUSH_DROPPED: "true" });
   expect(result.code, result.output + result.report).toBe(1);

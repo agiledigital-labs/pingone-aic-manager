@@ -7,12 +7,13 @@ import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { bindingsCrestFilterPath } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { type Answer, filterTable, records } from "../crest-filter-table.ts";
+import type { JsonObject } from "../../src/case/types.ts";
 import { loadBehaviour, sandboxFaults } from "./load-behaviour.ts";
 
 const grammar = createRequire(import.meta.url)(bindingsCrestFilterPath) as {
   parse(input: unknown): { ast?: unknown; error?: string };
 };
-const given = { managed: { "managed/widget": records.map((record) => structuredClone(record) as Record<string, unknown>) } };
+const given = { managed: { "managed/widget": records.map((record) => structuredClone(record) as JsonObject) } };
 const parseText = (filter: unknown) =>
   `rhino-local: openidm.query: The value '${String(filter)}' for parameter '_queryFilter' could not be parsed as a valid query filter`;
 const rows = (answer: Answer) => (Array.isArray(answer) ? answer : []);

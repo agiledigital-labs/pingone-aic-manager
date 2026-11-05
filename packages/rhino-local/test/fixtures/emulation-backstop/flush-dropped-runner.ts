@@ -1,7 +1,8 @@
 /** Adversarial control for the deferred run backstop: hide every
  * `suite-finished` from the runner's flush tracking, so the backstop is always
  * deferred to the final flush, then drop that flush. The worker's throw is then
- * lost; the run must still fail from the main reporter's audit copy. */
+ * lost; the run must still fail, with the message the main reporter prints
+ * from its audit copy. */
 import type { RunnerTaskEventPack, RunnerTaskResultPack, RunnerTestFile } from "vitest";
 import EmulationTestRunner from "../../../src/harness/vitest-runner.ts";
 export default class FlushDroppedRunner extends EmulationTestRunner {

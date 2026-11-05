@@ -123,7 +123,7 @@ export interface EmulationFailureInfo {
 }
 
 export interface HarnessFault {
-  /** Stable kebab slug, e.g. `send-body-js-date`, `arity/openidm.read`, `fixture/http`. */
+  /** Stable kebab slug, e.g. `script-defect/send-body-js-date`, `arity/openidm.read`, `fixture/http`. */
   id: string;
   message: string;
 }
