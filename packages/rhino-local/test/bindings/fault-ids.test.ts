@@ -10,7 +10,8 @@ type Methods = Record<string, ((...args: unknown[]) => unknown) | undefined>;
 // `arity-unknown/`); the tally groups by them, so a rename is a contract change.
 describe("harness fault ids", () => {
   it.each([
-    ["node-state-merge-non-object", {}, (s: Sandbox) => (s.nodeState as Methods).mergeShared!("x")],
+    // A string is AIC's measured catchable refusal since 2026-11-06; a function is still unmeasured.
+    ["node-state-merge-non-object", {}, (s: Sandbox) => (s.nodeState as Methods).mergeShared!(() => 0)],
     ["fixture/cache-manager", {}, (s: Sandbox) => (s.cacheManager as Methods).named!("c")],
   ])("%s", (id, given, call) => {
     const sandbox = loadBehaviour(given);

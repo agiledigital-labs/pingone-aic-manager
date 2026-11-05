@@ -317,9 +317,11 @@ var __rhinoLocalArityBasis = (function () {
   add("scripting.bindings.crypto.ScriptCryptoService", "assumed", ["utils.crypto.getRandomValues"]);
   add("auth.node.api.NodeStateScriptWrapper", "assumed", [
     "nodeState.get", "nodeState.isDefined", "nodeState.putShared", "nodeState.putTransient",
-    "nodeState.remove", "nodeState.keys", "nodeState.getObject", "nodeState.mergeShared",
-    "nodeState.mergeTransient",
+    "nodeState.remove", "nodeState.keys", "nodeState.getObject", "nodeState.mergeTransient",
   ]);
+  // mergeShared() with no argument: AIC's `Can't find method ...mergeShared().`
+  // (E19 live probe, 2026-11-06), which also measured the class it names.
+  add("auth.node.api.NodeStateScriptWrapper", "measured", ["nodeState.mergeShared"]);
   add("auth.nodes.script.ActionWrapper", "assumed", [
     "action.goTo", "action.withErrorMessage", "action.withHeader", "action.withIdentifiedUser",
     "action.withIdentifiedAgent", "action.withStage", "action.withDescription",
@@ -373,8 +375,12 @@ var __rhinoLocalArityBasis = (function () {
   ]);
   add("scripting.wrappers.HttpClientScriptWrapper", "assumed", ["httpClient.send"]);
   add("scripting.bindings.SystemEnvScriptWrapper", "assumed", ["systemEnv.getProperty"]);
-  add("scripting.logging.ScriptedLoggerWrapper", "assumed", [
-    "logger.trace", "logger.debug", "logger.info", "logger.warn", "logger.error",
+  add("scripting.logging.ScriptedLoggerWrapper", "assumed", ["logger.trace"]);
+  // True varargs on AIC: 4, 5 and 6 arguments were accepted at all four levels
+  // and every one bound a `{}` (E19 live probe, 2026-11-06). trace was not
+  // probed, so it keeps the array-tail fault below.
+  add("scripting.logging.ScriptedLoggerWrapper", "measured", [
+    "logger.debug", "logger.info", "logger.warn", "logger.error",
   ]);
   // An overload whose last parameter introspection lists as `array` may be a
   // Java array or Java varargs (SLF4J's `Object...` is the obvious candidate
@@ -390,7 +396,11 @@ var __rhinoLocalArityBasis = (function () {
     }
   }
   tail(0, ["utils.crypto.getRandomValues"]);
-  tail(1, ["logger.trace", "logger.debug", "logger.info", "logger.warn", "logger.error"]);
+  tail(1, ["logger.trace"]);
+  // Measured varargs: every count from `varargs` up is accepted.
+  for (var v = 0, measured = ["logger.debug", "logger.info", "logger.warn", "logger.error"]; v < measured.length; v += 1) {
+    basis[measured[v]].varargs = 1;
+  }
   tail(2, ["openidm.read", "openidm.query", "openidm.patch"]);
   tail(3, ["openidm.delete", "callbacksBuilder.validatedUsernameCallback"]);
   tail(4, [
@@ -412,7 +422,10 @@ function __rhinoLocalScriptSignature(args) {
     if (value === null) {
       out.push("null");
     } else if (value === undefined) {
-      out.push("undefined");
+      // Rhino 1.7.14's Undefined.instance is not a Scriptable, so it is named
+      // by its Java class: AIC's `mergeShared(org.mozilla.javascript.Undefined).`
+      // (E19 live probe, 2026-11-06).
+      out.push("org.mozilla.javascript.Undefined");
     } else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") {
       out.push(typeof value);
     } else if (typeof value === "function") {
@@ -489,18 +502,37 @@ function __rhinoLocalAssignPlain(target, source) {
   }
 }
 
-// A non-object merge is a fault, not Rhino's catchable "Can't find method"
-// (E19 P3-6, considered and kept): introspection types the parameter
-// `object`, as it does putShared's value, which takes a string, so whether
-// overload resolution refuses "x" here or AIC accepts and fails later is
-// unmeasured. Only the nested-object refusal is measured (docs/api/12).
+var __rhinoLocalNativeArrayHash = 0x69fd8b92;
+
+// A non-object merge throws AIC's catchable InternalError and changes no
+// state (E19 live probe, 2026-11-06; docs/api/12): a string, number, boolean
+// or undefined is Rhino's `Can't find method ...NodeStateScriptWrapper.<m>(<type>).`,
+// null is accepted by overload resolution and fails inside as `null`, and an
+// array resolves to the Map overload and fails conversion. Measured on
+// mergeShared, and on mergeTransient for a string; the same wrapper's other
+// mergeTransient cases are taken to match. Anything else (a function) is
+// unmeasured and stays the fault.
+function __rhinoLocalMergeRefusal(method, object) {
+  if (object === null) {
+    return __rhinoLocalInternalError("null");
+  }
+  if (Array.isArray(object)) {
+    __rhinoLocalNativeArrayHash = (__rhinoLocalNativeArrayHash + 0x9e3779b1) >>> 0;
+    return __rhinoLocalInternalError("Cannot convert org.mozilla.javascript.NativeArray@" +
+      __rhinoLocalNativeArrayHash.toString(16) + " to java.util.Map");
+  }
+  if (object === undefined || typeof object === "string" || typeof object === "number" ||
+      typeof object === "boolean") {
+    return __rhinoLocalInternalError("Can't find method org.forgerock.openam.auth.node.api.NodeStateScriptWrapper." +
+      method + "(" + __rhinoLocalScriptSignature([object]) + ").");
+  }
+  return __rhinoLocalFault("node-state-merge-non-object",
+    "rhino-local: nodeState." + method + ": what AIC does with a " + typeof object + " argument is unmeasured");
+}
+
 function __rhinoLocalMergeBucket(bucketName, object) {
   if (!__rhinoLocalIsPlainObject(object)) {
-    throw __rhinoLocalFault("node-state-merge-non-object", 
-      "rhino-local: nodeState.merge" +
-        (bucketName === "shared" ? "Shared" : "Transient") +
-        ": what AIC does with a non-object argument is unmeasured"
-    );
+    throw __rhinoLocalMergeRefusal(bucketName === "shared" ? "mergeShared" : "mergeTransient", object);
   }
   var bucket = __rhinoLocal[bucketName];
   var keys = Object.keys(object);
@@ -1169,7 +1201,7 @@ function __rhinoLocalFormat(pattern, bound) {
       if (odd) {
         out += "{}";
       } else if (argIndex < bound.length) {
-        out += String(bound[argIndex]);
+        out += __rhinoLocalLogArg(bound[argIndex]);
         argIndex += 1;
       } else {
         out += "{}";
@@ -1183,8 +1215,37 @@ function __rhinoLocalFormat(pattern, bound) {
   return out;
 }
 
+// How AIC's SLF4J back end prints a bound argument (E19 live probe,
+// 2026-11-06): a JS number reaches it as a java.lang.Double, so 1 prints
+// `1.0`; true, null and a plain object print `true`, `null` and
+// `[object Object]`. Every other value keeps String(), unmeasured.
+function __rhinoLocalJavaDouble(n) {
+  if (n !== n) {
+    return "NaN";
+  }
+  if (n === Infinity || n === -Infinity) {
+    return n > 0 ? "Infinity" : "-Infinity";
+  }
+  if (n === 0) {
+    return 1 / n < 0 ? "-0.0" : "0.0";
+  }
+  var abs = Math.abs(n);
+  if (abs >= 1e-3 && abs < 1e7) {
+    var plain = String(n);
+    return plain.indexOf(".") < 0 ? plain + ".0" : plain;
+  }
+  var parts = n.toExponential().split("e");
+  return (parts[0].indexOf(".") < 0 ? parts[0] + ".0" : parts[0]) + "E" + parts[1].replace("+", "");
+}
+
+function __rhinoLocalLogArg(value) {
+  return typeof value === "number" ? __rhinoLocalJavaDouble(value) : String(value);
+}
+
 function __rhinoLocalLog(level, args) {
-  if (args.length < 1 || args.length > 3) {
+  var basis = __rhinoLocal.engine === "legacy" ? undefined : __rhinoLocalArityBasis["logger." + level];
+  var varargs = basis !== undefined && basis.varargs !== undefined && args.length >= basis.varargs;
+  if (args.length < 1 || (args.length > 3 && !varargs)) {
     throw __rhinoLocalArityRefusal("logger." + level, args, "1..3");
   }
   var format = String(args[0]);

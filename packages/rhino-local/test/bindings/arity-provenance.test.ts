@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { loadBehaviour, sandboxFaults } from "./load-behaviour.ts";
+import { loadBehaviour, runScriptWithFaults, sandboxFaults } from "./load-behaviour.ts";
 
 // E19 decision B: a wrong argument count is AIC's own catchable refusal where
 // the accepted range has a basis (measured, or AIC's binding introspection),
@@ -57,7 +57,7 @@ function introspected(): Map<string, Overloads> {
   return out;
 }
 
-type Basis = { java: string; provenance: "measured" | "assumed"; arrayTail?: number };
+type Basis = { java: string; provenance: "measured" | "assumed"; arrayTail?: number; varargs?: number };
 
 const given = {
   existingSession: { UserId: "alice" },
@@ -81,6 +81,10 @@ function argsFor(path: string, count: number): unknown[] {
   if (path === "callbacksBuilder.confirmationCallback" && count === 3) {
     return [0, "x", "x"];
   }
+  // A merge takes a map; a string is refused by type, not count (2026-11-06).
+  if (path === "nodeState.mergeShared" || path === "nodeState.mergeTransient") {
+    return Array.from({ length: count }, () => ({}));
+  }
   return Array.from({ length: count }, () => "x");
 }
 
@@ -97,13 +101,19 @@ describe("arity provenance", () => {
   const basis = loadBehaviour(given).__rhinoLocalArityBasis as Record<string, Basis>;
   const table = introspected();
 
-  it("names exactly the two measured methods", () => {
+  it("names exactly the measured methods", () => {
     expect(
       Object.entries(basis)
         .filter(([, b]) => b.provenance === "measured")
         .map(([path]) => path)
         .sort()
-    ).toEqual(["existingSession.get", "utils.crypto.randomUUID"]);
+    ).toEqual([
+      "existingSession.get", "logger.debug", "logger.error", "logger.info", "logger.warn",
+      "nodeState.mergeShared", "utils.crypto.randomUUID",
+    ]);
+    // E19 live probe 2026-11-06: the four probed levels are true varargs; trace was not probed.
+    expect(Object.entries(basis).filter(([, b]) => b.varargs !== undefined).map(([path]) => path).sort())
+      .toEqual(["logger.debug", "logger.error", "logger.info", "logger.warn"]);
   });
 
   it("takes every assumed range and class from AIC's introspection", () => {
@@ -146,7 +156,8 @@ describe("arity provenance", () => {
       const method = path.substring(path.lastIndexOf(".") + 1);
       const faulted: number[] = [];
       for (let count = 0; count <= 12; count += 1) {
-        const ok = path === "existingSession.get" ? count === 1 : accepted!.has(count);
+        const ok = path === "existingSession.get" ? count === 1
+          : accepted!.has(count) || (b.varargs !== undefined && count >= b.varargs);
         const unknown = !ok && b.arrayTail !== undefined && count >= b.arrayTail;
         const before = sandboxFaults(sandbox).length;
         const error = callWith(fn, argsFor(path, count)) as { name?: string; message?: string } | undefined;
@@ -161,7 +172,7 @@ describe("arity provenance", () => {
         if (!ok && !unknown) {
           expect(error!.name).toBe("InternalError");
           expect(error!.message).toBe(
-            `Can't find method ${b.java}.${method}(${Array(count).fill("string").join(",")}).`
+            `Can't find method ${b.java}.${method}(${argsFor(path, count).map((a) => typeof a === "string" ? "string" : "object").join(",")}).`
           );
         }
       }
@@ -176,11 +187,12 @@ describe("arity provenance", () => {
     const sandbox = loadBehaviour(given);
     const logger = sandbox.logger as Record<string, (...args: unknown[]) => unknown>;
     const openidm = sandbox.openidm as Record<string, (...args: unknown[]) => unknown>;
-    expect((callWith(logger.info!, ["{} {} {}", 1, 2, 3]) as Error).message).toMatch(/^rhino-local: logger.info arity=4 /);
+    // trace was not probed on 2026-11-06, so its varargs reading is still the fault.
+    expect((callWith(logger.trace!, ["{} {} {}", 1, 2, 3]) as Error).message).toMatch(/^rhino-local: logger.trace arity=4 /);
     expect((callWith(openidm.read!, ["managed/user/x", null, ["_id"], "x"]) as Error).message).toMatch(
       /^rhino-local: openidm.read arity=4 .*varargs.*unmeasured/
     );
-    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["arity-unknown/logger.info", "arity-unknown/openidm.read"]);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["arity-unknown/logger.trace", "arity-unknown/openidm.read"]);
     // The control: below the array tail the overload set still decides.
     const control = loadBehaviour(given);
     const read = (control.openidm as Record<string, (...args: unknown[]) => unknown>).read!;
@@ -191,12 +203,40 @@ describe("arity provenance", () => {
     expect(sandboxFaults(control)).toEqual([]);
   });
 
+  // The 2026-11-06 probe's own calls (probes p1-logger-arity), and the lines am-core logged.
+  it("accepts any count on the four measured levels and logs them as AIC did", () => {
+    const script = [
+      'logger.info("ZZEMU-L T4 info {} {} {}", "A", "B", "C");',
+      'logger.error("ZZEMU-L T6 error {} {} {} {} {}", "A", "B", "C", "D", "E");',
+      'logger.warn("ZZEMU-L T5 warn {} {} {} {}", "A", "B", "C", "D");',
+      'logger.debug("ZZEMU-L T6 debug {} {} {} {} {}", "A", "B", "C", "D", "E");',
+      'logger.info("ZZEMU-L C6 info array {} {} {}", ["A", "B", "C"]);',
+      'logger.info("ZZEMU-L T5m info {} {} {} {}", 1, true, null, {k: "v"});',
+      'logger.info("n {} {} {} {}", 2.5, -0, 1e7, 0.0001);',
+      'var w; try { logger.warning("x {} {} {} {}", "A", "B", "C", "D"); w = "ok"; } catch (e) { w = e.name; }',
+      'logger.info("warning {}", w);',
+    ].join("\n");
+    const { effects, faults } = runScriptWithFaults(script, given);
+    expect(faults).toEqual([]);
+    expect(effects.logs).toEqual([
+      { level: "info", message: "ZZEMU-L T4 info A B C" },
+      { level: "error", message: "ZZEMU-L T6 error A B C D E" },
+      { level: "warn", message: "ZZEMU-L T5 warn A B C D" },
+      { level: "debug", message: "ZZEMU-L T6 debug A B C D E" },
+      { level: "info", message: "ZZEMU-L C6 info array A B C" },
+      { level: "info", message: "ZZEMU-L T5m info 1.0 true null [object Object]" },
+      // Java's Double.toString for the rest: not in the probe, but what a Double prints.
+      { level: "info", message: "n 2.5 -0.0 1.0E7 1.0E-4" },
+      { level: "info", message: "warning TypeError" },
+    ]);
+  });
+
   it("names a refused argument the way Rhino's scriptSignature does", () => {
     const sandbox = loadBehaviour(given);
     const fn = resolve(sandbox, "nodeState.get")!;
     const error = callWith(() => fn(null, 1, true, undefined, [], {}, () => 0), []) as Error;
     expect(error.message).toBe(
-      "Can't find method org.forgerock.openam.auth.node.api.NodeStateScriptWrapper.get(null,number,boolean,undefined,object,object,function)."
+      "Can't find method org.forgerock.openam.auth.node.api.NodeStateScriptWrapper.get(null,number,boolean,org.mozilla.javascript.Undefined,object,object,function)."
     );
   });
 
