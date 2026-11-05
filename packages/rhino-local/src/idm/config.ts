@@ -9,6 +9,8 @@ import type { ConfigInput, EndpointConfig, ManagedConfig, ManagedType } from "./
  * `alpha_user` / `bravo_user` are explicit by name (docs/api/14).
  */
 export type StorageKind = "generic" | "explicit" | "unknown";
+/** How a property is JSON-stored (`IdmConfig.jsonStored`): via `managed/*` alone, via the type's own entry, or not. */
+export type JsonStorage = "wildcard" | "own" | false;
 
 const USER_TYPES = ["alpha_user", "bravo_user"];
 
@@ -130,14 +132,17 @@ export class IdmConfig {
   }
 
   /**
-   * Whether a top-level property of a type is stored as JSON in DS: a generic type's property
-   * that its `genericMapping` entry does not map to an attribute of its own (a mapped
-   * relationship is listed under `properties`).
+   * Whether a top-level property of a type is stored as JSON in DS, and through which mapping: a
+   * generic type's property that its `genericMapping` entry does not map to an attribute of its
+   * own (a mapped relationship is listed under `properties`). `wildcard` is the measured shape (the
+   * type is covered by `managed/*` alone); `own` is a type with an entry of its own, whose JSON
+   * keys and matching rule were not measured (review pf-01 P3-1); `false` is not JSON.
    */
-  jsonStored(type: string, field: string): boolean {
+  jsonStored(type: string, field: string): JsonStorage {
     if (field.includes("/") || this.storage(type) !== "generic") return false;
     const entry = section(this.repo, "genericMapping")?.[`managed/${type}`];
+    if (entry === undefined) return "wildcard";
     const properties = entry !== null && typeof entry === "object" && !Array.isArray(entry) ? (entry as Record<string, JsonValue>).properties : undefined;
-    return !(properties !== null && typeof properties === "object" && !Array.isArray(properties) && has(properties as Record<string, JsonValue>, field));
+    return properties !== null && typeof properties === "object" && !Array.isArray(properties) && has(properties as Record<string, JsonValue>, field) ? false : "own";
   }
 }

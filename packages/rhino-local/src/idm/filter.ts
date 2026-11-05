@@ -28,7 +28,7 @@ interface Lane {
   label(provenance: "measured" | "assumed", behavior: string, source: string): void;
 }
 /** A field whose DS matching rule is not a string reading (crest-filter.cjs `fieldRule`). */
-export type FieldRule = "phone" | "instant" | "integer" | "dsInteger" | "dsRefused" | "emptyAbsent" | "json";
+export type FieldRule = "phone" | "instant" | "integer" | "dsInteger" | "dsRefused" | "emptyAbsent" | "json" | "jsonOwn";
 /** A literal AIC refuses with a 400 before reading any record. */
 export type Illegal = { field: string; value: string; op: string };
 

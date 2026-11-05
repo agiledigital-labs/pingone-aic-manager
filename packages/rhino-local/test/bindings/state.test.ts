@@ -167,7 +167,6 @@ describe("nodeState", () => {
       ['mergeTransient("x")', `Can't find method ${W}.mergeTransient(string).`],
       ["mergeTransient(7)", `Can't find method ${W}.mergeTransient(number).`],
       ["mergeShared(null)", "null"],
-      ["mergeTransient(null)", "null"],
       ['mergeShared(["a", "b"])', /^Cannot convert org\.mozilla\.javascript\.NativeArray@[0-9a-f]+ to java\.util\.Map$/],
       ['mergeTransient(["a"])', /^Cannot convert org\.mozilla\.javascript\.NativeArray@[0-9a-f]+ to java\.util\.Map$/],
     ] as const;
@@ -192,6 +191,13 @@ describe("nodeState", () => {
   it("a function merge is still the unmeasured fault", () => {
     const { faults } = runScriptWithFaults("try { nodeState.mergeShared(function () {}); } catch (e) {}");
     expect(faults.map((fault) => fault.id)).toEqual(["node-state-merge-non-object"]);
+  });
+
+  // Review pf-01 P3-3: null fails inside AM's method body, observed for mergeShared only.
+  it("mergeTransient(null) is the unmeasured fault", () => {
+    const { faults } = runScriptWithFaults("try { nodeState.mergeTransient(null); } catch (e) {}");
+    expect(faults.map((fault) => [fault.id, fault.message])).toEqual([["node-state-merge-non-object",
+      "rhino-local: nodeState.mergeTransient: what AIC does with a null argument is unmeasured"]]);
   });
 
   it("does not bind legacy maps on next-gen", () => {

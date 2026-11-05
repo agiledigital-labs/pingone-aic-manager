@@ -568,11 +568,16 @@ var __rhinoLocalCrestFilter = (function () {
   // reached through `and` alone (round-4 P3-2): whether AIC's measured "no
   // rows" is that leaf being false or the whole query matching nothing is
   // unknown, and only on that path do the two agree.
+  // `evaluated` is the operators the lane evaluates, or a predicate on the
+  // leaf (the script tester's admits ordering on some fields only).
   function prepare(input, evaluated) {
     var parsed = parse(input);
     if (parsed.error) {
       return parsed;
     }
+    var admits = typeof evaluated === "function" ? evaluated : function (node) {
+      return evaluated.indexOf(node.op) !== -1;
+    };
     var reason = null;
     var ne = false;
     (function check(node, positive) {
@@ -590,7 +595,7 @@ var __rhinoLocalCrestFilter = (function () {
         node.positive = positive;
         if (node.op === "ne") {
           ne = true;
-        } else if (evaluated.indexOf(node.op) === -1 && reason === null) {
+        } else if (!admits(node) && reason === null) {
           reason = "operator " + node.op + " is not evaluated by the harness";
         }
         if (typeof node.value === "string" && node.value.indexOf('"') !== -1 && reason === null &&
@@ -701,8 +706,11 @@ var __rhinoLocalCrestFilter = (function () {
   // GeneralizedTime (docs/api/14); frIndexedInteger1-5 / frUnindexedInteger1-5
   // are fr-attr-iintN / fr-attr-intN, integers. No string reading describes
   // the first two. Measured, on alpha_user, over REST and IDM's openidm.query:
-  //   phone        telephoneNumber: spaces and hyphens ignored anywhere, for
-  //                eq, sw and co.
+  //   phone        telephoneNumber: spaces, hyphens and `+` ignored anywhere,
+  //                in the stored value and the literal, for eq, sw and co
+  //                (`+` settled by the second probe, 2026-11-06: `eq
+  //                "61499999999"`, `eq "6+1499999999"` and `co "+9999"` all
+  //                match `+614-9999-9999`; `eq "61499999998"` does not).
   //   instant      frIndexedDate1, frUnindexedDate1: eq, gt and lt compare
   //                instants; `eq "notadate"` is a 400.
   //   integer      frIndexedInteger1: an integral literal of either JSON type
@@ -712,8 +720,10 @@ var __rhinoLocalCrestFilter = (function () {
   // The other members of each family, and every one on bravo_user, were not
   // probed: dsInteger (an integer attribute whose 400s are unmeasured) and
   // dsRefused (no comparison is decided). A lane that does not decide the
-  // measured rules (the script tester: its openidm surface was not probed)
-  // refuses them too.
+  // measured rules refuses them too. The script tester's openidm.query was
+  // measured to return the same rows (second probe, 2026-11-06), so its lane
+  // decides them; it admits ordering only on the instant fields, the one
+  // ordering measured through that binding.
   var PROBE = "docs/api/10-managed-objects.md (E19 live probe, 2026-11-06)";
   var PHONE_OPS = { eq: true, sw: true, co: true };
   var INSTANT_OPS = { eq: true, gt: true, lt: true };
@@ -746,7 +756,7 @@ var __rhinoLocalCrestFilter = (function () {
   }
 
   function phoneDigits(text) {
-    return text.replace(/[ -]/g, "");
+    return text.replace(/[ +-]/g, "");
   }
   // Only the characters the probe stored and asserted: other separators
   // (`(`, `)`, `.`), other dashes and spaces, and letters were not probed.
@@ -808,7 +818,7 @@ var __rhinoLocalCrestFilter = (function () {
       if (!phoneText(actual)) {
         return unknown(field, op, "rule");
       }
-      lane.label("measured", op + " on alpha_user telephoneNumber ignores spaces and hyphens (telephoneNumberMatch)", PROBE);
+      lane.label("measured", op + " on alpha_user telephoneNumber ignores spaces, hyphens and + (telephoneNumberMatch)", PROBE);
       return compareText(phoneDigits(actual), op, phoneDigits(expected));
     }
     if (rule === "instant") {
@@ -833,19 +843,24 @@ var __rhinoLocalCrestFilter = (function () {
         : op + " on alpha_user frIndexedInteger1 compares an integral literal numerically, like eq and ge", PROBE);
       return compareNumbers(actual, op, literal);
     }
-    if (rule === "json" && typeof actual === "number") {
+    // `jsonOwn`: a type with its own genericMapping entry. The probe's type had
+    // none (`managed/*` alone); an own entry's JSON keys and matching rule
+    // were not measured, so the same answers are labelled assumed.
+    if ((rule === "json" || rule === "jsonOwn") && typeof actual === "number") {
+      var own = rule === "jsonOwn";
+      var ownNote = own ? ", assumed for a type with its own genericMapping entry like managed/*" : "";
       if (typeof expected === "string") {
         if (positive && INSTANT_OPS[op]) {
-          lane.label("measured", op + " on a generic (JSON-stored) type: a quoted literal never matches a number", PROBE);
+          lane.label(own ? "assumed" : "measured", op + " on a generic (JSON-stored) type: a quoted literal never matches a number" + ownNote, PROBE);
           return false;
         }
         return unknown(field, op, "type");
       }
       if (typeof expected === "number" && DECIDED_INTEGER_OPS[op]) {
         var probed = op === "eq" || op === "gt";
-        lane.label(probed ? "measured" : "assumed", probed
-          ? op + " on a generic (JSON-stored) type compares numbers by value, decimals included"
-          : op + " on a generic (JSON-stored) type compares numbers by value, like eq and gt", PROBE);
+        lane.label(probed && !own ? "measured" : "assumed", probed
+          ? op + " on a generic (JSON-stored) type compares numbers by value, decimals included" + ownNote
+          : op + " on a generic (JSON-stored) type compares numbers by value, like eq and gt" + ownNote, PROBE);
         return compareNumbers(actual, op, expected);
       }
     }
@@ -902,7 +917,9 @@ var __rhinoLocalCrestFilter = (function () {
       case "dsRefused":
         return unknown(field, op, "rule");
       case "phone":
-        return decides && PHONE_OPS[op] && typeof value === "string" && phoneText(value) && /[0-9+]/.test(value)
+        // A literal with no digit strips to "" (`co "+"` would match every
+        // number): unmeasured.
+        return decides && PHONE_OPS[op] && typeof value === "string" && phoneText(value) && /[0-9]/.test(value)
           ? null : unknown(field, op, "rule");
       case "instant":
         if (!decides || typeof value !== "string") {
@@ -943,18 +960,24 @@ var __rhinoLocalCrestFilter = (function () {
     return null;
   }
 
-  // The script tester's lane: every reading, no measured type coercion and no
-  // measured field rule, for a collection it knows by name only. Its
-  // openidm.query was not part of the 2026-11-06 probe (REST and IDM's
-  // openidm.query were), so the ruled user fields stay refused here.
-  function unmeasuredLane(collection) {
+  // The script tester's lane: every reading and no measured type coercion,
+  // for a collection it knows by name only. The measured alpha_user field
+  // rules do apply: AM's openidm.query returned exactly the REST and IDM
+  // rows on every probed rule (second probe, 2026-11-06, docs/api/12). Its
+  // grammar evaluates eq, co and sw, plus ordering on an instant field (gt
+  // and lt were measured through this binding; `assertions` refuses ge/le).
+  function scriptTesterLane(collection) {
     var type = String(collection).replace(/^managed\//, "");
     return {
       strings: unmeasuredStrings,
       quotedInteger: function () { return false; },
       scalar: function () {},
       rule: function (field) { return fieldRule(type, field); },
-      decides: false,
+      admits: function (node) {
+        return node.op === "eq" || node.op === "co" || node.op === "sw" ||
+          (ORDERING[node.op] === true && fieldRule(type, node.field) === "instant");
+      },
+      decides: true,
       label: function () {},
     };
   }
@@ -967,7 +990,7 @@ var __rhinoLocalCrestFilter = (function () {
     readField: readField,
     readStrings: readStrings,
     unmeasuredStrings: unmeasuredStrings,
-    unmeasuredLane: unmeasuredLane,
+    scriptTesterLane: scriptTesterLane,
     fieldRule: fieldRule,
     assertions: assertions,
     compareText: compareText,
