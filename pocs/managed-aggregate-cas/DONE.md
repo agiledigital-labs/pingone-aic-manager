@@ -317,3 +317,19 @@ repo.ds POC mappings left: managed/alpha_poc_agg,managed/alpha_poc_child; generi
    `.state/run1/repo.ds-after.json`: the pre-POC baseline plus the two orphan
    mappings, and nothing else. No open decision. The items left unmeasured are
    listed at the end of the E21 section in `RESULTS.md`.
+
+## Round 3
+
+Whether the mapped `NOTIFY=1` burst in round 2 lost an edge, or the single
+9×200 + 1×404 was a transient. `node e21.mjs casrepeat` repeats that burst (N =
+10, five fresh parents per cell) for mapped and generic, with the flag and
+without it, plus mapped `notify` on `resourceCollection`. Each request keeps its
+status, sanitised body, latency and its own transaction id. Before and after,
+every edge is read from the parent and from the child.
+
+### Install
+
+`node setup.mjs preflight` on 2026-11-05: `managedEqualsBackup` true,
+`genericMappingEqualsRun1After` true, no POC types present.
+`genericMappingEqualsRun1Before` false, which is the two known orphans and
+nothing else. Install is next.
