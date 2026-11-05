@@ -203,3 +203,47 @@ its `derived` stays one link behind with or without the flags.
 
 Not covered: notification of a has-many reverse, `notify` on a has-one
 forward, and whatever a console-created pair writes beyond these two flags.
+
+## E19 — the audit trail written by `onUpdate`, in memory
+
+`audit` mode: `onUpdate` diffs `oldObject` → `object` over `data` and `items`
+(leaf level, arrays by index), and appends one entry per changed leaf —
+`{seq, path, from, to, runId, baseRev, ops}` — to `object.audit` before the
+write. `auditSeq` on the record numbers them.
+
+### Cost of k changes to nested data, sequential, one writer
+
+| k  | (a) data `PATCH` + audit `PATCH` per change | (b) one `PATCH` per change, hook audits | (c) one `PATCH` with k operations, hook audits |
+| -- | ------------------------------------------- | --------------------------------------- | ---------------------------------------------- |
+| 1  | 2 calls, 237 ms                             | 1 call, 41 ms                           | 1 call, 41 ms                                  |
+| 10 | 20 calls, 819 ms                            | 10 calls, 443 ms                        | 1 call, 40 ms                                  |
+| 50 | 100 calls, 4245 ms                          | 50 calls, 2188 ms                       | 1 call, 49 ms                                  |
+
+All three produced k audit entries; (b) and (c) had no chain breaks. (c) also
+saw all k operations in `request.patchOperations`. Batching the changes is
+where the win is: (c) is flat in k, about **85× faster than (a) at k = 50**.
+
+### Correctness under contention
+
+N writers at once, each `PATCH` carrying three operations: replace a shared
+leaf (`/data/shared`), set a leaf of its own (`/data/per/w<i>`), append an item.
+
+| N  | HTTP     | p50 / max ms | audit entries / want | run ids in trail | shared-leaf chain breaks | seq distinct, contiguous | `onUpdate` runs | max runs / request |
+| -- | -------- | ------------ | -------------------- | ---------------- | ------------------------ | ------------------------ | --------------- | ------------------ |
+| 10 | 10 × 200 | 307 / 421    | 30 / 30              | 10               | 0                        | yes, yes                 | 34              | 7                  |
+| 10 | 10 × 200 | 375 / 550    | 30 / 30              | 10               | 0                        | yes, yes                 | 50              | 10                 |
+| 10 | 10 × 200 | 474 / 660    | 30 / 30              | 10               | 0                        | yes, yes                 | 53              | 9                  |
+| 50 | 50 × 200 | 4571 / 7328  | 150 / 150            | 50               | 0                        | yes, yes                 | 814             | 38                 |
+| 50 | 50 × 200 | 3634 / 6412  | 150 / 150            | 50               | 0                        | yes, yes                 | 773             | 38                 |
+| 50 | 50 × 200 | 3280 / 5553  | 150 / 150            | 50               | 0                        | yes, yes                 | 747             | 39                 |
+
+- Exactly three entries per committed write, and exactly one `runId` per
+  commit in the trail, despite ~15 `onUpdate` runs per commit at N = 50: a
+  retried run's entries are discarded with the attempt, because they only ever
+  lived in `object`.
+- The shared leaf's audit is an unbroken chain (each `from` is the previous
+  `to`) and its last `to` equals the stored value, so every run diffed against
+  the state it actually committed over.
+- The audit is only as fine as the diff: a write that sets a leaf to the value
+  it already had leaves no entry (the diff sees no change). Recording intent
+  rather than effect means reading `request.patchOperations` instead.
