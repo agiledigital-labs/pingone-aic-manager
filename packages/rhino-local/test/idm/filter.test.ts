@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RhinoRunner } from "../../src/runner.ts";
 import { create, emulator, send } from "./fixtures.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
-import { type CollectionRow, causes, collectionRecords, collectionTable, filterTable, illegalMessage, records, repo } from "../crest-filter-table.ts";
+import { type CollectionRow, causes, collectionRecords, collectionTable, filterTable, illegalMessage, records, recordsFor, repo } from "../crest-filter-table.ts";
 import { escapeError } from "../../src/idm/errors.ts";
 import { type Document, IdmConfig, IdmEmulator } from "../../src/idm/index.ts";
 
@@ -99,16 +99,16 @@ describe("queryFilter grammar", () => {
       pinned: { count: "number" },
     } as const;
     const schema = (props: Record<string, string>) => ({ properties: Object.fromEntries(Object.entries(props).map(([k, type]) => [k, { type }])) });
-    const config = (withRepo: boolean) => new IdmConfig({ sync: { mappings: [] },
-      managed: { objects: [...Object.entries(types).map(([name, props]) => ({ name, schema: schema(props) })), { name: "bravo_user", schema: schema(types.alpha_user) }] },
+    const config = (withRepo: boolean, declared: Record<string, Record<string, string>> = types) => new IdmConfig({ sync: { mappings: [] },
+      managed: { objects: [...Object.entries(declared).map(([name, props]) => ({ name, schema: schema(props) })), { name: "bravo_user", schema: schema(types.alpha_user) }] },
       ...(withRepo ? { repo } : {}),
     });
     // alpha_user and bravo_user ids must be UUIDs (measured), so the table's letters are mapped.
     const uuid = (type: string, id: string) => type.endsWith("_user") ? `00000000-0000-0000-0000-${id.padStart(12, "0")}` : id;
     const letter = (id: unknown) => String(id).replace(/^00000000-0000-0000-0000-0*/, "");
-    const fresh = async (withRepo = true, only?: string) => {
-      const emu = new IdmEmulator(config(withRepo), runner);
-      for (const [type, rows] of Object.entries(collectionRecords)) {
+    const fresh = async (withRepo = true, only?: string, given = collectionRecords, declared: Record<string, Record<string, string>> = types) => {
+      const emu = new IdmEmulator(config(withRepo, declared), runner);
+      for (const [type, rows] of Object.entries(given)) {
         if (only !== undefined) continue;
         for (const { _id, ...record } of rows) {
           await send(emu, { method: "PUT", path: `managed/${type}/${uuid(type, _id)}`, headers: { "If-None-Match": "*" }, body: structuredClone(record) as Document }, 201);
@@ -116,13 +116,25 @@ describe("queryFilter grammar", () => {
       }
       return emu;
     };
+    // An off-form row's stored value may contradict alpha_user's usual schema (a number in
+    // telephoneNumber). Declaring the field with the stored value's type lets the write land, so the
+    // query reaches the rule's own guard rather than the write's valid-type policy.
+    const declaredFor = (row: CollectionRow) => {
+      if (row.records === undefined) return types;
+      const props: Record<string, string> = { ...types[row.collection as keyof typeof types] };
+      for (const { _id, ...record } of row.records) {
+        for (const [key, value] of Object.entries(record)) props[key] = Array.isArray(value) ? "array" : typeof value;
+      }
+      return { ...types, [row.collection]: props };
+    };
+    const forRow = (row: CollectionRow) => fresh(true, undefined, recordsFor(row), declaredFor(row));
     const cases = collectionTable.map((row) => [`${row.collection} ${row.filter}`, row] as const);
     const expectFor = (row: CollectionRow) => {
       if (!Array.isArray(row.idm) && "missing" in row.idm) expectEmulationFailure(row.idm.missing);
     };
     it.each(cases)("REST %s", async (_name, row) => {
       expectFor(row);
-      const result = await (await fresh()).request({ method: "GET", path: `managed/${row.collection}`, query: { _queryFilter: row.filter } });
+      const result = await (await forRow(row)).request({ method: "GET", path: `managed/${row.collection}`, query: { _queryFilter: row.filter } });
       const body = result.body as Document;
       if (Array.isArray(row.idm)) {
         expect(result.status, JSON.stringify(result.provenance)).toBe(200);
@@ -142,7 +154,7 @@ describe("queryFilter grammar", () => {
     it.each(cases)("script %s", async (_name, row) => {
       expectFor(row);
       const source = "try { JSON.stringify(openidm.query('managed/' + type,{_queryFilter:filter,_fields:['_id']}).result.map(function (r) { return String(r._id).replace(/^00000000-0000-0000-0000-0*/, ''); })); } catch (e) { JSON.stringify([e.name, e.message, String(e), e.javaException.getCode()]); }";
-      const response = await runner.eval({ engine: "idm", source, bindings: { filter: row.filter, type: row.collection } }, { onCall: (await fresh()).onCall });
+      const response = await runner.eval({ engine: "idm", source, bindings: { filter: row.filter, type: row.collection } }, { onCall: (await forRow(row)).onCall });
       if (!Array.isArray(row.idm) && "missing" in row.idm) {
         expect(response.outcome, row.why).toBe("runtime_error");
         expect(response.emulation?.missing?.[0], row.why).toBe(row.idm.missing);

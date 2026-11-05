@@ -444,10 +444,10 @@ var __rhinoLocalCrestFilter = (function () {
       return unknown(field, op, "type");
     }
     var rule = lane.rule ? lane.rule(field) : null;
-    if (rule === "dsRefused" || ((rule === "phone" || rule === "instant") && !lane.decides)) {
+    if (rule === "dsRefused") {
       return unknown(field, op, "rule");
     }
-    if (rule !== null && lane.decides) {
+    if (rule !== null) {
       var decided = compareByRule(rule, actual, op, expected, field, lane, positive);
       if (decided !== undefined) {
         return decided;
@@ -491,7 +491,7 @@ var __rhinoLocalCrestFilter = (function () {
       }
       // Whether DS stores an empty string, array or object as present is
       // unmeasured (round-5 P3-3 added `{}`).
-      if (isArray(value) && value.length === 0 && lane.decides && lane.rule && lane.rule(field) === "emptyAbsent") {
+      if (isArray(value) && value.length === 0 && lane.rule && lane.rule(field) === "emptyAbsent") {
         lane.label("measured", "pr reads an explicitly written [] on alpha_user " + fieldName(field) + " as absent", PROBE);
         return false;
       }
@@ -530,8 +530,8 @@ var __rhinoLocalCrestFilter = (function () {
     return undecided === null ? false : undecided;
   }
 
-  // `lane` is { strings, quotedInteger, scalar }: see `unmeasuredLane` for
-  // the script tester's and src/idm/filter.ts for the IDM emulator's.
+  // `lane` is { strings, quotedInteger, scalar, rule, admits, label }: see
+  // `scriptTesterLane` for the script tester's and src/idm/filter.ts for the IDM emulator's.
   function evaluate(ast, record, lane) {
     switch (ast.kind) {
       case "true": return true;
@@ -720,11 +720,11 @@ var __rhinoLocalCrestFilter = (function () {
   //                explicitly written [] is not present.
   // The other members of each family, and every one on bravo_user, were not
   // probed: dsInteger (an integer attribute whose 400s are unmeasured) and
-  // dsRefused (no comparison is decided). A lane that does not decide the
-  // measured rules refuses them too. The script tester's openidm.query was
-  // measured to return the same rows (second probe, 2026-11-06), so its lane
-  // decides them; it admits ordering only on the instant fields, the one
-  // ordering measured through that binding.
+  // dsRefused (no comparison is decided). Every lane applies the measured
+  // rules: the script tester's openidm.query was measured to return the same
+  // rows (second probe, 2026-11-06), so its lane decides them too. It admits
+  // ordering only on the instant fields, the one ordering measured through
+  // that binding.
   var PROBE = "docs/api/10-managed-objects.md (E19 live probe, 2026-11-06)";
   var PHONE_OPS = { eq: true, sw: true, co: true };
   var INSTANT_OPS = { eq: true, gt: true, lt: true };
@@ -789,11 +789,21 @@ var __rhinoLocalCrestFilter = (function () {
     return ms;
   }
 
+  // A quoted literal: how IDM converts one to the integer syntax is
+  // unmeasured, so only the probed spellings are decided. `"7.0"` is
+  // integral; `"7.5"` is fractional, and decided only when it is the shortest
+  // spelling of its Double (trailing zeros aside), so `"7.0000000000000001"`,
+  // which a Double parse would make 7, is neither (review pf-02 P3-1).
+  var DECIMAL = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
   function integralDecimal(text) {
     return /^-?(?:0|[1-9][0-9]*)(?:\.0+)?$/.test(text) && Math.abs(Number(text)) <= SAFE_INTEGER;
   }
   function fractionalDecimal(text) {
-    return /^-?(?:0|[1-9][0-9]*)\.[0-9]+$/.test(text) && !integralDecimal(text);
+    if (!/^-?(?:0|[1-9][0-9]*)\.[0-9]*[1-9]0*$/.test(text)) {
+      return false;
+    }
+    var number = Number(text);
+    return Math.floor(number) !== number && String(number) === text.replace(/0+$/, "");
   }
 
   function compareNumbers(actual, op, expected) {
@@ -893,7 +903,7 @@ var __rhinoLocalCrestFilter = (function () {
         return;
       }
       var rule = lane.rule(node.field);
-      var verdict = rule === null ? null : leafAssertion(rule, node, lane.decides === true);
+      var verdict = rule === null ? null : leafAssertion(rule, node);
       if (verdict === null) {
         return;
       }
@@ -906,7 +916,7 @@ var __rhinoLocalCrestFilter = (function () {
     return found !== null ? found : illegal;
   }
 
-  function leafAssertion(rule, node, decides) {
+  function leafAssertion(rule, node) {
     var op = node.op;
     var value = node.value;
     var field = node.field;
@@ -920,11 +930,11 @@ var __rhinoLocalCrestFilter = (function () {
       case "phone":
         // A literal with no digit strips to "" (`co "+"` would match every
         // number): unmeasured.
-        return decides && PHONE_OPS[op] && typeof value === "string" && phoneText(value) && /[0-9]/.test(value)
+        return PHONE_OPS[op] && typeof value === "string" && phoneText(value) && /[0-9]/.test(value)
           ? null : unknown(field, op, "rule");
       case "instant":
-        if (!decides || typeof value !== "string") {
-          return unknown(field, op, typeof value === "string" ? "rule" : "type");
+        if (typeof value !== "string") {
+          return unknown(field, op, "type");
         }
         if (instant(value) !== null && INSTANT_OPS[op]) {
           return null;
@@ -934,15 +944,19 @@ var __rhinoLocalCrestFilter = (function () {
         if (!DECIDED_INTEGER_OPS[op]) {
           return unknown(field, op, "type");
         }
-        if (!decides) {
-          return plainInteger ? null : unknown(field, op, "type");
-        }
         if (typeof value === "number") {
-          if (integralDecimal(node.spelling)) {
+          // CREST has already parsed the literal to a Long or a Double, so DS
+          // sees the value, not the spelling: `2.00000000000000004` is the
+          // Double 2.0, the same filter as `2.0` (review pf-02 P3-1). The
+          // spelling only has to be one of the probed forms (no exponent).
+          if (!DECIMAL.test(node.spelling)) {
+            return unknown(field, op, "type");
+          }
+          if (isSafeInteger(value)) {
             return null;
           }
           var abs = Math.abs(value);
-          return fractionalDecimal(node.spelling) && ILLEGAL_NUMBER_OPS[op] && abs >= 1e-3 && abs < 1e7
+          return Math.floor(value) !== value && ILLEGAL_NUMBER_OPS[op] && abs >= 1e-3 && abs < 1e7
             ? illegal(String(value)) : unknown(field, op, "type");
         }
         if (typeof value === "string" && op === "eq") {
@@ -978,7 +992,6 @@ var __rhinoLocalCrestFilter = (function () {
         return node.op === "eq" || node.op === "co" || node.op === "sw" ||
           (ORDERING[node.op] === true && fieldRule(type, node.field) === "instant");
       },
-      decides: true,
       label: function () {},
     };
   }
