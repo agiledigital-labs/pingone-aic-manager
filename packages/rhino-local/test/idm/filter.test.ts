@@ -51,9 +51,13 @@ describe("queryFilter grammar", () => {
     };
     it.each(table)("REST %s", async (_name, row) => {
       if (row.rest === "fault") expectHarnessFault("openidm-query-filter");
+      if (typeof row.rest === "object" && "missing" in row.rest) expectEmulationFailure(row.rest.missing);
       const result = await (await fresh()).request({ method: "GET", path: "managed/widget", query: { _queryFilter: row.filter as string } });
       const body = result.body as Document;
-      if (row.rest === "parse") expect(body, row.why).toEqual({ code: 400, reason: "Bad Request", message: "A value could not be parsed as a valid query filter" });
+      if (typeof row.rest === "object" && "missing" in row.rest) {
+        expect(result.status, row.why).toBe(501);
+        expect(result.provenance, row.why).toContainEqual({ kind: "missing", behavior: row.rest.missing });
+      } else if (row.rest === "parse") expect(body, row.why).toEqual({ code: 400, reason: "Bad Request", message: "A value could not be parsed as a valid query filter" });
       else if (row.rest === "ne") expect(body.message, row.why).toBe("unrecognized or unsupported filter operator 'ne'");
       else if (row.rest === "fault") {
         expect(result.status, row.why).toBe(501);
@@ -62,6 +66,7 @@ describe("queryFilter grammar", () => {
     });
     it.each(table)("script %s", async (_name, row) => {
       if (row.script === "fault") expectHarnessFault("openidm-query-filter");
+      if (typeof row.script === "object" && "missing" in row.script) expectEmulationFailure(row.script.missing);
       const source = "try { JSON.stringify(openidm.query('managed/widget',{_queryFilter:filter,_fields:['_id']}).result.map(function (r) { return r._id; })); } catch (e) { 'caught:' + e.message; }";
       const response = await runner.eval({ engine: "idm", source, bindings: { filter: row.filter as never } }, { onCall: (await fresh()).onCall });
       if (row.script === "fault") {
@@ -69,6 +74,11 @@ describe("queryFilter grammar", () => {
         // The JVM's IDM response rebuilds `emulation` from causes, so the id is in the cause here;
         // the host callback's audit entry carries it as a fault (fault-tally.test.ts).
         expect(response.emulation?.missing?.[0], row.why).toMatch(/^openidm-query-filter: /);
+        return;
+      }
+      if (typeof row.script === "object" && "missing" in row.script) {
+        expect(response.outcome, row.why).toBe("runtime_error");
+        expect(response.emulation?.missing?.[0], row.why).toBe(row.script.missing);
         return;
       }
       expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
