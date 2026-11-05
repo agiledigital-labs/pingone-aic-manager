@@ -2,7 +2,6 @@
 // the bag, bypassing collision guards and profile validation through IDM writes.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/run.ts";
-import { parseHarvest } from "../../src/bindings/harvest.ts";
 import { mockPreamble, withHarvest } from "../../src/bindings/preamble.ts";
 import { normaliseEffects } from "../../src/case/verdict.ts";
 import { validateCase } from "../../src/case/validate.ts";
@@ -10,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { bindingsIdentityPolicyPath } from "../../src/paths.ts";
 import { carryGiven } from "../../src/harness/step.ts";
 import type { EnvProfile } from "../../src/profile/types.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { caseWith, lintAmScript } from "../aic/helpers.ts";
 
@@ -93,6 +93,8 @@ describe("ownership collision checks on IDM writes", () => {
     it.each(["givenName", "_rev"])(
       `${method} also preflights historical %s when Node validation is bypassed`,
       async (key) => {
+        // The refusal is caught, but it is a harness fault, so declare it.
+        expectHarnessFault("identity-bag-key-collision");
         // Inject after valid seeding to exercise the runtime's own guard.
         const result = await runner.eval({
           preamble: mockPreamble({
@@ -109,20 +111,13 @@ describe("ownership collision checks on IDM writes", () => {
             __rhinoLocal.identityCustomAttrsOwnedKeys["${resource}"] = ["plain"];
           `),
         });
-        expect(result.outcome).toBe("ok");
-        if (typeof result.value !== "string")
-          throw new Error("missing harvest");
-        const effects = parseHarvest(result.value);
-        expect(effects.sharedState.final.error).toMatch(
-          new RegExp(`openidm\\.${method}:.*collides with.*unmeasured`),
+        // Since E19 a caught harness fault fails the run, so the harvest is
+        // gone and what the store looked like after the refusal is no longer
+        // observable (nor judged: no verdict follows a fault).
+        expect(result.outcome).toBe("runtime_error");
+        expect(result.error?.message).toMatch(
+          new RegExp(`^rhino-local harness fault identity-bag-key-collision: openidm\\.${method}:.*collides with.*unmeasured`),
         );
-        expect(effects.sharedState.final.record).toEqual(
-          managed["managed/alpha_user"][0],
-        );
-        expect(effects.sharedState.final.values).toEqual([]);
-        expect(effects.sharedState.final.keys).toEqual(["plain", key]);
-        expect(effects.managedStore).toEqual(managed);
-        expect(effects.identityCustomAttrs).toEqual(seed.identityCustomAttrs);
       },
     );
 

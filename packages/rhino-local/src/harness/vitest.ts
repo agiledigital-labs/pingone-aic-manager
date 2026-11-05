@@ -23,7 +23,7 @@ import {
 } from "./lease.ts";
 
 import { useEmulationGuard } from "./emulation-guard.ts";
-export { expectEmulationFailure, useEmulationGuard } from "./emulation-guard.ts";
+export { expectEmulationFailure, expectHarnessFault, useEmulationGuard } from "./emulation-guard.ts";
 export type { EmulationGuardSource } from "./emulation-guard.ts";
 
 export interface UseLeaseAicOptions {

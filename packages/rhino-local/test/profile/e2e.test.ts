@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/index.ts";
 import { defineCase } from "../../src/case/index.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { SchemaViolation } from "../../src/profile/validate.ts";
 import type { EnvProfile } from "../../src/profile/types.ts";
@@ -82,24 +83,23 @@ describe("environment profile through the JVM runner", () => {
   it("an UNdeclared type still throws, naming the environment", async () => {
     // The discriminating pair: AIC returns null for both, which is exactly why
     // a fixture typo is invisible there and must not be invisible here.
-    const result = await probeRead(
-      readCase("undeclared", "managed/zzz_not_a_type/anything", false),
-      true
+    // The probe catches the throw, but it is a harness fault (AIC returns
+    // null), so the run fails anyway.
+    expectHarnessFault("openidm-unknown-managed-type");
+    await expect(
+      probeRead(readCase("undeclared", "managed/zzz_not_a_type/anything", false), true)
+    ).rejects.toThrow(
+      /harness fault openidm-unknown-managed-type: openidm\.read: "managed\/zzz_not_a_type" is not a managed object in environment "sandbox"/
     );
-    expect(result.threw).toBe(true);
-    expect(result.error).toContain("is not a managed object");
-    expect(result.error).toContain("sandbox");
   });
 
   it("without a profile, a declared-but-unseeded type is still a missing fixture", async () => {
     // Pre-profile behaviour must be untouched, or every existing case changes
     // meaning the day a profile is introduced.
-    const result = await probeRead(
-      readCase("no-profile", "managed/alpha_organization/anything", false),
-      false
-    );
-    expect(result.threw).toBe(true);
-    expect(result.error).toContain("no given.managed entry");
+    expectHarnessFault("fixture/managed");
+    await expect(
+      probeRead(readCase("no-profile", "managed/alpha_organization/anything", false), false)
+    ).rejects.toThrow(/harness fault fixture\/managed: openidm\.read: no given\.managed entry for "managed\/alpha_organization"/);
   });
 
   it("a seeded record still reads back with a profile present", async () => {
