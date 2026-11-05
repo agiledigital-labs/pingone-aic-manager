@@ -1007,6 +1007,7 @@ The core has no dependency on a test framework.
 import { IdmConfig, IdmEmulator } from "./src/idm/index.ts";
 
 const config = new IdmConfig({
+  sync: { mappings: [] }, // required: the tenant's config/sync, or [] for none
   managed: { _id: "managed", objects: [{
     name: "widget",
     schema: { properties: { label: { type: "string" } } },
@@ -1042,6 +1043,7 @@ namespace completeness:
 
 ```ts
 new IdmConfig({
+  sync: { mappings: [] },
   managed: { objects: [widgetType] },
   endpoints: {},
   complete: { managed: true, endpoints: true },
@@ -1071,16 +1073,25 @@ whole document: a partial `repo` holding only `managed/*` makes every non-user
 type generic, including types the tenant maps under `explicitMapping`, and the
 emulator cannot tell.
 
-`sync` takes the tenant's `config/sync` document (`{mappings: [...]}`),
-optionally. On AIC a committed managed write on a mapping's `source` runs that
-mapping synchronously (implicit sync, measured 2026-06-19 in
-`docs/api/16-sync-mappings.md`), and the emulator models no sync. So a create,
+`sync` takes the tenant's `config/sync` document (`{mappings: [...]}`), and
+it is **required**: omitting it is a type error and a `TypeError` at
+construction. Pass `{ mappings: [] }` to state that the tenant has no
+mappings; like `complete.managed`, that is your claim and the emulator records
+it rather than checking it. There is no loader that builds an `IdmConfig` from
+a pull yet (the profile pull reads only `config/managed`, for types), so take
+`sync` from the same `config/sync` read as the rest of the tenant's config.
+
+On AIC a committed managed write on a mapping's `source` runs that mapping
+(implicit sync, `docs/api/16-sync-mappings.md`): synchronously by default,
+measured 2026-06-19, and asynchronously from the sync queue when the mapping
+enables `queuedSync`, measured 2026-07-29. What `enableSync: false` does to
+implicit sync is unmeasured. The emulator models none of these, so a create,
 update, changed patch or delete on a type some mapping names as its source is
 the harness fault `idm-implicit-sync/<mapping>`, raised before the store
-changes. A patch that changes nothing writes nothing and does not fault.
-Without `sync`, every write records `assumed: no config/sync supplied …`; with
-it, a write on an unmapped type records that the supplied `config/sync` has no
-mapping for it.
+changes, and its message says for each mapping which of the three it is. A
+patch that changes nothing writes nothing and does not fault. A write on a
+type no mapping names as its source records that the supplied `config/sync`
+has no mapping for it.
 
 With explicit completeness, an unlisted name reads as null internally and queries
 throw NotFoundException. Each such absence carries `assumed: caller declared
@@ -1381,14 +1392,19 @@ does not read the manifest. `test/fixtures/idm-runtime-scripts/` is an
 invented example of the layout.
 
 A directory provider is checked and indexed once, when the emulator is
-constructed: a relative path, or one that is not a directory, is a `TypeError`
-naming it, and a file added afterwards is not seen. Names are looked up exactly
+constructed: a relative path, one that is not a directory, or a tree with a
+subdirectory it cannot read, is a `TypeError` naming it, and a file added
+afterwards is not seen (its fault says the file is missing from the index made
+at construction). Names are looked up exactly
 as AIC's case-sensitive loader does, so a name that matches a file only in
 another letter case is unsupplied (the message names the near match), as is a
 directory's name. Symbolic links are never followed: a name that is a link, or
 passes through a linked directory, is `idm-runtime-script-path`, because a link
-can stand in for something that is not the tenant's bytes. Forks share the
-index.
+can stand in for something that is not the tenant's bytes. That holds at read
+time too: a file or directory replaced by a link after construction is
+`idm-runtime-script-path`, because the read opens the file without following a
+final link and then checks that the open file is the one at the canonical path
+under the root. Forks share the index.
 
 A `file` reference runs the supplied source with the bindings an inline script
 in the same place gets. `require(id)` loads `<id>.js` (or `id` if it already

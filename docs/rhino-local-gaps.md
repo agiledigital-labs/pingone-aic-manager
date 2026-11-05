@@ -86,6 +86,14 @@ while `read` of the same collection is `fixture/managed`. Faulting it would
 break every test that creates into a real but unseeded type; seed `[]` for the
 collection, or run with a profile, and the create is checked.
 
+**Implicit sync is not considered in this lane.** A write here on a type that
+is a `config/sync` mapping's source passes without running, faulting or
+recording anything about the mapping; on AIC that write runs the mapping
+(`docs/api/16-sync-mappings.md`). The IDM emulator faults the same write as
+`idm-implicit-sync/<mapping>`. This lane has no `config/sync` input, so it
+cannot tell which writes those are (review e15-02 P3-D; the open E15 round-1
+Q2 proposes routing these writes through an `IdmEmulator`).
+
 Only the SET of declared type names crosses into the sandbox. Every schema
 rule — properties, `required`, `enum` — is checked in the Node layer, so each
 rule has one implementation rather than an AM-safe second copy that could
@@ -189,9 +197,9 @@ assumption in `docs/api/`:
 | `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
 | `json-value-constructor`                                                          | `new JsonValue(...)`                                                                                                  |
 | `seed-cache-manager`, `seed-binding`                                              | seeding a binding the harness cannot seed                                                                            |
-| `idm-runtime-script/<path>`, `idm-runtime-script-path`, `idm-runtime-script-provider` | IDM emulator: one of IDM's own runtime scripts (a hook's `file`, or `require(id)` as `<id>.js`) that the project's `runtimeScripts` provider did not supply — including a name that matches a provider file only case-insensitively, or names a directory; a name that is not a canonical path under the script root (absolute, `.`/`..`/empty segment, trailing slash, backslash, NUL) or reaches a symbolic link in a provider directory; a loader that throws or returns a non-string, or a listed file that cannot be read (E15; README "IDM runtime scripts") |
+| `idm-runtime-script/<path>`, `idm-runtime-script-path`, `idm-runtime-script-provider` | IDM emulator: one of IDM's own runtime scripts (a hook's `file`, or `require(id)` as `<id>.js`) that the project's `runtimeScripts` provider did not supply — including a name that matches a provider file only case-insensitively, or names a directory; a name that is not a canonical path under the script root (absolute, `.`/`..`/empty segment, trailing slash, backslash, NUL) or reaches a symbolic link in a provider directory, including a file or directory replaced by one after construction (checked at read); a loader that throws or returns a non-string, or a listed file that cannot be read (E15; README "IDM runtime scripts") |
 | `idm-script-file-and-source`                                                      | IDM emulator: a script declaring both `file` and `source`                                                            |
-| `idm-implicit-sync/<mapping>`                                                     | IDM emulator: a committed managed create, update, changed patch or delete on a type that is the `source` of a mapping in the supplied `config/sync` (`ConfigInput.sync`). AIC runs the mapping synchronously (implicit sync, docs/api/16-sync-mappings.md, measured 2026-06-19); the emulator models no sync, so the write faults before the store changes. Without `sync`, every write records `assumed: no config/sync supplied …` instead |
+| `idm-implicit-sync/<mapping>`                                                     | IDM emulator: a committed managed create, update, changed patch or delete on a type that is the `source` of a mapping in the supplied `config/sync` (`ConfigInput.sync`). On AIC that write runs the mapping (implicit sync, docs/api/16-sync-mappings.md): synchronously by default (measured 2026-06-19), asynchronously from the sync queue when the mapping enables `queuedSync` (measured 2026-07-29); what `enableSync: false` does is unmeasured. The emulator models none of these, so the write faults before the store changes, and the message names which case each mapping is. `sync` is a required input (E15c); `{ mappings: [] }` is the caller's explicit none. **The script tester's AM lane is silent here**: `runtime.cjs`'s `openidm.create`/`update`/`patch`/`delete` write `given.managed` with no implicit-sync check and record nothing, so a write there on a mapping's source passes; routing those writes through an `IdmEmulator` (E15 round-1 Q2) would inherit this fault |
 
 **Argument counts, by provenance.** A call with an argument count AIC has no
 overload for fails on AIC as Rhino's catchable
