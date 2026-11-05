@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadBehaviour, runScript } from "./load-behaviour.ts";
+import { loadBehaviour, runScript, sandboxFaults } from "./load-behaviour.ts";
 
 describe("logger", () => {
   it("formats slf4j {} placeholders, escapes, and surplus args", () => {
@@ -271,10 +271,41 @@ describe("openidm", () => {
       openidm.query("managed/alpha_user", { _queryFilter: '/_id ne "alice"' }),
     ).toThrow(/unmocked filter "\/_id ne \\"alice\\""/);
     expect(() =>
-      openidm.query("managed/alpha_user", {
-        _queryFilter: 'not (userName eq "alice")',
-      }),
-    ).toThrow(/unmocked filter/);
+      openidm.query("managed/alpha_user", { _queryFilter: "count gt 1" }),
+    ).toThrow(/unmocked filter "count gt 1"/);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual([
+      "openidm-query-filter",
+      "openidm-query-filter",
+    ]);
+  });
+
+  // AIC parses the filter before it reads a row, so a malformed one is its
+  // catchable parse error even against an empty collection: the reviewer's
+  // false pass was "name eq" over [] returning an empty result.
+  it.each([
+    ["an empty collection", []],
+    ["a populated one", [{ _id: "alice", name: "alice" }]],
+  ])("a malformed filter is AIC's catchable parse error on %s", (_name, rows) => {
+    for (const filter of [
+      "name eq",
+      'not (name eq "alice")',
+      "name eq null",
+      "name in [1]",
+      "name eq [1]",
+      'name eq "open',
+      "(name pr",
+      "name pr trailing",
+      "name",
+    ]) {
+      const sandbox = loadBehaviour({ managed: { "managed/alpha_user": rows } });
+      const openidm = sandbox.openidm as {
+        query: (resource: string, params: { _queryFilter: string }) => unknown;
+      };
+      expect(() => openidm.query("managed/alpha_user", { _queryFilter: filter }), filter).toThrow(
+        `rhino-local: openidm.query: The value '${filter}' for parameter '_queryFilter' could not be parsed as a valid query filter`,
+      );
+      expect(sandboxFaults(sandbox), filter).toEqual([]);
+    }
   });
 
   it("records actionName and body as content ?? params", () => {

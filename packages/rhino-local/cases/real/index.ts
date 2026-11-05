@@ -3637,12 +3637,20 @@ export const realCases: RealEntry[] = [
         "managed/alpha_role": []
       }
     },
+    // The tenant declares alpha_role and not rlNoSuchType, so the absent type
+    // is answered as AIC answers it rather than as a missing fixture.
+    profile: {
+      tenant: "sandbox",
+      pulledAt: "2026-09-29T00:00:00.000Z",
+      sources: [],
+      objects: { alpha_role: { name: "alpha_role", properties: {}, required: [] } },
+    },
     allowUndeclared: {"openidmWrites":true},
     gap: {
       reason:
-        "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (undeclared action replies throw naming given.openidmActions). Writes were not captured live, so the write channel is not judged. openidm.query: a filter the local parser does not support is reported as unmocked rather than as AIC's parse error, and an unseeded managed type throws the harness's missing-fixture error rather than AIC's \"Resource … not found\".",
+        "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (undeclared action replies throw naming given.openidmActions). Writes were not captured live, so the write channel is not judged. openidm.query: a malformed filter and a managed type the profile does not declare throw AIC's parse and \"Resource … not found\" phrases, catchably, as plain Errors.",
       differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","query/2/queryExpression","query/2/two-kinds","patch/wrong-rev","delete/wrong-rev","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
-      faults: ["fixture/managed", "fixture/openidm-action", "openidm-query-filter"],
+      faults: ["fixture/openidm-action"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
