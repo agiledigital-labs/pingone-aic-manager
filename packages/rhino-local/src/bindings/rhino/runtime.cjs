@@ -370,11 +370,30 @@ var __rhinoLocalArityBasis = (function () {
   ]);
   add("scripting.wrappers.HttpClientScriptWrapper", "assumed", ["httpClient.send"]);
   add("scripting.bindings.SystemEnvScriptWrapper", "assumed", ["systemEnv.getProperty"]);
-  // Introspection lists info(msg), (format, arg), (format, arg1, arg2) and
-  // (format, arguments: array); the last is taken as SLF4J's `Object...`, which
-  // Rhino calls with any count, so only zero arguments has no overload.
   add("scripting.logging.ScriptedLoggerWrapper", "assumed", [
     "logger.trace", "logger.debug", "logger.info", "logger.warn", "logger.error",
+  ]);
+  // An overload whose last parameter introspection lists as `array` may be a
+  // Java array or Java varargs (SLF4J's `Object...` is the obvious candidate
+  // for logger's (format, arguments)), and introspection does not say which.
+  // Rhino calls a varargs method with any count from one fewer than its
+  // parameters upwards, a plain array parameter with exactly its count. So a
+  // count at or above `arrayTail` that no listed overload takes is decided by
+  // that reading, not by the overload set: unmeasured, and a fault.
+  function tail(from, paths) {
+    var i;
+    for (i = 0; i < paths.length; i += 1) {
+      basis[paths[i]].arrayTail = from;
+    }
+  }
+  tail(0, ["utils.crypto.getRandomValues"]);
+  tail(1, ["logger.trace", "logger.debug", "logger.info", "logger.warn", "logger.error"]);
+  tail(2, ["openidm.read", "openidm.query", "openidm.patch"]);
+  tail(3, ["openidm.delete", "callbacksBuilder.validatedUsernameCallback"]);
+  tail(4, [
+    "openidm.create", "openidm.update", "openidm.action",
+    "callbacksBuilder.validatedPasswordCallback", "callbacksBuilder.stringAttributeInputCallback",
+    "callbacksBuilder.numberAttributeInputCallback", "callbacksBuilder.booleanAttributeInputCallback",
   ]);
   return basis;
 })();
@@ -414,9 +433,17 @@ function __rhinoLocalInternalError(message) {
 }
 
 // What a call with an argument count the local binding does not take throws:
-// AIC's own refusal when the range has a basis, otherwise a harness fault.
+// AIC's own refusal when the range has a basis, otherwise a harness fault. A
+// count only a varargs reading of a trailing array parameter would accept has
+// no basis either way (see `arrayTail`).
 function __rhinoLocalArityRefusal(path, args, expected) {
   var basis = __rhinoLocal.engine === "legacy" ? undefined : __rhinoLocalArityBasis[path];
+  if (basis !== undefined && basis.arrayTail !== undefined && args.length >= basis.arrayTail) {
+    return __rhinoLocalFault("arity-unknown/" + path,
+      "rhino-local: " + path + " arity=" + args.length + " (AIC's introspection lists " + expected +
+        " ending in an array parameter; whether AIC takes it as varargs, and so accepts this count, is unmeasured)"
+    );
+  }
   if (basis !== undefined) {
     return __rhinoLocalInternalError(
       "Can't find method " + basis.java + "." + path.substring(path.lastIndexOf(".") + 1) +
@@ -1149,8 +1176,8 @@ function __rhinoLocalFormat(pattern, bound) {
 }
 
 function __rhinoLocalLog(level, args) {
-  if (args.length < 1) {
-    throw __rhinoLocalArityRefusal("logger." + level, args, ">= 1");
+  if (args.length < 1 || args.length > 3) {
+    throw __rhinoLocalArityRefusal("logger." + level, args, "1..3");
   }
   var format = String(args[0]);
   var bound = [];

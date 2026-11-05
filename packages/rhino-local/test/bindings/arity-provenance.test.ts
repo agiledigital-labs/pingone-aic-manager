@@ -17,21 +17,34 @@ interface Element {
   elementType?: string;
   name: string;
   javaClass?: string;
-  parameters?: unknown[];
+  parameters?: Array<{ javaScriptType?: string }>;
   elements?: Element[];
 }
-/** binding.method -> accepted argument counts and declaring class, from AIC's introspection. */
-function introspected(): Map<string, { counts: Set<number>; javaClass: string | undefined }> {
+/**
+ * binding.method -> accepted argument counts, declaring class, and the lowest
+ * count a varargs reading of a trailing array parameter would accept, from
+ * AIC's introspection.
+ */
+interface Overloads {
+  counts: Set<number>;
+  javaClass: string | undefined;
+  arrayTail: number | undefined;
+}
+function introspected(): Map<string, Overloads> {
   const doc = JSON.parse(
     readFileSync(`${repoRoot}docs/api/bindings/scripted-decision-next.json`, "utf8")
   ) as { bindings: Element[] };
-  const out = new Map<string, { counts: Set<number>; javaClass: string | undefined }>();
+  const out = new Map<string, Overloads>();
   const walk = (node: Element, prefix: string): void => {
     for (const element of node.elements ?? []) {
       if (element.elementType === "method") {
         const key = `${prefix}.${element.name}`;
-        const entry = out.get(key) ?? { counts: new Set<number>(), javaClass: node.javaClass };
-        entry.counts.add(element.parameters?.length ?? 0);
+        const entry = out.get(key) ?? { counts: new Set<number>(), javaClass: node.javaClass, arrayTail: undefined };
+        const parameters = element.parameters ?? [];
+        entry.counts.add(parameters.length);
+        if (parameters.at(-1)?.javaScriptType === "array") {
+          entry.arrayTail = Math.min(entry.arrayTail ?? Infinity, parameters.length - 1);
+        }
         out.set(key, entry);
       } else {
         walk(element, `${prefix}.${element.name}`);
@@ -44,7 +57,7 @@ function introspected(): Map<string, { counts: Set<number>; javaClass: string | 
   return out;
 }
 
-type Basis = { java: string; provenance: "measured" | "assumed" };
+type Basis = { java: string; provenance: "measured" | "assumed"; arrayTail?: number };
 
 const given = {
   existingSession: { UserId: "alice" },
@@ -104,11 +117,19 @@ describe("arity provenance", () => {
       if (table.has(path)) {
         expect(b.java, path).toBe(table.get(path)!.javaClass);
       }
+      // A trailing array parameter may be Java varargs; the count from which
+      // that reading decides must come from the introspection too.
+      if (b.provenance === "assumed") {
+        expect(b.arrayTail, path).toBe(table.get(path)!.arrayTail);
+      }
     }
   });
 
-  // The discriminating rows: a count AIC accepts must not be refused, and a
-  // count it refuses must be refused catchably, in AIC's words, with no fault.
+  // The discriminating rows: a count AIC accepts must not be refused; a count
+  // no overload takes must be refused catchably, in AIC's words, with no
+  // fault -- unless only a varargs reading of a trailing array parameter
+  // (P3-1) decides it, which is the arity fault: logger with 4 arguments was
+  // accepted, and openidm.read with 4 refused catchably, on that reading.
   it("refuses exactly the counts AIC's overload set has no method for", () => {
     // utils is overlaid only on the JVM, whose host ops it needs (node:vm has
     // the generated not-mocked stub); corpus binding-utils-interop compares
@@ -123,16 +144,21 @@ describe("arity provenance", () => {
       expect(fn, path).toBeTypeOf("function");
       const accepted = table.get(path)?.counts;
       const method = path.substring(path.lastIndexOf(".") + 1);
+      const faulted: number[] = [];
       for (let count = 0; count <= 12; count += 1) {
-        const ok = path.startsWith("logger.")
-          ? count >= 1
-          : path === "existingSession.get"
-            ? count === 1
-            : accepted!.has(count);
+        const ok = path === "existingSession.get" ? count === 1 : accepted!.has(count);
+        const unknown = !ok && b.arrayTail !== undefined && count >= b.arrayTail;
+        const before = sandboxFaults(sandbox).length;
         const error = callWith(fn, argsFor(path, count)) as { name?: string; message?: string } | undefined;
         const refused = typeof error?.message === "string" && error.message.startsWith("Can't find method");
-        expect(refused, `${path} with ${count}`).toBe(!ok);
-        if (!ok) {
+        expect(refused, `${path} with ${count}`).toBe(!ok && !unknown);
+        if (unknown) {
+          expect(sandboxFaults(sandbox).slice(before).map((f) => f.id), `${path} with ${count}`).toEqual([
+            `arity-unknown/${path}`,
+          ]);
+          faulted.push(count);
+        }
+        if (!ok && !unknown) {
           expect(error!.name).toBe("InternalError");
           expect(error!.message).toBe(
             `Can't find method ${b.java}.${method}(${Array(count).fill("string").join(",")}).`
@@ -140,10 +166,29 @@ describe("arity provenance", () => {
         }
       }
       expect(
-        sandboxFaults(sandbox).filter((f) => f.id.startsWith("arity")),
+        sandboxFaults(sandbox).filter((f) => f.id.startsWith("arity")).length,
         path
-      ).toEqual([]);
+      ).toBe(faulted.length);
     }
+  });
+
+  it("faults the reviewer's varargs-reading repros", () => {
+    const sandbox = loadBehaviour(given);
+    const logger = sandbox.logger as Record<string, (...args: unknown[]) => unknown>;
+    const openidm = sandbox.openidm as Record<string, (...args: unknown[]) => unknown>;
+    expect((callWith(logger.info!, ["{} {} {}", 1, 2, 3]) as Error).message).toMatch(/^rhino-local: logger.info arity=4 /);
+    expect((callWith(openidm.read!, ["managed/user/x", null, ["_id"], "x"]) as Error).message).toMatch(
+      /^rhino-local: openidm.read arity=4 .*varargs.*unmeasured/
+    );
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["arity-unknown/logger.info", "arity-unknown/openidm.read"]);
+    // The control: below the array tail the overload set still decides.
+    const control = loadBehaviour(given);
+    const read = (control.openidm as Record<string, (...args: unknown[]) => unknown>).read!;
+    expect((callWith(read, []) as Error).message).toBe(
+      "Can't find method org.forgerock.openam.scripting.wrappers.IdmIntegrationServiceScriptWrapper.read()."
+    );
+    expect(callWith((control.logger as Record<string, (...args: unknown[]) => unknown>).info!, ["{} {}", 1, 2])).toBeUndefined();
+    expect(sandboxFaults(control)).toEqual([]);
   });
 
   it("names a refused argument the way Rhino's scriptSignature does", () => {
