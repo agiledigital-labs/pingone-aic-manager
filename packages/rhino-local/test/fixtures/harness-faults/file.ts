@@ -19,7 +19,7 @@ function suite(name: string, script: string) {
 
 /**
  * The cases each fixture file runs, in order. `refusal` catches a true refusal
- * (a JS Date in an httpClient.send body, harness fault send-body-js-date) and
+ * (a JS Date in an httpClient.send body, harness fault script-defect/send-body-js-date) and
  * then succeeds; under E19 it must FAIL. `extra`, when given, is a second
  * caught refusal in the same case. `collide` catches AIC's own error for a
  * colliding create, which the harness emulates, and must PASS. `clean` runs

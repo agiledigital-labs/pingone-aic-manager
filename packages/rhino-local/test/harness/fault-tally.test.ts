@@ -65,7 +65,7 @@ describe("tallyFaults", () => {
     const t1 = owner("t1", "/r/a.test.ts");
     const t2 = owner("t2", "/r/a.test.ts");
     const cause = "openidm-query-filter: openidm-query-filter message";
-    const echo = (o: EmulationOwner): Failure => ({ sequence: ++sequence, context: "job", owner: o, file: o.file,
+    const echo = (o: EmulationOwner): Failure => ({ sequence: ++sequence, context: "job", owner: o, file: o.file!,
       causes: [cause], kind: "missing", observed: [cause] });
     const tally = tallyFaults([audit("w", [entry(t1, [fault("openidm-query-filter")]), echo(t1), echo(t2)])], "/r");
     expect(tally.faults.map((row) => [row.id, row.cases])).toEqual([["openidm-query-filter", 1]]);

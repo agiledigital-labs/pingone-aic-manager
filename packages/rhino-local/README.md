@@ -101,19 +101,22 @@ it with a **harness fault** rather than guessing. Examples are an unmocked
 binding method, an unseeded fixture, an argument count whose accepted range is
 the harness's guess, or a JS `Date` in an `httpClient.send` body. A harness fault **fails the case even if the script
 catches it and then succeeds**, because the harness cannot say what AIC does
-there. Sometimes AIC measurably does not throw at all (it sends a `Date` body as
-a dump of the Rhino object); sometimes it throws something the harness has not
-measured (a write to a type the tenant lacks); sometimes nobody knows (a guessed
-argument count). In each case a `try`/`catch` around the call must not turn a
+there: it may throw something the harness has not measured (a write to a type
+the tenant lacks), or nobody knows (a guessed argument count). One family is
+different in kind. Under `script-defect/` AIC's behaviour is measured — it sends
+a `Date`, `RegExp` or function body as a dump of the Rhino object and carries on
+— and the fault is a refusal to pass a script that would send that dump, not a
+gap in the harness. The tally lists that family apart, so it does not read as
+harness work. In each case a `try`/`catch` around the call must not turn a
 gap in the harness into a passing test.
 
 ```text
-rhino-local harness fault send-body-js-date: httpClient.send body.d is a JS Date: … (not emulated: this fails the run even if the script caught it)
+rhino-local harness fault script-defect/send-body-js-date: httpClient.send body.d is a JS Date: … (script defect: AIC's behaviour here is measured and is not what the script means; this fails the run even if the script caught it)
 ```
 
 Every fault has a stable id: a kebab-case slug, or a family prefix such as
-`arity-unknown/<binding.method>`, `not-mocked/<binding.method>` or
-`fixture/<kind>`.
+`arity-unknown/<binding.method>`, `not-mocked/<binding.method>`,
+`fixture/<kind>` or `script-defect/<kind>`.
 Ids are never derived from line numbers or message text, so they survive a
 release. [`docs/rhino-local-gaps.md`](../../docs/rhino-local-gaps.md#harness-faults)
 lists them.
@@ -162,7 +165,7 @@ cases from earlier runs; read the tally from a plain `vitest run`.
 
 ```json
 { "version": 1,
-  "faults": [{ "id": "send-body-js-date", "cases": 2, "failed": 2,
+  "faults": [{ "id": "script-defect/send-body-js-date", "cases": 2, "failed": 2,
                "files": ["test/a.test.ts", "test/b.test.ts"], "message": "…" }],
   "unidentified": [] }
 ```
@@ -173,8 +176,8 @@ refusal itself asserts it:
 
 ```ts
 import { expectHarnessFault } from "@agiledigital/pingone-aic-script-tester";
-expectHarnessFault("send-body-js-date");
-await expect(lease.run().expect({ outcome: "done" })).rejects.toThrow(/harness fault send-body-js-date/);
+expectHarnessFault("script-defect/send-body-js-date");
+await expect(lease.run().expect({ outcome: "done" })).rejects.toThrow(/harness fault script-defect\/send-body-js-date/);
 ```
 
 ### Libraries used by `require()`

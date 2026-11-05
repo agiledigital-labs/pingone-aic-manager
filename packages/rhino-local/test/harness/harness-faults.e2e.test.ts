@@ -12,7 +12,7 @@
  * A clean case then runs on the same pooled JVM and must pass, with nothing
  * in the tally: a fault must not leak into another case's tally.
  *
- * The tally must count across the file boundary: send-body-js-date is hit by
+ * The tally must count across the file boundary: script-defect/send-body-js-date is hit by
  * one case in each file (twice in file a's, which still counts once), and
  * state-put-undefined by file b's case only.
  */
@@ -78,7 +78,7 @@ it("a caught true refusal fails its case, a caught emulated error passes, and th
       const refusal = status[`${name} refusal caught refusal then success`];
       expect(refusal?.status).toBe("failed");
       expect(refusal?.failureMessages.join("\n")).toMatch(
-        /rhino-local harness fault send-body-js-date: httpClient\.send body\.d is a JS Date[\s\S]*not emulated: this fails the run even if the script caught it/
+        /rhino-local harness fault script-defect\/send-body-js-date: httpClient\.send body\.d is a JS Date[\s\S]*script defect: AIC's behaviour here is measured[\s\S]*this fails the run even if the script caught it/
       );
       expect(status[`${name} collide caught emulated error`]?.status).toBe("passed");
       expect(status[`${name} clean clean after a fault`]?.status).toBe("passed");
@@ -90,14 +90,15 @@ it("a caught true refusal fails its case, a caught emulated error passes, and th
     expect(tally).toEqual({
       version: 1,
       faults: [
-        { id: "send-body-js-date", cases: 2, failed: 2, files: [a, b], message: expect.stringContaining("httpClient.send body.d is a JS Date") as unknown },
+        { id: "script-defect/send-body-js-date", cases: 2, failed: 2, files: [a, b], message: expect.stringContaining("httpClient.send body.d is a JS Date") as unknown },
         { id: "state-put-undefined", cases: 1, failed: 1, files: [b], message: "rhino-local: nodeState.putShared: value is undefined" },
       ],
       unidentified: [],
     });
     expect(output).toContain("rhino-local harness faults");
-    expect(output).toMatch(/ {5}2 cases {2}send-body-js-date {2}\(2 files\)/);
-    expect(output).toMatch(/ {5}1 case {3}state-put-undefined {2}\(1 file\)/);
+    // The harness's gaps and the script defects are listed apart.
+    expect(output).toMatch(/behaviour this harness does not emulate:\n {5}1 case {3}state-put-undefined {2}\(1 file\)\n/);
+    expect(output).toMatch(/script defects \(AIC's behaviour is measured[^\n]*\n {5}2 cases {2}script-defect\/send-body-js-date {2}\(2 files\)\n/);
     expect(output).toContain(`tally: ${tallyPath}`);
 
     // The pool was on: both files' leases ran on one runner JVM. Linux only.

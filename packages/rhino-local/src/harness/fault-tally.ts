@@ -16,6 +16,9 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { EmulationAudit } from "../emulation.ts";
 import { ensureStateSubdir, stateDir } from "../project.ts";
 
+/** The fault-id family for measured AIC behaviour a script gets wrong, not a harness gap. */
+export const SCRIPT_DEFECT_PREFIX = "script-defect/";
+
 /** Overrides {@link faultTallyPath}. */
 export const FAULT_TALLY_ENV = "AIC_SCRIPT_TESTER_FAULT_TALLY";
 
@@ -126,10 +129,21 @@ export function writeFaultTally(tally: FaultTally, env: NodeJS.ProcessEnv = proc
 /** The end-of-run summary, one line per id; empty when the run hit none. */
 export function formatFaultTally(tally: FaultTally, path: string): string {
   if (tally.faults.length === 0 && tally.unidentified.length === 0) return "";
-  const lines = ["", "rhino-local harness faults (behaviour this harness does not emulate; a case that hits one fails unless it declared it):"];
+  const lines = ["", "rhino-local harness faults (a case that hits one fails unless it declared it):"];
   const declared = (row: FaultTallyRow): string => (row.failed === row.cases ? "" : `, ${row.cases - row.failed} declared`);
-  for (const row of tally.faults) {
-    lines.push(`  ${String(row.cases).padStart(4)} case${row.cases === 1 ? " " : "s"}  ${row.id}  (${row.files.length} file${row.files.length === 1 ? "" : "s"}${declared(row)})`);
+  const line = (row: FaultTallyRow): string =>
+    `  ${String(row.cases).padStart(4)} case${row.cases === 1 ? " " : "s"}  ${row.id}  (${row.files.length} file${row.files.length === 1 ? "" : "s"}${declared(row)})`;
+  // script-defect/ ids are measured AIC behaviour the script gets wrong, so
+  // they are listed apart from the harness's own gaps, which are its work list.
+  const defects = tally.faults.filter((row) => row.id.startsWith(SCRIPT_DEFECT_PREFIX));
+  const gaps = tally.faults.filter((row) => !row.id.startsWith(SCRIPT_DEFECT_PREFIX));
+  if (gaps.length > 0) {
+    lines.push("  behaviour this harness does not emulate:");
+    for (const row of gaps) lines.push(line(row));
+  }
+  if (defects.length > 0) {
+    lines.push("  script defects (AIC's behaviour is measured; the script would misbehave there):");
+    for (const row of defects) lines.push(line(row));
   }
   if (tally.unidentified.length > 0) {
     lines.push("  missing behaviour without a fault id:");

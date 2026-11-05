@@ -48,7 +48,10 @@ final class HarnessFaults extends BaseFunction {
     info.put(
         "message",
         "rhino-local harness fault " + causes.get(0)
-            + " (not emulated: this fails the run even if the script caught it)");
+            + (causes.get(0).startsWith("script-defect/")
+                ? " (script defect: AIC's behaviour here is measured and is not what the script means;"
+                    + " this fails the run even if the script caught it)"
+                : " (not emulated: this fails the run even if the script caught it)"));
     info.put("missing", causes);
     info.put("faults", held);
     response.put("emulation", info);

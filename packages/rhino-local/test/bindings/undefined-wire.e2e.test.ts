@@ -72,7 +72,7 @@ it("httpClient.send records NaN, ±Infinity, -0 and java.util.Date as AIC sends 
   expect(effects.http[0]?.body).toEqual({ a: "x", n: "NaN", p: "Infinity", m: "-Infinity", z: 0, d0: 0, d: 1234, arr: ["NaN"] });
 });
 it("httpClient.send never calls toJSON: a toJSON method is a function in the body", async () => {
-  expectHarnessFault("send-body-function");
+  expectHarnessFault("script-defect/send-body-function");
   await expect(run(SEND("{ a: 1, toJSON: function () { return 'x'; } }"))).rejects.toThrow(/rhino-local: httpClient\.send body\.toJSON is a function: AIC sends/);
 });
 // §5 measured the root self-cycle (b.self = b); this nested shape is assumed to throw the same.
@@ -85,14 +85,15 @@ it("a cycle throws AIC's catchable InternalError and records nothing", async () 
 it("an uncaught cycle fails the script with AIC's message", async () => {
   await expect(run(SEND(CYCLE))).rejects.toThrow(/InternalError: Cannot produce JSON from \[object Object\]/);
 });
-// A Date, RegExp or function goes out as a Rhino object dump nothing here reproduces, so the send
-// is a harness fault: it fails the run even when the script catches it, because AIC would not throw.
+// A Date, RegExp or function goes out as a Rhino object dump (measured), so the send is a
+// script-defect/ fault: it fails the run even when the script catches it, because AIC would not
+// throw and would send the dump. An Error or an array cycle is unmeasured: an ordinary fault.
 const DATE = /rhino-local: httpClient\.send body\.d is a JS Date: AIC sends a ~1 KB dump of the Rhino NativeDate object without the time value, not the date \(docs\/api\/12 §5\); send date\.toISOString\(\) or date\.getTime\(\)/;
 it.each([
-  ["a JS Date", "send-body-js-date", "{ d: new Date(0) }", DATE],
-  ["a RegExp", "send-body-regexp", "{ r: /a/g }", /rhino-local: httpClient\.send body\.r is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags/],
-  ["a function body", "send-body-function", "function () {}", /rhino-local: httpClient\.send body is a function: AIC sends a ~1\.7 KB dump of the Rhino function object, which exposes the script's name, its encoded source and the name of every binding and variable in the script/],
-  ["a nested function", "send-body-function", "{ arr: [1, function () {}] }", /rhino-local: httpClient\.send body\.arr\[1\] is a function: AIC sends/],
+  ["a JS Date", "script-defect/send-body-js-date", "{ d: new Date(0) }", DATE],
+  ["a RegExp", "script-defect/send-body-regexp", "{ r: /a/g }", /rhino-local: httpClient\.send body\.r is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags/],
+  ["a function body", "script-defect/send-body-function", "function () {}", /rhino-local: httpClient\.send body is a function: AIC sends a ~1\.7 KB dump of the Rhino function object, which exposes the script's name, its encoded source and the name of every binding and variable in the script/],
+  ["a nested function", "script-defect/send-body-function", "{ arr: [1, function () {}] }", /rhino-local: httpClient\.send body\.arr\[1\] is a function: AIC sends/],
   ["an Error (unmeasured)", "send-body-error", "{ error: new Error('boom') }", /rhino-local: httpClient\.send body\.error is an Error: what AIC sends for one is unmeasured \(it most likely dumps the Rhino object, as it does a JS Date or RegExp, docs\/api\/12 §5\); send e\.message or String\(e\)/],
   ["a caught TypeError", "send-body-error", "(function () { try { null.x; } catch (e) { return { error: e }; } })()", /rhino-local: httpClient\.send body\.error is an Error: what AIC sends/],
   ["a cycle through an array", "send-body-array-cycle", "(function () { var b = { l: [] }; b.l.push(b); return b; })()", /rhino-local: httpClient\.send body\.l\[0\] refers back to an enclosing value through an array \(a cycle\): AIC's error for this shape is unmeasured/],
@@ -101,9 +102,9 @@ it.each([
   await expect(run(SEND(body))).rejects.toThrow(message);
 });
 it("a caught Date refusal still fails the run by id, and says the script may have caught it", async () => {
-  expectHarnessFault("send-body-js-date");
+  expectHarnessFault("script-defect/send-body-js-date");
   await expect(run(`try { ${SEND("{ d: new Date(0) }")} } catch (e) { nodeState.putShared("err", String(e)); }`)).rejects.toThrow(
-    /rhino-local harness fault send-body-js-date: httpClient\.send body\.d is a JS Date[\s\S]*this fails the run even if the script caught it/,
+    /rhino-local harness fault script-defect\/send-body-js-date: httpClient\.send body\.d is a JS Date[\s\S]*script defect: AIC's behaviour here is measured[\s\S]*this fails the run even if the script caught it/,
   );
 });
 it.each([
