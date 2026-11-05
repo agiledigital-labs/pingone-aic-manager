@@ -3729,9 +3729,8 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "ECDSA interop (P1363 accepted, DER false), generated key encodings, digest/AES/HMAC edges and JS-array handling match. Still different: a 5-byte AES key fails on both, but AIC wraps it as JavaException ScriptCryptoException; randomUUID(1) and getRandomValues({}) fail on both, but with the harness arity message and without AIC's (name#line) suffix respectively.",
+        "ECDSA interop (P1363 accepted, DER false), generated key encodings, digest/AES/HMAC edges and JS-array handling match. Still different: a 5-byte AES key fails on both, but AIC wraps it as JavaException ScriptCryptoException; randomUUID(1) and getRandomValues({}) fail on both with AIC's catchable InternalError text, but without AIC's (name#line) suffix.",
       differs: ["aes/key-5","crypto/randomUUID/1","crypto/getRandomValues/js-object"],
-      faults: ["arity/utils.crypto.randomUUID"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).

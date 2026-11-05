@@ -885,10 +885,10 @@ it.each([
     "nodeState.putShared: value is undefined",
   ],
   [
-    "rebound arity helper around a caught diagnostic",
-    "__rhinoLocalExpectArity=function(){};",
-    "try{logger.info();}catch(e){}",
-    "logger.info arity=0 (expected >= 1)",
+    "rebound arity helpers around a caught diagnostic",
+    "__rhinoLocalExpectArity=function(){};__rhinoLocalArityRefusal=function(){return new Error('x');};",
+    "try{requestHeaders.get();}catch(e){}",
+    "map.get arity=0 (the harness accepts 1; AIC's accepted argument counts here are unmeasured)",
   ],
 ])("author code cannot answer a refused call: %s", async (_name, attack, call, cause) => {
   expectEmulationFailure(cause);
@@ -1000,12 +1000,11 @@ it.each([
     "try{new org.forgerock.json.JsonValue({a:1});}catch(e){}",
     "new JsonValue(...) is not modelled; use JsonValue.json or JsonValue.object",
   ],
-  ["logger arity", "try{logger.info();}catch(e){}", "logger.info arity=0 (expected >= 1)"],
-  ["request map arity", "try{requestHeaders.get();}catch(e){}", "map.get arity=0 (expected 1)"],
+  ["request map arity", "try{requestHeaders.get();}catch(e){}", "map.get arity=0 (the harness accepts 1; AIC's accepted argument counts here are unmeasured)"],
   [
-    "utils arity",
-    "try{utils.crypto.randomUUID(1);}catch(e){}",
-    "utils.crypto.randomUUID arity=1 (expected 0)",
+    "request map containsKey arity",
+    "try{requestHeaders.containsKey();}catch(e){}",
+    "map.containsKey arity=0 (the harness accepts 1; AIC's accepted argument counts here are unmeasured)",
   ],
 ])(
   "a caught rhino-local diagnostic is missing, not a script error: %s",
@@ -1030,6 +1029,22 @@ it("measured utils members run locally and say so", async () => {
       behavior: `${member} runs locally as measured`,
       source: "docs/api/12-script-bindings-matrix.md (utils, utils.crypto.subtle)",
     });
+});
+it.each([
+  ["measured", "utils.crypto.randomUUID(1)", "org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService.randomUUID(number)"],
+  ["introspected", "logger.info()", "org.forgerock.openam.scripting.logging.ScriptedLoggerWrapper.info()"],
+])("a wrong argument count with a %s range is AIC's catchable refusal in a journey", async (_name, call, method) => {
+  const result = await request(
+    make(
+      `var m='none';try{${call};}catch(e){m=String(e);}` +
+        `if(m==="InternalError: Can't find method ${method}."){` +
+        SUCCEED +
+        "}else{action.goTo('false');}",
+      ["true", "false"],
+      { true: SUCCESS, false: FAILURE },
+    ),
+  );
+  expect(result.status).toBe(200);
 });
 it.each([
   [

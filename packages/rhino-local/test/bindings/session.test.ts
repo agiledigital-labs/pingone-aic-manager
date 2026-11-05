@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Given } from "../../src/case/types.ts";
-import { loadBehaviour, runScript } from "./load-behaviour.ts";
+import { loadBehaviour, runScript, sandboxFaults } from "./load-behaviour.ts";
 
 /**
  * Every assertion here names something measured on a live tenant 2026-09-14
@@ -89,9 +89,20 @@ describe("existingSession", () => {
     ).toBe("{UserId=alice, Principals=alice, AuthLevel=0, rlProbe=hello}");
   });
 
-  it("enforces get()'s arity, as the live InternalError does", () => {
-    const map = session();
-    expect(() => (map.get as (...args: unknown[]) => unknown)()).toThrow(/arity=0/);
+  it("refuses get() with AIC's catchable InternalError, as measured", () => {
+    const sandbox = loadBehaviour({ existingSession: SEED });
+    const map = sandbox.existingSession as Record<string, (...args: unknown[]) => unknown>;
+    let thrown: unknown;
+    try {
+      map.get!();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({
+      name: "InternalError",
+      message: "Can't find method org.forgerock.openam.scripting.javascript.MapScriptWrapper.get().",
+    });
+    expect(sandboxFaults(sandbox)).toEqual([]);
   });
 
   it("is reinstalled per case, so one case's session cannot leak into the next", () => {
