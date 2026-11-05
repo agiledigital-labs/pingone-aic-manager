@@ -161,3 +161,31 @@ Unmeasured:
 - Whether `aic` will remove an object's last `repo.ds` mapping. The tool's
   refusal says that removal is unmeasured, which is why the two entries above
   are still on the tenant.
+
+## Round 2
+
+The harness is `e21.mjs`. Measured tables go in `RESULTS.md` under "E21 —
+relationship notification, both ends" as each part finishes. This section is the
+run log.
+
+### What `relationship set` does with the leftover mapping
+
+Read before install, in `src/managed/cli.rs` (`map_created_pair`) and
+`src/managed/storage.rs` (`set_with`, `mode`). A new `relationship set` writes
+`config/managed`, then maps the pair only when the property did not already
+exist. When the property is new but `repo.ds` already has a matching mapping for
+both ends, `mode` is `Mapped` and the command does not write `repo.ds`. It
+checks the reference column for orphaned values and stops if it finds any. A
+second or different mapping is not the path for this leftover. The install
+compares `genericMapping` with `.state/run1/repo.ds-after.json` immediately
+after `relationship set` and refuses to continue if they differ. It does not
+write `config/repo.ds` itself, and it does not overwrite `managed-before.json`
+or `repo.ds-before.json`.
+
+The tenant does not declare `notifyRelationships` on the object.
+`alpha_role.assignments` and `alpha_role.temporalConstraints` declare it on the
+property that changes, naming `members`. `notify` on those types sits on
+`resourceCollection`, and `notifySelf` sits on the relationship node. Round 1
+put both flags on the node. E21 measures both placements. The object-level
+placement the brief named is measured as well, because that is not the shape the
+tenant uses.
