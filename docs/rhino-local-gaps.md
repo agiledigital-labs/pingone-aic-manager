@@ -71,6 +71,21 @@ record) to an undeclared type is the harness fault
 because what AIC does there is unmeasured. Without a profile the pre-existing
 behaviour is unchanged: any unseeded collection is the fault `fixture/managed`.
 
+A profile lists managed **types**, so it speaks only for a bare
+`managed/<type>` collection and its records. Every other unseeded resource —
+`internal/role`, `config/…`, `system/…`, and a relationship collection such as
+`managed/alpha_user/<id>/roles` even when its type is declared — stays the
+fault `fixture/managed` with or without a profile, `create` included. Before
+E19 fix round 3 a profile answered all of them as an absent managed type
+(`null`, or a catchable not-found), which on AIC is false for every one that
+exists.
+
+One asymmetry is deliberate and pre-existing: **without** a profile,
+`openidm.create` into an unseeded collection makes the collection and succeeds,
+while `read` of the same collection is `fixture/managed`. Faulting it would
+break every test that creates into a real but unseeded type; seed `[]` for the
+collection, or run with a profile, and the create is checked.
+
 Only the SET of declared type names crosses into the sandbox. Every schema
 rule — properties, `required`, `enum` — is checked in the Node layer, so each
 rule has one implementation rather than an AM-safe second copy that could

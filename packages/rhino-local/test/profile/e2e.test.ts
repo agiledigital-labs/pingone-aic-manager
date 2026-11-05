@@ -82,13 +82,15 @@ describe("environment profile through the JVM runner", () => {
 
   // A type the profile says the tenant does not have: emulated where AIC is
   // measured, a harness fault where it is not.
-  async function probeCall(call: string) {
+  async function probeCall(call: string, seedAlice = false) {
     const run = await runCase(
       runner,
       defineCase({
         name: "undeclared",
         script: probe.replace("openidm.read(RESOURCE)", call),
-        given: {},
+        given: seedAlice
+          ? { managed: { "managed/alpha_user": [{ _id: "alice", userName: "alice" }] } }
+          : {},
         expect: { outcome: "true" },
       }),
       { timeoutMs: 5_000, profile }
@@ -132,6 +134,33 @@ describe("environment profile through the JVM runner", () => {
     expectHarnessFault("openidm-unknown-managed-type");
     await expect(probeCall(call)).rejects.toThrow(
       new RegExp(`harness fault openidm-unknown-managed-type: openidm\\.${method}: "managed\\/zzz_not_a_type" is not a managed object in environment "sandbox"`)
+    );
+  });
+
+  // Round-3 P1-1: a profile lists managed TYPES, so it says nothing about any
+  // other resource. Each of these used to read as an absent managed type
+  // (null, or a catchable not-found) once a profile was on, silently, while the
+  // same call without a profile was this fault. A relationship collection of a
+  // DECLARED, seeded type is the sharpest row: on AIC it exists and has rows.
+  it.each([
+    ["read", "internal/role", 'openidm.read("internal/role/r1")'],
+    ["query", "internal/role", 'openidm.query("internal/role", { _queryFilter: "true" })'],
+    ["read", "config/ui", 'openidm.read("config/ui/configuration")'],
+    ["read", "system/ldap/account", 'openidm.read("system/ldap/account/x")'],
+    ["read", "managed/alpha_user/alice/roles", 'openidm.read("managed/alpha_user/alice/roles/x")'],
+    [
+      "query",
+      "managed/alpha_user/alice/roles",
+      'openidm.query("managed/alpha_user/alice/roles", { _queryFilter: "true" })',
+    ],
+    ["update", "internal/role", 'openidm.update("internal/role/r1", null, {})'],
+    ["create", "internal/role", 'openidm.create("internal/role", null, { name: "r" })'],
+  ])("a %s of %s, which a profile does not speak for, is a missing fixture (P1-1)", async (method, collection, call) => {
+    expectHarnessFault("fixture/managed");
+    await expect(probeCall(call, true)).rejects.toThrow(
+      new RegExp(
+        `harness fault fixture/managed: openidm\\.${method}: no given\\.managed entry for "${collection.replace(/\//g, "\\/")}"`
+      )
     );
   });
 

@@ -2004,11 +2004,20 @@ function __rhinoLocalFindRecord(collection, recordId) {
   return { rows: rows, index: -1, record: null };
 }
 
+// A bare managed-object type collection, `managed/<type>`. A profile speaks
+// for these and nothing else: it lists managed types, so a relationship
+// collection (`managed/<type>/<id>/roles`), `internal/…`, `config/…` or
+// `system/…` is neither declared nor absent by it, and stays a missing fixture
+// exactly as without a profile (round-3 P1-1).
+function __rhinoLocalIsManagedType(collection) {
+  return /^managed\/[^/]+$/.test(String(collection));
+}
+
 // Object types this environment declares, from a pulled harness profile.
 // `null` means no profile was supplied, which keeps the pre-profile behaviour:
 // an unseeded collection is always a missing fixture.
 function __rhinoLocalDeclaresType(collection) {
-  if (!__rhinoLocal.knownTypes) {
+  if (!__rhinoLocal.knownTypes || !__rhinoLocalIsManagedType(collection)) {
     return false;
   }
   return __rhinoLocalHas(__rhinoLocal.knownTypes, collection);
@@ -2048,7 +2057,7 @@ function __rhinoLocalRequireCollection(method, collection) {
   // With a profile the type is known to be absent from the tenant. read and
   // query emulate AIC (null, and a catchable not-found) before reaching here;
   // what AIC does for update, patch or delete on an absent type is unmeasured.
-  if (__rhinoLocal.knownTypes) {
+  if (__rhinoLocal.knownTypes && __rhinoLocalIsManagedType(collection)) {
     throw __rhinoLocalUnknownTypeFault(method, collection);
   }
   throw __rhinoLocalFixtureFault("managed",
@@ -2066,6 +2075,7 @@ function __rhinoLocalAbsentType(collection) {
   return (
     !__rhinoLocalHas(__rhinoLocal.managed, collection) &&
     !!__rhinoLocal.knownTypes &&
+    __rhinoLocalIsManagedType(collection) &&
     !__rhinoLocalDeclaresType(collection)
   );
 }
@@ -2478,6 +2488,16 @@ openidm.create = function (resourceName, newResourceId, content) {
   __rhinoLocalPushOpenidm("create", recordedResource, content);
   if (__rhinoLocalAbsentType(collection)) {
     throw __rhinoLocalUnknownTypeFault("create", collection);
+  }
+  // With a profile, an unseeded resource the profile does not speak for (not
+  // `managed/<type>`) is a missing fixture, as read and query are. Without a
+  // profile create still makes the collection (pre-existing; gaps doc).
+  if (
+    !__rhinoLocalHas(__rhinoLocal.managed, collection) &&
+    __rhinoLocal.knownTypes &&
+    !__rhinoLocalIsManagedType(collection)
+  ) {
+    __rhinoLocalRequireCollection("create", collection);
   }
   if (!__rhinoLocalHas(__rhinoLocal.managed, collection)) {
     __rhinoLocal.managed[collection] = [];
