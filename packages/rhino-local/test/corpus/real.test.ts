@@ -15,6 +15,9 @@ function runOptions(entry: RealEntry, sourceName: string): RunCaseOptions {
   if (entry.libraries !== undefined) {
     options.libraries = entry.libraries;
   }
+  if (entry.profile !== undefined) {
+    options.profile = entry.profile;
+  }
   return options;
 }
 

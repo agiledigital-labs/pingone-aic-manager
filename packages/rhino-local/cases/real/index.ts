@@ -1,4 +1,5 @@
 import type { AllowUndeclared, Given, HttpExpect } from "../../src/case/types.ts";
+import type { EnvProfile } from "../../src/profile/types.ts";
 import {
   hiddenValue,
   librarySource,
@@ -89,6 +90,7 @@ interface Extras {
   libraries?: Record<string, string>;
   rewrites?: readonly Rewrite[];
   gap?: KnownGap;
+  profile?: EnvProfile;
   /** Requests the script makes; required alongside a `given.http` stub. */
   http?: HttpExpect[];
   /**
@@ -121,6 +123,7 @@ function entry(
     libraries?: Record<string, string>;
     rewrites?: readonly Rewrite[];
     gap?: KnownGap;
+    profile?: EnvProfile;
   } = {
     name,
     kind,
@@ -148,6 +151,9 @@ function entry(
   }
   if (extras.gap !== undefined) {
     init.gap = extras.gap;
+  }
+  if (extras.profile !== undefined) {
+    init.profile = extras.profile;
   }
   return realCase(init);
 }
@@ -1043,11 +1049,21 @@ export const realCases: RealEntry[] = [
       unknownTypeMiss: { threw: false, value: "null" },
     },
     {
-      gap: {
-        reason:
-          "openidm.read of a managed type that does not exist returns null on AIC. Locally an unseeded collection throws `no given.managed entry`, which is deliberate — it catches a case that forgot to seed — so closing this needs a way to declare a type absent rather than making every miss silent.",
-        differs: ["unknownTypeMiss"],
-        faults: ["fixture/managed"],
+      // openidm.read of a managed type the tenant does not have returns null
+      // on AIC. Without a profile the harness cannot tell an absent type from
+      // a forgotten seed, so the case names the types that exist.
+      profile: {
+        tenant: "sandbox",
+        pulledAt: "2026-09-28T00:00:00.000Z",
+        sources: [],
+        objects: {
+          idr_name_variants: { name: "idr_name_variants", properties: {}, required: [] },
+          idr_name_variant_discrepancies: {
+            name: "idr_name_variant_discrepancies",
+            properties: {},
+            required: [],
+          },
+        },
       },
       given: {
         managed: {

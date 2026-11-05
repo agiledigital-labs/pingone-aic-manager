@@ -261,6 +261,14 @@ function __rhinoLocalFail(message) {
   return new Error(message);
 }
 
+// An error AIC itself raises, which the harness emulates and the script may
+// rightly catch. Kept apart from __rhinoLocalFail, which a journey replaces
+// with its uncatchable missing-behaviour channel: an emulated error must stay
+// catchable in every lane.
+function __rhinoLocalEmulated(message) {
+  return new Error(message);
+}
+
 function __rhinoLocalHide(object, name, fn) {
   if (typeof Object.defineProperty === "function") {
     Object.defineProperty(object, name, {
@@ -569,7 +577,7 @@ function __rhinoLocalRequestMap(values, options) {
     return keyCount === 0;
   });
   __rhinoLocalHide(map, "keySet", function () {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalEmulated(
       "rhino-local: keySet is blocked by AM's class shutter; iterate with for...in"
     );
   });
@@ -625,7 +633,7 @@ function __rhinoLocalSessionMap(values, engine) {
     return __rhinoLocalSessionKeys(map).length === 0;
   });
   __rhinoLocalHide(map, "keySet", function () {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalEmulated(
       "rhino-local: existingSession.keySet is blocked by AM's class shutter " +
         '(Access to Java class "java.util.HashMap$KeySet" is prohibited); ' +
         "iterate with for...in"
@@ -1438,7 +1446,7 @@ callbacksBuilder.consentMappingCallback = function () {
     var i;
     // AIC streams config.fields and fails without it (measured).
     if (!config || !Array.isArray(config.fields)) {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalEmulated(
         "rhino-local: consentMappingCallback config needs a fields list; AIC refuses one without"
       );
     }
@@ -1982,9 +1990,9 @@ function __rhinoLocalRequireCollection(method, collection) {
     __rhinoLocal.managed[collection] = [];
     return __rhinoLocal.managed[collection];
   }
-  // A harness fault, not AIC's error: AIC's read returns null for an unknown
-  // type and its query throws a different message (docs/api/12, openidm
-  // query), so failing here is this harness catching a fixture typo.
+  // With a profile the type is known to be absent from the tenant. read and
+  // query emulate AIC (null, and a catchable not-found) before reaching here;
+  // what AIC does for update, patch or delete on an absent type is unmeasured.
   if (__rhinoLocal.knownTypes) {
     throw __rhinoLocalFault(
       "openidm-unknown-managed-type",
@@ -1996,14 +2004,27 @@ function __rhinoLocalRequireCollection(method, collection) {
         JSON.stringify(__rhinoLocal.profileTenant) +
         " (pulled " +
         String(__rhinoLocal.profilePulledAt) +
-        "). Check the name, or re-pull the profile if the tenant has changed."
+        "), and what AIC does for " +
+        method +
+        " on an absent type is unmeasured. Check the name, or re-pull the profile if the tenant has changed."
     );
   }
-  throw __rhinoLocalFixtureFault("managed", 
+  throw __rhinoLocalFixtureFault("managed",
     "rhino-local: openidm." +
       method +
       ": no given.managed entry for " +
-      JSON.stringify(collection)
+      JSON.stringify(collection) +
+      "; seed it, or run with a profile so a type absent from the tenant behaves as on AIC"
+  );
+}
+
+// A type a profile says the tenant does not have. Without a profile an
+// unseeded collection cannot be told from a typo, so it is never absent.
+function __rhinoLocalAbsentType(collection) {
+  return (
+    !__rhinoLocalHas(__rhinoLocal.managed, collection) &&
+    !!__rhinoLocal.knownTypes &&
+    !__rhinoLocalDeclaresType(collection)
   );
 }
 
@@ -2021,7 +2042,7 @@ function __rhinoLocalRequireRecord(method, resource) {
   __rhinoLocalRequireCollection(method, split.collection);
   var found = __rhinoLocalFindRecord(split.collection, split.recordId);
   if (!found.record) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalEmulated(
       "rhino-local: openidm." + method + ": No Such Entry: " + resource
     );
   }
@@ -2534,6 +2555,11 @@ openidm.read = function (resourceName, _params, fields) {
         " is a collection path, not a record"
     );
   }
+  // AIC returns null for a record of a type the tenant does not have
+  // (docs/api/10, measured on managed/zzz_no_such_type/x).
+  if (__rhinoLocalAbsentType(split.collection)) {
+    return null;
+  }
   __rhinoLocalRequireCollection("read", split.collection);
   var found = __rhinoLocalFindRecord(split.collection, split.recordId);
   if (!found.record) {
@@ -2552,6 +2578,13 @@ openidm.query = function (resourceName, params, fields) {
   }
   var collection = String(resourceName);
   __rhinoLocalPushOpenidm("query", collection, params);
+  // AIC's text, HTML-escaped as it comes back (corpus binding-openidm-writes
+  // query/2/absent-type, live; docs/api/12 openidm query).
+  if (__rhinoLocalAbsentType(collection)) {
+    throw __rhinoLocalEmulated(
+      "rhino-local: openidm.query: Resource &#39;" + collection + "&#39; not found"
+    );
+  }
   var rows = __rhinoLocalRequireCollection("query", collection);
   var kinds = 0;
   var kindNames = ["_queryId", "_queryExpression", "_queryFilter"];
@@ -2562,12 +2595,12 @@ openidm.query = function (resourceName, params, fields) {
     }
   }
   if (kinds !== 1) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalEmulated(
       "rhino-local: openidm.query: You must use exactly one of [_queryId, _queryExpression, _queryFilter]."
     );
   }
   if (params._queryExpression !== undefined) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalEmulated(
       "rhino-local: openidm.query: Query Expressions are not supported when using DS as the repo"
     );
   }
@@ -2624,7 +2657,7 @@ openidm.create = function (resourceName, newResourceId, content) {
   var existing = __rhinoLocalFindRecord(collection, id).record;
   if (existing) {
     __rhinoLocalBagAccess("create", collection + "/" + id, existing);
-    throw __rhinoLocalFail(
+    throw __rhinoLocalEmulated(
       "rhino-local: openidm.create: Entry Already Exists: " + recordedResource
     );
   }
@@ -2670,7 +2703,7 @@ openidm.patch = function (resourceName, _rev, patch) {
   for (i = 0; i < patch.length; i += 1) {
     op = patch[i];
     if (op.operation !== "add" && op.operation !== "remove" && op.operation !== "replace") {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalEmulated(
         "rhino-local: openidm.patch: not a valid JSON patch (operation " +
           String(op.operation) +
           ")"
@@ -2702,7 +2735,7 @@ openidm.delete = function (resourceName, _rev) {
   var found = __rhinoLocalRequireRecord("delete", resource);
   __rhinoLocalBagAccess("delete", resource, found.record);
   if (_rev !== null && _rev !== undefined && String(_rev) !== String(found.record._rev)) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalEmulated(
       "rhino-local: openidm.delete: Assertion Failed: the entry cannot be removed because the request contained an LDAP assertion control and the associated filter did not match the contents of the entry"
     );
   }
@@ -2729,7 +2762,7 @@ openidm.action = function (resource, actionName, content, params) {
     actionName !== "triggerSyncCheck" &&
     actionName !== "updateLastSync"
   ) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalEmulated(
       "rhino-local: openidm.action: Expecting String containing one of: patch triggerSyncCheck updateLastSync"
     );
   }
@@ -3566,7 +3599,7 @@ function __rhinoLocalRequireSecret(method, secretId) {
   var id = String(secretId);
   if (!__rhinoLocalHas(__rhinoLocal.secrets, id)) {
     if (__rhinoLocal.secretsProvided) {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalEmulated(
         "rhino-local: secrets." + method + ": Secret id " + id + " not accessible"
       );
     }

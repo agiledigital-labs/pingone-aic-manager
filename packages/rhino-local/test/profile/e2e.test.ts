@@ -80,16 +80,48 @@ describe("environment profile through the JVM runner", () => {
     expect(result).toEqual({ threw: false, value: "null" });
   });
 
-  it("an UNdeclared type still throws, naming the environment", async () => {
-    // The discriminating pair: AIC returns null for both, which is exactly why
-    // a fixture typo is invisible there and must not be invisible here.
-    // The probe catches the throw, but it is a harness fault (AIC returns
-    // null), so the run fails anyway.
+  // A type the profile says the tenant does not have: emulated where AIC is
+  // measured, a harness fault where it is not.
+  async function probeCall(call: string) {
+    const run = await runCase(
+      runner,
+      defineCase({
+        name: "undeclared",
+        script: probe.replace("openidm.read(RESOURCE)", call),
+        given: {},
+        expect: { outcome: "true" },
+      }),
+      { timeoutMs: 5_000, profile }
+    );
+    return JSON.parse(String(run.effects.sharedState.final.probe)) as {
+      threw: boolean;
+      value?: string;
+      error?: string;
+    };
+  }
+
+  it("a read of an UNdeclared type returns null, as AIC does (docs/api/10)", async () => {
+    expect(await probeCall('openidm.read("managed/zzz_not_a_type/anything")')).toEqual({
+      threw: false,
+      value: "null",
+    });
+  });
+
+  it("a query of an UNdeclared type throws AIC's catchable not-found (corpus query/2/absent-type)", async () => {
+    expect(
+      await probeCall('openidm.query("managed/zzz_not_a_type", { _queryFilter: "true" })')
+    ).toEqual({
+      threw: true,
+      error: "Error: rhino-local: openidm.query: Resource &#39;managed/zzz_not_a_type&#39; not found",
+    });
+  });
+
+  it("an update of an UNdeclared type is a harness fault naming the environment: unmeasured on AIC", async () => {
     expectHarnessFault("openidm-unknown-managed-type");
     await expect(
-      probeRead(readCase("undeclared", "managed/zzz_not_a_type/anything", false), true)
+      probeCall('openidm.update("managed/zzz_not_a_type/anything", null, {})')
     ).rejects.toThrow(
-      /harness fault openidm-unknown-managed-type: openidm\.read: "managed\/zzz_not_a_type" is not a managed object in environment "sandbox"/
+      /harness fault openidm-unknown-managed-type: openidm\.update: "managed\/zzz_not_a_type" is not a managed object in environment "sandbox"/
     );
   });
 
@@ -99,7 +131,9 @@ describe("environment profile through the JVM runner", () => {
     expectHarnessFault("fixture/managed");
     await expect(
       probeRead(readCase("no-profile", "managed/alpha_organization/anything", false), false)
-    ).rejects.toThrow(/harness fault fixture\/managed: openidm\.read: no given\.managed entry for "managed\/alpha_organization"/);
+    ).rejects.toThrow(
+      /harness fault fixture\/managed: openidm\.read: no given\.managed entry for "managed\/alpha_organization"; seed it, or run with a profile/
+    );
   });
 
   it("a seeded record still reads back with a profile present", async () => {
