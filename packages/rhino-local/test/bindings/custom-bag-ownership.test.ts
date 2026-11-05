@@ -167,7 +167,7 @@ describe("validated historical bag ownership", () => {
     expect(effects.sharedState.final.error).toMatch(
       /bag replacement and another attribute write in the same store.*unmeasured/,
     );
-    expectCaughtFault({ effects, faults }, "identity-bag-key-collision");
+    expectCaughtFault({ effects, faults }, "identity-bag-replacement-overlap");
     expect(effects.identityWrites).toEqual([]);
     expect(effects.managedStore).toEqual(seed.managed);
     expect(effects.identityCustomAttrsOwnedKeys).toEqual(

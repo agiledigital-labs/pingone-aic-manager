@@ -461,7 +461,7 @@ function __rhinoLocalAssignPlain(target, source) {
 
 function __rhinoLocalMergeBucket(bucketName, object) {
   if (!__rhinoLocalIsPlainObject(object)) {
-    throw __rhinoLocalFault("nodeState-merge-non-object", 
+    throw __rhinoLocalFault("node-state-merge-non-object", 
       "rhino-local: nodeState.merge" +
         (bucketName === "shared" ? "Shared" : "Transient") +
         ": expected an object"
@@ -3032,9 +3032,11 @@ function __rhinoLocalIdentityLayout(name) {
 }
 
 // Collision behavior is unmeasured; declarations may override eligible bag keys.
-function __rhinoLocalBagCollision(method, property, reason) {
+// Two ids: a bag key naming another attribute, and a whole-bag replacement
+// sharing one store with a write the replacement also covers.
+function __rhinoLocalBagCollision(method, property, reason, id) {
   var binding = method.indexOf("openidm.") === 0 ? method : "idRepository.getIdentity()." + method;
-  throw __rhinoLocalFault("identity-bag-key-collision", "rhino-local: " + binding + ": fr-idm-custom-attrs key " +
+  throw __rhinoLocalFault(id || "identity-bag-key-collision", "rhino-local: " + binding + ": fr-idm-custom-attrs key " +
     JSON.stringify(property) + " collides with " + reason + "; this identity mapping is unmeasured; use non-overlapping bag keys and identityAttributes fields");
 }
 function __rhinoLocalCheckBagKey(property, method) {
@@ -3066,7 +3068,8 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
       if (property.indexOf("custom_") === 0 ||
           keys.indexOf(property) !== -1 ||
           (__rhinoLocalIsPlainObject(incoming) && __rhinoLocalHas(incoming, property))) {
-        __rhinoLocalBagCollision("store", property, "a bag replacement and another attribute write in the same store");
+        __rhinoLocalBagCollision("store", property, "a bag replacement and another attribute write in the same store",
+          "identity-bag-replacement-overlap");
       }
     });
   }
@@ -3657,7 +3660,7 @@ secrets.getVerificationKey = function (secretId) {
 // given.bindings.cacheManager: {} is the measured state, no caches at all.
 function __rhinoLocalRequireCaches(method) {
   if (!__rhinoLocalHas(__rhinoLocal.bindings, "cacheManager")) {
-    throw __rhinoLocalFixtureFault("cacheManager", 
+    throw __rhinoLocalFixtureFault("cache-manager", 
       "rhino-local: cacheManager." + method + ": no given.bindings.cacheManager"
     );
   }

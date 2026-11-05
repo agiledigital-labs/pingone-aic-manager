@@ -170,7 +170,7 @@ describe("pre-mutation bag guards (round 3 #1/#3)", () => {
         expect(effects.sharedState.final.error).toMatch(
           /bag replacement and another attribute write in the same store.*unmeasured/,
         );
-        expectCaughtFault({ effects, faults }, "identity-bag-key-collision");
+        expectCaughtFault({ effects, faults }, "identity-bag-replacement-overlap");
         expect(effects.managedStore).toEqual({ "managed/alpha_user": [row] });
         expect(effects.identityCustomAttrs).toEqual({ [resource]: [bagText] });
         expect(effects.identityWrites).toEqual([]);
