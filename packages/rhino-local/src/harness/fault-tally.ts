@@ -12,7 +12,7 @@
  * its cause text, which is not stable across releases.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { EmulationAudit } from "../emulation.ts";
 import { ensureStateSubdir, stateDir } from "../project.ts";
 
@@ -24,7 +24,13 @@ export interface FaultTallyRow {
   id: string;
   /** Distinct cases (tests, or a suite's hooks) that hit it. */
   cases: number;
-  /** Test files those cases are in, sorted. */
+  /**
+   * Of those, the cases it failed. The rest declared it on purpose
+   * (`expectHarnessFault` / `expectEmulationFailure`), as a test of the
+   * harness itself does; a client suite's tally is normally all failures.
+   */
+  failed: number;
+  /** Test files those cases are in, relative to the Vitest root, sorted. */
   files: string[];
   /** The first message seen for it, for a reader without the source. */
   message: string;
@@ -38,16 +44,23 @@ export interface FaultTally {
   unidentified: FaultTallyRow[];
 }
 
-interface Acc { cases: Set<string>; files: Set<string>; message: string }
+interface Acc { cases: Set<string>; failed: Set<string>; files: Set<string>; message: string }
 
-export function tallyFaults(audits: Iterable<EmulationAudit>): FaultTally {
+/** `root`, when given, makes file paths under it relative (the reporter passes Vitest's root). */
+export function tallyFaults(audits: Iterable<EmulationAudit>, root?: string): FaultTally {
+  const shown = (file: string): string => {
+    if (root === undefined) return file;
+    const path = relative(root, file);
+    return path === "" || path.startsWith("..") || isAbsolute(path) ? file : path;
+  };
   const byId = new Map<string, Acc>();
   const byCause = new Map<string, Acc>();
-  const add = (into: Map<string, Acc>, key: string, kase: string, file: string | undefined, message: string): void => {
+  const add = (into: Map<string, Acc>, key: string, kase: string, file: string | undefined, message: string, failed: boolean): void => {
     let acc = into.get(key);
-    if (acc === undefined) into.set(key, (acc = { cases: new Set(), files: new Set(), message }));
+    if (acc === undefined) into.set(key, (acc = { cases: new Set(), failed: new Set(), files: new Set(), message }));
     acc.cases.add(kase);
-    if (file !== undefined) acc.files.add(file);
+    if (failed) acc.failed.add(kase);
+    if (file !== undefined) acc.files.add(shown(file));
   };
   for (const audit of audits) {
     for (const entry of audit.failures) {
@@ -56,9 +69,13 @@ export function tallyFaults(audits: Iterable<EmulationAudit>): FaultTally {
       // one case per file.
       const kase = entry.owner?.id ?? `unowned:${file ?? ""}`;
       if (entry.faults?.length) {
-        for (const fault of entry.faults) add(byId, fault.id, kase, file, fault.message);
+        // A fault's cause is "<id>: <message>"; it is in `causes` only when
+        // the case did not declare it.
+        for (const fault of entry.faults) {
+          add(byId, fault.id, kase, file, fault.message, entry.causes.some((cause) => cause.startsWith(`${fault.id}: `)));
+        }
       } else if (entry.kind === "missing") {
-        for (const cause of entry.observed ?? []) add(byCause, cause, kase, file, cause);
+        for (const cause of entry.observed ?? []) add(byCause, cause, kase, file, cause, entry.causes.includes(cause));
       }
     }
   }
@@ -67,7 +84,7 @@ export function tallyFaults(audits: Iterable<EmulationAudit>): FaultTally {
 
 function rows(from: Map<string, Acc>): FaultTallyRow[] {
   return [...from]
-    .map(([id, acc]) => ({ id, cases: acc.cases.size, files: [...acc.files].sort(), message: acc.message }))
+    .map(([id, acc]) => ({ id, cases: acc.cases.size, failed: acc.failed.size, files: [...acc.files].sort(), message: acc.message }))
     .sort((a, b) => b.cases - a.cases || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
@@ -96,13 +113,17 @@ export function writeFaultTally(tally: FaultTally, env: NodeJS.ProcessEnv = proc
 /** The end-of-run summary, one line per id; empty when the run hit none. */
 export function formatFaultTally(tally: FaultTally, path: string): string {
   if (tally.faults.length === 0 && tally.unidentified.length === 0) return "";
-  const lines = ["", "rhino-local harness faults (behaviour this harness does not emulate; each failed its case):"];
+  const lines = ["", "rhino-local harness faults (behaviour this harness does not emulate; a case that hits one fails unless it declared it):"];
+  const declared = (row: FaultTallyRow): string => (row.failed === row.cases ? "" : `, ${row.cases - row.failed} declared`);
   for (const row of tally.faults) {
-    lines.push(`  ${String(row.cases).padStart(4)} case${row.cases === 1 ? " " : "s"}  ${row.id}  (${row.files.length} file${row.files.length === 1 ? "" : "s"})`);
+    lines.push(`  ${String(row.cases).padStart(4)} case${row.cases === 1 ? " " : "s"}  ${row.id}  (${row.files.length} file${row.files.length === 1 ? "" : "s"}${declared(row)})`);
   }
   if (tally.unidentified.length > 0) {
     lines.push("  missing behaviour without a fault id:");
-    for (const row of tally.unidentified) lines.push(`  ${String(row.cases).padStart(4)} case${row.cases === 1 ? " " : "s"}  ${row.id}`);
+    for (const row of tally.unidentified) {
+      const note = declared(row);
+      lines.push(`  ${String(row.cases).padStart(4)} case${row.cases === 1 ? " " : "s"}  ${row.id}${note === "" ? "" : `  (${note.slice(2)})`}`);
+    }
   }
   lines.push(`  tally: ${path}`, "");
   return lines.join("\n");
