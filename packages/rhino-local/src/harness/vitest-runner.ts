@@ -15,6 +15,29 @@ export default class EmulationTestRunner extends TestRunner {
   #collectionReady: WeakMap<RunnerTestFile, { promise: Promise<void>; resolve: () => void }> | undefined;
   #beforeCollectionFile: RunnerTestFile | undefined;
 
+  /**
+   * Vitest's own task-update sends: it wraps `onTaskUpdate` with its RPC before
+   * the run starts, buffers task events behind a 100 ms throttle, and flushes
+   * the buffer only after `onAfterRunFiles` returns. Wrapping it lets the
+   * backstop below learn whether anything is still buffered (a file whose
+   * `suite-finished` has not gone out) and throw only after the flush.
+   */
+  #finishedSuites = new Set<string>();
+  #backstop: Error | undefined;
+  #tracked = false;
+  #trackTaskUpdates(): void {
+    const send = this.onTaskUpdate;
+    if (this.#tracked || !send) return;
+    this.#tracked = true;
+    this.onTaskUpdate = (packs, events) => {
+      for (const [id, event] of events) if (event === "suite-finished") this.#finishedSuites.add(id);
+      const update = send.call(this, packs, events);
+      const backstop = this.#backstop;
+      // The flush's send has reached the main process; now fail the run.
+      return backstop ? update.then(() => { throw backstop; }) : update;
+    };
+  }
+
   #currentCollectionFile(): RunnerTestFile | undefined {
     // The public collector is created only when collection first starts.
     try { return TestRunner.getCurrentSuite().file; }
@@ -36,6 +59,7 @@ export default class EmulationTestRunner extends TestRunner {
   // Vitest awaits the complete client hook before changing the collector's file.
   // Its later onCollectStart wrapper is NOT awaited before framework imports.
   onBeforeCollect(_paths: string[]): void {
+    this.#trackTaskUpdates();
     this.#beforeCollectionFile = this.#currentCollectionFile();
     this.#collectionReady = new WeakMap();
     attachEmulationAuditTransport(this.#publish);
@@ -138,6 +162,19 @@ export default class EmulationTestRunner extends TestRunner {
     if (this.#transportError) throw new Error("Emulation backstop audit transport failed", { cause: this.#transportError });
     // Supplement persistent failed task states; this throw alone is not a verdict.
     const diagnostics = emulationAuditDiagnostics(emulationAudit());
-    if (diagnostics.length) throw new Error(`Emulation run backstop:\n${diagnostics.join("\n")}`);
+    if (diagnostics.length) {
+      const backstop = new Error(`Emulation run backstop:\n${diagnostics.join("\n")}`);
+      // Throwing here skips Vitest's final flush of its throttled task updates,
+      // which can hold a file's last results indefinitely (its throttle does not
+      // reschedule when the timer fires exactly at the interval). Those tests
+      // then reached the main process as "pending", after any case's emulation
+      // failure. When something is still buffered, fail the flush's send
+      // instead, after the main process has taken it.
+      if (this.#tracked && files.some((file) => !this.#finishedSuites.has(file.id))) {
+        this.#backstop = backstop;
+        return;
+      }
+      throw backstop;
+    }
   }
 }

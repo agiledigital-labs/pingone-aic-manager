@@ -13,6 +13,7 @@ export default class EmulationReporter implements Reporter {
 
   #pool: Promise<JvmPool | undefined> | undefined;
   #watch = false;
+  #root: string | undefined;
 
   // The reporter is the package's one required main-process hook, so it owns
   // the JVM pool `useLease` borrows from (src/pool.ts). Vitest awaits onInit,
@@ -20,6 +21,7 @@ export default class EmulationReporter implements Reporter {
   async onInit(vitest: Vitest): Promise<void> {
     vitest.provide(EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION);
     this.#watch = vitest.config.watch;
+    this.#root = vitest.config.root;
     if (!poolEnabled()) return;
     this.#pool ??= JvmPool.start().catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -53,7 +55,7 @@ export default class EmulationReporter implements Reporter {
   // pooled JVMs. A tally that cannot be written is a warning, not a verdict:
   // the faults themselves already failed their cases.
   #tally(): void {
-    const tally = tallyFaults(this.#audits.values());
+    const tally = tallyFaults(this.#audits.values(), this.#root);
     try {
       const path = writeFaultTally(tally);
       const summary = formatFaultTally(tally, path);
