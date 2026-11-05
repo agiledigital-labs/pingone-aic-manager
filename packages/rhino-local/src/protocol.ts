@@ -114,6 +114,18 @@ export interface EmulationFailureInfo {
   kind: "missing" | "protocol" | "timeout" | "internal";
   message: string;
   missing?: string[];
+  /**
+   * Harness faults (E19): refusals of behaviour the harness does not emulate,
+   * each under a stable id. Present when the refusal came from a site that has
+   * one; the run tally (src/harness/fault-tally.ts) counts by id.
+   */
+  faults?: HarnessFault[];
+}
+
+export interface HarnessFault {
+  /** Stable kebab slug, e.g. `send-body-js-date`, `arity/openidm.read`, `fixture/http`. */
+  id: string;
+  message: string;
 }
 
 export interface HostError {

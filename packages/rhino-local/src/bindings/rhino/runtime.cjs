@@ -37,6 +37,7 @@ var __rhinoLocal = {
   logs: [],
   identityWrites: [],
   faults: [],
+  faultSink: null,
   identityAttributes: {},
   identityCustomAttrs: {},
   identityCustomAttrsOwnedKeys: {},
@@ -121,22 +122,22 @@ function __rhinoLocalSendBody(value, path, ancestors) {
   }
   kind = Object.prototype.toString.call(value);
   if (kind === "[object Date]") {
-    throw __rhinoLocalFault(
+    throw __rhinoLocalFault("send-body-js-date", 
       "rhino-local: httpClient.send " + path + " is a JS Date: AIC sends a ~1 KB dump of the Rhino NativeDate object without the time value, not the date (docs/api/12 §5); send date.toISOString() or date.getTime()"
     );
   }
   if (kind === "[object RegExp]") {
-    throw __rhinoLocalFault(
+    throw __rhinoLocalFault("send-body-regexp", 
       "rhino-local: httpClient.send " + path + " is a RegExp: AIC sends a ~1 KB dump of the Rhino NativeRegExp object without its source or flags (docs/api/12 §5); send regexp.source as a string"
     );
   }
   if (kind === "[object Error]") {
-    throw __rhinoLocalFault(
+    throw __rhinoLocalFault("send-body-error", 
       "rhino-local: httpClient.send " + path + " is an Error: what AIC sends for one is unmeasured (it most likely dumps the Rhino object, as it does a JS Date or RegExp, docs/api/12 §5); send e.message or String(e)"
     );
   }
   if (typeof value === "function") {
-    throw __rhinoLocalFault(
+    throw __rhinoLocalFault("send-body-function", 
       "rhino-local: httpClient.send " + path + " is a function: AIC sends a ~1.7 KB dump of the Rhino function object, which exposes the script's name, its encoded source and the name of every binding and variable in the script (docs/api/12 §5); leave it out of the body"
     );
   }
@@ -154,7 +155,7 @@ function __rhinoLocalSendBody(value, path, ancestors) {
       if (path.indexOf("[") === -1) {
         throw new InternalError("Cannot produce JSON from [object Object]");
       }
-      throw __rhinoLocalFault(
+      throw __rhinoLocalFault("send-body-array-cycle", 
         "rhino-local: httpClient.send " + path + " refers back to an enclosing value through an array (a cycle): AIC's error for this shape is unmeasured"
       );
     }
@@ -190,11 +191,30 @@ function __rhinoLocalIsJavaDate(value) {
   }
 }
 
-// A refusal the script must not be able to swallow: thrown as usual, and also
-// recorded so the harvest fails the run if the script caught it.
-function __rhinoLocalFault(message) {
-  __rhinoLocal.faults.push(message);
-  return __rhinoLocalFail(message);
+// A harness fault: behaviour the harness does not emulate, which the script
+// must not be able to swallow. `id` is a stable slug (docs/rhino-local-gaps.md
+// lists them); never derive one from a line number or the message text.
+//
+// Recorded with the runner's per-job recorder (java/HarnessFaults.java), which
+// the runner reports whatever the job's outcome, so the run fails even when the
+// script catches this and then succeeds, or throws something of its own. With
+// no recorder (a journey, or a host without the Java runner) it is kept for the
+// harvest, and a journey's __rhinoLocalFail is itself uncatchable and takes the
+// id. Thrown as usual either way, so the script sees what it would see first.
+function __rhinoLocalFault(id, message) {
+  if (__rhinoLocal.faultSink !== null) {
+    __rhinoLocal.faultSink(id, message);
+  } else {
+    __rhinoLocal.faults.push(id + ": " + message.replace(/^rhino-local: /, ""));
+  }
+  return __rhinoLocalFail(message, id);
+}
+
+// A refusal whose remedy is a fixture the test did not supply, not missing
+// emulation. Still a fault: a script that catches it and goes on passes
+// locally on a path AIC would not take.
+function __rhinoLocalFixtureFault(id, message) {
+  return __rhinoLocalFault("fixture/" + id, message);
 }
 
 // What a Java `toArray()` hands a script: indexable with a working `length`,
@@ -238,7 +258,7 @@ function __rhinoLocalHide(object, name, fn) {
 
 function __rhinoLocalExpectArity(path, args, expected) {
   if (args.length !== expected) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/" + path, 
       "rhino-local: " +
         path +
         " arity=" +
@@ -276,7 +296,7 @@ function __rhinoLocalAssignPlain(target, source) {
 
 function __rhinoLocalMergeBucket(bucketName, object) {
   if (!__rhinoLocalIsPlainObject(object)) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("nodeState-merge-non-object", 
       "rhino-local: nodeState.merge" +
         (bucketName === "shared" ? "Shared" : "Transient") +
         ": expected an object"
@@ -498,7 +518,7 @@ function __rhinoLocalStateMap(bucketName) {
   __rhinoLocalHide(map, "put", function (key, value) {
     __rhinoLocalExpectArity(bucketName + ".put", arguments, 2);
     if (value === undefined) {
-      throw __rhinoLocalFail("rhino-local: " + bucketName + ".put: value is undefined");
+      throw __rhinoLocalFault("state-put-undefined", "rhino-local: " + bucketName + ".put: value is undefined");
     }
     __rhinoLocal[bucketName][String(key)] = value;
   });
@@ -540,7 +560,7 @@ nodeState.isDefined = function (key) {
 nodeState.putShared = function (key, value) {
   __rhinoLocalExpectArity("nodeState.putShared", arguments, 2);
   if (value === undefined) {
-    throw __rhinoLocalFail("rhino-local: nodeState.putShared: value is undefined");
+    throw __rhinoLocalFault("state-put-undefined", "rhino-local: nodeState.putShared: value is undefined");
   }
   __rhinoLocal.shared[String(key)] = value;
   return nodeState;
@@ -549,7 +569,7 @@ nodeState.putShared = function (key, value) {
 nodeState.putTransient = function (key, value) {
   __rhinoLocalExpectArity("nodeState.putTransient", arguments, 2);
   if (value === undefined) {
-    throw __rhinoLocalFail("rhino-local: nodeState.putTransient: value is undefined");
+    throw __rhinoLocalFault("state-put-undefined", "rhino-local: nodeState.putTransient: value is undefined");
   }
   __rhinoLocal.transient[String(key)] = value;
   return nodeState;
@@ -896,7 +916,7 @@ action.withMaxIdleTime = function (maxIdleTime) {
 
 action.suspend = function (callbackTextFormat, additionalLogic) {
   if (arguments.length < 1 || arguments.length > 3) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/action.suspend", 
       "rhino-local: action.suspend arity=" +
         arguments.length +
         " (expected 1..3)"
@@ -906,7 +926,7 @@ action.suspend = function (callbackTextFormat, additionalLogic) {
   var resumeUri = "https://rhino-local.invalid/resume";
   if (arguments.length >= 2) {
     if (typeof additionalLogic !== "function") {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalFault("action-suspend-additional-logic", 
         "rhino-local: action.suspend additionalLogic is not a function"
       );
     }
@@ -969,7 +989,7 @@ function __rhinoLocalFormat(pattern, bound) {
 
 function __rhinoLocalLog(level, args) {
   if (args.length < 1) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/logger." + level, 
       "rhino-local: logger." + level + " arity=" + args.length + " (expected >= 1)"
     );
   }
@@ -1056,7 +1076,7 @@ function __rhinoLocalCallback(type, fields) {
 
 callbacksBuilder.nameCallback = function (prompt, defaultName) {
   if (arguments.length !== 1 && arguments.length !== 2) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/callbacksBuilder.nameCallback", 
       "rhino-local: callbacksBuilder.nameCallback arity=" +
         arguments.length +
         " (expected 1 or 2)"
@@ -1114,7 +1134,7 @@ callbacksBuilder.confirmationCallback = function () {
     fields.optionType = a[2];
     fields.defaultOption = a[3];
   } else {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/callbacksBuilder.confirmationCallback", 
       "rhino-local: callbacksBuilder.confirmationCallback arity=" + a.length
     );
   }
@@ -1159,7 +1179,7 @@ callbacksBuilder.suspendedTextOutputCallback = function (messageType, message) {
 
 callbacksBuilder.textInputCallback = function (prompt, defaultText) {
   if (arguments.length !== 1 && arguments.length !== 2) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/callbacksBuilder.textInputCallback", 
       "rhino-local: callbacksBuilder.textInputCallback arity=" +
         arguments.length +
         " (expected 1 or 2)"
@@ -1201,7 +1221,7 @@ callbacksBuilder.idPCallback = function (
   tokenType
 ) {
   if (arguments.length !== 9 && arguments.length !== 11) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/callbacksBuilder.idPCallback", 
       "rhino-local: callbacksBuilder.idPCallback arity=" +
         arguments.length +
         " (expected 9 or 11)"
@@ -1240,7 +1260,7 @@ callbacksBuilder.httpCallback = function () {
     });
     return;
   }
-  throw __rhinoLocalFail(
+  throw __rhinoLocalFault("arity/callbacksBuilder.httpCallback", 
     "rhino-local: callbacksBuilder.httpCallback arity=" + a.length
   );
 };
@@ -1251,7 +1271,7 @@ callbacksBuilder.x509CertificateCallback = function (
   requestSignature
 ) {
   if (arguments.length < 1 || arguments.length > 3) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/callbacksBuilder.x509CertificateCallback", 
       "rhino-local: callbacksBuilder.x509CertificateCallback arity=" +
         arguments.length +
         " (expected 1..3)"
@@ -1305,7 +1325,7 @@ callbacksBuilder.consentMappingCallback = function () {
     });
     return;
   }
-  throw __rhinoLocalFail(
+  throw __rhinoLocalFault("arity/callbacksBuilder.consentMappingCallback", 
     "rhino-local: callbacksBuilder.consentMappingCallback arity=" + a.length
   );
 };
@@ -1385,7 +1405,7 @@ callbacksBuilder.redirectCallback = function (
     __rhinoLocalCallback("RedirectCallback", redirectFields);
     return;
   }
-  throw __rhinoLocalFail(
+  throw __rhinoLocalFault("arity/callbacksBuilder.redirectCallback", 
     "rhino-local: callbacksBuilder.redirectCallback arity=" + a.length
   );
 };
@@ -1422,7 +1442,7 @@ function __rhinoLocalAttributeCallback(type, args) {
     __rhinoLocalCallback(type, fields);
     return;
   }
-  throw __rhinoLocalFail(
+  throw __rhinoLocalFault("arity/callbacksBuilder." + type.charAt(0).toLowerCase() + type.substring(1), 
     "rhino-local: callbacksBuilder." +
       type.charAt(0).toLowerCase() +
       type.substring(1) +
@@ -1450,7 +1470,7 @@ callbacksBuilder.validatedUsernameCallback = function (
   failedPolicies
 ) {
   if (arguments.length !== 3 && arguments.length !== 4) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/callbacksBuilder.validatedUsernameCallback", 
       "rhino-local: callbacksBuilder.validatedUsernameCallback arity=" +
         arguments.length +
         " (expected 3 or 4)"
@@ -1476,7 +1496,7 @@ callbacksBuilder.validatedPasswordCallback = function (
   failedPolicies
 ) {
   if (arguments.length !== 4 && arguments.length !== 5) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/callbacksBuilder.validatedPasswordCallback", 
       "rhino-local: callbacksBuilder.validatedPasswordCallback arity=" +
         arguments.length +
         " (expected 4 or 5)"
@@ -1497,7 +1517,7 @@ callbacksBuilder.validatedPasswordCallback = function (
 
 function __rhinoLocalRequireSubmitted() {
   if (__rhinoLocal.submittedCallbacks === null) {
-    throw __rhinoLocalFail("rhino-local: callbacks: no given.callbacks");
+    throw __rhinoLocalFixtureFault("callbacks", "rhino-local: callbacks: no given.callbacks");
   }
   return __rhinoLocal.submittedCallbacks;
 }
@@ -1595,7 +1615,7 @@ function __rhinoLocalSubmittedValues(type) {
     cb = submitted[i];
     if (cb.type === type) {
       if (cb.value === undefined) {
-        throw __rhinoLocalFail(
+        throw __rhinoLocalFixtureFault("callback-value", 
           "rhino-local: given.callbacks[" +
             i +
             "] (" +
@@ -1862,7 +1882,7 @@ function __rhinoLocalRequireCollection(method, collection) {
         "). Check the name, or re-pull the profile if the tenant has changed."
     );
   }
-  throw __rhinoLocalFail(
+  throw __rhinoLocalFixtureFault("managed", 
     "rhino-local: openidm." +
       method +
       ": no given.managed entry for " +
@@ -1873,7 +1893,7 @@ function __rhinoLocalRequireCollection(method, collection) {
 function __rhinoLocalRequireRecord(method, resource) {
   var split = __rhinoLocalSplitResource(resource);
   if (split.recordId === null) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("openidm-collection-path-as-record", 
       "rhino-local: openidm." +
         method +
         ": " +
@@ -1913,7 +1933,7 @@ function __rhinoLocalProject(record, fields) {
   for (i = 0; i < fields.length; i += 1) {
     if (fields[i] === "*") {
       if (hasChild) {
-        throw __rhinoLocalFail("rhino-local: openidm fields: combining * with parent/child selectors is unmeasured; use separate selectors without a wildcard");
+        throw __rhinoLocalFault("openidm-fields-wildcard-with-path", "rhino-local: openidm fields: combining * with parent/child selectors is unmeasured; use separate selectors without a wildcard");
       }
       return record;
     }
@@ -1950,11 +1970,11 @@ var __rhinoLocalReferenceEnvelope = [
 ];
 function __rhinoLocalProjectChild(value, path, previous) {
   if (!__rhinoLocalIsPlainObject(value)) {
-    throw __rhinoLocalFail("rhino-local: openidm fields: parent/child projection of a scalar or array parent is unmeasured; seed a pre-expanded object parent");
+    throw __rhinoLocalFault("openidm-fields-non-object-parent", "rhino-local: openidm fields: parent/child projection of a scalar or array parent is unmeasured; seed a pre-expanded object parent");
   }
   var child = path[0];
   if (__rhinoLocalHas(value, "_ref") && !__rhinoLocalHas(value, child)) {
-    throw __rhinoLocalFail("rhino-local: openidm fields: unresolved _ref or reference expansion is unmeasured; seed the requested child in a pre-expanded object parent");
+    throw __rhinoLocalFault("openidm-fields-unresolved-ref", "rhino-local: openidm fields: unresolved _ref or reference expansion is unmeasured; seed the requested child in a pre-expanded object parent");
   }
   var out = previous || {};
   __rhinoLocalReferenceEnvelope.forEach(function (key) {
@@ -2005,7 +2025,7 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
 }
 
 function __rhinoLocalFilterError(filter) {
-  throw __rhinoLocalFail(
+  throw __rhinoLocalFault("openidm-query-filter", 
     "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
   );
 }
@@ -2385,7 +2405,7 @@ function __rhinoLocalMatchesFilter(record, filter) {
 
 openidm.read = function (resourceName, _params, fields) {
   if (arguments.length < 1 || arguments.length > 3) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/openidm.read", 
       "rhino-local: openidm.read arity=" + arguments.length + " (expected 1..3)"
     );
   }
@@ -2393,7 +2413,7 @@ openidm.read = function (resourceName, _params, fields) {
   __rhinoLocalPushOpenidm("read", resource);
   var split = __rhinoLocalSplitResource(resource);
   if (split.recordId === null) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("openidm-collection-path-as-record", 
       "rhino-local: openidm.read: " +
         JSON.stringify(resource) +
         " is a collection path, not a record"
@@ -2413,7 +2433,7 @@ openidm.read = function (resourceName, _params, fields) {
 
 openidm.query = function (resourceName, params, fields) {
   if (arguments.length < 2 || arguments.length > 3) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/openidm.query", 
       "rhino-local: openidm.query arity=" + arguments.length + " (expected 2 or 3)"
     );
   }
@@ -2440,7 +2460,7 @@ openidm.query = function (resourceName, params, fields) {
   }
   // query-all-ids is the one _queryId measured: every record, _id/_rev only.
   if (params._queryId !== undefined && params._queryId !== "query-all-ids") {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("openidm-query-id", 
       "rhino-local: not mocked: openidm.query _queryId " + String(params._queryId)
     );
   }
@@ -2470,7 +2490,7 @@ openidm.query = function (resourceName, params, fields) {
 
 openidm.create = function (resourceName, newResourceId, content) {
   if (arguments.length < 3 || arguments.length > 5) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/openidm.create", 
       "rhino-local: openidm.create arity=" + arguments.length + " (expected 3..5)"
     );
   }
@@ -2510,7 +2530,7 @@ openidm.create = function (resourceName, newResourceId, content) {
 
 openidm.update = function (id, _rev, value) {
   if (arguments.length < 3 || arguments.length > 5) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/openidm.update", 
       "rhino-local: openidm.update arity=" + arguments.length + " (expected 3..5)"
     );
   }
@@ -2528,7 +2548,7 @@ openidm.update = function (id, _rev, value) {
 
 openidm.patch = function (resourceName, _rev, patch) {
   if (arguments.length < 3 || arguments.length > 5) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/openidm.patch", 
       "rhino-local: openidm.patch arity=" + arguments.length + " (expected 3..5)"
     );
   }
@@ -2568,7 +2588,7 @@ openidm.patch = function (resourceName, _rev, patch) {
 
 openidm.delete = function (resourceName, _rev) {
   if (arguments.length < 2 || arguments.length > 4) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/openidm.delete", 
       "rhino-local: openidm.delete arity=" + arguments.length + " (expected 2..4)"
     );
   }
@@ -2589,7 +2609,7 @@ openidm.delete = function (resourceName, _rev) {
 
 openidm.action = function (resource, actionName, content, params) {
   if (arguments.length < 2 || arguments.length > 5) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/openidm.action", 
       "rhino-local: openidm.action arity=" + arguments.length + " (expected 2..5)"
     );
   }
@@ -2620,7 +2640,7 @@ openidm.action = function (resource, actionName, content, params) {
   if (managedCollection) {
     return {};
   }
-  throw __rhinoLocalFail(
+  throw __rhinoLocalFixtureFault("openidm-action", 
     "rhino-local: openidm.action: no given.openidmActions stub for " +
       String(actionName) + " " + String(resource)
   );
@@ -2641,7 +2661,7 @@ function __rhinoLocalMatchPattern(pattern, value, channel, field) {
   if (p && typeof p.test === "function") {
     return p.test(value);
   }
-  throw __rhinoLocalFail("rhino-local: given." + channel + " match." + field + " is not a string or regexp");
+  throw __rhinoLocalFixtureFault("match-pattern-type", "rhino-local: given." + channel + " match." + field + " is not a string or regexp");
 }
 
 function __rhinoLocalMatchHttp(url, method) {
@@ -2664,7 +2684,7 @@ function __rhinoLocalMatchHttp(url, method) {
 
 httpClient.send = function (uri, requestOptions) {
   if (arguments.length < 1 || arguments.length > 2) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault("arity/httpClient.send", 
       "rhino-local: httpClient.send arity=" + arguments.length + " (expected 1 or 2)"
     );
   }
@@ -2685,7 +2705,7 @@ httpClient.send = function (uri, requestOptions) {
   __rhinoLocal.http.push(effect);
   var reply = __rhinoLocalMatchHttp(url, method);
   if (!reply) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFixtureFault("http", 
       "rhino-local: httpClient.send: no given.http stub for " + method + " " + url
     );
   }
@@ -2787,7 +2807,7 @@ function __rhinoLocalBagAccess(method, resource, record, fields, params) {
       params._queryFilter !== undefined && Array.isArray(fields) && fields.length === 1 && fields[0] === "_id") {
     return;
   }
-  throw __rhinoLocalFail(
+  throw __rhinoLocalFault("identity-bag-non-object-access", 
     "rhino-local: openidm." + method + ": " + resource +
       " carries a non-object fr-idm-custom-attrs bag (" + category + "); this IDM access is unmeasured; restore an object bag through AM before this access"
   );
@@ -2864,7 +2884,7 @@ function __rhinoLocalIdentityLayout(name) {
 // Collision behavior is unmeasured; declarations may override eligible bag keys.
 function __rhinoLocalBagCollision(method, property, reason) {
   var binding = method.indexOf("openidm.") === 0 ? method : "idRepository.getIdentity()." + method;
-  throw __rhinoLocalFail("rhino-local: " + binding + ": fr-idm-custom-attrs key " +
+  throw __rhinoLocalFault("identity-bag-key-collision", "rhino-local: " + binding + ": fr-idm-custom-attrs key " +
     JSON.stringify(property) + " collides with " + reason + "; this identity mapping is unmeasured; use non-overlapping bag keys and identityAttributes fields");
 }
 function __rhinoLocalCheckBagKey(property, method) {
@@ -2922,7 +2942,7 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
     var property = step.layout.field;
     var bagKey = property.indexOf("custom_") === 0 || keys.indexOf(property) !== -1;
     if (bagKey && !__rhinoLocalIsPlainObject(previous)) {
-      throw __rhinoLocalFail("rhino-local: idRepository.getIdentity().store: replacing " +
+      throw __rhinoLocalFault("identity-store-non-object-bag", "rhino-local: idRepository.getIdentity().store: replacing " +
         JSON.stringify(property) + " within a non-object fr-idm-custom-attrs bag (" +
         __rhinoLocalBagCategory(previous) + ") is unmeasured; restore an object bag through AM in a separate store before this write");
     }
@@ -2949,7 +2969,7 @@ function __rhinoLocalPlanIdentityStore(resource, record, plan) {
     }
   });
   if (next._id !== record._id) {
-    throw __rhinoLocalFail("rhino-local: idRepository.getIdentity().store: changing the identity resource through an _id layout is unmeasured; keep the existing _id");
+    throw __rhinoLocalFault("identity-store-id-layout-change", "rhino-local: idRepository.getIdentity().store: changing the identity resource through an _id layout is unmeasured; keep the existing _id");
   }
   return { record: next, bag: values, ownedKeys: keys.sort(), changed: changed };
 }
@@ -3015,7 +3035,7 @@ function __rhinoLocalIdentityRender(syntax, value, name) {
   if (syntax === "date") {
     var match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z$/.exec(String(value));
     if (!match) {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalFault("identity-date-rendering", 
         "rhino-local: idRepository.getIdentity().getAttributeValues: how AM renders the IDM date " +
           JSON.stringify(String(value)) + " of " + JSON.stringify(String(name)) +
           " is unmeasured; seed it as YYYY-MM-DDTHH:MM:SSZ"
@@ -3056,7 +3076,7 @@ idRepository.getIdentity = function (userName) {
       var split = __rhinoLocalSplitResource(resource);
       found = __rhinoLocalFindRecord(split.collection, split.recordId).record;
       if (found && generation !== (__rhinoLocal.identityGenerations[resource] || 0)) {
-        throw __rhinoLocalFail("rhino-local: idRepository.getIdentity()." + method + ": retained wrapper behavior after delete and recreate is unmeasured; get a fresh identity wrapper");
+        throw __rhinoLocalFault("identity-wrapper-after-recreate", "rhino-local: idRepository.getIdentity()." + method + ": retained wrapper behavior after delete and recreate is unmeasured; get a fresh identity wrapper");
       }
     }
   }
@@ -3114,7 +3134,7 @@ idRepository.getIdentity = function (userName) {
     return key === "userName" ? "uid" : key === "accountStatus" ? "inetUserStatus" : key;
   }
   function unmeasured(method, name, detail) {
-    return __rhinoLocalFail(
+    return __rhinoLocalFault("identity-attribute-layout", 
       "rhino-local: idRepository.getIdentity()." + method + ": " + detail +
         "; measured: " + __rhinoLocalIdentityMeasuredNames +
         ". Declare a tenant attribute's IDM layout with identityAttributes: { " +
@@ -3128,7 +3148,7 @@ idRepository.getIdentity = function (userName) {
   function writable(method, name) {
     var key = field(name);
     if (key === IDM_NAME) {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalFault("identity-write-idm-field-name", 
         "rhino-local: idRepository.getIdentity()." + method + ": " +
           JSON.stringify(String(name)) + " is the IDM field name; AM names this attribute " +
           JSON.stringify(amName(name)) + ". What AM stores for an unknown attribute name is unmeasured, so the local lane refuses it"
@@ -3137,7 +3157,7 @@ idRepository.getIdentity = function (userName) {
     if (String(name) === "cn" && !__rhinoLocalHas(__rhinoLocal.identityAttributes || {}, "cn")) {
       // Measured: AM stores cn and reads it back, but IDM's managed user has
       // no cn property, so the value lives outside the record this lane keeps.
-      throw __rhinoLocalFail(
+      throw __rhinoLocalFault("identity-write-cn", 
         "rhino-local: idRepository.getIdentity()." + method +
           ': AM stores "cn" outside the IDM managed record (measured), which the local lane does not model, so it refuses the write'
       );
@@ -3209,7 +3229,7 @@ idRepository.getIdentity = function (userName) {
       }
       __rhinoLocalExpectArity("idRepository.getIdentity().setAttribute", arguments, 2);
       if (!Array.isArray(attributeValues)) {
-        throw __rhinoLocalFail("rhino-local: setAttribute requires an array of strings");
+        throw __rhinoLocalFault("identity-set-attribute-non-array", "rhino-local: setAttribute requires an array of strings");
       }
       writable("setAttribute", attributeName);
       pending[String(attributeName)] = attributeValues.map(String);
@@ -3298,7 +3318,7 @@ idRepository.getIdentity = function (userName) {
         plan.push({ name: names[i], layout: layout, rule: rule, given: given, converted: converted });
       }
       if (codes.length > 1) {
-        throw __rhinoLocalFail(
+        throw __rhinoLocalFault("identity-store-two-ds-rules", 
           "rhino-local: idRepository.getIdentity().store: this store breaks two DS rules at once (ldap errorcodes " +
             codes.join(" and ") + "); which one AM reports is unmeasured, so the local lane refuses it"
         );
@@ -3349,12 +3369,12 @@ idRepository.createUser = function (userName, password, attributes) {
 systemEnv = {
   getProperty: function (key, defaultValue, returnType) {
     if (arguments.length < 1 || arguments.length > 3) {
-      throw __rhinoLocalFail("rhino-local: systemEnv.getProperty arity=" + arguments.length);
+      throw __rhinoLocalFault("arity/systemEnv.getProperty", "rhino-local: systemEnv.getProperty arity=" + arguments.length);
     }
     var k = String(key);
     var declared = __rhinoLocal.esvProvided && __rhinoLocalHas(__rhinoLocal.esv, k);
     if (!declared && __rhinoLocal.esvUndeclared !== "absent") {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalFixtureFault("esv", 
         "rhino-local: systemEnv.getProperty: no given.esv entry for " +
           JSON.stringify(k) + "; declare it in given.esv or use given.esvUndeclared: \"absent\" (.esvUndeclared(\"absent\"))"
       );
@@ -3449,7 +3469,7 @@ function __rhinoLocalRequireSecret(method, secretId) {
         "rhino-local: secrets." + method + ": Secret id " + id + " not accessible"
       );
     }
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFixtureFault("secrets", 
       "rhino-local: secrets." +
         method +
         ": no given.secrets entry for " +
@@ -3487,7 +3507,7 @@ secrets.getVerificationKey = function (secretId) {
 // given.bindings.cacheManager: {} is the measured state, no caches at all.
 function __rhinoLocalRequireCaches(method) {
   if (!__rhinoLocalHas(__rhinoLocal.bindings, "cacheManager")) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFixtureFault("cacheManager", 
       "rhino-local: cacheManager." + method + ": no given.bindings.cacheManager"
     );
   }
@@ -3508,7 +3528,7 @@ cacheManager.named = function (cacheName) {
 function __rhinoLocalJourneySeed(field) {
   var seed = __rhinoLocal.bindings.journey;
   if (!seed || seed[field] === undefined) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFixtureFault("journey", 
       "rhino-local: journey." + field + ": no given.bindings.journey." + field
     );
   }
@@ -3543,7 +3563,7 @@ var __rhinoLocalRealJavaImporter =
 // A function, because AM hands back a Java class and `typeof` of one is
 // "function" (measured 2026-10-01, live-java-importer-scope).
 var __rhinoLocalJsonValueClass = function () {
-  throw __rhinoLocalFail("rhino-local: new JsonValue(...) is not modelled; use JsonValue.json or JsonValue.object");
+  throw __rhinoLocalFault("json-value-constructor", "rhino-local: new JsonValue(...) is not modelled; use JsonValue.json or JsonValue.object");
 };
 var __rhinoLocalJsonValueStatics = {
   // A Java map (measured: put/get, prints `{ "a": "b" }`), so it shares the
@@ -3741,7 +3761,7 @@ var __rhinoLocalLoadLibrary = (function (host) {
     }
     var loader = host === null ? undefined : host(id);
     if (loader === undefined && !__rhinoLocalHas(__rhinoLocal.libraries, id)) {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalFixtureFault("library", 
         "rhino-local: require: library " + JSON.stringify(id) +
           " is not declared on the suite (given.libraries); if this name exists on AIC, AM would load the tenant's copy and the lanes would disagree"
       );
@@ -3968,12 +3988,12 @@ function __rhinoLocalSeed(given) {
       });
     } else if (seeded[s] === "cacheManager") {
       if (Object.keys(__rhinoLocal.bindings.cacheManager || {}).length > 0) {
-        throw __rhinoLocalFail(
+        throw __rhinoLocalFault("seed-cache-manager", 
           "rhino-local: given.bindings.cacheManager must be {}; seeding caches is not implemented"
         );
       }
     } else {
-      throw __rhinoLocalFail(
+      throw __rhinoLocalFault("seed-binding", 
         "rhino-local: given.bindings." +
           seeded[s] +
           " seeding is not implemented; only journey and cacheManager are"
@@ -4044,6 +4064,10 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.logs = [];
   __rhinoLocal.identityWrites = [];
   __rhinoLocal.faults = [];
+  // Defined by the runner for the preamble only; captured here, before the
+  // script runs and while the name still resolves.
+  __rhinoLocal.faultSink =
+    typeof __rhinoLocalHarnessFault === "function" ? __rhinoLocalHarnessFault : null;
   // Local-only: the AIC lane runs against the tenant's real mapping.
   __rhinoLocal.identityAttributes = __rhinoLocalClone(given.identityAttributes || {});
 
@@ -4117,7 +4141,7 @@ function __rhinoLocalSeed(given) {
 function __rhinoLocalHarvest() {
   if (__rhinoLocal.faults.length > 0) {
     throw new Error(
-      __rhinoLocal.faults[0] +
+      "rhino-local harness fault " + __rhinoLocal.faults[0] +
         " (the script caught this refusal, but AIC would not have thrown there, so the run fails anyway)"
     );
   }

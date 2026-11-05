@@ -45,9 +45,20 @@ final class AmHostBridge extends BaseFunction {
   }
 
   EmulationFailure missing(String behavior) {
+    return missing(behavior, null);
+  }
+
+  /** {@code id}: the runtime's stable harness-fault id for this refusal, or null if it has none. */
+  EmulationFailure missing(String behavior, String id) {
     EmulationFailure failure =
         new EmulationFailure("missing", "Missing journey behavior: " + behavior);
     failure.info.put("missing", Collections.singletonList(behavior));
+    if (id != null) {
+      Map<String, Object> fault = new java.util.LinkedHashMap<String, Object>();
+      fault.put("id", id);
+      fault.put("message", behavior);
+      failure.info.put("faults", Collections.singletonList(fault));
+    }
     return state.fail(failure);
   }
 
@@ -119,7 +130,7 @@ final class AmHostBridge extends BaseFunction {
 
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-      throw missing(behavior);
+      throw missing(behavior, "not-mocked/" + behavior);
     }
   }
 
@@ -133,7 +144,12 @@ final class AmHostBridge extends BaseFunction {
     @Override
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
       String message = Context.toString(arg(args, 0));
-      throw missing(message.startsWith("rhino-local: ") ? message.substring(13) : message);
+      // The runtime passes a harness-fault id as the second argument; the
+      // emulated AIC errors (which a journey also treats as missing) have none.
+      Object id = args.length > 1 ? args[1] : Undefined.instance;
+      throw missing(
+          message.startsWith("rhino-local: ") ? message.substring(13) : message,
+          id instanceof CharSequence ? id.toString() : null);
     }
   }
 
