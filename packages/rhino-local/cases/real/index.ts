@@ -1047,6 +1047,7 @@ export const realCases: RealEntry[] = [
         reason:
           "openidm.read of a managed type that does not exist returns null on AIC. Locally an unseeded collection throws `no given.managed entry`, which is deliberate — it catches a case that forgot to seed — so closing this needs a way to declare a type absent rather than making every miss silent.",
         differs: ["unknownTypeMiss"],
+        faults: ["fixture/managed"],
       },
       given: {
         managed: {
@@ -1629,6 +1630,7 @@ export const realCases: RealEntry[] = [
       reason:
         "Base64/UTF-8, UUID, random values and every subtle result and rejection match, through java/HostOps.java. Still different: encoding a JS array fails on both, but AIC suffixes its conversion error with the calling script's (name#line) and local with the mock's; checkBcrypt is unmocked (no bcrypt in the JDK, and no dependency added); PBKDF2 with a JS-array salt fails on both, but AIC's ClassCastException also names its webapp class loader.",
       differs: ["base64/encode/bytes","base64url/encode/bytes","crypto/checkBcrypt/right","crypto/checkBcrypt/wrong","subtle/deriveKey/object"],
+      faults: ["not-mocked/utils.crypto.checkBcrypt"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -3124,6 +3126,7 @@ export const realCases: RealEntry[] = [
       reason:
         "57/80 measured payload keys now match: ESV defaults and conversions, cacheManager, the seeded journey values and flags, null SAML/OAuth bindings, and logger.isTraceEnabled. Remaining gaps are tenant-backed JWT creation/validation and policy results; idRepository.getIdentity on an absent user (both lanes return the wrapper with the same class name and methods, but AIC's Java object also enumerates bean properties and java.lang.Object members such as class, getClass and wait); JavaException wrappers for absent secrets; logger.getName includes the tenant script id; and Java reflection shapes for emailService enumeration and locales.",
       differs: ["logger.getName","secrets.getGenericSecret","secrets.getDecryptionKey","secrets.getEncryptionKey","secrets.getSigningKey","secrets.getVerificationKey","jwtAssertion.generateJwt","jwtValidator.validateJwtClaims","policy.evaluate","policy.evaluateTree","idRepository.getIdentity","emailService/typeof-enumeration","locales","jwtAssertion.generateJwt/empty","jwtAssertion.generateJwt/HS256","jwtAssertion.generateJwt/HS256/string-key","jwtValidator.validateJwtClaims/empty","jwtValidator.validateJwtClaims/HS256","policy.evaluate/claims/oauth2Scopes","policy.evaluateTree/claims/oauth2Scopes","policy.evaluate/ssoToken","policy.evaluate/jwt","policy.evaluate/claims"],
+      faults: ["not-mocked/jwtAssertion.generateJwt", "not-mocked/jwtValidator.validateJwtClaims", "not-mocked/policy.evaluate", "not-mocked/policy.evaluateTree"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -3623,6 +3626,7 @@ export const realCases: RealEntry[] = [
       reason:
         "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (undeclared action replies throw naming given.openidmActions). Writes were not captured live, so the write channel is not judged. openidm.query: a filter the local parser does not support is reported as unmocked rather than as AIC's parse error, and an unseeded managed type throws the harness's missing-fixture error rather than AIC's \"Resource … not found\".",
       differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","query/2/queryExpression","query/2/two-kinds","patch/wrong-rev","delete/wrong-rev","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
+      faults: ["fixture/managed", "fixture/openidm-action", "openidm-query-filter"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -3727,6 +3731,7 @@ export const realCases: RealEntry[] = [
       reason:
         "ECDSA interop (P1363 accepted, DER false), generated key encodings, digest/AES/HMAC edges and JS-array handling match. Still different: a 5-byte AES key fails on both, but AIC wraps it as JavaException ScriptCryptoException; randomUUID(1) and getRandomValues({}) fail on both, but with the harness arity message and without AIC's (name#line) suffix respectively.",
       differs: ["aes/key-5","crypto/randomUUID/1","crypto/getRandomValues/js-object"],
+      faults: ["arity/utils.crypto.randomUUID"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).

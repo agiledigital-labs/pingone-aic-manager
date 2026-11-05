@@ -28,3 +28,14 @@ export function useEmulationGuard(..._inputs: EmulationGuardSource[]): void {
 
 export function expectEmulationFailure(name: string | RegExp): void { expectOwnedEmulationFailure(name); }
 
+/**
+ * Declare that the current test hits harness fault `id` (one occurrence of one
+ * message; call again for each further distinct message). A harness fault is
+ * behaviour this harness does not emulate, so it fails the test whether or not
+ * the script catches it; this is the one way to assert one on purpose, and the
+ * test fails if it does not happen.
+ */
+export function expectHarnessFault(id: string): void {
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  expectOwnedEmulationFailure(new RegExp(`${escaped}: [\\s\\S]*`));
+}

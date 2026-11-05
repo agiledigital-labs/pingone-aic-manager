@@ -3,6 +3,7 @@ import { runCase } from "../../src/bindings/index.ts";
 import { judge } from "../../src/case/index.ts";
 import type { CallbackEffect, CallbackExpect } from "../../src/case/types.ts";
 import type { RunCaseOptions } from "../../src/bindings/run.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { blockedCases, gapCases, realCases, runnableCases } from "../../cases/real/index.ts";
 import { PROBE_SOURCE_NAME, type RealEntry } from "../../cases/real/load.ts";
@@ -63,6 +64,18 @@ describe("real scripted-decision corpus", { timeout: 30_000 }, () => {
       }
       it(`${entry.kase.name} — differs on ${gap.differs.join(", ")}`, async () => {
         expect(gap.reason, entry.kase.name).toBeTruthy();
+        if (gap.faults !== undefined) {
+          // The probe catches these refusals, but a harness fault fails the run
+          // anyway; the guard fails the test on any fault not listed here, and
+          // on any listed one that did not occur.
+          for (const id of gap.faults) {
+            expectHarnessFault(id);
+          }
+          await expect(runCase(runner, entry.kase, runOptions(entry, PROBE_SOURCE_NAME))).rejects.toThrow(
+            /rhino-local harness fault /
+          );
+          return;
+        }
         const result = await runCase(runner, entry.kase, runOptions(entry, PROBE_SOURCE_NAME));
         const local = emitted(result.effects.callbacks);
         const live = emitted(entry.kase.expect.callbacks ?? []);

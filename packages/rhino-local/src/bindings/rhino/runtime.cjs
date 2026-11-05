@@ -1869,8 +1869,12 @@ function __rhinoLocalRequireCollection(method, collection) {
     __rhinoLocal.managed[collection] = [];
     return __rhinoLocal.managed[collection];
   }
+  // A harness fault, not AIC's error: AIC's read returns null for an unknown
+  // type and its query throws a different message (docs/api/12, openidm
+  // query), so failing here is this harness catching a fixture typo.
   if (__rhinoLocal.knownTypes) {
-    throw __rhinoLocalFail(
+    throw __rhinoLocalFault(
+      "openidm-unknown-managed-type",
       "rhino-local: openidm." +
         method +
         ": " +

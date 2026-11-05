@@ -65,6 +65,14 @@ export interface KnownGap {
   reason: string;
   /** Top-level payload keys that differ from the live run today. */
   differs: readonly string[];
+  /**
+   * Harness fault ids (E19) the local run hits. The probe catches each of these
+   * refusals to record a payload key, but a harness fault fails the run whether
+   * or not the script catches it, so a case listing faults produces no payload
+   * to compare: the suite asserts the run fails with exactly these fault ids
+   * instead. Emulating the behaviour (or seeding the fixture) removes the id.
+   */
+  faults?: readonly string[];
 }
 
 /** HiddenValueCallback the probe fixtures emit on a successful live run. */
