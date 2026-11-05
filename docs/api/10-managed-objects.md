@@ -1477,7 +1477,9 @@ Three ways a filter silently matches nothing, all HTTP 200:
   `resultCount: 0`.
 - **A number matches quoted or unquoted.** `frIndexedInteger1 eq 7` and
   `frIndexedInteger1 eq "7"` both matched the same integer-valued field, so
-  quoting cannot be used to distinguish a string from a number.
+  quoting cannot be used to distinguish a string from a number. That holds
+  for a DS integer attribute only: on a generic (JSON-stored) type a quoted
+  literal never matches a number (below, 2026-11-06).
 
 **`eq` on `mail` and `userName` is case-insensitive** (verified 2026-11-04,
 `scripts/experiment-journey-defaults-case.sh`, run twice). One `alpha_user` stored with an all-lower-case
@@ -1521,6 +1523,65 @@ and other managed objects.
 there is no null literal; ask for absence with `!(field pr)`. A malformed
 filter is 400 `A value could not be parsed as a valid query filter`, as is the
 word form `not (…)` (see the 2026-07-03 notes above).
+
+**DS matching rules on `alpha_user`, and JSON storage** (verified
+2026-11-06, E19 live probe). Three throwaway `alpha_user` records (a, b, c)
+and three records on an existing empty generic type, created and deleted the
+same day. Every filter ran ANDed with a prefix on the probe's own records, over
+IDM REST and from an IDM script (`openidm.query` via `script?_action=eval`);
+**the two agreed on every case**, and where REST answered 400 the script got a
+catchable `JavaException: org.forgerock.json.resource.BadRequestException`
+with the same message. Not probed: AM's `openidm` binding.
+
+`telephoneNumber` (a stores `+614-9999-9999`; the sandbox's phone policy
+needs a mobile shape) is DS `telephoneNumberMatch` — **spaces and hyphens
+are ignored anywhere, in the value and the literal**, for `eq`, `sw` and
+`co`:
+
+| Filter | Rows |
+| --- | --- |
+| `eq "+614-9999-9999"` / `eq "+614-9999-9998"` (controls) | a / — |
+| `eq "+614 9999 9999"`, `eq "+61499999999"`, `eq "+61 4 9999 9999"`, `eq "+6 1-4 99 99-9999"` | a |
+| `sw "+6149"`, `co "99 99"` | a |
+
+Other separators (`(`, `)`, `.`) and ordering were not probed.
+
+`frIndexedDate1` and `frUnindexedDate1` (a stores
+`2026-01-01T10:00:00+11:00`, an earlier instant than `2026-01-01T00:00:00Z`
+that sorts later as text; b `2026-01-02T00:00:00Z`) **compare as instants**:
+`gt "2026-01-01T00:00:00Z"` → b, `lt` → a, `eq "2025-12-31T23:00:00Z"` → a,
+and an offset literal orders the same way. **`eq "notadate"` is a 400**:
+`The request cannot be processed because it contained an illegal filter
+assertion value 'notadate' for field '/frIndexedDate1'` (quotes HTML-escaped
+over REST). Not probed: `ge`/`le`, fractional seconds, date-only and
+GeneralizedTime-form literals, the other date attributes.
+
+`frIndexedInteger1` (a `7`, b `8`) **converts the literal to an integer
+whatever its JSON type**: `eq 7`, `eq "7"`, `eq 7.0`, `eq 7.00` and
+`eq "7.0"` → a; `ge 7.0` → a, b. **`eq 7.5`, `lt 7.5`, `gt 6.5`, `eq "7.5"`
+and `eq "abc"` are each a 400** `illegal filter assertion value '<v>'`, not
+an empty result. The other integer attributes were not probed.
+
+**An explicitly written `[]` is not present.** a wrote `[]` to
+`frIndexedMultivalued1` and `frUnindexedMultivalued1` and PATCHed `roles` to
+`[]`; b holds `["x"]` and one role; c never wrote them. `pr` → b and
+`!(… pr)` → a, c on all three: a behaves like c.
+
+**On a generic type a quoted literal never matches a number.** A
+`type: number` property on a type under the `managed/*` generic mapping, with
+records holding `7`, `8` and `7.5`:
+
+| Filter | Rows |
+| --- | --- |
+| `count eq 7` (control), `count eq 7.0` | the `7` record |
+| `count eq 7.5` | the `7.5` record — a fraction is an ordinary value |
+| `count gt 6.5` | all three |
+| `count eq "7"`, `eq "7.0"`, `eq "7.5"`, `gt "6"`, `lt "10"` | **none**, 200 |
+
+So JSON storage compares numbers by value and never coerces a quoted literal
+— the **opposite** of `frIndexedInteger1`. A rule for "a number field"
+must be per storage kind. `custom_*` properties on `alpha_user` (a JSON
+attribute on a DS-mapped type) were not probed: the sandbox declares none.
 
 **`mail`, `givenName` and `sn` are required by policy on `alpha_user`.** A
 create missing any of them is refused `403 Policy validation failed` — and the
@@ -1730,6 +1791,19 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-11-06 — E19 live probe (orchestrator probe note, §3–§4;
+  throwaway records, every delete confirmed by a 404 read):
+  `POST /openidm/managed/alpha_user?_action=create` ×3 (a, b, c);
+  `GET /openidm/managed/alpha_user?_queryFilter=…` and the same filters
+  through `POST /openidm/script?_action=eval` (`openidm.query`), three runs,
+  identical: `telephoneNumber` `eq`/`sw`/`co` with spaces and hyphens (match),
+  `frIndexedDate1` / `frUnindexedDate1` `gt`/`lt`/`eq` across offsets
+  (instant order), `eq "notadate"` (400), `frIndexedInteger1` with `7`,
+  `"7"`, `7.0`, `7.00`, `"7.0"`, `ge 7.0` (match) and `7.5`, `"7.5"`, `"abc"`
+  under `eq`/`lt`/`gt` (400), `pr` and `!(… pr)` on `frIndexedMultivalued1`,
+  `frUnindexedMultivalued1` and `roles` written as `[]` (absent);
+  `POST /openidm/managed/<generic type>?_action=create` ×3 and `count` with
+  `7`, `"7"`, `7.0`, `"7.0"`, `7.5`, `"7.5"`, `gt 6.5`, `gt "6"`, `lt "10"`.
 - Date: 2026-10-31 — `config/repo.ds` repair, sandbox `test_from` / `test_to`
   with throwaway records, both config documents restored byte-identical
   afterwards: `PATCH /openidm/config/repo.ds` with one `remove` (200, document
