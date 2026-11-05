@@ -275,7 +275,10 @@ describe("case isolation across files on a pooled JVM", () => {
     expect(next).not.toBe(crashed);
   });
 
-  it("a JVM that retired itself is replaced, not lent again", async () => {
+  // A retiring job is always an IDM job, which also marks the JVM unshuttered,
+  // so this passes on either flag; the retire branch alone is pinned by
+  // pool-lendable.test.ts against `lendable`.
+  it("a JVM whose IDM job retired it (and so ran unshuttered) is replaced, not lent again", async () => {
     const retired = await file(async (runner) => {
       const pid = await jvmPid(runner);
       expectEmulationFailure("spawned thread outlived its job");

@@ -706,8 +706,8 @@ What reuse guarantees:
 
 - **JavaScript state never crosses a case.** Every case runs in a fresh
   `initStandardObjects()` scope, and only compiled code is shared.
-- **Java-level state does not cross a file, unless the class shutter was on.**
-  A script that can reach `java.lang.System`, `java.util.TimeZone` or
+- **Java-level state crosses a file only on a JVM whose every job ran behind
+  the class shutter, which hides the classes that could change it.** A script that can reach `java.lang.System`, `java.util.TimeZone` or
   `java.lang.Thread` can change the JVM itself (a default timezone, a system
   property, a thread it started), and a normal finish does not undo that. The
   next-gen decision-node shutter, which is on by default, hides all of those
