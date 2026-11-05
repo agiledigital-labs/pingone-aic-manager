@@ -50,7 +50,7 @@ function __rhinoLocalNotMocked(binding, method, args, signatures) {
   if (matched.length === 0) {
     matched.push("no matching signature");
   }
-  throw new Error(
+  var message =
     "rhino-local: not mocked: " +
       binding +
       "." +
@@ -59,8 +59,13 @@ function __rhinoLocalNotMocked(binding, method, args, signatures) {
       arity +
       " overload=[" +
       matched.join(" | ") +
-      "]"
-  );
+      "]";
+  // A harness fault where the runtime is loaded (it always is in a run), so a
+  // script that catches this cannot pass on a path AIC would not take.
+  if (typeof __rhinoLocalFault === "function") {
+    throw __rhinoLocalFault("not-mocked/" + binding + "." + method, message);
+  }
+  throw new Error(message);
 }
 
 var samlApplication = {

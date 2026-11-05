@@ -274,6 +274,16 @@ public final class Runner {
 
   private static Map<String, Object> evalAmJob(
       AmContextFactory factory, String id, Map<String, Object> job, AmHostBridge bridge) {
+    // A journey has its own uncatchable channel (AmHostBridge's unsupported), so
+    // the recorder is the script tester's alone.
+    HarnessFaults faults = bridge == null ? new HarnessFaults() : null;
+    Map<String, Object> result = evalAmJob(factory, id, job, bridge, faults);
+    return faults == null ? result : faults.attach(result);
+  }
+
+  private static Map<String, Object> evalAmJob(
+      AmContextFactory factory, String id, Map<String, Object> job, AmHostBridge bridge,
+      HarnessFaults faults) {
     final String source = Json.optionalString(job, "source");
     if (source == null) {
       return errorResponse(
@@ -354,6 +364,11 @@ public final class Runner {
           hostOps.setParentScope(scope);
           hostOps.setPrototype(ScriptableObject.getFunctionPrototype(scope));
           ScriptableObject.putProperty(scope, hostOpName, hostOps);
+          if (faults != null) {
+            faults.setParentScope(scope);
+            faults.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+            ScriptableObject.putProperty(scope, HarnessFaults.NAME, faults);
+          }
           if (bridge != null) {
             bridge.setParentScope(scope);
             bridge.setPrototype(ScriptableObject.getFunctionPrototype(scope));
@@ -385,6 +400,7 @@ public final class Runner {
             ScriptableObject.deleteProperty(scope, hostOpName);
             ScriptableObject.deleteProperty(scope, LIBRARIES_NAME);
             ScriptableObject.deleteProperty(scope, PREAMBLE_DATA_NAME);
+            ScriptableObject.deleteProperty(scope, HarnessFaults.NAME);
             if (bridge != null) ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }
         } catch (EvaluatorException e) {
