@@ -10,16 +10,24 @@ wrong.
   with the value already stored returns 200, does not move `_rev`, and does not
   run `onUpdate`, in fold mode and in plain mode. The short-circuit is before
   the hook: fold mode would have incremented `derived.runs`.
+- **E15** (2026-11-05, `node experiments.mjs E15`, 1 s). Neither self-patch
+  hung. `postUpdate`'s nested patch is a normal second `PATCH` after the commit
+  and the counter guard stops the loop. `onUpdate`'s nested patch races the
+  in-flight attempt, commits a gap state (`counter` 1001, `derived.count` 0),
+  and the outer attempt retries into the right final state. See RESULTS.
 
 ## Surprises
 
-- None yet beyond E16's status being 200 rather than a short-circuit status. The
-  fork's "code says it short-circuits" is confirmed for the hook and the
-  revision; the HTTP status is still success.
+- E16 returns 200, not a distinct short-circuit status. The hook and `_rev` are
+  skipped; the HTTP status is still success.
+- E15 from `onUpdate` does not deadlock at one caller. It loses the race against
+  its own nested patch and retries. `derived.runs` is 2 while the trace sink
+  shows 3 runs, because one attempt was discarded — the same shape as E6, plus a
+  committed gap state a reader can observe.
 
 ## Divergences from the brief
 
-- None yet.
+- None yet. The 90 s hang did not happen; both E15 calls returned 200.
 
 ## Teardown
 

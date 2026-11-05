@@ -314,3 +314,35 @@ nothing either way. `trace: true`, so a run would have created a sink.
 - Not measured: a multi-operation patch whose net effect is empty; `add` then
   `remove` of the same value; whether a `304` is ever returned (these two were
   `200`).
+
+## E15 — a hook patches its own parent
+
+Both hooks are guarded, so this is the bounded case. `onUpdate` in `selfpatch`
+mode folds, then `openidm.patch`es `/counter` to `1000 + derived.count` when the
+inbox entry carries `selfpatch: true`. `postUpdate` in `selfpatch` mode patches
+`/counter` to `2000 + counter` while `counter < 2000`. One request each,
+`timeoutMs` 90 s. Neither came close to it.
+
+| caller       | HTTP | ms  | `onUpdate` runs | `derived.runs` | stored counter | stored entries |
+| ------------ | ---- | --- | --------------- | -------------- | -------------- | -------------- |
+| `onUpdate`   | 200  | 294 | 3               | 2              | 1001           | 1              |
+| `postUpdate` | 200  | 77  | 2               | 2              | 2000           | 1              |
+
+The caller's response already shows the counter the nested patch wrote.
+
+- From `postUpdate` the nested patch is a second, ordinary revision-less `PATCH`
+  after the outer write has committed. Its `onUpdate` saw
+  `oldObject.derived.count == 1` and a newer base than the outer run. The guard
+  then stops: the counter patch does not patch again. Two hook runs, one extra
+  write, no loop.
+- From `onUpdate` the nested patch races the attempt that called it. The first
+  two runs shared a base revision. The nested run saw an empty inbox (the outer
+  add had not committed) and its own fold committed `derived.count == 0` with
+  the counter already at 1001. The outer attempt then retried, saw that count of
+  0, re-applied the inbox add, and folded to one entry. Its second counter patch
+  was a no-op (1001 → 1001), so E16's short-circuit meant no fourth run. Final
+  state is right; a reader in the gap would have seen the counter move and the
+  entry missing.
+- Not measured: the unguarded loop (left bounded on purpose), self-patch under
+  concurrent callers, and a nested patch that writes a field the outer fold does
+  not recompute.
