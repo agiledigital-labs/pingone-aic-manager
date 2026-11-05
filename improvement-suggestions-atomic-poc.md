@@ -52,6 +52,35 @@ which does not touch `repo.ds`.
 prints that the pair stays generic. The default stays "map it", which is what
 every current caller wants.
 
+## `relationship delete --remove-mapping` refuses a pair that is an object's last mapping
+
+**Evidence.** Teardown on 2026-11-05 ran
+`aic managed relationship delete alpha_poc_agg.children --remove-mapping`. The
+command wrote nothing. The error was: refusing to repair
+`alpha_poc_agg.children` because `config/repo.ds` reads through it from
+`alpha_poc_child.parent`, and refusing to repair that reverse end because it is
+the last mapped property of `managed/alpha_poc_child`. Removing a mapping
+another one reads through, and removing an object's last mapping, are both
+called unmeasured. That text is `plan_sequence` in `src/managed/repair.rs` (the
+dependents check, then `entries.len() == 1`), returned by `src/managed/cli.rs`
+before any write. The planner sees a stale mapping because it judges the managed
+document the delete would write, which has already dropped both ends; the live
+objects were still present when the command returned. The following
+`object delete` calls removed the three types. `ObjectCommand::Delete` only
+`PUT`s `config/managed` and confirms `ObjectAbsent` for that one name. After a
+second delete of `alpha_poc_sink` (the first confirm did not stick; see the done
+note), `config/managed` matches the pre-POC backup and `genericMapping` still
+has `managed/alpha_poc_agg` (property `children`) and `managed/alpha_poc_child`
+(property `parent`).
+
+**Sketch.** When both ends of a pair are being removed and each `genericMapping`
+entry's only properties are those ends, remove both properties and drop the two
+per-type entries in one `repo.ds` write. That is the case the last-mapping
+refusal exists to avoid doing one side at a time. `object delete` of a type
+whose `genericMapping` properties are only relationships this delete is removing
+can drop that entry in the same operation and confirm the key is gone. A mapping
+another live object still reads through stays refused.
+
 ## No way to set `notify` or `notifySelf`
 
 **Evidence.** `FieldAttrs` and `RelationshipCommand::Set` expose title,

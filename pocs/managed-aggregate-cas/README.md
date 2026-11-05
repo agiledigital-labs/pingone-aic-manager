@@ -77,6 +77,15 @@ whether `config/managed` equals `.state/managed-before.json` and whether
 say `true`. If either does not, stop. Do not hand-edit the tenant config. The
 `repo.ds` backup taken before the POC is `.state/repo.ds-before.json`.
 
+The 2026-11-05 run did not get both lines to `true`.
+`relationship delete --remove-mapping` refused — an object's last mapping, and a
+mapping another one reads through — and wrote nothing. The script printed
+`config equals backup: false` and `genericMapping equals backup: false`. A later
+`aic managed object delete alpha_poc_sink` made `config/managed` match the
+backup. The `genericMapping` keys `managed/alpha_poc_agg` and
+`managed/alpha_poc_child` are still there. `DONE.md` has the verbatim output. A
+re-run that prints either line `false` stops the same way.
+
 ## Files
 
 | File                    | What it is                                                                                                       |
