@@ -1285,6 +1285,249 @@ The “post” distinction means after the corresponding repository operation, n
 synchronization of targets. Reproduce with
 `scripts/experiment-managed-post-hook-routing.sh`.
 
+### Concurrent `PATCH` and hooks (verified 2026-11-05)
+
+A revision-less `PATCH` of a managed record is a compare-and-swap. IDM applies
+the operations, runs `onUpdate`, and writes conditional on the revision it read.
+A conflict re-reads and repeats the attempt, including `onUpdate`. A `PATCH`
+with `If-Match` does not retry. The pattern this supports — facts on the
+parent's own fields, derivation in a pure `onUpdate` — is written up in
+[managed-object aggregates](../managed-object-aggregates.md). Per-run rows and
+the driver are in `pocs/managed-aggregate-cas/`.
+
+Storage: the parent and the side-effect sink are generic custom objects (a
+per-type `genericMapping`, no property mappings). Relationship rows below name
+the pair. "trace" means `onUpdate` also created one sink record per run, which
+is how runs are counted; that write is inside the attempt and lengthens it.
+
+#### Revision-less `PATCH` retries `onUpdate` and commits once
+
+N concurrent `PATCH add /inbox/-`, no `If-Match`. Fold mode, trace on,
+`postUpdate` creating one sink per commit. Three runs at each N. Every response
+was `200`, every entry was stored, `derived` matched a recomputation from the
+stored entries, and no retry saw the same `oldObject._rev` twice.
+
+| N   | p50 ms (three runs) | max ms | `onUpdate` runs | `postUpdate` runs | requests retried | max runs / request |
+| --- | ------------------- | ------ | --------------- | ----------------- | ---------------- | ------------------ |
+| 2   | 238–352             | 352    | 3               | 2                 | 1                | 2                  |
+| 10  | 628–1060            | 1315   | 36–55           | 10                | 7–9              | 8–10               |
+| 50  | 3281–6225           | 8888   | 667–836         | 50                | 47–49            | 33–40              |
+
+`postUpdate`'s distinct `_rev`s equalled the commits, so it ran once per commit.
+`onUpdate` ran once per attempt: 836 sink records for 50 commits at the high
+end. A side effect in `onUpdate` is repeated by every retry.
+
+The same appends from a custom endpoint's `openidm.patch(path, null, ops)`
+(`POST /openidm/endpoint/pocagg?_action=append`, config `PUT` returned `201`)
+matched that. N = 10 and N = 50, three runs, all `200`, all entries present,
+`derived` consistent, `postUpdate` once per commit, no retry on the same base. N
+= 50 p50 was 2831–2908 ms, with 743–807 `onUpdate` runs. One uncontended pair,
+fetched with `aic logs tx`: the endpoint call and a direct `PATCH` recorded the
+same `userId` and the same `runAs` on the parent `PATCH` and on the sink
+`CREATE`. The access event is the outer call. The script's `openidm.patch` has
+no access event of its own.
+
+A stale `If-Match` does not retry. The first `PATCH` with the read `_rev` was
+`200`. The second with the same `_rev` was `412` and stored nothing further.
+
+#### `PUT` and a client-computed array lose updates
+
+Both of these return `200`. `onUpdate` recomputes from what was stored, so
+`derived` stays consistent with the surviving entries and cannot restore what
+the caller dropped.
+
+| Call                                                           | N   | entries kept (three runs) | lost  |
+| -------------------------------------------------------------- | --- | ------------------------- | ----- |
+| revision-less `PUT` of a full record built from a prior read   | 5   | 1                         | 4     |
+| revision-less `PUT`                                            | 20  | 1–2                       | 18–19 |
+| `PATCH replace /entries` with an array built from a prior read | 5   | 1                         | 4     |
+| `PATCH replace /entries`                                       | 20  | 1                         | 19    |
+
+`PUT` carrying a revision was not measured.
+
+#### `postUpdate` throwing, and `onUpdate` throwing
+
+`throw { code: 500, message: "POC_POST_THROW" }` in `postUpdate`: the caller
+received `500` "POC_POST_THROW", and the parent change was stored. A client that
+treats that 500 as "not written" and retries appends twice.
+
+`throw { code: 409, message: "POC_TERMINAL: …" }` in `onUpdate`, once the
+derived outcome is terminal: the caller received `409` and nothing was stored.
+Concurrently, threshold 5, N = 20, three runs: `5 × 200` and `15 × 409`, five
+entries, outcome `closed`, `derived` consistent. The guard runs inside the swap,
+on the state the write would commit.
+
+#### A hook patching its own parent
+
+Guarded, one request each, 90 s client timeout. Neither hung.
+
+| Caller                                            | HTTP | ms  | `onUpdate` runs | stored result         |
+| ------------------------------------------------- | ---- | --- | --------------- | --------------------- |
+| `onUpdate` calls `openidm.patch` on this record   | 200  | 294 | 3               | counter 1001, 1 entry |
+| `postUpdate` calls `openidm.patch` on this record | 200  | 77  | 2               | counter 2000, 1 entry |
+
+From `postUpdate` the nested patch is an ordinary second `PATCH` after the
+commit, and the guard stops a loop. From `onUpdate` the nested patch races the
+attempt that called it: the two first runs shared a base revision, the nested
+run committed `derived.count == 0` with the counter already moved, and the outer
+attempt retried into the final entry. An unguarded loop was not measured.
+
+#### A no-op patch
+
+`PATCH replace /name` with the value already stored, fold mode and plain mode:
+`200`, `_rev` unchanged, `onUpdate` did not run. Fold mode's hook would have
+incremented `derived.runs` had it run, so the short-circuit is before the hook.
+A no-op does not force a recompute. Whether a `304` is ever returned was not
+measured; these two were `200`.
+
+#### Heavy contention
+
+`postUpdate` still created one sink per commit. With the trace sink off, retry
+counts are invisible (that counter is the sink). The runner stops at the first
+non-200. Nothing stopped it.
+
+| trace | N   | HTTP      | p50 / max ms | entries | `postUpdate` | `onUpdate` runs | requests retried     |
+| ----- | --- | --------- | ------------ | ------- | ------------ | --------------- | -------------------- |
+| off   | 50  | 50 × 200  | 1392 / 2093  | 50      | 50           | —               | —                    |
+| off   | 100 | 100 × 200 | 2454 / 3842  | 100     | 100          | —               | —                    |
+| off   | 200 | 200 × 200 | 5019 / 9348  | 200     | 200          | —               | —                    |
+| on    | 100 | 100 × 200 | 5194 / 9236  | 100     | 100          | 1670            | 96, max 50 / request |
+
+All entries present, `derived` consistent, `postUpdate` once per commit. No 412,
+no 5xx, no timeout, through 200 writers with the trace off and 100 with it on.
+No retry bound appeared in this range. The untraced N = 50 p50 (1392 ms) sits
+next to the traced N = 50 p50 above (3281–6225 ms): the sink create inside
+`onUpdate` is a large part of the traced latency. N above 200 was not measured.
+On the untraced rows `derived.runs` equalled N, which counts committed folds
+only.
+
+#### Array size
+
+One parent created already holding N entries (id, number, 40-character note),
+then five sequential appends and ten concurrent ones. Trace off. The first
+failing create would have stopped the series. None failed.
+
+| entries at create | JSON bytes | create ms | sequential p50 / max ms | concurrent 10 p50 / max ms | final entries |
+| ----------------- | ---------- | --------- | ----------------------- | -------------------------- | ------------- |
+| 10                | 721        | 142       | 39 / 188                | 391 / 430                  | 25            |
+| 100               | 7381       | 40        | 43 / 45                 | 160 / 228                  | 115           |
+| 1000              | 74791      | 90        | 89 / 99                 | 792 / 1131                 | 1015          |
+| 5000              | 378391     | 256       | 315 / 395               | 4017 / 5028                | 5015          |
+
+Every patch was `200` and `derived` matched a recomputation. Create stayed cheap
+through ~370 KB. The fold's rewrite of the whole array is what gets expensive,
+and one run per size means the size-10 concurrent row being slower than size 100
+is noise. The point at which create or patch fails was not reached.
+
+#### The audit trail written in `onUpdate`
+
+`onUpdate` diffs `oldObject` → `object` and appends one entry per changed leaf
+to `object.audit` in memory, in the same write. k sequential changes to nested
+data, one writer:
+
+| k   | data `PATCH` + audit `PATCH` per change | one `PATCH` per change, hook audits | one `PATCH` with k operations, hook audits |
+| --- | --------------------------------------- | ----------------------------------- | ------------------------------------------ |
+| 1   | 2 calls, 237 ms                         | 1 call, 41 ms                       | 1 call, 41 ms                              |
+| 10  | 20 calls, 819 ms                        | 10 calls, 443 ms                    | 1 call, 40 ms                              |
+| 50  | 100 calls, 4245 ms                      | 50 calls, 2188 ms                   | 1 call, 49 ms                              |
+
+All three shapes produced k audit entries. The batched `PATCH` is flat in k.
+
+N writers at once, each `PATCH` carrying three operations (a shared leaf, a leaf
+of its own, an append). Three runs. Every response was `200`.
+
+| N   | p50 / max ms     | audit entries | shared-leaf chain breaks | `onUpdate` runs |
+| --- | ---------------- | ------------- | ------------------------ | --------------- |
+| 10  | 307–474 / 660    | 30 / 30       | 0                        | 34–53           |
+| 50  | 3280–4571 / 7328 | 150 / 150     | 0                        | 747–814         |
+
+Exactly one run id per commit in the trail. Sequence numbers were distinct and
+contiguous. A retried attempt's entries were discarded with the attempt. A write
+that sets a leaf to its current value leaves no diff entry;
+`request.patchOperations` is the source for intent rather than effect.
+
+### `PATCH` array operations (verified 2026-11-05)
+
+Single-parent measurements on a generic object. Concurrent `increment /counter`
+by 1: N = 10 left the counter at 10, N = 50 left it at 50 (p50 1040 ms), every
+response `200`.
+
+| Operation                                                   | Result                                                                       |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `add /items/-` on an absent array                           | `200`, the array is created                                                  |
+| `add /items/0` while `items` is absent, ten concurrent      | `403` "Failed policy validation": the index produced an object, not an array |
+| `add /items/0` on an existing array                         | `400` "Position-based operation is not allowed: /items/0"                    |
+| `remove /items/0`                                           | `400`, the same message                                                      |
+| `remove /items` with `value`                                | `200`, removes every element equal to the value                              |
+| `replace /items/0/w`                                        | `200`                                                                        |
+| `replace /items/5/w` past the end                           | `500`, empty body                                                            |
+| `increment /data/n` while `data.n` is absent                | `200`, creates it as the increment                                           |
+| one `PATCH` with `add /-`, `replace`, and a new nested path | `200`, all applied                                                           |
+
+`/-` and `increment` are the position-free operations. An index names whichever
+element sits there when the attempt runs, so a retry can apply it to a different
+element than the client read. A multi-operation patch whose net effect is empty
+was not measured.
+
+### Relationship writes sit outside the parent swap (verified 2026-11-05)
+
+Each writer created a child and linked it with `PATCH add /<rel>/-`. `onUpdate`
+queried the relationship and stored a count and a sum. No notification flags.
+Three runs. Every link landed, in both storage modes, and `derived` was wrong on
+every run: the hook runs before the request's own link is persisted, so the last
+writer's link is never counted, and which of the others are counted depends on
+the interleaving.
+
+| pair    | N   | links | `derived.count` across runs | `derived.sum` / want      |
+| ------- | --- | ----- | --------------------------- | ------------------------- |
+| mapped  | 5   | 5     | 0, 4, 4                     | 0/15, 11/15, 10/15        |
+| mapped  | 20  | 20    | 19, 19, 19                  | 194/210, 207/210, 193/210 |
+| generic | 5   | 5     | 4, 4, 4                     | 10/15, 14/15, 11/15       |
+| generic | 20  | 20    | 19, 19, 19                  | 203/210, 208/210, 194/210 |
+
+The mapped N = 5 run that counted nothing was the first write through a pair
+just mapped; a fresh pair needs a few seconds before it is live. Not
+investigated further. The retries in this table come from `derived` itself, a
+plain field the hook changes, which moves `_rev`. They are not evidence that the
+link write is inside the swap.
+
+An edge `PATCH` replacing `/_refProperties/status`:
+
+| pair    | HTTP | edge changed | parent `_rev` moved | parent `onUpdate` ran |
+| ------- | ---- | ------------ | ------------------- | --------------------- |
+| mapped  | 200  | yes          | yes                 | no                    |
+| generic | 200  | yes          | no                  | no                    |
+
+Patching the linked child's own `value` from 5 to 50 did not run the parent
+hook, did not move the parent's `_rev`, and left `derived.sum` at 5, in both
+modes.
+
+#### Notification flags
+
+`notifySelf: true` on the parent's relationship items and `notify: true` on the
+child's reverse (`NOTIFY=1`). `NOTIFY=2` swaps the ends. The parent counted both
+hooks with the trace sink and a `postUpdate` sink. One write each, waited on for
+4–8 s. The same in both storage modes.
+
+| Write                                          | default flags        | `NOTIFY=1`                  | `NOTIFY=2`              |
+| ---------------------------------------------- | -------------------- | --------------------------- | ----------------------- |
+| child created with its reverse link set        | no parent hook       | no parent hook              | no parent hook          |
+| child `PATCH` of its reverse link              | no parent hook       | no parent hook              | —                       |
+| child `PATCH` of a plain field                 | no parent hook       | no parent hook              | no parent hook          |
+| child deleted                                  | —                    | `onUpdate` and `postUpdate` | —                       |
+| edge `PATCH` through the parent's relationship | no parent hook       | `onUpdate` and `postUpdate` | no parent hook          |
+| parent `PATCH add /<rel>/-`                    | the parent's own run | that run, no second run     | that run, no second run |
+
+With `NOTIFY=1`, the edge-triggered run saw the edge's new status and the
+child's current `value`. It runs for writes made through the parent's
+relationship sub-resource, and for a deleted child. A link made from the child,
+and a change to a child's own fields, did not reach the parent under either
+placement. The parent-side link add gets no second, post-persist run, so
+`derived` stays one link behind with or without the flags.
+
+Not covered: notification of a has-many reverse, `notify` on a has-one forward,
+and whatever a console-created pair stores beyond these two flags.
+
 ## Examples
 
 ```bash
@@ -1791,6 +2034,18 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-11-05 — concurrent `PATCH` and managed hooks, sandbox, throwaway
+  `alpha_poc_agg` / `alpha_poc_child` / `alpha_poc_sink`. Parent and sink
+  generic; one `repo.ds`-mapped relationship pair (`children`) and one generic
+  pair (`gchildren`). The runs are E1–E16 and E18–E20 in
+  `pocs/managed-aggregate-cas/RESULTS.md`: revision-less `PATCH` retries
+  `onUpdate` and commits every append through N = 200; `If-Match` conflicts are
+  `412`; revision-less `PUT` and client-computed `replace` lose updates; a throw
+  in `onUpdate` stores nothing and a throw in `postUpdate` stores the change;
+  relationship and edge writes are outside the swap, with and without `notify` /
+  `notifySelf`; an in-memory audit trail stays exact under contention;
+  `idm-activity` shows the committed parent write once and every retried hook
+  side effect. See "Concurrent `PATCH` and hooks".
 - Date: 2026-10-31 — `config/repo.ds` repair, sandbox `test_from` / `test_to`
   with throwaway records, both config documents restored byte-identical
   afterwards: `PATCH /openidm/config/repo.ds` with one `remove` (200, document
