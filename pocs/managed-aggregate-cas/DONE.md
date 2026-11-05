@@ -332,4 +332,41 @@ every edge is read from the parent and from the child.
 `node setup.mjs preflight` on 2026-11-05: `managedEqualsBackup` true,
 `genericMappingEqualsRun1After` true, no POC types present.
 `genericMappingEqualsRun1Before` false, which is the two known orphans and
-nothing else. Install is next.
+nothing else.
+
+`node setup.mjs install`, then `hooks`, then `schema`. `target tenant: sandbox`
+lines and Node's `NO_COLOR` warning omitted:
+
+```
+managed object alpha_poc_agg created; undo it from the TUI history overlay
+managed object alpha_poc_child created; undo it from the TUI history overlay
+managed object alpha_poc_sink created; undo it from the TUI history overlay
+round 1: present alpha_poc_agg,alpha_poc_child,alpha_poc_sink
+alpha_poc_agg.children already has matching mappings; checking for orphaned values
+note: managed/alpha_poc_agg answered 404 for 0.6s, the settling after a config/managed write; read again once it answered
+mapping configuration verified; runtime storage mode is untested without links (run verify --probe later if appropriate)
+relationship alpha_poc_agg.children set; undo it from the TUI history overlay
+note: managed/alpha_poc_agg has no records to probe alpha_poc_agg.children through; wait a few seconds before writing through it — a write made before it is live is lost
+note: managed/alpha_poc_child has no records to probe alpha_poc_child.parent through; wait a few seconds before writing through it — a write made before it is live is lost
+relationship set left genericMapping equal to run1/repo.ds-after.json
+schema+hooks: confirmed (attempt 1)
+hooks live after 1 probe(s)
+hooks: confirmed (attempt 1)
+hooks live after 1 probe(s)
+schema+hooks: confirmed (attempt 1)
+hooks live after 1 probe(s)
+```
+
+No `repo.ds` write.
+
+### map-node
+
+`E21_CELLS=map-node node e21.mjs casrepeat` (381 s). The direct-PATCH control
+fired. Five repetitions, each starting from 10 edges visible on both sides.
+Every repetition lost edges. The 404 body was `Resource '<id>' not found`. The
+child record stayed. The edge was gone from the parent list and from the child's
+relationship, and a read about 30 s later did not bring it back. The 404
+transaction had an access event and no activity. No `DELETE` and no
+relationship-removed event. `idm-core` in the burst window had no `ERROR` line.
+`derived` matched the edges that remained, not the original ten. Detail is in
+`RESULTS.md` once the other cells are in.
