@@ -11,7 +11,7 @@ export const simple: ManagedType = { name: "widget", schema: { properties: {
 } } };
 
 export function emulator(runner: RhinoRunner, type: ManagedType = simple): IdmEmulator {
-  return new IdmEmulator(new IdmConfig({ managed: { _id: "managed", objects: [type] } }), runner);
+  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { _id: "managed", objects: [type] } }), runner);
 }
 
 export function traceScript(phase: string, tail = ""): Script {
@@ -60,7 +60,7 @@ export function traced(runner: RhinoRunner): IdmEmulator {
     onSync: traceScript("onSync"),
     actions: { ping: traceScript("action", "({ discarded: true });") },
   };
-  return new IdmEmulator(new IdmConfig({ managed: { objects: [type, traceType] } }), runner);
+  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [type, traceType] } }), runner);
 }
 
 export async function send(emu: IdmEmulator, request: RestRequest, status = 200): Promise<Document> {

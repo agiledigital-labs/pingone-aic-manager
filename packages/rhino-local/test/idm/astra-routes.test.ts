@@ -10,7 +10,7 @@ const routes = ["system/hr/account/123", "repo/internal/user/123", "config/sync"
 it.each(routes)("Astra #1 route knowledge determines the outcome for read %s", async (path) => {
   const knownAbsent = path.startsWith("managed/notConfigured") || path === "endpoint/notConfigured";
   if (!knownAbsent) expectEmulationFailure(`resource route: ${path}`);
-  const result = await runner.eval({ engine: "idm", source: `(function(){try { return openidm.read(${JSON.stringify(path)}); } catch(e) {} finally { 42; }})()` }, { onCall: new IdmEmulator(new IdmConfig({ managed: { objects: [simple] }, endpoints: {}, complete: { managed: true, endpoints: true } }), runner).onCall });
+  const result = await runner.eval({ engine: "idm", source: `(function(){try { return openidm.read(${JSON.stringify(path)}); } catch(e) {} finally { 42; }})()` }, { onCall: new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [simple] }, endpoints: {}, complete: { managed: true, endpoints: true } }), runner).onCall });
   if (knownAbsent) expect(result).toMatchObject({ outcome: "ok", value: null });
   else {
     expect(result.outcome).not.toBe("ok");
@@ -36,7 +36,7 @@ it("Astra #4 unknown action remains a catchable measured 400", async () => {
   expect(result).toMatchObject({ outcome: "ok", value: 400 });
 });
 it.each(["alpha_user", "bravo_user"])("Astra #2 %s rejects readable ids at the repository boundary", async (name) => {
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name, schema: { properties: { userName: { type: "string" } } } }] } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name, schema: { properties: { userName: { type: "string" } } } }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: `try { openidm.create('managed/${name}','readable',{userName:'probe'}); } catch(e) { ({code:e.javaException.getCode(),message:e.message}); }` }, { onCall: emu.onCall });
   expect(result.outcome).toBe("ok");
   expect(result.value).toMatchObject({ code: 400, message: expect.stringContaining('org.forgerock.json.resource.BadRequestException: Invalid Attribute Syntax: Entry "fr-idm-uuid=readable,ou=user,') });
@@ -47,6 +47,6 @@ it.each(["alpha_user", "bravo_user"])("Astra #2 %s rejects readable ids at the r
   expect(valid.status).toBe(201);
 });
 it.each(["alpha_role", "custom_user"])("Astra #2 %s retains caller-chosen ids", async (name) => {
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name, schema: { properties: {} } }] } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name, schema: { properties: {} } }] } }), runner);
   expect((await emu.request({ method: "PUT", path: `managed/${name}/readable`, body: {} })).status).toBe(201);
 });

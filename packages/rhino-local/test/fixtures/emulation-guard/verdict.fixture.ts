@@ -9,7 +9,7 @@ let runner: RhinoRunner;
 let emu: IdmEmulator;
 beforeAll(async () => {
   runner = await RhinoRunner.spawn();
-  emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {
+  emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {
     probe: { type: "text/javascript", source: "require('unsupported');" },
     tenant: { type: "text/javascript", source: "throw {code:501,message:'tenant error'};" },
   } }), runner);

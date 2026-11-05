@@ -4,7 +4,7 @@
  * written below), run on the real JVM through the emulator's own hook and
  * endpoint paths.
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,7 +48,7 @@ const widget = (hooks: Partial<ManagedType> = {}): ManagedType => ({
 const fileHook = (file: string): Partial<ManagedType> => ({ onCreate: { type: "text/javascript", file } });
 
 function emulator(options: { runtimeScripts?: RuntimeScriptProvider; type?: ManagedType; endpoint?: string } = {}): IdmEmulator {
-  return new IdmEmulator(new IdmConfig({
+  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] },
     managed: { objects: [options.type ?? widget()] },
     ...(options.endpoint === undefined ? {} : { endpoints: { probe: js(options.endpoint) } }),
   }), runner, options.runtimeScripts === undefined ? {} : { runtimeScripts: options.runtimeScripts });
@@ -286,10 +286,62 @@ describe("the directory provider follows no links and matches names exactly", ()
     const emu = emulator({ runtimeScripts: linkedRoot, type: widget(fileHook("lib/late.js")) });
     writeFileSync(join(linkedRoot, "lib", "late.js"), "object.stamp = 'late';");
     try {
-      expect(faultIds(await tryCreate(emu))).toEqual(["idm-runtime-script/lib/late.js"]);
+      const result = await tryCreate(emu);
+      expect(faultIds(result)).toEqual(["idm-runtime-script/lib/late.js"]);
+      // The file exists when anyone looks, so the message must say which view was consulted.
+      expect(faultText(result)).toContain("no such file as indexed when the emulator was constructed");
     } finally {
       rmSync(join(linkedRoot, "lib", "late.js"));
     }
+  });
+});
+
+describe("a link swapped in after construction is refused at read time (review e15-02 P3-A)", () => {
+  /** A fresh provider root with `<dir>/<name>` regular, plus an outside directory holding the same name. */
+  function swapTree(dir: string, name: string): { root: string; outside: string } {
+    const base = mkdtempSync(join(scratch, "swap-"));
+    const root = join(base, "root");
+    const outside = join(base, "outside");
+    mkdirSync(join(root, dir), { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(root, dir, name), "object.stamp = 'inside';");
+    writeFileSync(join(outside, name), "object.stamp = 'OUTSIDE';");
+    return { root, outside };
+  }
+
+  it("a file replaced by a link after construction is the path fault, and the outside script never runs", async () => {
+    // The reviewer's repro gave 201 with stamp OUTSIDE: the index said "file", and the read followed the link.
+    expectHarnessFault("idm-runtime-script-path");
+    const { root, outside } = swapTree("lib", "late-swap.js");
+    const emu = emulator({ runtimeScripts: root, type: widget(fileHook("lib/late-swap.js")) });
+    unlinkSync(join(root, "lib", "late-swap.js"));
+    symlinkSync(join(outside, "late-swap.js"), join(root, "lib", "late-swap.js"));
+    const result = await tryCreate(emu);
+    expect(result.status).toBe(501);
+    expect(faultIds(result)).toEqual(["idm-runtime-script-path"]);
+    expect(faultText(result)).toContain("replaced by a symbolic link");
+    expect(JSON.stringify(result.body)).not.toContain("OUTSIDE");
+  });
+
+  it("a directory on the path replaced by a link after construction is the path fault", async () => {
+    // O_NOFOLLOW guards only the last component; this case needs the realpath and identity check.
+    expectHarnessFault("idm-runtime-script-path");
+    const { root, outside } = swapTree("sub", "swap.js");
+    const emu = emulator({ runtimeScripts: root, type: widget(fileHook("sub/swap.js")) });
+    renameSync(join(root, "sub"), join(root, "sub-original"));
+    symlinkSync(outside, join(root, "sub"));
+    const result = await tryCreate(emu);
+    expect(faultIds(result)).toEqual(["idm-runtime-script-path"]);
+    expect(JSON.stringify(result.body)).not.toContain("OUTSIDE");
+  });
+
+  it("a root that is itself reached through a link still loads its regular files", async () => {
+    // The containment check compares against the root's resolved path, not the spelling passed in.
+    const { root } = swapTree("lib", "plain.js");
+    const alias = join(root, "..", "alias");
+    symlinkSync(root, alias);
+    const body = await createWidget(emulator({ runtimeScripts: alias, type: widget(fileHook("lib/plain.js")) }));
+    expect(body.stamp).toBe("inside");
   });
 });
 
@@ -325,5 +377,17 @@ describe("provider configuration", () => {
     expect(() => emulator({ runtimeScripts: absent })).toThrow(new RegExp(`${absent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is not a directory`));
     expect(() => emulator({ runtimeScripts: join(directory, "manifest.json") })).toThrow(/is not a directory/);
     expect(() => emulator({ runtimeScripts: new URL("https://example.com/scripts/") })).toThrow(/not a file: URL/);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("an unreadable subdirectory is the documented TypeError naming the root, not a raw EACCES", () => {
+    const root = mkdtempSync(join(scratch, "unreadable-"));
+    mkdirSync(join(root, "locked"));
+    chmodSync(join(root, "locked"), 0o000);
+    try {
+      expect(() => emulator({ runtimeScripts: root })).toThrow(TypeError);
+      expect(() => emulator({ runtimeScripts: root })).toThrow(`Invalid IDM runtimeScripts: cannot index ${root}`);
+    } finally {
+      chmodSync(join(root, "locked"), 0o755);
+    }
   });
 });

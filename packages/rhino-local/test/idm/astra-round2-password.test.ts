@@ -9,7 +9,7 @@ afterAll(async () => { await runner?.close(); });
 const id = "00000000-0000-0000-0000-000000000001";
 const path = `managed/alpha_user/${id}`;
 function make(name = "alpha_user") {
-  return new IdmEmulator(new IdmConfig({ managed: { objects: [{ name, schema: { properties: { password: { type: "string" }, mail: { type: "string" } } } }] } }), runner);
+  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name, schema: { properties: { password: { type: "string" }, mail: { type: "string" } } } }] } }), runner);
 }
 const prefix = "{PBKDF2-HMAC-SHA256}";
 it.each([
@@ -65,7 +65,7 @@ it.each([null, 7, {}])("A2 #1 unmeasured non-string password %j fails missing", 
 });
 it("A2 #1 unmeasured retrieval-hook password representation cannot expose plaintext", async () => {
   expectEmulationFailure("alpha_user password representation after retrieval hooks");
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string", onRetrieve: js("'hook-plaintext'") } } } }] } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string", onRetrieve: js("'hook-plaintext'") } } } }] } }), runner);
   await emu.request({ method: "PUT", path, body: { password: "submitted-secret" } });
   const result = await runner.eval({ engine: "idm", source: `try {openidm.read('${path}')} catch(e) {} 42;` }, { onCall: emu.onCall });
   expect(result.emulation?.missing).toContain("alpha_user password representation after retrieval hooks");

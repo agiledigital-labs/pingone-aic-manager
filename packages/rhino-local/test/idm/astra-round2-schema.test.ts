@@ -7,7 +7,7 @@ let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
 function make(schema: ManagedType["schema"]) {
-  return new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema }] }, endpoints: { healthy: js("({ok:true});") } }), runner);
+  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema }] }, endpoints: { healthy: js("({ok:true});") } }), runner);
 }
 it.each([
   ["boolean", "nope"], ["string", 42], ["number", false], ["array", "not an array"], ["object", []],

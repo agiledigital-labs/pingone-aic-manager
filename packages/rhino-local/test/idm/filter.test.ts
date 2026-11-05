@@ -99,7 +99,7 @@ describe("queryFilter grammar", () => {
       pinned: { count: "number" },
     } as const;
     const schema = (props: Record<string, string>) => ({ properties: Object.fromEntries(Object.entries(props).map(([k, type]) => [k, { type }])) });
-    const config = (withRepo: boolean) => new IdmConfig({
+    const config = (withRepo: boolean) => new IdmConfig({ sync: { mappings: [] },
       managed: { objects: [...Object.entries(types).map(([name, props]) => ({ name, schema: schema(props) })), { name: "bravo_user", schema: schema(types.alpha_user) }] },
       ...(withRepo ? { repo } : {}),
     });
@@ -177,9 +177,9 @@ describe("queryFilter grammar", () => {
       expect(result.provenance).toContainEqual({ kind: "missing", behavior: cause });
     });
     it("the storage kind comes from repo's mappings", () => {
-      const both = new IdmConfig({ managed: { objects: [] }, repo: { resourceMapping: { explicitMapping: { "managed/x": {} }, genericMapping: { "managed/x": {}, "managed/*": {} } } } });
+      const both = new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, repo: { resourceMapping: { explicitMapping: { "managed/x": {} }, genericMapping: { "managed/x": {}, "managed/*": {} } } } });
       expect([both.storage("x"), both.storage("y"), both.storage("alpha_user")]).toEqual(["unknown", "generic", "explicit"]);
-      const noWildcard = new IdmConfig({ managed: { objects: [] }, repo: { resourceMapping: { genericMapping: { "managed/x": {} } } } });
+      const noWildcard = new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, repo: { resourceMapping: { genericMapping: { "managed/x": {} } } } });
       expect([noWildcard.storage("x"), noWildcard.storage("y")]).toEqual(["generic", "unknown"]);
       const cfg = config(true);
       // sink is covered by managed/* alone (the probe's shape, review P2-1); linkedsink has its own entry (P3-1).
@@ -187,7 +187,7 @@ describe("queryFilter grammar", () => {
         cfg.jsonStored("linkedsink", "linked"), cfg.jsonStored("sink", "a/b"), cfg.jsonStored("pinned", "count"), cfg.jsonStored("alpha_user", "custom_n")])
         .toEqual(["generic", "generic", "explicit", "wildcard", "own", false, false, false, false]);
       expect(config(false).storage("sink")).toBe("unknown");
-      expect(() => new IdmConfig({ managed: { objects: [] }, repo: [] as never })).toThrow(/repo must be a plain object/);
+      expect(() => new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, repo: [] as never })).toThrow(/repo must be a plain object/);
     });
 
     // Provenance: what the probe measured is labelled measured, the inferred neighbours assumed.
@@ -242,7 +242,7 @@ describe("queryFilter grammar", () => {
     const CASE = { kind: "measured", behavior: "eq on alpha_user mail and userName ignores letter case", source: "docs/api/10-managed-objects.md (eq on mail and userName is case-insensitive, 2026-11-04)" };
     const users = async () => {
       const props = { userName: { type: "string" }, mail: { type: "string" }, givenName: { type: "string" }, sn: { type: "string" }, city: { type: "string" } };
-      const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: props } }, { name: "bravo_user", schema: { properties: props } }] } }), runner);
+      const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "alpha_user", schema: { properties: props } }, { name: "bravo_user", schema: { properties: props } }] } }), runner);
       for (const type of ["alpha_user", "bravo_user"]) await send(emu, { method: "PUT", path: `managed/${type}/${user}`, headers: { "If-None-Match": "*" }, body: { userName: "ua", mail: "ma@example.com", givenName: "alice", sn: "doe", city: "perth" } }, 201);
       return emu;
     };
@@ -373,7 +373,7 @@ describe("queryFilter grammar", () => {
     it("a case-only match against an array element on bravo_user is missing, not dropped", async () => {
       const cause = "openidm-query-filter: query eq whose match turns on letter case: bravo_user tags";
       expectEmulationFailure(cause);
-      const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "bravo_user", schema: { properties: { tags: { type: "array", items: { type: "string" } } } } }] } }), runner);
+      const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "bravo_user", schema: { properties: { tags: { type: "array", items: { type: "string" } } } } }] } }), runner);
       await send(emu, { method: "PUT", path: `managed/bravo_user/${user}`, headers: { "If-None-Match": "*" }, body: { tags: ["beta", "Alpha"] } }, 201);
       const result = await query(emu, "bravo_user", 'tags eq "alpha"');
       expect(result.status).toBe(501);
@@ -457,7 +457,7 @@ describe("queryFilter grammar", () => {
       const props = { userName: { type: "string" }, givenName: { type: "string" }, telephoneNumber: { type: "string" },
         frIndexedDate1: { type: "string" }, frUnindexedDate2: { type: "string" }, frIndexedInteger1: { type: "number" },
         frIndexedInteger2: { type: "number" }, custom_n: { type: "number" } };
-      const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: props } }, { name: "bravo_user", schema: { properties: props } }] } }), runner);
+      const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "alpha_user", schema: { properties: props } }, { name: "bravo_user", schema: { properties: props } }] } }), runner);
       for (const type of ["alpha_user", "bravo_user"]) await send(emu, { method: "PUT", path: `managed/${type}/${id}`, headers: { "If-None-Match": "*" }, body: {
         userName: "ub", givenName: "alice", telephoneNumber: "+61-2-9999-9999", frIndexedDate1: "2026-01-01T10:00:00+11:00",
         frUnindexedDate2: "2026-01-01T00:00:00Z", frIndexedInteger1: 7, frIndexedInteger2: 7, custom_n: 7 } }, 201);

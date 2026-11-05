@@ -4,7 +4,7 @@ import { IdmConfig, IdmEmulator } from "../../../src/idm/index.ts";
 export interface LateState { release: () => void; done: Promise<void>; runner: RhinoRunner }
 const shared = process as typeof process & { rhinoBackstopLate?: LateState };
 const runner = await RhinoRunner.spawn();
-const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "w", schema: { properties: {} } }] } }), runner);
+const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "w", schema: { properties: {} } }] } }), runner);
 let release!: () => void;
 const gate = new Promise<void>((resolve) => { release = resolve; });
 let finish!: () => void;

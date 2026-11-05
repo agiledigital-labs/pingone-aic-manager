@@ -51,13 +51,15 @@ export type ConfigInput = {
    */
   readonly repo?: Readonly<Record<string, JsonValue>>;
   /**
-   * The tenant's `config/sync`, as read (`{ mappings: [...] }`). Optional: it is how the emulator
-   * learns which managed types are a mapping's source. A committed write on such a type runs the
-   * mapping on AIC (implicit sync, docs/api/16-sync-mappings.md), which the emulator does not
-   * model, so that write is the harness fault `idm-implicit-sync/<mapping>`. Without it every
-   * write records the assumption that no mapping has the type as its source.
+   * The tenant's `config/sync`, as read (`{ mappings: [...] }`). **Required** (E15c): it is how the
+   * emulator learns which managed types are a mapping's source, and a committed write on such a
+   * type runs the mapping on AIC (implicit sync, docs/api/16-sync-mappings.md), which the emulator
+   * does not model — so that write is the harness fault `idm-implicit-sync/<mapping>`. Pass
+   * `{ mappings: [] }` to state that the tenant has no mappings; that is the caller's claim, like
+   * `complete.managed`. There is no default, because a missing `sync` would otherwise be an
+   * unrecorded assumption on every managed write.
    */
-  readonly sync?: Readonly<Record<string, JsonValue>>;
+  readonly sync: Readonly<Record<string, JsonValue>>;
 };
 export type RestRequest = {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

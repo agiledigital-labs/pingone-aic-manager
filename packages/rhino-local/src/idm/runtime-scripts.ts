@@ -6,7 +6,7 @@
  * fetched from the tenant and committed, or a loader function — and a script
  * the provider does not supply is the harness fault `idm-runtime-script/<path>`.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { emulationFailure } from "../emulation.ts";
@@ -79,7 +79,13 @@ function index(root: string): Map<string, Entry> {
       else entries.set(key, dirent.isFile() ? "file" : "other");
     }
   };
-  walk(root, "");
+  try {
+    walk(root, "");
+  } catch (error) {
+    // An unreadable subdirectory (EACCES) is a configuration error like a missing root, so it
+    // gets the same TypeError shape rather than a raw fs error from the constructor.
+    throw new TypeError(`Invalid IDM runtimeScripts: cannot index ${root}: ${(error as Error).message}`);
+  }
   return entries;
 }
 
@@ -87,6 +93,8 @@ export class RuntimeScripts {
   readonly #provider: RuntimeScriptProvider | undefined;
   /** The directory provider's resolved root, its entries and a lower-cased lookup for case hints. */
   readonly #root: string | undefined;
+  /** `#root` with its links resolved, which a read's realpath must sit under (P3-A). */
+  readonly #realRoot: string | undefined;
   readonly #entries = new Map<string, Entry>();
   readonly #folded = new Map<string, string>();
   readonly #read = new Map<string, string>();
@@ -113,6 +121,7 @@ export class RuntimeScripts {
     try { directory = statSync(root).isDirectory(); } catch { directory = false; }
     if (!directory) throw new TypeError(`Invalid IDM runtimeScripts: ${root} is not a directory`);
     this.#root = root;
+    this.#realRoot = realpathSync(root);
     for (const [key, entry] of index(root)) {
       this.#entries.set(key, entry);
       this.#folded.set(key.toLowerCase(), key);
@@ -174,16 +183,49 @@ export class RuntimeScripts {
     if (entry === "directory") return { absent: `the provider directory ${root} has a directory, not a file, by that name` };
     if (entry === undefined) {
       const near = this.#folded.get(path.toLowerCase());
-      return { absent: near === undefined ? `the provider directory ${root} has no such file` :
-        `the provider directory ${root} has no such file (it has ${near}, which differs in case; AIC's lookup is case-sensitive)` };
+      const indexed = `the provider directory ${root} has no such file as indexed when the emulator was constructed (a file added afterwards is not seen)`;
+      return { absent: near === undefined ? indexed : `${indexed}; it has ${near}, which differs in case, and AIC's lookup is case-sensitive` };
     }
-    let text: string;
+    return this.#readIndexed(path, segments, reach, evidence);
+  }
+
+  /**
+   * Read an indexed regular file without following a link that replaced it, or one of its
+   * directories, after construction (review e15-02 P3-A). The open refuses a final-component
+   * link (`O_NOFOLLOW`) and never blocks on a FIFO (`O_NONBLOCK`). The bytes come from that
+   * descriptor, and it is accepted only if it is a regular file whose identity (dev, ino) is the
+   * file now at the canonical path under the resolved root. A directory swapped for a link
+   * between the open and that check moves the realpath or the identity, so it is refused too.
+   */
+  #readIndexed(path: string, segments: string[], reach: string, evidence: Evidence): Lookup {
+    const root = this.#root as string;
+    const full = join(root, ...segments);
+    const linked = { refused: `it, or a directory on its path, was replaced by a symbolic link in the provider directory ${root} after the emulator was constructed; the directory provider follows none` };
+    let fd: number;
     try {
-      text = readFileSync(join(root, ...segments), "utf8");
+      fd = openSync(full, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") return linked;
       return missing(evidence, `reading ${path} from the provider directory ${root} (${reach}) failed: ${(error as Error).message}`, RUNTIME_SCRIPT_PROVIDER_FAULT);
     }
-    this.#read.set(path, text);
-    return { text };
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isFile()) return { refused: `it is no longer a regular file in the provider directory ${root}` };
+      let here: { dev: number; ino: number } | undefined;
+      try {
+        if (realpathSync(full) === join(this.#realRoot as string, ...segments)) here = statSync(full);
+      } catch { here = undefined; }
+      if (here === undefined || here.dev !== opened.dev || here.ino !== opened.ino) return linked;
+      let text: string;
+      try {
+        text = readFileSync(fd, "utf8");
+      } catch (error) {
+        return missing(evidence, `reading ${path} from the provider directory ${root} (${reach}) failed: ${(error as Error).message}`, RUNTIME_SCRIPT_PROVIDER_FAULT);
+      }
+      this.#read.set(path, text);
+      return { text };
+    } finally {
+      closeSync(fd);
+    }
   }
 }

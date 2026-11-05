@@ -33,7 +33,7 @@ it("R2 #1 runtime missing helpers also escape catches", async () => {
 
 it("R2 new1 policy mapping retains missing and prevents catch continuation", async () => {
     expectEmulationFailure("policy helper");
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [simple] } }), runner, { policy: () => {
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [simple] } }), runner, { policy: () => {
     throw new HostCallError({ class: "example.Policy", code: 501, message: "policy unavailable", detail: {}, missing: ["policy helper"] });
   } });
   const response = await runner.eval({ engine: "idm", source: "try {openidm.create('managed/widget','one',{});} catch(e) {} 'passed';" }, { onCall: emu.onCall });
@@ -48,7 +48,7 @@ it("R2 new2 admission refusal remains fatal through hook and endpoint mappings",
     expectEmulationFailure(/rhino-local: concurrent job limit exceeded \(\d+\)/);
   const limited = await RhinoRunner.spawn({ maxConcurrentJobs: 1 });
   try {
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ ...simple, onRetrieve: js("object.text='hook';") }] }, endpoints: {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ ...simple, onRetrieve: js("object.text='hook';") }] }, endpoints: {
       example: js("try {openidm.read('managed/widget/one');} catch(e) {({passed:true});}"),
     } }), limited);
     await create(emu);
@@ -65,7 +65,7 @@ it("R2 harness timeout remains fatal through hook and endpoint mappings", async 
     ...(job.source.includes("round2-timeout") ? { timeoutMs: 80 } : {}),
   }, options));
   try {
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ ...simple, onRetrieve: js("while(true){} /* round2-timeout */") }] }, endpoints: {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ ...simple, onRetrieve: js("while(true){} /* round2-timeout */") }] }, endpoints: {
       example: js("try {openidm.read('managed/widget/one');} catch(e) {({passed:true});}"),
     } }), runner);
     await create(emu);
@@ -104,7 +104,7 @@ it("R2 an adapter cannot swallow a nested protocol rejection", async () => {
 
 
 it.each(["__proto__", "constructor", "toString", "prototype"])("R2 new5 unconfigured %s endpoint names are own lookups", async (name) => {
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {}, complete: { endpoints: true } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {}, complete: { endpoints: true } }), runner);
   for (const prefix of ["endpoint", "config/endpoint"]) {
     const result = await emu.request({ method: "GET", path: `${prefix}/${name}` });
     expect(result.status).toBe(404);
@@ -124,7 +124,7 @@ it.each(["__proto__", "constructor", "prototype"])("R2 new5 property %s hooks re
 
 it("R2 new5 configured prototype-named routes work and action names stay own", async () => {
     expectEmulationFailure("managed object action: toString");
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ ...simple, actions: {} }] }, endpoints: {
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ ...simple, actions: {} }] }, endpoints: {
     ["__proto__"]: js("({ok:true});"),
   } }), runner);
   expect((await emu.request({ method: "GET", path: "endpoint/__proto__" })).body).toMatchObject({ ok: true });
@@ -140,7 +140,7 @@ it.each(["PATCH", "PUT", "DELETE"] as const)("R2 new6 %s cannot overwrite a recr
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let pause = true;
   const hook = js("openidm.create('managed/gate',null,{pause:true});");
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [
     { ...simple, onUpdate: hook, onDelete: hook },
     { name: "gate", schema: { properties: { pause: { type: "boolean" } } } },
   ] } }), runner, { policy: async ({ object }) => {
@@ -185,7 +185,7 @@ it("R2 forks accept parent cookies and re-evaluate their own divergent rows", as
 
 
 it("R2 new8 internal endpoint numbers survive while HTTP output stays measured", async () => {
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {
     inner: js("({n:NaN,inf:Infinity,received:typeof request.content.n,receivedNan:request.content.n!==request.content.n,receivedInf:request.content.inf===Infinity});"),
     outer: js("var r=openidm.action('endpoint/inner','go',{n:NaN,inf:Infinity}); ({received:r.received,receivedNan:r.receivedNan,receivedInf:r.receivedInf,numeric:typeof r.n==='number',nan:r.n!==r.n,inf:r.inf===Infinity});"),
   } }), runner);
@@ -199,7 +199,7 @@ it("R2 new8 internal endpoint numbers survive while HTTP output stays measured",
 
 it.each(["source", "bindings", "policy"] as const)("R2 error-conversion audit: %s failures cannot become tenant success", async (boundary) => {
     expectEmulationFailure(boundary === "source" ? /java.lang.IllegalArgumentException: source must be a string/ : boundary === "bindings" ? /IDM protocol setup: unknown binding alias target: absent/ : /Error: policy adapter crashed/);
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [simple] } }), runner, { policy: () => { throw new Error("policy adapter crashed"); } });
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [simple] } }), runner, { policy: () => { throw new Error("policy adapter crashed"); } });
   const result = await runner.eval({ engine: "idm", source: "try{openidm.read('audit')}catch(e){} 'passed'" }, {
     onCall: async (call) => {
       if (boundary === "policy") return emu.onCall({ ...call, method: "create", args: ["managed/widget", "audit", {}] });

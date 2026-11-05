@@ -4,7 +4,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { HostCallError } from "../runner.ts";
 import type { JsonValue } from "../protocol.ts";
-import type { JsonStorage } from "./config.ts";
+import type { JsonStorage, SyncMapping } from "./config.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
@@ -44,14 +44,14 @@ export class ManagedStore {
   /** Whether a type's top-level property is JSON in DS, and through which mapping (`IdmConfig.jsonStored`). */
   private readonly jsonStored: (type: string, field: string) => JsonStorage;
   /** The sync mappings with this type as source (`IdmConfig.syncMappings`). */
-  private readonly syncMappings: (type: string) => readonly string[] | undefined;
+  private readonly syncMappings: (type: string) => readonly SyncMapping[];
   constructor(
     records: Map<string, Document>,
     scripts: Scripts,
     evidence: Evidence,
-    policy?: PolicyEvaluator,
-    jsonStored: (type: string, field: string) => JsonStorage = () => false,
-    syncMappings: (type: string) => readonly string[] | undefined = () => undefined,
+    policy: PolicyEvaluator | undefined,
+    jsonStored: (type: string, field: string) => JsonStorage,
+    syncMappings: (type: string) => readonly SyncMapping[],
   ) {
     this.records = records;
     this.scripts = scripts;
@@ -64,23 +64,27 @@ export class ManagedStore {
   /**
    * Implicit sync, checked immediately before a write commits. On AIC a committed managed write
    * on a mapping's source runs that mapping (its onCreate/onUpdate/onDelete/onLink scripts and
-   * the target write) synchronously, measured 2026-06-19 (docs/api/16-sync-mappings.md, "Recon vs.
-   * implicit (live) sync"). Nothing here runs a mapping, so a write that would is a fault; it is
-   * raised before the store changes.
+   * the target write): synchronously by default, measured 2026-06-19, and from the sync queue
+   * when `queuedSync` is enabled, measured asynchronous 2026-07-29 (docs/api/16-sync-mappings.md).
+   * What `enableSync: false` does to implicit sync is unmeasured. Nothing here runs a mapping in
+   * any of those modes, so a write that would is a fault, raised before the store changes; the
+   * message says per mapping what AIC is measured (or not) to do, so no one "fixes" a test to
+   * expect synchronous target state from a queued mapping (review e15-02 P3-C).
    */
   private implicitSync(type: ManagedType, method: string): void {
     const mappings = this.syncMappings(type.name);
-    if (mappings === undefined) {
-      this.evidence.assumed("no config/sync supplied: no sync mapping is assumed to have this type as its source, so no implicit sync runs");
-      return;
-    }
     if (mappings.length === 0) {
       this.evidence.assumed("the supplied config/sync has no mapping with this type as its source, so no implicit sync runs");
       return;
     }
-    missing(this.evidence, `implicit sync: managed/${type.name} is the source of sync mapping${mappings.length > 1 ? "s" : ""} ${mappings.join(", ")}; ` +
-      `a committed ${method} runs ${mappings.length > 1 ? "them" : "it"} on AIC (docs/api/16-sync-mappings.md), and the emulator does not model sync`,
-    `idm-implicit-sync/${mappings[0]}`);
+    const how = (mapping: SyncMapping) => mapping.disabled
+      ? `${mapping.name} sets enableSync: false, and whether AIC then skips implicit sync for it is unmeasured`
+      : mapping.queued
+        ? `${mapping.name} has queuedSync enabled, so on AIC the ${method} enqueues it and the mapping runs asynchronously from the sync queue (measured 2026-07-29)`
+        : `on AIC ${mapping.name} runs synchronously within the committed ${method} (measured 2026-06-19)`;
+    missing(this.evidence, `implicit sync: managed/${type.name} is the source of sync mapping${mappings.length > 1 ? "s" : ""} ${mappings.map((mapping) => mapping.name).join(", ")}; ` +
+      `${mappings.map(how).join("; ")} (docs/api/16-sync-mappings.md); the emulator models none of these, so the ${method} is refused before it commits`,
+    `idm-implicit-sync/${mappings[0]!.name}`);
   }
 
   /** Forks retain continuation credentials; offset cookies use each fork's current rows. */

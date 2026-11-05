@@ -9,7 +9,7 @@ it("cause coverage", async () => {
   const scenario = process.env.R5_CASE;
   if (scenario === "substring") {
     expectEmulationFailure(/require/);
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "w", schema: { properties: {} } }] } }), runner);
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "w", schema: { properties: {} } }] } }), runner);
     await emu.request({ method: "GET", path: "managed/w", query: { _queryId: "prefix-require-suffix" } });
     return;
   }

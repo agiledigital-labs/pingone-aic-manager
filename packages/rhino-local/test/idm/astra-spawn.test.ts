@@ -98,7 +98,7 @@ it.each(lanes)("Astra #7 %s snapshots shared log arguments while siblings mutate
 }, 60_000);
 
 it("Astra #5 REST provenance retains the supplied p20 measurement", async () => {
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {
     child: js("var t=spawn(function(){throw new Error('child-only')});t.join();({ok:true});"),
   } }), runner);
   const result = await emu.request({ method: "GET", path: "endpoint/child" });

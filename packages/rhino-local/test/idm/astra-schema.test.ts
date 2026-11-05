@@ -18,14 +18,14 @@ const cases: Array<[string, PropertyConfig]> = [
 ];
 it.each(cases)("Astra #3 refuses reached %s schema instead of storing plausible values", async (flag, declaration) => {
   expectEmulationFailure(`property behavior ${flag}: widget/secret`);
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: { secret: { type: "string", ...declaration } } } }] } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: { secret: { type: "string", ...declaration } } } }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: "try { openidm.create('managed/widget','a',{secret:'clear'}); } catch(e) {} 42;" }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
   expect(result.emulation?.missing).toContain(`property behavior ${flag}: widget/secret`);
 });
 it.each(["encryption", "secureHash"])("Astra #3 detects nested array item %s", async (flag) => {
   expectEmulationFailure(`property behavior ${flag}: widget/box/items/secret`);
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: {
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: {
     box: { type: "array", items: { type: "object", properties: { secret: { type: "string", [flag]: {} } } } },
   } } }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: "try { openidm.create('managed/widget','a',{box:[{secret:'clear'}]}); } catch(e) {} 42;" }, { onCall: emu.onCall });
@@ -34,12 +34,12 @@ it.each(["encryption", "secureHash"])("Astra #3 detects nested array item %s", a
 it.each(["isVirtual", "returnByDefault", "viewable", "scope"])("Astra #3 read reaches declared %s even on empty collections", async (flag) => {
   expectEmulationFailure(`property behavior ${flag}: widget/secret`);
   const declaration = cases.find(([key]) => key === flag)![1];
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: { secret: { type: "string", ...declaration } } } }] } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: { secret: { type: "string", ...declaration } } } }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: "try { openidm.query('managed/widget',{_queryFilter:'true'}); } catch(e) {} 42;" }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
 });
 it("Astra #3 alpha_user internal read/query expose encoded password while HTTP omits it", async () => {
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string" }, mail: { type: "string" } } } }] } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "alpha_user", schema: { properties: { password: { type: "string" }, mail: { type: "string" } } } }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: `
     var r=openidm.create('managed/alpha_user',null,{password:'secret',mail:'Mixed@Example.com'});
     var read=openidm.read('managed/alpha_user/'+r._id);
@@ -53,7 +53,7 @@ it.each(["enum", "policies", "required"])("Astra #3 declared %s policy cannot si
   const schema = { properties: { secret: { type: "string", ...(key === "enum" ? { enum: ["allowed"] } : key === "policies" ? { policies: [{ policyId: "valid-type" }] } : {}) } }, ...(key === "required" ? { required: ["secret"] } : {}) };
   const cause = `schema policy ${key}: ${key === "required" ? "widget" : "widget/secret"}`;
   expectEmulationFailure(cause);
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema }] } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: "openidm.create('managed/widget','a',{})" }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
   expect(result.emulation?.missing).toContain(cause);
@@ -61,7 +61,7 @@ it.each(["enum", "policies", "required"])("Astra #3 declared %s policy cannot si
 
 it("Astra #3 an empty enum is a declaration, not permission to accept anything", async () => {
   expectEmulationFailure("schema policy enum: widget/secret");
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: { secret: { type: "string", enum: [] } } } }] } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: { secret: { type: "string", enum: [] } } } }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: "try {openidm.create('managed/widget','a',{secret:'not-allowed'})} catch(e) {} 42;" }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
 });

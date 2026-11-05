@@ -16,7 +16,7 @@ for (const complete of [{ managed: true }, { endpoints: true }, { managed: true,
     const normalized = path?.replace(/^\/?(?:openidm\/)?/, "").replace(/\/$/, "");
     const cause = `resource route: ${normalized}`;
     expectEmulationFailure(cause);
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {}, complete }), runner);
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {}, complete }), runner);
     const result = await runner.eval({ engine: "idm", source: `try {openidm.${method}(${JSON.stringify(path)}${method === "query" ? ",{_queryFilter:'true'}" : ""})} catch(e) {} 42;` }, { onCall: emu.onCall });
     expect(result.outcome).not.toBe("ok");
     expect(result.emulation?.missing).toContain(cause);
@@ -30,7 +30,7 @@ for (const complete of [{ managed: true }, { endpoints: true }, { managed: true,
   it.each(["managed", "endpoint", "config", "config/endpoint"])(`A5 create cannot append an id to bypass root refusal: %s ${JSON.stringify(complete)}`, async (root) => {
     const cause = `resource route: ${root}`;
     expectEmulationFailure(cause);
-    const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: { actual: { type: "text/javascript", source: "({created:true});" } }, complete }), runner);
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: { actual: { type: "text/javascript", source: "({created:true});" } }, complete }), runner);
     for (const path of [root, `/openidm/${root}/`]) {
       const result = await runner.eval({ engine: "idm", source: `try {openidm.create(${JSON.stringify(path)},'actual',{})} catch(e) {} 42;` }, { onCall: emu.onCall });
       expect(result.outcome).not.toBe("ok");

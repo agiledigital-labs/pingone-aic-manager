@@ -72,7 +72,7 @@ function config(children: string[], source: string, outcomes = ["chosen"]): Jour
 function make(
   input: JourneyConfigInput,
   options: JourneyOptions = {},
-  idm = new IdmEmulator(new IdmConfig({ managed: { objects: [] } }), runner),
+  idm = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] } }), runner),
 ) {
   return new JourneyEmulator(new JourneyConfig(input), runner, idm, options);
 }
@@ -179,7 +179,7 @@ it.each([false, true])(
 );
 function widgets() {
   return new IdmEmulator(
-    new IdmConfig({
+    new IdmConfig({ sync: { mappings: [] },
       managed: { objects: [{ name: "widget", schema: { properties: { x: { type: "string" } } } }] },
     }),
     runner,
@@ -401,7 +401,7 @@ function flow(
 }
 function storage(required = false) {
   return new IdmEmulator(
-    new IdmConfig({
+    new IdmConfig({ sync: { mappings: [] },
       managed: {
         objects: [
           {
@@ -871,7 +871,7 @@ it.each([
 const USER_A = "00000000-0000-0000-0000-0000000000a1";
 async function alphaUser() {
   const idm = new IdmEmulator(
-    new IdmConfig({
+    new IdmConfig({ sync: { mappings: [] },
       managed: {
         objects: [
           {

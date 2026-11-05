@@ -7,7 +7,7 @@ let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
 function make(complete = false) {
-  return new IdmEmulator(new IdmConfig({
+  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] },
     managed: { objects: [{ name: "widget", schema: { properties: {} } }] },
     endpoints: {
       first: js("({absent:openidm.read('endpoint/fourth') === null});"),
@@ -60,18 +60,18 @@ it.each(["managed", "endpoints"] as const)("A4 #2 unknown %s query is missing un
 });
 it("A4 #2 completeness is per namespace and never changes missing ids in an implemented collection", async () => {
   expectEmulationFailure("resource route: endpoint/fourth");
-  const emu = new IdmEmulator(new IdmConfig({ managed: { objects: [{ name: "widget", schema: { properties: {} } }] }, endpoints: {}, complete: { managed: true } }), runner);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: {} } }] }, endpoints: {}, complete: { managed: true } }), runner);
   expect(await runner.eval({ engine: "idm", source: "openidm.read('managed/widget/absent')" }, { onCall: emu.onCall })).toMatchObject({ outcome: "ok", value: null });
   expect(await runner.eval({ engine: "idm", source: "openidm.read('managed/fourth/a')" }, { onCall: emu.onCall })).toMatchObject({ outcome: "ok", value: null });
   const unknown = await runner.eval({ engine: "idm", source: "openidm.read('endpoint/fourth')" }, { onCall: emu.onCall });
   expect(unknown.outcome).not.toBe("ok");
 });
 it.each([null, [], Object.setPrototypeOf([], null) as unknown, false, 0].map((value) => [value]))("A4 #2 malformed completeness container fails construction: %j", (complete) => {
-  expect(() => new IdmEmulator(new IdmConfig({ managed: { objects: [] }, complete } as unknown as ConfigInput), runner)).toThrow("Invalid IDM configuration: complete must be a plain object");
+  expect(() => new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, complete } as unknown as ConfigInput), runner)).toThrow("Invalid IDM configuration: complete must be a plain object");
 });
 it.each([{ endpoints: "true" }, { managed: 1 }, { system: true }])("A4 #2 malformed completeness flags fail construction: %j", (complete) => {
-  expect(() => new IdmEmulator(new IdmConfig({ managed: { objects: [] }, endpoints: {}, complete } as unknown as ConfigInput), runner)).toThrow("Invalid IDM configuration: complete supports only boolean managed/endpoints flags");
+  expect(() => new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, endpoints: {}, complete } as unknown as ConfigInput), runner)).toThrow("Invalid IDM configuration: complete supports only boolean managed/endpoints flags");
 });
 it("A4 #2 endpoint completeness requires an explicit map, including an empty one", () => {
-  expect(() => new IdmEmulator(new IdmConfig({ managed: { objects: [] }, complete: { endpoints: true } }), runner)).toThrow("Invalid IDM configuration: complete.endpoints requires an endpoints map");
+  expect(() => new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [] }, complete: { endpoints: true } }), runner)).toThrow("Invalid IDM configuration: complete.endpoints requires an endpoints map");
 });

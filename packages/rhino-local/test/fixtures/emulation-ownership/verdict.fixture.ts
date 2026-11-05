@@ -5,7 +5,7 @@ import { IdmConfig, IdmEmulator } from "../../../src/idm/index.ts";
 import * as harness from "../../../src/harness/vitest.ts";
 
 let runner: RhinoRunner;
-const config = new IdmConfig({ managed: { objects: [{ name: "w", schema: { properties: {} } }] }, endpoints: {
+const config = new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "w", schema: { properties: {} } }] }, endpoints: {
   tenant: { type: "text/javascript", source: "throw {code:501,message:'tenant error'};" },
 } });
 const make = () => new IdmEmulator(config, runner);
