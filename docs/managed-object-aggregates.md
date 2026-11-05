@@ -163,7 +163,14 @@ The swap covers the parent's own fields. It does not cover:
   `<parent>/<rel>/<edgeId>` changing `_refProperties` does not run the parent's
   hooks. On a mapped pair the parent's `_rev` moves anyway, because the link
   lives on the parent's entry, so an `If-Match` on the parent collides with it.
-  On a generic pair the parent's `_rev` stays put.
+  On a generic pair the parent's `_rev` stays put. Concurrent patches of
+  different edges on a mapped pair also drop edges. Ten at once lost edges on
+  every run (two to six of the ten), with `notify` on the node, with `notify` on
+  `resourceCollection`, and with the flags off. The child record stayed; the
+  edge was gone from both sides and a read about 30 s later did not bring it
+  back. The 404's transaction logged no `DELETE`. The same ten patches one at a
+  time kept every edge, two concurrent patches kept both, and the generic pair
+  kept all ten.
 - **Notification flags.** Where the flag sits decides who hears the write.
   `notifySelf` on the relationship node runs the origin object's hooks for a
   write through that relationship's own URL. `notify` on the relationship node

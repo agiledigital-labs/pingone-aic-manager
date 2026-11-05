@@ -803,7 +803,9 @@ and 10 `postUpdate`s, with a repeated `oldRev`, which is the revision-less
 through 10, all inactive). The mapped final `derived` matches a nine-edge
 relationship in count and active state, and the sum is 50 rather than 55. One
 mapped edge was absent at the end. The 404 body was not kept. The wanted count
-of 10 was not what the mapped pair stored.
+of 10 was not what the mapped pair stored. Round 3 repeated this cell. The
+missing edge was not a one-off: see "E21 `cas` repeated" below. This row stays
+the single sample from round 2.
 
 ### Not measured
 
@@ -815,3 +817,46 @@ was not its own row. The propagation of a notification received through one
 relationship out along another was not isolated. A child script that assigns to
 `object` was not the script measured, so a notified child run that would move
 the child's `_rev` was not measured.
+
+## E21 `cas` repeated
+
+Ten concurrent `PATCH`es of `_refProperties/status` on ten different edges,
+fresh parent and children each repetition. Before the burst every edge was
+listed from the parent and from the child, under the same edge id. The direct
+`PATCH` control fired in every configuration. A repetition that lost an edge
+waited about 30 s and read both sides again.
+
+| Cell                  | Flags                              | Reps | HTTP (200/404)          | Edges                   | Came back | `derived`                           |
+| --------------------- | ---------------------------------- | ---- | ----------------------- | ----------------------- | --------- | ----------------------------------- |
+| mapped                | `NOTIFY=1` node                    | 5    | 6/4, 4/6, 6/4, 6/4, 7/3 | 10 → 6, 4, 6, 6, 7      | no        | matches the edges left, not 10/55/0 |
+| mapped                | none                               | 5    | 4/6, 6/4, 7/3, 5/5, 6/4 | 10 → 4, 6, 7, 5, 6      | no        | stayed 9/45/9                       |
+| generic               | `NOTIFY=1` node                    | 5    | 10/0 every rep          | 10 → 10                 | —         | 10/55/0 every rep                   |
+| generic               | none                               | 5    | 10/0 every rep          | 10 → 10                 | —         | stayed 9/45/9                       |
+| mapped                | `NOTIFY=1` on `resourceCollection` | 5    | 7/3, 8/2, 6/4, 5/5, 6/4 | 10 → 7, 8, 6, 5, 6      | no        | matches the edges left, not 10/55/0 |
+| mapped, one at a time | none                               | 5    | 10/0 every rep          | 10 → 10, all `inactive` | —         | stayed 9/45/9                       |
+| mapped, N = 2         | none                               | 5    | 2/0 every rep           | 2 → 2, both `inactive`  | —         | stayed 1/1/1                        |
+
+Round 2's lost mapped edge reproduced. Every concurrent mapped burst of ten lost
+edges, including with the flags cleared and with `notify` on
+`resourceCollection`. The generic pair kept all ten in both flag states. The
+edges that remained were `inactive`. The edges that 404'd were gone from the
+parent's list and from the child's relationship. The child record was still
+there. A read about 30 s later did not bring the edge back.
+
+The 404 body was `code` 404, `reason` `Not Found`, `message` naming that edge id
+as not found. Each 404 transaction's `idm-access` event was `PATCH` `FAILED`
+404, and `idm-activity` had no writes under it: no `DELETE`, no
+relationship-removed. A scan of `idm-core` for `ERROR` over the burst window
+finished with no matches. Where the notification ran, `derived` matched the
+edges still stored. Where it did not, `derived` stayed at the value the
+link-adds had left (count 9, sum 45, active 9 for ten children; count 1, sum 1,
+active 1 for two), which is the hook running before the last link is visible,
+not a count of the edges the burst lost.
+
+Sending the same ten mapped patches one after another kept every edge, five
+times. Two concurrent mapped patches kept both edges, five times. The loss shows
+up on this pair when many edge patches overlap. The step from 2 to 10 was not
+filled in.
+
+The 404 is not the harness patching an id that was already missing. The
+before-read listed that id from both sides, and the response names that same id.

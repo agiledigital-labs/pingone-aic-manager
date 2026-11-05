@@ -403,6 +403,56 @@ and not a missing edge.
 `NOTIFY=1` with `notify` on the child's `resourceCollection` and `notifySelf` on
 the parent's relationship node. The control fired. Five repetitions lost edges
 (10 down to 7, 8, 6, 5 and 6). Same 404, both sides, nothing came back, no
-`DELETE`, no `idm-core` `ERROR`. `derived` matched the edges that remained. Two
-narrowing runs are in progress: the same mapped burst with the flags off, sent
-one patch at a time, and the same burst with N = 2.
+`DELETE`, no `idm-core` `ERROR`. `derived` matched the edges that remained.
+
+### Narrowing
+
+Same mapped pair, flags off. Five repetitions of the ten patches sent one at a
+time: every request 200, every edge kept, every edge `inactive`. Five
+repetitions of two concurrent patches: every request 200, both edges kept, both
+`inactive`. `derived` stayed at the link-add value in both, which is what the
+flags-off cells do when no edge is lost. The step from 2 to 10 was not run.
+
+### Answer
+
+A concurrent edge-attribute patch on a mapped pair can lose an edge. Round 2's
+single 404 was the mild end of that, not a transient and not a harness that
+patched an id already missing. The generic pair does not lose edges under the
+same burst. The notification hook is not what removes them.
+
+### Divergences
+
+`casrepeat` is a new part. The round-2 `cas` one-shot is unchanged. The
+collection cell is the harness's `FLAG_AT=collection` shape: `notifySelf` stays
+on the relationship node, and `notify` moves to `resourceCollection`. The two
+narrowing runs are stored beside the matrix, not over it. The positive control
+is a plain-field `PATCH`, as in round 2. `idm-core` was a finished `logs grep`
+for `ERROR` over the burst window, not a full dump of that source.
+
+### Teardown
+
+`node setup.mjs teardown` exited 0. `target tenant: sandbox` lines and Node's
+`NO_COLOR` warning omitted:
+
+```
+alpha_poc_agg: deleted 42 record(s)
+alpha_poc_child: deleted 317 record(s)
+alpha_poc_sink: deleted 1724 record(s)
+aic error: Config error: refusing relationship delete alpha_poc_agg.children --remove-mapping; nothing was written: refusing to repair alpha_poc_agg.children: config/repo.ds reads through it from alpha_poc_child.parent (also stale, but repair refuses it too: it is its object's last mapping). Removing a mapping another one reads through is unmeasured; refusing to repair alpha_poc_child.parent: it is the last mapped property of managed/alpha_poc_child, and removing an object's last mapping is unmeasured
+children: delete failed: Command failed: aic managed relationship delete alpha_poc_agg.children --remove-mapping
+managed object alpha_poc_agg deleted; undo it from the TUI history overlay
+also changed: alpha_poc_child.gparent (removed)
+also changed: alpha_poc_child.owner (removed)
+also changed: alpha_poc_child.parent (removed)
+also changed: alpha_poc_child.peerOf (removed)
+managed object alpha_poc_child deleted; undo it from the TUI history overlay
+managed object alpha_poc_sink deleted; undo it from the TUI history overlay
+endpoint pocagg: 404
+endpoint poctrace: 404
+leftover POC types: none; config equals backup: true
+repo.ds POC mappings left: managed/alpha_poc_agg,managed/alpha_poc_child; genericMapping equals run1/repo.ds-after.json: true
+```
+
+`relationship delete --remove-mapping` refused and wrote nothing, as in rounds 1
+and 2. `config/managed` equals the backup. `genericMapping` equals
+`.state/run1/repo.ds-after.json`.
