@@ -7,6 +7,7 @@ import type {
   Expect,
   Given,
 } from "../../src/case/types.ts";
+import type { EnvProfile } from "../../src/profile/types.ts";
 import { repoRoot } from "../../src/paths.ts";
 
 /** Load an AM LIBRARY fixture body for `require()` by script name. */
@@ -112,6 +113,8 @@ export interface RealEntry {
   libraries?: Record<string, string>;
   /** Present when local and live measurably differ; see {@link KnownGap}. */
   gap?: KnownGap;
+  /** The environment the case runs against, when it depends on which managed types exist. */
+  profile?: EnvProfile;
 }
 
 export function realCase(input: {
@@ -124,6 +127,7 @@ export function realCase(input: {
   libraries?: Record<string, string>;
   rewrites?: readonly Rewrite[];
   gap?: KnownGap;
+  profile?: EnvProfile;
 }): RealEntry {
   const init: {
     name: string;
@@ -155,6 +159,9 @@ export function realCase(input: {
   }
   if (input.gap !== undefined) {
     entry.gap = input.gap;
+  }
+  if (input.profile !== undefined) {
+    entry.profile = input.profile;
   }
   return entry;
 }

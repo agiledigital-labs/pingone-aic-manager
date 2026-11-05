@@ -1030,6 +1030,24 @@ it("measured utils members run locally and say so", async () => {
       source: "docs/api/12-script-bindings-matrix.md (utils, utils.crypto.subtle)",
     });
 });
+// Errors AIC raises and the runtime emulates stay catchable in a journey too:
+// only a harness fault is uncatchable there.
+it.each([
+  ["request map keySet (class shutter)", "requestHeaders.keySet()"],
+  ["consentMappingCallback without fields", "callbacksBuilder.consentMappingCallback({},'m',true)"],
+])("an emulated AIC error stays catchable in a journey: %s", async (_name, call) => {
+  const result = await request(
+    make(
+      `var m='none';try{${call};}catch(e){m=String(e);}` +
+        "if(m!=='none'){" +
+        SUCCEED +
+        "}else{action.goTo('false');}",
+      ["true", "false"],
+      { true: SUCCESS, false: FAILURE },
+    ),
+  );
+  expect(result.status).toBe(200);
+});
 it.each([
   ["measured", "utils.crypto.randomUUID(1)", "org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService.randomUUID(number)"],
   ["introspected", "logger.info()", "org.forgerock.openam.scripting.logging.ScriptedLoggerWrapper.info()"],
