@@ -100,6 +100,22 @@ const STATUS_TIMEOUT_MS = 2_000;
  * so a marker split across two `data` chunks is still seen. The status check
  * on return is the authority; this only stops lending sooner.
  */
+/**
+ * The lend decision, from a JVM's status answer and its process-side state.
+ * Fail-closed: no answer, or an answer missing a field, is not lendable — so
+ * each check compares with `=== false` / `=== 0` rather than testing falsiness.
+ * @internal Exported for its unit test.
+ */
+export function lendable(status: Partial<Status> | undefined, usable: boolean): boolean {
+  return (
+    status !== undefined &&
+    status.active === 0 &&
+    status.retired === false &&
+    status.unshuttered === false &&
+    usable
+  );
+}
+
 export class RetirementWatch {
   #partial = "";
   retired = false;
@@ -179,13 +195,7 @@ class PooledJvm {
       this.write(JSON.stringify({ id, op: STATUS_OP }));
     });
     if (status?.retired === true) this.retired = true;
-    return (
-      status !== undefined &&
-      status.active === 0 &&
-      status.retired === false &&
-      status.unshuttered === false &&
-      this.usable
-    );
+    return lendable(status, this.usable);
   }
 
   attach(client: Socket): void {

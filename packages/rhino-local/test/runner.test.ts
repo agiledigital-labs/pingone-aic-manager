@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LaneDivergenceError, RhinoRunner, RhinoRunnerExitError } from "../src/runner.ts";
+import { decisionNodeClassAllowList } from "../src/bindings/allowlist.ts";
 import { cacheDir, ensureRhinoJar, ensureRunnerClasses, EXPECTED_ENVIRONMENT } from "../src/jvm.ts";
 
 describe("RhinoRunner", () => {
@@ -45,6 +46,17 @@ describe("RhinoRunner", () => {
     });
     expect(response.outcome).toBe("ok");
     expect(response.value).toBe(100);
+  });
+
+  // The shutter always admits org.mozilla.javascript, so a shuttered script
+  // can reach the global ContextFactory; it must not be able to change it.
+  it("hands a shuttered script a sealed global ContextFactory", async () => {
+    const response = await runner.eval({
+      source: "String(Packages.org.mozilla.javascript.ContextFactory.getGlobal().isSealed())",
+      classAllowList: decisionNodeClassAllowList(),
+      timeoutMs: 2_000,
+    });
+    expect(response.value).toBe("true");
   });
 
   it("compiles and runs a trivial script", async () => {
