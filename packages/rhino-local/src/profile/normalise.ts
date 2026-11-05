@@ -32,7 +32,7 @@ export function normaliseManagedConfig(
     if (!isPlainObject(entry) || typeof entry.name !== "string") {
       throw new ProfileShapeError("managed object entry has no `name`");
     }
-    out[entry.name] = normaliseObject(entry.name, entry.schema);
+    out[entry.name] = normaliseObject(entry.name, entry);
   }
   return {
     tenant: meta.tenant,
@@ -42,13 +42,15 @@ export function normaliseManagedConfig(
   };
 }
 
-function normaliseObject(name: string, schema: unknown): ObjectSchema {
+function normaliseObject(name: string, entry: Record<string, unknown>): ObjectSchema {
+  const schema = entry.schema;
+  const hooks = hookNames(entry);
   if (!isPlainObject(schema)) {
     // An object with no schema block is real (some shipped types carry none).
     // Record it as existing with no properties rather than dropping it: type
     // EXISTENCE is what distinguishes an AIC `null` from a fixture typo, and
     // that distinction must not depend on how richly the type is described.
-    return { name, properties: {}, required: [] };
+    return { name, properties: {}, required: [], hooks };
   }
   const properties: Record<string, PropertySchema> = {};
   if (isPlainObject(schema.properties)) {
@@ -59,7 +61,7 @@ function normaliseObject(name: string, schema: unknown): ObjectSchema {
   const required = Array.isArray(schema.required)
     ? schema.required.filter((item): item is string => typeof item === "string")
     : [];
-  return { name, properties, required };
+  return { name, properties, required, hooks };
 }
 
 function normaliseProperty(value: unknown): PropertySchema {
@@ -81,7 +83,28 @@ function normaliseProperty(value: unknown): PropertySchema {
   if (targets.length > 0) {
     out.resourceCollection = targets;
   }
+  const hooks = hookNames(value);
+  if (hooks.length > 0) {
+    out.hooks = hooks;
+  }
+  if (Array.isArray(value.policies) && value.policies.length > 0) {
+    // A policy entry without a string policyId is still a policy AIC runs.
+    out.policies = value.policies.map((policy) =>
+      isPlainObject(policy) && typeof policy.policyId === "string" ? policy.policyId : "?"
+    );
+  }
   return out;
+}
+
+/**
+ * Script hook names on a managed object or property, without their bodies. Any `on…`/`post…` key
+ * holding an object counts, so a hook name this harness does not know is recorded rather than
+ * dropped — the script tester faults writes on it instead of passing them (E15b).
+ */
+function hookNames(config: Record<string, unknown>): string[] {
+  return Object.keys(config)
+    .filter((key) => /^(on|post)[A-Z]\w*$/.test(key) && isPlainObject(config[key]))
+    .sort();
 }
 
 /**

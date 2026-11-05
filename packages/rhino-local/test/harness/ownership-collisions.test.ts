@@ -40,8 +40,17 @@ const profile: EnvProfile = {
       name: "alpha_user",
       required: [],
       properties: { givenName: { type: "string", enum: ["Original"] } },
+      hooks: [],
     },
   },
+};
+// The same type without the enum. Since E15b a script write to a type declaring
+// a policy faults (`openidm-managed-policy/alpha_user`; AIC would refuse
+// "invalid" as VALID_ENUM_VALUE), so the write runs under this profile and the
+// follow-up seed check under `profile` still proves givenName stayed ordinary.
+const writable: EnvProfile = {
+  ...profile,
+  objects: { alpha_user: { name: "alpha_user", required: [], properties: { givenName: { type: "string" } }, hooks: [] } },
 };
 
 function mutation(method: string, key: string): string {
@@ -133,7 +142,7 @@ describe("ownership collision checks on IDM writes", () => {
           script: mutation(method, "givenName") + 'action.goTo("true");',
           expect: { outcome: "true", allowUndeclared: { openidmWrites: true } },
         }),
-        { profile },
+        { profile: writable },
       );
       expect(result.verdict.pass, result.verdict.summary).toBe(true);
       expect(result.effects.identityCustomAttrs).toEqual({

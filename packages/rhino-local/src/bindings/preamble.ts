@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
 import type { EnvProfile } from "../profile/types.ts";
+import { managedWriteFaults } from "../profile/write-guard.ts";
 import { bindingsCrestFilterPath, bindingsIdentityPolicyPath, bindingsRuntimePath, generatedJsPath } from "../paths.ts";
 
 export interface MockPreambleOptions {
@@ -11,9 +12,10 @@ export interface MockPreambleOptions {
    */
   libraries?: Record<string, string>;
   /**
-   * Pulled environment schema. Only the set of declared object types crosses
-   * into the sandbox — every schema rule is enforced in the Node layer, so
-   * there is one implementation of each rather than an AM-safe copy.
+   * Pulled environment schema. Only the set of declared object types, and the
+   * per-type write faults `profile/write-guard.ts` decides (E15b), cross into
+   * the sandbox — every schema rule is decided in the Node layer, so there is
+   * one implementation of each rather than an AM-safe copy.
    */
   profile?: EnvProfile;
 }
@@ -81,6 +83,7 @@ function seedAndOverrides(
     seed.knownTypes = known;
     seed.profileTenant = options.profile.tenant;
     seed.profilePulledAt = options.profile.pulledAt;
+    seed.managedWriteFaults = managedWriteFaults(options.profile);
   }
   const overrides = Object.entries(given.bindingOverrides ?? {})
     .map(([name, expression]) => `${name} = (${expression});`)
