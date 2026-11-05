@@ -701,9 +701,24 @@ per lease a worker holds at once. A borrowed JVM is returned at `afterAll` and
 lent again only if it is idle: one that crashed, retired itself after a spawned
 thread survived cleanup, or still has a job running (a lease closed while a
 case was still executing) is discarded, and the next file gets a fresh JVM.
-Isolation does not depend on the JVM: every case still runs in a fresh
-`initStandardObjects()` scope, and only compiled code is shared
-(`test/harness/isolation.e2e.test.ts` and `pool-files.e2e.test.ts` pin this).
+
+What reuse guarantees:
+
+- **JavaScript state never crosses a case.** Every case runs in a fresh
+  `initStandardObjects()` scope, and only compiled code is shared.
+- **Java-level state does not cross a file, unless the class shutter was on.**
+  A script that can reach `java.lang.System`, `java.util.TimeZone` or
+  `java.lang.Thread` can change the JVM itself (a default timezone, a system
+  property, a thread it started), and a normal finish does not undo that. The
+  next-gen decision-node shutter, which is on by default, hides all of those
+  classes. Any job without it (a `legacy`-engine case, `classShutter: false`,
+  an IDM-engine script, or a raw `runner.eval` with no `classAllowList`) marks
+  its JVM as not lendable, so the file that ran it gets a JVM to itself and the
+  next file starts a new one, as it would with no pool.
+- **Within one file, cases share a JVM, as they always have.** An unshuttered
+  case can still leave Java-level state for a later case in the same file.
+
+`test/harness/isolation.e2e.test.ts` and `pool-files.e2e.test.ts` pin these.
 
 The pool runs in the main Vitest process, so it and the JVMs it launches read
 **that** process's environment: set `AIC_SCRIPT_TESTER_JVM_POOL`,
