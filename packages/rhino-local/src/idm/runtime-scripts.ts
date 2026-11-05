@@ -84,7 +84,7 @@ function index(root: string): Map<string, Entry> {
   } catch (error) {
     // An unreadable subdirectory (EACCES) is a configuration error like a missing root, so it
     // gets the same TypeError shape rather than a raw fs error from the constructor.
-    throw new TypeError(`Invalid IDM runtimeScripts: cannot index ${root}: ${(error as Error).message}`);
+    throw new TypeError(`Invalid IDM runtimeScripts: cannot index ${root}: ${(error as Error).message}`, { cause: error });
   }
   return entries;
 }
