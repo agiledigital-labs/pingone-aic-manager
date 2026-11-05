@@ -138,7 +138,14 @@ wherever the accepted counts have a basis: measured on AIC
 introspection (`docs/api/bindings/scripted-decision-next.json`). Where the
 harness's range is its own guess, the call is the harness fault
 `arity-unknown/<binding.method>` instead, and so is every argument-count check
-on the legacy engine, which has no introspection.
+on the legacy engine, which has no introspection. The same fault covers a count
+that only a reading of the introspection decides: where an overload's last
+parameter is listed as an `array`, it may be Java varargs, which Rhino calls
+with any count from one fewer upwards. So `logger.info` with four or more
+arguments and `openidm.read(r, null, ["_id"], "x")` fault rather than pass or
+throw. The class named in an introspection-based refusal is the introspection's
+declaring class; that Rhino names that class, and not an implementation
+subclass, is measured for `existingSession.get` and `randomUUID` only.
 
 **The fault tally.** At the end of a run the package's Vitest reporter prints a
 per-id summary to stderr. It shows how many cases hit each fault and in how

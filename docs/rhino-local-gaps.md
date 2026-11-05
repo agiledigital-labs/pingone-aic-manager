@@ -159,7 +159,7 @@ assumption in `docs/api/`:
 | Id                                                                                | Refusal                                                                                                               |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `not-mocked/<binding>.<method>`                                                   | a generated binding method the overlay does not implement                                                            |
-| `arity-unknown/<binding>.<method>`                                                | an argument count outside the harness's own guessed range, where AIC's accepted counts are unknown (see below)      |
+| `arity-unknown/<binding>.<method>`                                                | an argument count outside the harness's own guessed range, or one only a varargs reading would accept (see below) |
 | `fixture/<kind>`                                                                  | an unseeded fixture: `managed`, `http`, `esv`, `secrets`, `library`, `callbacks`, `callback-value`, `openidm-action`, `cache-manager`, `journey`, `match-pattern-type` |
 | `send-body-js-date`, `send-body-regexp`, `send-body-function`, `send-body-error`, `send-body-array-cycle` | an `httpClient.send` body AIC sends as a Rhino object dump, or whose error is unmeasured                     |
 | `state-put-undefined`                                                             | `nodeState.put*` / `sharedState.put` / `transientState.put` with `undefined`                                         |
@@ -191,7 +191,17 @@ accepted counts have a basis:
   `systemEnv.getProperty`, `idRepository.getIdentity` and
   `utils.crypto.getRandomValues` method the overlay checks. That Rhino refuses an
   unlisted count there is assumed from the measured cases, not measured per
-  method.
+  method, and so is the class the refusal names: the introspection's declaring
+  class, where Rhino might name an implementation subclass.
+- **not decided by the overload set**: where an overload's last parameter is
+  listed as `array` (`logger.*`'s `(format, arguments)`, every `openidm`
+  method's `fields`, `getRandomValues`, the attribute-input and validated
+  callbacks' `failedPolicies`), introspection does not say whether it is a Java
+  array or varargs, and Rhino calls varargs with any count from one fewer
+  upwards. A count at or above that (`arrayTail` in the basis table) that no
+  listed overload takes is the fault `arity-unknown/<path>`, not a refusal and
+  not an acceptance — `logger.info` with four arguments was accepted before
+  E19 fix round 2, `openidm.read` with four refused catchably.
 
 Everywhere else the accepted range is the harness's own guess — the request
 maps' `get`/`containsKey`, `existingSession.put`/`containsKey`, the identity
