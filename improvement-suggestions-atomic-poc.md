@@ -99,6 +99,17 @@ tri-state: absent leaves the current value, `true` and `false` write it. Put
 them on the relationship node (`notifySelf`) and on the resource collection
 (`notify`), which is where the preserve test already finds them.
 
+E21 (2026-11-05) measured which placement fires. `notifySelf` on the
+relationship node notifies the origin of a write through that relationship's
+URL. `notify` on the node does not notify the other side. `notify` on
+`resourceCollection` does, including on `DELETE` of the referenced record.
+`notifyRelationships` is not a flag the CLI sets either. On the field that
+changes, it notifies the linked objects with no `notify` flag. On the object,
+it is stored and ignored. On a relationship property naming that same
+property, `GET` of the managed type returns 404 until the property is removed.
+`--notify-relationships <name>`, written on the field whose change should fan
+out, is the matching flag. It must not default to the relationship's own name.
+
 ## `logs tx` cannot see script logs, and has no write summary
 
 **Evidence.** `logger.info` from a managed hook reaches `idm-core` as

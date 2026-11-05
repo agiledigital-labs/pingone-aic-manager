@@ -43,6 +43,8 @@ node experiments.mjs E16 E15 E13 E18
 E14_TRACE=0 E14_N=50,100,200 node experiments.mjs E14
 E14_N=100 node experiments.mjs E14
 node experiments.mjs E20
+node e21.mjs table
+node e21.mjs fanout peers owner attrs trace cas
 ```
 
 One id or several, in order. Raw JSON goes to `.state/results/`. `REPEATS`
@@ -73,30 +75,39 @@ node setup.mjs teardown
 Deletes the POC records, the mapped relationship and its `repo.ds` entries, the
 three types, and the `pocagg` and `poctrace` endpoint configs. It then prints
 whether `config/managed` equals `.state/managed-before.json` and whether
-`repo.ds` `genericMapping` equals `.state/repo.ds-before.json`. Both lines must
+`repo.ds` `genericMapping` equals `.state/run1/repo.ds-after.json` (the pre-POC
+baseline plus the two orphan mappings round 1 could not remove). Both lines must
 say `true`. If either does not, stop. Do not hand-edit the tenant config. The
-`repo.ds` backup taken before the POC is `.state/repo.ds-before.json`.
+`repo.ds` backup taken before the POC is `.state/repo.ds-before.json`. Do not
+overwrite it, or `.state/run1/`.
 
-The 2026-11-05 run did not get both lines to `true`.
+Round 1's teardown did not get both lines to `true`.
 `relationship delete --remove-mapping` refused — an object's last mapping, and a
 mapping another one reads through — and wrote nothing. The script printed
 `config equals backup: false` and `genericMapping equals backup: false`. A later
 `aic managed object delete alpha_poc_sink` made `config/managed` match the
 backup. The `genericMapping` keys `managed/alpha_poc_agg` and
 `managed/alpha_poc_child` are still there. `DONE.md` has the verbatim output. A
-re-run that prints either line `false` stops the same way.
+re-run that prints either line `false` stops the same way. Round 2's teardown
+printed both lines `true`. The relationship delete refused again and wrote
+nothing, and those two orphan mappings are still the only difference from the
+pre-POC `genericMapping`.
 
 ## Files
 
-| File                    | What it is                                                                                                       |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `PLAN.md`               | The experiment list and the pattern the probes were aimed at.                                                    |
-| `RESULTS.md`            | The measured tables.                                                                                             |
-| `DONE.md`               | What this run actually did, and where it diverged.                                                               |
-| `lib.mjs`               | HTTP helper. Mints a bearer with `aic whoami --token` and refuses a non-sandbox context.                         |
-| `setup.mjs`             | Install, hook push, notification flags, teardown.                                                                |
-| `experiments.mjs`       | E1–E16, E18–E20.                                                                                                 |
-| `trace.mjs`             | Write summary for one transaction id or stem.                                                                    |
-| `hooks/onUpdate.js`     | One hook, several modes (`fold`, `audit`, `children`, `selfpatch`, `plain`).                                     |
-| `hooks/postUpdate.js`   | `sink`, `throw`, or a guarded self-patch.                                                                        |
-| `endpoints/poctrace.js` | Source of the endpoint that did one read and one query for the single-request trace. E13 writes `pocagg` itself. |
+| File                       | What it is                                                                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PLAN.md`                  | The experiment list and the pattern the probes were aimed at.                                                                                      |
+| `RESULTS.md`               | The measured tables.                                                                                                                               |
+| `DONE.md`                  | What this run actually did, and where it diverged.                                                                                                 |
+| `lib.mjs`                  | HTTP helper. Mints a bearer with `aic whoami --token` and refuses a non-sandbox context.                                                           |
+| `setup.mjs`                | Install, hook push, notification flags, `notifyRelationships`, teardown.                                                                           |
+| `experiments.mjs`          | E1–E16, E18–E20.                                                                                                                                   |
+| `e21.mjs`                  | E21, both ends of a relationship. Parts: `table`, `deletewait`, `placement`, `fanout`, `shape`, `peers`, `owner`, `attrs`, `trace`, `cas`, `repo`. |
+| `trace.mjs`                | Write summary for one transaction id or stem.                                                                                                      |
+| `hooks/onUpdate.js`        | Parent hook. Modes `fold`, `audit`, `children`, `selfpatch`, `plain`.                                                                              |
+| `hooks/postUpdate.js`      | Parent `postUpdate`: `sink`, `throw`, or a guarded self-patch.                                                                                     |
+| `hooks/childOnUpdate.js`   | Child `onUpdate`. One sink when `trace` is set.                                                                                                    |
+| `hooks/childPostUpdate.js` | Child `postUpdate`. One sink when `trace` is set.                                                                                                  |
+| `hooks/childOnDelete.js`   | Child `onDelete`. One sink when `trace` is set.                                                                                                    |
+| `endpoints/poctrace.js`    | Source of the endpoint that did one read and one query for the single-request trace. E13 writes `pocagg` itself.                                   |

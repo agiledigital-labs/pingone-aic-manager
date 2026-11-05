@@ -16,6 +16,12 @@
   if (!postMode) return;
 
   if (postMode === "sink") {
+    var tx = null;
+    try {
+      tx = String(context.transactionId.transactionId.value);
+    } catch (e) {
+      tx = null;
+    }
     openidm.create("managed/alpha_poc_sink", null, {
       kind: "postUpdate",
       parent: id,
@@ -23,6 +29,7 @@
       oldRev: oldObject && oldObject._rev ? String(oldObject._rev) : null,
       outcome: object.derived ? object.derived.outcome : null,
       count: object.derived ? object.derived.count : null,
+      txid: tx,
       at: Date.now(),
     });
   } else if (postMode === "throw") {
