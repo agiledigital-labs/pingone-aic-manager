@@ -17,7 +17,13 @@
  * compiled-script cache — is content-addressed code, never state.
  *
  * A JVM is not lent again once it has exited or retired itself (a spawned
- * thread outlived its job), so one file's crash cannot reach the next file.
+ * thread outlived its job), or while any job is still running in it: before
+ * a returned JVM goes idle the pool asks it (`op: "pool-status"`) and discards
+ * it unless it is idle and not retired. A client that closes with a job
+ * pending kills its JVM outright. So neither one file's crash nor its runaway
+ * job can reach the next file. A JVM is also only reused by a client whose
+ * runner classes are the ones it was started with, so editing `java/*.java`
+ * in watch mode starts fresh JVMs rather than testing the old build.
  * Opt out with `AIC_SCRIPT_TESTER_JVM_POOL=0`: each `useLease` then spawns and
  * closes its own JVM, as before.
  */
@@ -59,10 +65,38 @@ interface Hello {
   env: Partial<Record<(typeof LAUNCH_ENV)[number], string>>;
 }
 
+interface Status {
+  type: typeof STATUS_OP;
+  id: string;
+  active: number;
+  retired: boolean;
+}
+
 /** Frames the pool adds to the runner's stdout stream; the runner never prints this prefix. */
 const CONTROL = '{"type":"rhino-local-pool"';
 const READY = "rhino-local-runner ready";
 const RETIRED = "rhino-local-runner retired";
+const STATUS_OP = "pool-status";
+const STATUS = '{"type":"pool-status"';
+const STATUS_TIMEOUT_MS = 2_000;
+
+/**
+ * Whether a JVM's stderr has carried the retirement marker, read line by line
+ * so a marker split across two `data` chunks is still seen. The status check
+ * on return is the authority; this only stops lending sooner.
+ */
+export class RetirementWatch {
+  #partial = "";
+  retired = false;
+
+  feed(chunk: string): void {
+    const text = this.#partial + chunk;
+    const lines = text.split("\n");
+    // The last element is an unterminated line; keep only enough of it to finish a marker.
+    this.#partial = (lines.pop() ?? "").slice(-RETIRED.length * 2);
+    if (lines.some((line) => line.includes(RETIRED))) this.retired = true;
+  }
+}
 
 export function poolEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env[JVM_POOL_ENV] !== "0";
@@ -71,6 +105,10 @@ export function poolEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 /** One pooled runner JVM, owned by the main process. */
 class PooledJvm {
   readonly key: string;
+  /** The runner classes directory it was started with; content-addressed, so it names the build. */
+  readonly build: string;
+  readonly #watch = new RetirementWatch();
+  #status: { id: string; resolve: (status: Status | undefined) => void } | undefined;
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #containerName: string | undefined;
   #stdout = "";
@@ -82,8 +120,9 @@ class PooledJvm {
   exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
   #exitWaiters: Array<() => void> = [];
 
-  constructor(key: string, launch: Launch) {
+  constructor(key: string, build: string, launch: Launch) {
     this.key = key;
+    this.build = build;
     this.#containerName = launch.containerName;
     this.#child = spawn(launch.command, launch.args, { env: launch.env, stdio: ["pipe", "pipe", "pipe"] });
     this.#child.stdout.setEncoding("utf8");
@@ -102,7 +141,29 @@ class PooledJvm {
   }
 
   get usable(): boolean {
-    return this.exit === undefined && !this.retired;
+    return this.exit === undefined && !this.retired && !this.#watch.retired;
+  }
+
+  /**
+   * Ask the JVM whether it may be lent again: no job running, not retired.
+   * No answer within the bound counts as no.
+   */
+  async reusable(): Promise<boolean> {
+    if (!this.usable) return false;
+    const id = `${STATUS_OP}-${randomUUID()}`;
+    const status = await new Promise<Status | undefined>((resolve) => {
+      const timer = setTimeout(() => finish(undefined), STATUS_TIMEOUT_MS);
+      const finish = (value: Status | undefined): void => {
+        clearTimeout(timer);
+        if (this.#status?.id === id) this.#status = undefined;
+        resolve(value);
+      };
+      this.#status = { id, resolve: finish };
+      this.#exitWaiters.push(() => finish(undefined));
+      this.write(JSON.stringify({ id, op: STATUS_OP }));
+    });
+    if (status?.retired === true) this.retired = true;
+    return status !== undefined && status.active === 0 && !status.retired && this.usable;
   }
 
   attach(client: Socket): void {
@@ -173,10 +234,24 @@ class PooledJvm {
     while (nl !== -1) {
       const line = this.#stdout.slice(0, nl + 1);
       this.#stdout = this.#stdout.slice(nl + 1);
+      nl = this.#stdout.indexOf("\n");
+      if (line.startsWith(STATUS)) {
+        this.#onStatus(line);
+        continue;
+      }
       // A response for a client that has gone is dropped: its job ids mean nothing to the next.
       this.#client?.write(line);
-      nl = this.#stdout.indexOf("\n");
     }
+  }
+
+  #onStatus(line: string): void {
+    let status: Status | undefined;
+    try {
+      status = JSON.parse(line) as Status;
+    } catch {
+      status = undefined;
+    }
+    if (status !== undefined && this.#status?.id === status.id) this.#status.resolve(status);
   }
 
   #onStderr(chunk: string): void {
@@ -191,7 +266,7 @@ class PooledJvm {
       }
       return;
     }
-    if (chunk.includes(RETIRED)) this.retired = true;
+    this.#watch.feed(chunk);
     // Kept short: it only feeds the exit message of whoever holds the JVM when it dies.
     this.#stderr = (this.#stderr + chunk).slice(-64_000);
     if (this.#client !== undefined) this.#send(this.#client, { stderr: chunk });
@@ -232,6 +307,15 @@ class PooledJvm {
   }
 }
 
+export interface PoolOptions {
+  /**
+   * The runner classes directory for a lend. Defaults to `ensureRunnerClasses`;
+   * tests substitute a second build to prove a JVM is not reused across builds.
+   * @internal
+   */
+  classes?: (jar: string, cache: string) => Promise<string>;
+}
+
 /** The main-process side: a socket server lending JVMs to worker slots. */
 export class JvmPool {
   readonly address: PoolAddress;
@@ -240,24 +324,30 @@ export class JvmPool {
   readonly #idle = new Map<string, PooledJvm[]>();
   readonly #all = new Set<PooledJvm>();
   #stopped = false;
+  /** Status checks in progress, per key: a lend waits for them rather than spawning beside them. */
+  readonly #returning = new Map<string, Set<Promise<void>>>();
   readonly #onExit = (): void => {
     for (const jvm of this.#all) jvm.kill();
+    rmSync(this.#dir, { recursive: true, force: true });
   };
 
-  private constructor(server: Server, dir: string, address: PoolAddress) {
+  readonly #classes: (jar: string, cache: string) => Promise<string>;
+
+  private constructor(server: Server, dir: string, address: PoolAddress, options: PoolOptions) {
     this.#server = server;
     this.#dir = dir;
     this.address = address;
+    this.#classes = options.classes ?? ((jar, cache) => ensureRunnerClasses(jar, { cache }));
   }
 
-  static async start(): Promise<JvmPool> {
+  static async start(options: PoolOptions = {}): Promise<JvmPool> {
     // A private directory: the socket admits whoever can open it, and it runs scripts.
     const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : shortTmp(), "rhino-pool-"));
     const path =
       process.platform === "win32" ? `\\\\.\\pipe\\rhino-local-${randomUUID()}` : join(dir, "pool.sock");
     const token = randomBytes(24).toString("hex");
     const server = createServer();
-    const pool = new JvmPool(server, dir, { path, token });
+    const pool = new JvmPool(server, dir, { path, token }, options);
     server.on("connection", (socket) => pool.#serve(socket));
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -359,22 +449,25 @@ export class JvmPool {
 
   async #lend(hello: Hello): Promise<PooledJvm> {
     const key = JSON.stringify([hello.kind, hello.cache, hello.slot, hello.env]);
-    const idle = this.#idle.get(key) ?? [];
-    while (idle.length > 0) {
-      const jvm = idle.pop() as PooledJvm;
-      if (jvm.usable) return jvm;
-      this.#discard(jvm);
-    }
+    await Promise.all([...(this.#returning.get(key) ?? [])]);
     if (this.#stopped) throw new Error("JVM pool is stopped");
     const env: NodeJS.ProcessEnv = { ...process.env };
     for (const name of LAUNCH_ENV) {
       if (hello.env[name] === undefined) delete env[name];
       else env[name] = hello.env[name];
     }
+    // Content-addressed and cheap once built; asked on every lend so an edited
+    // runner is never served by a JVM started from the previous build.
     const jar = await ensureRhinoJar(hello.cache, undefined, env);
-    const classes = await ensureRunnerClasses(jar, { cache: hello.cache });
+    const classes = await this.#classes(jar, hello.cache);
+    const idle = this.#idle.get(key) ?? [];
+    while (idle.length > 0) {
+      const jvm = idle.pop() as PooledJvm;
+      if (jvm.usable && jvm.build === classes) return jvm;
+      this.#discard(jvm);
+    }
     const launch = hello.kind === "host" ? hostLaunch(classes, jar, env) : containerLaunch(classes, jar, env);
-    const jvm = new PooledJvm(key, launch);
+    const jvm = new PooledJvm(key, classes, launch);
     this.#all.add(jvm);
     return jvm;
   }
@@ -384,9 +477,22 @@ export class JvmPool {
       this.#discard(jvm);
       return;
     }
-    const idle = this.#idle.get(jvm.key) ?? [];
-    idle.push(jvm);
-    this.#idle.set(jvm.key, idle);
+    const checks = this.#returning.get(jvm.key) ?? new Set<Promise<void>>();
+    this.#returning.set(jvm.key, checks);
+    const check = jvm.reusable().then((reusable) => {
+      checks.delete(check);
+      if (checks.size === 0) this.#returning.delete(jvm.key);
+      if (this.#stopped || !reusable) {
+        // Still running a job, or retired: never lend it again.
+        jvm.kill();
+        this.#discard(jvm);
+        return;
+      }
+      const idle = this.#idle.get(jvm.key) ?? [];
+      idle.push(jvm);
+      this.#idle.set(jvm.key, idle);
+    });
+    checks.add(check);
   }
 
   #discard(jvm: PooledJvm): void {
