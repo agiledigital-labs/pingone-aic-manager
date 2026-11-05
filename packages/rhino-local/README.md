@@ -1059,6 +1059,17 @@ a number and numbers compare by value, `7.5` included, as measured on
 attribute of its own is excluded. Without `repo`, or for a type in both
 sections, those queries stay the `openidm-query-filter` fault.
 
+`sync` takes the tenant's `config/sync` document (`{mappings: [...]}`),
+optionally. On AIC a committed managed write on a mapping's `source` runs that
+mapping synchronously (implicit sync, measured 2026-06-19 in
+`docs/api/16-sync-mappings.md`), and the emulator models no sync. So a create,
+update, changed patch or delete on a type some mapping names as its source is
+the harness fault `idm-implicit-sync/<mapping>`, raised before the store
+changes. A patch that changes nothing writes nothing and does not fault.
+Without `sync`, every write records `assumed: no config/sync supplied …`; with
+it, a write on an unmapped type records that the supplied `config/sync` has no
+mapping for it.
+
 With explicit completeness, an unlisted name reads as null internally and queries
 throw NotFoundException. Each such absence carries `assumed: caller declared
 managed namespace complete` or `assumed: caller declared endpoints namespace
@@ -1066,6 +1077,11 @@ complete`: the emulator cannot verify the caller's claim. The null read and
 managed-query diagnostic are measured by orchestrator p24 (2026-11-02); endpoint
 query diagnostic reuse is assumed. Endpoint completeness also covers absent
 `config/endpoint/<name>` snapshots (assumed). REST absence uses 404 (assumed).
+Declare endpoints complete only with the tenant's whole `config/endpoint`
+pull: AIC also ships endpoints of its own (`oauthproxy`, `gettasksview`,
+docs/api/11-idm-endpoints.md), and a map built from your custom endpoints
+alone, declared complete, makes those read as absent locally where AIC answers
+them.
 Forks preserve the declarations. Unknown general `config/*`, `system/*` and other
 namespaces remain missing, even though p24 observed null for genuinely absent
 tenant resources there: the emulator was not given those namespaces.
@@ -1334,8 +1350,9 @@ supplies them, through a provider:
 
 ```ts
 const idm = new IdmEmulator(config, runner, {
-  // A directory named by IDM's relative paths: <dir>/roles/effectiveRoles.js
-  runtimeScripts: "idm-runtime-scripts",
+  // A directory named by IDM's relative paths: <dir>/roles/effectiveRoles.js.
+  // Absolute, or a file: URL, so its base never depends on the process cwd.
+  runtimeScripts: new URL("./idm-runtime-scripts/", import.meta.url),
   // …or a loader: (scriptPath) => string | undefined (it may return a promise)
   // runtimeScripts: (path) => myScripts[path],
 });
@@ -1351,17 +1368,34 @@ tenant, the fetch time, the IDM version and each file's SHA-256. The emulator
 does not read the manifest. `test/fixtures/idm-runtime-scripts/` is an
 invented example of the layout.
 
+A directory provider is checked and indexed once, when the emulator is
+constructed: a relative path, or one that is not a directory, is a `TypeError`
+naming it, and a file added afterwards is not seen. Names are looked up exactly
+as AIC's case-sensitive loader does, so a name that matches a file only in
+another letter case is unsupplied (the message names the near match), as is a
+directory's name. Symbolic links are never followed: a name that is a link, or
+passes through a linked directory, is `idm-runtime-script-path`, because a link
+can stand in for something that is not the tenant's bytes. Forks share the
+index.
+
 A `file` reference runs the supplied source with the bindings an inline script
 in the same place gets. `require(id)` loads `<id>.js` (or `id` if it already
 ends in `.js`) as a CommonJS module, following IDM 9.0.0's engine as read from
 its bytecode rather than measured on AIC. The module sees the caller's bindings
-(`openidm`, `object`, `request`, …) and keeps its own top-level `var`s. It runs
-at most once per script invocation, and runs again in the next invocation. A
-require cycle sees the partial exports. These rules are recorded as `assumed`
-provenance. Two differences from IDM are deliberate and also recorded: IDM
-preloads `lib/lodash`, `lib/handlebars` and `lib/validator` once per engine
-and shares their exports, where here they run per invocation; and a relative
-id (`./x`) is refused, because IDM's resolution of it is unmeasured.
+(`openidm`, `object`, `request`, …) and keeps its own top-level `var`s. The
+module cache is keyed by the id as written, as IDM's is: within one script
+invocation `require('x')` runs `x.js` once, but `require('x')` and
+`require('x.js')` are two instances and each runs the body. Everything runs
+again in the next invocation. A require cycle sees the partial exports: the
+original `exports` object, not a replacement already assigned to
+`module.exports`; once the module returns, `require` answers
+`module.exports` (a primitive comes back as its object wrapper). A module that
+throws is not cached. These rules are recorded as `assumed` provenance. Two
+differences from IDM are deliberate and also recorded: IDM preloads
+`lib/lodash`, `lib/handlebars` and `lib/validator` once per engine, shares
+their exports and runs them without the caller's bindings, where here they run
+per invocation and see the caller's bindings; and a relative id (`./x`) is
+refused, because IDM's resolution of it is unmeasured.
 
 A script the provider does not supply is the harness fault
 `idm-runtime-script/<path>`, for example `idm-runtime-script/onCreateUser.js`.
@@ -1369,8 +1403,13 @@ This includes the case where no provider is configured at all. The message
 names the script, how it was reached (`onCreate file reference`,
 `require("onCreateUser")`) and how to fetch it. As with every harness fault, a
 script that catches the failure still fails the request with 501, and the run's
-fault tally counts it. A name that is not a canonical path under the script
-root (absolute, `..`, `./`) is the fault `idm-runtime-script-path`. Supplying a
+fault tally counts it; a fault raised inside a nested write keeps its id on the
+outer result's `emulation.faults`. A name that is not a canonical path under
+the script root (absolute, a `.`, `..` or empty segment, a trailing slash, a
+backslash or a NUL byte) is the fault `idm-runtime-script-path`. A loader that
+throws or returns something other than a string or `undefined`, or a listed
+file that cannot be read, is `idm-runtime-script-provider`. A script declaring
+both `file` and `source` is `idm-script-file-and-source`. Supplying a
 script does not make the behaviour around it emulated: `policy.js` in
 particular is not wired. Writes go through the `policy` evaluator seam or carry
 `assumed: policy not evaluated`.
