@@ -16,7 +16,7 @@ import { runCase } from "../../src/bindings/index.ts";
 import { defineCase } from "../../src/case/index.ts";
 import type { Given } from "../../src/case/types.ts";
 import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cacheDir, ensureRhinoJar, ensureRunnerClasses } from "../../src/jvm.ts";
@@ -206,7 +206,12 @@ describe("case isolation across files on a pooled JVM", () => {
       // Control: same build, same JVM.
       expect(await pidOn()).toBe(first);
       build = edited;
-      expect(await pidOn()).not.toBe(first);
+      const second = await pidOn();
+      expect(second).not.toBe(first);
+      // A rebuild in place, as `npm run build` does to dist/classes: the same
+      // path with a different manifest is another build.
+      writeFileSync(join(edited, ".complete"), `${readFileSync(join(edited, ".complete"), "utf8")}rebuilt\n`);
+      expect(await pidOn()).not.toBe(second);
     } finally {
       await builds.stop();
       rmSync(dir, { recursive: true, force: true });
