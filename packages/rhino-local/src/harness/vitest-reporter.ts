@@ -4,6 +4,7 @@ import { emulationAuditDiagnostics, type EmulationAudit } from "../emulation.ts"
 
 import { EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION } from "./vitest-context.ts";
 import { JVM_POOL_CONTEXT, JvmPool, poolEnabled } from "../pool.ts";
+import { formatFaultTally, tallyFaults, writeFaultTally } from "./fault-tally.ts";
 
 export default class EmulationReporter implements Reporter {
   #audits = new Map<string, EmulationAudit>();
@@ -44,8 +45,23 @@ export default class EmulationReporter implements Reporter {
     for (const module of modules) this.#accept(module.meta());
     this.#ended = true;
     this.#enforce();
+    this.#tally();
     // A watch run keeps its warm JVMs for the next rerun; idle ones never hold the process open.
     if (!this.#watch) await (await this.#pool)?.stop();
+  }
+  // Every worker's audit is here by now, so this covers all files, workers and
+  // pooled JVMs. A tally that cannot be written is a warning, not a verdict:
+  // the faults themselves already failed their cases.
+  #tally(): void {
+    const tally = tallyFaults(this.#audits.values());
+    try {
+      const path = writeFaultTally(tally);
+      const summary = formatFaultTally(tally, path);
+      if (summary !== "") process.stderr.write(summary);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.emitWarning(`rhino-local: could not write the harness-fault tally: ${message}`);
+    }
   }
   #enforce(): void {
     for (const audit of this.#audits.values()) for (const message of emulationAuditDiagnostics(audit)) {
