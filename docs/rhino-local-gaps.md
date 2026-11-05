@@ -183,7 +183,7 @@ assumption in `docs/api/`:
 | `action-suspend-additional-logic`                                                 | `action.suspend` with a non-function `additionalLogic`                                                               |
 | `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
 | `openidm-unknown-managed-type`                                                    | a write (`create`, `update`, `patch`, `delete`, `action`) to a managed type the environment profile does not declare |
-| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the harness cannot decide: one the shared CREST grammar (`src/bindings/rhino/crest-filter.cjs`) cannot read, an empty or non-string one, an operator the matcher does not evaluate (`gt`/`ge`/`lt`/`le` in the script tester), or `ne` from a script (its script text is unmeasured); a `_queryId` other than the measured ones. Only measured or certain rejections are the catchable parse error, in both lanes |
+| `openidm-query-filter`, `openidm-query-id`                                        | a `_queryFilter` the harness cannot decide: one the shared CREST grammar (`src/bindings/rhino/crest-filter.cjs`) cannot read, an empty or non-string one, an operator the matcher does not evaluate (`gt`/`ge`/`lt`/`le` in the script tester), or `ne` from a script (its script text is unmeasured); in the script tester, a record whose answer turns on letter case or spaces; a `_queryId` other than the measured ones. Only measured or certain rejections are the catchable parse error, in both lanes |
 | `openidm-fields-wildcard-with-path`, `openidm-fields-non-object-parent`, `openidm-fields-unresolved-ref` | `_fields` projections that were not measured                                                  |
 | `identity-attribute-layout`, `identity-write-idm-field-name`, `identity-write-cn`, `identity-set-attribute-non-array`, `identity-date-rendering`, `identity-wrapper-after-recreate` | `idRepository.getIdentity()` reads and writes outside the measured mapping |
 | `identity-bag-key-collision`, `identity-bag-replacement-overlap`, `identity-bag-non-object-access`, `identity-store-non-object-bag`, `identity-store-id-layout-change`, `identity-store-two-ds-rules` | `fr-idm-custom-attrs` bag shapes that were not measured                     |
@@ -227,6 +227,38 @@ engine, which has no introspection — and a count outside it is the harness
 fault `arity-unknown/<path>`. The basis table (`__rhinoLocalArityBasis` in
 `runtime.cjs`) is pinned against the introspection file by
 `test/bindings/arity-provenance.test.ts`.
+
+**Hypotheses from on-prem jars, each settled by one live probe.** The E19
+round-3 review read the AM 8.1.1 binding jars with `javap` and ran the CREST
+27.1.1 `QueryFilters.parse` from a ForgeOps AM image over 112 filters. On-prem
+signatures are a hypothesis in this project, not an AIC measurement (IDM's
+bundles import CREST `[28.0,29)`, a neighbouring version), so each of these
+stays a fault until a probe on AIC decides it:
+
+- **`logger.*` is probably true varargs.** `ScriptedLoggerWrapper.info` is
+  `(String, Object...)` in the jar, so `logger.info("{} {} {} {}", a, b, c, d)`
+  probably succeeds on AIC, while the harness faults it
+  (`arity-unknown/logger.info`): a fault on a likely-correct script. One call
+  with four arguments settles it.
+- **The other `arrayTail` parameters are probably not varargs.** The jar types
+  `openidm`'s trailing parameter as `java.util.List`, the validated and
+  attribute-input callbacks' as `List<String>`, and `getRandomValues`' as a
+  `NativeArray`, so a count past the overloads is likely Rhino's catchable
+  refusal. The fault there is noise in the safe direction.
+- **`mergeShared` probably takes a `Map`.** The jar has `mergeShared(java.util.Map)`
+  beside `putShared(String, Object)`, so `mergeShared("x")` is likely Rhino's
+  catchable `Can't find method`. It stays `node-state-merge-non-object` until
+  one probe.
+- **The filter grammar faults on inputs CREST 27.1.1 accepts**: keyword case
+  (`AND`, `Or`, `TRUE`, `PR`, `EQ`), single quotes, `+5`, `05`, `1.`, `.5`,
+  the pointers `/a~2`, `text~`, `/` and `!text`, `"a"and`, `\x` escapes, a tab
+  inside a pointer, and integers between 2^53 and `Long.MAX_VALUE` (the last
+  on purpose: a JS number cannot hold the long CREST compares). Conversely the
+  grammar now refuses, as the fault, all eleven inputs the jar rejects that it
+  used to accept (exponent with no `.`, integers past `long`, tab or newline
+  separators, `!` glued to a keyword). One probe of uppercase `AND` and of
+  `'x'` on AIC would show whether AIC's CREST matches 27.1.1; if it does,
+  transcribing its `QueryFilterParser` would retire every grammar fault.
 
 **Journey lane.** In a journey, AM's host bridge replaces the fault channel
 with its uncatchable `unsupported` refusal. The emulated AIC errors above stay
