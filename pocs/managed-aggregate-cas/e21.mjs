@@ -1701,9 +1701,9 @@ async function partCasRepeat() {
   assertTxShape(CAS_CELLS);
   const prev = loadJson("casrepeat") || { cells: {} };
   const doc = {
-    n: CAS_N,
-    reps: CAS_REPS,
-    variant: variant || "concurrent",
+    n: prev.n || CAS_N,
+    reps: prev.reps || CAS_REPS,
+    variant: prev.variant || variant || "concurrent",
     cells: prev.cells || {},
   };
   for (const cell of wanted) {
@@ -1713,12 +1713,15 @@ async function partCasRepeat() {
     await sleep(2000);
     const control = await requireControl();
     const shape = await liveShape().catch((e) => ({ error: scrub(e.message) }));
-    const resume = process.env.E21_RESUME === "1" ? doc.cells[cell.name] : null;
+    const key = `${cell.name}${variant ? `-${variant}` : ""}${CAS_N === 10 ? "" : `-n${CAS_N}`}`;
+    const resume = process.env.E21_RESUME === "1" ? doc.cells[key] : null;
     const attempts = resume?.attempts ? resume.attempts.slice() : [];
     const measured = resume?.measured ? resume.measured.slice() : [];
-    doc.cells[cell.name] = {
+    doc.cells[key] = {
       pair: cell.pair,
       flags: cell.flags,
+      variant: variant || "concurrent",
+      n: CAS_N,
       control,
       storedFlags: flagProof(shape, pair),
       attempts,
@@ -1735,8 +1738,8 @@ async function partCasRepeat() {
         : { attempt: tries, measured: false, step: row.step || "?", row });
       if (row.measured) measured.push(row);
       tries += 1;
-      doc.cells[cell.name].attempts = attempts;
-      doc.cells[cell.name].measured = measured;
+      doc.cells[key].attempts = attempts;
+      doc.cells[key].measured = measured;
       save("casrepeat", doc);
     }
     if (measured.length < CAS_REPS) {
