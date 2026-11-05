@@ -621,10 +621,44 @@ put, and a mapped one still moved it.
   its own run plus the child's update. Node placement of the same flag did not
   run the child's hooks for that add.
 
-Not in this section yet: `notifyRelationships` (the first three child-object
-configs stored `["parent","gparent"]` on the child and did not notify the
-parent; the rest of that matrix is still running), a has-many reverse, `notify`
+### `notifyRelationships`
+
+Object-level, which is what the brief asked to set and what the tenant does
+not use. The live document stored `["parent","gparent"]` on the child object
+and `["children","gchildren"]` on the parent object. With default flags,
+`NOTIFY=1` on the node, and `NOTIFY=2` on the node, a child plain-field change
+and a child reverse-link replace did not run the parent's hooks, and a parent
+plain-field change and a parent link add did not run the child's. Both storage
+modes. The key is accepted and ignored for these writes.
+
+On the field that changes, which is where `alpha_role.temporalConstraints` and
+`alpha_assignment.attributes` put it. No `notify` flag was set for the first
+row of each pair, and adding the flags did not change that row.
+
+| Changed field | names | Write | other side | other `_rev` |
+| ------------- | ----- | ----- | ---------- | ------------ |
+| child `value` | `parent`, `gparent` | child plain field | parent update, both modes | generic parent moves |
+| child `value` | `parent`, `gparent` | reverse-link replace | no parent | generic parent stays |
+| parent `name` | `children`, `gchildren` | parent plain field | child update, both modes | child stays |
+| parent `name` | `children`, `gchildren` | parent link add | no child | — |
+
+The reverse-link replace did notify the parent when `notify` was also on the
+child's `resourceCollection`. That is the `notify` result above, not this
+field: the same replace with the field set and no `notify` flag did not. A
+child `value` patch took 91–114 ms against about 52 ms with no
+`notifyRelationships`, and the sink was in the response. The parent script
+assigns `object.derived`, so that notified run has a document change to
+commit. The child script does not assign to `object`; its hooks ran and its
+`_rev` did not move. A child script that mutates `object` was not the one
+measured.
+
+`alpha_user` declares no `notifyRelationships`. The field placement above is
+the tenant's. The copies that put `notify` only on the named relationship's
+`resourceCollection`, and the form that sets `notifyRelationships` on the
+relationship itself, are still running.
+
+Not in this section yet: the rest of that matrix, a has-many reverse, `notify`
 on a has-one forward, whether `status` is readable from the other side,
-`returnByDefault`, the activity log for a notified run, concurrent notified edge
-patches, and `GET /openidm/repo/relationships`. What a console-created pair
-stores still needs the console.
+`returnByDefault`, the activity log for a notified run, concurrent notified
+edge patches, and `GET /openidm/repo/relationships`. What a console-created
+pair stores still needs the console.

@@ -171,11 +171,13 @@ The swap covers the parent's own fields. It does not cover:
   parent's hooks, and a parent-side relationship write ran the child's. A plain
   field change crossed neither way. None of these adds a second, post-persist
   run to the parent's own link add. A derivation that has to notice a child's
-  field edit does not get it from these flags. See
-  `docs/api/10-managed-objects.md`.
-- **Other records.** `onUpdate` can read them. The parent is not recomputed when
-  one of them changes later. A child `value` patched from 5 to 50 left the
-  parent's `derived.sum` at 5, in both storage modes.
+  field edit does not get it from these flags. It does if the changed field
+  names the relationship in `notifyRelationships`, which ran the other side's
+  hooks with no `notify` flag set. See `docs/api/10-managed-objects.md`.
+- **Other records.** `onUpdate` can read them. With no `notifyRelationships`
+  on the field that changed, the parent is not recomputed when a child changes
+  later. A child `value` patched from 5 to 50 left the parent's `derived.sum`
+  at 5, in both storage modes.
 - **The client's snapshot.** `PUT`, and `PATCH replace` of an array the client
   assembled, lose updates even though each call returns `200`. `onUpdate` can
   recompute from what was stored. It cannot restore what the client never sent.
