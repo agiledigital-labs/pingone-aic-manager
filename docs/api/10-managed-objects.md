@@ -515,11 +515,29 @@ A relationship property was observed in one of two modes, and both can work:
 - **Generic.** No mapping, and `_refProperties._id` is a plain UUID. Where
   those links are stored is inference — presumably IDM's generic relationships
   table, but `/openidm/repo/relationships` is 403 to the service account.
+  E21 on 2026-11-05 got the same 403, body `Access denied`. What a
+  console-created pair writes was not measured.
 
 Either way, the forward and reverse sides report the **same**
 `_refProperties._id` for a link. The id shape matched the mapping mode on every
 link probed, but that is an observed association over a handful of links, not a
 documented allocation rule; treat it as a hint, never as a classifier.
+
+A custom attribute declared on one side only is one value on that shared edge
+(verified 2026-11-05, E21). `status` was declared on the parent end of
+`children` / `gchildren` and not on the child's reverse. Both sides'
+relationship reads returned `_refProperties` keys `_id`, `_rev` and `status`.
+A patch of the child's has-one subresource changed the status the parent
+read, and a patch through the parent changed the status the child read,
+mapped and generic. The write moved the mapped parent's `_rev` and not the
+generic parent's, and not the child's, from either side. `GET` of the object
+omits relationship fields unless `returnByDefault` is true. `GET` with
+`_fields=<rel>` returns the edge either way. With `returnByDefault` false, a
+plain-field `onUpdate` on either object saw no relationship field in
+`object` or `oldObject`. With it true, both sides' plain-field hooks saw the
+edge, including `status`. The schema note above still holds: the declaration
+is per side. The stored value is not. Detail:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21".
 
 **`PUT config/managed` did not write `repo.ds` in either operation tried** —
 creating a pair, and renaming a mapped property (below). A has-many ↔ has-one
@@ -974,15 +992,21 @@ remove were sent with the now-stale `_rev`:
 | generic          | **no**                                | **`200`, the write lands**           |
 
 A link written from the **far** record moved the near record's `_rev` on the
-mapped pair as well. So `If-Match` on a record `PATCH` protects a link only on
-a mapped end; on a generic end it is accepted and ignored, because nothing a
-link write changes is in the `_rev`. `aic managed relationship relink` and
-`verify --probe` send `If-Match` on every has-one write and re-read the
-property immediately before it, which closes the window on a mapped end and
-only narrows it on a generic one.
+mapped pair as well. Measured again on 2026-11-05 from the child side of a
+has-many / has-one pair (`pocs/managed-aggregate-cas`, E21): an edge
+`_refProperties` patch through the child, and a replace of the child's reverse
+link, each moved the mapped parent's `_rev` and did not move the generic
+parent's, and did not move the child's own `_rev` even when the child's
+`onUpdate` ran. The reverse-link replace moved both mapped parents, the one the
+child left and the one it joined. So `If-Match` on a record `PATCH` protects a
+link only on a mapped end; on a generic end it is accepted and ignored, because
+nothing a link write changes is in the `_rev`. `aic managed relationship relink`
+and `verify --probe` send `If-Match` on every has-one write and re-read the
+property immediately before it, which closes the window on a mapped end and only
+narrows it on a generic one.
 
-**A link into an occupied has-one is refused, not displacing.** Measured the
-same day, writing from the near end to a far record whose has-one reverse
+**A link into an occupied has-one is refused, not displacing.** Measured
+2026-10-31, writing from the near end to a far record whose has-one reverse
 already held another link:
 
 | Pair                                      | Write                              | Result                                                                                       |
@@ -1502,31 +1526,122 @@ Patching the linked child's own `value` from 5 to 50 did not run the parent
 hook, did not move the parent's `_rev`, and left `derived.sum` at 5, in both
 modes.
 
-#### Notification flags
+#### Notification flags (verified 2026-11-05)
 
-`notifySelf: true` on the parent's relationship items and `notify: true` on the
-child's reverse (`NOTIFY=1`). `NOTIFY=2` swaps the ends. The parent counted both
-hooks with the trace sink and a `postUpdate` sink. One write each, waited on for
-4–8 s. The same in both storage modes.
+`notifySelf: true` on the parent's relationship node and `notify: true` on the
+child's reverse node (`NOTIFY=1`). `NOTIFY=2` swaps the ends. This table puts
+both flags on the relationship node. Ping's page puts `notify` on
+`resourceCollection`; that placement is the next table. The child counted
+`onUpdate`, `postUpdate` and `onDelete`; the parent counted both of its hooks.
+One write each, settled for 6 s. Two rows were read again at 30 s and had not
+moved. A direct `PATCH` of each record fired that record's hooks in every flag
+mode, so a "neither" cell is a hook that the same run could see. The same in
+both storage modes.
 
-| Write                                          | default flags        | `NOTIFY=1`                  | `NOTIFY=2`              |
-| ---------------------------------------------- | -------------------- | --------------------------- | ----------------------- |
-| child created with its reverse link set        | no parent hook       | no parent hook              | no parent hook          |
-| child `PATCH` of its reverse link              | no parent hook       | no parent hook              | —                       |
-| child `PATCH` of a plain field                 | no parent hook       | no parent hook              | no parent hook          |
-| child deleted                                  | —                    | `onUpdate` and `postUpdate` | —                       |
-| edge `PATCH` through the parent's relationship | no parent hook       | `onUpdate` and `postUpdate` | no parent hook          |
-| parent `PATCH add /<rel>/-`                    | the parent's own run | that run, no second run     | that run, no second run |
+| Write                                          | default          | `NOTIFY=1`                         | `NOTIFY=2`       |
+| ---------------------------------------------- | ---------------- | ---------------------------------- | ---------------- |
+| child created with its reverse link set        | neither          | neither                            | neither          |
+| child `PATCH` of its reverse link              | child update     | child update; neither parent       | child update     |
+| child `PATCH` of a plain field                 | child update     | child update                       | child update     |
+| child record `DELETE`                          | child `onDelete` | child `onDelete` only              | child `onDelete` |
+| edge `PATCH` through the parent's relationship | neither          | parent `onUpdate` and `postUpdate` | neither          |
+| edge `PATCH` through the child's relationship  | neither          | neither                            | child update     |
+| parent `PATCH add /<rel>/-`                    | parent, once     | parent, once                       | parent, once     |
+| parent `PATCH` of a plain field                | parent, once     | parent, once                       | parent, once     |
+| parent record `DELETE`                         | neither          | neither                            | neither          |
 
-With `NOTIFY=1`, the edge-triggered run saw the edge's new status and the
-child's current `value`. It runs for writes made through the parent's
-relationship sub-resource, and for a deleted child. A link made from the child,
-and a change to a child's own fields, did not reach the parent under either
-placement. The parent-side link add gets no second, post-persist run, so
-`derived` stays one link behind with or without the flags.
+The child's has-one reverse accepted `PATCH <child>/<rel>` of
+`/_refProperties/status` (200, first attempt) on both pairs.
 
-Not covered: notification of a has-many reverse, `notify` on a has-one forward,
-and whatever a console-created pair stores beyond these two flags.
+Round 1, same node placement, reported a parent hook when the child was
+deleted under `NOTIFY=1`. This run does not: not at 6 s, not at 30 s, not with
+the child's scripts removed. The edge patch through the parent under the same
+flags did run the parent hooks, so the flags were live. With the flag on the
+node, the rounds otherwise agree. The notified edge run is inside the caller's
+response (one sample went from 48 ms to 94 ms mapped, 44 ms to 73 ms generic).
+It does not add a second post-persist run to the parent's own link add, so
+`derived` on that write stays one link behind, as round 1 measured. A link or
+a field change made from the child does not reach the parent. A parent field
+patch does not reach the child. `NOTIFY=2` runs the child's own hooks for an
+edge patch made through the child, and does not move the child's `_rev`.
+
+| Write | `NOTIFY=1` on `resourceCollection` | `NOTIFY=2` on `resourceCollection` |
+| ----- | ---------------------------------- | ---------------------------------- |
+| child `PATCH` of its reverse link | parent and child update | child update; no parent |
+| child `PATCH` of a plain field | child update; no parent | child update; no parent |
+| child record `DELETE` | parent update and child `onDelete` | child `onDelete`; no parent |
+| edge `PATCH` through the parent | parent update | child update; no parent |
+| edge `PATCH` through the child | parent update; no child | child update; no parent |
+| parent `PATCH add /<rel>/-` | parent, once; no child | parent, once, and child update |
+
+`notify` on `resourceCollection` notifies the referenced object, which is
+where Ping's page says to put it. That includes `DELETE` of the child record.
+Round 1's parent-hook-on-delete result matches this placement, not the node
+placement its script wrote. A plain field change still does not cross. Where
+the parent hooks ran, the generic parent's `_rev` moved, because the
+notification commits a parent update.
+
+An edge or membership change on the mapped pair moves the parent's `_rev`
+whether or not a hook runs. On the generic pair it does not, unless that
+notification commits a parent update. Replacing the child's reverse link with
+the flag on the node moves `_rev` on both mapped parents and on neither
+generic parent.
+
+`notifyRelationships` on the object is stored and does not notify anyone
+(verified 2026-11-05). On the field that changes, it does, with no `notify`
+flag: a child `value` change that names `parent` and `gparent` ran the
+parent's hooks, both storage modes, and moved the generic parent's `_rev`.
+A parent `name` change that names `children` and `gchildren` ran the child's
+hooks, and the child's `_rev` stayed put. The child script does not assign
+to `object`. A change to a different field did not propagate. The tenant
+puts this on the field (`alpha_role.temporalConstraints` names `members`).
+`alpha_user` declares none.
+
+On the relationship property, naming that same relationship 404'd the
+managed resource (`Resource 'managed/<type>' not found`) for about 24 s
+while `config/managed` still listed the type. The other POC type stayed
+200. Clearing the property brought it back. Naming the other relationship,
+which is what `alpha_organization.parent` does, did not notify that other
+relationship's objects. The referenced object was notified only when
+`notify` was also on `resourceCollection`.
+
+A has-many / has-many generic pair (`peers` / `peerOf`) matched the
+node-placement table above, including no parent hook on child `DELETE`
+under `NOTIFY=1`. `notify` on a has-one forward's relationship node changed
+nothing. On that forward's `resourceCollection` it notified the referenced
+parent for a create-with-link, a reverse-link replace, a child-side edge
+patch and a child `DELETE`, and not for a plain field. `notifySelf` on the
+forward notified the child for a child-side edge patch.
+
+The notified hook's transaction id was the id the client sent plus `/0`.
+The sink creates were in the one `idm-activity` transaction that
+`aic logs tx` returned for the sent id, along with `relationshipUpdated`
+on the parent and no separate parent `UPDATE`. The client waited: three
+samples went from 46–48 ms with the flags off to 72–85 ms with `NOTIFY=1`
+on the node, and the sink was already in the response. Ten concurrent
+notified edge patches ran `onUpdate` 38 times and `postUpdate` 9 (mapped)
+or 10 (generic), with a repeated `oldRev`. The generic final `derived`
+matched the ten edges. The mapped pair returned one 404, finished with
+nine edges, and its `derived.sum` was 50 rather than 55.
+
+Repeated the same day, five fresh bursts of those ten patches lost mapped
+edges every time (two to six of the ten). The same loss happened with the
+flags off and with `notify` on `resourceCollection`. The generic pair kept
+all ten edges in five bursts with the flag and five without. The ten mapped
+patches sent one at a time kept every edge, and two concurrent mapped
+patches kept both, five times each. The 404 body was `Resource '<id>' not
+found` for an edge both sides had listed immediately before the burst. The
+child record stayed. The edge was gone from the parent and from the child,
+and a read about 30 s later did not bring it back. The 404's transaction had
+an access event and no activity: no `DELETE`, no relationship-removed event.
+`idm-core` in that window had no `ERROR` line. Where the notification ran,
+`derived` matched the edges still stored. Where it did not, `derived` stayed
+at the value the link-adds had left. (verified 2026-11-05)
+
+`DELETE` of the relationship URL, as distinct from `DELETE` of the child
+record, was not its own row. A notification received through one
+relationship and propagated out along another was not isolated. Tables:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21" and "E21 `cas` repeated".
 
 ## Examples
 
@@ -2043,7 +2158,18 @@ on create, or when actually rotating it.
   `412`; revision-less `PUT` and client-computed `replace` lose updates; a throw
   in `onUpdate` stores nothing and a throw in `postUpdate` stores the change;
   relationship and edge writes are outside the swap, with and without `notify` /
-  `notifySelf`; an in-memory audit trail stays exact under contention;
+  `notifySelf`. E21 the same day counted hooks on both ends. `notify` on the
+  relationship node did not run the parent hooks on `DELETE` of the child
+  record; `notify` on the child's `resourceCollection` did, and that
+  notification moves a generic parent's `_rev`. Field-level
+  `notifyRelationships` notified the other side on a change of that field;
+  the same key on the object did not. A relationship property that named
+  itself 404'd that managed type until the property was cleared. Concurrent
+  notified edge patches retried `onUpdate` several times per commit. A repeat
+  lost mapped edges on every burst of ten, with the node flags, with `notify`
+  on `resourceCollection`, and with the flags off; the generic pair did not,
+  and the same ten mapped patches sent one at a time did not. An in-memory
+  audit trail stays exact under contention;
   `idm-activity` shows the committed parent write once and every retried hook
   side effect. See "Concurrent `PATCH` and hooks".
 - Date: 2026-10-31 — `config/repo.ds` repair, sandbox `test_from` / `test_to`

@@ -1787,3 +1787,54 @@ equaled the backup taken before the POC. `genericMapping` still has those two
 keys and no others beyond the backup; their only properties are `children` and
 `parent`. Both endpoint deletes returned 200, and a later read of each is 404.
 No `PUT` of either config document was sent after the script stopped.
+
+The same day's first relationship-notification pass reported that `DELETE` of a
+linked child ran the parent's hooks when `notifySelf` was on the parent's
+relationship and `notify` was on the child's. The script put `notify` on the
+relationship node. A remeasure with the flag there did not run the parent
+hooks: not at 6 s, not at 30 s, not with the child's scripts removed. The same
+delete with `notify` on the child's `resourceCollection` did run them, mapped
+and generic, which is where Ping's relationship-notification page says to put
+`notify`
+(`docs.pingidentity.com/pingidm/8/objects-guide/relationships-notification.html`).
+The first pass's result matches the `resourceCollection` placement, not the
+node placement its script wrote. Detail:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21".
+
+The same measurement found two further disagreements with that page, and one
+hazard the page does not mention.
+
+Putting `notifyRelationships` on a relationship property and naming that same
+property (`parent` set to `["parent"]`) made `GET` and `POST` of the managed
+type return 404, `Resource 'managed/<type>' not found`, while `config/managed`
+still listed it. The other type stayed 200. Clearing the property restored
+the type on the next read. The page's examples name a different relationship
+(`attributes` names `roles`; `assignments` names `members`). They do not say
+that naming itself removes the resource.
+
+The page's `notifyRelationships` example is a property of the object. Setting
+the array on the managed object itself stored it and did not notify the other
+side, for a plain field change or a link change, with and without the
+`notify` flags.
+
+The page says relationship auditing is independent of `notify` and
+`notifySelf`. A fetch of the caller's transaction for an edge patch contained
+`relationshipUpdated` when `NOTIFY=1` was on the relationship node, and no
+activity events when the flags were off. An audit under an id that does not
+start with the caller's id was not searched for, so this is not a proof the
+audit was skipped.
+
+**2026-11-05 — concurrent edge patches on a mapped relationship drop edges.**
+Ten concurrent `PATCH`es of `_refProperties` on ten different edges of one
+mapped parent lost edges on every repetition (two to six), with `notify` /
+`notifySelf` on the relationship node, with those flags off, and with
+`notify` on `resourceCollection`. The generic pair, written the same way,
+kept all ten edges in both flag states. The same ten mapped patches sent one
+at a time kept every edge, and two concurrent mapped patches kept both. The
+404 names an edge id that both sides listed immediately before the burst. The
+child record stays. The edge is gone from the parent and from the child, and
+is still gone about 30 s later. The 404 transaction has an access event and
+no activity write: no `DELETE`, no relationship-removed event. `idm-core` in
+the window had no `ERROR` line. Nothing in Ping's relationship-notification
+page describes this. Detail: `pocs/managed-aggregate-cas/RESULTS.md`, "E21
+`cas` repeated".

@@ -93,11 +93,12 @@ that grows without bound.
 
 ## Where each kind of logic goes
 
-| Logic                                     | Where                                     | Why                                                                                |
-| ----------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| Derive fields, enforce invariants         | `onUpdate`, by assigning `object`         | Runs inside the swap, on every attempt. A throw rolls the attempt back.            |
-| Create or update another record, call out | `postUpdate`                              | Runs after the commit, once per committed revision.                                |
-| A write that is really a new fact         | the client or an endpoint, as one `PATCH` | The hook should not be the place that discovers the fact by reading other records. |
+| Logic                                          | Where                                                        | Why                                                                                                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Derive fields, enforce invariants              | `onUpdate`, by assigning `object`                            | Runs inside the swap, on every attempt. A throw rolls the attempt back.                                                                    |
+| Create or update another record, call out      | `postUpdate`                                                 | Runs after the commit, once per committed revision.                                                                                        |
+| A write that is really a new fact              | the client or an endpoint, as one `PATCH`                    | The hook should not be the place that discovers the fact by reading other records.                                                         |
+| A child field edit should recompute the parent | `notifyRelationships` on that field, naming the relationship | The parent's `onUpdate` runs inside the child's request. It is synchronous, and concurrent notifications retry like a revision-less patch. |
 
 `postUpdate` is the wrong place to signal failure. Throwing
 `{ code: 500, message: "…" }` returned that 500 to the caller and left the
@@ -158,28 +159,48 @@ The swap covers the parent's own fields. It does not cover:
   saw a stale set. The last writer's link was never counted, because the hook
   runs before the link is persisted. Which of the other links were visible
   changed from run to run. `derived` was wrong on every run.
-- **Edge properties.** `PATCH` of `<parent>/<rel>/<edgeId>` changing
-  `_refProperties` does not run the parent's hooks. On a mapped pair the
-  parent's `_rev` moves anyway, because the link lives on the parent's entry, so
-  an `If-Match` on the parent collides with it. On a generic pair the parent's
-  `_rev` stays put.
-- **Notification flags.** `notifySelf` on the parent's relationship and `notify`
-  on the child's reverse run the parent hooks for an edge write made through the
-  parent's relationship sub-resource, and for a deleted child. They do not run
-  them for a link created from the child, for a change to a child's own fields,
-  or a second time after the parent's own link add. Swapping which end carries
-  which flag did not change that. A derivation that has to notice a child edit
-  does not get it from these flags.
-- **Other records.** `onUpdate` can read them. The parent is not recomputed when
-  one of them changes later. A child `value` patched from 5 to 50 left the
-  parent's `derived.sum` at 5, in both storage modes.
+- **Edge properties.** With no notification flags, `PATCH` of
+  `<parent>/<rel>/<edgeId>` changing `_refProperties` does not run the parent's
+  hooks. On a mapped pair the parent's `_rev` moves anyway, because the link
+  lives on the parent's entry, so an `If-Match` on the parent collides with it.
+  On a generic pair the parent's `_rev` stays put. Concurrent patches of
+  different edges on a mapped pair also drop edges. Ten at once lost edges on
+  every run (two to six of the ten), with `notify` on the node, with `notify` on
+  `resourceCollection`, and with the flags off. The child record stayed; the
+  edge was gone from both sides and a read about 30 s later did not bring it
+  back. The 404's transaction logged no `DELETE`. The same ten patches one at a
+  time kept every edge, two concurrent patches kept both, and the generic pair
+  kept all ten.
+- **Notification flags.** Where the flag sits decides who hears the write.
+  `notifySelf` on the relationship node runs the origin object's hooks for a
+  write through that relationship's own URL. `notify` on the relationship node
+  did not notify the other side. `notify` on `resourceCollection` did: a
+  child-side link change and a `DELETE` of the child record then ran the
+  parent's hooks, and a parent-side relationship write ran the child's. A plain
+  field change crossed neither way. None of these adds a second, post-persist
+  run to the parent's own link add. A derivation that has to notice a child's
+  field edit does not get it from these flags. It does if the changed field
+  names the relationship in `notifyRelationships`, which ran the other side's
+  hooks with no `notify` flag set. That run is inside the caller's request:
+  three samples went from 46–48 ms to 72–85 ms, and ten concurrent notified edge
+  patches ran `onUpdate` about four times per commit. The same key on the object
+  did not notify anyone. A relationship property that named itself 404'd that
+  managed type until the property was cleared. See
+  `docs/api/10-managed-objects.md`.
+- **Other records.** `onUpdate` can read them. With no `notifyRelationships` on
+  the field that changed, the parent is not recomputed when a child changes
+  later. A child `value` patched from 5 to 50 left the parent's `derived.sum` at
+  5, in both storage modes.
 - **The client's snapshot.** `PUT`, and `PATCH replace` of an array the client
   assembled, lose updates even though each call returns `200`. `onUpdate` can
   recompute from what was stored. It cannot restore what the client never sent.
 
-Anything the derivation needs has to be copied onto the parent at the moment of
-the write. A relationship is a plain link. A child is immutable after its fact
-has been appended; a later change is a new inbox entry.
+A plain field change reaches the other side when that field's
+`notifyRelationships` names the relationship. The parent's hook then runs inside
+the caller's request. Object-level `notifyRelationships` did not, and the
+`notify` flags alone still do not carry a plain field change. A child whose
+later edits should not recompute the parent stays an inbox entry: copy the fact
+onto the parent at the moment of the write. A relationship is a plain link.
 
 ## Measuring a change
 
