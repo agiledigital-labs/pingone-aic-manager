@@ -22,6 +22,10 @@ wrong.
 - **E18** (2026-11-05, `node experiments.mjs E18`, 11 s). Create and append
   succeeded at 10, 100, 1000 and 5000 entries. No cap was hit. Concurrent append
   latency climbs sharply by 5000 (p50 4017 ms for N = 10).
+- **E14** (2026-11-05). `E14_TRACE=0 E14_N=50,100,200` (16 s) all 200, then
+  traced `E14_N=100` (11 s) all 200 with 1670 `onUpdate` runs. No retry bound
+  inside this range. Untraced rows cannot count retries: that counter is the
+  trace sink. Untraced N = 50 p50 is 1392 ms against E1's traced 3281–6225 ms.
 
 ## Surprises
 

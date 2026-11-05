@@ -406,3 +406,32 @@ Every patch was 200. Final count is the seeded array plus 15 appends, and
   writers are concurrent, and the audit-trail pattern (E19) has the same shape
   once `audit` itself is the large array. Not measured: the size at which create
   or patch fails, and a parent whose array is larger than 5000.
+
+## E14 — heavy contention, and the cost of the trace sink
+
+`E14_TRACE=0 E14_N=50,100,200` once, then `E14_N=100` with the trace sink on.
+The runner stops at the first non-200. Nothing stopped it. Fold mode,
+`postUpdate` still creating one sink per commit. With the trace off there is no
+`onUpdate` sink, so `requests retried` and `onUpdate runs` stay 0: that counter
+is the sink, and these rows do not say the retry stopped happening.
+
+| trace | N   | HTTP      | p50 / p90 / max ms | entries | all present | `derived` consistent | `onUpdate` runs | `postUpdate` runs | requests retried | max runs / request | retry saw same base |
+| ----- | --- | --------- | ------------------ | ------- | ----------- | -------------------- | --------------- | ----------------- | ---------------- | ------------------ | ------------------- |
+| off   | 50  | 50 × 200  | 1392 / 2036 / 2093 | 50      | yes         | yes                  | —               | 50                | —                | —                  | —                   |
+| off   | 100 | 100 × 200 | 2454 / 3691 / 3842 | 100     | yes         | yes                  | —               | 100               | —                | —                  | —                   |
+| off   | 200 | 200 × 200 | 5019 / 8663 / 9348 | 200     | yes         | yes                  | —               | 200               | —                | —                  | —                   |
+| on    | 100 | 100 × 200 | 5194 / 8894 / 9236 | 100     | yes         | yes                  | 1670            | 100               | 96               | 50                 | 0                   |
+
+- No lost append, no 412, no 5xx, no timeout, through 200 concurrent writers
+  with the trace off and through 100 with it on. `postUpdate` ran once per
+  commit at every size (`distinctPostRevs` equals N). No retry bound showed up
+  inside this range.
+- The untraced N = 50 row is the latency to set next to E1. E1's traced N = 50
+  p50 was 3281–6225 ms (max 5260–8888). Untraced p50 is 1392 ms (max 2093). The
+  sink create inside `onUpdate` is a large part of the traced cost, and it
+  widens the window each attempt holds. Traced N = 100 (p50 5194 ms, 1670 hook
+  runs, 96 of 100 requests retried, one request ran the hook 50 times) is still
+  all 200, and no retry saw the same base.
+- Not measured: N above 200, a failure mode, and the retry counts for the
+  untraced rows. `derived.runs` equalled N on those rows, which counts committed
+  folds only.
