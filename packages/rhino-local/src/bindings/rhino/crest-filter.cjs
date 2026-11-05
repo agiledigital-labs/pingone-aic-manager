@@ -259,7 +259,14 @@ var __rhinoLocalCrestFilter = (function () {
       if (isCaseVariant(op.text, "pr")) {
         reject("unsupported", "pr in another letter case: " + op.text);
       }
-      return { kind: "cmp", field: token.text, op: op.text, value: value(op) };
+      var node = { kind: "cmp", field: token.text, op: op.text, value: value(op) };
+      // Round-5 P2-2: the literal's spelling, since `7.0` and `7` read alike
+      // as JS numbers but may not reach DS alike.
+      var literal = tokens[pos - 1];
+      if (typeof node.value === "number" && literal.type === "word") {
+        node.spelling = literal.text;
+      }
+      return node;
     }
 
     function not() {
@@ -333,9 +340,10 @@ var __rhinoLocalCrestFilter = (function () {
   // false, or { unknown: { field, op, dimension } }: a leaf whose answer
   // turns on something nobody measured. `and`, `or` and `!` are Kleene, so a
   // record's verdict is unknown only when the unknown leaf decides it, and
-  // the lane then refuses the whole query. A lane supplies only its string
-  // rule (`strings`), because only the IDM emulator knows which fields were
-  // measured to fold case and spaces.
+  // the lane then refuses the whole query. A lane supplies its string rule
+  // (`strings`), whether the measured quoted integer holds (`quotedInteger`)
+  // and a label for a decided non-string leaf (`scalar`), because only the
+  // IDM emulator knows which types and fields were measured.
   var SAFE_INTEGER = 9007199254740991;
   var ORDERING = { gt: true, ge: true, lt: true, le: true };
 
@@ -345,6 +353,27 @@ var __rhinoLocalCrestFilter = (function () {
 
   function isArray(value) {
     return Object.prototype.toString.call(value) === "[object Array]";
+  }
+
+  // `throughArray` is set when a pointer step meets an array: doc 10 measured
+  // only the bare positive `/<rel>/_refResourceId eq` form (no rows), and
+  // whether that is the leaf being false or the query matching nothing is
+  // unknown (round-5 P3-4).
+  function walk(record, path) {
+    var parts = pointerParts(path);
+    var current = record;
+    var i;
+    for (i = 0; i < parts.length; i += 1) {
+      if (isArray(current)) {
+        return { value: undefined, throughArray: true };
+      }
+      if (current === null || current === undefined || typeof current !== "object" ||
+          !Object.prototype.hasOwnProperty.call(current, parts[i])) {
+        return { value: undefined, throughArray: false };
+      }
+      current = current[parts[i]];
+    }
+    return { value: current, throughArray: false };
   }
 
   function readField(record, path) {
@@ -359,6 +388,19 @@ var __rhinoLocalCrestFilter = (function () {
       current = current[parts[i]];
     }
     return current;
+  }
+
+  function isEmptyObject(value) {
+    if (value === null || typeof value !== "object" || isArray(value)) {
+      return false;
+    }
+    var key;
+    for (key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   function isSafeInteger(value) {
@@ -387,42 +429,56 @@ var __rhinoLocalCrestFilter = (function () {
     return false;
   }
 
-  // One scalar against the literal. Same JSON type is decided; a different
-  // one is decided only in the measured case above. `co`/`sw` on a number or
-  // boolean and ordering on a boolean are unmeasured too.
-  function compareScalar(actual, op, expected, field, strings) {
+  // One scalar against the literal. Same JSON type is decided, and the lane
+  // labels it (`lane.scalar`); a different one is decided only in the
+  // measured case above, and only where the lane says it holds
+  // (`lane.quotedInteger`, round-5 P2-1). `co`/`sw` on a number or boolean,
+  // ordering on a boolean, and a decimal literal against a number (round-5
+  // P2-2: `7.0` may reach an LDAP integer attribute as text it refuses) are
+  // unmeasured too.
+  function compareScalar(actual, op, expected, field, lane, decimal) {
     if (actual === null || typeof actual === "object") {
       return unknown(field, op, "type");
     }
     var actualType = typeof actual;
     var expectedType = typeof expected;
     if (actualType === "string" && expectedType === "string") {
-      return strings(field, op, actual, expected);
+      return lane.strings(field, op, actual, expected);
     }
     if (actualType === expectedType) {
-      if (op === "eq") {
-        return actual === expected;
+      if (actualType === "number" && decimal) {
+        return unknown(field, op, "type");
       }
-      if (actualType === "number" && ORDERING[op]) {
-        return compareText(actual, op, expected);
+      if (op === "eq" || (actualType === "number" && ORDERING[op])) {
+        lane.scalar(field, op, actualType);
+        return op === "eq" ? actual === expected : compareText(actual, op, expected);
       }
       return unknown(field, op, "type");
     }
     if (op === "eq" && actualType === "number" && expectedType === "string" &&
-        isSafeInteger(actual) && canonicalInteger(expected)) {
+        isSafeInteger(actual) && canonicalInteger(expected) && lane.quotedInteger(field)) {
       return actual === Number(expected);
     }
     return unknown(field, op, "type");
   }
 
-  function compareField(record, field, op, expected, strings) {
-    var value = readField(record, field);
+  function compareField(record, node, lane) {
+    var field = node.field;
+    var op = node.kind === "pr" ? "pr" : node.op;
+    var expected = node.kind === "pr" ? null : node.value;
+    var decimal = node.spelling !== undefined && /[.eE]/.test(node.spelling);
+    var read = walk(record, field);
+    if (read.throughArray) {
+      return op === "eq" && node.positive === true ? false : unknown(field, op, "path");
+    }
+    var value = read.value;
     if (op === "pr") {
       if (value === undefined || value === null) {
         return false;
       }
-      // Whether DS stores an empty string or array as present is unmeasured.
-      if (value === "" || (isArray(value) && value.length === 0)) {
+      // Whether DS stores an empty string, array or object as present is
+      // unmeasured (round-5 P3-3 added `{}`).
+      if (value === "" || (isArray(value) && value.length === 0) || isEmptyObject(value)) {
         return unknown(field, op, "presence");
       }
       return true;
@@ -439,14 +495,14 @@ var __rhinoLocalCrestFilter = (function () {
       return false;
     }
     if (!isArray(value)) {
-      return compareScalar(value, op, expected, field, strings);
+      return compareScalar(value, op, expected, field, lane, decimal);
     }
     // Any-match: a definite element match wins; otherwise any undecided
     // element leaves the field undecided.
     var undecided = null;
     var i;
     for (i = 0; i < value.length; i += 1) {
-      var one = compareScalar(value[i], op, expected, field, strings);
+      var one = compareScalar(value[i], op, expected, field, lane, decimal);
       if (one === true) {
         return true;
       }
@@ -457,32 +513,34 @@ var __rhinoLocalCrestFilter = (function () {
     return undecided === null ? false : undecided;
   }
 
-  function evaluate(ast, record, strings) {
+  // `lane` is { strings, quotedInteger, scalar }: see `unmeasuredLane` for
+  // the script tester's and src/idm/filter.ts for the IDM emulator's.
+  function evaluate(ast, record, lane) {
     switch (ast.kind) {
       case "true": return true;
       case "false": return false;
       case "not": {
-        var inner = evaluate(ast.inner, record, strings);
+        var inner = evaluate(ast.inner, record, lane);
         return inner === true ? false : inner === false ? true : inner;
       }
       case "and": {
-        var andLeft = evaluate(ast.left, record, strings);
+        var andLeft = evaluate(ast.left, record, lane);
         if (andLeft === false) {
           return false;
         }
-        var andRight = evaluate(ast.right, record, strings);
+        var andRight = evaluate(ast.right, record, lane);
         return andRight === false ? false : andLeft === true ? andRight : andLeft;
       }
       case "or": {
-        var orLeft = evaluate(ast.left, record, strings);
+        var orLeft = evaluate(ast.left, record, lane);
         if (orLeft === true) {
           return true;
         }
-        var orRight = evaluate(ast.right, record, strings);
+        var orRight = evaluate(ast.right, record, lane);
         return orRight === true ? true : orLeft === false ? orRight : orLeft;
       }
-      case "pr": return compareField(record, ast.field, "pr", null, strings);
-      case "cmp": return compareField(record, ast.field, ast.op, ast.value, strings);
+      case "pr":
+      case "cmp": return compareField(record, ast, lane);
     }
     return false;
   }
@@ -509,7 +567,10 @@ var __rhinoLocalCrestFilter = (function () {
         check(node.right, false);
       } else if (node.kind === "not") {
         check(node.inner, false);
+      } else if (node.kind === "pr") {
+        node.positive = positive;
       } else if (node.kind === "cmp") {
+        node.positive = positive;
         if (node.op === "ne") {
           ne = true;
         } else if (evaluated.indexOf(node.op) === -1 && reason === null) {
@@ -567,6 +628,10 @@ var __rhinoLocalCrestFilter = (function () {
     asciiUpper: asciiUpper,
     fullLower: function (t) { return t.toLowerCase(); },
     foldLower: function (t) { return t.toUpperCase().toLowerCase(); },
+    // Round-5 P3-1: Java's per-char Character.toLowerCase (U+0130 to `i`,
+    // not `i` + U+0307), and a full fold (U+1E9E to `ss`, RFC 3454 B.2).
+    charLower: function (t) { return t.replace(/[\s\S]/g, function (c) { return c.toLowerCase().charAt(0); }); },
+    fullFold: function (t) { return t.toLowerCase().toUpperCase().toLowerCase(); },
     trim: trim,
     collapse: collapse,
     wideTrim: function (t) { return trim(toSpace(t)); },
@@ -600,7 +665,8 @@ var __rhinoLocalCrestFilter = (function () {
     return { answer: answer, dimension: null };
   }
 
-  var everyCase = [identity, asciiLower, transforms.fullLower, asciiUpper, transforms.foldLower];
+  var everyCase = [identity, asciiLower, transforms.fullLower, asciiUpper, transforms.foldLower, transforms.charLower,
+    transforms.fullFold];
   var everySpace = [identity, trim, collapse, transforms.wideTrim, transforms.wideCollapse];
 
   // The rule for a lane with no per-field policy: a leaf whose answer moves
@@ -608,6 +674,35 @@ var __rhinoLocalCrestFilter = (function () {
   function unmeasuredStrings(field, op, candidate, expected) {
     var read = readStrings(candidate, op, expected, everyCase, everySpace);
     return read.dimension === null ? read.answer : unknown(field, op, read.dimension);
+  }
+
+  // Round-5 P2-3: alpha_user/bravo_user properties whose DS attribute is not
+  // compared by caseIgnoreMatch, so no reading above describes them.
+  // telephoneNumber is 2.5.4.20, EQUALITY telephoneNumberMatch (2.5.13.20),
+  // in DS's core schema (opendj-core 8.1.1 `Schema.getCoreSchema()`, read
+  // from the AM 8.1.1 image; RFC 4519 2.35): it ignores spaces and hyphens.
+  // No other alpha_user phone attribute exists (a new property there must be
+  // custom_*). frIndexedDate1-5 / frUnindexedDate1-5 are fr-attr-idateN /
+  // fr-attr-dateN, which refuse anything but GeneralizedTime (docs/api/14),
+  // so they compare as instants (generalizedTimeMatch and
+  // generalizedTimeOrderingMatch, RFC 4517), not as text. Every other mapped
+  // string there is caseIgnoreMatch or caseIgnoreIA5Match. Unprobed on AIC.
+  var OTHER_RULE = /^\/?(?:telephoneNumber|fr(?:Indexed|Unindexed)Date[1-5])$/;
+  function otherRule(type, field) {
+    return (type === "alpha_user" || type === "bravo_user") && OTHER_RULE.test(String(field));
+  }
+
+  // The script tester's lane: every reading, no measured type coercion, and
+  // the user fields above refused, for a collection it knows by name only.
+  function unmeasuredLane(collection) {
+    var type = String(collection).replace(/^\/+|\/+$/g, "").replace(/^managed\//, "");
+    return {
+      strings: function (field, op, candidate, expected) {
+        return otherRule(type, field) ? unknown(field, op, "rule") : unmeasuredStrings(field, op, candidate, expected);
+      },
+      quotedInteger: function () { return false; },
+      scalar: function () {},
+    };
   }
 
   return {
@@ -618,6 +713,8 @@ var __rhinoLocalCrestFilter = (function () {
     readField: readField,
     readStrings: readStrings,
     unmeasuredStrings: unmeasuredStrings,
+    unmeasuredLane: unmeasuredLane,
+    otherRule: otherRule,
     compareText: compareText,
     transforms: transforms,
   };

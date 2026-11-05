@@ -7,7 +7,7 @@ import type { JsonValue } from "../protocol.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
-import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldValue, matchesFilter } from "./filter.ts";
+import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldValue, matchesFilter, otherRule } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Invocation, Scripts } from "./scripts.ts";
 import type { Document, ManagedType, PolicyEvaluator, RestRequest } from "./types.ts";
@@ -35,6 +35,8 @@ export class ManagedStore {
   // Body syntax is unmeasured: recognize our opaque tokens by issuance, not a guessed regex.
   private passwordTokens = new Set<string>();
   private readonly records: Map<string, Document>;
+  /** Array properties `materialize` injected per record, which a query reads as absent (round-5 P3-6). */
+  private materialized = new Map<string, Set<string>>();
   private readonly scripts: Scripts;
   private readonly evidence: Evidence;
   private readonly policy: PolicyEvaluator | undefined;
@@ -52,6 +54,11 @@ export class ManagedStore {
 
   /** Forks retain continuation credentials; offset cookies use each fork's current rows. */
   inheritCookies(parent: ManagedStore): void { this.cookieKey = Buffer.from(parent.cookieKey); }
+
+  /** A fork's records are copies of the parent's, so it copies which of their arrays were injected. */
+  inheritMaterialized(parent: ManagedStore): void {
+    this.materialized = new Map([...parent.materialized].map(([key, names]) => [key, new Set(names)]));
+  }
 
   /** Token validity knowledge is shared by a fork family; record state remains isolated. */
   inheritPasswordTokens(parent: ManagedStore): void { this.passwordTokens = parent.passwordTokens; }
@@ -133,14 +140,42 @@ export class ManagedStore {
     }
   }
 
-  private materialize(type: ManagedType, object: Document): Document {
+  private materialize(type: ManagedType, object: Document, injected?: Set<string>): Document {
     this.evidence.assumed("generic scalar/array materialization follows measured user null/array shape");
     for (const [name, config] of Object.entries(type.schema.properties)) {
-      if (!Object.hasOwn(object, name)) Object.defineProperty(object, name, {
-        value: config.type === "array" ? [] : null, writable: true, enumerable: true, configurable: true,
-      });
+      if (!Object.hasOwn(object, name)) {
+        Object.defineProperty(object, name, {
+          value: config.type === "array" ? [] : null, writable: true, enumerable: true, configurable: true,
+        });
+        if (config.type === "array") injected?.add(name);
+      }
     }
     return object;
+  }
+
+  /**
+   * Which arrays of the record now stored at `key` are still the `[]` this emulator injected: those
+   * injected by this write, and those injected earlier that a PATCH left alone. An unset
+   * multi-valued attribute reads back as `[]` (doc 10), so a query must see it as absent; `pr` on
+   * an explicitly written `[]` stays unmeasured.
+   */
+  private remember(key: string, record: Document, injected: Set<string>, patch?: JsonValue): void {
+    const named = new Set((Array.isArray(patch) ? patch : []).map((op) =>
+      op && typeof op === "object" && !Array.isArray(op) ? String(op.field ?? "").replace(/^\//, "").split("/")[0] : ""));
+    for (const name of patch === undefined ? [] : this.materialized.get(key) ?? []) {
+      const value = record[name];
+      if (!named.has(name) && Array.isArray(value) && value.length === 0) injected.add(name);
+    }
+    if (injected.size) this.materialized.set(key, injected); else this.materialized.delete(key);
+  }
+
+  /** The record as a query reads it: injected arrays absent. */
+  private queried(key: string, row: Document): Document {
+    const names = this.materialized.get(key);
+    if (!names) return row;
+    const view: Document = { ...row };
+    for (const name of names) if (Array.isArray(view[name]) && (view[name] as JsonValue[]).length === 0) delete view[name];
+    return view;
   }
 
   private async read(type: ManagedType, id: string, op: Operation, readHook = true, selectors = fields(op.request.query?._fields)): Promise<Document> {
@@ -258,8 +293,10 @@ export class ManagedStore {
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
     this.evidence.assumed("recreated records restart revision at 0");
     this.encodePassword(type, object);
-    const record = this.materialize(type, { ...object, _id: id, _rev: "0" });
+    const injected = new Set<string>();
+    const record = this.materialize(type, { ...object, _id: id, _rev: "0" }, injected);
     this.records.set(this.key(type, id), structuredClone(record));
+    this.remember(this.key(type, id), record, injected);
     await this.afterWrite(type, id, op, record, null, "create");
     return { status: 201, body: project(record, fields(op.request.query?._fields), this.evidence) };
   }
@@ -289,8 +326,10 @@ export class ManagedStore {
     }
     this.evidence.assumed("revisions are monotonic decimal strings starting at zero");
     this.encodePassword(type, object);
-    const record = this.materialize(type, { ...object, _id: id, _rev: String(Number(oldObject._rev) + 1) });
+    const injected = new Set<string>();
+    const record = this.materialize(type, { ...object, _id: id, _rev: String(Number(oldObject._rev) + 1) }, injected);
     this.records.set(this.key(type, id), structuredClone(record));
+    this.remember(this.key(type, id), record, injected, op.request.method === "PATCH" ? op.request.body ?? [] : undefined);
     await this.afterWrite(type, id, op, record, oldObject, "update");
     this.evidence.assumed("managed update and patch return the stored object with status 200");
     return { status: 200, body: project(record, fields(op.request.query?._fields), this.evidence) };
@@ -321,6 +360,7 @@ export class ManagedStore {
       throw new IdmError(412, "Revision mismatch");
     }
     this.records.delete(this.key(type, id));
+    this.materialized.delete(this.key(type, id));
     this.evidence.assumed("post-hook mutations affect responses only");
     try {
       await this.scripts.hook(type, "postDelete", { ...invocation, object: null });
@@ -382,7 +422,7 @@ export class ManagedStore {
     const filter = classified.filter;
     checkCapabilities(type, false, this.evidence, this.policy !== undefined);
     const policy = stringPolicy(type.name, this.evidence);
-    let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, row, policy)).map(([, row]) => structuredClone(row));
+    let rows = [...this.records.entries()].filter(([key, row]) => key.startsWith(`managed/${type.name}/`) && matchesFilter(filter, this.queried(key, row), policy)).map(([, row]) => structuredClone(row));
     if (query._sortKeys !== undefined) {
       this.evidence.measured("nested query sort keys", "docs/api/10-managed-objects.md");
       this.evidence.assumed("sort nulls first and break ties by insertion order");
@@ -467,6 +507,31 @@ function stringPolicy(type: string, evidence: Evidence): StringPolicy {
       if (type !== "alpha_user" || op === "co" || op === "sw") return { case: "unknown", space: "unknown" };
       return { case: "fold", space: "fold" };
     },
+    // Round-5 P2-1: measured on alpha_user frIndexedInteger1, an LDAP integer attribute, so the
+    // quoted text reaches DS as an integer assertion. Generic types and alpha_user custom_*
+    // properties are JSON in DS (caseIgnoreJsonQueryMatch), where coercion is unmeasured.
+    quotedInteger(field) {
+      const f = name(field);
+      if (type !== "alpha_user" || f.startsWith("custom_") || f.includes("/")) return false;
+      if (f === "frIndexedInteger1") {
+        evidence.measured("eq on alpha_user frIndexedInteger1 matches a quoted integer", "docs/api/10-managed-objects.md (A number matches quoted or unquoted)");
+      } else {
+        evidence.assumed(`eq on alpha_user ${f} matches a quoted integer like frIndexedInteger1`);
+      }
+      return true;
+    },
+    // Round-5 P3-5: nothing measured these beyond the unquoted frIndexedInteger1 eq.
+    scalar(field, op, kind) {
+      const f = name(field);
+      if (kind === "number" && op === "eq" && type === "alpha_user" && f === "frIndexedInteger1") {
+        evidence.measured("eq on alpha_user frIndexedInteger1 matches an unquoted integer", "docs/api/10-managed-objects.md (A number matches quoted or unquoted)");
+      } else if (kind === "number") {
+        evidence.assumed(`${op} on a number property compares JSON numbers numerically`);
+      } else {
+        evidence.assumed("eq on a boolean property compares JSON booleans");
+      }
+    },
+    refused: (field) => otherRule(type, name(field)),
     used(field, op, dimension) {
       const f = name(field);
       if (dimension === "case") {
@@ -497,9 +562,11 @@ function stringPolicy(type: string, evidence: Evidence): StringPolicy {
         space: "match turns on leading, trailing or repeated spaces or non-U+0020 whitespace",
         unicode: "match turns on Unicode normalisation or characters RFC 4518 maps to nothing",
         type: "match compares different JSON types, or an object or null element, which nothing measured",
-        presence: "answer for an empty string or array is unmeasured",
+        presence: "answer for an empty string, array or object is unmeasured",
+        rule: "field's DS matching rule is not caseIgnoreMatch, which nothing measured",
+        path: "pointer reads through an array, measured only as a bare eq reached through and alone",
       }[dimension];
-      return missing(evidence, `query ${op} whose ${what}: ${type} ${field}`);
+      return missing(evidence, `query ${op} whose ${what}: ${type} ${field}`, "openidm-query-filter");
     },
   };
 }

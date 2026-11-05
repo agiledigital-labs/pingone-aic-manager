@@ -2270,7 +2270,8 @@ function __rhinoLocalOpenidmRecord(value, id, rev) {
 // (crest-filter.cjs), which the IDM emulator runs too. This lane has no
 // per-field string policy, so any leaf whose answer moves under a case,
 // space or Unicode reading is unknown (round-3 P3-1), as is a type mismatch
-// nobody measured (round-4 P2-3). A record whose whole answer is unknown is a
+// nobody measured (round-4 P2-3), the quoted integer included (measured on
+// alpha_user only, round-5 P2-1). A record whose whole answer is unknown is a
 // fault. Runs before any row is read, as AIC parses before it reads.
 function __rhinoLocalParseFilter(filter) {
   var prepared = __rhinoLocalCrestFilter.prepare(filter, ["eq", "co", "sw"]);
@@ -2291,7 +2292,9 @@ var __rhinoLocalUndecidedWhy = {
   space: "turns on leading, trailing or repeated spaces or non-U+0020 whitespace",
   unicode: "turns on Unicode normalisation or characters RFC 4518 maps to nothing",
   type: "compares different JSON types, or an object or null element, which nothing measured",
-  presence: "asks pr of an empty string or array, which nothing measured",
+  presence: "asks pr of an empty string, array or object, which nothing measured",
+  rule: "is on a user field whose DS matching rule is not caseIgnoreMatch, which nothing measured",
+  path: "reads through an array, measured only as a bare eq reached through and alone",
 };
 
 openidm.read = function (resourceName, _params, fields) {
@@ -2373,10 +2376,11 @@ openidm.query = function (resourceName, params, fields) {
   // Parsed before the rows, as AIC parses it before reading any: a malformed
   // filter fails on an empty collection too.
   var ast = __rhinoLocalParseFilter(filter);
+  var lane = __rhinoLocalCrestFilter.unmeasuredLane(collection);
   var result = [];
   var i;
   for (i = 0; i < rows.length; i += 1) {
-    var verdict = __rhinoLocalCrestFilter.evaluate(ast, rows[i], __rhinoLocalCrestFilter.unmeasuredStrings);
+    var verdict = __rhinoLocalCrestFilter.evaluate(ast, rows[i], lane);
     if (verdict !== true && verdict !== false) {
       __rhinoLocalFilterUnsupported(filter,
         "whether record " + JSON.stringify(String(rows[i]._id)) + " matches: " +
