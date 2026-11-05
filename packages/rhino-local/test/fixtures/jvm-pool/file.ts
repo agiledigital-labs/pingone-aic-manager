@@ -3,7 +3,7 @@ import { describe, expect, inject, it } from "vitest";
 import { defineSuite, useLease } from "../../../src/harness/index.ts";
 import { JVM_POOL_CONTEXT } from "../../../src/pool.ts";
 import { RhinoRunner } from "../../../src/runner.ts";
-import { FRESH, LIBRARIES, POLLUTER, PROBE } from "../../harness/isolation-scripts.ts";
+import { FRESH, LIBRARIES, PID_PROBE, POLLUTER, PROBE } from "../../harness/isolation-scripts.ts";
 
 /** Probe first, then pollute: whichever file runs second probes the scope the first one vandalised. */
 const suite = defineSuite({
@@ -33,7 +33,7 @@ export function poolFile(name: string): void {
       expect(address).toBeDefined();
       const runner = await RhinoRunner.borrow(address!);
       try {
-        const response = await runner.eval({ source: "Number(java.lang.ProcessHandle.current().pid())" });
+        const response = await runner.eval(PID_PROBE);
         appendFileSync(process.env.POOL_FILES_PIDS!, `${name} ${String(response.value)}\n`);
       } finally {
         await runner.close();
