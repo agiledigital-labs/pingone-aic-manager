@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runCase } from "../../src/bindings/index.ts";
+import { CaseRunError, runCase } from "../../src/bindings/index.ts";
 import { judge } from "../../src/case/index.ts";
 import type { CallbackEffect, CallbackExpect } from "../../src/case/types.ts";
 import type { RunCaseOptions } from "../../src/bindings/run.ts";
@@ -64,19 +64,28 @@ describe("real scripted-decision corpus", { timeout: 30_000 }, () => {
       }
       it(`${entry.kase.name} — differs on ${gap.differs.join(", ")}`, async () => {
         expect(gap.reason, entry.kase.name).toBeTruthy();
+        let effects;
         if (gap.faults !== undefined) {
           // The probe catches these refusals, but a harness fault fails the run
           // anyway; the guard fails the test on any fault not listed here, and
-          // on any listed one that did not occur.
+          // on any listed one that did not occur. The run still returns what
+          // the script did around them, so every key the faults did not touch
+          // is compared with AIC as for any other gap case.
           for (const id of gap.faults) {
             expectHarnessFault(id);
           }
-          await expect(runCase(runner, entry.kase, runOptions(entry, PROBE_SOURCE_NAME))).rejects.toThrow(
-            /rhino-local harness fault /
+          const failure = await runCase(runner, entry.kase, runOptions(entry, PROBE_SOURCE_NAME)).then(
+            () => undefined,
+            (error: unknown) => error
           );
-          return;
+          expect(failure).toBeInstanceOf(CaseRunError);
+          expect((failure as CaseRunError).message).toMatch(/rhino-local harness fault /);
+          effects = (failure as CaseRunError).faultedEffects;
+          expect(effects, `${entry.kase.name}: the faulted run's effects`).toBeDefined();
+        } else {
+          effects = (await runCase(runner, entry.kase, runOptions(entry, PROBE_SOURCE_NAME))).effects;
         }
-        const result = await runCase(runner, entry.kase, runOptions(entry, PROBE_SOURCE_NAME));
+        const result = { effects: effects! };
         const local = emitted(result.effects.callbacks);
         const live = emitted(entry.kase.expect.callbacks ?? []);
         // The payload's keys are exactly AIC's plus the declared gap — an

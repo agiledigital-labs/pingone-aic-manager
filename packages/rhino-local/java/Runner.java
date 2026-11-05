@@ -403,6 +403,7 @@ public final class Runner {
             ScriptableObject.deleteProperty(scope, HarnessFaults.NAME);
             if (bridge != null) ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }
+          ((ScriptContextScope) scope).sealHarnessGlobals();
         } catch (EvaluatorException e) {
           return errorFromRhino(id, "compile_error", e);
         } catch (RhinoException e) {

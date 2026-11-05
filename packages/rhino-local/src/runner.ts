@@ -660,7 +660,7 @@ export class RhinoRunner {
       if (fatal) this.#failures.record(fatal, `job ${id}`);
       const parent = callScope.getStore();
       if (fatal && parent) parent.failure ??= fatal;
-      return fatal ? { ...response, ...(response.outcome === "ok" ? failedResponse(id, fatal) : { emulation: fatal }) } : response;
+      return fatal ? { ...response, ...(response.outcome === "ok" ? { ...failedResponse(id, fatal), faultedValue: response.value } : { emulation: fatal }) } : response;
     } catch (error) {
       if (error instanceof LaneDivergenceError) {
         reportResponseEvidence(error.host);

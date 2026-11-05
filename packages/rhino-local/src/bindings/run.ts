@@ -35,6 +35,24 @@ export interface CaseRun {
 }
 
 /**
+ * A case whose run did not complete. When a harness fault failed a run the
+ * script itself completed, `faultedEffects` is what the script did around the
+ * refusal — for comparing the parts the fault did not touch, never for a
+ * verdict on the case.
+ */
+export class CaseRunError extends Error {
+  readonly response: JobResponse;
+  readonly faultedEffects: CompleteRecordedEffects | undefined;
+  constructor(message: string, response: JobResponse) {
+    super(message);
+    this.name = "CaseRunError";
+    this.response = response;
+    this.faultedEffects =
+      typeof response.faultedValue === "string" ? parseHarvest(response.faultedValue) : undefined;
+  }
+}
+
+/**
  * Eval a case against the local Rhino runner: mocks as preamble, author script
  * as source, harvest appended so line numbers do not shift. The preamble goes
  * as {@link casePreamble}'s parts, so the runner compiles the mocks and each
@@ -73,8 +91,9 @@ export async function runCase(
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {
     const detail = response.error?.message ?? response.outcome;
-    throw new Error(
-      `rhino-local: case ${JSON.stringify(kase.name)} ${response.outcome}: ${detail}`
+    throw new CaseRunError(
+      `rhino-local: case ${JSON.stringify(kase.name)} ${response.outcome}: ${detail}`,
+      response
     );
   }
   if (typeof response.value !== "string") {

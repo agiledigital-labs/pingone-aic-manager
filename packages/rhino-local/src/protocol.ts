@@ -184,6 +184,12 @@ export interface JobResponse {
   thrown?: ThrownValue;
   /** Reached fidelity failures survive script catches; independent of job outcome. */
   missing?: string[];
+  /**
+   * The harvest of a run the script completed but a harness fault failed: what
+   * the script did around the refusal it caught. Diagnostics only — the run has
+   * failed, and nothing judges a verdict from this.
+   */
+  faultedValue?: JsonValue;
   /** Assumptions reached by IDM runtime helpers. */
   assumed?: string[];
   /** Measured behavior reached by IDM runtime helpers, with probe attribution. */

@@ -37,7 +37,6 @@ var __rhinoLocal = {
   logs: [],
   identityWrites: [],
   faults: [],
-  faultSink: null,
   identityAttributes: {},
   identityCustomAttrs: {},
   identityCustomAttrsOwnedKeys: {},
@@ -201,10 +200,29 @@ function __rhinoLocalIsJavaDate(value) {
 // no recorder (a journey, or a host without the Java runner) it is kept for the
 // harvest, and a journey's __rhinoLocalFail is itself uncatchable and takes the
 // id. Thrown as usual either way, so the script sees what it would see first.
+// The runner's recorder, held where the script cannot reach it: setting a
+// property of __rhinoLocal must not silence every later fault. Captured as the
+// first act of __rhinoLocalSeed, so a fault raised while seeding is recorded.
+var __rhinoLocalFaultSink = (function () {
+  var sink = null;
+  var channel = {
+    capture: function () {
+      sink =
+        typeof __rhinoLocalHarnessFault === "function" ? __rhinoLocalHarnessFault : null;
+    },
+    record: function (id, message) {
+      if (sink === null) {
+        return false;
+      }
+      sink(id, message);
+      return true;
+    },
+  };
+  return typeof Object.freeze === "function" ? Object.freeze(channel) : channel;
+})();
+
 function __rhinoLocalFault(id, message) {
-  if (__rhinoLocal.faultSink !== null) {
-    __rhinoLocal.faultSink(id, message);
-  } else {
+  if (!__rhinoLocalFaultSink.record(id, message)) {
     __rhinoLocal.faults.push(id + ": " + message.replace(/^rhino-local: /, ""));
   }
   return __rhinoLocalFail(message, id);
@@ -256,17 +274,156 @@ function __rhinoLocalHide(object, name, fn) {
   object[name] = fn;
 }
 
+// Where each method's accepted argument count comes from (E19, decision B).
+// On AIC every binding below is a Java object, and Rhino resolves a Java
+// method by argument count: a call matching no overload throws a catchable
+//   InternalError: Can't find method <declaring class>.<method>(<arg types>).
+// measured for session.get() (docs/api/12, existingSession table) and
+// utils.crypto.randomUUID(1) (corpus binding-utils-interop, live payload), and
+// seen for three more methods (docs/api/12: getMemberships(), setAct(object);
+// corpus getRandomValues(object)).
+//   measured -- that refusal was observed for this method.
+//   assumed  -- the local range is the method's overload set in AIC's own
+//               binding introspection (docs/api/bindings/scripted-decision-
+//               next.json, named by `java`), and the refusal is assumed to
+//               take the measured shape.
+// A path missing here has no such basis: its range is the harness's guess, and
+// a call outside it is a harness fault (`arity-unknown/<path>`) -- AIC may
+// accept the call, so a script catching the local throw would pass on a path
+// AIC never takes. The legacy engine has no introspection file, so every path
+// is a guess there.
+var __rhinoLocalArityBasis = (function () {
+  var basis = {};
+  var pkg = "org.forgerock.openam.";
+  function add(java, provenance, paths) {
+    var i;
+    for (i = 0; i < paths.length; i += 1) {
+      basis[paths[i]] = { java: pkg + java, provenance: provenance };
+    }
+  }
+  add("scripting.javascript.MapScriptWrapper", "measured", ["existingSession.get"]);
+  add("scripting.bindings.crypto.ScriptCryptoService", "measured", ["utils.crypto.randomUUID"]);
+  add("scripting.bindings.crypto.ScriptCryptoService", "assumed", ["utils.crypto.getRandomValues"]);
+  add("auth.node.api.NodeStateScriptWrapper", "assumed", [
+    "nodeState.get", "nodeState.isDefined", "nodeState.putShared", "nodeState.putTransient",
+    "nodeState.remove", "nodeState.keys", "nodeState.getObject", "nodeState.mergeShared",
+    "nodeState.mergeTransient",
+  ]);
+  add("auth.nodes.script.ActionWrapper", "assumed", [
+    "action.goTo", "action.withErrorMessage", "action.withHeader", "action.withIdentifiedUser",
+    "action.withIdentifiedAgent", "action.withStage", "action.withDescription",
+    "action.withLockoutMessage", "action.putSessionProperty", "action.removeSessionProperty",
+    "action.withMaxSessionTime", "action.withMaxIdleTime", "action.suspend",
+  ]);
+  add("auth.nodes.script.ScriptedCallbacksBuilder", "assumed", [
+    "callbacksBuilder.nameCallback", "callbacksBuilder.passwordCallback",
+    "callbacksBuilder.textOutputCallback", "callbacksBuilder.hiddenValueCallback",
+    "callbacksBuilder.confirmationCallback", "callbacksBuilder.choiceCallback",
+    "callbacksBuilder.radioChoiceCallback", "callbacksBuilder.suspendedTextOutputCallback",
+    "callbacksBuilder.textInputCallback", "callbacksBuilder.scriptTextOutputCallback",
+    "callbacksBuilder.languageCallback", "callbacksBuilder.idPCallback",
+    "callbacksBuilder.httpCallback", "callbacksBuilder.x509CertificateCallback",
+    "callbacksBuilder.consentMappingCallback", "callbacksBuilder.deviceProfileCallback",
+    "callbacksBuilder.kbaCreateCallback", "callbacksBuilder.selectIdPCallback",
+    "callbacksBuilder.termsAndConditionsCallback", "callbacksBuilder.metadataCallback",
+    "callbacksBuilder.pollingWaitCallback", "callbacksBuilder.redirectCallback",
+    "callbacksBuilder.stringAttributeInputCallback", "callbacksBuilder.numberAttributeInputCallback",
+    "callbacksBuilder.booleanAttributeInputCallback", "callbacksBuilder.validatedUsernameCallback",
+    "callbacksBuilder.validatedPasswordCallback",
+  ]);
+  add("auth.nodes.script.ScriptedCallbacksWrapper", "assumed", [
+    "callbacks.isEmpty", "callbacks.getNameCallbacks", "callbacks.getPasswordCallbacks",
+    "callbacks.getHiddenValueCallbacks", "callbacks.getDeviceProfileCallbacks",
+    "callbacks.getKbaCreateCallbacks", "callbacks.getSelectIdPCallbacks",
+    "callbacks.getTermsAndConditionsCallbacks", "callbacks.getTextInputCallbacks",
+    "callbacks.getStringAttributeInputCallbacks", "callbacks.getNumberAttributeInputCallbacks",
+    "callbacks.getBooleanAttributeInputCallbacks", "callbacks.getConfirmationCallbacks",
+    "callbacks.getLanguageCallbacks", "callbacks.getIdpCallbacks",
+    "callbacks.getValidatedPasswordCallbacks", "callbacks.getValidatedUsernameCallbacks",
+    "callbacks.getHttpCallbacks", "callbacks.getX509CertificateCallbacks",
+    "callbacks.getConsentMappingCallbacks", "callbacks.getChoiceCallbacks",
+  ]);
+  add("scripting.api.identity.ScriptedIdentityRepositoryScriptWrapper", "assumed", [
+    "idRepository.getIdentity",
+  ]);
+  add("scripting.api.secrets.ScriptedSecretsFacadeImpl", "assumed", [
+    "secrets.getGenericSecret", "secrets.getDecryptionKey", "secrets.getEncryptionKey",
+    "secrets.getSigningKey", "secrets.getVerificationKey",
+  ]);
+  add("scripting.cache.service.CacheManagerScriptFacade", "assumed", [
+    "cacheManager.exists", "cacheManager.named",
+  ]);
+  add("auth.nodes.script.ScriptedTreeWrapper", "assumed", [
+    "journey.name", "journey.innerJourney", "journey.mustRun", "journey.identityResource",
+  ]);
+  add("scripting.wrappers.IdmIntegrationServiceScriptWrapper", "assumed", [
+    "openidm.read", "openidm.query", "openidm.create", "openidm.update", "openidm.patch",
+    "openidm.delete", "openidm.action",
+  ]);
+  add("scripting.wrappers.HttpClientScriptWrapper", "assumed", ["httpClient.send"]);
+  add("scripting.bindings.SystemEnvScriptWrapper", "assumed", ["systemEnv.getProperty"]);
+  // Introspection lists info(msg), (format, arg), (format, arg1, arg2) and
+  // (format, arguments: array); the last is taken as SLF4J's `Object...`, which
+  // Rhino calls with any count, so only zero arguments has no overload.
+  add("scripting.logging.ScriptedLoggerWrapper", "assumed", [
+    "logger.trace", "logger.debug", "logger.info", "logger.warn", "logger.error",
+  ]);
+  return basis;
+})();
+
+// Rhino's NativeJavaMethod.scriptSignature: how a refused call names its
+// arguments.
+function __rhinoLocalScriptSignature(args) {
+  var out = [];
+  var i;
+  var value;
+  for (i = 0; i < args.length; i += 1) {
+    value = args[i];
+    if (value === null) {
+      out.push("null");
+    } else if (value === undefined) {
+      out.push("undefined");
+    } else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") {
+      out.push(typeof value);
+    } else if (typeof value === "function") {
+      out.push("function");
+    } else if (typeof java !== "undefined" && value instanceof java.lang.Object) {
+      out.push(String(value.getClass().getName()));
+    } else {
+      out.push("object");
+    }
+  }
+  return out.join(",");
+}
+
+function __rhinoLocalInternalError(message) {
+  if (typeof InternalError === "function") {
+    return new InternalError(message);
+  }
+  var error = new Error(message);
+  error.name = "InternalError";
+  return error;
+}
+
+// What a call with an argument count the local binding does not take throws:
+// AIC's own refusal when the range has a basis, otherwise a harness fault.
+function __rhinoLocalArityRefusal(path, args, expected) {
+  var basis = __rhinoLocal.engine === "legacy" ? undefined : __rhinoLocalArityBasis[path];
+  if (basis !== undefined) {
+    return __rhinoLocalInternalError(
+      "Can't find method " + basis.java + "." + path.substring(path.lastIndexOf(".") + 1) +
+        "(" + __rhinoLocalScriptSignature(args) + ")."
+    );
+  }
+  return __rhinoLocalFault("arity-unknown/" + path,
+    "rhino-local: " + path + " arity=" + args.length + " (the harness accepts " + expected +
+      "; AIC's accepted argument counts here are unmeasured)"
+  );
+}
+
 function __rhinoLocalExpectArity(path, args, expected) {
   if (args.length !== expected) {
-    throw __rhinoLocalFault("arity/" + path, 
-      "rhino-local: " +
-        path +
-        " arity=" +
-        args.length +
-        " (expected " +
-        expected +
-        ")"
-    );
+    throw __rhinoLocalArityRefusal(path, args, String(expected));
   }
 }
 
@@ -916,11 +1073,7 @@ action.withMaxIdleTime = function (maxIdleTime) {
 
 action.suspend = function (callbackTextFormat, additionalLogic) {
   if (arguments.length < 1 || arguments.length > 3) {
-    throw __rhinoLocalFault("arity/action.suspend", 
-      "rhino-local: action.suspend arity=" +
-        arguments.length +
-        " (expected 1..3)"
-    );
+    throw __rhinoLocalArityRefusal("action.suspend", arguments, "1..3");
   }
   var message = String(callbackTextFormat);
   var resumeUri = "https://rhino-local.invalid/resume";
@@ -989,9 +1142,7 @@ function __rhinoLocalFormat(pattern, bound) {
 
 function __rhinoLocalLog(level, args) {
   if (args.length < 1) {
-    throw __rhinoLocalFault("arity/logger." + level, 
-      "rhino-local: logger." + level + " arity=" + args.length + " (expected >= 1)"
-    );
+    throw __rhinoLocalArityRefusal("logger." + level, args, ">= 1");
   }
   var format = String(args[0]);
   var bound = [];
@@ -1076,11 +1227,7 @@ function __rhinoLocalCallback(type, fields) {
 
 callbacksBuilder.nameCallback = function (prompt, defaultName) {
   if (arguments.length !== 1 && arguments.length !== 2) {
-    throw __rhinoLocalFault("arity/callbacksBuilder.nameCallback", 
-      "rhino-local: callbacksBuilder.nameCallback arity=" +
-        arguments.length +
-        " (expected 1 or 2)"
-    );
+    throw __rhinoLocalArityRefusal("callbacksBuilder.nameCallback", arguments, "1 or 2");
   }
   __rhinoLocalCallback("NameCallback", { prompt: String(prompt) });
 };
@@ -1134,9 +1281,7 @@ callbacksBuilder.confirmationCallback = function () {
     fields.optionType = a[2];
     fields.defaultOption = a[3];
   } else {
-    throw __rhinoLocalFault("arity/callbacksBuilder.confirmationCallback", 
-      "rhino-local: callbacksBuilder.confirmationCallback arity=" + a.length
-    );
+    throw __rhinoLocalArityRefusal("callbacksBuilder.confirmationCallback", a, "3 or 4");
   }
   __rhinoLocalCallback("ConfirmationCallback", fields);
 };
@@ -1179,11 +1324,7 @@ callbacksBuilder.suspendedTextOutputCallback = function (messageType, message) {
 
 callbacksBuilder.textInputCallback = function (prompt, defaultText) {
   if (arguments.length !== 1 && arguments.length !== 2) {
-    throw __rhinoLocalFault("arity/callbacksBuilder.textInputCallback", 
-      "rhino-local: callbacksBuilder.textInputCallback arity=" +
-        arguments.length +
-        " (expected 1 or 2)"
-    );
+    throw __rhinoLocalArityRefusal("callbacksBuilder.textInputCallback", arguments, "1 or 2");
   }
   var textFields = { prompt: String(prompt) };
   textFields.defaultText = arguments.length > 1 ? String(defaultText) : "";
@@ -1221,11 +1362,7 @@ callbacksBuilder.idPCallback = function (
   tokenType
 ) {
   if (arguments.length !== 9 && arguments.length !== 11) {
-    throw __rhinoLocalFault("arity/callbacksBuilder.idPCallback", 
-      "rhino-local: callbacksBuilder.idPCallback arity=" +
-        arguments.length +
-        " (expected 9 or 11)"
-    );
+    throw __rhinoLocalArityRefusal("callbacksBuilder.idPCallback", arguments, "9 or 11");
   }
   var idpFields = {
     provider: String(provider),
@@ -1260,9 +1397,7 @@ callbacksBuilder.httpCallback = function () {
     });
     return;
   }
-  throw __rhinoLocalFault("arity/callbacksBuilder.httpCallback", 
-    "rhino-local: callbacksBuilder.httpCallback arity=" + a.length
-  );
+  throw __rhinoLocalArityRefusal("callbacksBuilder.httpCallback", a, "3 or 4");
 };
 
 callbacksBuilder.x509CertificateCallback = function (
@@ -1271,11 +1406,7 @@ callbacksBuilder.x509CertificateCallback = function (
   requestSignature
 ) {
   if (arguments.length < 1 || arguments.length > 3) {
-    throw __rhinoLocalFault("arity/callbacksBuilder.x509CertificateCallback", 
-      "rhino-local: callbacksBuilder.x509CertificateCallback arity=" +
-        arguments.length +
-        " (expected 1..3)"
-    );
+    throw __rhinoLocalArityRefusal("callbacksBuilder.x509CertificateCallback", arguments, "1..3");
   }
   var x509 = { prompt: String(prompt) };
   if (arguments.length > 1) {
@@ -1325,9 +1456,7 @@ callbacksBuilder.consentMappingCallback = function () {
     });
     return;
   }
-  throw __rhinoLocalFault("arity/callbacksBuilder.consentMappingCallback", 
-    "rhino-local: callbacksBuilder.consentMappingCallback arity=" + a.length
-  );
+  throw __rhinoLocalArityRefusal("callbacksBuilder.consentMappingCallback", a, "3 or 7");
 };
 
 callbacksBuilder.deviceProfileCallback = function (metadata, location, message) {
@@ -1405,9 +1534,7 @@ callbacksBuilder.redirectCallback = function (
     __rhinoLocalCallback("RedirectCallback", redirectFields);
     return;
   }
-  throw __rhinoLocalFault("arity/callbacksBuilder.redirectCallback", 
-    "rhino-local: callbacksBuilder.redirectCallback arity=" + a.length
-  );
+  throw __rhinoLocalArityRefusal("callbacksBuilder.redirectCallback", a, "3..6");
 };
 
 function __rhinoLocalAttributeCallback(type, args) {
@@ -1442,13 +1569,7 @@ function __rhinoLocalAttributeCallback(type, args) {
     __rhinoLocalCallback(type, fields);
     return;
   }
-  throw __rhinoLocalFault("arity/callbacksBuilder." + type.charAt(0).toLowerCase() + type.substring(1), 
-    "rhino-local: callbacksBuilder." +
-      type.charAt(0).toLowerCase() +
-      type.substring(1) +
-      " arity=" +
-      args.length
-  );
+  throw __rhinoLocalArityRefusal("callbacksBuilder." + type.charAt(0).toLowerCase() + type.substring(1), args, "4..7");
 }
 
 callbacksBuilder.stringAttributeInputCallback = function () {
@@ -1470,11 +1591,7 @@ callbacksBuilder.validatedUsernameCallback = function (
   failedPolicies
 ) {
   if (arguments.length !== 3 && arguments.length !== 4) {
-    throw __rhinoLocalFault("arity/callbacksBuilder.validatedUsernameCallback", 
-      "rhino-local: callbacksBuilder.validatedUsernameCallback arity=" +
-        arguments.length +
-        " (expected 3 or 4)"
-    );
+    throw __rhinoLocalArityRefusal("callbacksBuilder.validatedUsernameCallback", arguments, "3 or 4");
   }
   var userFields = {
     prompt: String(prompt),
@@ -1496,11 +1613,7 @@ callbacksBuilder.validatedPasswordCallback = function (
   failedPolicies
 ) {
   if (arguments.length !== 4 && arguments.length !== 5) {
-    throw __rhinoLocalFault("arity/callbacksBuilder.validatedPasswordCallback", 
-      "rhino-local: callbacksBuilder.validatedPasswordCallback arity=" +
-        arguments.length +
-        " (expected 4 or 5)"
-    );
+    throw __rhinoLocalArityRefusal("callbacksBuilder.validatedPasswordCallback", arguments, "4 or 5");
   }
   var pwFields = {
     prompt: String(prompt),
@@ -2409,9 +2522,7 @@ function __rhinoLocalMatchesFilter(record, filter) {
 
 openidm.read = function (resourceName, _params, fields) {
   if (arguments.length < 1 || arguments.length > 3) {
-    throw __rhinoLocalFault("arity/openidm.read", 
-      "rhino-local: openidm.read arity=" + arguments.length + " (expected 1..3)"
-    );
+    throw __rhinoLocalArityRefusal("openidm.read", arguments, "1..3");
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("read", resource);
@@ -2437,9 +2548,7 @@ openidm.read = function (resourceName, _params, fields) {
 
 openidm.query = function (resourceName, params, fields) {
   if (arguments.length < 2 || arguments.length > 3) {
-    throw __rhinoLocalFault("arity/openidm.query", 
-      "rhino-local: openidm.query arity=" + arguments.length + " (expected 2 or 3)"
-    );
+    throw __rhinoLocalArityRefusal("openidm.query", arguments, "2 or 3");
   }
   var collection = String(resourceName);
   __rhinoLocalPushOpenidm("query", collection, params);
@@ -2494,9 +2603,7 @@ openidm.query = function (resourceName, params, fields) {
 
 openidm.create = function (resourceName, newResourceId, content) {
   if (arguments.length < 3 || arguments.length > 5) {
-    throw __rhinoLocalFault("arity/openidm.create", 
-      "rhino-local: openidm.create arity=" + arguments.length + " (expected 3..5)"
-    );
+    throw __rhinoLocalArityRefusal("openidm.create", arguments, "3..5");
   }
   var collection = String(resourceName);
   var id = newResourceId;
@@ -2534,9 +2641,7 @@ openidm.create = function (resourceName, newResourceId, content) {
 
 openidm.update = function (id, _rev, value) {
   if (arguments.length < 3 || arguments.length > 5) {
-    throw __rhinoLocalFault("arity/openidm.update", 
-      "rhino-local: openidm.update arity=" + arguments.length + " (expected 3..5)"
-    );
+    throw __rhinoLocalArityRefusal("openidm.update", arguments, "3..5");
   }
   var resource = String(id);
   __rhinoLocalPushOpenidm("update", resource, value);
@@ -2552,9 +2657,7 @@ openidm.update = function (id, _rev, value) {
 
 openidm.patch = function (resourceName, _rev, patch) {
   if (arguments.length < 3 || arguments.length > 5) {
-    throw __rhinoLocalFault("arity/openidm.patch", 
-      "rhino-local: openidm.patch arity=" + arguments.length + " (expected 3..5)"
-    );
+    throw __rhinoLocalArityRefusal("openidm.patch", arguments, "3..5");
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("patch", resource, patch);
@@ -2592,9 +2695,7 @@ openidm.patch = function (resourceName, _rev, patch) {
 
 openidm.delete = function (resourceName, _rev) {
   if (arguments.length < 2 || arguments.length > 4) {
-    throw __rhinoLocalFault("arity/openidm.delete", 
-      "rhino-local: openidm.delete arity=" + arguments.length + " (expected 2..4)"
-    );
+    throw __rhinoLocalArityRefusal("openidm.delete", arguments, "2..4");
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("delete", resource);
@@ -2613,9 +2714,7 @@ openidm.delete = function (resourceName, _rev) {
 
 openidm.action = function (resource, actionName, content, params) {
   if (arguments.length < 2 || arguments.length > 5) {
-    throw __rhinoLocalFault("arity/openidm.action", 
-      "rhino-local: openidm.action arity=" + arguments.length + " (expected 2..5)"
-    );
+    throw __rhinoLocalArityRefusal("openidm.action", arguments, "2..5");
   }
   var body = content;
   if (body === undefined || body === null) {
@@ -2688,9 +2787,7 @@ function __rhinoLocalMatchHttp(url, method) {
 
 httpClient.send = function (uri, requestOptions) {
   if (arguments.length < 1 || arguments.length > 2) {
-    throw __rhinoLocalFault("arity/httpClient.send", 
-      "rhino-local: httpClient.send arity=" + arguments.length + " (expected 1 or 2)"
-    );
+    throw __rhinoLocalArityRefusal("httpClient.send", arguments, "1 or 2");
   }
   var url = String(uri);
   var method = "GET";
@@ -3373,7 +3470,7 @@ idRepository.createUser = function (userName, password, attributes) {
 systemEnv = {
   getProperty: function (key, defaultValue, returnType) {
     if (arguments.length < 1 || arguments.length > 3) {
-      throw __rhinoLocalFault("arity/systemEnv.getProperty", "rhino-local: systemEnv.getProperty arity=" + arguments.length);
+      throw __rhinoLocalArityRefusal("systemEnv.getProperty", arguments, "1..3");
     }
     var k = String(key);
     var declared = __rhinoLocal.esvProvided && __rhinoLocalHas(__rhinoLocal.esv, k);
@@ -3974,6 +4071,9 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
 }
 
 function __rhinoLocalSeed(given) {
+  // Defined by the runner for the preamble only; captured first, so a fault
+  // raised while seeding (seed-binding, seed-cache-manager) is recorded too.
+  __rhinoLocalFaultSink.capture();
   given = given || {};
   __rhinoLocal.engine = given.engine || "next-gen";
   __rhinoLocal.loggerScriptId = given.loggerScriptId || "<unseeded-script-id>";
@@ -4068,10 +4168,6 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.logs = [];
   __rhinoLocal.identityWrites = [];
   __rhinoLocal.faults = [];
-  // Defined by the runner for the preamble only; captured here, before the
-  // script runs and while the name still resolves.
-  __rhinoLocal.faultSink =
-    typeof __rhinoLocalHarnessFault === "function" ? __rhinoLocalHarnessFault : null;
   // Local-only: the AIC lane runs against the tenant's real mapping.
   __rhinoLocal.identityAttributes = __rhinoLocalClone(given.identityAttributes || {});
 
