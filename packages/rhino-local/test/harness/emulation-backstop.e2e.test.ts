@@ -39,6 +39,14 @@ it.each(modes)("R5 main reporter enforces discarded worker verdict in $pool isol
   const report = JSON.parse(result.report) as { testResults: Array<{ assertionResults: Array<{ status: string }> }> };
   expect(report.testResults[0]?.assertionResults[0]?.status).toBe("passed");
 }, 30_000);
+// The worker's run backstop is deferred to Vitest's final flush. When no flush
+// send carries it the worker's throw is lost, so the run must still fail, with
+// the message, from the main reporter's own audit copy.
+it.each(modes)("R9 deferred backstop survives a dropped flush in $pool isolate=$isolate", async ({ pool, isolate }) => {
+  const result = await runChild("fails", pool, isolate, { R9_FLUSH_DROPPED: "true" });
+  expect(result.code, result.output + result.report).toBe(1);
+  expect(result.output).toContain("Emulation run backstop: expected-fail cannot invert emulation");
+}, 30_000);
 it("R5 setup refuses missing run enforcement", async () => {
   const result = await runChild("tenant", "forks", true, { R5_NO_RUNNER: "true" });
   expect(result.code, result.output + result.report).toBe(1);
