@@ -83,6 +83,15 @@ export const bindingsIdentityPolicyPath = join(
   "identity-policy.cjs"
 );
 
+/** The one CREST `_queryFilter` grammar, shared as text by Rhino and as CommonJS by Node. */
+export const bindingsCrestFilterPath = join(
+  packageRoot,
+  "src",
+  "bindings",
+  "rhino",
+  "crest-filter.cjs"
+);
+
 /** Scripted-decision case files (author scripts + defineCase wrappers). */
 export const casesDir = join(packageRoot, "cases");
 
