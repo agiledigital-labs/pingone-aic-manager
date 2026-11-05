@@ -23,8 +23,6 @@ interface Lane {
   scalar(field: string, op: string, type: "number" | "boolean"): void;
   /** The field's matching rule (crest-filter.cjs `fieldRule`, or `json` for a JSON-stored property). */
   rule(field: string): FieldRule | null;
-  /** This lane applies the measured field rules (the script tester's does not). */
-  decides: boolean;
   label(provenance: "measured" | "assumed", behavior: string, source: string): void;
 }
 /** A field whose DS matching rule is not a string reading (crest-filter.cjs `fieldRule`). */
@@ -118,7 +116,6 @@ function policyLane(policy: StringPolicy): Lane {
     quotedInteger: (field) => policy.quotedInteger(field),
     scalar: (field, op, type) => policy.scalar(field, op as Operator, type),
     rule: (field) => policy.rule(field),
-    decides: true,
     label: (provenance, behavior, source) => policy.label(provenance, behavior, source),
   };
 }

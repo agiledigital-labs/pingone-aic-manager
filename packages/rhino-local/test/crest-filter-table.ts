@@ -293,13 +293,24 @@ export interface CollectionRow {
   /** The IDM emulator, over REST and from a script alike (the probe found them identical). */
   idm: string[] | Missing | Illegal;
   why: string;
+  /** The collection's records for this row alone, in place of `collectionRecords` (the off-form guard rows). */
+  records?: Array<JsonObject & { _id: string }>;
 }
+/** Every collection's records as `row` sees them. */
+export const recordsFor = (row: CollectionRow): typeof collectionRecords =>
+  row.records === undefined ? collectionRecords : { ...collectionRecords, [row.collection]: row.records };
 const missingOn = (type: string, op: string, why: keyof typeof causes, field: string): Missing =>
   ({ missing: `openidm-query-filter: query ${op} whose ${causes[why]}: ${type} ${field}` });
 const alpha = (filter: string, am: CollectionRow["am"], idm: CollectionRow["idm"], why: string): CollectionRow => ({ collection: "alpha_user", filter, am, idm, why });
 const on = (collection: string) => (filter: string, am: CollectionRow["am"], idm: CollectionRow["idm"], why: string): CollectionRow => ({ collection, filter, am, idm, why });
 const bravo = on("bravo_user"), sink = on("sink"), linkedsink = on("linkedsink"), pinned = on("pinned");
 const illegal = (value: string, field: string): Illegal => ({ illegal: value, field });
+/**
+ * A stored value outside the form a rule decides (review pf-02 P2-1): the rule's guard refuses the
+ * record, so every lane must too. One record per row, so the probe-mirroring a/b/c stay as they are.
+ */
+const offForm = (stored: JsonObject, filter: string, op: string, why: keyof typeof causes, field: string, note: string): CollectionRow =>
+  ({ collection: "alpha_user", filter, am: "fault", idm: missingOn("alpha_user", op, why, field), why: note, records: [{ _id: "d", ...user(stored) }] });
 
 export const collectionTable: CollectionRow[] = [
   // §3a telephoneNumberMatch: spaces, hyphens and `+` ignored anywhere, eq/sw/co (both probes;
@@ -369,7 +380,20 @@ export const collectionTable: CollectionRow[] = [
   alpha('frIndexedInteger1 gt "6"', "fault", missingOn("alpha_user", "gt", "type", "frIndexedInteger1"), "a quoted literal under ordering was not probed"),
   alpha('frIndexedInteger1 co "7"', "fault", missingOn("alpha_user", "co", "type", "frIndexedInteger1"), "substring on an integer was not probed"),
   alpha("frIndexedInteger1 eq true", "fault", missingOn("alpha_user", "eq", "type", "frIndexedInteger1"), "a boolean literal was not probed"),
+  // Review pf-02 P3-1: CREST parses a number literal to a Double before DS sees it, so integrality
+  // is the value's, not the spelling's. A quoted literal's conversion is unmeasured, so it is not.
+  alpha("frIndexedInteger1 eq 7.00000000000000004", ["a"], ["a"], "CREST parses it to the Double 7.0: the same filter as eq 7.0"),
+  alpha("frIndexedInteger1 eq 7.50000000000000001", illegal("7.5", "/frIndexedInteger1"), illegal("7.5", "/frIndexedInteger1"), "CREST parses it to the Double 7.5: the 400 for 7.5"),
+  alpha('frIndexedInteger1 eq "7.0000000000000001"', "fault", missingOn("alpha_user", "eq", "type", "frIndexedInteger1"),
+    "quoted, integral only after a Double parse IDM was not measured to make"),
   alpha("frIndexedInteger1 eq 7.5 and frIndexedInteger1 eq 7", illegal("7.5", "/frIndexedInteger1"), illegal("7.5", "/frIndexedInteger1"), "the 400 is query-level, whatever the other leaf"),
+  // Stored values outside the decided forms (review pf-02 P2-1): each is refused by its own guard.
+  offForm({ telephoneNumber: "(02) 9999-9999" }, 'telephoneNumber eq "0299999999"', "eq", "rule", "telephoneNumber", "stored parentheses were not probed"),
+  offForm({ telephoneNumber: 61299999999 }, 'telephoneNumber eq "61299999999"', "eq", "type", "telephoneNumber", "a stored number is not a telephone string"),
+  offForm({ frIndexedDate1: "2026-01-01T00:00:00.000Z" }, 'frIndexedDate1 eq "2026-01-01T00:00:00Z"', "eq", "rule", "frIndexedDate1",
+    "stored fractional seconds were not probed"),
+  offForm({ frIndexedInteger1: "7" }, "frIndexedInteger1 eq 7", "eq", "type", "frIndexedInteger1", "a stored string is not the DS integer"),
+  offForm({ frIndexedInteger1: 7.5 }, "frIndexedInteger1 eq 7", "eq", "type", "frIndexedInteger1", "a stored fraction is not the DS integer"),
   // Integer 2-5 and unindexed: the existing quoted-integer reading; other literals are refused before any record.
   alpha('frIndexedInteger2 eq "7"', "fault", ["a"], "assumed like frIndexedInteger1 (round 5); the AM lane has no quoted-integer reading"),
   alpha("frIndexedInteger2 eq 7.0", "fault", missingOn("alpha_user", "eq", "type", "frIndexedInteger2"), "integer 2-5 were not probed with decimals"),

@@ -6,7 +6,7 @@ import { mockPreamble, withHarvest } from "../../src/bindings/preamble.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { bindingsCrestFilterPath } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
-import { type Answer, type CollectionRow, type Illegal, collectionRecords, collectionTable, filterTable, illegalMessage, records } from "../crest-filter-table.ts";
+import { type Answer, type CollectionRow, type Illegal, collectionTable, filterTable, illegalMessage, records, recordsFor } from "../crest-filter-table.ts";
 import type { JsonObject } from "../../src/case/types.ts";
 import { loadBehaviour, sandboxFaults } from "./load-behaviour.ts";
 
@@ -78,7 +78,7 @@ describe("openidm.query by collection (node:vm)", () => {
 // E19 live probes (2026-11-06): the collection-keyed table. The second probe measured this binding
 // on the alpha_user rules, so it decides them and throws its own 400; the rest still fault, even on
 // an empty collection.
-const byCollection = { managed: Object.fromEntries(Object.entries(collectionRecords).map(([type, rows]) => [`managed/${type}`, rows])) };
+const byCollection = (row: CollectionRow) => ({ managed: Object.fromEntries(Object.entries(recordsFor(row)).map(([type, rows]) => [`managed/${type}`, rows])) });
 const collectionCases = collectionTable.map((row) => [`${row.collection} ${row.filter}`, row] as const);
 // A leaf whose field rule this lane cannot apply is refused before any record is read, as AIC
 // converts assertions before reading: an empty collection must not pass vacuously. Record-level
@@ -113,7 +113,7 @@ describe("openidm.query by collection, probe table (node:vm)", () => {
     return { sandbox, call: () => openidm.query(`managed/${row.collection}`, { _queryFilter: row.filter }).result.map((r) => r._id) };
   };
   it.each(collectionCases)("%s", (_name, row) => {
-    const { sandbox, call } = run(row, byCollection);
+    const { sandbox, call } = run(row, byCollection(row));
     if (isIllegal(row.am)) {
       expectAmIllegal(call, row.am, row.why);
       expect(sandboxFaults(sandbox)).toEqual([]);
@@ -171,7 +171,7 @@ describe("openidm.query on the JVM", () => {
   it.each(collectionCases)("probe table: %s", async (_name, row) => {
     const script = `try { nodeState.putShared("r", JSON.stringify(openidm.query(${JSON.stringify(`managed/${row.collection}`)}, { _queryFilter: ${JSON.stringify(row.filter)} }).result.map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", JSON.stringify(["caught", e.name, e.message, String(e), e.javaException ? e.javaException.getCode() : null, e.javaException ? e.javaException.getReason() : null])); }`;
     if (row.am === "fault") expectHarnessFault("openidm-query-filter");
-    const response = await runner.eval({ preamble: mockPreamble(byCollection as never), source: withHarvest(script) });
+    const response = await runner.eval({ preamble: mockPreamble(byCollection(row) as never), source: withHarvest(script) });
     if (row.am === "fault") {
       expect(response.outcome, row.why).toBe("runtime_error");
       expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-query-filter"]);
