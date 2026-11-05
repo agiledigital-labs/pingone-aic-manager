@@ -6,6 +6,7 @@ import { HostCallError } from "../runner.ts";
 import type { JsonValue } from "../protocol.ts";
 import type { JsonStorage, SyncMapping } from "./config.ts";
 import { checkCapabilities } from "./capabilities.ts";
+import { ASSUMED_POLICY, implicitPolicy, notNullDetail } from "./policy.ts";
 import { applyPatch, document, fields, own, project } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
 import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldRule, fieldValue, illegalAssertion, matchesFilter } from "./filter.ts";
@@ -305,7 +306,20 @@ export class ManagedStore {
         if (error instanceof HostCallError) throw new IdmError(error.code, error.message, error.detail);
         throw error;
       }
-    } else this.evidence.assumed("policy not evaluated");
+    } else {
+      const patching = op.request.method === "PATCH" && oldObject !== null;
+      const verdict = implicitPolicy(type, object, {
+        creating: method === "create" && !this.records.has(this.key(type, id)),
+        ...(patching ? { patchedFrom: oldObject, operations: op.request.body } : {}),
+      });
+      if (verdict.kind === "fault") missing(this.evidence, `implicit policy: ${verdict.reason}`, verdict.id);
+      if (verdict.kind === "notNull") {
+        this.evidence.measured("explicit null on a defaulted property is refused NOT_NULL on create", "docs/api/10-managed-objects.md");
+        this.evidence.assumed("NOT_NULL detail lists only NOT_NULL when the schema's required array omits the property (stock policy.js reading)");
+        throw new IdmError(403, "Policy validation failed", notNullDetail(verdict.property));
+      }
+      this.evidence.assumed(ASSUMED_POLICY);
+    }
     this.evidence.measured("property onStore always replaces the property including absent and undefined values");
     await this.scripts.properties(type, "onStore", invocation);
     await this.scripts.hook(type, "onStore", invocation);

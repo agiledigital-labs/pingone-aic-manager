@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IdmConfig, IdmEmulator, type Document, type ManagedType } from "../../src/idm/index.ts";
 import { HostCallError, RhinoRunner } from "../../src/runner.ts";
 import { create, emulator, js, send, simple } from "./fixtures.ts";
+import { ASSUMED_POLICY } from "../../src/idm/policy.ts";
 
 let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
@@ -131,7 +132,7 @@ describe("provenance and explicit boundaries", () => {
   it("writes report policy omission, reads report measured behavior and a policy seam can replace it", async () => {
     const emu = emulator(runner);
     const write = await emu.request({ method: "POST", path: "managed/widget", query: { _action: "create" }, body: { text: "a" } });
-    expect(write.provenance).toContainEqual({ kind: "assumed", behavior: "policy not evaluated" });
+    expect(write.provenance).toContainEqual({ kind: "assumed", behavior: ASSUMED_POLICY });
     expect(write.provenance.some((entry) => entry.kind === "measured")).toBe(true);
     let checked = 0;
     const withPolicy = new IdmEmulator(emu.config, runner, { policy: ({ object, internal }) => {
@@ -140,7 +141,7 @@ describe("provenance and explicit boundaries", () => {
     const result = await withPolicy.request({ method: "POST", path: "managed/widget", query: { _action: "create" }, body: { text: "checked" } });
     expect(result.status).toBe(201);
     expect(checked).toBe(1);
-    expect(result.provenance.some((entry) => entry.behavior === "policy not evaluated")).toBe(false);
+    expect(result.provenance.some((entry) => entry.behavior === ASSUMED_POLICY)).toBe(false);
   });
 
   it.each(["increment", "move", "copy", "transform"])("unsupported patch %s fails loudly", async (operation) => {

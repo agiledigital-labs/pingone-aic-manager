@@ -8,8 +8,8 @@ beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
 const id = "00000000-0000-0000-0000-000000000001";
 const path = `managed/alpha_user/${id}`;
-function make(name = "alpha_user") {
-  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name, schema: { properties: { password: { type: "string" }, mail: { type: "string" } } } }] } }), runner);
+function make(name = "alpha_user", options: ConstructorParameters<typeof IdmEmulator>[2] = {}) {
+  return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name, schema: { properties: { password: { type: "string" }, mail: { type: "string" } } } }] } }), runner, options);
 }
 const prefix = "{PBKDF2-HMAC-SHA256}";
 it.each([
@@ -59,7 +59,10 @@ it("A2 #1 bravo_user password remains an explicit unmeasured boundary", async ()
 
 it.each([null, 7, {}])("A2 #1 unmeasured non-string password %j fails missing", async (password) => {
   expectEmulationFailure("alpha_user password without measured string value");
-  const result = await runner.eval({ engine: "idm", source: `try {openidm.create('managed/alpha_user','${id}',{password:${JSON.stringify(password)}})} catch(e) {} 42;` }, { onCall: make().onCall });
+  // A pass-through evaluator stands in for policy.js, so the password rule, which runs after
+  // policy, is what this reaches; without one the implicit valid-type check faults first (E15a).
+  const emu = make("alpha_user", { policy: () => {} });
+  const result = await runner.eval({ engine: "idm", source: `try {openidm.create('managed/alpha_user','${id}',{password:${JSON.stringify(password)}})} catch(e) {} 42;` }, { onCall: emu.onCall });
   expect(result.emulation?.missing).toContain("alpha_user password without measured string value");
   expect(result.outcome).not.toBe("ok");
 });
