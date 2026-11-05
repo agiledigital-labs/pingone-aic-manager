@@ -7,6 +7,7 @@ export const js = (source: string): Script => ({ type: "text/javascript", source
 export const simple: ManagedType = { name: "widget", schema: { properties: {
   text: { type: "string" }, count: { type: "number" }, flag: { type: "boolean" },
   nested: { type: "object" }, list: { type: "array" }, other: { type: "string" },
+  spaced: { type: "string" }, label: { type: "string" }, nulls: { type: "array" },
 } } };
 
 export function emulator(runner: RhinoRunner, type: ManagedType = simple): IdmEmulator {

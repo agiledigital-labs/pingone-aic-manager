@@ -10,9 +10,9 @@
  * `openidm-query-filter` harness fault: the harness cannot say what AIC does.
  */
 export const records = [
-  { _id: "a", text: "alpha", count: 1, flag: true, nested: { "a/b": "match" } },
-  { _id: "b", text: "beta", count: 2, flag: false, other: 'say "hi"' },
-  { _id: "c", text: "alpine", count: 1000 },
+  { _id: "a", text: "alpha", count: 1, flag: true, nested: { "a/b": "match" }, list: ["Red", "x"], spaced: "al  pha" },
+  { _id: "b", text: "beta", count: 2, flag: false, other: 'say "hi"', spaced: "ga\tma" },
+  { _id: "c", text: "alpine", count: 1000, spaced: "be\u00a0ta" },
 ] as const;
 
 /** What a lane answers: matching ids, AIC's parse error, or the fault. */
@@ -39,6 +39,16 @@ export interface FilterRow {
 
 const same = (filter: unknown, grammar: FilterRow["grammar"], answer: Answer, why: string): FilterRow =>
   ({ filter, grammar, am: answer, script: answer, rest: answer, why });
+
+const causes = {
+  case: "letter case",
+  space: "leading, trailing or repeated spaces or non-U+0020 whitespace",
+} as const;
+/** A row whose answer for some record turns on an unmeasured rule: the AM fault, the emulator's missing. */
+const undecided = (filter: string, why: keyof typeof causes, field: string, note: string, op = "eq"): FilterRow => {
+  const missing = { missing: `query ${op} whose match turns on ${causes[why]}: widget ${field}` };
+  return { filter, grammar: "ast", am: "fault", script: missing, rest: missing, why: note };
+};
 
 export const filterTable: FilterRow[] = [
   same("true", "ast", ["a", "b", "c"], "literal, measured"),
@@ -138,6 +148,16 @@ export const filterTable: FilterRow[] = [
     why: "unknown or false is unknown for record a",
   },
   same('text eq "ALPHA" or count eq 1', "ast", ["a"], "unknown or true is true for record a"),
+  // Round-4 P2-1: the three mechanisms no row pinned. Each row is a false pass
+  // under the plausible wrong version: a two-valued `!`, an array whose
+  // undecided element counts as false, and readings without the interior
+  // collapse or the non-U+0020 whitespace.
+  undecided('!(text eq "ALPHA")', "case", "text", "Kleene !: not unknown is unknown, not true"),
+  undecided('list eq "red"', "case", "list", "array: a case-only element match is unknown, not false"),
+  same('list eq "Red"', "ast", ["a"], "control: an exact element match decides the array"),
+  undecided('spaced eq "al pha"', "space", "spaced", "a run of interior spaces: whether AIC collapses it is unmeasured"),
+  undecided('spaced eq "be ta"', "space", "spaced", "U+00A0 inside the value: whether AIC reads it as a space is unmeasured"),
+  undecided('spaced eq "ga ma"', "space", "spaced", "a tab inside the value: whether AIC reads it as a space is unmeasured"),
   { filter: "count gt 1", grammar: "ast", am: "fault", script: ["b", "c"], rest: ["b", "c"], why: "ordering: not evaluated in the AM lane" },
   { filter: 'text ne "x"', grammar: "ast", am: "fault", script: "fault", rest: "ne", why: "ne: REST 400 measured, script text unmeasured" },
 ];
