@@ -136,14 +136,14 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/absent-type 1`] = `
 {
-  "error": "Error: rhino-local: openidm.query: no given.managed entry for "managed/rlNoSuchType"",
+  "error": "Error: rhino-local: openidm.query: Resource &#39;managed/rlNoSuchType&#39; not found",
   "ok": false,
 }
 `;
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > binding-openidm-writes — differs on cleanup/before, create/duplicate, update/wrong-rev, patch/bad-operation, query/2/bad-filter, query/2/no-filter, query/2/absent-type, query/2/queryExpression, query/2/two-kinds, patch/wrong-rev, delete/wrong-rev, action/4/validateObject, action/3/validateObject, action/5/validateObject, action/2/unknown, delete, delete/absent, update/absent > query/2/bad-filter 1`] = `
 {
-  "error": "Error: rhino-local: openidm.query: unmocked filter "name eq"",
+  "error": "Error: rhino-local: openidm.query: The value 'name eq' for parameter '_queryFilter' could not be parsed as a valid query filter",
   "ok": false,
 }
 `;
@@ -631,13 +631,6 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > java-collecti
     "ok": false,
   },
 ]
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > lib-openidm-miss-consumer — differs on unknownTypeMiss > unknownTypeMiss 1`] = `
-{
-  "error": "Error: rhino-local: openidm.read: no given.managed entry for "managed/zzz_no_such_object_type"",
-  "threw": true,
-}
 `;
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > cookies 1`] = `

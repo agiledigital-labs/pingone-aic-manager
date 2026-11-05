@@ -2162,8 +2162,22 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
   }
 }
 
+// A filter CREST cannot parse. AIC's script text is measured for "name eq"
+// (docs/api/12); the REST lane measures the same 400 for the word form `not`,
+// `eq null`, `in` and array values (docs/api/10), and the IDM emulator's
+// parser (src/idm/filter.ts) rejects the same grammar. Catchable, as on AIC.
 function __rhinoLocalFilterError(filter) {
-  throw __rhinoLocalFault("openidm-query-filter", 
+  throw __rhinoLocalEmulated(
+    "rhino-local: openidm.query: The value '" + String(filter) +
+      "' for parameter '_queryFilter' could not be parsed as a valid query filter"
+  );
+}
+
+// A filter that parses on AIC but uses an operator this parser does not
+// evaluate (gt/ge/lt/le), or one AIC refuses with a script text never
+// measured (ne). The harness cannot answer it, so it is a fault.
+function __rhinoLocalFilterUnsupported(filter) {
+  throw __rhinoLocalFault("openidm-query-filter",
     "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
   );
 }
@@ -2400,7 +2414,8 @@ function __rhinoLocalParseFilter(filter) {
       return false;
     }
     if (ident === "null") {
-      return null;
+      // No null literal: `eq null` is AIC's parse error (docs/api/10).
+      __rhinoLocalFilterError(filter);
     }
     i = saved;
     var num = readNumber();
@@ -2444,7 +2459,12 @@ function __rhinoLocalParseFilter(filter) {
     if (op === "eq" || op === "co" || op === "sw") {
       return { kind: "cmp", field: field, op: op, value: parseValue() };
     }
-    __rhinoLocalFilterError(filter);
+    // A missing operator, and `in` (whose array operand CREST cannot parse),
+    // are parse errors; any other word is an operator CREST accepts.
+    if (op === "" || op === "in") {
+      __rhinoLocalFilterError(filter);
+    }
+    __rhinoLocalFilterUnsupported(filter);
     return null;
   }
 
@@ -2531,16 +2551,6 @@ function __rhinoLocalEvalFilter(record, ast) {
   return false;
 }
 
-function __rhinoLocalMatchesFilter(record, filter) {
-  if (!filter || filter === "true") {
-    return true;
-  }
-  if (filter === "false") {
-    return false;
-  }
-  return __rhinoLocalEvalFilter(record, __rhinoLocalParseFilter(filter));
-}
-
 openidm.read = function (resourceName, _params, fields) {
   if (arguments.length < 1 || arguments.length > 3) {
     throw __rhinoLocalArityRefusal("openidm.read", arguments, "1..3");
@@ -2617,10 +2627,16 @@ openidm.query = function (resourceName, params, fields) {
   if (params._queryId !== undefined) {
     fields = ["_id"];
   }
+  // Parsed before the rows, as AIC parses it before reading any: a malformed
+  // filter fails on an empty collection too.
+  var ast =
+    !filter || filter === "true" ? { kind: "true" }
+      : filter === "false" ? { kind: "false" }
+      : __rhinoLocalParseFilter(filter);
   var result = [];
   var i;
   for (i = 0; i < rows.length; i += 1) {
-    if (__rhinoLocalMatchesFilter(rows[i], filter)) {
+    if (__rhinoLocalEvalFilter(rows[i], ast)) {
       __rhinoLocalBagAccess("query", collection + "/" + rows[i]._id, rows[i], fields, params);
       result.push(__rhinoLocalProject(rows[i], fields));
     }
