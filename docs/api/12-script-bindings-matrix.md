@@ -1859,7 +1859,9 @@ cookie would measure the completed session (see `09-journeys.md`).
   NPE, no line suffix); an array gives
   `Cannot convert org.mozilla.javascript.NativeArray@<hash> to java.util.Map`,
   and adds no `"0"` key. `mergeTransient("x")` is the same refusal naming
-  `mergeTransient(string)`; its other shapes were not probed.
+  `mergeTransient(string)`; its other shapes were not probed (rhino-local
+  takes the overload and conversion refusals from `mergeShared`, and keeps
+  `mergeTransient(null)`, which fails inside AM's method body, as a fault).
 - `getObject` returns a Java map: it prints as `{ "a": 1.0, … }`, and
   `containsKey`, `size` and `keySet` are functions on it. `keys()` is
   a Java collection, iterated with `iterator()`, that includes **transient**
@@ -1962,7 +1964,28 @@ only way to its values is `values().toArray()` or `map[k]`. A key named `get`,
   in the measured messages either; they carry the reason text (above). So the
   local script tester's injected failures (`openidmFailures`) carry no `code`
   property and put the code in their own message text,
-  `injected ResourceException code <code>`. `getCode()` was not probed.
+  `injected ResourceException code <code>`. `getCode()` was not probed on
+  that error.
+- **An illegal filter assertion is a catchable `JavaException`, not IDM's
+  `BadRequestException`** (verified 2026-11-06, E19 second probe, next-gen
+  decision node). For `frIndexedInteger1 eq 7.5` (and `frIndexedDate1 eq
+  "notadate"`, same shape): `e.name` is `JavaException`; `e.message` is
+  `org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: The request cannot be processed because it contained an illegal filter assertion value &#39;7.5&#39; for field &#39;/frIndexedInteger1&#39;`
+  — **HTML-escaped as over REST** (`&#39;`; the message holds no raw `'`),
+  where an IDM script's `e.message` is
+  `org.forgerock.json.resource.BadRequestException: …` with plain quotes;
+  `String(e)` is `JavaException: ` + the message, with **no
+  `(script#line)` suffix**. `e.javaException` is an object whose string is
+  the message; `getCode()` is `400` and `getReason()` is `Bad Request`, while
+  `getMessage()` and `getClass()` are `TypeError: Cannot find function …`.
+  `e instanceof Error` is true and the enumerable keys are
+  `fileName,lineNumber`. The rows the same binding returns for the field
+  rules match REST's (`docs/api/10`, DS matching rules).
+- **An `InternalError`'s `(script#line)` suffix is inside `e.message`**
+  (same probe, control): `openidm.read(path, null, [], "extra")` threw
+  `InternalError` with `e.message`
+  `Can't find method org.forgerock.openam.scripting.wrappers.IdmIntegrationServiceScriptWrapper.read(string,null,object,string). (<script name>#<line>)`,
+  and `String(e)` is `InternalError: ` + that message.
 
 
 **`systemEnv.getProperty`**

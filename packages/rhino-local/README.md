@@ -128,14 +128,21 @@ colliding `openidm.create`, `Resource 'managed/<type>' not found` from
 `aic-script-tester-pull-profile`) does not declare, or the `_queryFilter` parse error for a filter AIC is measured (or
 certain) to reject, such as `name eq` or the word form `not (…)` (raised before any record is read, so an empty
 collection does not hide it). A filter the harness's CREST grammar cannot read, an operator it does not evaluate
-(`gt`/`ge`/`lt`/`le`), `ne` (refused by AIC, in words not measured from a script), an empty or `null` filter, an escaped quote anywhere
+(`gt`/`ge`/`lt`/`le`, except on `alpha_user`'s measured date fields), `ne` (refused by AIC, in words not measured from a script), an empty or `null` filter, an escaped quote anywhere
 but a bare `eq` joined by `and` alone, and a record whose match turns on letter case, spaces or Unicode normalisation
 (AIC folds them for some fields, unmeasured for the rest), on a type mismatch (a number field against a quoted
-integer such as `"7"` is measured on `alpha_user` only, and this lane knows no types), on a decimal literal against a
+integer such as `"7"` is decided on `alpha_user` `frIndexedInteger1` only, and this lane knows no other types), on a decimal literal against a
 number, on `pr` of `""`, `[]` or `{}`, on a pointer through an array (except a bare `eq` joined by `and` alone), or on
 an `alpha_user`/`bravo_user` field DS does not compare by caseIgnoreMatch (`telephoneNumber`, the date and integer
-families: refused before any record is read, since this lane was not part of the 2026-11-06 probe that measured them
-over REST and IDM scripts) are the harness fault `openidm-query-filter` instead: AIC may well parse a filter the harness cannot. A script
+families) beyond what the 2026-11-06 probes measured (refused before any record is read) are the harness fault
+`openidm-query-filter` instead: AIC may well parse a filter the harness cannot. Where the probes measured AM's
+`openidm.query` on `alpha_user` — `telephoneNumber` with spaces, hyphens and `+` ignored, `frIndexedDate1` and
+`frUnindexedDate1` as instants under `eq`/`gt`/`lt`, an integral literal of either JSON type under `eq` on
+`frIndexedInteger1`, `pr` of an explicitly written `[]` — the script tester answers as AIC does, and a literal AIC
+cannot convert (`frIndexedInteger1 eq 7.5`, `frIndexedDate1 eq "notadate"`) throws AIC's catchable `JavaException`:
+`org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: The request cannot be processed because it
+contained an illegal filter assertion value &#39;7.5&#39; for field &#39;/frIndexedInteger1&#39;`, with
+`e.javaException.getCode()` 400 and `getReason()` `Bad Request` (`docs/api/12`). A script
 that catches one of those passes, just as it would on the tenant. `openidm.read`
 of an undeclared type returns `null`, as AIC's does. A profile speaks only for `managed/<type>`: any other unseeded
 resource (`internal/role`, `config/…`, a relationship collection) is the fault `fixture/managed` with or without one.
@@ -1057,7 +1064,12 @@ emulator knows a type's storage kind (`IdmConfig.storage`): a type that
 a number and numbers compare by value, `7.5` included, as measured on
 2026-11-06. A property that the type's `genericMapping` entry maps to an
 attribute of its own is excluded. Without `repo`, or for a type in both
-sections, those queries stay the `openidm-query-filter` fault.
+sections, those queries stay the `openidm-query-filter` fault. The measured
+shape is a type covered by `managed/*` alone; a type with its own
+`genericMapping` entry is decided the same way, labelled `assumed`. Pass the
+whole document: a partial `repo` holding only `managed/*` makes every non-user
+type generic, including types the tenant maps under `explicitMapping`, and the
+emulator cannot tell.
 
 `sync` takes the tenant's `config/sync` document (`{mappings: [...]}`),
 optionally. On AIC a committed managed write on a mapping's `source` runs that

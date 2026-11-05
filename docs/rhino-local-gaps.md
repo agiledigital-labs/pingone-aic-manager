@@ -179,7 +179,7 @@ assumption in `docs/api/`:
 | `script-defect/send-body-js-date`, `script-defect/send-body-regexp`, `script-defect/send-body-function` | an `httpClient.send` body AIC **measurably** sends as a Rhino object dump. Not a harness gap: the `script-defect/` family is a refusal to pass a script that would send the dump, and the tally lists it apart from the harness's work |
 | `send-body-error`, `send-body-array-cycle`                                        | an `httpClient.send` body whose AIC behaviour is unmeasured                                                           |
 | `state-put-undefined`                                                             | `nodeState.put*` / `sharedState.put` / `transientState.put` with `undefined`                                         |
-| `node-state-merge-non-object`                                                     | `nodeState.mergeShared`/`mergeTransient` with a function. Every other non-object is AIC's measured catchable `InternalError` (2026-11-06): `Can't find method …NodeStateScriptWrapper.<m>(<type>).` for a string, number, boolean or `undefined`, `null` for `null`, `Cannot convert …NativeArray@<hash> to java.util.Map` for an array; state is unchanged |
+| `node-state-merge-non-object`                                                     | `nodeState.mergeShared`/`mergeTransient` with a function, and `mergeTransient(null)`. Every other non-object is AIC's measured catchable `InternalError` (2026-11-06): `Can't find method …NodeStateScriptWrapper.<m>(<type>).` for a string, number, boolean or `undefined`, `null` for `mergeShared(null)`, `Cannot convert …NativeArray@<hash> to java.util.Map` for an array; state is unchanged |
 | `action-suspend-additional-logic`                                                 | `action.suspend` with a non-function `additionalLogic`                                                               |
 | `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
 | `openidm-unknown-managed-type`                                                    | a write (`create`, `update`, `patch`, `delete`, `action`) to a managed type the environment profile does not declare |
@@ -202,10 +202,12 @@ accepted counts have a basis:
 - **measured** on AIC: `existingSession.get` (`docs/api/12`),
   `utils.crypto.randomUUID` (corpus `binding-utils-interop`),
   `nodeState.mergeShared` (one argument, and the message's class), and
-  `logger.debug`/`info`/`warn`/`error`, which are true varargs: any count from
-  one up, each argument filling a `{}`, a number printed as Java's `Double`
-  text (`1.0`, `1.0E7`), an object as `[object Object]` (live probe
-  2026-11-06, `docs/api/12`). `logger.trace` was not probed and keeps the
+  `logger.debug`/`info`/`warn`/`error`, which are true varargs, each
+  argument filling a `{}`, and an object prints as `[object Object]` (live
+  probe 2026-11-06, `docs/api/12`). Measured: 4–6 arguments and a number's
+  `1.0` form. The rest follows structurally — any other count from SLF4J's
+  varargs signature, other numbers (`1.0E7`, `1.0E-4`) from Java's
+  `Double.toString`, which the formatter matches on 24 values. `logger.trace` was not probed and keeps the
   overload range. The tenant's other
   measured `Can't find method` refusals (`getMemberships()`, `setAct(object)`,
   `getRandomValues(object)`) are type refusals, not argument counts.
@@ -258,8 +260,12 @@ stays a fault until a probe on AIC decides it:
 - **Settled 2026-11-06: `mergeShared` takes a `Map`.** A non-object is a
   catchable `InternalError` in three measured shapes (see the fault table),
   and state is unchanged. `mergeTransient` was probed with a string only;
-  its `null`, array, number, boolean and `undefined` shapes are taken from
-  `mergeShared`'s, on the same wrapper class. Only a function is still `node-state-merge-non-object`.
+  its array, number, boolean and `undefined` shapes are Rhino's own overload
+  and conversion refusals on the same `(Map)` signature, so they are taken
+  from `mergeShared`'s. `null` is not: it passes resolution and fails inside
+  AM's method body, never observed for `mergeTransient`, so
+  `mergeTransient(null)` stays `node-state-merge-non-object`, as does a
+  function.
 - **The filter grammar faults on inputs CREST 27.1.1 accepts**: keyword case
   (`AND`, `Or`, `TRUE`, `PR`, `EQ`), single quotes, `+5`, `05`, `1.`, `.5`,
   the pointers `/a~2`, `text~`, `/` and `!text`, `"a"and`, `\x` escapes, a tab
@@ -481,10 +487,12 @@ and neither carries a label:
   `openidm.query`, which agreed on every case) measured these on
   `alpha_user`, and the IDM emulator applies exactly them, labelled
   `measured`:
-  - `telephoneNumber`: spaces and hyphens are ignored anywhere, in the stored
-    value and the literal, for `eq`, `sw` and `co`. Decided only when both
-    hold nothing but digits, `+`, space and `-`; parentheses, dots and
-    ordering were not probed.
+  - `telephoneNumber`: spaces, hyphens and `+` are ignored anywhere, in the
+    stored value and the literal, for `eq`, `sw` and `co` (`+` settled by the
+    second probe: `eq "61499999999"`, `eq "6+1499999999"` and `co "+9999"`
+    match `+614-9999-9999`, `eq "61499999998"` does not). Decided only when
+    both hold nothing but digits, `+`, space and `-`, and the literal holds a
+    digit; parentheses, dots and ordering were not probed.
   - `frIndexedDate1`, `frUnindexedDate1`: `eq`, `gt` and `lt` compare
     instants across offsets, for literals and values of the form
     `YYYY-MM-DDThh:mm:ss` with `Z` or `±hh:mm`. `eq "notadate"` is a 400
@@ -492,7 +500,7 @@ and neither carries a label:
     date-only and GeneralizedTime-form literals were not probed.
   - `frIndexedInteger1`: an integral literal of either JSON type (`7`, `"7"`,
     `7.0`, `7.00`, `"7.0"`) equals the integer, and `ge 7.0` orders by it;
-    `7.5`, `"7.5"` and `"abc"` are the 400, with `eq`, `lt` and `gt` alike.
+    `eq 7.5`, `lt 7.5`, `gt 6.5`, `eq "7.5"` and `eq "abc"` are the 400.
     Other operators with a fraction, exponents, booleans and `co`/`sw` stay
     undecided.
   - `frIndexedMultivalued1`, `frUnindexedMultivalued1`, `roles`: an
@@ -511,9 +519,30 @@ and neither carries a label:
   comparison) and `frIndexedInteger2`–`5`, `frUnindexedInteger1`–`5` (any
   literal but a plain or canonical quoted integer). The probe note suggests
   the families share the measured rule; the emulator does not assume it.
-  The script tester's `openidm.query` was not part of the probe, so there
-  every one of these rules — measured or not — is the fault, raised before
-  any record is read.
+
+  **The script tester (AM's `openidm.query`).** The second probe ran the
+  rules through AM's next-gen binding and got exactly the REST rows, so the
+  script tester decides the same `alpha_user` rules. Its grammar evaluates
+  `eq`, `co` and `sw` everywhere and ordering only on the two instant fields
+  (`gt`/`lt` measured there); integer ordering stays the fault, as it was
+  not measured through this binding. A literal AIC cannot convert throws
+  AM's measured surface: a catchable `JavaException` whose message is
+  `org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: `
+  plus REST's message, HTML escaping included (`&#39;`), with no
+  `(script#line)` suffix, and `e.javaException.getCode()` 400 /
+  `getReason()` `Bad Request`. It has no `repo`, so it has no JSON-storage
+  rule and no quoted-integer reading on other fields. Everything unmeasured
+  is still the fault, raised before any record is read.
+
+  **Emulated `InternalError`s carry no `(script#line)` suffix; AIC's do.**
+  The second probe's control (`openidm.read` with four arguments) put
+  `(<script name>#<line>)` inside AIC's `e.message`, not only in
+  `String(e)`. Every `InternalError` the harness throws (arity and merge
+  refusals among them) lacks it, so a test asserting an exact `e.message`
+  passes locally and fails on AIC; match a prefix instead. A
+  `JavaException` (the 400 above, the `ResourceExceptionScriptAdapter`
+  family) has no suffix on AIC either. `mergeShared(null)`'s `null`
+  carries none on AIC (`docs/api/12`).
 
   **Generic (JSON-stored) types (probe §4).** On a type DS stores as JSON in
   `ou=managed`, a quoted literal never matches a number (`eq`, `gt`, `lt`:
@@ -523,7 +552,13 @@ and neither carries a label:
   as generic when `genericMapping` names it or `managed/*` covers it and
   `explicitMapping` does not. A property its `genericMapping` entry maps to
   an attribute of its own is not JSON. With no `repo`, or a type in both
-  sections, the faults stay. A quoted literal is decided `false` only in a
+  sections, the faults stay. The probe's type had no entry of its own (only
+  `managed/*` covered it), so a type with its own `genericMapping` entry is
+  decided the same way but labelled `assumed`: its JSON keys and matching
+  rule were not measured. **A partial hand-written `repo` is unsound**: one
+  holding only `managed/*` makes every non-user type generic, including types
+  the tenant maps under `explicitMapping` (doc 10 names `alpha_group` and
+  `bravo_group`). Pass the tenant's whole `config/repo.ds`, as read. A quoted literal is decided `false` only in a
   leaf reached through `and` alone (the probe ran no negation); `ge`/`le`
   are `assumed` like `eq`/`gt`. `custom_*` on `alpha_user` (a JSON
   attribute inside a DS-mapped type) is still undecided: the tenant had none
