@@ -27,6 +27,7 @@ var __rhinoLocal = {
   openidmActions: [],
   openidmFailures: [],
   managedWriteFaults: null,
+  managedDefaults: null,
   openidmCallCounts: {},
   generatedId: 0,
   outcome: null,
@@ -2179,6 +2180,68 @@ function __rhinoLocalRequireCollection(method, collection) {
 // A write that reaches this lane's store on a type whose profile declares hooks
 // or policies (E15b). A write a test stubs with given.openidmFailures has
 // already thrown in __rhinoLocalPushOpenidm and never gets here.
+function __rhinoLocalDefaultsRule(collection) {
+  var table = __rhinoLocal.managedDefaults;
+  return table && __rhinoLocalHas(table, collection) ? table[collection] : null;
+}
+
+// An explicit null on a property with a non-null default (P2-2). AIC refuses
+// a create of a new record that sends one: 403 "Policy validation failed",
+// NOT_NULL in the detail (docs/api/10 over REST; docs/api/12 from a next-gen
+// openidm.create, where String(e) is the adapter's and getDetail() names
+// NOT_NULL). Only that route is emulated: one such null, a new record, a
+// property the rule calls emulable (legacy has no openidm binding at all).
+// Everything else with a defaulted null is unmeasured and faults.
+function __rhinoLocalDefaultedNull(method, collection, content, creatingNew) {
+  var rule = __rhinoLocalDefaultsRule(collection);
+  if (!rule || content === null || typeof content !== "object") {
+    return;
+  }
+  var nulls = [];
+  var i;
+  for (i = 0; i < rule.notNull.length; i += 1) {
+    if (__rhinoLocalHas(content, rule.notNull[i]) && content[rule.notNull[i]] === null) {
+      nulls.push(rule.notNull[i]);
+    }
+  }
+  if (nulls.length === 0) {
+    return;
+  }
+  if (
+    method === "create" &&
+    creatingNew &&
+    nulls.length === 1 &&
+    rule.emulable.indexOf(nulls[0]) >= 0
+  ) {
+    var error = __rhinoLocalAdapterException("Policy validation failed", 403);
+    __rhinoLocalHide(error.javaException, "getDetail", function () {
+      throw __rhinoLocalFault("openidm-policy-detail",
+        "rhino-local: javaException.getDetail(): on AIC it names NOT_NULL on " + nulls[0] +
+          " (docs/api/12), but its Java type and string form are unmeasured");
+    });
+    throw error;
+  }
+  var type = collection.replace(/^managed\//, "");
+  throw __rhinoLocalFault("openidm-managed-policy/" + type,
+    "rhino-local: openidm." + method + ": " + collection + ": the write sends null for " + nulls.join(", ") +
+      ", which declare" + (nulls.length === 1 ? "s" : "") + " a default. AIC's 403 NOT_NULL is measured only for one such null " +
+      "on a create of a new record, the property not named in a required array the schema has " +
+      "(docs/api/10, 12); this write is not that case. Omit the key to let the default land, or stub the call with " +
+      "given.openidmFailures if the test means a refusal");
+}
+
+function __rhinoLocalApplyDefaults(collection, stored) {
+  var rule = __rhinoLocalDefaultsRule(collection);
+  if (!rule) {
+    return;
+  }
+  Object.keys(rule.defaults).forEach(function (name) {
+    if (!__rhinoLocalHas(stored, name)) {
+      stored[name] = __rhinoLocalClone(rule.defaults[name]);
+    }
+  });
+}
+
 function __rhinoLocalManagedWriteFault(method, collection) {
   var table = __rhinoLocal.managedWriteFaults;
   if (!table || !__rhinoLocalHas(table, collection) || !__rhinoLocalHas(table[collection], method)) {
@@ -2580,6 +2643,9 @@ openidm.create = function (resourceName, newResourceId, content) {
   // before the record is committed and found to collide.
   __rhinoLocalManagedWriteFault("create", collection);
   var existing = __rhinoLocalFindRecord(collection, id).record;
+  // openidm.create sends an undefined value as null (docs/api/12), so judge
+  // the serialised content. Policy runs before the collision is found.
+  __rhinoLocalDefaultedNull("create", collection, __rhinoLocalCloneUndefinedAsNull(content, true), !existing);
   if (existing) {
     __rhinoLocalBagAccess("create", collection + "/" + id, existing);
     throw __rhinoLocalEmulated(
@@ -2587,6 +2653,8 @@ openidm.create = function (resourceName, newResourceId, content) {
     );
   }
   var stored = __rhinoLocalCloneUndefinedAsNull(content, true);
+  // Defaults land on a create that omits the property (docs/api/10).
+  __rhinoLocalApplyDefaults(collection, stored);
   stored = __rhinoLocalOpenidmRecord(
     stored,
     id,
@@ -2607,6 +2675,7 @@ openidm.update = function (id, _rev, value) {
   __rhinoLocalBagAccess("update", resource, found.record);
   __rhinoLocalCheckRev("update", _rev, found.record);
   __rhinoLocalManagedWriteFault("update", __rhinoLocalSplitResource(resource).collection);
+  __rhinoLocalDefaultedNull("update", __rhinoLocalSplitResource(resource).collection, value, false);
   var next = __rhinoLocalClone(value);
   next = __rhinoLocalOpenidmRecord(next, found.record._id, found.record._rev);
   __rhinoLocalBagIdmWrite("update", resource, next);
@@ -4133,6 +4202,11 @@ function __rhinoLocalSeed(given) {
   // src/profile/write-guard.ts; this side only looks the answer up.
   __rhinoLocal.managedWriteFaults = given.managedWriteFaults
     ? __rhinoLocalClone(given.managedWriteFaults)
+    : null;
+  // `managed/<type>` → { defaults, notNull, emulable }: the type's defaulted
+  // properties (P2-2), decided in src/profile/write-guard.ts managedDefaults.
+  __rhinoLocal.managedDefaults = given.managedDefaults
+    ? __rhinoLocalClone(given.managedDefaults)
     : null;
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
   __rhinoLocal.esvProvided = given.esv !== undefined;

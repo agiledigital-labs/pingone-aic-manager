@@ -6,8 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/run.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { normaliseManagedConfig } from "../../src/profile/normalise.ts";
-import type { EnvProfile, ObjectSchema } from "../../src/profile/types.ts";
-import { managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
+import { type EnvProfile, type ObjectSchema, PROFILE_VERSION } from "../../src/profile/types.ts";
+import { managedDefaults, managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { caseWith } from "../aic/helpers.ts";
 import { runScriptWithFaults } from "../bindings/load-behaviour.ts";
@@ -24,8 +24,27 @@ describe("the profile records hook names, never bodies", () => {
       secret: { type: "string", onStore: body("BODY-FIVE"), onValidate: body("BODY-SIX") },
       code: { type: "string", policies: [{ policyId: "regexpMatches", params: { regexp: "^x" } }, { bare: true }] },
       plain: { type: "string" },
+      count: { type: "number", default: 0 },
+      cleared: { type: "string", default: null },
+      gated: { type: "string",
+        conditionalPolicies: [{ condition: { type: "text/javascript", source: "BODY-SEVEN" }, dependencies: ["plain"],
+          policies: [{ policyId: "minimum-length" }] }, { condition: {} }],
+        fallbackPolicies: [{ policyId: "maximum-length" }] },
     } },
-  }, { name: "bare" }] }, META);
+  }, { name: "bare", schema: { required: [], properties: {} } }] }, META);
+
+  it("stamps the format version, and records a missing required array", () => {
+    expect(profile.profileVersion).toBe(PROFILE_VERSION);
+    expect(profile.objects.gizmo?.noRequiredArray).toBe(true);
+    expect(profile.objects.bare?.noRequiredArray).toBeUndefined();
+  });
+
+  it("records a default, null included, and conditional/fallback policy ids without conditions", () => {
+    expect(profile.objects.gizmo?.properties.count).toEqual({ type: "number", default: 0 });
+    expect(profile.objects.gizmo?.properties.cleared).toEqual({ type: "string", default: null });
+    expect(profile.objects.gizmo?.properties.gated).toEqual({ type: "string",
+      conditionalPolicies: ["minimum-length", "?"], fallbackPolicies: ["maximum-length"] });
+  });
 
   it("lists object hooks sorted, including an unknown on…/post… name, and skips non-scripts", () => {
     expect(profile.objects.gizmo?.hooks).toEqual(["onCreate", "onFrobnicate", "postUpdate"]);
@@ -39,14 +58,49 @@ describe("the profile records hook names, never bodies", () => {
   });
 
   it("carries no script source", () => {
-    expect(JSON.stringify(profile)).not.toMatch(/BODY-|logger/);
+    expect(JSON.stringify(profile)).not.toMatch(/BODY-|logger|text\/javascript/);
+  });
+});
+
+describe("staleness is the profile's format version (P3-5)", () => {
+  const quiet: ObjectSchema = { name: "quiet", properties: { n: { type: "number", default: 0 } }, required: [], hooks: [] };
+  it.each([["absent", undefined], ["1", 1]])("version %s faults every write on every type, with a hand-written remedy", (_name, version) => {
+    const profile: EnvProfile = { ...META, ...(version === undefined ? {} : { profileVersion: version }), sources: [], objects: { quiet } };
+    const table = managedWriteFaults(profile);
+    expect(Object.keys(table["managed/quiet"] ?? {})).toEqual(["create", "update", "patch", "delete"]);
+    const message = table["managed/quiet"]?.create?.message ?? "";
+    expect(table["managed/quiet"]?.create?.id).toBe("openidm-managed-profile-stale");
+    expect(message).toContain("aic-script-tester-pull-profile");
+    expect(message).toContain(`"profileVersion": ${PROFILE_VERSION}`);
+    expect(managedDefaults(profile)).toEqual({});
+  });
+  // Discriminating: the old sniff read an absent `hooks` as stale; a current profile that omits it declares none.
+  it("a current profile whose type omits hooks declares none", () => {
+    const { hooks: _hooks, ...bare } = quiet;
+    expect(managedWriteFaults({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { quiet: bare } })).toEqual({});
+  });
+});
+
+describe("managedDefaults gives the lane plain lists (P2-2)", () => {
+  const object = (extra: Partial<ObjectSchema>): ObjectSchema => ({ name: "gizmo", required: [], hooks: [], properties: {
+    n: { type: "number", default: 0 }, b: { type: "boolean", default: false }, cleared: { type: "string", default: null }, plain: { type: "string" },
+  }, ...extra });
+  const rule = (extra: Partial<ObjectSchema>) =>
+    managedDefaults({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: object(extra) } })["managed/gizmo"];
+  it("non-null defaults are applied and refused as null; a null default is neither", () => {
+    expect(rule({})).toEqual({ defaults: { n: 0, b: false }, notNull: ["n", "b"], emulable: ["n", "b"] });
+  });
+  it("a required-named property is not emulable (AIC adds VALID_TYPE)", () => {
+    expect(rule({ required: ["b"] })?.emulable).toEqual(["n"]);
+  });
+  it("no required array: nothing is emulable", () => {
+    expect(rule({ noRequiredArray: true })?.emulable).toEqual([]);
   });
 });
 
 describe("writeFault decides per type and method", () => {
   const object = (extra: Partial<ObjectSchema>): ObjectSchema => ({ name: "gizmo", properties: {}, required: [], hooks: [], ...extra });
   const cases: [string, ObjectSchema, WriteMethod, string | undefined][] = [
-    ["a stale profile cannot say", { name: "gizmo", properties: {}, required: [] }, "update", "openidm-managed-profile-stale"],
     ["nothing declared stays quiet", object({}), "create", undefined],
     ["onCreate on create", object({ hooks: ["onCreate"] }), "create", "openidm-managed-hook/gizmo.onCreate"],
     // Discriminating: a guard that faulted every hooked type for every method would fault here.
@@ -58,12 +112,22 @@ describe("writeFault decides per type and method", () => {
     ["the chain's first hook names the fault", object({ hooks: ["onCreate", "postCreate"] }), "create", "openidm-managed-hook/gizmo.onCreate"],
     ["property onStore on create", object({ properties: { secret: { type: "string", hooks: ["onStore"] } } }), "create", "openidm-managed-hook/gizmo.secret.onStore"],
     ["property onStore not on delete", object({ properties: { secret: { type: "string", hooks: ["onStore"] } } }), "delete", undefined],
-    ["read hooks count for delete", object({ hooks: ["onRetrieve"] }), "delete", "openidm-managed-hook/gizmo.onRetrieve"],
+    // P3-1: an update or PATCH reads the record first; a create and a delete run no read hooks (doc 24).
+    ["read hooks run on update", object({ hooks: ["onRetrieve"] }), "update", "openidm-managed-hook/gizmo.onRetrieve"],
+    ["onRead runs on patch", object({ hooks: ["onRead"] }), "patch", "openidm-managed-hook/gizmo.onRead"],
+    ["read hooks do not run on create", object({ hooks: ["onRetrieve", "onRead"] }), "create", undefined],
+    ["read hooks do not run on delete", object({ hooks: ["onRetrieve"] }), "delete", undefined],
+    ["a property onRetrieve runs on update", object({ properties: { p: { type: "string", hooks: ["onRetrieve"] } } }), "update", "openidm-managed-hook/gizmo.p.onRetrieve"],
+    ["a property onRetrieve does not run on create", object({ properties: { p: { type: "string", hooks: ["onRetrieve"] } } }), "create", undefined],
+    ["an unknown property hook counts everywhere", object({ properties: { p: { type: "string", hooks: ["onFrob"] } } }), "delete", "openidm-managed-hook/gizmo.p.onFrob"],
     ["an unknown hook counts everywhere", object({ hooks: ["onFrobnicate"] }), "delete", "openidm-managed-hook/gizmo.onFrobnicate"],
     ["required is a policy", object({ required: ["mail"] }), "create", "openidm-managed-policy/gizmo"],
     ["an enum is a policy", object({ properties: { state: { type: "string", enum: ["a"] } } }), "update", "openidm-managed-policy/gizmo"],
     ["an items enum is a policy", object({ properties: { tags: { type: "array", items: { type: "string", enum: ["a"] } } } }), "patch", "openidm-managed-policy/gizmo"],
     ["property policies", object({ properties: { code: { type: "string", policies: ["regexpMatches"] } } }), "create", "openidm-managed-policy/gizmo"],
+    ["conditional policies (P3-6)", object({ properties: { code: { type: "string", conditionalPolicies: ["minimum-length"] } } }), "update", "openidm-managed-policy/gizmo"],
+    ["fallback policies (P3-6)", object({ properties: { code: { type: "string", fallbackPolicies: ["maximum-length"] } } }), "create", "openidm-managed-policy/gizmo"],
+    ["a default alone is not a write fault: the lane answers it", object({ properties: { n: { type: "number", default: 0 } } }), "create", undefined],
     ["policy does not judge a delete", object({ required: ["mail"] }), "delete", undefined],
     ["a hook outranks a policy", object({ hooks: ["onUpdate"], required: ["mail"] }), "update", "openidm-managed-hook/gizmo.onUpdate"],
   ];
@@ -78,17 +142,21 @@ describe("writeFault decides per type and method", () => {
   });
 
   it("the lane table holds only types that fault", () => {
-    const table = managedWriteFaults({ ...META, sources: [], objects: { gizmo: object({ hooks: ["onDelete"] }), quiet: { ...object({}), name: "quiet" } } });
+    const table = managedWriteFaults({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: object({ hooks: ["onDelete"] }), quiet: { ...object({}), name: "quiet" } } });
     expect(Object.keys(table)).toEqual(["managed/gizmo"]);
     expect(Object.keys(table["managed/gizmo"] ?? {})).toEqual(["delete"]);
   });
 });
 
-const lane: EnvProfile = { ...META, sources: [], objects: {
+const lane: EnvProfile = { ...META, profileVersion: PROFILE_VERSION, sources: [], objects: {
   hooked: { name: "hooked", properties: { mail: { type: "string" } }, required: [], hooks: ["onCreate", "onUpdate", "onDelete"] },
   quiet: { name: "quiet", properties: { mail: { type: "string" } }, required: [], hooks: [] },
+  defaulted: { name: "defaulted", properties: { mail: { type: "string" }, count: { type: "number", default: 0 },
+    flag: { type: "boolean", default: false }, tags: { type: "array", items: { type: "string" }, default: ["a"] } }, required: [], hooks: [] },
+  loose: { name: "loose", noRequiredArray: true, properties: { count: { type: "number", default: 0 } }, required: [], hooks: [] },
 } };
-const seeded = { managed: { "managed/hooked": [{ _id: "h1", _rev: "1", mail: "a" }], "managed/quiet": [{ _id: "q1", _rev: "1", mail: "a" }] } };
+const seeded = { managed: { "managed/hooked": [{ _id: "h1", _rev: "1", mail: "a" }], "managed/quiet": [{ _id: "q1", _rev: "1", mail: "a" }],
+  "managed/defaulted": [{ _id: "d1", _rev: "1", count: 1, flag: true, tags: [] }], "managed/loose": [] } };
 const catching = (call: string) => `try { ${call} } catch (e) { nodeState.putShared("error", String(e)); }`;
 
 describe("the lane faults writes that reach its store", () => {
@@ -125,6 +193,50 @@ describe("the lane faults writes that reach its store", () => {
   it("a create that would collide still faults first: AIC runs the create chain before the collision", () => {
     const run = runScriptWithFaults(catching("openidm.create('managed/hooked', 'h1', {mail: 'b'})"), seeded, { profile: lane });
     expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-managed-hook/hooked.onCreate"]);
+  });
+});
+
+describe("the lane answers defaulted properties (P2-2)", () => {
+  const store = (run: ReturnType<typeof runScriptWithFaults>, type: string) => run.effects.managedStore?.[`managed/${type}`];
+  it("a create omitting defaulted properties stores their defaults", () => {
+    const run = runScriptWithFaults("openidm.create('managed/defaulted', 'd2', {mail: 'b', flag: true});", seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(store(run, "defaulted")?.[1]).toEqual({ _id: "d2", _rev: "local-rev", mail: "b", flag: true, count: 0, tags: ["a"] });
+  });
+
+  it.each([["null", "null"], ["undefined", "undefined"]])(
+    "a create of a new record sending %s for one is the measured catchable 403, and stores nothing", (_name, literal) => {
+      const run = runScriptWithFaults(
+        `try { openidm.create('managed/defaulted', 'd2', {mail: 'b', count: ${literal}}); } ` +
+        "catch (e) { nodeState.putShared('error', String(e)); nodeState.putShared('code', e.javaException.getCode()); }",
+        seeded, { profile: lane });
+      expect(run.faults).toEqual([]);
+      expect(String(run.effects.sharedState.final.error)).toMatch(/^JavaException: .*ResourceExceptionScriptAdapter: Policy validation failed$/);
+      expect(run.effects.sharedState.final.code).toBe(403);
+      expect(store(run, "defaulted")).toHaveLength(1);
+    });
+
+  it("reading the detail is a fault: only that it names NOT_NULL is measured", () => {
+    const run = runScriptWithFaults(catching("try { openidm.create('managed/defaulted', 'd2', {count: null}); } catch (e) { e.javaException.getDetail(); }"),
+      seeded, { profile: lane });
+    expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-policy-detail"]);
+  });
+
+  it.each([
+    ["two nulls", "openidm.create('managed/defaulted', 'd2', {count: null, flag: null})"],
+    ["an existing id", "openidm.create('managed/defaulted', 'd1', {count: null})"],
+    ["an update", "openidm.update('managed/defaulted/d1', null, {count: null})"],
+    ["no required array", "openidm.create('managed/loose', 'l1', {count: null})"],
+  ])("a defaulted null on %s is unmeasured and faults", (_name, call) => {
+    const type = call.includes("loose") ? "loose" : "defaulted";
+    const run = runScriptWithFaults(catching(call), seeded, { profile: lane });
+    expect(run.faults.map((fault) => fault.id)).toEqual([`openidm-managed-policy/${type}`]);
+  });
+
+  it("an explicit value is stored and an undefaulted null still writes", () => {
+    const run = runScriptWithFaults("openidm.create('managed/defaulted', 'd2', {count: 7, mail: null});", seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(store(run, "defaulted")?.[1]).toMatchObject({ count: 7, mail: null, flag: false });
   });
 });
 

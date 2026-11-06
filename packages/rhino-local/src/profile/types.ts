@@ -13,7 +13,17 @@ import type { JsonValue } from "../case/types.ts";
  * Lives under `workspace/<tenant>/`, which `.gitignore` covers in full — object
  * and property names are client business vocabulary.
  */
+/**
+ * The profile format this package writes. 1 (or absent) predates hook, default and conditional-
+ * policy recording, so the script tester cannot tell a type with none from one pulled before they
+ * were recorded, and faults its writes (`openidm-managed-profile-stale`). Bump it whenever a field
+ * becomes one whose absence means "none".
+ */
+export const PROFILE_VERSION = 2;
+
 export interface EnvProfile {
+  /** The format version, {@link PROFILE_VERSION} when pulled by this package. Absent before 2. */
+  profileVersion?: number;
   /** Tenant context name, as `aic ctx list` reports it. Never a hostname. */
   tenant: string;
   /** ISO-8601. Staleness is the operator's call; nothing here expires. */
@@ -30,9 +40,14 @@ export interface ObjectSchema {
   /** Property names IDM rejects a create without. */
   required: string[];
   /**
+   * True when the schema has no `required` array at all, which stock `policy.js` treats differently
+   * from an empty one (a null is then also `VALID_TYPE`). Absent means the array was there.
+   */
+  noRequiredArray?: true;
+  /**
    * Names of the object-level script hooks the type declares (`onCreate`, `postUpdate`, …), sorted,
-   * WITHOUT their bodies: hook source is client code. Absent on a profile pulled before E15b, which
-   * cannot say whether the type has hooks, so the script tester faults its writes until a re-pull.
+   * WITHOUT their bodies: hook source is client code. Always written from version 2; a version-2
+   * profile that omits it declares none.
    */
   hooks?: string[];
 }
@@ -55,4 +70,16 @@ export interface PropertySchema {
   hooks?: string[];
   /** The `policyId`s of the property's declared `policies`, in order. AIC runs them on write. */
   policies?: string[];
+  /**
+   * The property's schema `default`, when it declares one (`null` included). Schema config, not
+   * client code. AIC applies it on a create that omits the property and, for a non-null default,
+   * refuses an explicit `null` (`NOT_NULL`, docs/api/10-managed-objects.md).
+   */
+  default?: JsonValue;
+  /**
+   * The `policyId`s inside the property's `conditionalPolicies` entries, and its `fallbackPolicies`,
+   * which stock `policy.js` runs when no condition matched. Names only.
+   */
+  conditionalPolicies?: string[];
+  fallbackPolicies?: string[];
 }

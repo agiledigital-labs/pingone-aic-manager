@@ -1,6 +1,6 @@
 import { isPlainObject } from "../case/util.ts";
 import type { JsonValue } from "../case/types.ts";
-import type { EnvProfile, ObjectSchema, PropertySchema } from "./types.ts";
+import { type EnvProfile, type ObjectSchema, PROFILE_VERSION, type PropertySchema } from "./types.ts";
 
 export class ProfileShapeError extends Error {
   constructor(message: string) {
@@ -35,6 +35,7 @@ export function normaliseManagedConfig(
     out[entry.name] = normaliseObject(entry.name, entry);
   }
   return {
+    profileVersion: PROFILE_VERSION,
     tenant: meta.tenant,
     pulledAt: meta.pulledAt,
     sources: [meta.endpoint],
@@ -61,7 +62,7 @@ function normaliseObject(name: string, entry: Record<string, unknown>): ObjectSc
   const required = Array.isArray(schema.required)
     ? schema.required.filter((item): item is string => typeof item === "string")
     : [];
-  return { name, properties, required, hooks };
+  return { name, properties, required, ...(Array.isArray(schema.required) ? {} : { noRequiredArray: true as const }), hooks };
 }
 
 function normaliseProperty(value: unknown): PropertySchema {
@@ -88,12 +89,26 @@ function normaliseProperty(value: unknown): PropertySchema {
     out.hooks = hooks;
   }
   if (Array.isArray(value.policies) && value.policies.length > 0) {
-    // A policy entry without a string policyId is still a policy AIC runs.
-    out.policies = value.policies.map((policy) =>
-      isPlainObject(policy) && typeof policy.policyId === "string" ? policy.policyId : "?"
+    out.policies = policyIds(value.policies);
+  }
+  if (Object.hasOwn(value, "default")) {
+    out.default = value.default as JsonValue;
+  }
+  if (Array.isArray(value.conditionalPolicies) && value.conditionalPolicies.length > 0) {
+    // An entry whose policies are unreadable still makes the property conditionally policed.
+    out.conditionalPolicies = value.conditionalPolicies.flatMap((entry) =>
+      isPlainObject(entry) && Array.isArray(entry.policies) && entry.policies.length > 0 ? policyIds(entry.policies) : ["?"]
     );
   }
+  if (Array.isArray(value.fallbackPolicies) && value.fallbackPolicies.length > 0) {
+    out.fallbackPolicies = policyIds(value.fallbackPolicies);
+  }
   return out;
+}
+
+/** A policy entry without a string policyId is still a policy AIC runs. */
+function policyIds(policies: unknown[]): string[] {
+  return policies.map((policy) => isPlainObject(policy) && typeof policy.policyId === "string" ? policy.policyId : "?");
 }
 
 /**

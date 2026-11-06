@@ -9,9 +9,15 @@
  * up (`given.managedWriteFaults`), so the rule has one implementation, here.
  *
  * A type with neither hooks nor policies keeps writing silently: nothing about it is wrong. A
- * profile pulled before hooks were recorded cannot tell, so its writes fault until a re-pull.
+ * profile older than {@link PROFILE_VERSION} cannot tell, so every write on it faults until it is
+ * re-pulled (or, if hand-written, brought up to the version by hand).
+ *
+ * Defaulted properties are the one implicit policy the lane does answer (P2-2): AIC is measured to
+ * apply a `default` on a create that omits the property, and to refuse an explicit `null` on one
+ * (docs/api/10). {@link managedDefaults} gives the lane those per type as plain lists.
  */
-import type { EnvProfile, ObjectSchema, PropertySchema } from "./types.ts";
+import type { JsonValue } from "../case/types.ts";
+import { type EnvProfile, type ObjectSchema, PROFILE_VERSION, type PropertySchema } from "./types.ts";
 
 export type WriteMethod = "create" | "update" | "patch" | "delete";
 export const WRITE_METHODS: readonly WriteMethod[] = ["create", "update", "patch", "delete"];
@@ -19,8 +25,9 @@ export type WriteFault = { readonly id: string; readonly message: string };
 
 /**
  * Object-level hooks a write runs, in chain order (docs/api/10; the emulator's measured order).
- * Read hooks are not known NOT to run around a write (the response is a read of the record), so
- * they count for every method; so does any hook name this list does not know.
+ * Read hooks run only around an update or PATCH, which read the record first: a create runs none
+ * and a delete runs `onDelete → postDelete → onSync` (docs/api/24-idm-script-runtime.md). A hook
+ * name this list does not know counts for every method.
  */
 const CHAIN: Record<"create" | "update" | "delete", readonly string[]> = {
   create: ["onCreate", "onValidate", "onStore", "postCreate", "onSync"],
@@ -30,6 +37,7 @@ const CHAIN: Record<"create" | "update" | "delete", readonly string[]> = {
 const READ_HOOKS = ["onRead", "onRetrieve"];
 const KNOWN = new Set([...CHAIN.create, ...CHAIN.update, ...CHAIN.delete, ...READ_HOOKS]);
 const PROPERTY_WRITE_HOOKS = ["onValidate", "onStore"];
+const READS_FIRST: readonly WriteMethod[] = ["update", "patch"];
 
 function propertyHooks(object: ObjectSchema, wanted: (hook: string) => boolean): string[] {
   const out: string[] = [];
@@ -44,11 +52,13 @@ export function hooksRun(object: ObjectSchema, method: WriteMethod): string[] {
   const chain = CHAIN[method === "patch" ? "update" : method];
   const declared = object.hooks ?? [];
   const writes = method === "delete" ? [] : propertyHooks(object, (hook) => PROPERTY_WRITE_HOOKS.includes(hook));
+  const reads = READS_FIRST.includes(method);
   return [
     ...chain.filter((hook) => declared.includes(hook)),
     ...writes,
-    ...READ_HOOKS.filter((hook) => declared.includes(hook)),
-    ...propertyHooks(object, (hook) => !PROPERTY_WRITE_HOOKS.includes(hook)),
+    ...(reads ? READ_HOOKS.filter((hook) => declared.includes(hook)) : []),
+    ...(reads ? propertyHooks(object, (hook) => READ_HOOKS.includes(hook)) : []),
+    ...propertyHooks(object, (hook) => !PROPERTY_WRITE_HOOKS.includes(hook) && !READ_HOOKS.includes(hook)),
     ...declared.filter((hook) => !KNOWN.has(hook)),
   ];
 }
@@ -57,6 +67,8 @@ function propertyPolicies(path: string, property: PropertySchema): string[] {
   const own = [
     ...(property.enum ? [`${path} enum`] : []),
     ...(property.policies ?? []).map((id) => `${path} ${id}`),
+    ...(property.conditionalPolicies ?? []).map((id) => `${path} ${id} (conditional)`),
+    ...(property.fallbackPolicies ?? []).map((id) => `${path} ${id} (fallback)`),
   ];
   return property.items ? [...own, ...propertyPolicies(`${path}[]`, property.items)] : own;
 }
@@ -69,12 +81,22 @@ export function policiesDeclared(object: ObjectSchema): string[] {
   ];
 }
 
+/** A profile older than this package's format cannot say a type declares nothing. */
+export function profileStale(profile: EnvProfile): boolean {
+  return (profile.profileVersion ?? 1) < PROFILE_VERSION;
+}
+
+function staleFault(object: ObjectSchema, profile: EnvProfile): WriteFault {
+  return { id: "openidm-managed-profile-stale", message: `managed/${object.name}: the environment profile is format version ` +
+    `${profile.profileVersion ?? 1}, older than ${PROFILE_VERSION}, so it cannot say whether this write runs hooks or policies ` +
+    "on AIC. Re-pull it: aic-script-tester-pull-profile. A hand-written profile cannot be re-pulled: give each type " +
+    "`hooks` (its object hook names, [] for none), give each property its `default`, `conditionalPolicies` and " +
+    `\`fallbackPolicies\` where the tenant declares them, then set "profileVersion": ${PROFILE_VERSION}` };
+}
+
+/** The fault a write of `method` raises on a type of a current-version profile, if any. */
 export function writeFault(object: ObjectSchema, method: WriteMethod): WriteFault | undefined {
   const type = `managed/${object.name}`;
-  if (object.hooks === undefined) {
-    return { id: "openidm-managed-profile-stale", message: `${type}: the environment profile predates hook recording, so ` +
-      "whether this write runs hooks on AIC is unknown here. Re-pull it: aic-script-tester-pull-profile" };
-  }
   const remedy = "This lane runs no hooks and evaluates no policy, so the local result is not what AIC does. " +
     "Stub the call with given.openidmFailures if the test means a refusal, or expect the fault (E19)";
   const hooks = hooksRun(object, method);
@@ -93,13 +115,51 @@ export function writeFault(object: ObjectSchema, method: WriteMethod): WriteFaul
 /** The lane's lookup table: `managed/<type>` → method → fault, for every type that has one. */
 export function managedWriteFaults(profile: EnvProfile): Record<string, Partial<Record<WriteMethod, WriteFault>>> {
   const out: Record<string, Partial<Record<WriteMethod, WriteFault>>> = {};
+  const stale = profileStale(profile);
   for (const object of Object.values(profile.objects)) {
     const faults: Partial<Record<WriteMethod, WriteFault>> = {};
     for (const method of WRITE_METHODS) {
-      const fault = writeFault(object, method);
+      const fault = stale ? staleFault(object, profile) : writeFault(object, method);
       if (fault) faults[method] = fault;
     }
     if (Object.keys(faults).length > 0) out[`managed/${object.name}`] = faults;
+  }
+  return out;
+}
+
+/**
+ * What the lane needs about one type's defaulted properties (P2-2):
+ * - `defaults`: every declared non-null `default`, to fill in on a create that omits the property
+ *   (measured for scalars and arrays, docs/api/10). A `null` default is not applied: what AIC stores
+ *   for one is unmeasured, and a read renders an absent scalar as `null` either way.
+ * - `notNull`: the properties an explicit `null` is refused on (stock `policy.js` adds `not-null`
+ *   for a non-null default; measured on create, docs/api/10 and 12).
+ * - `emulable`: the subset where the lane may emulate the measured refusal itself — the schema has
+ *   a `required` array and does not name the property, which is the measured single-`NOT_NULL`
+ *   case. Required-named nulls are `NOT_NULL` + `VALID_TYPE` (shape unmeasured).
+ *
+ * The lane decides only what it alone knows: the method, whether the record exists, the engine,
+ * and how many nulls the write sends.
+ */
+export type DefaultsRule = {
+  readonly defaults: Record<string, JsonValue>;
+  readonly notNull: readonly string[];
+  readonly emulable: readonly string[];
+};
+
+/** The lane's defaults table: `managed/<type>` → rule, for every type with a non-null default. */
+export function managedDefaults(profile: EnvProfile): Record<string, DefaultsRule> {
+  const out: Record<string, DefaultsRule> = {};
+  if (profileStale(profile)) return out;
+  for (const object of Object.values(profile.objects)) {
+    const defaults: Record<string, JsonValue> = {};
+    for (const [name, property] of Object.entries(object.properties)) {
+      if (property.default !== undefined && property.default !== null) defaults[name] = property.default;
+    }
+    const notNull = Object.keys(defaults);
+    if (notNull.length === 0) continue;
+    const emulable = object.noRequiredArray ? [] : notNull.filter((name) => !object.required.includes(name));
+    out[`managed/${object.name}`] = { defaults, notNull, emulable };
   }
   return out;
 }
