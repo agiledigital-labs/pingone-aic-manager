@@ -2,7 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
 import type { EnvProfile } from "../profile/types.ts";
-import { managedWriteFaults } from "../profile/write-guard.ts";
+import { managedDefaults, managedWriteFaults } from "../profile/write-guard.ts";
 import { bindingsCrestFilterPath, bindingsIdentityPolicyPath, bindingsRuntimePath, generatedJsPath } from "../paths.ts";
 
 export interface MockPreambleOptions {
@@ -84,6 +84,7 @@ function seedAndOverrides(
     seed.profileTenant = options.profile.tenant;
     seed.profilePulledAt = options.profile.pulledAt;
     seed.managedWriteFaults = managedWriteFaults(options.profile);
+    seed.managedDefaults = managedDefaults(options.profile);
   }
   const overrides = Object.entries(given.bindingOverrides ?? {})
     .map(([name, expression]) => `${name} = (${expression});`)
