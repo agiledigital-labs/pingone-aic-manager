@@ -1,6 +1,6 @@
 /** JSON pointer projection and CREST patch operations, shared by REST and host calls. */
 import type { JsonValue } from "../protocol.ts";
-import { invalidInput, missing } from "./errors.ts";
+import { IdmError, invalidInput, missing } from "./errors.ts";
 import { fieldValue, pointerParts } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
 import type { Document } from "./types.ts";
@@ -71,8 +71,32 @@ export function project(object: Document, selectors: string[], evidence: Evidenc
   return result;
 }
 
+/**
+ * AIC refuses a PATCH whose `replace` carries `value: null` as `400` "not a valid JSON patch", before
+ * policy (docs/api/10-managed-objects.md: measured on a defaulted boolean and on an undefaulted has-one
+ * relationship, so the rule is the patch parser's, not the property's). Only the status and that
+ * phrase are measured; the rest of the message is local. `add` with `null` is unmeasured and faults.
+ * Checked over every operation before any is applied, as a parse-time refusal would be.
+ */
+export function refuseNullPatch(operations: JsonValue | undefined, evidence: Evidence): void {
+  if (!Array.isArray(operations)) return;
+  for (const op of operations) {
+    if (!isDocument(op) || op.value !== null) continue;
+    if (op.operation === "replace") {
+      evidence.measured("PATCH replace with null is refused 400 as an invalid JSON patch, before policy", "docs/api/10-managed-objects.md");
+      throw new IdmError(400, `not a valid JSON patch: replace ${String(op.field)} with null`, undefined, undefined, false,
+        "the replace-null 400 message beyond the measured phrase \"not a valid JSON patch\" is local");
+    }
+    if (op.operation === "add") {
+      missing(evidence, `PATCH add ${String(op.field)} with null: AIC refuses replace with null as an invalid JSON patch ` +
+        "(docs/api/10), and what it does with add is unmeasured", "idm-patch/add-null");
+    }
+  }
+}
+
 export function applyPatch(object: Document, operations: JsonValue | undefined, evidence: Evidence): Document {
   if (!Array.isArray(operations)) throw invalidInput("Expecting a list of patch operations");
+  refuseNullPatch(operations, evidence);
   const result = structuredClone(object);
   for (const raw of operations) {
     const op = document(raw);

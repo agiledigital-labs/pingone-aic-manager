@@ -128,6 +128,28 @@ describe("the lane faults writes that reach its store", () => {
   });
 });
 
+describe("the lane's PATCH null refusals (P2-1)", () => {
+  const replaceNull = (type: string, id: string) =>
+    catching(`openidm.patch('managed/${type}/${id}', null, [{operation: 'replace', field: '/mail', value: null}])`);
+  it.each([
+    // Discriminating: a hookless type used to store the null and pass.
+    ["a hookless type", "quiet", "q1"],
+    // Parse-time, so it answers before the hooked type's write fault.
+    ["a hooked type", "hooked", "h1"],
+  ])("replace with null on %s is AIC's catchable invalid-patch refusal and writes nothing", (_name, type, id) => {
+    const run = runScriptWithFaults(replaceNull(type, id), seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(String(run.effects.sharedState.final.error)).toContain("not a valid JSON patch");
+    expect(run.effects.managedStore?.[`managed/${type}`]).toEqual([{ _id: id, _rev: "1", mail: "a" }]);
+  });
+
+  it("add with null is unmeasured and faults", () => {
+    const run = runScriptWithFaults(catching("openidm.patch('managed/quiet/q1', null, [{operation: 'add', field: '/mail', value: null}])"),
+      seeded, { profile: lane });
+    expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-patch-add-null"]);
+  });
+});
+
 describe("on the real JVM the fault fails the run and is tallied", () => {
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);

@@ -78,10 +78,11 @@ describe("the emulator applies it to writes without a policy evaluator", () => {
   };
   const createPath = { method: "POST", path: "managed/gadget", query: { _action: "create" } } as const;
 
-  it("an explicit null on a defaulted property is the measured 403, byte for byte", async () => {
+  it("an explicit null on a defaulted property is the measured envelope and requirement (single-requirement shape from the stock reading)", async () => {
     const result = await make(gadget([])).request({ ...createPath, body: { count: null } });
     expect(result.status).toBe(403);
-    // doc 10's verbatim REQUIRED envelope, with NOT_NULL on the property.
+    // doc 10's verbatim REQUIRED envelope with NOT_NULL on the property (measured); that NOT_NULL is
+    // the only requirement listed is the stock policy.js reading (assumed).
     expect(JSON.stringify(result.body)).toBe('{"code":403,"reason":"Forbidden","message":"Policy validation failed",' +
       '"detail":{"result":false,"failedPolicyRequirements":[{"policyRequirements":[{"policyRequirement":"NOT_NULL"}],"property":"count"}]}}');
     expect(result.provenance).toContainEqual(expect.objectContaining({ kind: "measured",
@@ -122,6 +123,21 @@ describe("the emulator applies it to writes without a policy evaluator", () => {
     expect(result.status).toBe(501);
   });
 
+  // P3-3: the create chain runs before the collision (doc 24), but the measured NOT_NULL was a new
+  // record; a create-first write over an existing one is not that case, whichever route reaches it.
+  it.each([
+    ["an unconditional PUT", { method: "PUT", path: "managed/gadget/g4", body: { count: null } }],
+    ["a create on an existing id", { ...createPath, body: { _id: "g4", count: null } }],
+  ] as const)("a defaulted null through %s over an existing record faults rather than emulating the 403", async (_name, request) => {
+    expectHarnessFault("idm-policy/not-null");
+    const emu = make(gadget([]));
+    expect((await emu.request({ method: "PUT", path: "managed/gadget/g4", body: { count: 1 } })).status).toBe(201);
+    const result = await emu.request(request);
+    expect(result.status).toBe(501);
+    expect(JSON.stringify(result.body)).toContain("idm-policy/not-null");
+    expect((await emu.request({ method: "GET", path: "managed/gadget/g4" })).body).toMatchObject({ count: 1 });
+  });
+
   it("a type-valid write keeps the reworded assumption and commits", async () => {
     const result = await make(gadget([])).request({ ...createPath, body: { text: "a", count: 2, tags: ["x"] } });
     expect(result.status).toBe(201);
@@ -131,5 +147,55 @@ describe("the emulator applies it to writes without a policy evaluator", () => {
   it("a supplied evaluator replaces the implicit check entirely", async () => {
     const result = await make(gadget([]), { policy: () => {} }).request({ ...createPath, body: { text: 5 } });
     expect(result.status).toBe(201);
+  });
+});
+
+describe("PATCH replace with null is the measured 400, whatever the property (P2-1)", () => {
+  let runner: RhinoRunner;
+  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+  afterAll(async () => { await runner?.close(); });
+  const seeded = async (required?: string[]) => {
+    const type = gadget(required);
+    const { nothing: _nothing, ...properties } = type.schema.properties;
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ ...type, schema: { ...type.schema, properties } }] } }), runner);
+    expect((await emu.request({ method: "PUT", path: "managed/gadget/p1", body: { text: "a", count: 1, tags: ["x"] } })).status).toBe(201);
+    return emu;
+  };
+  const patch = (operations: Document[]) => ({ method: "PATCH", path: "managed/gadget/p1", body: operations }) as const;
+
+  it.each([
+    // Discriminating: undefaulted, required: [] is the path that used to store null and answer 200.
+    ["an undefaulted property with a required array", [], [{ operation: "replace", field: "/text", value: null }]],
+    ["an undefaulted property with no required array", undefined, [{ operation: "replace", field: "/text", value: null }]],
+    ["a defaulted property", [], [{ operation: "replace", field: "/count", value: null }]],
+    ["an array element", [], [{ operation: "replace", field: "/tags/0", value: null }]],
+    // A parse-time refusal judges the whole patch before applying any of it.
+    ["a later operation, after one that would fail to apply", [], [
+      { operation: "replace", field: "/box/inner", value: 1 }, { operation: "replace", field: "/text", value: null }]],
+  ] as const)("on %s", async (_name, required, operations) => {
+    const emu = await seeded(required as string[] | undefined);
+    const result = await emu.request(patch(operations as unknown as Document[]));
+    expect(result.status).toBe(400);
+    expect(String((result.body as Document).message)).toContain("not a valid JSON patch");
+    expect(result.provenance).toContainEqual(expect.objectContaining({ kind: "measured",
+      behavior: "PATCH replace with null is refused 400 as an invalid JSON patch, before policy" }));
+    expect((await emu.request({ method: "GET", path: "managed/gadget/p1" })).body).toMatchObject({ text: "a", count: 1 });
+  });
+
+  it("add with null is unmeasured and faults idm-patch/add-null", async () => {
+    expectHarnessFault("idm-patch/add-null");
+    const emu = await seeded([]);
+    const result = await emu.request(patch([{ operation: "add", field: "/text", value: null }]));
+    expect(result.status).toBe(501);
+    expect(JSON.stringify(result.body)).toContain("idm-patch/add-null");
+  });
+
+  it("a script's openidm.patch gets the same 400", async () => {
+    const emu = await seeded([]);
+    const result = await runner.eval({ engine: "idm", source:
+      "var out; try { openidm.patch('managed/gadget/p1', null, [{operation: 'replace', field: '/text', value: null}]); out = 'patched'; } " +
+      "catch (e) { out = String(e); } out;" }, { onCall: emu.onCall });
+    expect(result.outcome).toBe("ok");
+    expect(String(result.value)).toContain("not a valid JSON patch");
   });
 });
