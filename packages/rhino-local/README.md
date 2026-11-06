@@ -775,10 +775,12 @@ process, where the Vitest registration does not reach.
 
 - `aic-script-tester-pull-profile [--tenant <name>]` writes
   `.aic-script-tester/profiles/<tenant>.json`. It prints only counts. The
-  profile records each type's properties, `required`, `enum`s, the `policyId`s
-  of declared `policies`, and the **names** of its script hooks (object-level
-  `onCreate`, `postUpdate`, …, and property-level `onStore`, …), never their
-  source.
+  profile records each type's properties, `required` (and whether the schema
+  has the array at all), `enum`s, `default`s, the `policyId`s of declared
+  `policies`, `conditionalPolicies` and `fallbackPolicies`, and the **names**
+  of its script hooks (object-level `onCreate`, `postUpdate`, …, and
+  property-level `onStore`, …), never their source or conditions. It carries
+  `profileVersion: 2`.
 
 **Writes on types with hooks or policies (E15b).** The script tester's
 `openidm.create`/`update`/`patch`/`delete` write `given.managed` directly: they
@@ -789,14 +791,21 @@ is a harness fault: `openidm-managed-hook/<type>.<hook>`, naming the first hook
 the write would run (a create runs `onCreate`, property `onValidate`,
 `onValidate`, property `onStore`, `onStore`, `postCreate`, `onSync`; an update
 or patch the `onUpdate`/`postUpdate` equivalents; a delete `onDelete`,
-`postDelete`, `onSync`; read hooks and hook names the harness does not know
-count for every write), or `openidm-managed-policy/<type>` when the type
-declares only policies (`required`, an `enum`, or property `policies`; a delete
-is not judged on policy). A write a test stubs with `given.openidmFailures`
+`postDelete`, `onSync`; read hooks only for an update or patch, which read the
+record first; hook names the harness does not know count for every write), or
+`openidm-managed-policy/<type>` when the type declares only policies
+(`required`, an `enum`, property `policies`, `conditionalPolicies` or
+`fallbackPolicies`; a delete is not judged on policy). A write a test stubs with `given.openidmFailures`
 never reaches the store and does not fault. A type with neither keeps writing
-silently, and without a profile nothing changes. A profile pulled before hook
-names were recorded cannot tell, so its writes are
-`openidm-managed-profile-stale` until it is pulled again. Expect this to fail
+silently, and without a profile nothing changes. A profile whose
+`profileVersion` is absent or below 2 cannot say a type declares nothing, so
+every write under it is `openidm-managed-profile-stale` until it is pulled
+again. A hand-written profile cannot be re-pulled: add `hooks` to each type
+(`[]` for none) and `default`, `conditionalPolicies` and `fallbackPolicies` to
+each property the tenant gives them, then set `"profileVersion": 2`. A type's
+defaults are applied on create, and a `null` sent for a defaulted property is
+AIC's measured `403 Policy validation failed` on a create of a new record and
+a harness fault otherwise (`docs/rhino-local-gaps.md`). Expect this to fail
 client tests that write without stubs; the fault tally counts them, by type
 and hook (E19).
 - `aic-script-tester-show-log [--stdout]` fetches the logs of recorded failures. It
