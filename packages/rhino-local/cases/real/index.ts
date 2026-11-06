@@ -3640,21 +3640,27 @@ export const realCases: RealEntry[] = [
     },
     // The tenant declares alpha_role and not rlNoSuchType, so the absent type
     // is answered as AIC answers it rather than as a missing fixture. The
-    // hand-written profile records no hooks or policies on alpha_role, which
-    // is what lets its writes run here at all (E15b); the live writes above
-    // succeeded, so nothing the tenant ran refused them.
+    // hand-written profile records alpha_role's two object hooks as doc 10
+    // records them on this sandbox (postCreate; onDelete,
+    // roles/onDelete-roles.js). The lane runs neither, so the create and the
+    // delete would fault. Only postCreate's fault is declared: every create
+    // faults, so no record exists and each delete stops at its absent record
+    // before the onDelete check. The live writes above succeeded with the
+    // hooks running; nothing here can say what the hooks did, so the keys
+    // downstream of a create are listed in `differs`.
     profile: {
+      profileVersion: 2,
       tenant: "sandbox",
       pulledAt: "2026-09-29T00:00:00.000Z",
       sources: [],
-      objects: { alpha_role: { name: "alpha_role", properties: {}, required: [], hooks: [] } },
+      objects: { alpha_role: { name: "alpha_role", properties: {}, required: [], hooks: ["onDelete", "postCreate"] } },
     },
     allowUndeclared: {"openidmWrites":true},
     gap: {
       reason:
         "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (undeclared action replies throw naming given.openidmActions). Writes were not captured live, so the write channel is not judged. openidm.query: a malformed filter and a managed type the profile does not declare throw AIC's parse and \"Resource … not found\" phrases, catchably, as plain Errors.",
-      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","query/2/queryExpression","query/2/two-kinds","patch/wrong-rev","delete/wrong-rev","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
-      faults: ["fixture/openidm-action"],
+      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","query/2/queryExpression","query/2/two-kinds","patch/wrong-rev","delete/wrong-rev","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent","create/5","create/3","create/fields","update/null-rev","update/after","patch/replace","patch/add-unknown-field","patch/fields","create/4","update/4","update/5/fields","patch/4","query/2/filter","query/3/fields","query/2/queryId","delete/4/fields","delete/3"],
+      faults: ["fixture/openidm-action", "openidm-managed-hook/alpha_role.postCreate"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
