@@ -76,7 +76,9 @@ export function project(object: Document, selectors: string[], evidence: Evidenc
  * policy (docs/api/10-managed-objects.md: measured on a defaulted boolean and on an undefaulted has-one
  * relationship, so the rule is the patch parser's, not the property's). Only the status and that
  * phrase are measured; the rest of the message is local. `add` with `null` is unmeasured and faults.
- * Checked over every operation before any is applied, as a parse-time refusal would be.
+ * Checked over every operation before any is applied, as a parse-time refusal would be. (A type the
+ * capability gate faults, such as one with a relationship, can hold no record here, so its PATCH is a
+ * 404 before this point; the measured relationship case cannot be reached in the emulator.)
  */
 export function refuseNullPatch(operations: JsonValue | undefined, evidence: Evidence): void {
   if (!Array.isArray(operations)) return;
