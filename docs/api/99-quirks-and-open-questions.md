@@ -233,6 +233,25 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
 
 ## Open
 
+### Q18. Is `null` on an undefaulted property accepted? (2026-11-06)
+
+- **Question:** every measured `null` refusal on a managed write (`403
+  NOT_NULL` on create; see `10-managed-objects.md`, `default` and `required`
+  table) used a property with a non-null `default`. Does a create or update
+  sending `null` for a property with **no** `default` succeed?
+- **Status: unmeasured.** Stock `policy.js` predicts: accepted when the
+  schema's `required` array exists and does not name the property, refused
+  `VALID_TYPE` when the schema has no `required` array, and `REQUIRED` +
+  `VALID_TYPE` when it names it. That is a reading of shipped code, not an
+  observation.
+- **Why it matters:** the rhino-local IDM emulator assumes acceptance in the
+  first case and faults the second (`idm-policy/valid-type`); the script
+  tester does not check it at all (`docs/rhino-local-gaps.md`).
+- **To settle it:** on a throwaway type with `required: []`, create with
+  `{"<undefaulted>": null}` (expect 201 if stock holds), then with the property
+  added to `required` and, separately, with the `required` key removed. Keep
+  the defaulted `null` create as the positive control (403 `NOT_NULL`).
+
 ### Q5. Log API keys not present in `.envrc`
 
 - **Status:** Resolved.

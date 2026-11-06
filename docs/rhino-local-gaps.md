@@ -103,8 +103,37 @@ the test's own claim and does not fault; a type with neither keeps writing.
 Unstubbed managed-collection actions (`patch`, `triggerSyncCheck`,
 `updateLastSync`) used to return an invented `{}` and now fault too.
 
-Only the SET of declared type names, and the per-type write faults that
-`src/profile/write-guard.ts` decides, cross into the sandbox. Every schema
+**Defaults and nulls in this lane.** The profile records each property's
+`default` (version 2), and the lane answers the two measured outcomes:
+
+- A create that omits a property with a non-null `default` stores the
+  default.
+- A create of a new record sending `null` (or `undefined`, which
+  `openidm.create` sends as `null`) for one such property, not named in the
+  schema's `required` array, throws AIC's catchable `403 Policy validation
+  failed`. Its `getDetail()` faults (`openidm-policy-detail`).
+
+Any other defaulted null faults `openidm-managed-policy/<type>`. A PATCH
+`replace` with `null` is AIC's invalid-patch refusal, and an `add` with `null`
+faults. Still **not checked** here, and passing silently:
+
+- a `null` on an undefaulted property, and a value of the wrong JSON type
+  (unmeasured; the IDM emulator faults the unmeasured ones as `idm-policy/*`);
+- a `null` default, which is not applied (what AIC stores is unmeasured, and a
+  read renders an absent scalar as `null` either way);
+- an `undefined` in an update body, which is cloned rather than read as `null`;
+- writes to a seeded sub-resource (`managed/<type>/<id>/<rel>`), which look up
+  that path, not `managed/<type>`, and so bypass the hook, policy and default
+  tables.
+
+`conditionalPolicies` and `fallbackPolicies` are recorded by name and count as
+declared policies here. The IDM emulator does not run them either: its
+capability gate faults any schema that declares them, as an unknown property
+behaviour, with or without a `policy` evaluator.
+
+Only the SET of declared type names, and the per-type write faults and
+defaults tables that `src/profile/write-guard.ts` decides, cross into the
+sandbox. Every schema
 rule — properties, `required`, `enum` — is decided in the Node layer, so each
 rule has one implementation rather than an AM-safe second copy that could
 drift from it.
@@ -211,12 +240,15 @@ assumption in `docs/api/`:
 | `seed-cache-manager`, `seed-binding`                                              | seeding a binding the harness cannot seed                                                                            |
 | `idm-runtime-script/<path>`, `idm-runtime-script-path`, `idm-runtime-script-provider` | IDM emulator: one of IDM's own runtime scripts (a hook's `file`, or `require(id)` as `<id>.js`) that the project's `runtimeScripts` provider did not supply — including a name that matches a provider file only case-insensitively, or names a directory; a name that is not a canonical path under the script root (absolute, `.`/`..`/empty segment, trailing slash, backslash, NUL) or reaches a symbolic link in a provider directory, including a file or directory replaced by one after construction (checked at read); a loader that throws or returns a non-string, or a listed file that cannot be read (E15; README "IDM runtime scripts") |
 | `idm-script-file-and-source`                                                      | IDM emulator: a script declaring both `file` and `source`                                                            |
-| `idm-policy/not-null`                                                             | IDM emulator, no `policy` evaluator (E15a): an explicit `null` on a property with a non-null `default`, except the measured case (a create of a new record, the schema's `required` an array), which is emulated as AIC's `403 NOT_NULL`. Covers an update, a PUT over an existing record, several such nulls at once, and a schema with no `required` array |
+| `idm-policy/not-null`                                                             | IDM emulator, no `policy` evaluator (E15a): an explicit `null` on a property with a non-null `default`, except the measured case (a create of a new record, the schema's `required` an array), which is emulated as AIC's `403 NOT_NULL`. Covers an update, a PUT or create over an existing record, several such nulls at once, and a schema with no `required` array. A PATCH `replace` with `null` never gets here: it is the measured `400` "not a valid JSON patch" (below) |
+| `idm-patch/add-null`                                                              | IDM emulator: a PATCH `add` whose `value` is `null`. AIC refuses `replace` with `null` as `400` "not a valid JSON patch", before policy, on a defaulted boolean and on an undefaulted has-one relationship (docs/api/10), and that is emulated for every property, checked over the whole patch before any operation applies, and before the capability gate. What AIC does with `add` is unmeasured. Only the status and the phrase are measured; the rest of the 400's message is local |
 | `idm-policy/valid-type`                                                           | IDM emulator, no `policy` evaluator (E15a): a value whose JSON type is not the declared `type`; a nested declared property of the wrong type or `null`; any value for a property with no `type`; a `null` on an undefaulted property when the schema has no `required` array. Unmeasured on AIC. A `null` on an undefaulted property with a `required` array is accepted (stock `policy.js`), with the assumption |
 | `idm-policy/valid-array-items`                                                    | IDM emulator, no `policy` evaluator (E15a): an array item whose JSON type is not the declared `items.type`. Unmeasured; stock `policy.js` adds no implicit item check |
-| `openidm-managed-hook/<type>.<hook>`                                              | script tester (E15b): an unstubbed `openidm.create`/`update`/`patch`/`delete` on a type whose environment profile declares a hook that write runs on AIC. `<hook>` is the first in chain order, or `<property>.<hook>` for a property hook; read hooks and unknown hook names count for every write |
-| `openidm-managed-policy/<type>`                                                   | script tester (E15b): the same, on a type that declares no such hook but declares policies (`required`, an `enum`, or property `policies`). A delete is not judged on policy |
-| `openidm-managed-profile-stale`                                                   | script tester (E15b): a write under a profile pulled before hook names were recorded, which cannot say whether the type has hooks. Re-pull the profile |
+| `openidm-managed-hook/<type>.<hook>`                                              | script tester (E15b): an unstubbed `openidm.create`/`update`/`patch`/`delete` on a type whose environment profile declares a hook that write runs on AIC. `<hook>` is the first in chain order, or `<property>.<hook>` for a property hook. Read hooks (`onRead`, `onRetrieve`, object or property) count only for an update or patch, which read the record first; a create runs none and a delete runs `onDelete → postDelete → onSync` (docs/api/24). Unknown hook names count for every write |
+| `openidm-managed-policy/<type>`                                                   | script tester (E15b): the same, on a type that declares no such hook but declares policies (`required`, an `enum`, property `policies`, `conditionalPolicies` or `fallbackPolicies`). A delete is not judged on policy. Also, on a hookless, policy-free type, a write sending `null` for a property with a non-null `default` that is not the measured case: two such nulls, a create over an existing id, an update, or a schema with no `required` array. The measured case (one such null on a create of a new record, the property not named in the `required` array) is emulated as AIC's catchable `403 Policy validation failed` |
+| `openidm-managed-profile-stale`                                                   | script tester (E15b): any write under a profile whose `profileVersion` is absent or older than the package's (2), which cannot say a type declares no hooks, defaults or conditional policies. Re-pull it; for a hand-written profile, add `hooks` per type and `default`/`conditionalPolicies`/`fallbackPolicies` per property where the tenant has them, then set `"profileVersion": 2` |
+| `openidm-patch-add-null`                                                          | script tester: `openidm.patch` with an `add` whose `value` is `null` (see `idm-patch/add-null`). A `replace` with `null` is AIC's invalid-patch refusal, emulated as a catchable error before any hook or policy fault |
+| `openidm-policy-detail`                                                           | script tester: `e.javaException.getDetail()` on the emulated defaulted-null `403`. AIC's detail is measured to name `NOT_NULL` on the property (docs/api/12); its Java type and string form are not |
 | `openidm-managed-collection-action/<action>`                                      | script tester (E15b): `patch`, `triggerSyncCheck` or `updateLastSync` on `managed/<type>` with no `given.openidmActions` reply. The names are measured; the result, and the write chain or sync it runs on AIC, are not |
 | `idm-implicit-sync/<mapping>`                                                     | IDM emulator: a committed managed create, update, changed patch or delete on a type that is the `source` of a mapping in the supplied `config/sync` (`ConfigInput.sync`). On AIC that write runs the mapping (implicit sync, docs/api/16-sync-mappings.md): synchronously by default (measured 2026-06-19), asynchronously from the sync queue when the mapping enables `queuedSync` (measured 2026-07-29); what `enableSync: false` does is unmeasured. The emulator models none of these, so the write faults before the store changes, and the message names which case each mapping is. `sync` is a required input (E15c); `{ mappings: [] }` is the caller's explicit none. **The script tester's AM lane is silent here**: `runtime.cjs`'s `openidm.create`/`update`/`patch`/`delete` write `given.managed` with no implicit-sync check and record nothing, so a write there on a mapping's source passes; routing those writes through an `IdmEmulator` (E15 round-1 Q2) would inherit this fault |
 

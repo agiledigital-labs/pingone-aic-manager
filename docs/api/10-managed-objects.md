@@ -420,6 +420,18 @@ other:
 | `PATCH remove` the property                                    | 403 `REQUIRED`                                                                |
 | `PATCH replace` it with `null`                                 | 400 — rejected as an invalid JSON patch, before policy                        |
 
+**Note (2026-11-06, no new measurement):** every `null` row above was measured
+on a property with a `default` — `bReq` (`--default false`,
+`scripts/experiment-managed-defaults.sh`) and `bravo_user.frIndexedInteger1`
+(`default: 0`). A `null` on an **undefaulted** property is unmeasured. Stock
+`policy.js` adds `not-null` only for a non-null `default`, and its
+`valid-type` accepts `null` when `schema.required` is an array not naming the
+property, so it predicts acceptance there. "The null guard is independent of
+`required`" holds for a defaulted property only. The `PATCH replace … null`
+400 is the exception: it was also seen on an undefaulted has-one relationship
+(below), and the message names the patch parser. Open question: Q18 in
+`99-quirks-and-open-questions.md`.
+
 Three consequences worth carrying:
 
 - **Removing `required` will not make a `default` "start working"** — the
