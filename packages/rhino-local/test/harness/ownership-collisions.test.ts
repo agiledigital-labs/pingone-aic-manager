@@ -8,7 +8,7 @@ import { validateCase } from "../../src/case/validate.ts";
 import { readFileSync } from "node:fs";
 import { bindingsIdentityPolicyPath } from "../../src/paths.ts";
 import { carryGiven } from "../../src/harness/step.ts";
-import type { EnvProfile } from "../../src/profile/types.ts";
+import { type EnvProfile, PROFILE_VERSION } from "../../src/profile/types.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { caseWith, lintAmScript } from "../aic/helpers.ts";
@@ -32,6 +32,7 @@ const emptyEffects = {
   identityCustomAttrs: seed.identityCustomAttrs,
 };
 const profile: EnvProfile = {
+  profileVersion: PROFILE_VERSION,
   tenant: "sandbox",
   pulledAt: "2026-10-02T00:00:00Z",
   sources: ["/openidm/config/managed"],
