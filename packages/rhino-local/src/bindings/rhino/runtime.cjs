@@ -2636,6 +2636,27 @@ openidm.patch = function (resourceName, _rev, patch) {
       );
     }
   }
+  // Still parse-time, so before the write fault: `replace` with null is a
+  // measured 400 "not a valid JSON patch" over REST, on a defaulted boolean
+  // and on an undefaulted relationship (docs/api/10); the script path is
+  // assumed to answer in the same family, as for an unknown operation. `add`
+  // with null is unmeasured.
+  for (i = 0; i < patch.length; i += 1) {
+    op = patch[i];
+    if (op.value !== null) {
+      continue;
+    }
+    if (op.operation === "replace") {
+      throw __rhinoLocalEmulated(
+        "rhino-local: openidm.patch: not a valid JSON patch (replace " + String(op.field) + " with null)"
+      );
+    }
+    if (op.operation === "add") {
+      throw __rhinoLocalFault("openidm-patch-add-null",
+        "rhino-local: openidm.patch: add " + String(op.field) + " with null: AIC refuses replace with null as an " +
+          "invalid JSON patch (docs/api/10), and what it does with add is unmeasured");
+    }
+  }
   __rhinoLocalManagedWriteFault("patch", __rhinoLocalSplitResource(resource).collection);
   var next = __rhinoLocalClone(found.record);
   for (i = 0; i < patch.length; i += 1) {

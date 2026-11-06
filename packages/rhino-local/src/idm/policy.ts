@@ -50,7 +50,11 @@ export type PolicyWrite = {
 export const ASSUMED_POLICY = "policy.js not run: no config/policy resource policies apply to this write; " +
   "the implicit not-null, valid-type and array-item rules were checked locally";
 
-/** The measured `NOT_NULL` body, in the envelope doc 10 shows verbatim for `REQUIRED`. */
+/**
+ * The `NOT_NULL` refusal body. Measured: the envelope (doc 10 shows it verbatim for `REQUIRED`) and
+ * that the property's requirements include `NOT_NULL`. The single-requirement shape (nothing else
+ * listed) is the stock `policy.js` reading, not a measurement.
+ */
 export function notNullDetail(property: string): Document {
   return { result: false, failedPolicyRequirements: [
     { policyRequirements: [{ policyRequirement: "NOT_NULL" }], property },
@@ -125,8 +129,10 @@ export function implicitPolicy(type: ManagedType, object: Document, write: Polic
           "so stock policy.js's valid-type would refuse it; AIC's refusal is unmeasured" };
       }
       if (!write.creating || write.patchedFrom !== undefined || !Array.isArray(required)) {
-        return { kind: "fault", id: "idm-policy/not-null", reason: `${path} has a default and the write sends null; AIC's NOT_NULL ` +
-          `is measured only on a create of a new record${Array.isArray(required) ? "" : " whose schema has a required array"} (docs/api/10-managed-objects.md)` };
+        return { kind: "fault", id: "idm-policy/not-null", reason: `${path} has a default and the write sends null. AIC's NOT_NULL ` +
+          `is measured only on a create of a new record${Array.isArray(required) ? "" : " whose schema has a required array"}, and a ` +
+          "PATCH replace with null is a measured 400 refused before policy (docs/api/10-managed-objects.md); this write is neither, " +
+          "so what AIC does with it is unmeasured" };
       }
       nulls.push(name);
       continue;

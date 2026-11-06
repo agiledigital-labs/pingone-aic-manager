@@ -7,7 +7,7 @@ import type { JsonValue } from "../protocol.ts";
 import type { JsonStorage, SyncMapping } from "./config.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { ASSUMED_POLICY, implicitPolicy, notNullDetail } from "./policy.ts";
-import { applyPatch, document, fields, own, project } from "./document.ts";
+import { applyPatch, document, fields, own, project, refuseNullPatch } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
 import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldRule, fieldValue, illegalAssertion, matchesFilter } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
@@ -112,6 +112,8 @@ export class ManagedStore {
     }
     const noneMatch = header(request, "If-None-Match");
     if (noneMatch !== undefined && noneMatch !== "*") missing(this.evidence, "If-None-Match other than star");
+    // A parse-time refusal: measured on a has-one relationship too, which the capability gate faults.
+    if (request.method === "PATCH" && id !== undefined) refuseNullPatch(request.body, this.evidence);
     if (request.method !== "GET") checkCapabilities(type, request.method !== "DELETE", this.evidence, this.policy !== undefined);
     this.evidence.measured("managed CRUD status and response shapes", "docs/api/10-managed-objects.md");
     if (request.method === "GET") {
