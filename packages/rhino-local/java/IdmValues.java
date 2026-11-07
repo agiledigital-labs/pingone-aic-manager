@@ -30,6 +30,18 @@ final class IdmValues {
     return result;
   }
 
+  /**
+   * A caught exception's {@code getDetail()}: a container that renders as CREST's one-line
+   * JsonValue form (measured 2026-11-08, docs/api/10), not the multi-line form other host values
+   * use. Spellings the probes never showed fault under the owner's harness-fault id.
+   */
+  synchronized Object wrapDetail(Object detail, HostCalls.HostException owner) {
+    if (!(detail instanceof Map) && !(detail instanceof List)) throw owner.unmeasured("getDetail() of a detail that is not an object or array");
+    Value result = (Value) wrap(detail);
+    result.detailOwner = owner;
+    return result;
+  }
+
   synchronized Object wrapRequest(Object value) {
     Map<String, Object> map = Json.asObject(value, "request");
     String method = Json.asString(map.get("method"), "request.method");
@@ -162,7 +174,50 @@ final class IdmValues {
     @Override public Scriptable getParentScope() { return parent; }
     @Override public void setParentScope(Scriptable value) { parent = value; }
     @Override public boolean hasInstance(Scriptable instance) { return false; }
-    @Override public Object getDefaultValue(Class<?> hint) { return pretty(backing()); }
+    /** Set for an exception's detail: renders one-line, faulting through this owner. */
+    volatile HostCalls.HostException detailOwner;
+    @Override public Object getDefaultValue(Class<?> hint) {
+      HostCalls.HostException owner = detailOwner;
+      return owner == null ? pretty(backing()) : crest(wireValue(backing()), owner);
+    }
+  }
+
+  /** CREST JsonValue's one-line form, as far as the captured details spell it. */
+  static String crest(Object value, HostCalls.HostException owner) {
+    if (value instanceof Map) {
+      Map<String, Object> map = Json.asObject(value, "detail");
+      if (map.isEmpty()) throw owner.unmeasured("the string form of an empty object in getDetail()");
+      StringBuilder out = new StringBuilder("{ ");
+      String separator = "";
+      for (Map.Entry<String, Object> entry : map.entrySet()) {
+        out.append(separator).append(crest(entry.getKey(), owner)).append(": ").append(crest(entry.getValue(), owner));
+        separator = ", ";
+      }
+      return out.append(" }").toString();
+    }
+    if (value instanceof List) {
+      List<?> list = (List<?>) value;
+      if (list.isEmpty()) throw owner.unmeasured("the string form of an empty array in getDetail()");
+      StringBuilder out = new StringBuilder("[ ");
+      String separator = "";
+      for (Object item : list) { out.append(separator).append(crest(item, owner)); separator = ", "; }
+      return out.append(" ]").toString();
+    }
+    if (value instanceof String) {
+      String text = (String) value;
+      for (int i = 0; i < text.length(); i++) {
+        char c = text.charAt(i);
+        if (c < 0x20 || c > 0x7e || c == '"' || c == '\\') throw owner.unmeasured("the string form of a getDetail() string needing an escape");
+      }
+      return '"' + text + '"';
+    }
+    if (value instanceof Number) {
+      double number = ((Number) value).doubleValue();
+      if (number != Math.rint(number) || Math.abs(number) > 1e15) throw owner.unmeasured("the string form of a non-integral number in getDetail()");
+      return Long.toString((long) number);
+    }
+    if (value == null || value instanceof Boolean) return String.valueOf(value);
+    throw owner.unmeasured("the string form of a " + value.getClass().getSimpleName() + " in getDetail()");
   }
 
   private final class MapValue extends Value {

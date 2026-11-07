@@ -5,6 +5,7 @@ import org.mozilla.javascript.Function;
 import org.mozilla.javascript.Script;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptRuntime;
+import org.mozilla.javascript.WrapFactory;
 
 /** IDM's plain feature set, with an optional harness deadline in compiled code. */
 final class IdmContextFactory extends ContextFactory {
@@ -113,9 +114,19 @@ final class IdmContextFactory extends ContextFactory {
     cx.setLanguageVersion(200);
     cx.setOptimizationLevel(9);
     cx.setLocale(Locale.ENGLISH);
+    cx.setWrapFactory(WRAP);
     // Rhino emits observer checks into JVM bytecode when this is nonzero.
     cx.setInstructionObserverThreshold(timeoutMs > 0 ? 1000 : 0);
   }
+
+  /** Wraps a caught tenant exception in its member gate; everything else as Rhino would. */
+  private static final WrapFactory WRAP = new WrapFactory() {
+    @Override
+    public Scriptable wrapAsJavaObject(Context cx, Scriptable scope, Object value, Class<?> staticType) {
+      if (value instanceof HostCalls.HostException) return new IdmExceptionView(scope, (HostCalls.HostException) value);
+      return super.wrapAsJavaObject(cx, scope, value, staticType);
+    }
+  };
 
   long remainingMillis() {
     return timeoutMs <= 0 ? 0 : Math.max(1, timeoutMs - (System.nanoTime() - started) / 1_000_000);

@@ -49,10 +49,12 @@ export class IdmError extends Error {
     if (rawBody !== undefined) this.rawBody = rawBody;
   }
 
+  /** A 404 with no detail carries a Java null, measured 2026-11-08 (`String(getDetail())` is "null"); other statuses keep `{}`. */
   host(): HostCallError {
     return new HostCallError({
       class: `org.forgerock.json.resource.${classes[this.status] ?? "ResourceException"}`,
-      message: this.message, code: this.status, detail: this.body.detail ?? {},
+      message: this.message, code: this.status, reason: String(this.body.reason),
+      detail: this.body.detail ?? (this.status === 404 ? null : {}),
     });
   }
 }
