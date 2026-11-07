@@ -13,10 +13,10 @@
  * re-pulled (or, if hand-written, brought up to the version by hand).
  *
  * Implicit schema policy is the one policy the lane does answer (P2-2, sol-r1b): AIC is measured to
- * apply a `default` on a create that omits the property (`null` included), to refuse an explicit
- * `null` on a property with a non-null one, to
- * check a top-level property's `type` and nothing nested, and to accept a null on an undefaulted
- * property only when the schema's `required` array exists and omits it (docs/api/10).
+ * apply a `default` on a create that omits the property (`null` included; an array's null becomes
+ * `[]`), to refuse an explicit `null` on a property with a non-null one, to check a top-level
+ * property's `type` and nothing nested, and to accept a null on an undefaulted property only when
+ * the schema's `required` array exists and omits it (docs/api/10).
  * {@link managedPolicy} gives the lane those per type as plain lists.
  */
 import type { JsonValue } from "../case/types.ts";
@@ -103,7 +103,9 @@ function staleFault(object: ObjectSchema, profile: EnvProfile): WriteFault {
     "write runs hooks or policies on AIC. Re-pull it: aic-script-tester-pull-profile. A hand-written profile cannot be " +
     "re-pulled: give each type `hooks` (its object hook names, [] for none) and `noRequiredArray: true` when its schema " +
     "has no `required` array, give each property its `default`, `conditionalPolicies` and " +
-    `\`fallbackPolicies\` where the tenant declares them, then set "profileVersion": ${PROFILE_VERSION}` };
+    "`fallbackPolicies` where the tenant declares them, an object property its normalised `properties`, and a property " +
+    "whose type list is not one type plus \"null\" `type: \"any\"` with the list verbatim as `types`, then set " +
+    `"profileVersion": ${PROFILE_VERSION}` };
 }
 
 /** The fault a write of `method` raises on a type of a current-version profile, if any. */
@@ -148,10 +150,12 @@ export function managedWriteFaults(profile: EnvProfile): Record<string, Partial<
   return out;
 }
 
-/** Declared types a top-level mismatch was measured for (docs/api/10, 2026-11-08 probe). */
-const MEASURED_TYPES = new Set(["string", "object", "array"]);
-/** Declared types whose mismatch is unmeasured: the lane faults one. `relationship`/`any` stay unchecked. */
-const UNMEASURED_TYPES = new Set(["number", "integer", "boolean"]);
+/**
+ * Declared types a top-level mismatch was measured for (docs/api/10): `string`/`object`/`array`
+ * (zzemu_pol) and `boolean`/`number`/`integer` (zzemu_nd, 2026-11-08). `integer` admits no number:
+ * IDM classifies every JSON number as `number`. `relationship`/`any` stay unchecked.
+ */
+const MEASURED_TYPES = new Set(["string", "object", "array", "boolean", "number", "integer"]);
 
 /**
  * What the lane needs to answer a type's implicit policies (P2-2, sol-r1b), as plain lists. IDM's
@@ -159,24 +163,28 @@ const UNMEASURED_TYPES = new Set(["number", "integer", "boolean"]);
  * stored and not enforced (measured 2026-11-08, docs/api/10). Every field is about top-level
  * properties:
  * - `defaults`: every declared `default`, to fill in on a create that omits the property (measured
- *   for scalars, arrays, objects and, 2026-11-08, `default: null`, which is stored as `null`). A
- *   null default on a type with no `required` array is unmeasured: that property is also in
- *   `nullUnmeasured`, and the lane faults rather than apply it.
+ *   for scalars, arrays, objects and, 2026-11-08, `default: null` on every type, stored as `null`
+ *   except on an array, where it is stored as `[]`). A null default the lane cannot apply faithfully
+ *   is also in `nullUnmeasured`, and the lane faults rather than apply it.
  * - `notNull`: the properties with a non-null default, on which an explicit `null` is `NOT_NULL`.
  *   It keys on the non-null default, not the type (measured 2026-11-08: an object defaulting to
- *   `{x:1}` gets it, a string with `default: null` does not).
+ *   `{x:1}` gets it, no `default: null` property on any type does).
  * - `nullRefused`: the properties an explicit `null` on a create of a new record is refused on:
  *   `notNull`, plus every typed property when the schema has no `required` array (`VALID_TYPE`,
- *   `invalidType "null"`). Measured. Any other typed property's null is accepted and stored, because
- *   a required-named property never gets here (`writeFault` faults the type's writes).
- * - `nullUnmeasured`: a nullable (`["string","null"]`) property, whose null is measured only with a
- *   `default: null` and a `required` array, and, when the schema has no `required` array, a property
- *   that declares `default: null` or is of a type the rule does not know (`relationship`, `any`).
- *   With a `required` array the unknown types keep writing as before (gaps doc).
- * - `checked`: property → declared type, for `string`/`object`/`array`, where a mismatching
- *   top-level value on a create of a new record is a measured `403 VALID_TYPE`. A nullable property
- *   is checked only where its null default was measured (its `{text: 5}` is the same 403).
- * - `unmeasured`: property → declared type, for `number`/`integer`/`boolean`; a mismatch faults.
+ *   `invalidType "null"`; measured for an undefaulted property and for a string with
+ *   `default: null`). Any other typed property's null is accepted and stored, because a
+ *   required-named property never gets here (`writeFault` faults the type's writes).
+ * - `emptyOnNull`: array properties declaring `default: null` with a `required` array. Their null,
+ *   applied or sent on a create of a new record, is stored as `[]` (measured 2026-11-08, zzemu_nd).
+ *   A null sent by any other write faults: only the create was measured.
+ * - `nullUnmeasured`: a nullable (`["<type>","null"]`) property, whose null is measured only on a
+ *   string with a `default: null` and a `required` array, and, when the schema has no `required` array, a
+ *   non-string property that declares `default: null` (only the string was measured there) or a
+ *   property of a type the rule does not know (`relationship`, `any`). With a `required` array the
+ *   unknown types keep writing as before (gaps doc).
+ * - `checked`: property → declared type, for `string`/`object`/`array`/`boolean`/`number`/
+ *   `integer`, where a mismatching top-level value on a create of a new record is a measured
+ *   `403 VALID_TYPE`. A nullable property is checked only where its null default was measured.
  * - `itemTypes`: array property → its `items.type`. An item of another type faults: nested `items`
  *   were measured unenforced, a top-level array's own items were not tested.
  * - `defaulted`: every property that declares a `default`, `null` included. Stock `policy.js` adds
@@ -190,9 +198,9 @@ export type PolicyRule = {
   readonly defaults: Record<string, JsonValue>;
   readonly notNull: readonly string[];
   readonly nullRefused: readonly string[];
+  readonly emptyOnNull: readonly string[];
   readonly nullUnmeasured: readonly string[];
   readonly checked: Record<string, string>;
-  readonly unmeasured: Record<string, string>;
   readonly itemTypes: Record<string, string>;
   readonly defaulted: readonly string[];
 };
@@ -205,45 +213,66 @@ export function managedPolicy(profile: EnvProfile): Record<string, PolicyRule> {
     const defaults: Record<string, JsonValue> = {};
     const defaulted: string[] = [];
     const nullUnmeasured: string[] = [];
+    const emptyOnNull: string[] = [];
     const checked: Record<string, string> = {};
-    const unmeasured: Record<string, string> = {};
     const itemTypes: Record<string, string> = {};
     const notNull: string[] = [];
     for (const [name, property] of Object.entries(object.properties)) {
-      if (property.default !== undefined) {
-        defaulted.push(name);
-        defaults[name] = property.default;
-        if (property.default !== null) notNull.push(name);
-      }
-      const known = MEASURED_TYPES.has(property.type) || UNMEASURED_TYPES.has(property.type);
+      const known = MEASURED_TYPES.has(property.type);
       const nullDefault = property.default === null;
       const nullMeasured = nullDefault && !object.noRequiredArray;
-      if ((property.nullable && !nullMeasured) || (object.noRequiredArray && (!known || nullDefault))) nullUnmeasured.push(name);
-      if (MEASURED_TYPES.has(property.type) && (!property.nullable || nullMeasured)) checked[name] = property.type;
-      if (UNMEASURED_TYPES.has(property.type)) unmeasured[name] = property.type;
+      // D2's nullable null default was measured on a string only.
+      const nullableMeasured = nullMeasured && property.type === "string";
+      if (property.default !== undefined) {
+        defaulted.push(name);
+        defaults[name] = nullMeasured && property.type === "array" && !property.nullable ? [] : property.default;
+        if (property.default !== null) notNull.push(name);
+      }
+      const noRequiredNull = object.noRequiredArray && (!known || (nullDefault && property.type !== "string"));
+      if ((property.nullable && !nullableMeasured) || noRequiredNull) nullUnmeasured.push(name);
+      else if (nullMeasured && property.type === "array") emptyOnNull.push(name);
+      if (known && (!property.nullable || nullableMeasured)) checked[name] = property.type;
       const item = property.items?.type;
-      if (property.type === "array" && item !== undefined && (MEASURED_TYPES.has(item) || UNMEASURED_TYPES.has(item))) itemTypes[name] = item;
+      if (property.type === "array" && item !== undefined && MEASURED_TYPES.has(item)) itemTypes[name] = item;
     }
     const typed = Object.keys(object.properties).filter((name) => !nullUnmeasured.includes(name));
     const nullRefused = object.noRequiredArray ? typed : notNull.filter((name) => !nullUnmeasured.includes(name));
-    out[`managed/${object.name}`] = { defaults, notNull, nullRefused, nullUnmeasured, checked, unmeasured, itemTypes, defaulted };
+    out[`managed/${object.name}`] = { defaults, notNull, nullRefused, emptyOnNull, nullUnmeasured, checked, itemTypes, defaulted };
   }
   return out;
 }
 
-/** Why a property's declaration is one AIC refuses or might, if it is (judged by {@link judgeDefault}). */
+/** The declaration {@link judgeDefault} reads: the verbatim type list when the profile kept one. */
+function declared(property: PropertySchema): { type: unknown; items?: unknown } {
+  const type = property.types ?? (property.nullable ? [property.type, "null"] : property.type);
+  return property.items ? { type, items: { type: property.items.types ?? property.items.type } } : { type };
+}
+
+/**
+ * Why a property's declaration is one AIC refuses or might, if it is (judged by {@link judgeDefault}).
+ * A default nested under `items` or `properties` is unmeasured whatever its value, as in the IDM
+ * emulator (`nested property behavior default`): no probe declared one.
+ */
 function declarationProblem(name: string, property: PropertySchema, depth = 0): { kind: "invalid" | "unmeasured"; why: string } | undefined {
   if (property.default !== undefined) {
-    if (depth > 0) return { kind: "unmeasured", why: `${name} declares a default nested inside items, which nothing measured` };
-    const verdict = judgeDefault(property.default, property);
+    if (depth > 0) return { kind: "unmeasured", why: `${name} declares a default nested inside items or properties, which nothing measured` };
+    const verdict = judgeDefault(property.default, declared(property));
     if (verdict !== "valid") {
-      const type = `${JSON.stringify(property.type)}${property.nullable ? " (nullable)" : ""}`;
+      const type = JSON.stringify(property.types ?? property.type) + (property.nullable && !property.types ? " (nullable)" : "");
       return { kind: verdict, why: verdict === "invalid"
         ? `${name} declares default ${JSON.stringify(property.default)}, which does not match its type ${type}`
         : `${name} declares default ${JSON.stringify(property.default)} on type ${type}, which no probe covered` };
     }
   }
-  return property.items ? declarationProblem(`${name}[]`, property.items, depth + 1) : undefined;
+  if (property.items) {
+    const problem = declarationProblem(`${name}[]`, property.items, depth + 1);
+    if (problem) return problem;
+  }
+  for (const [child, schema] of Object.entries(property.properties ?? {})) {
+    const problem = declarationProblem(`${name}.${child}`, schema, depth + 1);
+    if (problem) return problem;
+  }
+  return undefined;
 }
 
 /**

@@ -4,22 +4,27 @@
  * profile table (`profile/write-guard.ts`) call this, so they cannot disagree about which
  * declaration is invalid.
  *
- * Measured on the sandbox tenant 2026-11-08 (zzemu_def probe, REST and IDM script;
- * docs/api/10-managed-objects.md "Default validation"):
+ * The rule, measured on the sandbox tenant 2026-11-08 (zzemu_def and zzemu_nd probes, REST and IDM
+ * script; docs/api/10-managed-objects.md "Default validation"): **a default is invalid exactly when
+ * it fails the declared type's `VALID_TYPE` check, and `null` always passes**.
  *
  * - The top-level `type` is checked against the default: `{"type": "boolean", "default": "nope"}`
  *   is invalid (also 2026-08 for the same case).
+ * - `integer` admits no number: IDM's type check classifies every JSON number as `"number"`, so a
+ *   record write of `3` or `3.5` is `VALID_TYPE {invalidType: "number"}`, and an `integer` default
+ *   of `3` and of `3.5` both freeze the config. `number` accepts `3` and `3.5`.
  * - An array default is checked item by item against `items.type`: `["a", 2]` against
- *   `items: {type: "string"}` is invalid, `["a", "b"]` is valid.
+ *   `items: {type: "string"}` is invalid, `["a", "b"]` is valid. An `integer` item type therefore
+ *   refuses every numeric item, by the same classification (the item case itself is not measured).
  * - An object default is checked only for being an object. Its declared `properties` are **not**
  *   checked: `{x: 1}` against `x: {type: "string"}` is valid and stored as given.
- * - `default: null` is valid on `string` and on `["string", "null"]`.
+ * - `default: null` is valid on `string`, `boolean`, `number`, `integer`, `object` and `array`, and
+ *   on `["string", "null"]`. A nullable spelling of the other types with a null default is valid by
+ *   the same rule (null always passes) without a probe of its own.
  *
- * Judged by the same rule without a measurement of its own (the rule plainly decides them, and the
- * earlier emulator already did): a scalar mismatch on `string` / `number` / `integer`. Unmeasured,
- * so `"unmeasured"`: a `null` default on any other type, a `null` array item, arrays of arrays,
- * and any default on a type with no JSON shape here (`relationship`, a missing type, a type list
- * that is not one type plus `"null"`).
+ * Unmeasured, so `"unmeasured"`: a `null` array item, arrays of arrays, and any default on a type
+ * with no JSON shape here (`relationship`, a missing type, a type list that is not one type plus
+ * `"null"`).
  *
  * What an invalid default does is not "that type is unavailable": IDM keeps serving the last good
  * `config/managed` for every type (measured, same probe). Callers act on that; see their headers.
@@ -43,7 +48,10 @@ function declaredType(type: unknown): string | undefined {
   return concrete.length === 1 && type.length === 2 && typeof concrete[0] === "string" ? concrete[0] : undefined;
 }
 
-/** A non-null value against a JSON type name, at one level: nothing under it is looked at. */
+/**
+ * A non-null value against a JSON type name, at one level: nothing under it is looked at. `type` is
+ * one of the six measured types or it is unmeasured.
+ */
 function shapeMatches(value: unknown, type: string): DefaultVerdict {
   switch (type) {
     case "string":
@@ -52,7 +60,8 @@ function shapeMatches(value: unknown, type: string): DefaultVerdict {
     case "number":
       return typeof value === "number" && Number.isFinite(value) ? "valid" : "invalid";
     case "integer":
-      return Number.isInteger(value) ? "valid" : "invalid";
+      // Measured 2026-11-08 (zzemu_nd): no JSON value passes VALID_TYPE for `integer` but null.
+      return "invalid";
     case "object":
       return isDocument(value) ? "valid" : "invalid";
     case "array":
@@ -62,10 +71,13 @@ function shapeMatches(value: unknown, type: string): DefaultVerdict {
   }
 }
 
+/** The types a `default: null` was measured valid on (zzemu_def, zzemu_nd; 2026-11-08). */
+const MEASURED_NULL = new Set(["string", "boolean", "number", "integer", "object", "array"]);
+
 export function judgeDefault(value: unknown, declaration: DefaultDeclaration): DefaultVerdict {
   const type = declaredType(declaration.type);
   if (type === undefined) return "unmeasured";
-  if (value === null) return type === "string" ? "valid" : "unmeasured";
+  if (value === null) return MEASURED_NULL.has(type) ? "valid" : "unmeasured";
   const top = shapeMatches(value, type);
   if (top !== "valid" || type !== "array" || !Array.isArray(value)) return top;
   const items = declaration.items;

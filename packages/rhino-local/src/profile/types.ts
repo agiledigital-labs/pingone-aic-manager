@@ -17,9 +17,12 @@ import type { JsonValue } from "../case/types.ts";
  * The profile format this package writes. 1 (or absent) predates hook, default and conditional-
  * policy recording, so the script tester cannot tell a type with none from one pulled before they
  * were recorded, and faults its writes (`openidm-managed-profile-stale`). Bump it whenever a field
- * becomes one whose absence means "none".
+ * becomes one whose absence means "none". 3 (sol-r2 P2-1) records a property's nested
+ * `properties` and keeps a type list that is not one type plus `"null"` as `types`: a version-2
+ * profile turned `["string", "number"]` into `string` and dropped nested declarations, so a nested
+ * or multi-type `default` cannot be judged from it.
  */
-export const PROFILE_VERSION = 2;
+export const PROFILE_VERSION = 3;
 
 export interface EnvProfile {
   /** The format version, {@link PROFILE_VERSION} when pulled by this package. Absent before 2. */
@@ -60,10 +63,21 @@ export interface PropertySchema {
    */
   type: string;
   nullable?: boolean;
+  /**
+   * The declared type list verbatim, when it is not one type plus `"null"` (`["string", "number"]`);
+   * `type` is then `any`. A default on such a property is judged against this list, which no probe
+   * covered, so it faults as unmeasured rather than as whichever type came first.
+   */
+  types?: unknown[];
   /** Present only on an enum-constrained scalar. AIC enforces this on write. */
   enum?: JsonValue[];
   /** Element schema for `type: "array"`. */
   items?: PropertySchema;
+  /**
+   * Member schemas for `type: "object"`, normalised the same way. Recorded so a nested `default`
+   * can be judged; nested values are not checked on write (AIC stores them unenforced, docs/api/10).
+   */
+  properties?: Record<string, PropertySchema>;
   /** `managed/<target>` paths, for `type: "relationship"`. */
   resourceCollection?: string[];
   /** Property-level script hooks (`onValidate`, `onStore`, `onRetrieve`), names only, sorted. */

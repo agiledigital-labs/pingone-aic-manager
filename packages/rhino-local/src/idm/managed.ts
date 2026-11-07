@@ -6,7 +6,7 @@ import { HostCallError } from "../runner.ts";
 import type { JsonValue } from "../protocol.ts";
 import type { JsonStorage, SyncMapping } from "./config.ts";
 import { checkCapabilities } from "./capabilities.ts";
-import { ASSUMED_POLICY, implicitPolicy, POLICY_SOURCE, policyRefusalDetail } from "./policy.ts";
+import { ARRAY_NULL_TIMING, ASSUMED_POLICY, emptyOnNull, implicitPolicy, POLICY_MEASURED, POLICY_SOURCE, policyRefusalDetail } from "./policy.ts";
 import { applyPatch, document, fields, own, project, refuseNullPatch } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
 import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldRule, fieldValue, illegalAssertion, matchesFilter } from "./filter.ts";
@@ -283,13 +283,20 @@ export class ManagedStore {
       this.evidence.measured("undeclared request attributes are rejected", "docs/api/10-managed-objects.md");
       throw new IdmError(400, `Request content includes undeclared attributes: ${JSON.stringify(undeclared)}`);
     }
+    const applied: string[] = [];
     if (method === "create") {
       this.evidence.measured("declared defaults apply on create before policy", "docs/api/10-managed-objects.md");
       this.evidence.assumed("defaults apply before create hooks; non-scalar defaults use cloned JSON values");
       for (const [name, config] of Object.entries(type.schema.properties)) {
         if (!Object.hasOwn(object, name) && Object.hasOwn(config, "default")) {
+          applied.push(name);
           Object.defineProperty(object, name, { value: structuredClone(config.default) as JsonValue,
             writable: true, enumerable: true, configurable: true });
+        }
+        if (emptyOnNull(type, config) && object[name] === null) {
+          this.evidence.measured(POLICY_MEASURED.arrayNullDefault, POLICY_SOURCE);
+          this.evidence.assumed(ARRAY_NULL_TIMING);
+          object[name] = [];
         }
       }
     }
@@ -311,6 +318,7 @@ export class ManagedStore {
       const patching = op.request.method === "PATCH" && oldObject !== null;
       const verdict = implicitPolicy(type, object, {
         creating: method === "create" && !this.records.has(this.key(type, id)),
+        applied,
         ...(patching ? { patchedFrom: oldObject, operations: op.request.body } : {}),
       });
       if (verdict.kind === "fault") missing(this.evidence, `implicit policy: ${verdict.reason}`, verdict.id);

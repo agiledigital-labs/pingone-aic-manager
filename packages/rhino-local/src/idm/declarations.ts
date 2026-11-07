@@ -21,7 +21,7 @@ export function validateDeclarations(config: IdmConfig, evidence: Evidence): voi
   };
   const visit = (value: unknown, path: string, depth: number): void => {
     const declaration = object(value, path);
-    if (Object.hasOwn(declaration, "type") && (typeof declaration.type !== "string" || !["string", "number", "boolean", "object", "array", "relationship"].includes(declaration.type))) missing(evidence, `property behavior type: ${path}`);
+    if (Object.hasOwn(declaration, "type") && (typeof declaration.type !== "string" || !["string", "number", "integer", "boolean", "object", "array", "relationship"].includes(declaration.type))) missing(evidence, `property behavior type: ${path}`);
     for (const key of ["enum", "required", "policies"]) if (Object.hasOwn(declaration, key)) {
       if (!Array.isArray(declaration[key])) reject(`${path}/${key}`, "array");
       if (key === "required" && !(declaration[key] as unknown[]).every((name) => typeof name === "string")) reject(`${path}/${key}`, "string array");

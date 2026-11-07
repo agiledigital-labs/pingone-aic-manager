@@ -2195,7 +2195,8 @@ function __rhinoLocalJsonType(value) {
 
 function __rhinoLocalTypeMatches(value, declared) {
   var actual = __rhinoLocalJsonType(value);
-  return actual === declared || (declared === "integer" && actual === "number" && Math.floor(value) === value);
+  // No JSON number is an `integer` to IDM's type check (measured 2026-11-08, docs/api/10).
+  return actual === declared;
 }
 
 // IDM's implicit schema policy on the top-level properties a write sends
@@ -2205,15 +2206,19 @@ function __rhinoLocalTypeMatches(value, declared) {
 //   - a null on a defaulted property is NOT_NULL; a null on any typed
 //     property is VALID_TYPE when the schema has no required array; any other
 //     null is accepted and stored;
-//   - a value whose JSON type is not the declared string/object/array is
-//     VALID_TYPE; nothing nested under items/properties is checked.
+//   - a value whose JSON type is not the declared string/object/array/
+//     boolean/number/integer is VALID_TYPE (every number is "number", so an
+//     integer property refuses all of them); nothing nested under
+//     items/properties is checked;
+//   - a null on an array declaring default: null is stored as [] (emptyOnNull).
 // Any of those refuses the write: 403 "Policy validation failed", which this
 // lane throws as the adapter exception the measured NOT_NULL showed. Which
 // requirements getDetail() lists is the policy's answer, but its Java type and
 // string form here are unmeasured, so reading it faults. Everything else that
-// policy would judge is unmeasured and faults: a mismatch against a declared
-// number/integer/boolean, a top-level array item of the wrong items type (only
-// nested items were measured), a null on a nullable property, and any refusal or
+// policy would judge is unmeasured and faults: a top-level array item of the
+// wrong items type (only nested items were measured), a null on a nullable
+// property, a null on an emptyOnNull array outside a new record's create, and
+// any refusal or
 // defaulted null outside a new record's create. A null on an undefaulted
 // property outside a create, where a create would accept it, writes as on
 // create (assumed).
@@ -2230,6 +2235,9 @@ function __rhinoLocalImplicitPolicy(method, collection, content, creatingNew) {
     if (value === null) {
       if (rule.nullUnmeasured.indexOf(name) >= 0) {
         unmeasured.push(name + " is null on a nullable or untyped property, which nothing measured");
+      } else if (rule.emptyOnNull.indexOf(name) >= 0 && !(method === "create" && creatingNew)) {
+        unmeasured.push(name + " is null on an array declaring default: null; AIC stores [] for that on a create of a " +
+          "new record, and this write is not one");
       } else if (rule.nullRefused.indexOf(name) >= 0) {
         refused.push(name + (rule.notNull.indexOf(name) >= 0 ? " (NOT_NULL: it declares a non-null default)" : " (VALID_TYPE: the schema has no required array)"));
       }
@@ -2237,9 +2245,6 @@ function __rhinoLocalImplicitPolicy(method, collection, content, creatingNew) {
     }
     if (__rhinoLocalHas(rule.checked, name) && !__rhinoLocalTypeMatches(value, rule.checked[name])) {
       refused.push(name + " (VALID_TYPE: declared " + rule.checked[name] + ", sent " + __rhinoLocalJsonType(value) + ")");
-    } else if (__rhinoLocalHas(rule.unmeasured, name) && !__rhinoLocalTypeMatches(value, rule.unmeasured[name])) {
-      unmeasured.push(name + " is declared " + rule.unmeasured[name] + " and the write sends " + __rhinoLocalJsonType(value) +
-        "; VALID_TYPE is measured only for declared string, object and array");
     } else if (Array.isArray(value) && __rhinoLocalHas(rule.itemTypes, name)) {
       value.forEach(function (item, index) {
         if (!__rhinoLocalTypeMatches(item, rule.itemTypes[name])) {
@@ -2282,15 +2287,24 @@ function __rhinoLocalApplyDefaults(collection, stored) {
     if (__rhinoLocalHas(stored, name)) {
       return;
     }
-    // A null default is measured applied (stored as null) only when the
-    // schema has a required array; without one it is in nullUnmeasured.
+    // A null default is measured applied (stored as null, [] on an array) on
+    // every non-nullable type when the schema has a required array, and on a
+    // string without one; the rest are in nullUnmeasured.
     if (rule.defaults[name] === null && rule.nullUnmeasured.indexOf(name) >= 0) {
       throw __rhinoLocalFault("openidm-managed-policy/" + collection.replace(/^managed\//, ""),
-        "rhino-local: openidm.create: " + collection + ": " + name + " declares default: null and the schema has no " +
-          "required array. A null default is measured applied only with one, and an undefaulted null without one is " +
-          "VALID_TYPE (docs/api/10), so what AIC does here is unmeasured. Send the property, or expect the fault (E19)");
+        "rhino-local: openidm.create: " + collection + ": " + name + " declares default: null on a nullable type, or " +
+          "on a non-string type in a schema with no required array. A null default was measured applied on every plain " +
+          "type with a required array, and on a string without one (docs/api/10); this case was not, so what AIC " +
+          "stores is unmeasured. Send the property, or expect the fault (E19)");
     }
     stored[name] = __rhinoLocalClone(rule.defaults[name]);
+  });
+  // An explicit null on an array declaring default: null is stored as [] too
+  // (measured 2026-11-08, docs/api/10); only a new record's create gets here.
+  rule.emptyOnNull.forEach(function (name) {
+    if (stored[name] === null) {
+      stored[name] = [];
+    }
   });
 }
 
@@ -4321,8 +4335,8 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.managedWriteFaults = given.managedWriteFaults
     ? __rhinoLocalClone(given.managedWriteFaults)
     : null;
-  // `managed/<type>` → { defaults, notNull, nullRefused, nullUnmeasured,
-  // checked, unmeasured, defaulted }: the type's implicit policies (P2-2,
+  // `managed/<type>` → { defaults, notNull, nullRefused, emptyOnNull,
+  // nullUnmeasured, checked, itemTypes, defaulted }: the type's implicit policies (P2-2,
   // sol-r1b), decided in src/profile/write-guard.ts managedPolicy.
   __rhinoLocal.managedPolicy = given.managedPolicy
     ? __rhinoLocalClone(given.managedPolicy)

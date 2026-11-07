@@ -16,7 +16,7 @@ import { realCases } from "../../cases/real/index.ts";
 import { type LiveHooks, profileForRun, type RealEntry, realCase } from "../../cases/real/load.ts";
 
 const writes = realCases.find((entry) => entry.kase.name === "binding-openidm-writes") as RealEntry;
-const profile: EnvProfile = { profileVersion: 2, tenant: "sandbox", pulledAt: "2026-09-29T00:00:00.000Z", sources: [],
+const profile: EnvProfile = { profileVersion: 3, tenant: "sandbox", pulledAt: "2026-09-29T00:00:00.000Z", sources: [],
   objects: { alpha_role: { name: "alpha_role", properties: {}, required: [], hooks: ["onDelete", "postCreate", "onUpdate"] } } };
 const live: LiveHooks = { probed: "2026-09-29", hooks: { alpha_role: ["postCreate", "onDelete"] } };
 type Input = Parameters<typeof realCase>[0];
