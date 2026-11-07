@@ -1400,30 +1400,43 @@ create/update/changed patch is checked against IDM's implicit schema policies
 where they were measured, and faults where they were not (E15a,
 `src/idm/policy.ts`):
 
-- A create of a new record sending `null` for a property with a non-null
-  `default` is AIC's measured `403 Policy validation failed`, `NOT_NULL` on that
-  property (`docs/api/10-managed-objects.md`), in doc 10's envelope:
-  `{"code":403,"reason":"Forbidden","message":"Policy validation failed","detail":{"result":false,"failedPolicyRequirements":[{"policyRequirements":[{"policyRequirement":"NOT_NULL"}],"property":"<name>"}]}}`.
-  It needs the schema's `required` to be an array (which, without an
-  evaluator, can only be empty); that the detail then lists `NOT_NULL` alone
-  is read from stock `policy.js`, and recorded as assumed.
-- Any other `null` on a defaulted property (an update, a PUT over an existing
-  record, two at once, or no `required` array) is `idm-policy/not-null`. Both
-  measurements used a defaulted property, and stock `policy.js` adds
-  `not-null` only there.
-- A `null` on an undefaulted property is accepted with the assumption below
-  when the schema has a `required` array (stock `policy.js` lets an optional
-  property be null), and is `idm-policy/valid-type` when it has none.
-- A value whose JSON type is not the declared `type`, a nested declared
-  property of the wrong type or `null`, or any value for a property with no
-  `type`, is `idm-policy/valid-type`; an array item that is not the declared
-  `items.type` is `idm-policy/valid-array-items`. None was measured.
+- Measured on a create of a new record (`docs/api/10-managed-objects.md`, the
+  2026-11-08 probe over REST and from an IDM script), and emulated as
+  `403 Policy validation failed` in doc 10's envelope, one
+  `failedPolicyRequirements` entry per failing requirement, e.g.
+  `{"code":403,"reason":"Forbidden","message":"Policy validation failed","detail":{"result":false,"failedPolicyRequirements":[{"policyRequirements":[{"params":{"invalidType":"null","validTypes":["string"]},"policyRequirement":"VALID_TYPE"}],"property":"<name>"}]}}`.
+  An IDM script's `openidm.create` catches it as CREST's
+  `ForbiddenException` with `getCode()` 403 and the same `getDetail()`:
+  - **only the top-level `type` is checked**: a value whose JSON type is not
+    the declared `string`, `object` or `array` is `VALID_TYPE`
+    (`invalidType`, `validTypes`). Schemas under `properties` and `items` are
+    **not** enforced, and nested values are stored as sent;
+  - a `null` on a property with a non-null `default` is `NOT_NULL`;
+  - a `null` passes the type check only when the schema's `required` key
+    exists and does not name the property (without an evaluator a `required`
+    array can only be empty). With no `required` key it is `VALID_TYPE`,
+    `invalidType "null"`, after any `NOT_NULL` for the same property;
+    otherwise an undefaulted property's `null` is stored as `null`.
+- A PATCH `remove` of an undefaulted, non-required property commits (measured
+  200).
+- Faults (`idm-policy/*`), because unmeasured: a mismatch against any other
+  declared type (`number`, `boolean`, …) or on any write but a new record's
+  create, and any value for a property with no `type`
+  (`idm-policy/valid-type`); a defaulted `null` outside a new record's create,
+  or an undefaulted one when the schema has no `required` array
+  (`idm-policy/not-null`, `idm-policy/valid-type`); a refusal naming more than
+  one property, whose order is unmeasured; a PATCH `remove` of a defaulted
+  property (`idm-policy/required`); and an item of a top-level array that is
+  not the declared `items.type` (`idm-policy/valid-array-items`: only nested
+  `items` were measured unenforced).
+- A `null` on an undefaulted property outside a create, where a create would
+  accept it, is accepted with that assumption (the probe measured create only).
 - A PATCH is checked only on the properties its operations name or whose value
   changed, as AIC's enum check is measured to do.
 
-Everything else carries `assumed: policy.js not run: no config/policy resource
-policies apply to this write; the implicit not-null, valid-type and array-item
-rules were checked locally`. The optional constructor
+Every pass records the measured outcomes it relied on, plus
+`assumed: policy.js not run: no config/policy resource policies apply to this
+write`. The optional constructor
 `{policy: evaluator}` seam replaces all of this, and runs between validation hooks and store hooks. It can
 throw `HostCallError` to reject with a CREST status and detail; its provenance is
 `assumed: caller-supplied policy evaluator`. It is intended for the real

@@ -413,23 +413,69 @@ other:
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **Create** omitting a property that has a `default`            | 201, and the record comes back holding the default — `false`/`true`/`0` alike |
 | **Create** omitting a `required` property that has a `default` | 201 — the default is applied _before_ policy runs, so `REQUIRED` is satisfied |
-| **Create** sending an explicit `null`                          | **403 `NOT_NULL`** (+ `VALID_TYPE` when the property is also `required`)      |
+| **Create** sending an explicit `null` on a property with a `default` | **403 `NOT_NULL`** (+ a separate `VALID_TYPE` entry when the property is also `required`, or the schema has no `required` key — 2026-11-08) |
 | **Create** from a next-gen journey script's `openidm.create` with the property `undefined` | **403 `NOT_NULL`**, exactly as `null` — the key is sent as `null`, not dropped, so the default does not land (2026-11-04, below) |
-| Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — the null guard is independent of `required`        |
+| Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — for a defaulted property the null guard is independent of `required` |
+| **Create** sending `null` on an **undefaulted** property, `schema.required` present and not naming it (`[]` or a list of others) | **201**, stored and read back as JSON `null` (2026-11-08) |
+| Same, the schema has **no `required` key**                     | **403 `VALID_TYPE`**, `{invalidType: "null", validTypes: [<type>]}` (2026-11-08) |
+| **Create** sending `null` on an undefaulted property that `required` names | **403 `VALID_TYPE`**, not `REQUIRED`: a null counts as present (2026-11-08) |
+| `PATCH remove` an undefaulted property that `required` does not name | **200**, the key absent on read-back, with `required: []` and with no key (2026-11-08) |
 | **Update** (`PUT` whole record) omitting the property          | **200, and the stored value is dropped** — `required` does not catch this     |
 | `PATCH remove` the property (still named in `schema.required`) | 403 `REQUIRED`                                                                |
 | `PATCH replace` it with `null`                                 | 400 — rejected as an invalid JSON patch, before policy                        |
 
-**Note (2026-11-06, no new measurement):** every `null` row above was measured
-on a property with a `default` — `bReq` (`--default false`,
-`scripts/experiment-managed-defaults.sh`) and `bravo_user.frIndexedInteger1`
-(`default: 0`). A `null` on an **undefaulted** property is unmeasured. Stock
-`policy.js` adds `not-null` only for a non-null `default`, and its
-`valid-type` accepts `null` when `schema.required` is an array not naming the
-property, so it predicts acceptance there. "The null guard is independent of
-`required`" holds for a defaulted property only. The `PATCH replace … null`
-400 is the exception: it was also seen on an undefaulted has-one relationship
-(below), and the message names the patch parser. Open question: Q18 in
+**Explicit `null`, nested types and optional removes (verified 2026-11-08).**
+The 2026-08-05 `null` rows were all measured on properties with a `default`. A
+probe on 2026-11-08 (orchestrator probe note `probe-pol/note.md`, REST and IDM
+script lanes; read by the rhino-local writer, not re-run) measured the
+undefaulted case on three throwaway types sharing `text: {type: "string"}`,
+`box: {type: "object", properties: {tags: {type: "array", items: {type: "string"}}}}`,
+`rows: {type: "array", items: {type: "object", properties: {inner: {type: "number"}}}}`
+and a readiness sentinel `zready: {type: "boolean", default: true}`, differing
+only in `required`: `[]`, absent, and `["rows"]`. Policy was live before any
+answer counted: a default had landed, and the top-level negative controls were
+refused. Most rows ran in both lanes (the `["rows"]` type and the `box`/`rows`
+negative controls were REST only; the note lists each), and the lanes agreed
+wherever both ran.
+
+- **Only the top-level property's `type` is checked.** `{text: 5}`,
+  `{box: "s"}` and `{rows: "s"}` are 403 `VALID_TYPE` with
+  `{invalidType: <sent>, validTypes: [<declared>]}`. Schemas under `properties`
+  and `items` are stored and **not enforced**: `{box: {tags: [2]}}` and
+  `{rows: [{inner: "bad"}]}` are 201 and read back verbatim. A top-level array
+  whose own items mismatch `items.type` (`{tags: [2]}` with `tags` a top-level
+  `string[]`) was **not** tested.
+- **A `null` passes the type check only when `schema.required` exists and does
+  not name the property.** With `required: []`, or `["rows"]` for `text`,
+  `{text: null}` is 201 and reads back `"text": null`. With no `required` key
+  the same body is 403 `VALID_TYPE`, `invalidType "null"`. `{rows: null}` with
+  `rows` required is `VALID_TYPE`, not `REQUIRED`; omitting `rows` is
+  `REQUIRED`. So an absent `required` key is not "everything required" — an
+  omitted property is still accepted — it only changes whether `null` passes.
+  A tool that normalises a missing `required` key to `[]` accepts nulls the
+  tenant refuses.
+- **`NOT_NULL` was seen only on a defaulted property.** `{zready: null}` is
+  `NOT_NULL` alone with `required: []`, and `NOT_NULL` then a separate
+  `VALID_TYPE` (`invalidType "null"`, `validTypes ["boolean"]`) entry with no
+  `required` key. A default-less string never gets `NOT_NULL`. Whether
+  `NOT_NULL` keys on the `default` or on the boolean type was not separated.
+- **`PATCH remove` of an undefaulted property `required` does not name** is 200
+  under both `required` shapes, and the key is then absent, not `null`.
+- **Read-back shows only what was stored.** On these custom types a record's
+  read with `_fields=*` and its create response carried only the properties
+  written or defaulted: no `null` for an unset string, no `[]` for an unset
+  array. That differs from `alpha_user`'s materialized read (below).
+- **Surfaces.** REST: the 403 body
+  `{code: 403, reason: "Forbidden", message: "Policy validation failed", detail: {result: false, failedPolicyRequirements: [...]}}`,
+  one entry per failing requirement, each `{policyRequirements: [{params?, policyRequirement}], property}`.
+  IDM script (`openidm.create`): a catchable `JavaException`; `e.message` is
+  `org.forgerock.json.resource.ForbiddenException: Policy validation failed`,
+  `e.javaException.getCode()` is 403, and `getDetail()` holds the same
+  `failedPolicyRequirements`.
+
+Not measured: `PATCH replace` with `null` beyond the existing 400 rows, a
+whole-record `PUT` with `null`, the next-gen journey `openidm` lane for these
+cases, and `NOT_NULL`'s trigger. Open remainder: Q18 in
 `99-quirks-and-open-questions.md`.
 
 Three consequences worth carrying:
@@ -1820,6 +1866,24 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-11-08 — explicit `null`, nested types and optional remove
+  (orchestrator probe note `probe-pol/note.md` with its driver, scripts and
+  redacted log; sandbox tenant, REST and IDM-script lanes; read by the
+  rhino-local writer, not re-run): three throwaway types `zzemu_pol`
+  (`required: []`), `zzemu_pol2` (no `required`) and `zzemu_pol3`
+  (`required: ["rows"]`, REST only), appended by one confirmed
+  `PUT /openidm/config/managed` each and restored to the byte-equal backup
+  afterwards. Calls: `POST /openidm/managed/<t>?_action=create`,
+  `PATCH /openidm/managed/<t>/<id>`, `GET …/<id>?_fields=*`, and
+  `POST /openidm/script?_action=eval` running `openidm.create/patch/read`.
+  Results: top-level mismatches 403 `VALID_TYPE`; nested `properties`/`items`
+  mismatches 201 stored verbatim; `{text: null}` 201 stored `null` with a
+  `required` array not naming it, 403 `VALID_TYPE` with no `required` key;
+  `{rows: null}` with `rows` required 403 `VALID_TYPE`; defaulted boolean null
+  `NOT_NULL` (+ `VALID_TYPE` with no key); `PATCH remove` of an optional
+  undefaulted property 200, key absent. Q1–Q4 on `zzemu_pol` repeated two
+  minutes later with identical results. All 24 records deleted, each confirmed
+  by a 404.
 - Date: 2026-11-06 — E19 second live probe (orchestrator probe note 2 and
   its captures `compare.out`, `am-errshape.out`; read by the fix-round writer,
   not re-run): three throwaway `alpha_user` records (`zzemu-e19b-` prefix),
