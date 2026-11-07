@@ -76,9 +76,11 @@ export function project(object: Document, selectors: string[], evidence: Evidenc
  * policy (docs/api/10-managed-objects.md: measured on a defaulted boolean and on an undefaulted has-one
  * relationship, so the rule is the patch parser's, not the property's). Only the status and that
  * phrase are measured; the rest of the message is local. `add` with `null` is unmeasured and faults.
- * Checked over every operation before any is applied, as a parse-time refusal would be. (A type the
- * capability gate faults, such as one with a relationship, can hold no record here, so its PATCH is a
- * 404 before this point; the measured relationship case cannot be reached in the emulator.)
+ * Checked over every operation before any is applied, as a parse-time refusal would be, and called
+ * by the managed dispatcher before the record lookup, the revision check, read hooks and the
+ * capability gate: CREST parses a request body before routing it (structural over REST, assumed for
+ * an IDM script's call). So the refusal also answers for an absent record, a stale revision, and a
+ * type the capability gate faults, which is where the measured has-one relationship case lives.
  */
 export function refuseNullPatch(operations: JsonValue | undefined, evidence: Evidence): void {
   if (!Array.isArray(operations)) return;
@@ -98,7 +100,6 @@ export function refuseNullPatch(operations: JsonValue | undefined, evidence: Evi
 
 export function applyPatch(object: Document, operations: JsonValue | undefined, evidence: Evidence): Document {
   if (!Array.isArray(operations)) throw invalidInput("Expecting a list of patch operations");
-  refuseNullPatch(operations, evidence);
   const result = structuredClone(object);
   for (const raw of operations) {
     const op = document(raw);

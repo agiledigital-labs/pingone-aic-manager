@@ -14,13 +14,16 @@
  *   part of the rule. The detail's single-requirement shape is the stock reading (no `valid-type`
  *   entry when `schema.required` is an array not naming the property), consistent with doc 10's
  *   "+ `VALID_TYPE` when the property is also required".
- * - **Faulted:** every other null on a defaulted property (`idm-policy/not-null`), a null on an
+ * - **Faulted:** a PATCH removing a property that declares a `default` (`idm-policy/required`:
+ *   stock adds an implicit `required` for any default; the measured 403 had `schema.required` name
+ *   the property too), every other null on a defaulted property (`idm-policy/not-null`), a null on an
  *   undefaulted property when the schema has no `required` array, a value whose JSON type is not
  *   the declared `type`, a nested declared property of the wrong type, or a value for an untyped
  *   property (`idm-policy/valid-type`), and an array item of the wrong `items.type`
  *   (`idm-policy/valid-array-items`). None of these was measured on AIC.
  * - **Assumed:** everything else, including a null on an undefaulted optional property when the
- *   schema has a `required` array, which stock `policy.js`'s `validatePropertyType` accepts.
+ *   schema has a `required` array, which stock `policy.js`'s `validatePropertyType` accepts, and
+ *   removing an undefaulted optional property, which no stock policy refuses (unmeasured on AIC).
  *
  * Pure: the caller decides what an outcome does to the request.
  */
@@ -30,7 +33,7 @@ import { isDocument } from "./document.ts";
 import { pointerParts } from "./filter.ts";
 import type { Document, ManagedType, PropertyConfig } from "./types.ts";
 
-export type PolicyFaultId = "idm-policy/not-null" | "idm-policy/valid-type" | "idm-policy/valid-array-items";
+export type PolicyFaultId = "idm-policy/not-null" | "idm-policy/valid-type" | "idm-policy/valid-array-items" | "idm-policy/required";
 
 export type ImplicitPolicyVerdict =
   | { readonly kind: "assumed" }
@@ -116,8 +119,20 @@ export function implicitPolicy(type: ManagedType, object: Document, write: Polic
   const nulls: string[] = [];
   for (const name of written(type, object, write)) {
     const config = type.schema.properties[name] ?? {};
-    const value = object[name] as JsonValue;
     const path = `${type.name}.${name}`;
+    if (!Object.hasOwn(object, name)) {
+      // Absent after the write: a PATCH removed it. Stock valid-type accepts an absent value, so no
+      // type check applies. A required-named property never gets here (the capability gate faults
+      // it). An undefaulted optional one has no policy that could refuse it: assumed.
+      if (Object.hasOwn(config, "default")) {
+        return { kind: "fault", id: "idm-policy/required", reason: `${path} declares a default and the write removes it. ` +
+          "Stock policy.js adds an implicit required for any default, null included; AIC's 403 REQUIRED for a PATCH remove " +
+          "is measured only with the property also named in schema.required (docs/api/10-managed-objects.md), so what AIC " +
+          "answers here is unmeasured" };
+      }
+      continue;
+    }
+    const value = object[name] as JsonValue;
     if (value === null) {
       const defaulted = Object.hasOwn(config, "default") && config.default !== null;
       if (typeof config.type !== "string") {

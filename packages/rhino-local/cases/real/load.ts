@@ -115,6 +115,57 @@ export interface RealEntry {
   gap?: KnownGap;
   /** The environment the case runs against, when it depends on which managed types exist. */
   profile?: EnvProfile;
+  /** Hooks the case's live run exercised; see {@link LiveHooks}. */
+  liveHooks?: LiveHooks;
+}
+
+/**
+ * Object hooks of the case's own profile that its **live run** ran, so the compared payload keys
+ * already are the measurement of what those hooks did to the script's writes. The corpus runner
+ * subtracts them when it computes this case's lane write faults ({@link profileForRun}); the
+ * profile itself stays true, and every hook not named here still faults.
+ *
+ * Corpus-only by construction: it lives on `RealEntry`, never on `Given` or `RunCaseOptions`, so a
+ * client case cannot reach it. {@link realCase} refuses it unless every named hook is in the case's
+ * own profile (it cannot exempt a hook the tenant lacks) and the case carries a live payload (a
+ * HiddenValueCallback the probe emitted, and no `blocked`). It exempts hooks only, never a policy.
+ */
+export interface LiveHooks {
+  /** The live probe run the payload comes from, `YYYY-MM-DD`. */
+  readonly probed: string;
+  /** Managed type name → object hook names, each declared in the profile's `hooks` for that type. */
+  readonly hooks: Readonly<Record<string, readonly string[]>>;
+}
+
+/** Refuse a {@link LiveHooks} the case cannot back with its own profile and live payload. */
+function checkLiveHooks(name: string, live: LiveHooks, profile: EnvProfile | undefined, expect: Expect, blocked: BlockedBy | undefined): void {
+  const refuse = (why: string): never => {
+    throw new Error(`rhino-local: case ${JSON.stringify(name)}: liveHooks ${why}`);
+  };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(live.probed)) refuse(`names no probe date (got ${JSON.stringify(live.probed)})`);
+  const payload = (expect.callbacks ?? []).find((callback) => callback.type === "HiddenValueCallback");
+  if (blocked !== undefined || typeof payload?.value !== "string") {
+    refuse("needs a live payload: a HiddenValueCallback the probe emitted, on a case that is not blocked");
+  }
+  if (profile === undefined) refuse("needs the case's own profile");
+  for (const [type, hooks] of Object.entries(live.hooks)) {
+    const declared = profile!.objects[type]?.hooks ?? [];
+    for (const hook of hooks) {
+      if (!declared.includes(hook)) refuse(`names ${type}.${hook}, which the case's profile does not declare`);
+    }
+  }
+}
+
+/**
+ * The profile the corpus runs a case with: its own, minus the object hooks its live run exercised
+ * ({@link LiveHooks}). Only the lane's hook faults read `hooks`, so nothing else changes.
+ */
+export function profileForRun(entry: RealEntry): EnvProfile | undefined {
+  const profile = entry.profile;
+  if (profile === undefined || entry.liveHooks === undefined) return profile;
+  const live = entry.liveHooks.hooks;
+  return { ...profile, objects: Object.fromEntries(Object.entries(profile.objects).map(([type, object]) => [type,
+    live[type] === undefined ? object : { ...object, hooks: (object.hooks ?? []).filter((hook) => !live[type]!.includes(hook)) }])) };
 }
 
 export function realCase(input: {
@@ -128,6 +179,7 @@ export function realCase(input: {
   rewrites?: readonly Rewrite[];
   gap?: KnownGap;
   profile?: EnvProfile;
+  liveHooks?: LiveHooks;
 }): RealEntry {
   const init: {
     name: string;
@@ -162,6 +214,10 @@ export function realCase(input: {
   }
   if (input.profile !== undefined) {
     entry.profile = input.profile;
+  }
+  if (input.liveHooks !== undefined) {
+    checkLiveHooks(input.name, input.liveHooks, input.profile, input.expect, input.blocked);
+    entry.liveHooks = input.liveHooks;
   }
   return entry;
 }

@@ -64,15 +64,21 @@ describe("the profile records hook names, never bodies", () => {
 
 describe("staleness is the profile's format version (P3-5)", () => {
   const quiet: ObjectSchema = { name: "quiet", properties: { n: { type: "number", default: 0 } }, required: [], hooks: [] };
-  it.each([["absent", undefined], ["1", 1]])("version %s faults every write on every type, with a hand-written remedy", (_name, version) => {
-    const profile: EnvProfile = { ...META, ...(version === undefined ? {} : { profileVersion: version }), sources: [], objects: { quiet } };
+  // P3-4 (fix round 2): the discriminating rows are the strings "2" and "two" and the fraction 2.5,
+  // which a numeric `< PROFILE_VERSION` comparison read as current.
+  it.each([["absent", undefined], ["1", 1], ['"2"', "2"], ['"two"', "two"], ["2.5", 2.5], ["null", null]])("version %s faults every write on every type, with a hand-written remedy", (_name, version) => {
+    const profile = { ...META, ...(version === undefined ? {} : { profileVersion: version }), sources: [], objects: { quiet } } as unknown as EnvProfile;
     const table = managedWriteFaults(profile);
     expect(Object.keys(table["managed/quiet"] ?? {})).toEqual(["create", "update", "patch", "delete"]);
     const message = table["managed/quiet"]?.create?.message ?? "";
     expect(table["managed/quiet"]?.create?.id).toBe("openidm-managed-profile-stale");
     expect(message).toContain("aic-script-tester-pull-profile");
     expect(message).toContain(`"profileVersion": ${PROFILE_VERSION}`);
+    expect(message).toContain("noRequiredArray");
     expect(managedDefaults(profile)).toEqual({});
+  });
+  it.each([["2", 2], ["3", 3]])("integer version %s is current", (_name, version) => {
+    expect(managedWriteFaults({ ...META, profileVersion: version, sources: [], objects: { quiet } })).toEqual({});
   });
   // Discriminating: the old sniff read an absent `hooks` as stale; a current profile that omits it declares none.
   it("a current profile whose type omits hooks declares none", () => {
@@ -88,7 +94,14 @@ describe("managedDefaults gives the lane plain lists (P2-2)", () => {
   const rule = (extra: Partial<ObjectSchema>) =>
     managedDefaults({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: object(extra) } })["managed/gizmo"];
   it("non-null defaults are applied and refused as null; a null default is neither", () => {
-    expect(rule({})).toEqual({ defaults: { n: 0, b: false }, notNull: ["n", "b"], emulable: ["n", "b"] });
+    expect(rule({})).toEqual({ defaults: { n: 0, b: false }, notNull: ["n", "b"], emulable: ["n", "b"], defaulted: ["n", "b", "cleared"] });
+  });
+  // P3-1 (fix round 2): a null default is still a default to stock policy.js, so a type whose only
+  // default is null still gets a rule; the lane faults a PATCH remove of it.
+  it("a type whose only default is null still lists it as defaulted", () => {
+    const profile: EnvProfile = { ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
+      properties: { cleared: { type: "string", default: null }, plain: { type: "string" } } } } };
+    expect(managedDefaults(profile)["managed/gizmo"]).toEqual({ defaults: {}, notNull: [], emulable: [], defaulted: ["cleared"] });
   });
   it("a required-named property is not emulable (AIC adds VALID_TYPE)", () => {
     expect(rule({ required: ["b"] })?.emulable).toEqual(["n"]);
