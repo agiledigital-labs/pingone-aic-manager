@@ -6,22 +6,36 @@ import { js } from "./fixtures.ts";
 let runner: RhinoRunner;
 beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
 afterAll(async () => { await runner?.close(); });
+/** The stable id names the offending type.property (sol-r1c); the cause keeps the declaration path. */
+const INVALID_FLAG = "openidm-managed-invalid-default/widget.flag: invalid default: widget/flag";
 function make(schema: ManagedType["schema"]) {
   return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema }] }, endpoints: { healthy: js("({ok:true});") } }), runner);
 }
 it.each([
   ["boolean", "nope"], ["string", 42], ["number", false], ["array", "not an array"], ["object", []],
 ] as const)("A2 #2 invalid %s default refuses before a write can succeed", async (type, value) => {
-  expectEmulationFailure("invalid default: widget/flag");
+  expectEmulationFailure(INVALID_FLAG);
   const emu = make({ properties: { flag: { type, default: value } } });
   const result = await runner.eval({ engine: "idm", source: "try {openidm.create('managed/widget','a',{})} catch(e) {} 42;" }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
-  expect(result.emulation?.missing).toContain("invalid default: widget/flag");
+  expect(result.emulation?.missing).toContain(INVALID_FLAG);
 });
 it("A2 #2 invalid defaults are checked even for absent-record reads", async () => {
-  expectEmulationFailure("invalid default: widget/flag");
+  expectEmulationFailure(INVALID_FLAG);
   const result = await runner.eval({ engine: "idm", source: "openidm.read('managed/widget/absent')" }, { onCall: make({ properties: { flag: { type: "boolean", default: "nope" } } }).onCall });
   expect(result.outcome).not.toBe("ok");
+});
+// sol-r1c: measured 2026-11-08 (zzemu_def probe) — with an invalid default anywhere, IDM keeps serving
+// its last good config/managed for every type, so a valid sibling's answer is not trustworthy either.
+it("A2 #2 an invalid default refuses a valid sibling type's requests too", async () => {
+  expectEmulationFailure(INVALID_FLAG);
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [
+    { name: "widget", schema: { properties: { flag: { type: "boolean", default: "nope" } } } },
+    { name: "fine", schema: { required: [], properties: { text: { type: "string" } } } },
+  ] } }), runner);
+  const result = await emu.request({ method: "POST", path: "managed/fine", query: { _action: "create" }, body: { text: "a" } });
+  expect(result.status).not.toBe(201);
+  expect(result.emulation?.missing).toEqual([INVALID_FLAG]);
 });
 const bad: Array<[string, unknown, string]> = [
   ["tuple encryption", { type: "array", items: [{ type: "string", encryption: {} }] }, "schema declaration shape: widget/box/items (expected object)"],

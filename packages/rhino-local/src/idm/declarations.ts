@@ -1,5 +1,5 @@
 /** Configuration-wide shape/location checks precede routing and storage work. */
-import { defaultMatches } from "../declared-default.ts";
+import { judgeDefault } from "../declared-default.ts";
 import type { IdmConfig } from "./config.ts";
 import { isDocument } from "./document.ts";
 import { missing } from "./errors.ts";
@@ -37,7 +37,11 @@ export function validateDeclarations(config: IdmConfig, evidence: Evidence): voi
     if (Object.hasOwn(declaration, "items")) visit(object(declaration.items, `${path}/items`), `${path}/items`, depth + 1);
     if (Object.hasOwn(declaration, "default")) {
       if (depth !== 1) missing(evidence, `nested property behavior default: ${path}`);
-      if (!defaultMatches(declaration.default, declaration)) missing(evidence, `invalid default: ${path}`);
+      // A default AIC refuses (or might) means the tenant keeps serving an earlier config/managed for
+      // every type (measured 2026-11-08, docs/api/10), so no answer this config gives is trustworthy:
+      // refused here, before any request, like every other declaration the emulator cannot serve.
+      const verdict = judgeDefault(declaration.default, declaration);
+      if (verdict !== "valid") missing(evidence, `${verdict} default: ${path}`, `openidm-managed-${verdict}-default/${path.replace("/", ".")}`);
     }
   };
   for (const type of config.managed.objects) {

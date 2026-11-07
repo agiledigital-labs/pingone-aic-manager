@@ -13,13 +13,14 @@
  * re-pulled (or, if hand-written, brought up to the version by hand).
  *
  * Implicit schema policy is the one policy the lane does answer (P2-2, sol-r1b): AIC is measured to
- * apply a `default` on a create that omits the property, to refuse an explicit `null` on one, to
+ * apply a `default` on a create that omits the property (`null` included), to refuse an explicit
+ * `null` on a property with a non-null one, to
  * check a top-level property's `type` and nothing nested, and to accept a null on an undefaulted
  * property only when the schema's `required` array exists and omits it (docs/api/10).
  * {@link managedPolicy} gives the lane those per type as plain lists.
  */
 import type { JsonValue } from "../case/types.ts";
-import { defaultMatches } from "../declared-default.ts";
+import { judgeDefault } from "../declared-default.ts";
 import { type EnvProfile, type ObjectSchema, PROFILE_VERSION, type PropertySchema } from "./types.ts";
 
 export type WriteMethod = "create" | "update" | "patch" | "delete";
@@ -157,20 +158,24 @@ const UNMEASURED_TYPES = new Set(["number", "integer", "boolean"]);
  * `policy.js` checks only the top-level property's `type`: schemas under `items`/`properties` are
  * stored and not enforced (measured 2026-11-08, docs/api/10). Every field is about top-level
  * properties:
- * - `defaults`: every declared non-null `default`, to fill in on a create that omits the property
- *   (measured for scalars and arrays). A `null` default is not applied. The lane never reaches one:
- *   `null` matches no declared type, so {@link managedUnavailable} faults every call on such a type
- *   first. The entries stay so this table does not depend on that ordering.
+ * - `defaults`: every declared `default`, to fill in on a create that omits the property (measured
+ *   for scalars, arrays, objects and, 2026-11-08, `default: null`, which is stored as `null`). A
+ *   null default on a type with no `required` array is unmeasured: that property is also in
+ *   `nullUnmeasured`, and the lane faults rather than apply it.
  * - `notNull`: the properties with a non-null default, on which an explicit `null` is `NOT_NULL`.
+ *   It keys on the non-null default, not the type (measured 2026-11-08: an object defaulting to
+ *   `{x:1}` gets it, a string with `default: null` does not).
  * - `nullRefused`: the properties an explicit `null` on a create of a new record is refused on:
  *   `notNull`, plus every typed property when the schema has no `required` array (`VALID_TYPE`,
  *   `invalidType "null"`). Measured. Any other typed property's null is accepted and stored, because
  *   a required-named property never gets here (`writeFault` faults the type's writes).
- * - `nullUnmeasured`: a nullable (`["string","null"]`) property, whose null nothing measured, and,
- *   when the schema has no `required` array, a property of a type the rule does not know
- *   (`relationship`, `any`). With a `required` array those keep writing as before (gaps doc).
+ * - `nullUnmeasured`: a nullable (`["string","null"]`) property, whose null is measured only with a
+ *   `default: null` and a `required` array, and, when the schema has no `required` array, a property
+ *   that declares `default: null` or is of a type the rule does not know (`relationship`, `any`).
+ *   With a `required` array the unknown types keep writing as before (gaps doc).
  * - `checked`: property → declared type, for `string`/`object`/`array`, where a mismatching
- *   top-level value on a create of a new record is a measured `403 VALID_TYPE`.
+ *   top-level value on a create of a new record is a measured `403 VALID_TYPE`. A nullable property
+ *   is checked only where its null default was measured (its `{text: 5}` is the same 403).
  * - `unmeasured`: property → declared type, for `number`/`integer`/`boolean`; a mismatch faults.
  * - `itemTypes`: array property → its `items.type`. An item of another type faults: nested `items`
  *   were measured unenforced, a top-level array's own items were not tested.
@@ -203,19 +208,22 @@ export function managedPolicy(profile: EnvProfile): Record<string, PolicyRule> {
     const checked: Record<string, string> = {};
     const unmeasured: Record<string, string> = {};
     const itemTypes: Record<string, string> = {};
+    const notNull: string[] = [];
     for (const [name, property] of Object.entries(object.properties)) {
       if (property.default !== undefined) {
         defaulted.push(name);
-        if (property.default !== null) defaults[name] = property.default;
+        defaults[name] = property.default;
+        if (property.default !== null) notNull.push(name);
       }
       const known = MEASURED_TYPES.has(property.type) || UNMEASURED_TYPES.has(property.type);
-      if (property.nullable || (object.noRequiredArray && !known)) nullUnmeasured.push(name);
-      else if (MEASURED_TYPES.has(property.type)) checked[name] = property.type;
+      const nullDefault = property.default === null;
+      const nullMeasured = nullDefault && !object.noRequiredArray;
+      if ((property.nullable && !nullMeasured) || (object.noRequiredArray && (!known || nullDefault))) nullUnmeasured.push(name);
+      if (MEASURED_TYPES.has(property.type) && (!property.nullable || nullMeasured)) checked[name] = property.type;
       if (UNMEASURED_TYPES.has(property.type)) unmeasured[name] = property.type;
       const item = property.items?.type;
       if (property.type === "array" && item !== undefined && (MEASURED_TYPES.has(item) || UNMEASURED_TYPES.has(item))) itemTypes[name] = item;
     }
-    const notNull = Object.keys(defaults);
     const typed = Object.keys(object.properties).filter((name) => !nullUnmeasured.includes(name));
     const nullRefused = object.noRequiredArray ? typed : notNull.filter((name) => !nullUnmeasured.includes(name));
     out[`managed/${object.name}`] = { defaults, notNull, nullRefused, nullUnmeasured, checked, unmeasured, itemTypes, defaulted };
@@ -223,44 +231,49 @@ export function managedPolicy(profile: EnvProfile): Record<string, PolicyRule> {
   return out;
 }
 
-/**
- * Why a property's declaration makes its type unavailable, if it does (sol-r1 P1-1): a `default`
- * that does not match the declared type ({@link defaultMatches}, the IDM emulator's rule), or a
- * `default` nested inside `items`, which the emulator refuses too and nothing measured.
- */
-function declarationProblem(name: string, property: PropertySchema, depth = 0): string | undefined {
+/** Why a property's declaration is one AIC refuses or might, if it is (judged by {@link judgeDefault}). */
+function declarationProblem(name: string, property: PropertySchema, depth = 0): { kind: "invalid" | "unmeasured"; why: string } | undefined {
   if (property.default !== undefined) {
-    if (depth > 0) return `${name} declares a nested default, which nothing measured`;
-    if (!defaultMatches(property.default, property)) {
-      return `${name} declares default ${JSON.stringify(property.default)}, which does not match its type ` +
-        `${JSON.stringify(property.type)}${property.nullable ? " (a nullable type is judged by its non-null type)" : ""}`;
+    if (depth > 0) return { kind: "unmeasured", why: `${name} declares a default nested inside items, which nothing measured` };
+    const verdict = judgeDefault(property.default, property);
+    if (verdict !== "valid") {
+      const type = `${JSON.stringify(property.type)}${property.nullable ? " (nullable)" : ""}`;
+      return { kind: verdict, why: verdict === "invalid"
+        ? `${name} declares default ${JSON.stringify(property.default)}, which does not match its type ${type}`
+        : `${name} declares default ${JSON.stringify(property.default)} on type ${type}, which no probe covered` };
     }
   }
   return property.items ? declarationProblem(`${name}[]`, property.items, depth + 1) : undefined;
 }
 
 /**
- * The lane's unavailable-type table: `managed/<type>` → the fault every `openidm` call on it raises.
+ * The fault every `openidm` call on a `managed/…` resource raises when any type of the profile
+ * declares an invalid (or unjudged) default, or `undefined` when none does. One fault for the whole
+ * lane, naming the first offending `type.property`.
  *
- * Measured (docs/api/10): a config with `{"type": "boolean", "default": "nope"}` is accepted, and
- * the type then answers 404 to every `/openidm/managed/<type>` call, indefinitely. What a script's
- * `openidm.read`/`create`/… returns for such a type is not measured (a type the config does not
- * declare at all reads as `null`, but that is a different tenant state), so the lane faults every
- * call rather than emulate an answer. Never repaired: the profile is used as written. Judged on any
- * profile version, because a default is in the profile or it is not.
+ * Measured 2026-11-08 (zzemu_def probe, docs/api/10): the config `PUT` with an invalid default is
+ * 200 and reads back, but IDM keeps running the last config/managed it compiled. The bad type stays
+ * 404, so do new types added beside it, a removed type keeps serving, and an existing type keeps its
+ * old schema, until the bad default is gone, when everything applies at once. A profile records the
+ * stored document, not that earlier compile, so no answer the lane could give for any managed type
+ * is trustworthy: not the 404 for the bad type (it would imply its siblings are live as written),
+ * and not a sibling's write. Never repaired: the profile is used as written. Judged on any profile
+ * version, because a default is in the profile or it is not.
  */
-export function managedUnavailable(profile: EnvProfile): Record<string, WriteFault> {
-  const out: Record<string, WriteFault> = {};
+export function managedInvalidDefault(profile: EnvProfile): WriteFault | undefined {
   for (const object of byKey(profile)) {
     for (const [name, property] of Object.entries(object.properties)) {
       const problem = declarationProblem(name, property);
       if (problem === undefined) continue;
-      out[`managed/${object.name}`] = { id: `openidm-managed-invalid-default/${object.name}.${name}`,
-        message: `managed/${object.name}: ${problem}. On AIC a type-mismatched default leaves the type unavailable ` +
-          "(every record call 404, measured for a boolean declaring default \"nope\", docs/api/10), and what an openidm " +
-          "call answers then is unmeasured. Fix the default on the tenant and re-pull the profile" };
-      break;
+      return { id: `openidm-managed-${problem.kind}-default/${object.name}.${name}`,
+        message: `managed/${object.name}: ${problem.why}. ` + (problem.kind === "invalid"
+          ? "On AIC a config/managed holding an invalid default is stored but never applied: IDM keeps serving its last " +
+            "good compile for every managed type (measured 2026-11-08, docs/api/10)"
+          : "If AIC refuses it, IDM keeps serving its last good config/managed for every managed type (measured " +
+            "2026-11-08 for invalid defaults, docs/api/10)") +
+          ", which this profile does not describe, so no managed call can be answered locally. Fix the default on the " +
+          "tenant and re-pull the profile" };
     }
   }
-  return out;
+  return undefined;
 }

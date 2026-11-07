@@ -46,16 +46,24 @@ it("A3 #3 stale order is assumed and a supported retrieval runs before 412", asy
   expect(result.status).toBe(412);
   expect(result.provenance).toContainEqual({ kind: "assumed", behavior: "update pre-read and retrieval hooks run before revision validation, including stale revisions" });
 });
+// sol-r1c: measured 2026-11-08 (zzemu_def probe D4) — an object default is checked only for being an
+// object; its declared properties are not checked, so `{x: 1}` against `x: string` is valid and stored
+// as given. These three were refused as invalid before; each is now applied verbatim.
 it.each([
   { flag: "nope" }, { nested: { flag: "nope" } }, { list: [{ flag: "nope" }] },
-])("A3 #4 recursive default mismatch is missing: %j", async (value) => {
-  expectEmulationFailure("invalid default: widget/box");
-  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: { box: { type: "object", properties: {
+])("A3 #4 a nested mismatch in an object default is stored as given: %j", async (value) => {
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { required: [], properties: { box: { type: "object", properties: {
     flag: { type: "boolean" }, nested: { type: "object", properties: { flag: { type: "boolean" } } }, list: { type: "array", items: { type: "object", properties: { flag: { type: "boolean" } } } },
   }, default: value } } } }] } }), runner);
+  const result = await runner.eval({ engine: "idm", source: "openidm.create('managed/widget','a',{}).box" }, { onCall: emu.onCall });
+  expect(result).toMatchObject({ outcome: "ok", value });
+});
+it("A3 #4 an object default that is not an object is still invalid", async () => {
+  expectEmulationFailure("openidm-managed-invalid-default/widget.box: invalid default: widget/box");
+  const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "widget", schema: { properties: { box: { type: "object", default: "s" } } } }] } }), runner);
   const result = await runner.eval({ engine: "idm", source: "try {openidm.create('managed/widget','a',{})} catch(e) {} 42;" }, { onCall: emu.onCall });
   expect(result.outcome).not.toBe("ok");
-  expect(result.emulation?.missing).toContain("invalid default: widget/box");
+  expect(result.emulation?.missing).toContain("openidm-managed-invalid-default/widget.box: invalid default: widget/box");
 });
 it("A3 #4 compatible recursive object defaults remain supported assumptions", async () => {
   const value = { nested: { flag: false }, list: [{ flag: true }] };
