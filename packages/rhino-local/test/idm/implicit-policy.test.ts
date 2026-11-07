@@ -20,6 +20,12 @@ const gadget = (required?: string[]): ManagedType => ({ name: "gadget", schema: 
   },
 } });
 const creating: PolicyWrite = { creating: true };
+// sol-r2 (zzemu_nd, 2026-11-08): an integer beside a number, and null defaults on non-string types.
+const widget = (required?: string[]): ManagedType => ({ name: "widget", schema: {
+  ...(required ? { required } : {}),
+  properties: { i: { type: "integer" }, n: { type: "number" }, list: { type: "array", items: { type: "string" }, default: null },
+    flag: { type: "boolean", default: null }, text: { type: "string", default: null } },
+} });
 
 const nn = (property: string) => ({ policyRequirements: [{ policyRequirement: "NOT_NULL" }], property });
 const vt = (property: string, invalidType: string, declared: string) =>
@@ -39,8 +45,19 @@ describe("implicitPolicy decides from the real schema", () => {
     ["defaulted null, no required array", gadget(), { flag: null }, creating, "refuse", [nn("flag"), vt("flag", "null", "boolean")]],
     // sol-r1c, zzemu_def probe D1: NOT_NULL keys on a non-null default, so default: null gives none.
     ["default: null gives no NOT_NULL (measured)", gadget([]), { nothing: null }, creating, "pass"],
-    // Unmeasured: the null-default probe used required: [] throughout.
-    ["default: null with no required array", gadget(), { nothing: null }, creating, "fault", "idm-policy/valid-type"],
+    // zzemu_nd N6 (measured): with no required key a string's sent null is VALID_TYPE, its applied one stored.
+    ["default: null sent with no required array", gadget(), { nothing: null }, creating, "refuse", [vt("nothing", "null", "string")]],
+    ["default: null applied with no required array", gadget(), { nothing: null }, { creating: true, applied: ["nothing"] }, "pass"],
+    // Unmeasured: N6 covered a string only.
+    ["a boolean's default: null with no required array", widget(), { flag: null }, { creating: true, applied: ["flag"] }, "fault", "idm-policy/valid-type"],
+    ["a boolean's default: null, required: [] (N1)", widget([]), { flag: null }, creating, "pass"],
+    // An array's null default is [] on create (the emulator coerces it before policy); elsewhere a null faults.
+    ["an array's null default over an existing record", widget([]), { list: null }, { creating: false }, "fault", "idm-policy/valid-type"],
+    // Discriminating for sol-r2 P2-2: every JSON number is "number" to IDM, so 3 is refused on an integer.
+    ["3 on an integer (N3)", widget([]), { i: 3 }, creating, "refuse", [vt("i", "number", "integer")]],
+    ["3.5 on an integer (N3)", widget([]), { i: 3.5 }, creating, "refuse", [vt("i", "number", "integer")]],
+    ["3 on a number (N2 control)", widget([]), { n: 3 }, creating, "pass"],
+    ["null on an integer (N3)", widget([]), { i: null }, creating, "pass"],
     ["defaulted null over an existing record", gadget([]), { count: null }, { creating: false }, "fault", "idm-policy/not-null"],
     ["undefaulted null over an existing record, no required array", gadget(), { text: null }, { creating: false }, "fault", "idm-policy/valid-type"],
     ["undefaulted null over an existing record, required: []", gadget([]), { text: null }, { creating: false }, "pass"],
@@ -51,9 +68,10 @@ describe("implicitPolicy decides from the real schema", () => {
     ["string sent as number", gadget([]), { text: 5 }, creating, "refuse", [vt("text", "number", "string")]],
     ["array sent as object", gadget([]), { tags: {} }, creating, "refuse", [vt("tags", "object", "array")]],
     ["object sent as string", gadget([]), { box: "s" }, creating, "refuse", [vt("box", "string", "object")]],
-    // Unmeasured declared types and unmeasured writes still fault.
-    ["number sent as string", gadget([]), { count: "7" }, creating, "fault", "idm-policy/valid-type"],
-    ["boolean sent as string", gadget([]), { flag: "x" }, creating, "fault", "idm-policy/valid-type"],
+    // Measured for number and boolean too (zzemu_nd N1/N2).
+    ["number sent as string", gadget([]), { count: "7" }, creating, "refuse", [vt("count", "string", "number")]],
+    ["boolean sent as string", gadget([]), { flag: "x" }, creating, "refuse", [vt("flag", "string", "boolean")]],
+    // Unmeasured writes still fault.
     ["mismatch over an existing record", gadget([]), { text: 5 }, { creating: false }, "fault", "idm-policy/valid-type"],
     ["untyped property written", gadget([]), { loose: "x" }, creating, "fault", "idm-policy/valid-type"],
     // P2-1, measured: nested schemas are not enforced, through objects and through array items.
@@ -246,13 +264,37 @@ describe("the emulator applies it to writes without a policy evaluator", () => {
     expect(JSON.stringify(result.provenance)).not.toContain("were checked");
     expect((await emu.request({ method: "GET", path: "managed/gadget/n4" })).body).toMatchObject(body);
   });
-  it("a mismatch against an unmeasured declared type is the harness fault idm-policy/valid-type", async () => {
+  it("a mismatch over an existing record is the harness fault idm-policy/valid-type", async () => {
     expectHarnessFault("idm-policy/valid-type");
     const emu = make(gadget([]));
-    const result = await emu.request({ ...createPath, body: { _id: "g5", count: "7" } });
+    await emu.request({ ...createPath, body: { _id: "g5", text: "a" } });
+    const result = await emu.request({ method: "PUT", path: "managed/gadget/g5", body: { text: 5 } });
     expect(result.status).toBe(501);
     expect(JSON.stringify(result.body)).toContain("idm-policy/valid-type");
-    expect((await emu.request({ method: "GET", path: "managed/gadget/g5" })).status).toBe(404);
+    expect((await emu.request({ method: "GET", path: "managed/gadget/g5" })).body).toMatchObject({ text: "a" });
+  });
+
+  // sol-r2 P2-2 (zzemu_nd N3): IDM types every JSON number "number", so an integer refuses 3.
+  it("3 on an integer is the measured 403 VALID_TYPE number, and 3 on a number is stored", async () => {
+    const emu = make(widget([]));
+    const widgetPath = { method: "POST", path: "managed/widget", query: { _action: "create" } } as const;
+    const refused = await emu.request({ ...widgetPath, body: { _id: "w1", i: 3 } });
+    expect(refused.status).toBe(403);
+    expect((refused.body as { detail: unknown }).detail).toEqual({ result: false, failedPolicyRequirements: [vt("i", "number", "integer")] });
+    expect((await emu.request({ method: "GET", path: "managed/widget/w1" })).status).toBe(404);
+    const stored = await emu.request({ ...widgetPath, body: { _id: "w2", n: 3 } });
+    expect(stored.status).toBe(201);
+  });
+
+  // zzemu_nd N5/N8: an array's null default, and an explicit null sent to it, store [].
+  it.each([
+    ["omitted", { _id: "a1" }],
+    ["sent as null", { _id: "a1", list: null }],
+  ])("an array with a null default stores [] when %s", async (_name, body) => {
+    const emu = make(widget([]));
+    const result = await emu.request({ method: "POST", path: "managed/widget", query: { _action: "create" }, body });
+    expect(result.status).toBe(201);
+    expect((await emu.request({ method: "GET", path: "managed/widget/a1" })).body).toMatchObject({ list: [] });
   });
 
   it("an array item mismatch is the harness fault idm-policy/valid-array-items", async () => {
