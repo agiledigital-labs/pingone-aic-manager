@@ -7,7 +7,7 @@ import { runCase } from "../../src/bindings/run.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { normaliseManagedConfig } from "../../src/profile/normalise.ts";
 import { type EnvProfile, type ObjectSchema, PROFILE_VERSION } from "../../src/profile/types.ts";
-import { hooksRun, managedDefaults, managedUnavailable, managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
+import { hooksRun, managedPolicy, managedUnavailable, managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
 import { parseProfile } from "../../src/profile/store.ts";
 import { IdmConfig } from "../../src/idm/config.ts";
 import { validateDeclarations } from "../../src/idm/declarations.ts";
@@ -79,7 +79,7 @@ describe("staleness is the profile's format version (P3-5)", () => {
     expect(message).toContain("aic-script-tester-pull-profile");
     expect(message).toContain(`"profileVersion": ${PROFILE_VERSION}`);
     expect(message).toContain("noRequiredArray");
-    expect(managedDefaults(profile)).toEqual({});
+    expect(managedPolicy(profile)).toEqual({});
   });
   it.each([["2", 2], ["3", 3]])("integer version %s is current", (_name, version) => {
     expect(managedWriteFaults({ ...META, profileVersion: version, sources: [], objects: { quiet } })).toEqual({});
@@ -91,27 +91,35 @@ describe("staleness is the profile's format version (P3-5)", () => {
   });
 });
 
-describe("managedDefaults gives the lane plain lists (P2-2)", () => {
+describe("managedPolicy gives the lane plain lists (P2-2, sol-r1b)", () => {
   const object = (extra: Partial<ObjectSchema>): ObjectSchema => ({ name: "gizmo", required: [], hooks: [], properties: {
     n: { type: "number", default: 0 }, b: { type: "boolean", default: false }, cleared: { type: "string", default: null }, plain: { type: "string" },
+    maybe: { type: "string", nullable: true }, tags: { type: "array", items: { type: "string" } }, box: { type: "object" },
+    owner: { type: "relationship" },
   }, ...extra });
   const rule = (extra: Partial<ObjectSchema>) =>
-    managedDefaults({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: object(extra) } })["managed/gizmo"];
-  it("non-null defaults are applied and refused as null; a null default is neither", () => {
-    expect(rule({})).toEqual({ defaults: { n: 0, b: false }, notNull: ["n", "b"], emulable: ["n", "b"], defaulted: ["n", "b", "cleared"] });
+    managedPolicy({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: object(extra) } })["managed/gizmo"];
+  it("with a required array: only non-null defaults refuse a null; types split measured from unmeasured", () => {
+    expect(rule({})).toEqual({ defaults: { n: 0, b: false }, notNull: ["n", "b"], nullRefused: ["n", "b"], nullUnmeasured: ["maybe"],
+      checked: { cleared: "string", plain: "string", tags: "array", box: "object" }, unmeasured: { n: "number", b: "boolean" },
+      itemTypes: { tags: "string" }, defaulted: ["n", "b", "cleared"] });
   });
-  // P3-1 (fix round 2): a null default is still a default to stock policy.js, so a type whose only
-  // default is null still gets a rule; the lane faults a PATCH remove of it.
-  it("a type whose only default is null still lists it as defaulted", () => {
+  // Discriminating (measured 2026-11-08): the same type with no required key refuses every typed null.
+  it("with no required array: every typed property refuses a null, an unknown type's null is unmeasured", () => {
+    const loose = rule({ noRequiredArray: true });
+    expect(loose?.nullRefused).toEqual(["n", "b", "cleared", "plain", "tags", "box"]);
+    expect(loose?.nullUnmeasured).toEqual(["maybe", "owner"]);
+  });
+  // P3-1 (fix round 2): a null default is still a default to stock policy.js, so the lane faults a
+  // PATCH remove of it.
+  it("a null default is listed as defaulted, and is neither applied nor a NOT_NULL", () => {
     const profile: EnvProfile = { ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
-      properties: { cleared: { type: "string", default: null }, plain: { type: "string" } } } } };
-    expect(managedDefaults(profile)["managed/gizmo"]).toEqual({ defaults: {}, notNull: [], emulable: [], defaulted: ["cleared"] });
+      properties: { cleared: { type: "string", default: null } } } } };
+    expect(managedPolicy(profile)["managed/gizmo"]).toMatchObject({ defaults: {}, notNull: [], nullRefused: [], defaulted: ["cleared"] });
   });
-  it("a required-named property is not emulable (AIC adds VALID_TYPE)", () => {
-    expect(rule({ required: ["b"] })?.emulable).toEqual(["n"]);
-  });
-  it("no required array: nothing is emulable", () => {
-    expect(rule({ noRequiredArray: true })?.emulable).toEqual([]);
+  it("a type with nothing defaulted still gets a rule", () => {
+    expect(managedPolicy({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
+      properties: { plain: { type: "string" } } } } })["managed/gizmo"]?.checked).toEqual({ plain: "string" });
   });
 });
 
@@ -173,6 +181,9 @@ const lane: EnvProfile = { ...META, profileVersion: PROFILE_VERSION, sources: []
     flag: { type: "boolean", default: false }, tags: { type: "array", items: { type: "string" }, default: ["a"] } }, required: [], hooks: [] },
   loose: { name: "loose", noRequiredArray: true, properties: { count: { type: "number", default: 0 } }, required: [], hooks: [] },
   nulldef: { name: "nulldef", properties: { cleared: { type: "string", default: null }, note: { type: "string" } }, required: [], hooks: [] },
+  // sol-r1b: quiet's twin with no required key, and the probe's nested shapes (as a pull normalises them).
+  bare: { name: "bare", noRequiredArray: true, properties: { mail: { type: "string" } }, required: [], hooks: [] },
+  nested: { name: "nested", properties: { box: { type: "object" }, rows: { type: "array", items: { type: "object" } } }, required: [], hooks: [] },
 } };
 const seeded = { managed: { "managed/hooked": [{ _id: "h1", _rev: "1", mail: "a" }], "managed/quiet": [{ _id: "q1", _rev: "1", mail: "a" }],
   "managed/defaulted": [{ _id: "d1", _rev: "1", count: 1, flag: true, tags: [] }], "managed/loose": [],
@@ -243,20 +254,98 @@ describe("the lane answers defaulted properties (P2-2)", () => {
   });
 
   it.each([
-    ["two nulls", "openidm.create('managed/defaulted', 'd2', {count: null, flag: null})"],
     ["an existing id", "openidm.create('managed/defaulted', 'd1', {count: null})"],
     ["an update", "openidm.update('managed/defaulted/d1', null, {count: null})"],
-    ["no required array", "openidm.create('managed/loose', 'l1', {count: null})"],
   ])("a defaulted null on %s is unmeasured and faults", (_name, call) => {
-    const type = call.includes("loose") ? "loose" : "defaulted";
     const run = runScriptWithFaults(catching(call), seeded, { profile: lane });
-    expect(run.faults.map((fault) => fault.id)).toEqual([`openidm-managed-policy/${type}`]);
+    expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-managed-policy/defaulted"]);
+  });
+  // sol-r1b: these faulted before. Measured 2026-11-08: with no required key a defaulted null is
+  // NOT_NULL + VALID_TYPE, and any failing requirement refuses the write. The detail (and so the
+  // order of two properties' entries) is behind getDetail(), which faults.
+  it.each([
+    ["two nulls", "defaulted", "openidm.create('managed/defaulted', 'd2', {count: null, flag: null})"],
+    ["no required array", "loose", "openidm.create('managed/loose', 'l1', {count: null})"],
+  ])("a defaulted null on %s is the measured catchable 403", (_name, type, call) => {
+    const run = runScriptWithFaults(`try { ${call} } catch (e) { nodeState.putShared('code', e.javaException.getCode()); }`, seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(run.effects.sharedState.final.code).toBe(403);
+    expect(store(run, type)).toEqual(seeded.managed[`managed/${type}` as keyof typeof seeded.managed]);
   });
 
   it("an explicit value is stored and an undefaulted null still writes", () => {
     const run = runScriptWithFaults("openidm.create('managed/defaulted', 'd2', {count: 7, mail: null});", seeded, { profile: lane });
     expect(run.faults).toEqual([]);
     expect(store(run, "defaulted")?.[1]).toMatchObject({ count: 7, mail: null, flag: false });
+  });
+});
+
+describe("the lane answers the 2026-11-08 policy probe (sol-r1b P2-1, P2-3)", () => {
+  const store = (run: ReturnType<typeof runScriptWithFaults>, type: string) => run.effects.managedStore?.[`managed/${type}`];
+  const refused = (call: string) => runScriptWithFaults(`try { ${call} } catch (e) { nodeState.putShared('error', String(e)); ` +
+    "nodeState.putShared('code', e.javaException.getCode()); }", seeded, { profile: lane });
+  // P2-3, discriminating: the same null body against required: [] and against no required key.
+  it("an undefaulted null with required: [] is stored as null", () => {
+    const run = runScriptWithFaults("openidm.create('managed/quiet', 'q2', {mail: null});", seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(store(run, "quiet")?.[1]).toEqual({ _id: "q2", _rev: "local-rev", mail: null });
+  });
+  it("the same null with no required key is the catchable 403 and stores nothing", () => {
+    const run = refused("openidm.create('managed/bare', 'b1', {mail: null});");
+    expect(run.faults).toEqual([]);
+    expect(String(run.effects.sharedState.final.error)).toMatch(/ResourceExceptionScriptAdapter: Policy validation failed$/);
+    expect(run.effects.sharedState.final.code).toBe(403);
+    expect(store(run, "bare") ?? []).toEqual([]);
+  });
+  it("reading that refusal's detail faults", () => {
+    const run = runScriptWithFaults(catching("try { openidm.create('managed/bare', 'b1', {mail: null}); } catch (e) { e.javaException.getDetail(); }"),
+      seeded, { profile: lane });
+    expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-policy-detail"]);
+  });
+  it("an optional remove writes and drops the key (measured 200)", () => {
+    const run = runScriptWithFaults("openidm.patch('managed/quiet/q1', null, [{operation: 'remove', field: '/mail'}]);", seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(store(run, "quiet")).toEqual([{ _id: "q1", _rev: "1" }]);
+  });
+  it("an undefaulted null outside a create writes as on create (assumed)", () => {
+    const run = runScriptWithFaults("openidm.update('managed/quiet/q1', null, {mail: null});", seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(store(run, "quiet")?.[0]).toMatchObject({ mail: null });
+  });
+  // P2-1: only the top-level type is enforced.
+  it.each([
+    ["a string sent as a number", "openidm.create('managed/quiet', 'q2', {mail: 5})", "quiet"],
+    ["an object sent as a string", "openidm.create('managed/nested', 'x1', {box: 's'})", "nested"],
+    ["an array sent as a string", "openidm.create('managed/nested', 'x1', {rows: 's'})", "nested"],
+  ])("%s is the catchable 403 and stores nothing", (_name, call, type) => {
+    const run = refused(call);
+    expect(run.faults).toEqual([]);
+    expect(run.effects.sharedState.final.code).toBe(403);
+    expect(store(run, type)).toEqual(seeded.managed[`managed/${type}` as keyof typeof seeded.managed] ?? []);
+  });
+  // Sol's two rows (measured 201, stored as written).
+  it.each([
+    ["a number in a string[] nested in an object", { box: { tags: [2] } }],
+    ["a string where items.properties.inner is a number", { rows: [{ inner: "bad" }] }],
+  ])("%s is stored as written", (_name, content) => {
+    const run = runScriptWithFaults(`openidm.create('managed/nested', 'x1', ${JSON.stringify(content)});`, seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(store(run, "nested")?.[0]).toEqual({ _id: "x1", _rev: "local-rev", ...content });
+  });
+  it.each([
+    ["a top-level array item of the wrong type (only nested items were measured)", "openidm.create('managed/defaulted', 'd2', {tags: ['a', 2]})"],
+    ["a mismatch against a declared number", "openidm.create('managed/defaulted', 'd2', {count: '7'})"],
+    ["a mismatch on an update", "openidm.update('managed/quiet/q1', null, {mail: 5})"],
+    ["a mismatch a PATCH writes", "openidm.patch('managed/quiet/q1', null, [{operation: 'replace', field: '/mail', value: 5}])"],
+    ["a mismatch on a create over an existing id", "openidm.create('managed/quiet', 'q1', {mail: 5})"],
+  ])("%s is unmeasured and faults", (_name, call) => {
+    const run = runScriptWithFaults(catching(call), seeded, { profile: lane });
+    expect(run.faults.map((fault) => fault.id)).toEqual([`openidm-managed-policy/${call.includes("defaulted") ? "defaulted" : "quiet"}`]);
+  });
+  it("a PATCH writing inside a property is not checked", () => {
+    const run = runScriptWithFaults("openidm.patch('managed/nested/x1', null, [{operation: 'add', field: '/box/tags', value: [2]}]);",
+      { managed: { ...seeded.managed, "managed/nested": [{ _id: "x1", _rev: "1", box: {} }] } }, { profile: lane });
+    expect(run.faults).toEqual([]);
   });
 });
 
@@ -389,7 +478,7 @@ describe("one name per type: map key and object.name must agree (sol-r1 P1-2)", 
   it("the tables key by the map key", () => {
     expect(Object.keys(managedWriteFaults(aliased()))).toEqual(["managed/gizmo"]);
     expect(managedWriteFaults(aliased(2))["managed/gizmo"]?.create?.id).toBe("openidm-managed-hook/gizmo.onCreate");
-    expect(Object.keys(managedDefaults(aliased(2)))).toEqual(["managed/gizmo"]);
+    expect(Object.keys(managedPolicy(aliased(2)))).toEqual(["managed/gizmo"]);
     const bad = aliased(2);
     bad.objects.gizmo!.properties.flag = { type: "boolean", default: "nope" };
     expect(Object.keys(managedUnavailable(bad))).toEqual(["managed/gizmo"]);

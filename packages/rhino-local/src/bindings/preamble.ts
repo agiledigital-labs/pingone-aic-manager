@@ -3,7 +3,7 @@ import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
 import { checkProfileObjects } from "../profile/normalise.ts";
 import type { EnvProfile } from "../profile/types.ts";
-import { managedDefaults, managedUnavailable, managedWriteFaults } from "../profile/write-guard.ts";
+import { managedPolicy, managedUnavailable, managedWriteFaults } from "../profile/write-guard.ts";
 import { bindingsCrestFilterPath, bindingsIdentityPolicyPath, bindingsRuntimePath, generatedJsPath } from "../paths.ts";
 
 export interface MockPreambleOptions {
@@ -88,7 +88,7 @@ function seedAndOverrides(
     seed.profileTenant = options.profile.tenant;
     seed.profilePulledAt = options.profile.pulledAt;
     seed.managedWriteFaults = managedWriteFaults(options.profile);
-    seed.managedDefaults = managedDefaults(options.profile);
+    seed.managedPolicy = managedPolicy(options.profile);
     seed.managedUnavailable = managedUnavailable(options.profile);
   }
   const overrides = Object.entries(given.bindingOverrides ?? {})
