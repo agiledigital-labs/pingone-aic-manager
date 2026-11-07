@@ -15,9 +15,12 @@ const writes = realCases.find((entry) => entry.kase.name === "binding-openidm-wr
 const profile: EnvProfile = { profileVersion: 2, tenant: "sandbox", pulledAt: "2026-09-29T00:00:00.000Z", sources: [],
   objects: { alpha_role: { name: "alpha_role", properties: {}, required: [], hooks: ["onDelete", "postCreate", "onUpdate"] } } };
 const live: LiveHooks = { probed: "2026-09-29", hooks: { alpha_role: ["postCreate", "onDelete"] } };
-const build = (overrides: Partial<Parameters<typeof realCase>[0]>) => realCase({
-  name: "live-hooks-probe", kind: "nextgen", origin: writes.origin, expect: writes.kase.expect, profile, liveHooks: live, ...overrides,
-});
+type Input = Parameters<typeof realCase>[0];
+const build = (overrides: Partial<Input>, withProfile = true) => {
+  const input: Input = { name: "live-hooks-probe", kind: "nextgen", origin: writes.origin, expect: writes.kase.expect, liveHooks: live, ...overrides };
+  if (withProfile) input.profile = overrides.profile ?? profile;
+  return realCase(input);
+};
 
 describe("liveHooks is a corpus-only, profile-bound, live-anchored acknowledgement", () => {
   it("the committed writes case uses it, and its live run backs it", () => {
@@ -52,11 +55,11 @@ describe("liveHooks is a corpus-only, profile-bound, live-anchored acknowledgeme
 
   // Constraint 2: it may only name hooks the case's own profile declares.
   it.each([
-    ["a hook the type does not declare", { probed: "2026-09-29", hooks: { alpha_role: ["postUpdate"] } }, profile, /alpha_role\.postUpdate, which the case's profile does not declare/],
-    ["a type the profile does not have", { probed: "2026-09-29", hooks: { alpha_user: ["postCreate"] } }, profile, /alpha_user\.postCreate/],
-    ["no profile at all", live, undefined, /needs the case's own profile/],
-  ] as const)("refuses %s", (_name, liveHooks, caseProfile, message) => {
-    expect(() => build({ liveHooks, profile: caseProfile })).toThrow(message);
+    ["a hook the type does not declare", { probed: "2026-09-29", hooks: { alpha_role: ["postUpdate"] } }, true, /alpha_role\.postUpdate, which the case's profile does not declare/],
+    ["a type the profile does not have", { probed: "2026-09-29", hooks: { alpha_user: ["postCreate"] } }, true, /alpha_user\.postCreate/],
+    ["no profile at all", live, false, /needs the case's own profile/],
+  ] as const)("refuses %s", (_name, liveHooks, withProfile, message) => {
+    expect(() => build({ liveHooks }, withProfile)).toThrow(message);
   });
 
   // Constraint 3: the case must carry a live payload.
