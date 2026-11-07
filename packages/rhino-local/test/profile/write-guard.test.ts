@@ -167,9 +167,11 @@ const lane: EnvProfile = { ...META, profileVersion: PROFILE_VERSION, sources: []
   defaulted: { name: "defaulted", properties: { mail: { type: "string" }, count: { type: "number", default: 0 },
     flag: { type: "boolean", default: false }, tags: { type: "array", items: { type: "string" }, default: ["a"] } }, required: [], hooks: [] },
   loose: { name: "loose", noRequiredArray: true, properties: { count: { type: "number", default: 0 } }, required: [], hooks: [] },
+  nulldef: { name: "nulldef", properties: { cleared: { type: "string", default: null }, note: { type: "string" } }, required: [], hooks: [] },
 } };
 const seeded = { managed: { "managed/hooked": [{ _id: "h1", _rev: "1", mail: "a" }], "managed/quiet": [{ _id: "q1", _rev: "1", mail: "a" }],
-  "managed/defaulted": [{ _id: "d1", _rev: "1", count: 1, flag: true, tags: [] }], "managed/loose": [] } };
+  "managed/defaulted": [{ _id: "d1", _rev: "1", count: 1, flag: true, tags: [] }], "managed/loose": [],
+  "managed/nulldef": [{ _id: "n1", _rev: "1", cleared: "x", note: "y" }] } };
 const catching = (call: string) => `try { ${call} } catch (e) { nodeState.putShared("error", String(e)); }`;
 
 describe("the lane faults writes that reach its store", () => {
@@ -272,6 +274,64 @@ describe("the lane's PATCH null refusals (P2-1)", () => {
     const run = runScriptWithFaults(catching("openidm.patch('managed/quiet/q1', null, [{operation: 'add', field: '/mail', value: null}])"),
       seeded, { profile: lane });
     expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-patch-add-null"]);
+  });
+
+  // Fix round 2, P2-1. Discriminating: each of these passed and deleted `mail` at a825992. AIC sends
+  // a script's undefined as null (docs/api/12), and an operation with no `value` key is the same null
+  // to the patch parser (inference; the emulator's REST path answers it 400 too).
+  it.each([
+    ["value: undefined", "{operation: 'replace', field: '/mail', value: undefined}"],
+    ["no value key", "{operation: 'replace', field: '/mail'}"],
+  ])("replace with %s is the same catchable invalid-patch refusal and writes nothing", (_name, op) => {
+    const run = runScriptWithFaults(catching(`openidm.patch('managed/quiet/q1', null, [${op}])`), seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(String(run.effects.sharedState.final.error)).toContain("not a valid JSON patch");
+    expect(run.effects.managedStore?.["managed/quiet"]).toEqual([{ _id: "q1", _rev: "1", mail: "a" }]);
+  });
+  it.each([
+    ["value: undefined", "{operation: 'add', field: '/mail', value: undefined}"],
+    ["no value key", "{operation: 'add', field: '/mail'}"],
+  ])("add with %s faults like add with null", (_name, op) => {
+    const run = runScriptWithFaults(catching(`openidm.patch('managed/quiet/q1', null, [${op}])`), seeded, { profile: lane });
+    expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-patch-add-null"]);
+    expect(run.effects.managedStore?.["managed/quiet"]).toEqual([{ _id: "q1", _rev: "1", mail: "a" }]);
+  });
+
+  // Fix round 2, P3-2. Discriminating: at a825992 the record lookup and revision check ran first, so
+  // these answered "No Such Entry" and the version error.
+  it.each([
+    ["an absent record", "openidm.patch('managed/quiet/absent', null, [{operation: 'replace', field: '/mail', value: null}])"],
+    ["a stale revision", "openidm.patch('managed/quiet/q1', '9', [{operation: 'replace', field: '/mail', value: null}])"],
+    ["an unknown operation on an absent record", "openidm.patch('managed/quiet/absent', null, [{operation: 'move', field: '/mail'}])"],
+  ])("the patch is judged before %s", (_name, call) => {
+    const run = runScriptWithFaults(catching(call), seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(String(run.effects.sharedState.final.error)).toContain("not a valid JSON patch");
+  });
+  it("a well-formed patch on an absent record is still No Such Entry (positive control)", () => {
+    const run = runScriptWithFaults(catching("openidm.patch('managed/quiet/absent', null, [{operation: 'replace', field: '/mail', value: 'b'}])"),
+      seeded, { profile: lane });
+    expect(String(run.effects.sharedState.final.error)).toContain("No Such Entry");
+  });
+});
+
+describe("the lane's PATCH remove of a defaulted property (fix round 2, P3-1)", () => {
+  // Stock policy.js adds an implicit required for any default; AIC's 403 REQUIRED was measured only
+  // with the property also in schema.required. Unmeasured either way, so it faults.
+  it.each([
+    ["a non-null default", "defaulted", "d1", "/count"],
+    // Discriminating: a null default gives the type no defaults to apply, and is still a default.
+    ["a null default", "nulldef", "n1", "/cleared"],
+  ])("removing a property with %s faults and writes nothing", (_name, type, id, field) => {
+    const run = runScriptWithFaults(catching(`openidm.patch('managed/${type}/${id}', null, [{operation: 'remove', field: '${field}'}])`),
+      seeded, { profile: lane });
+    expect(run.faults.map((fault) => fault.id)).toEqual([`openidm-managed-policy/${type}`]);
+    expect(run.effects.managedStore?.[`managed/${type}`]).toEqual(seeded.managed[`managed/${type}` as keyof typeof seeded.managed]);
+  });
+  it("removing an undefaulted property of the same type still writes", () => {
+    const run = runScriptWithFaults("openidm.patch('managed/nulldef/n1', null, [{operation: 'remove', field: '/note'}]);", seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(run.effects.managedStore?.["managed/nulldef"]).toEqual([{ _id: "n1", _rev: "1", cleared: "x" }]);
   });
 });
 

@@ -8,6 +8,7 @@ import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { IdmConfig, IdmEmulator, type Document, type ManagedType } from "../../src/idm/index.ts";
 import { ASSUMED_POLICY, type ImplicitPolicyVerdict, implicitPolicy, type PolicyWrite } from "../../src/idm/policy.ts";
 import { RhinoRunner } from "../../src/runner.ts";
+import { create, trace, traced } from "./fixtures.ts";
 
 const gadget = (required?: string[]): ManagedType => ({ name: "gadget", schema: {
   ...(required ? { required } : {}),
@@ -50,6 +51,17 @@ describe("implicitPolicy decides from the real schema", () => {
       { creating: false, patchedFrom: { text: null }, operations: [{ operation: "replace", field: "/text", value: null }] }, "fault", "idm-policy/valid-type"],
     ["a hook's change counts as written", gadget([]), { text: 7 },
       { creating: false, patchedFrom: { text: "a" }, operations: [] }, "fault", "idm-policy/valid-type"],
+    // Fix round 2, P3-3. Discriminating: at a825992 a removed property reached the type check as
+    // `undefined` and faulted valid-type ("the write sends undefined"). Stock refuses nothing here.
+    ["patch removes an undefaulted optional property", gadget([]), { count: 1 },
+      { creating: false, patchedFrom: { text: "a", count: 1 }, operations: [{ operation: "remove", field: "/text" }] }, "assumed"],
+    ["patch removes an untyped property", gadget([]), { count: 1 },
+      { creating: false, patchedFrom: { loose: "x", count: 1 }, operations: [{ operation: "remove", field: "/loose" }] }, "assumed"],
+    // Fix round 2, P3-1: stock adds an implicit required for any default; unmeasured without schema.required.
+    ["patch removes a defaulted property", gadget([]), { text: "a" },
+      { creating: false, patchedFrom: { text: "a", count: 1 }, operations: [{ operation: "remove", field: "/count" }] }, "fault", "idm-policy/required"],
+    ["patch removes a null-defaulted property", gadget([]), { text: "a" },
+      { creating: false, patchedFrom: { text: "a", nothing: "x" }, operations: [{ operation: "remove", field: "/nothing" }] }, "fault", "idm-policy/required"],
   ];
   it.each(cases)("%s", (_name, type, object, write, kind, id) => {
     const verdict = implicitPolicy(type, object, write);
@@ -188,6 +200,66 @@ describe("PATCH replace with null is the measured 400, whatever the property (P2
     const result = await emu.request(patch([{ operation: "add", field: "/text", value: null }]));
     expect(result.status).toBe(501);
     expect(JSON.stringify(result.body)).toContain("idm-patch/add-null");
+  });
+
+  // Fix round 2, P2-1: a script's undefined reaches IDM as null (docs/api/12).
+  it("a script's openidm.patch with value undefined gets the same 400", async () => {
+    const emu = await seeded([]);
+    const result = await runner.eval({ engine: "idm", source:
+      "var out; try { openidm.patch('managed/gadget/p1', null, [{operation: 'replace', field: '/text', value: undefined}]); out = 'patched'; } " +
+      "catch (e) { out = String(e); } out;" }, { onCall: emu.onCall });
+    expect(String(result.value)).toContain("not a valid JSON patch");
+  });
+
+  // Fix round 2, P3-2: the refusal is parse-time, ahead of lookup, revision and capability gate.
+  // Discriminating: at a825992 these answered 404 and 412.
+  it.each([
+    ["an absent record", { method: "PATCH", path: "managed/gadget/absent" }],
+    ["a stale revision", { method: "PATCH", path: "managed/gadget/p1", headers: { "If-Match": "9" } }],
+  ] as const)("answers before %s", async (_name, request) => {
+    const emu = await seeded([]);
+    const result = await emu.request({ ...request, body: [{ operation: "replace", field: "/text", value: null }] });
+    expect(result.status).toBe(400);
+    expect(String((result.body as Document).message)).toContain("not a valid JSON patch");
+  });
+  it("a well-formed patch on an absent record is still 404 (positive control)", async () => {
+    const emu = await seeded([]);
+    expect((await emu.request({ method: "PATCH", path: "managed/gadget/absent", body: [{ operation: "replace", field: "/text", value: "b" }] })).status).toBe(404);
+  });
+  // The measured has-one relationship case is now reachable: the refusal comes before the
+  // capability gate that faults every write on a relationship type.
+  it("answers on a type with a relationship property, which the capability gate would fault", async () => {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ name: "linked", schema: { properties: {
+      text: { type: "string" }, owner: { type: "relationship", resourceCollection: [{ path: "managed/linked" }] } } } }] } }), runner);
+    const result = await emu.request({ method: "PATCH", path: "managed/linked/x", body: [{ operation: "replace", field: "/owner", value: null }] });
+    expect(result.status).toBe(400);
+  });
+
+  // Discriminating: at a825992 onRetrieve and onRead ran (and wrote trace records) before the 400.
+  it("answers before any read hook runs", async () => {
+    const emu = traced(runner);
+    await create(emu);
+    const before = (await trace(emu)).length;
+    const result = await emu.request({ method: "PATCH", path: "managed/widget/one", body: [{ operation: "replace", field: "/text", value: null }] });
+    expect(result.status).toBe(400);
+    expect((await trace(emu)).length).toBe(before);
+  });
+
+  // Fix round 2, P3-3 end to end: removing an optional undefaulted property commits.
+  it("remove of an undefaulted optional property commits", async () => {
+    const emu = await seeded([]);
+    const result = await emu.request(patch([{ operation: "remove", field: "/text" }]));
+    expect(result.status).toBe(200);
+    expect(result.provenance).toContainEqual(expect.objectContaining({ kind: "assumed", behavior: ASSUMED_POLICY }));
+    expect((await emu.request({ method: "GET", path: "managed/gadget/p1" })).body).toMatchObject({ text: null, count: 1 });
+  });
+  it("remove of a defaulted property faults idm-policy/required", async () => {
+    expectHarnessFault("idm-policy/required");
+    const emu = await seeded([]);
+    const result = await emu.request(patch([{ operation: "remove", field: "/count" }]));
+    expect(result.status).toBe(501);
+    expect(JSON.stringify(result.body)).toContain("idm-policy/required");
+    expect((await emu.request({ method: "GET", path: "managed/gadget/p1" })).body).toMatchObject({ count: 1 });
   });
 
   it("a script's openidm.patch gets the same 400", async () => {
