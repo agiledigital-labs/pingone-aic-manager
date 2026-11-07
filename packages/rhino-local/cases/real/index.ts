@@ -6,6 +6,7 @@ import {
   realCase,
   type BlockedBy,
   type KnownGap,
+  type LiveHooks,
   type RealEntry,
   type Rewrite,
 } from "./load.ts";
@@ -91,6 +92,7 @@ interface Extras {
   rewrites?: readonly Rewrite[];
   gap?: KnownGap;
   profile?: EnvProfile;
+  liveHooks?: LiveHooks;
   /** Requests the script makes; required alongside a `given.http` stub. */
   http?: HttpExpect[];
   /**
@@ -124,6 +126,7 @@ function entry(
     rewrites?: readonly Rewrite[];
     gap?: KnownGap;
     profile?: EnvProfile;
+    liveHooks?: LiveHooks;
   } = {
     name,
     kind,
@@ -154,6 +157,9 @@ function entry(
   }
   if (extras.profile !== undefined) {
     init.profile = extras.profile;
+  }
+  if (extras.liveHooks !== undefined) {
+    init.liveHooks = extras.liveHooks;
   }
   return realCase(init);
 }
@@ -3642,12 +3648,13 @@ export const realCases: RealEntry[] = [
     // is answered as AIC answers it rather than as a missing fixture. The
     // hand-written profile records alpha_role's two object hooks as doc 10
     // records them on this sandbox (postCreate; onDelete,
-    // roles/onDelete-roles.js). The lane runs neither, so the create and the
-    // delete would fault. Only postCreate's fault is declared: every create
-    // faults, so no record exists and each delete stops at its absent record
-    // before the onDelete check. The live writes above succeeded with the
-    // hooks running; nothing here can say what the hooks did, so the keys
-    // downstream of a create are listed in `differs`.
+    // roles/onDelete-roles.js). The lane runs neither. The live writes above
+    // ran both, and every compared key equals the live payload, which is the
+    // measurement that they did not change what these writes return; so
+    // `liveHooks` exempts exactly those two hooks for this case (P2-2, fix
+    // round 2). It is the only live-anchored guard of the lane's write paths
+    // (`fields` on create/update/patch/delete, the duplicate-create message).
+    liveHooks: { probed: "2026-09-29", hooks: { alpha_role: ["postCreate", "onDelete"] } },
     profile: {
       profileVersion: 2,
       tenant: "sandbox",
@@ -3659,8 +3666,8 @@ export const realCases: RealEntry[] = [
     gap: {
       reason:
         "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (undeclared action replies throw naming given.openidmActions). Writes were not captured live, so the write channel is not judged. openidm.query: a malformed filter and a managed type the profile does not declare throw AIC's parse and \"Resource … not found\" phrases, catchably, as plain Errors.",
-      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","query/2/queryExpression","query/2/two-kinds","patch/wrong-rev","delete/wrong-rev","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent","create/5","create/3","create/fields","update/null-rev","update/after","patch/replace","patch/add-unknown-field","patch/fields","create/4","update/4","update/5/fields","patch/4","query/2/filter","query/3/fields","query/2/queryId","delete/4/fields","delete/3"],
-      faults: ["fixture/openidm-action", "openidm-managed-hook/alpha_role.postCreate"],
+      differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","query/2/queryExpression","query/2/two-kinds","patch/wrong-rev","delete/wrong-rev","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
+      faults: ["fixture/openidm-action"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).

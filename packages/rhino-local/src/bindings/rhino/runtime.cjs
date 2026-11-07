@@ -2242,6 +2242,31 @@ function __rhinoLocalApplyDefaults(collection, stored) {
   });
 }
 
+// A PATCH `remove` of a property that declares a `default`, null included
+// (P3-1). Stock policy.js adds an implicit `required` for any default; the
+// measured 403 REQUIRED was taken with the property also named in
+// schema.required, which the lane already faults as a declared policy. With
+// the property not required the answer is unmeasured: stock predicts 403,
+// docs/api/10's inference predicts 200. Neither is emulated.
+function __rhinoLocalRemovedDefault(collection, patch) {
+  var rule = __rhinoLocalDefaultsRule(collection);
+  if (!rule) {
+    return;
+  }
+  var i;
+  var field;
+  for (i = 0; i < patch.length; i += 1) {
+    field = String(patch[i].field).replace(/^\//, "");
+    if (patch[i].operation === "remove" && rule.defaulted.indexOf(field) >= 0) {
+      throw __rhinoLocalFault("openidm-managed-policy/" + collection.replace(/^managed\//, ""),
+        "rhino-local: openidm.patch: " + collection + ": remove " + String(patch[i].field) + ", which declares a default. " +
+          "AIC's 403 REQUIRED for that is measured only with the property also named in schema.required " +
+          "(docs/api/10); without it, stock policy.js still adds an implicit required for any default, and what AIC " +
+          "answers is unmeasured. Stub the call with given.openidmFailures if the test means a refusal, or expect the fault (E19)");
+    }
+  }
+}
+
 function __rhinoLocalManagedWriteFault(method, collection) {
   var table = __rhinoLocal.managedWriteFaults;
   if (!table || !__rhinoLocalHas(table, collection) || !__rhinoLocalHas(table[collection], method)) {
@@ -2689,9 +2714,6 @@ openidm.patch = function (resourceName, _rev, patch) {
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("patch", resource, patch);
-  var found = __rhinoLocalRequireRecord("patch", resource);
-  __rhinoLocalBagAccess("patch", resource, found.record);
-  __rhinoLocalCheckRev("patch", _rev, found.record);
   var i;
   var op;
   var field;
@@ -2705,14 +2727,17 @@ openidm.patch = function (resourceName, _rev, patch) {
       );
     }
   }
-  // Still parse-time, so before the write fault: `replace` with null is a
-  // measured 400 "not a valid JSON patch" over REST, on a defaulted boolean
-  // and on an undefaulted relationship (docs/api/10); the script path is
-  // assumed to answer in the same family, as for an unknown operation. `add`
-  // with null is unmeasured.
+  // Still parse-time: `replace` with null is a measured 400 "not a valid JSON
+  // patch" over REST, on a defaulted boolean and on an undefaulted
+  // relationship (docs/api/10); the script path is assumed to answer in the
+  // same family, as for an unknown operation. `add` with null is unmeasured.
+  // A `value` that is undefined, or no `value` key at all, is the same null:
+  // AIC sends a script's undefined as null (docs/api/12, measured for
+  // openidm.create content and for httpClient bodies at every depth), and an
+  // operation without a value is a null value to the patch parser.
   for (i = 0; i < patch.length; i += 1) {
     op = patch[i];
-    if (op.value !== null) {
+    if (op.operation === "remove" || (op.value !== null && op.value !== undefined)) {
       continue;
     }
     if (op.operation === "replace") {
@@ -2726,7 +2751,16 @@ openidm.patch = function (resourceName, _rev, patch) {
           "invalid JSON patch (docs/api/10), and what it does with add is unmeasured");
     }
   }
-  __rhinoLocalManagedWriteFault("patch", __rhinoLocalSplitResource(resource).collection);
+  // The patch is parsed before the record is looked up or its revision
+  // checked (CREST parses a request body before routing it; structural over
+  // REST, assumed for the script path), so a malformed patch on an absent
+  // record or a stale revision is still the patch error.
+  var found = __rhinoLocalRequireRecord("patch", resource);
+  __rhinoLocalBagAccess("patch", resource, found.record);
+  __rhinoLocalCheckRev("patch", _rev, found.record);
+  var collection = __rhinoLocalSplitResource(resource).collection;
+  __rhinoLocalManagedWriteFault("patch", collection);
+  __rhinoLocalRemovedDefault(collection, patch);
   var next = __rhinoLocalClone(found.record);
   for (i = 0; i < patch.length; i += 1) {
     op = patch[i];

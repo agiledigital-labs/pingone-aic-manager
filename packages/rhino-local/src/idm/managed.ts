@@ -7,7 +7,7 @@ import type { JsonValue } from "../protocol.ts";
 import type { JsonStorage, SyncMapping } from "./config.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { ASSUMED_POLICY, implicitPolicy, notNullDetail } from "./policy.ts";
-import { applyPatch, document, fields, own, project } from "./document.ts";
+import { applyPatch, document, fields, own, project, refuseNullPatch } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
 import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldRule, fieldValue, illegalAssertion, matchesFilter } from "./filter.ts";
 import type { Evidence } from "./provenance.ts";
@@ -105,6 +105,7 @@ export class ManagedStore {
     // Configuration shape checks ran before routing. Finish known absence and
     // implemented rejections before inspecting storage capabilities.
     if (request.method === "POST" && id === undefined && action !== undefined && action !== "create") return this.action(type, id, op);
+    if (request.method === "PATCH" && id !== undefined) refuseNullPatch(request.body, this.evidence);
     if (id !== undefined && (["GET", "PATCH", "DELETE"].includes(request.method) ||
         (request.method === "PUT" && revision(request) !== undefined))) {
       const existing = this.stored(type, id);

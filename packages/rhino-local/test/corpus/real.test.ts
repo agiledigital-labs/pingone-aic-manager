@@ -6,7 +6,7 @@ import type { RunCaseOptions } from "../../src/bindings/run.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { blockedCases, gapCases, realCases, runnableCases } from "../../cases/real/index.ts";
-import { PROBE_SOURCE_NAME, type RealEntry } from "../../cases/real/load.ts";
+import { PROBE_SOURCE_NAME, profileForRun, type RealEntry } from "../../cases/real/load.ts";
 
 function runOptions(entry: RealEntry, sourceName: string): RunCaseOptions {
   // RSA key generation (binding-utils-subtle) runs past 5 s on a loaded CI
@@ -15,8 +15,9 @@ function runOptions(entry: RealEntry, sourceName: string): RunCaseOptions {
   if (entry.libraries !== undefined) {
     options.libraries = entry.libraries;
   }
-  if (entry.profile !== undefined) {
-    options.profile = entry.profile;
+  const profile = profileForRun(entry);
+  if (profile !== undefined) {
+    options.profile = profile;
   }
   return options;
 }

@@ -81,16 +81,23 @@ export function policiesDeclared(object: ObjectSchema): string[] {
   ];
 }
 
-/** A profile older than this package's format cannot say a type declares nothing. */
+/**
+ * A profile older than this package's format cannot say a type declares nothing. Only an integer
+ * version at or above {@link PROFILE_VERSION} is current: a hand-written `"2"` or `"v2"` is not the
+ * format a pull writes, and reading it as current would let a profile without `hooks` pass every
+ * write on a hooked type.
+ */
 export function profileStale(profile: EnvProfile): boolean {
-  return (profile.profileVersion ?? 1) < PROFILE_VERSION;
+  const version: unknown = profile.profileVersion;
+  return !(Number.isInteger(version) && (version as number) >= PROFILE_VERSION);
 }
 
 function staleFault(object: ObjectSchema, profile: EnvProfile): WriteFault {
   return { id: "openidm-managed-profile-stale", message: `managed/${object.name}: the environment profile is format version ` +
-    `${profile.profileVersion ?? 1}, older than ${PROFILE_VERSION}, so it cannot say whether this write runs hooks or policies ` +
-    "on AIC. Re-pull it: aic-script-tester-pull-profile. A hand-written profile cannot be re-pulled: give each type " +
-    "`hooks` (its object hook names, [] for none), give each property its `default`, `conditionalPolicies` and " +
+    `${JSON.stringify(profile.profileVersion ?? 1)}, not the integer ${PROFILE_VERSION} or later, so it cannot say whether this ` +
+    "write runs hooks or policies on AIC. Re-pull it: aic-script-tester-pull-profile. A hand-written profile cannot be " +
+    "re-pulled: give each type `hooks` (its object hook names, [] for none) and `noRequiredArray: true` when its schema " +
+    "has no `required` array, give each property its `default`, `conditionalPolicies` and " +
     `\`fallbackPolicies\` where the tenant declares them, then set "profileVersion": ${PROFILE_VERSION}` };
 }
 
@@ -137,6 +144,9 @@ export function managedWriteFaults(profile: EnvProfile): Record<string, Partial<
  * - `emulable`: the subset where the lane may emulate the measured refusal itself — the schema has
  *   a `required` array and does not name the property, which is the measured single-`NOT_NULL`
  *   case. Required-named nulls are `NOT_NULL` + `VALID_TYPE` (shape unmeasured).
+ * - `defaulted`: every property that declares a `default`, `null` included. Stock `policy.js` adds
+ *   an implicit `required` for any default, so a PATCH `remove` of one is checked on AIC; the
+ *   measured 403 `REQUIRED` had the property in `schema.required` too, so the lane faults the rest.
  *
  * The lane decides only what it alone knows: the method, whether the record exists, the engine,
  * and how many nulls the write sends.
@@ -145,21 +155,25 @@ export type DefaultsRule = {
   readonly defaults: Record<string, JsonValue>;
   readonly notNull: readonly string[];
   readonly emulable: readonly string[];
+  readonly defaulted: readonly string[];
 };
 
-/** The lane's defaults table: `managed/<type>` → rule, for every type with a non-null default. */
+/** The lane's defaults table: `managed/<type>` → rule, for every type that declares a default. */
 export function managedDefaults(profile: EnvProfile): Record<string, DefaultsRule> {
   const out: Record<string, DefaultsRule> = {};
   if (profileStale(profile)) return out;
   for (const object of Object.values(profile.objects)) {
     const defaults: Record<string, JsonValue> = {};
+    const defaulted: string[] = [];
     for (const [name, property] of Object.entries(object.properties)) {
-      if (property.default !== undefined && property.default !== null) defaults[name] = property.default;
+      if (property.default === undefined) continue;
+      defaulted.push(name);
+      if (property.default !== null) defaults[name] = property.default;
     }
+    if (defaulted.length === 0) continue;
     const notNull = Object.keys(defaults);
-    if (notNull.length === 0) continue;
     const emulable = object.noRequiredArray ? [] : notNull.filter((name) => !object.required.includes(name));
-    out[`managed/${object.name}`] = { defaults, notNull, emulable };
+    out[`managed/${object.name}`] = { defaults, notNull, emulable, defaulted };
   }
   return out;
 }
