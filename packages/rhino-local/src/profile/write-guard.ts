@@ -12,9 +12,11 @@
  * profile older than {@link PROFILE_VERSION} cannot tell, so every write on it faults until it is
  * re-pulled (or, if hand-written, brought up to the version by hand).
  *
- * Defaulted properties are the one implicit policy the lane does answer (P2-2): AIC is measured to
- * apply a `default` on a create that omits the property, and to refuse an explicit `null` on one
- * (docs/api/10). {@link managedDefaults} gives the lane those per type as plain lists.
+ * Implicit schema policy is the one policy the lane does answer (P2-2, sol-r1b): AIC is measured to
+ * apply a `default` on a create that omits the property, to refuse an explicit `null` on one, to
+ * check a top-level property's `type` and nothing nested, and to accept a null on an undefaulted
+ * property only when the schema's `required` array exists and omits it (docs/api/10).
+ * {@link managedPolicy} gives the lane those per type as plain lists.
  */
 import type { JsonValue } from "../case/types.ts";
 import { defaultMatches } from "../declared-default.ts";
@@ -145,47 +147,78 @@ export function managedWriteFaults(profile: EnvProfile): Record<string, Partial<
   return out;
 }
 
+/** Declared types a top-level mismatch was measured for (docs/api/10, 2026-11-08 probe). */
+const MEASURED_TYPES = new Set(["string", "object", "array"]);
+/** Declared types whose mismatch is unmeasured: the lane faults one. `relationship`/`any` stay unchecked. */
+const UNMEASURED_TYPES = new Set(["number", "integer", "boolean"]);
+
 /**
- * What the lane needs about one type's defaulted properties (P2-2):
+ * What the lane needs to answer a type's implicit policies (P2-2, sol-r1b), as plain lists. IDM's
+ * `policy.js` checks only the top-level property's `type`: schemas under `items`/`properties` are
+ * stored and not enforced (measured 2026-11-08, docs/api/10). Every field is about top-level
+ * properties:
  * - `defaults`: every declared non-null `default`, to fill in on a create that omits the property
- *   (measured for scalars and arrays, docs/api/10). A `null` default is not applied. The lane never
- *   reaches one: `null` matches no declared type, so {@link managedUnavailable} faults every call on
- *   such a type first. The entries stay so this table does not depend on that ordering.
- * - `notNull`: the properties an explicit `null` is refused on (stock `policy.js` adds `not-null`
- *   for a non-null default; measured on create, docs/api/10 and 12).
- * - `emulable`: the subset where the lane may emulate the measured refusal itself — the schema has
- *   a `required` array and does not name the property, which is the measured single-`NOT_NULL`
- *   case. Required-named nulls are `NOT_NULL` + `VALID_TYPE` (shape unmeasured).
+ *   (measured for scalars and arrays). A `null` default is not applied. The lane never reaches one:
+ *   `null` matches no declared type, so {@link managedUnavailable} faults every call on such a type
+ *   first. The entries stay so this table does not depend on that ordering.
+ * - `notNull`: the properties with a non-null default, on which an explicit `null` is `NOT_NULL`.
+ * - `nullRefused`: the properties an explicit `null` on a create of a new record is refused on:
+ *   `notNull`, plus every typed property when the schema has no `required` array (`VALID_TYPE`,
+ *   `invalidType "null"`). Measured. Any other typed property's null is accepted and stored, because
+ *   a required-named property never gets here (`writeFault` faults the type's writes).
+ * - `nullUnmeasured`: a nullable (`["string","null"]`) property, whose null nothing measured, and,
+ *   when the schema has no `required` array, a property of a type the rule does not know
+ *   (`relationship`, `any`). With a `required` array those keep writing as before (gaps doc).
+ * - `checked`: property → declared type, for `string`/`object`/`array`, where a mismatching
+ *   top-level value on a create of a new record is a measured `403 VALID_TYPE`.
+ * - `unmeasured`: property → declared type, for `number`/`integer`/`boolean`; a mismatch faults.
+ * - `itemTypes`: array property → its `items.type`. An item of another type faults: nested `items`
+ *   were measured unenforced, a top-level array's own items were not tested.
  * - `defaulted`: every property that declares a `default`, `null` included. Stock `policy.js` adds
  *   an implicit `required` for any default, so a PATCH `remove` of one is checked on AIC; the
  *   measured 403 `REQUIRED` had the property in `schema.required` too, so the lane faults the rest.
+ *   Removing any other (non-required) property is a measured 200.
  *
- * The lane decides only what it alone knows: the method, whether the record exists, the engine,
- * and how many nulls the write sends.
+ * The lane decides only what it alone knows: the method and whether the record exists.
  */
-export type DefaultsRule = {
+export type PolicyRule = {
   readonly defaults: Record<string, JsonValue>;
   readonly notNull: readonly string[];
-  readonly emulable: readonly string[];
+  readonly nullRefused: readonly string[];
+  readonly nullUnmeasured: readonly string[];
+  readonly checked: Record<string, string>;
+  readonly unmeasured: Record<string, string>;
+  readonly itemTypes: Record<string, string>;
   readonly defaulted: readonly string[];
 };
 
-/** The lane's defaults table: `managed/<type>` → rule, for every type that declares a default. */
-export function managedDefaults(profile: EnvProfile): Record<string, DefaultsRule> {
-  const out: Record<string, DefaultsRule> = {};
+/** The lane's implicit-policy table: `managed/<type>` → rule, for every type of a current profile. */
+export function managedPolicy(profile: EnvProfile): Record<string, PolicyRule> {
+  const out: Record<string, PolicyRule> = {};
   if (profileStale(profile)) return out;
   for (const object of byKey(profile)) {
     const defaults: Record<string, JsonValue> = {};
     const defaulted: string[] = [];
+    const nullUnmeasured: string[] = [];
+    const checked: Record<string, string> = {};
+    const unmeasured: Record<string, string> = {};
+    const itemTypes: Record<string, string> = {};
     for (const [name, property] of Object.entries(object.properties)) {
-      if (property.default === undefined) continue;
-      defaulted.push(name);
-      if (property.default !== null) defaults[name] = property.default;
+      if (property.default !== undefined) {
+        defaulted.push(name);
+        if (property.default !== null) defaults[name] = property.default;
+      }
+      const known = MEASURED_TYPES.has(property.type) || UNMEASURED_TYPES.has(property.type);
+      if (property.nullable || (object.noRequiredArray && !known)) nullUnmeasured.push(name);
+      else if (MEASURED_TYPES.has(property.type)) checked[name] = property.type;
+      if (UNMEASURED_TYPES.has(property.type)) unmeasured[name] = property.type;
+      const item = property.items?.type;
+      if (property.type === "array" && item !== undefined && (MEASURED_TYPES.has(item) || UNMEASURED_TYPES.has(item))) itemTypes[name] = item;
     }
-    if (defaulted.length === 0) continue;
     const notNull = Object.keys(defaults);
-    const emulable = object.noRequiredArray ? [] : notNull.filter((name) => !object.required.includes(name));
-    out[`managed/${object.name}`] = { defaults, notNull, emulable, defaulted };
+    const typed = Object.keys(object.properties).filter((name) => !nullUnmeasured.includes(name));
+    const nullRefused = object.noRequiredArray ? typed : notNull.filter((name) => !nullUnmeasured.includes(name));
+    out[`managed/${object.name}`] = { defaults, notNull, nullRefused, nullUnmeasured, checked, unmeasured, itemTypes, defaulted };
   }
   return out;
 }
