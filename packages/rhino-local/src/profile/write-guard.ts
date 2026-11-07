@@ -148,8 +148,9 @@ export function managedWriteFaults(profile: EnvProfile): Record<string, Partial<
 /**
  * What the lane needs about one type's defaulted properties (P2-2):
  * - `defaults`: every declared non-null `default`, to fill in on a create that omits the property
- *   (measured for scalars and arrays, docs/api/10). A `null` default is not applied: what AIC stores
- *   for one is unmeasured, and a read renders an absent scalar as `null` either way.
+ *   (measured for scalars and arrays, docs/api/10). A `null` default is not applied. The lane never
+ *   reaches one: `null` matches no declared type, so {@link managedUnavailable} faults every call on
+ *   such a type first. The entries stay so this table does not depend on that ordering.
  * - `notNull`: the properties an explicit `null` is refused on (stock `policy.js` adds `not-null`
  *   for a non-null default; measured on create, docs/api/10 and 12).
  * - `emulable`: the subset where the lane may emulate the measured refusal itself — the schema has
