@@ -2,7 +2,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureStateSubdir, stateDir } from "../project.ts";
 import type { EnvProfile } from "./types.ts";
-import { ProfileShapeError } from "./normalise.ts";
+import { checkProfileObjects, ProfileShapeError } from "./normalise.ts";
 
 /**
  * Profiles live in the harness state directory, which ignores itself.
@@ -69,5 +69,6 @@ export function parseProfile(text: string, path: string): EnvProfile {
   ) {
     throw new ProfileShapeError(`profile at ${path} is missing tenant/objects`);
   }
+  checkProfileObjects(parsed as EnvProfile, `at ${path}`);
   return parsed as EnvProfile;
 }

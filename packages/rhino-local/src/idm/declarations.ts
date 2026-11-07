@@ -1,4 +1,5 @@
 /** Configuration-wide shape/location checks precede routing and storage work. */
+import { defaultMatches } from "../declared-default.ts";
 import type { IdmConfig } from "./config.ts";
 import { isDocument } from "./document.ts";
 import { missing } from "./errors.ts";
@@ -18,17 +19,6 @@ export function validateDeclarations(config: IdmConfig, evidence: Evidence): voi
     if (Object.hasOwn(declaration, "globals")) object(declaration.globals, `${path}/globals`);
     return declaration;
   };
-  const matches = (value: unknown, declaration: Record<string, unknown>): boolean => {
-    if (declaration.type === "array") return Array.isArray(value) && (!isDocument(declaration.items) || value.every((item) => matches(item, declaration.items as Record<string, unknown>)));
-    if (declaration.type === "object") {
-      if (!isDocument(value)) return false;
-      const properties = declaration.properties;
-      return !isDocument(properties) || Object.entries(value).every(([name, child]) =>
-        !Object.hasOwn(properties, name) || (isDocument(properties[name]) && matches(child, properties[name] as Record<string, unknown>)));
-    }
-    if (declaration.type === "number") return typeof value === "number" && Number.isFinite(value);
-    return ["string", "boolean"].includes(String(declaration.type)) && typeof value === declaration.type;
-  };
   const visit = (value: unknown, path: string, depth: number): void => {
     const declaration = object(value, path);
     if (Object.hasOwn(declaration, "type") && (typeof declaration.type !== "string" || !["string", "number", "boolean", "object", "array", "relationship"].includes(declaration.type))) missing(evidence, `property behavior type: ${path}`);
@@ -47,7 +37,7 @@ export function validateDeclarations(config: IdmConfig, evidence: Evidence): voi
     if (Object.hasOwn(declaration, "items")) visit(object(declaration.items, `${path}/items`), `${path}/items`, depth + 1);
     if (Object.hasOwn(declaration, "default")) {
       if (depth !== 1) missing(evidence, `nested property behavior default: ${path}`);
-      if (!matches(declaration.default, declaration)) missing(evidence, `invalid default: ${path}`);
+      if (!defaultMatches(declaration.default, declaration)) missing(evidence, `invalid default: ${path}`);
     }
   };
   for (const type of config.managed.objects) {

@@ -1,8 +1,9 @@
 import { readFileSync, statSync } from "node:fs";
 import { normaliseIdentitySeeds } from "../case/identity.ts";
 import type { Given } from "../case/types.ts";
+import { checkProfileObjects } from "../profile/normalise.ts";
 import type { EnvProfile } from "../profile/types.ts";
-import { managedDefaults, managedWriteFaults } from "../profile/write-guard.ts";
+import { managedDefaults, managedUnavailable, managedWriteFaults } from "../profile/write-guard.ts";
 import { bindingsCrestFilterPath, bindingsIdentityPolicyPath, bindingsRuntimePath, generatedJsPath } from "../paths.ts";
 
 export interface MockPreambleOptions {
@@ -13,7 +14,8 @@ export interface MockPreambleOptions {
   libraries?: Record<string, string>;
   /**
    * Pulled environment schema. Only the set of declared object types, and the
-   * per-type write faults `profile/write-guard.ts` decides (E15b), cross into
+   * per-type tables `profile/write-guard.ts` decides (write faults, defaults,
+   * types an invalid declaration makes unavailable), cross into
    * the sandbox — every schema rule is decided in the Node layer, so there is
    * one implementation of each rather than an AM-safe copy.
    */
@@ -76,6 +78,8 @@ function seedAndOverrides(
     seed.libraries = options.libraries;
   }
   if (options.profile !== undefined) {
+    // A runner caller can hand over a profile object that never went through parseProfile.
+    checkProfileObjects(options.profile, "given to the case");
     const known: Record<string, true> = {};
     for (const name of Object.keys(options.profile.objects)) {
       known[`managed/${name}`] = true;
@@ -85,6 +89,7 @@ function seedAndOverrides(
     seed.profilePulledAt = options.profile.pulledAt;
     seed.managedWriteFaults = managedWriteFaults(options.profile);
     seed.managedDefaults = managedDefaults(options.profile);
+    seed.managedUnavailable = managedUnavailable(options.profile);
   }
   const overrides = Object.entries(given.bindingOverrides ?? {})
     .map(([name, expression]) => `${name} = (${expression});`)
