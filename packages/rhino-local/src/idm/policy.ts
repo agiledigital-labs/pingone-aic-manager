@@ -18,15 +18,20 @@
  *   property.** `required: []` (or a list omitting it) and an undefaulted property: 201, stored and
  *   read back as `null`. No `required` key: `VALID_TYPE` with `invalidType "null"`.
  * - **A null on a property with a non-null `default` is `NOT_NULL`**, plus a separate `VALID_TYPE`
- *   entry, after it, when the null fails the type check too. Measured only on defaulted properties
- *   (the probe's was a boolean); whether `NOT_NULL` keys on the default or on the type is not
- *   separated, so a property gets it here only with a default.
+ *   entry, after it, when the null fails the type check too. `NOT_NULL` keys on the non-null
+ *   default, not on the type: an object defaulting to `{x:1}` gets it, a string declaring
+ *   `default: null` does not (zzemu_def probe, 2026-11-08).
+ * - **`default: null` is a valid declaration, applied as a stored `null`** on a create that omits
+ *   the property, and an explicit `null` is accepted with no `NOT_NULL` (measured with
+ *   `required: []`, on `string` and `["string","null"]`).
  * - **A PATCH `remove` of an undefaulted, non-required property is accepted** (200), the key gone.
  *
  * Faulted, because unmeasured: a mismatch against any other declared type (`number`, `boolean`,
  * `integer`, `relationship`, …) or on any write but a new record's create (`idm-policy/valid-type`);
  * a value or null for a property with no `type`; a null on an undefaulted property outside a create
- * when the schema has no `required` array; any defaulted null outside a create
+ * when the schema has no `required` array; a null (sent or applied from `default: null`) on a
+ * null-defaulted property when the schema has no `required` array, which the null-default probe
+ * did not cover (`idm-policy/valid-type`); any defaulted null outside a create
  * (`idm-policy/not-null`); a refusal naming more than one property, whose order is unmeasured; a
  * PATCH removing a property that declares a `default` (`idm-policy/required`); and an item of a
  * top-level array whose JSON type is not `items.type` (`idm-policy/valid-array-items`): only
@@ -78,7 +83,8 @@ export const POLICY_MEASURED = {
   nestedUnchecked: "schemas under properties and items are stored and not enforced",
   nullAccepted: "a null on an undefaulted property is accepted and stored as null when schema.required exists and omits it",
   nullRefused: "a null fails VALID_TYPE when the schema has no required array",
-  notNull: "explicit null on a defaulted property is refused NOT_NULL on create",
+  notNull: "explicit null on a property with a non-null default is refused NOT_NULL on create",
+  nullDefault: "default: null is applied as a stored null, and a null on that property is accepted with no NOT_NULL, when schema.required exists",
   optionalRemove: "PATCH remove of an undefaulted, non-required property is accepted and the key removed",
 } as const;
 export const POLICY_SOURCE = "docs/api/10-managed-objects.md";
@@ -164,6 +170,7 @@ export function implicitPolicy(type: ManagedType, object: Document, write: Polic
     }
     if (value === null) {
       const defaulted = Object.hasOwn(config, "default") && config.default !== null;
+      const nullDefault = Object.hasOwn(config, "default") && config.default === null;
       if (!newRecord) {
         if (defaulted) {
           return fault("idm-policy/not-null", `${path} has a default and the write sends null. AIC's NOT_NULL is measured only ` +
@@ -179,12 +186,18 @@ export function implicitPolicy(type: ManagedType, object: Document, write: Polic
           "as measured on create");
         continue;
       }
+      if (nullDefault && !hasRequired) {
+        return fault("idm-policy/valid-type", `${path} declares default: null and the schema has no required array. A null ` +
+          "default is measured accepted only with a required array, and an undefaulted null with none is a VALID_TYPE " +
+          "refusal (docs/api/10-managed-objects.md); which applies here is unmeasured");
+      }
       if (defaulted) {
         measured.add(POLICY_MEASURED.notNull);
         failed.push(requirement(name, "NOT_NULL"));
       }
       if (hasRequired) {
-        if (!defaulted) measured.add(POLICY_MEASURED.nullAccepted);
+        if (nullDefault) measured.add(POLICY_MEASURED.nullDefault);
+        else if (!defaulted) measured.add(POLICY_MEASURED.nullAccepted);
       } else {
         measured.add(POLICY_MEASURED.nullRefused);
         failed.push(requirement(name, "VALID_TYPE", "null", config.type));

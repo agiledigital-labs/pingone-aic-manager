@@ -6,8 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/run.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { normaliseManagedConfig } from "../../src/profile/normalise.ts";
-import { type EnvProfile, type ObjectSchema, PROFILE_VERSION } from "../../src/profile/types.ts";
-import { hooksRun, managedPolicy, managedUnavailable, managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
+import { type EnvProfile, type ObjectSchema, PROFILE_VERSION, type PropertySchema } from "../../src/profile/types.ts";
+import { hooksRun, managedInvalidDefault, managedPolicy, managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
 import { parseProfile } from "../../src/profile/store.ts";
 import { IdmConfig } from "../../src/idm/config.ts";
 import { validateDeclarations } from "../../src/idm/declarations.ts";
@@ -100,22 +100,24 @@ describe("managedPolicy gives the lane plain lists (P2-2, sol-r1b)", () => {
   const rule = (extra: Partial<ObjectSchema>) =>
     managedPolicy({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: object(extra) } })["managed/gizmo"];
   it("with a required array: only non-null defaults refuse a null; types split measured from unmeasured", () => {
-    expect(rule({})).toEqual({ defaults: { n: 0, b: false }, notNull: ["n", "b"], nullRefused: ["n", "b"], nullUnmeasured: ["maybe"],
+    expect(rule({})).toEqual({ defaults: { n: 0, b: false, cleared: null }, notNull: ["n", "b"], nullRefused: ["n", "b"], nullUnmeasured: ["maybe"],
       checked: { cleared: "string", plain: "string", tags: "array", box: "object" }, unmeasured: { n: "number", b: "boolean" },
       itemTypes: { tags: "string" }, defaulted: ["n", "b", "cleared"] });
   });
   // Discriminating (measured 2026-11-08): the same type with no required key refuses every typed null.
-  it("with no required array: every typed property refuses a null, an unknown type's null is unmeasured", () => {
+  // A null default without a required array was not probed (the null-default probe used required: []).
+  it("with no required array: every typed property refuses a null, a null default's and an unknown type's are unmeasured", () => {
     const loose = rule({ noRequiredArray: true });
-    expect(loose?.nullRefused).toEqual(["n", "b", "cleared", "plain", "tags", "box"]);
-    expect(loose?.nullUnmeasured).toEqual(["maybe", "owner"]);
+    expect(loose?.nullRefused).toEqual(["n", "b", "plain", "tags", "box"]);
+    expect(loose?.nullUnmeasured).toEqual(["cleared", "maybe", "owner"]);
   });
-  // P3-1 (fix round 2): a null default is still a default to stock policy.js, so the lane faults a
-  // PATCH remove of it.
-  it("a null default is listed as defaulted, and is neither applied nor a NOT_NULL", () => {
+  // sol-r1c, zzemu_def probe D1/D2: `default: null` is applied (stored as null) and gives no NOT_NULL.
+  // P3-1 (fix round 2): it is still a default to stock policy.js, so the lane faults a PATCH remove of it.
+  it("a null default is applied as null, listed as defaulted, and is not a NOT_NULL", () => {
     const profile: EnvProfile = { ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
-      properties: { cleared: { type: "string", default: null } } } } };
-    expect(managedPolicy(profile)["managed/gizmo"]).toMatchObject({ defaults: {}, notNull: [], nullRefused: [], defaulted: ["cleared"] });
+      properties: { cleared: { type: "string", default: null }, both: { type: "string", nullable: true, default: null } } } } };
+    expect(managedPolicy(profile)["managed/gizmo"]).toEqual({ defaults: { cleared: null, both: null }, notNull: [], nullRefused: [],
+      nullUnmeasured: [], checked: { cleared: "string", both: "string" }, unmeasured: {}, itemTypes: {}, defaulted: ["cleared", "both"] });
   });
   it("a type with nothing defaulted still gets a rule", () => {
     expect(managedPolicy({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
@@ -412,16 +414,22 @@ describe("the lane's PATCH null refusals (P2-1)", () => {
 describe("the lane's PATCH remove of a defaulted property (fix round 2, P3-1)", () => {
   // Stock policy.js adds an implicit required for any default; AIC's 403 REQUIRED was measured only
   // with the property also in schema.required. Unmeasured either way, so it faults.
-  // sol-r1 P1-1: a `default: null` on a string no longer reaches this check. It does not match its
-  // declared type, which the IDM emulator already refused, so the whole type is unavailable.
+  // sol-r1c: `default: null` is a valid declaration (zzemu_def probe D1), so it reaches this check
+  // again, as before sol-r1. Removing it is unmeasured for a null default as for a non-null one.
   it.each([
-    ["a non-null default", "defaulted", "d1", "/count", "openidm-managed-policy/defaulted"],
-    ["a null default (the type is unavailable)", "nulldef", "n1", "/cleared", "openidm-managed-invalid-default/nulldef.cleared"],
-  ])("removing a property with %s faults and writes nothing", (_name, type, id, field, fault) => {
+    ["a non-null default", "defaulted", "d1", "/count"],
+    // Discriminating: a null default gives the type no NOT_NULL, and is still a default.
+    ["a null default", "nulldef", "n1", "/cleared"],
+  ])("removing a property with %s faults and writes nothing", (_name, type, id, field) => {
     const run = runScriptWithFaults(catching(`openidm.patch('managed/${type}/${id}', null, [{operation: 'remove', field: '${field}'}])`),
       seeded, { profile: lane });
-    expect(run.faults.map((fault) => fault.id)).toEqual([fault]);
+    expect(run.faults.map((fault) => fault.id)).toEqual([`openidm-managed-policy/${type}`]);
     expect(run.effects.managedStore?.[`managed/${type}`]).toEqual(seeded.managed[`managed/${type}` as keyof typeof seeded.managed]);
+  });
+  it("removing an undefaulted property of a null-defaulted type still writes", () => {
+    const run = runScriptWithFaults("openidm.patch('managed/nulldef/n1', null, [{operation: 'remove', field: '/note'}]);", seeded, { profile: lane });
+    expect(run.faults).toEqual([]);
+    expect(run.effects.managedStore?.["managed/nulldef"]).toEqual([{ _id: "n1", _rev: "1", cleared: "x" }]);
   });
   it("removing an undefaulted property of the same type still writes", () => {
     const run = runScriptWithFaults("openidm.patch('managed/defaulted/d1', null, [{operation: 'add', field: '/mail', value: 'm'}, " +
@@ -481,45 +489,70 @@ describe("one name per type: map key and object.name must agree (sol-r1 P1-2)", 
     expect(Object.keys(managedPolicy(aliased(2)))).toEqual(["managed/gizmo"]);
     const bad = aliased(2);
     bad.objects.gizmo!.properties.flag = { type: "boolean", default: "nope" };
-    expect(Object.keys(managedUnavailable(bad))).toEqual(["managed/gizmo"]);
+    expect(managedInvalidDefault(bad)?.id).toBe("openidm-managed-invalid-default/gizmo.flag");
   });
 });
 
-describe("a default that does not match its type makes the type unavailable (sol-r1 P1-1)", () => {
+describe("an invalid default anywhere in the profile faults every managed call (sol-r1 P1-1, sol-r1c)", () => {
   const config = (flag: unknown) => ({ objects: [{ name: "gizmo", schema: { required: [], properties: { flag, note: { type: "string" } } } }] });
   const profileOf = (flag: unknown) => normaliseManagedConfig(config(flag), META);
+  type Verdict = "valid" | "invalid" | "unmeasured";
   /** What the IDM emulator's config check says about the same raw config. */
-  const idmRefuses = async (flag: unknown): Promise<boolean> => {
+  const idmVerdict = async (flag: unknown): Promise<Verdict> => {
     const evidence = new Evidence();
     try {
       await evidence.run(async () => validateDeclarations(new IdmConfig({ sync: { mappings: [] }, managed: config(flag) } as never), evidence));
-      return false;
+      return "valid";
     } catch (error) {
-      return /invalid default|nested property behavior default/.test(String(error));
+      const text = String(error);
+      if (/nested property behavior default/.test(text)) return "unmeasured";
+      const match = /openidm-managed-(invalid|unmeasured)-default\/gizmo\.flag: (invalid|unmeasured) default: gizmo\/flag/.exec(text);
+      if (!match) throw error;
+      return match[1] as Verdict;
     }
   };
+  const laneVerdict = (flag: unknown): Verdict => {
+    const id = managedInvalidDefault(profileOf(flag))?.id;
+    if (id === undefined) return "valid";
+    const match = /^openidm-managed-(invalid|unmeasured)-default\/gizmo\.flag$/.exec(id);
+    if (!match) throw new Error(`unexpected id ${id}`);
+    return match[1] as Verdict;
+  };
   // Both lanes judge the same raw declaration with the same function, so they must agree on every row.
+  // The rows marked measured are the zzemu_def probe (2026-11-08) or doc 10's boolean "nope".
   it.each([
-    ["the measured case: boolean, default \"nope\"", { type: "boolean", default: "nope" }, true],
-    ["boolean false", { type: "boolean", default: false }, false],
-    ["number 0", { type: "number", default: 0 }, false],
-    ["number as string", { type: "number", default: "0" }, true],
-    ["string", { type: "string", default: "x" }, false],
-    ["null on a string", { type: "string", default: null }, true],
-    ["array of strings", { type: "array", items: { type: "string" }, default: ["a", "b"] }, false],
-    // Discriminating for the recursive check: the outer value is an array, an item is not a string.
-    ["array with a wrong-typed item", { type: "array", items: { type: "string" }, default: ["a", 2] }, true],
-    ["a default nested inside items", { type: "array", items: { type: "string", default: "a" } }, true],
-    ["no default", { type: "boolean" }, false],
-  ])("%s", async (_name, flag, invalid) => {
-    expect(await idmRefuses(flag)).toBe(invalid);
-    const table = managedUnavailable(profileOf(flag));
-    expect(table["managed/gizmo"]?.id).toBe(invalid ? "openidm-managed-invalid-default/gizmo.flag" : undefined);
+    ["measured: boolean, default \"nope\" (D5)", { type: "boolean", default: "nope" }, "invalid"],
+    ["measured: boolean true (the control)", { type: "boolean", default: true }, "valid"],
+    ["boolean false", { type: "boolean", default: false }, "valid"],
+    ["number 0", { type: "number", default: 0 }, "valid"],
+    ["number as string", { type: "number", default: "0" }, "invalid"],
+    ["string", { type: "string", default: "x" }, "valid"],
+    // Discriminating for sol-r1's null rule, which called this invalid.
+    ["measured: null on a string (D1)", { type: "string", default: null }, "valid"],
+    ["null on a boolean (only string was probed)", { type: "boolean", default: null }, "unmeasured"],
+    ["measured: array of strings (D3 control)", { type: "array", items: { type: "string" }, default: ["a", "b"] }, "valid"],
+    // Discriminating for the item check: the outer value is an array, an item is not a string.
+    ["measured: array with a wrong-typed item (D3)", { type: "array", items: { type: "string" }, default: ["a", 2] }, "invalid"],
+    ["an array of arrays (not probed)", { type: "array", items: { type: "array" }, default: [["a"]] }, "unmeasured"],
+    // Discriminating for the object rule: the old check recursed into properties and called this invalid.
+    ["measured: object with a nested mismatch (D4)", { type: "object", properties: { x: { type: "string" } }, default: { x: 1 } }, "valid"],
+    ["object as a string", { type: "object", default: "s" }, "invalid"],
+    ["a relationship default (no JSON shape here)", { type: "relationship", default: { _ref: "managed/x/1" } }, "unmeasured"],
+    ["a default nested inside items", { type: "array", items: { type: "string", default: "a" } }, "unmeasured"],
+    ["no default", { type: "boolean" }, "valid"],
+  ] as const)("%s", async (_name, flag, verdict) => {
+    expect(await idmVerdict(flag)).toBe(verdict);
+    expect(laneVerdict(flag)).toBe(verdict);
+  });
+  // The IDM emulator refuses a type list outright (a shape it does not take), so this row is the lane's alone.
+  it("measured: a nullable string with default: null (D2) is valid in the lane", () => {
+    expect(laneVerdict({ type: ["string", "null"], default: null })).toBe("valid");
   });
 
-  // The lane: omitted and valid explicit values both fault, on every method, and nothing is stored.
-  const bad = profileOf({ type: "boolean", default: "nope" });
-  const given = { managed: { "managed/gizmo": [{ _id: "g0", _rev: "1", note: "a" }] } };
+  // The lane: every call faults, on the bad type, on a valid sibling, and on a type the profile lacks.
+  const mixed = normaliseManagedConfig({ objects: [...config({ type: "boolean", default: "nope" }).objects,
+    { name: "fine", schema: { required: [], properties: { flag: { type: "boolean", default: false } } } }] }, META);
+  const given = { managed: { "managed/gizmo": [{ _id: "g0", _rev: "1", note: "a" }], "managed/fine": [{ _id: "f0", _rev: "1", flag: true }] } };
   it.each([
     ["create omitting the property", "openidm.create('managed/gizmo', 'g1', {})"],
     ["create with a valid explicit value", "openidm.create('managed/gizmo', 'g1', {flag: true})"],
@@ -528,18 +561,72 @@ describe("a default that does not match its type makes the type unavailable (sol
     ["update", "openidm.update('managed/gizmo/g0', null, {note: 'b', flag: true})"],
     ["patch", "openidm.patch('managed/gizmo/g0', null, [{operation: 'replace', field: '/note', value: 'b'}])"],
     ["delete", "openidm.delete('managed/gizmo/g0', null)"],
+    // Discriminating for sol-r1c: sol-r1 faulted only the bad type, and these wrote or answered.
+    ["a valid sibling's create", "openidm.create('managed/fine', 'f1', {})"],
+    ["a valid sibling's read", "openidm.read('managed/fine/f0')"],
+    ["a valid sibling's patch", "openidm.patch('managed/fine/f0', null, [{operation: 'replace', field: '/flag', value: false}])"],
+    ["a type the profile does not declare", "openidm.query('managed/absent', {_queryFilter: 'true'})"],
   ])("%s faults and leaves the store alone", (_name, call) => {
-    const run = runScriptWithFaults(catching(call), given, { profile: bad });
+    const run = runScriptWithFaults(catching(call), given, { profile: mixed });
     expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-managed-invalid-default/gizmo.flag"]);
-    expect(run.effects.managedStore?.["managed/gizmo"]).toEqual(given.managed["managed/gizmo"]);
+    expect(run.effects.managedStore).toEqual(given.managed);
   });
-  it("the profile is not repaired: the default is still in it, and a valid sibling type still writes", () => {
-    const mixed = normaliseManagedConfig({ objects: [...config({ type: "boolean", default: "nope" }).objects,
-      { name: "fine", schema: { required: [], properties: { flag: { type: "boolean", default: false } } } }] }, META);
+  it("the profile is not repaired: the default is still in it", () => {
     expect(mixed.objects.gizmo?.properties.flag?.default).toBe("nope");
-    const run = runScriptWithFaults("openidm.create('managed/fine', 'f1', {});", {}, { profile: mixed });
+  });
+  it("an unmeasured default faults the lane under its own id", () => {
+    const run = runScriptWithFaults(catching("openidm.read('managed/gizmo/g0')"), given, { profile: profileOf({ type: "boolean", default: null }) });
+    expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-managed-unmeasured-default/gizmo.flag"]);
+  });
+  // Positive control: the same two types with the default fixed write as before.
+  it("with every default valid, the sibling writes and its default lands", () => {
+    const fixed = normaliseManagedConfig({ objects: [...config({ type: "boolean", default: true }).objects,
+      { name: "fine", schema: { required: [], properties: { flag: { type: "boolean", default: false } } } }] }, META);
+    const run = runScriptWithFaults("openidm.create('managed/fine', 'f1', {});", given, { profile: fixed });
     expect(run.faults).toEqual([]);
-    expect(run.effects.managedStore?.["managed/fine"]).toEqual([{ _id: "f1", _rev: "local-rev", flag: false }]);
+    expect(run.effects.managedStore?.["managed/fine"]?.[1]).toEqual({ _id: "f1", _rev: "local-rev", flag: false });
+  });
+});
+
+describe("the lane answers a null default (sol-r1c, zzemu_def probe D1/D2)", () => {
+  const profile = (text: PropertySchema, extra: Partial<ObjectSchema> = {}): EnvProfile => ({ ...META, profileVersion: PROFILE_VERSION, sources: [],
+    objects: { gizmo: { name: "gizmo", required: [], hooks: [], properties: { text, note: { type: "string" } }, ...extra } } });
+  const store = (run: ReturnType<typeof runScriptWithFaults>) => run.effects.managedStore?.["managed/gizmo"];
+  const nullDefault = profile({ type: "string", default: null });
+  it("a create omitting it stores text: null (present, not absent)", () => {
+    const run = runScriptWithFaults("openidm.create('managed/gizmo', 'g1', {note: 'a'});", {}, { profile: nullDefault });
+    expect(run.faults).toEqual([]);
+    expect(store(run)).toEqual([{ _id: "g1", _rev: "local-rev", note: "a", text: null }]);
+  });
+  // Discriminating: the same body against default: null (201) and against default: "x" (403 NOT_NULL).
+  it.each([
+    ["default: null", { type: "string", default: null }, "stored"],
+    ["a nullable string with default: null", { type: "string", nullable: true, default: null }, "stored"],
+    ["default: \"x\"", { type: "string", default: "x" }, 403],
+  ] as const)("{text: null} against %s", (_name, text, outcome) => {
+    const run = runScriptWithFaults("try { openidm.create('managed/gizmo', 'g1', {text: null}); } " +
+      "catch (e) { nodeState.putShared('code', e.javaException.getCode()); }", {}, { profile: profile(text) });
+    expect(run.faults).toEqual([]);
+    if (outcome === "stored") expect(store(run)).toEqual([{ _id: "g1", _rev: "local-rev", text: null }]);
+    else {
+      expect(run.effects.sharedState.final.code).toBe(403);
+      expect(store(run) ?? []).toEqual([]);
+    }
+  });
+  it("a nullable string with default: null refuses a number (D2, measured 403)", () => {
+    const run = runScriptWithFaults("try { openidm.create('managed/gizmo', 'g1', {text: 5}); } " +
+      "catch (e) { nodeState.putShared('code', e.javaException.getCode()); }", {}, { profile: profile({ type: "string", nullable: true, default: null }) });
+    expect(run.faults).toEqual([]);
+    expect(run.effects.sharedState.final.code).toBe(403);
+  });
+  // Unmeasured: the null-default probe used required: [] throughout.
+  it.each([
+    ["omitting it", "openidm.create('managed/gizmo', 'g1', {note: 'a'})"],
+    ["sending null", "openidm.create('managed/gizmo', 'g1', {text: null})"],
+  ])("with no required array, %s faults", (_name, call) => {
+    const run = runScriptWithFaults(catching(call), {}, { profile: profile({ type: "string", default: null }, { noRequiredArray: true }) });
+    expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-managed-policy/gizmo"]);
+    expect(store(run) ?? []).toEqual([]);
   });
 });
 

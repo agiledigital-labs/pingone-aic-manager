@@ -37,7 +37,10 @@ describe("implicitPolicy decides from the real schema", () => {
     ["undefaulted null, required names another property", gadget(["count"]), { text: null }, creating, "pass"],
     // With no required key a defaulted null is both entries, NOT_NULL first (measured order).
     ["defaulted null, no required array", gadget(), { flag: null }, creating, "refuse", [nn("flag"), vt("flag", "null", "boolean")]],
-    ["default: null is no default", gadget([]), { nothing: null }, creating, "pass"],
+    // sol-r1c, zzemu_def probe D1: NOT_NULL keys on a non-null default, so default: null gives none.
+    ["default: null gives no NOT_NULL (measured)", gadget([]), { nothing: null }, creating, "pass"],
+    // Unmeasured: the null-default probe used required: [] throughout.
+    ["default: null with no required array", gadget(), { nothing: null }, creating, "fault", "idm-policy/valid-type"],
     ["defaulted null over an existing record", gadget([]), { count: null }, { creating: false }, "fault", "idm-policy/not-null"],
     ["undefaulted null over an existing record, no required array", gadget(), { text: null }, { creating: false }, "fault", "idm-policy/valid-type"],
     ["undefaulted null over an existing record, required: []", gadget([]), { text: null }, { creating: false }, "pass"],
@@ -101,6 +104,7 @@ describe("implicitPolicy decides from the real schema", () => {
   // Each pass names what it relied on, so provenance says measured only where the probe covered it.
   it.each([
     ["an accepted null", gadget([]), { text: null }, creating, [POLICY_MEASURED.nullAccepted], []],
+    ["a null on a null-defaulted property", gadget([]), { nothing: null }, creating, [POLICY_MEASURED.nullDefault], []],
     ["nested values", gadget([]), { rows: [{ inner: "bad" }] }, creating, [POLICY_MEASURED.nestedUnchecked], []],
     ["a nested null", gadget([]), { box: { inner: null } }, creating, [POLICY_MEASURED.nestedUnchecked], [NESTED_NULL]],
     ["an optional remove", gadget([]), {}, { creating: false, patchedFrom: { text: "a" }, operations: [{ operation: "remove", field: "/text" }] },
@@ -115,8 +119,8 @@ describe("the emulator applies it to writes without a policy evaluator", () => {
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); });
-  // Config validation already refuses a `default: null` on a string, so the emulator's schema
-  // drops that one property; the unit table above covers it.
+  // The emulator's schema drops the null-defaulted property so that `gadget()` (no required key)
+  // creates are not all the unmeasured null-default fault; the null-default tests below build their own.
   const make = (type: ManagedType, options: ConstructorParameters<typeof IdmEmulator>[2] = {}) => {
     const { nothing: _nothing, ...properties } = type.schema.properties;
     return new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [{ ...type, schema: { ...type.schema, properties } }] } }), runner, options);
@@ -140,6 +144,39 @@ describe("the emulator applies it to writes without a policy evaluator", () => {
     expect(String(result.value)).toContain("Policy validation failed");
     const read = await emu.request({ method: "GET", path: "managed/gadget/g1" });
     expect(read.status).toBe(404);
+  });
+
+  // sol-r1c, zzemu_def probe 2026-11-08 (D1). A config declaring `default: null` is served (sol-r1
+  // refused it as an invalid default), the default lands as a stored null, and an explicit null is
+  // accepted. Discriminating: the same {text: null} against default: "x" is 403 NOT_NULL.
+  const textType = (text: Document): IdmEmulator => new IdmEmulator(new IdmConfig({ sync: { mappings: [] },
+    managed: { objects: [{ name: "gadget", schema: { required: [], properties: { text, note: { type: "string" } } } }] } }), runner);
+  it("a create omitting a null-defaulted property stores and returns text: null", async () => {
+    const emu = textType({ type: "string", default: null });
+    const result = await emu.request({ ...createPath, body: { _id: "d1", note: "a" } });
+    expect(result.status).toBe(201);
+    expect(result.body).toMatchObject({ text: null, note: "a" });
+    expect(Object.hasOwn(result.body as Document, "text")).toBe(true);
+    expect(emu.emulationFailures).toEqual([]);
+    const read = await emu.request({ method: "GET", path: "managed/gadget/d1" });
+    expect((read.body as Document).text).toBeNull();
+  });
+  it.each([
+    ["default: null", { type: "string", default: null }, 201],
+    ["default: \"x\"", { type: "string", default: "x" }, 403],
+  ] as const)("{text: null} against %s", async (_name, text, status) => {
+    const result = await textType(text).request({ ...createPath, body: { _id: "d2", text: null } });
+    expect(result.status).toBe(status);
+    if (status === 403) expect((result.body as Document).detail).toEqual({ result: false,
+      failedPolicyRequirements: [{ policyRequirements: [{ policyRequirement: "NOT_NULL" }], property: "text" }] });
+  });
+  // NOT_NULL is not the boolean type's: an object defaulting to {x:1} gets it too (D4).
+  it("a null on an object with a non-null default is NOT_NULL", async () => {
+    const result = await textType({ type: "object", default: { x: 1 }, properties: { x: { type: "string" } } })
+      .request({ ...createPath, body: { _id: "d3", text: null } });
+    expect(result.status).toBe(403);
+    expect((result.body as Document).detail).toEqual({ result: false,
+      failedPolicyRequirements: [{ policyRequirements: [{ policyRequirement: "NOT_NULL" }], property: "text" }] });
   });
 
   // P2-3, measured 2026-11-08. Discriminating: the same body against required: [] and no required key.

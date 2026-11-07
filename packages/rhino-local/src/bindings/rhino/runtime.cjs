@@ -28,7 +28,7 @@ var __rhinoLocal = {
   openidmFailures: [],
   managedWriteFaults: null,
   managedPolicy: null,
-  managedUnavailable: null,
+  managedInvalidDefault: null,
   openidmCallCounts: {},
   generatedId: 0,
   outcome: null,
@@ -2231,7 +2231,7 @@ function __rhinoLocalImplicitPolicy(method, collection, content, creatingNew) {
       if (rule.nullUnmeasured.indexOf(name) >= 0) {
         unmeasured.push(name + " is null on a nullable or untyped property, which nothing measured");
       } else if (rule.nullRefused.indexOf(name) >= 0) {
-        refused.push(name + (rule.notNull.indexOf(name) >= 0 ? " (NOT_NULL: it declares a default)" : " (VALID_TYPE: the schema has no required array)"));
+        refused.push(name + (rule.notNull.indexOf(name) >= 0 ? " (NOT_NULL: it declares a non-null default)" : " (VALID_TYPE: the schema has no required array)"));
       }
       return;
     }
@@ -2279,9 +2279,18 @@ function __rhinoLocalApplyDefaults(collection, stored) {
     return;
   }
   Object.keys(rule.defaults).forEach(function (name) {
-    if (!__rhinoLocalHas(stored, name)) {
-      stored[name] = __rhinoLocalClone(rule.defaults[name]);
+    if (__rhinoLocalHas(stored, name)) {
+      return;
     }
+    // A null default is measured applied (stored as null) only when the
+    // schema has a required array; without one it is in nullUnmeasured.
+    if (rule.defaults[name] === null && rule.nullUnmeasured.indexOf(name) >= 0) {
+      throw __rhinoLocalFault("openidm-managed-policy/" + collection.replace(/^managed\//, ""),
+        "rhino-local: openidm.create: " + collection + ": " + name + " declares default: null and the schema has no " +
+          "required array. A null default is measured applied only with one, and an undefaulted null without one is " +
+          "VALID_TYPE (docs/api/10), so what AIC does here is unmeasured. Send the property, or expect the fault (E19)");
+    }
+    stored[name] = __rhinoLocalClone(rule.defaults[name]);
   });
 }
 
@@ -2319,16 +2328,17 @@ function __rhinoLocalManagedWriteFault(method, collection) {
   throw __rhinoLocalFault(fault.id, "rhino-local: openidm." + method + ": " + fault.message);
 }
 
-// A type whose profile declaration AIC cannot serve (sol-r1 P1-1): a default
-// that does not match its declared type. AIC accepts the config and then 404s
-// every call on the type (docs/api/10); what a script's openidm call answers is
-// unmeasured, so every call faults, before anything else about it is judged.
-function __rhinoLocalUnavailableType(method, collection) {
-  var table = __rhinoLocal.managedUnavailable;
-  if (!table || !__rhinoLocalHas(table, collection)) {
+// A profile with an invalid default anywhere (sol-r1c): AIC stores that
+// config/managed but keeps serving its last good compile for every type
+// (measured 2026-11-08, docs/api/10), which the profile does not describe. So
+// every call on any managed/<type> faults, before anything else is judged,
+// decided in write-guard.ts managedInvalidDefault.
+function __rhinoLocalInvalidDefault(method, collection) {
+  var fault = __rhinoLocal.managedInvalidDefault;
+  if (!fault || !/^managed\/[^/]+/.test(String(collection))) {
     return;
   }
-  throw __rhinoLocalFault(table[collection].id, "rhino-local: openidm." + method + ": " + table[collection].message);
+  throw __rhinoLocalFault(fault.id, "rhino-local: openidm." + method + ": " + collection + ": " + fault.message);
 }
 
 // A type a profile says the tenant does not have. Without a profile an
@@ -2579,7 +2589,7 @@ openidm.read = function (resourceName, _params, fields) {
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("read", resource);
   var split = __rhinoLocalSplitResource(resource);
-  __rhinoLocalUnavailableType("read", split.collection);
+  __rhinoLocalInvalidDefault("read", split.collection);
   if (split.recordId === null) {
     throw __rhinoLocalFault("openidm-collection-path-as-record", 
       "rhino-local: openidm.read: " +
@@ -2610,7 +2620,7 @@ openidm.query = function (resourceName, params, fields) {
   }
   var collection = String(resourceName);
   __rhinoLocalPushOpenidm("query", collection, params);
-  __rhinoLocalUnavailableType("query", collection);
+  __rhinoLocalInvalidDefault("query", collection);
   // AIC's text, HTML-escaped as it comes back (corpus binding-openidm-writes
   // query/2/absent-type, live; docs/api/12 openidm query).
   if (__rhinoLocalAbsentType(collection)) {
@@ -2704,7 +2714,7 @@ openidm.create = function (resourceName, newResourceId, content) {
     recordedResource = collection + "/" + id;
   }
   __rhinoLocalPushOpenidm("create", recordedResource, content);
-  __rhinoLocalUnavailableType("create", collection);
+  __rhinoLocalInvalidDefault("create", collection);
   if (__rhinoLocalAbsentType(collection)) {
     throw __rhinoLocalUnknownTypeFault("create", collection);
   }
@@ -2754,7 +2764,7 @@ openidm.update = function (id, _rev, value) {
   }
   var resource = String(id);
   __rhinoLocalPushOpenidm("update", resource, value);
-  __rhinoLocalUnavailableType("update", __rhinoLocalSplitResource(resource).collection);
+  __rhinoLocalInvalidDefault("update", __rhinoLocalSplitResource(resource).collection);
   var found = __rhinoLocalRequireRecord("update", resource);
   __rhinoLocalBagAccess("update", resource, found.record);
   __rhinoLocalCheckRev("update", _rev, found.record);
@@ -2773,7 +2783,7 @@ openidm.patch = function (resourceName, _rev, patch) {
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("patch", resource, patch);
-  __rhinoLocalUnavailableType("patch", __rhinoLocalSplitResource(resource).collection);
+  __rhinoLocalInvalidDefault("patch", __rhinoLocalSplitResource(resource).collection);
   var i;
   var op;
   var field;
@@ -2853,7 +2863,7 @@ openidm.delete = function (resourceName, _rev) {
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("delete", resource);
-  __rhinoLocalUnavailableType("delete", __rhinoLocalSplitResource(resource).collection);
+  __rhinoLocalInvalidDefault("delete", __rhinoLocalSplitResource(resource).collection);
   var found = __rhinoLocalRequireRecord("delete", resource);
   __rhinoLocalBagAccess("delete", resource, found.record);
   if (_rev !== null && _rev !== undefined && String(_rev) !== String(found.record._rev)) {
@@ -2882,7 +2892,7 @@ openidm.action = function (resource, actionName, content, params) {
   // raises for an absent type is unmeasured, and a stub cannot make it exist.
   var managedType = /^(managed\/[^/]+)(?:\/|$)/.exec(String(resource));
   if (managedType) {
-    __rhinoLocalUnavailableType("action", managedType[1]);
+    __rhinoLocalInvalidDefault("action", managedType[1]);
   }
   if (managedType && __rhinoLocalAbsentType(managedType[1])) {
     throw __rhinoLocalUnknownTypeFault("action", managedType[1]);
@@ -4317,10 +4327,11 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.managedPolicy = given.managedPolicy
     ? __rhinoLocalClone(given.managedPolicy)
     : null;
-  // `managed/<type>` → { id, message }: types an invalid declaration makes
-  // unavailable (sol-r1 P1-1), decided in write-guard.ts managedUnavailable.
-  __rhinoLocal.managedUnavailable = given.managedUnavailable
-    ? __rhinoLocalClone(given.managedUnavailable)
+  // { id, message } or null: the fault every managed call raises when the
+  // profile declares an invalid default (sol-r1c), from write-guard.ts
+  // managedInvalidDefault.
+  __rhinoLocal.managedInvalidDefault = given.managedInvalidDefault
+    ? __rhinoLocalClone(given.managedInvalidDefault)
     : null;
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
   __rhinoLocal.esvProvided = given.esv !== undefined;
