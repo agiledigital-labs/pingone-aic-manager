@@ -533,6 +533,8 @@ describe("an invalid default anywhere in the profile faults every managed call (
     ["measured: array of strings (D3 control)", { type: "array", items: { type: "string" }, default: ["a", "b"] }, "valid"],
     // Discriminating for the item check: the outer value is an array, an item is not a string.
     ["measured: array with a wrong-typed item (D3)", { type: "array", items: { type: "string" }, default: ["a", 2] }, "invalid"],
+    // Discriminating: a null item is neither a match nor a measured mismatch.
+    ["a null item in an array default (not probed)", { type: "array", items: { type: "string" }, default: ["a", null] }, "unmeasured"],
     ["an array of arrays (not probed)", { type: "array", items: { type: "array" }, default: [["a"]] }, "unmeasured"],
     // Discriminating for the object rule: the old check recursed into properties and called this invalid.
     ["measured: object with a nested mismatch (D4)", { type: "object", properties: { x: { type: "string" } }, default: { x: 1 } }, "valid"],
