@@ -788,11 +788,12 @@ run no hook and evaluate no policy. On AIC the same write runs both, so for a
 type whose profile declares either, a local pass says nothing (an `alpha_user`
 create without `mail`/`givenName`/`sn` is a measured 403 there). Such a write
 is a harness fault: `openidm-managed-hook/<type>.<hook>`, naming the first hook
-the write would run (a create runs `onCreate`, property `onValidate`,
-`onValidate`, property `onStore`, `onStore`, `postCreate`, `onSync`; an update
-or patch the `onUpdate`/`postUpdate` equivalents; a delete `onDelete`,
-`postDelete`, `onSync`; read hooks only for an update or patch, which read the
-record first; hook names the harness does not know count for every write), or
+the write would run, in the measured order (a create runs `onCreate`, property
+`onValidate`, `onValidate`, property `onStore`, `onStore`, `postCreate`,
+`onSync`; an update or patch first reads the record, running `onRetrieve`,
+property `onRetrieve` and `onRead`, then the `onUpdate`/`postUpdate`
+equivalents of the create chain; a delete `onDelete`, `postDelete`, `onSync`;
+hook names the harness does not know count for every write), or
 `openidm-managed-policy/<type>` when the type declares only policies
 (`required`, an `enum`, property `policies`, `conditionalPolicies` or
 `fallbackPolicies`; a delete is not judged on policy). A write a test stubs with `given.openidmFailures`
@@ -807,7 +808,14 @@ profile cannot be re-pulled: add `hooks` to each type (`[]` for none) and
 tenant gives them, then set `"profileVersion": 2`. A type's
 defaults are applied on create, and a `null` sent for a defaulted property is
 AIC's measured `403 Policy validation failed` on a create of a new record and
-a harness fault otherwise (`docs/rhino-local-gaps.md`). Expect this to fail
+a harness fault otherwise (`docs/rhino-local-gaps.md`). A type whose profile
+records a `default` that does not match its declared type (AIC accepts
+`{"type": "boolean", "default": "nope"}` and then 404s every call on the type)
+faults every `openidm` call on it, reads included, as
+`openidm-managed-invalid-default/<type>.<property>`; the IDM emulator refuses
+the same declarations with the same rule. A profile must key each type by its
+own `name`: one whose `objects` key and `name` disagree is refused when read
+and when a case is given it. Expect this to fail
 client tests that write without stubs; the fault tally counts them, by type
 and hook (E19).
 - `aic-script-tester-show-log [--stdout]` fetches the logs of recorded failures. It
