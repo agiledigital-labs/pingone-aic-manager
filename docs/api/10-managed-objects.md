@@ -417,7 +417,7 @@ other:
 | **Create** from a next-gen journey script's `openidm.create` with the property `undefined` | **403 `NOT_NULL`**, exactly as `null` — the key is sent as `null`, not dropped, so the default does not land (2026-11-04, below) |
 | Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — the null guard is independent of `required`        |
 | **Update** (`PUT` whole record) omitting the property          | **200, and the stored value is dropped** — `required` does not catch this     |
-| `PATCH remove` the property                                    | 403 `REQUIRED`                                                                |
+| `PATCH remove` the property (still named in `schema.required`) | 403 `REQUIRED`                                                                |
 | `PATCH replace` it with `null`                                 | 400 — rejected as an invalid JSON patch, before policy                        |
 
 **Note (2026-11-06, no new measurement):** every `null` row above was measured
@@ -435,8 +435,12 @@ property, so it predicts acceptance there. "The null guard is independent of
 Three consequences worth carrying:
 
 - **Removing `required` will not make a `default` "start working"** — the
-  default already applies on create, and dropping `required` only loses the
-  `PATCH remove` guard. It does not make an explicit `null` acceptable.
+  default already applies on create. It does not make an explicit `null`
+  acceptable. Whether it also loses the `PATCH remove` guard is **unmeasured**
+  (inference, 2026-11-08): the 403 `REQUIRED` above was taken with the property
+  still in `schema.required`, and stock `policy.js` adds an implicit `required`
+  for any `default`, `null` included, which predicts the remove is still
+  refused. See Q18 in `99-quirks-and-open-questions.md`.
 - **`null` is never a substitute for "unset".** A caller that sends `null` for
   an untouched field gets a 403 that reads like "you must supply a value", when
   the fix is to _omit_ the key and let the default land. Strip null-valued keys
