@@ -377,6 +377,8 @@ describe("one name per type: map key and object.name must agree (sol-r1 P1-2)", 
   });
   it("parseProfile refuses an entry that is not an object, and accepts a consistent profile", () => {
     expect(() => parseProfile(JSON.stringify({ ...aliased(2), objects: { gizmo: 7 } }), "/x")).toThrow(/objects\["gizmo"\]\.name is missing/);
+    // `objects` is a map keyed by name; an array keys by index, which no pull writes.
+    expect(() => parseProfile(JSON.stringify({ ...aliased(2), objects: [] }), "/x")).toThrow(/`objects` is not an object/);
     expect(parseProfile(JSON.stringify(lane), "/x").objects.hooked?.name).toBe("hooked");
   });
   // A runner caller can pass a profile object directly; the preamble refuses it there too.
