@@ -24,7 +24,11 @@ array each item against `items.type` (`["a", 2]` against `items: string` is
 fatal, `["a", "b"]` is fine). An object default's nested `properties` are not
 checked, and `default: null` on a string (plain or nullable) is valid, stored as
 `null`, with no `NOT_NULL`. `NOT_NULL` keys on a non-null default, not on the
-type. Details, the unavailable-type surface, and what rhino-local does about
+type. A follow-up the same day (zzemu_nd, `probe-nd/note.md`, run by someone
+else, read by the rhino-local writer) found `default: null` valid on every type
+tried, an array's null default stored as `[]`, and that **no JSON number is an
+`integer`**: `{i: 3}` is 403 `VALID_TYPE invalidType: "number"`, so a numeric
+`integer` default — `3` included — is invalid and freezes the config. Details, the unavailable-type surface, and what rhino-local does about
 it: doc 10, "An invalid `default` freezes all of `config/managed`".
 
 The `aic managed` default coercion already refused both measured invalid
@@ -294,8 +298,11 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
   - a **top-level** array whose own items mismatch `items.type`
     (`{tags: [2]}` with `tags` a top-level `string[]`); both rhino-local lanes
     fault it;
-  - a top-level mismatch against a declared `number`, `integer` or `boolean`
-    (measured: `string`, `object`, `array`); both lanes fault it;
+  - ~~a top-level mismatch against a declared `number`, `integer` or
+    `boolean`~~ — answered 2026-11-08 by the zzemu_nd probe
+    (`probe-nd/note.md`): 403 `VALID_TYPE` on each (`"x"` against all three),
+    and on `integer` every number too (`invalidType: "number"`). Both
+    rhino-local lanes now emulate the 403;
   - all of the above from a next-gen journey script's `openidm` binding.
 - **To settle the rest:** on a throwaway type with `required: []`, an
   undefaulted string and a defaulted property not in `required`: `PUT` a whole
