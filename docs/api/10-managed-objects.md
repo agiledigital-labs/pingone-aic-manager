@@ -394,17 +394,92 @@ that writes a schema and then immediately writes records against it must poll
 for that, not for the type responding. (`scripts/experiment-managed-defaults.sh`
 does exactly this.)
 
-**A type-mismatched `default` bricks the object with no error anywhere.**
-`{"type": "boolean", "default": "nope"}` is accepted by the config `PUT` with
-**200**, and the managed object then never comes live: every
-`/openidm/managed/<object>` call returns **404 indefinitely** (still 404 after
-two minutes of polling). Nothing server-side reports why. The blast radius is
-that one object — every other managed type keeps serving, and removing the bad
-default restores it. Because there is no server-side signal,
-`aic managed field add`/`edit` coerce `--default` against the declared type and
-refuse a mismatch locally. A default outside an `enum` is refused for a
-different reason: the default is applied before policy, so every create would
-fail `VALID_ENUM_VALUE`.
+**An invalid `default` freezes all of `config/managed`, with no error
+anywhere (corrected 2026-11-08).** `{"type": "boolean", "default": "nope"}` is
+accepted by the config `PUT` with **200**, reads back verbatim, and the object
+never comes live: every `/openidm/managed/<object>` call returns **404
+indefinitely**. This doc used to say "the blast radius is that one object".
+**That was wrong.** The config change as a whole fails to apply, and IDM keeps
+serving the **last good compile** of `config/managed` (zzemu_def probe below):
+
+- a valid type added while the bad one is present stays 404 — a type declaring
+  nothing but a readiness sentinel stayed 404 for 150 s, twice;
+- a type **removed** while the bad one is present keeps serving: it answered
+  200 for a minute after its removal was confirmed, and `create {}` still
+  applied its default;
+- changed schemas keep their old behaviour, by the same mechanism;
+- types that were already live keep working, which is why "the other types
+  still answer" is not evidence that a schema write took effect;
+- removing the bad declaration applies the **whole** pending document at once:
+  everything waiting came live, and the removed type went 404, at the first
+  poll (≤1 s).
+
+Because there is no server-side signal, `aic managed field add`/`edit` coerce
+`--default` against the declared type (array items included) and refuse a
+mismatch locally. A readiness check after any schema write has to see a
+sentinel default land on the **changed** type; a check that only re-reads types
+that were already live stays green while every later managed change is
+frozen. A default outside an `enum` is refused for a different reason: the
+default is applied before policy, so every create would fail
+`VALID_ENUM_VALUE`.
+
+**Default validation (verified 2026-11-08).** What makes a `default` invalid,
+from the same probe (each type added alone, with `required: []`):
+
+| Declaration                                                         | Valid? | Notes                                                                                   |
+| ------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `{type: "boolean", default: true}`                                  | yes    | control; `create {}` stores `true`                                                      |
+| `{type: "boolean", default: "nope"}`                                | **no** | top-level type mismatch; freezes the config                                             |
+| `{type: "string", default: null}`                                   | yes    | `create {}` stores and returns `"text": null` (present, not absent)                     |
+| `{type: ["string", "null"], default: null}`                         | yes    | same as the plain string in every row                                                   |
+| `{type: "array", items: {type: "string"}, default: ["a", "b"]}`     | yes    | `create {}` stores `["a", "b"]`                                                         |
+| `{type: "array", items: {type: "string"}, default: ["a", 2]}`       | **no** | an item mismatching `items.type` is fatal, though a record's nested items are not checked |
+| `{type: "object", properties: {x: {type: "string"}}, default: {x: 1}}` | yes  | nested `properties` are **not** checked against an object default; stored `{x: 1}`      |
+
+So the check is the top-level `type` against the default, plus each item of an
+array default against `items.type`. It does not recurse into an object
+default's `properties`, and `null` is not a mismatch on a string. Not measured:
+a `null` default on any other type, arrays of arrays, fractional values against
+`integer`, `required` other than `[]`, and whether the frozen state survives an
+IDM restart.
+
+**`default: null` (verified 2026-11-08).** On `string` and `["string", "null"]`
+with `required: []`, in both lanes: `create {}` is 201 holding `text: null`;
+`{text: "a"}` is 201; an explicit `{text: null}` is **201 with no `NOT_NULL`**;
+`{text: 5}` is 403 `VALID_TYPE` whose `validTypes` echoes the declared type
+verbatim (`["string"]`, or `["string", "null"]` for the nullable form).
+`NOT_NULL` keys on a **non-null** default, not on the type: the control's
+`flag: {type: "boolean", default: true}` and an object defaulting to `{x: 1}`
+both refuse `null` with 403 `NOT_NULL`, while the null-defaulted string does
+not.
+
+**An unavailable type looks exactly like an undeclared one (verified
+2026-11-08).** Captured for an invalid type, a valid type frozen behind it, and
+a name never declared: all three are byte-identical.
+
+| Lane       | Call                                                    | Result                                                                                              |
+| ---------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| REST       | `GET managed/<t>?_queryFilter=true`                      | 404 `{"code":404,"reason":"Not Found","message":"Resource &#39;managed/<t>&#39; not found"}` — the quote is HTML-escaped in the body |
+| REST       | `GET`/`PATCH`/`DELETE managed/<t>/<id>`                  | 404, message names `managed/<t>/<id>`                                                               |
+| REST       | `POST managed/<t>?_action=create`                        | 404, message names `managed/<t>`                                                                    |
+| REST       | `PUT managed/<t>/<id>` with `If-None-Match: *`           | 404, message names **`managed/<t>`**, not the id                                                    |
+| IDM script | `openidm.read("managed/<t>/<id>")`                       | returns **`null`**, does not throw (as for a missing record in a live type)                         |
+| IDM script | `openidm.query` / `create` / `patch` / `delete`          | throws `JavaException`: `org.forgerock.json.resource.NotFoundException: Resource 'managed/<t>' not found` (patch/delete name the id), `getCode()` 404, reason `Not Found`, `getDetail()` null; not HTML-escaped |
+
+The next-gen journey (AM) `openidm` binding was not probed for an unavailable
+type.
+
+**What rhino-local does with this.** Both lanes judge a default with one
+function (`packages/rhino-local/src/declared-default.ts`). A default it calls
+invalid, or one no probe covered (a `null` default on a non-string type, for
+example), means the tenant is serving an earlier config the local one does not
+describe, so neither lane answers **any** managed call. The IDM emulator refuses
+the whole config before every request. The AM lane faults every `openidm` call
+on a `managed/…` resource. Both use one stable id naming the first offending
+property, `openidm-managed-invalid-default/<type>.<property>` (or
+`…-unmeasured-default/…`). Neither emulates the 404 surface above: answering
+404 for the bad type would imply its siblings are live as written, which is
+false.
 
 `default` and `required` answer different questions and neither blocks the
 other:
@@ -413,9 +488,11 @@ other:
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **Create** omitting a property that has a `default`            | 201, and the record comes back holding the default — `false`/`true`/`0` alike |
 | **Create** omitting a `required` property that has a `default` | 201 — the default is applied _before_ policy runs, so `REQUIRED` is satisfied |
-| **Create** sending an explicit `null` on a property with a `default` | **403 `NOT_NULL`** (+ a separate `VALID_TYPE` entry when the property is also `required`, or the schema has no `required` key — 2026-11-08) |
+| **Create** sending an explicit `null` on a property with a non-null `default` | **403 `NOT_NULL`** (+ a separate `VALID_TYPE` entry when the property is also `required`, or the schema has no `required` key — 2026-11-08) |
 | **Create** from a next-gen journey script's `openidm.create` with the property `undefined` | **403 `NOT_NULL`**, exactly as `null` — the key is sent as `null`, not dropped, so the default does not land (2026-11-04, below) |
 | Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — for a defaulted property the null guard is independent of `required` |
+| **Create** omitting a property declaring `default: null` (`required: []`) | 201, stored and read back as `null` (2026-11-08) |
+| **Create** sending `null` on a property declaring `default: null` (`required: []`) | **201**, no `NOT_NULL` (2026-11-08) |
 | **Create** sending `null` on an **undefaulted** property, `schema.required` present and not naming it (`[]` or a list of others) | **201**, stored and read back as JSON `null` (2026-11-08) |
 | Same, the schema has **no `required` key**                     | **403 `VALID_TYPE`**, `{invalidType: "null", validTypes: [<type>]}` (2026-11-08) |
 | **Create** sending `null` on an undefaulted property that `required` names | **403 `VALID_TYPE`**, not `REQUIRED`: a null counts as present (2026-11-08) |
@@ -457,8 +534,10 @@ wherever both ran.
 - **`NOT_NULL` was seen only on a defaulted property.** `{zready: null}` is
   `NOT_NULL` alone with `required: []`, and `NOT_NULL` then a separate
   `VALID_TYPE` (`invalidType "null"`, `validTypes ["boolean"]`) entry with no
-  `required` key. A default-less string never gets `NOT_NULL`. Whether
-  `NOT_NULL` keys on the `default` or on the boolean type was not separated.
+  `required` key. A default-less string never gets `NOT_NULL`. This probe did
+  not separate the `default` from the boolean type; the zzemu_def probe later
+  the same day did: an object with a non-null default gets `NOT_NULL`, a string
+  with `default: null` does not ("Default validation" above).
 - **`PATCH remove` of an undefaulted property `required` does not name** is 200
   under both `required` shapes, and the key is then absent, not `null`.
 - **Read-back shows only what was stored.** On these custom types a record's
@@ -475,7 +554,7 @@ wherever both ran.
 
 Not measured: `PATCH replace` with `null` beyond the existing 400 rows, a
 whole-record `PUT` with `null`, the next-gen journey `openidm` lane for these
-cases, and `NOT_NULL`'s trigger. Open remainder: Q18 in
+cases, and a default-less boolean sent `null`. Open remainder: Q18 in
 `99-quirks-and-open-questions.md`.
 
 Three consequences worth carrying:
@@ -1866,6 +1945,25 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-11-08 — edge and invalid `default` declarations (orchestrator
+  probe note `probe-def/note.md` with its driver, scripts and redacted log;
+  sandbox tenant, REST and IDM-script lanes; run by someone else and read by
+  the rhino-local writer, not re-run). Ten throwaway types `zzemu_def*`, each
+  added by one confirmed `PUT /openidm/config/managed` (every `PUT` 200), each
+  carrying a readiness sentinel `zready: {type: "boolean", default: true}` and
+  `required: []`; poll up to 150 s for the sentinel to land. Calls:
+  `POST /openidm/managed/<t>?_action=create`, `GET`/`PUT`/`PATCH`/`DELETE
+  …/<id>`, `GET …?_queryFilter=true`, and `POST /openidm/script?_action=eval`
+  running `openidm.create/read/query/patch/delete`. Results: `default: null`
+  valid on `string` and `["string","null"]` (`create {}` stores `null`; explicit
+  `null` 201, no `NOT_NULL`); an object default with a nested mismatch valid and
+  stored verbatim, with `NOT_NULL` on `null`; boolean `"nope"` and array
+  `["a", 2]` against `items: string` invalid, each leaving the type 404 **and**
+  every later type 404 until it was removed, a type removed meanwhile still
+  serving, and the whole document applying at once on removal; the unavailable
+  type's REST and IDM-script shapes identical to an undeclared name's. Records
+  (48) deleted, each confirmed by a 404; the config restored and compared
+  equal to the backup, ignoring `_rev`, on 8/8 re-reads.
 - Date: 2026-11-08 — explicit `null`, nested types and optional remove
   (orchestrator probe note `probe-pol/note.md` with its driver, scripts and
   redacted log; sandbox tenant, REST and IDM-script lanes; read by the

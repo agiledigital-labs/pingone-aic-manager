@@ -806,14 +806,16 @@ profile cannot be re-pulled: add `hooks` to each type (`[]` for none) and
 `noRequiredArray: true` to a type whose schema has no `required` array, add
 `default`, `conditionalPolicies` and `fallbackPolicies` to each property the
 tenant gives them, then set `"profileVersion": 2`. A type's
-defaults are applied on create, and a `null` sent for a defaulted property is
-AIC's measured `403 Policy validation failed` on a create of a new record and
-a harness fault otherwise (`docs/rhino-local-gaps.md`). A type whose profile
-records a `default` that does not match its declared type (AIC accepts
-`{"type": "boolean", "default": "nope"}` and then 404s every call on the type)
-faults every `openidm` call on it, reads included, as
-`openidm-managed-invalid-default/<type>.<property>`; the IDM emulator refuses
-the same declarations with the same rule. A profile must key each type by its
+defaults are applied on create (`default: null` stores `null`), and a `null`
+sent for a property with a non-null default is AIC's measured `403 Policy
+validation failed` on a create of a new record and a harness fault otherwise
+(`docs/rhino-local-gaps.md`). If any type's profile records an invalid
+`default` (a type mismatch such as `{"type": "boolean", "default": "nope"}`, or
+an array item not of `items.type`), every `openidm` call on any `managed/…`
+resource faults, reads included, as
+`openidm-managed-invalid-default/<type>.<property>`: AIC stores such a config
+but keeps serving an earlier one for every type, which the profile does not
+describe. The IDM emulator refuses the same declarations with the same rule. A profile must key each type by its
 own `name`: one whose `objects` key and `name` disagree is refused when read
 and when a case is given it. Expect this to fail
 client tests that write without stubs; the fault tally counts them, by type

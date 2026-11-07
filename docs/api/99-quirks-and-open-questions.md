@@ -6,6 +6,33 @@ new things are learned.
 
 ---
 
+## 2026-11-08 — an invalid `default` freezes all of `config/managed`
+
+`10-managed-objects.md` said a type-mismatched `default` bricks only its own
+object ("the blast radius is that one object"). **Wrong.** Measured on the
+sandbox by the zzemu_def probe (orchestrator probe note `probe-def/note.md`,
+REST and IDM-script lanes; run by someone else, read by the rhino-local writer,
+not re-run): the config `PUT` is 200 and reads back, but IDM keeps serving its
+**last good compile**. Every type added afterwards stays 404, a type removed
+meanwhile keeps serving, and the whole pending document applies at once when
+the bad declaration is removed. The original measurement only checked that
+already-live types still answered, which is exactly what stays true while the
+config is frozen.
+
+The same probe settled what counts as invalid: the top-level `type`, and for an
+array each item against `items.type` (`["a", 2]` against `items: string` is
+fatal, `["a", "b"]` is fine). An object default's nested `properties` are not
+checked, and `default: null` on a string (plain or nullable) is valid, stored as
+`null`, with no `NOT_NULL`. `NOT_NULL` keys on a non-null default, not on the
+type. Details, the unavailable-type surface, and what rhino-local does about
+it: doc 10, "An invalid `default` freezes all of `config/managed`".
+
+The `aic managed` default coercion already refused both measured invalid
+shapes; its error text ("the object then 404s forever") still describes the old
+one-object model.
+
+---
+
 ## 2026-11-02 — journey runtime surprises
 
 Measured with `scripts/experiment-journey-*.sh`; details and controls in
@@ -260,9 +287,10 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
     `default` (`null` included) and predicts 403; doc 10 used to state 200.
     Both rhino-local lanes fault it (`idm-policy/required`,
     `openidm-managed-policy/<type>`);
-  - what triggers `NOT_NULL`: the probe's only `NOT_NULL` property was a
-    defaulted boolean, so a default-less boolean (or a defaulted string) would
-    separate the `default` from the type;
+  - ~~what triggers `NOT_NULL`~~ — answered 2026-11-08 by the zzemu_def probe
+    (`probe-def/note.md`): a non-null default. An object defaulting to `{x: 1}`
+    gets `NOT_NULL`, a string with `default: null` does not. A default-less
+    boolean sent `null` is still untested;
   - a **top-level** array whose own items mismatch `items.type`
     (`{tags: [2]}` with `tags` a top-level `string[]`); both rhino-local lanes
     fault it;

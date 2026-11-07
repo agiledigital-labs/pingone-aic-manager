@@ -14,8 +14,9 @@ export interface MockPreambleOptions {
   libraries?: Record<string, string>;
   /**
    * Pulled environment schema. Only the set of declared object types, and the
-   * per-type tables `profile/write-guard.ts` decides (write faults, defaults,
-   * types an invalid declaration makes unavailable), cross into
+   * tables `profile/write-guard.ts` decides (per-type write faults and
+   * implicit policy, and the one fault an invalid default anywhere raises on
+   * every managed call), cross into
    * the sandbox — every schema rule is decided in the Node layer, so there is
    * one implementation of each rather than an AM-safe copy.
    */

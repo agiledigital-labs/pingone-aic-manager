@@ -112,7 +112,7 @@ every property's `onValidate`, `onValidate`, every property's `onStore`,
 A profile must key each type by its own `name`. One whose map key and
 `object.name` disagree is refused when it is read and again when a case is
 given it, because the key is what says the type exists and every write,
-default and unavailable-type table is keyed by it (review sol-r1 P1-2).
+default and policy table is keyed by it (review sol-r1 P1-2).
 
 The corpus's `liveHooks` acknowledgement (corpus-only, on `RealEntry`) is
 checked where the corpus runner consumes it, `profileForRun`, as well as where
@@ -121,31 +121,52 @@ payload, not that the live run wrote to the types whose hooks it names, so an
 unrelated read-only probe's payload would satisfy them. That link rests on
 review.
 
-**A default that does not match its type.** AIC accepts a config with
-`{"type": "boolean", "default": "nope"}` and the type then answers 404 to every
-call (measured, docs/api/10). The lane judges every recorded `default` with
-the IDM emulator's own rule (`src/declared-default.ts`, which its `invalid
-default` check calls too) and faults every `openidm` call on a type with a
-mismatch, `read` and `query` included, as
-`openidm-managed-invalid-default/<type>.<property>`. It faults rather than
-emulates, because what a script's `openidm` call answers for such a type is not
-measured (a type the config does not declare reads as `null`, but that is a
-different tenant state). Every other mismatch, a `null` default on a scalar
-type, a nullable type's `null` default and a `default` nested inside `items`
-are judged by the same rule without a measurement of their own. The profile is
-never repaired. An `object` default is checked by shape only here, because the
-profile does not record nested `properties`.
+**An invalid `default` anywhere faults every managed call (sol-r1c).** AIC
+stores a `config/managed` holding an invalid default (`PUT` 200) and keeps
+serving its **last good compile** for every type: the bad type and every type
+added after it are 404, a removed type keeps serving, until the bad default is
+gone (measured 2026-11-08, zzemu_def probe, docs/api/10). A profile records the
+stored document, not that earlier compile, so nothing the lane could answer for
+any managed type is trustworthy. Both lanes judge every `default` with one
+function (`src/declared-default.ts` `judgeDefault`). Measured: the top-level
+`type` is checked, an array default item by item against `items.type`, and an
+object default only for being an object (its `properties` are not checked);
+`default: null` on a string, plain or nullable, is valid. Judged by the same
+rule without a probe of their own: scalar mismatches on `string`, `number` and
+`integer`. Unmeasured: a `null` default on any other type, a `null` item, arrays
+of arrays, a `relationship` or untyped default, and a `default` nested inside
+`items`.
+
+- **Script tester:** any `openidm` call on a `managed/…` resource — any type,
+  declared or not — faults with one id naming the first offending property,
+  `openidm-managed-invalid-default/<type>.<property>`, or
+  `openidm-managed-unmeasured-default/<type>.<property>` for the unmeasured
+  cases. The profile is never repaired.
+- **IDM emulator:** refuses the whole config before every request, as it does
+  for any declaration it cannot serve, with the same id
+  (`openidm-managed-invalid-default/<type>.<property>: invalid default:
+  <type>/<property>`). A refusal at load is what the emulator already does for a
+  config it cannot serve, and the tenant's own state is "this config is not the
+  one running", which no per-request answer would model better.
+
+Neither lane emulates the measured 404 surface of an unavailable type (REST
+`Resource 'managed/<t>' not found`, script `NotFoundException`, `openidm.read`
+`null`): answering 404 for the bad type would imply its siblings are live as
+written, which they are not.
 
 **Defaults, nulls and types in this lane.** The profile records each
 property's `default` and top-level `type` (version 2), and the lane answers
 IDM's measured implicit policies (`write-guard.ts` `managedPolicy`; docs/api/10,
 including the 2026-11-08 probe):
 
-- A create that omits a property with a non-null `default` stores the
-  default.
+- A create that omits a property with a `default` stores the default.
+  `default: null` stores `null` (measured with a `required` array; without one
+  the create faults, unmeasured).
 - A create of a new record is refused with AIC's catchable `403 Policy
   validation failed` when it sends `null` (or `undefined`, which
-  `openidm.create` sends as `null`) for a property with a non-null `default`,
+  `openidm.create` sends as `null`) for a property with a non-null `default`
+  (`NOT_NULL` keys on the non-null default, not the type: a `default: null`
+  property accepts `null`, measured),
   `null` for any typed property when the schema has no `required` array, or a
   top-level value whose JSON type is not the declared `string`, `object` or
   `array`. Any other `null` on an undefaulted property is stored as `null`.
@@ -162,8 +183,9 @@ refusals outside a new record's create (an update, a create over an existing
 id, a value a PATCH writes at a top-level path); a mismatch against a declared
 `number`, `integer` or `boolean`; an item of a top-level array that is not the
 declared `items.type` (only nested `items` were measured); a `null` on a
-nullable property, or, with no `required` array, on a property of a type the
-rule does not know (`relationship`, `any`). A `null` an update sends for an
+nullable property not declaring `default: null` (with a `required` array), or,
+with no `required` array, on a `default: null` property or a property of a type
+the rule does not know (`relationship`, `any`). A `null` an update sends for an
 undefaulted property that a create would accept writes as on create (assumed;
 Q18). A PATCH `replace` with `null` is AIC's invalid-patch refusal, and an `add`
 with `null` faults. An operation whose `value` is `undefined`, or which has no
@@ -180,8 +202,9 @@ required (Q18). Still **not checked** here, and passing silently:
   unchecked on AIC too, except that a top-level array's items are unmeasured;
 - an `undefined` in an update body, which is cloned rather than read as `null`;
 - writes to a seeded sub-resource (`managed/<type>/<id>/<rel>`), which look up
-  that path, not `managed/<type>`, and so bypass the hook, policy, default
-  and unavailable-type tables.
+  that path, not `managed/<type>`, and so bypass the hook, policy and default
+  tables (the invalid-default fault still applies: it matches any
+  `managed/…` resource).
 
 `conditionalPolicies` and `fallbackPolicies` are recorded by name and count as
 declared policies here. The IDM emulator does not run them either: its
@@ -200,8 +223,9 @@ whether the split is by DS storage (explicit `repo.ds` mapping versus the
 generic JSON store) is itself unmeasured. The policy outcomes above do not
 depend on it.
 
-Only the SET of declared type names, and the per-type write-fault, defaults
-and unavailable-type tables that `src/profile/write-guard.ts` decides, cross
+Only the SET of declared type names, the per-type write-fault and policy
+tables, and the one invalid-default fault that `src/profile/write-guard.ts`
+decides, cross
 into the sandbox. Every schema
 rule — properties, `required`, `enum` — is decided in the Node layer, so each
 rule has one implementation rather than an AM-safe second copy that could
@@ -317,7 +341,7 @@ assumption in `docs/api/`:
 | `openidm-managed-hook/<type>.<hook>`                                              | script tester (E15b): an unstubbed `openidm.create`/`update`/`patch`/`delete` on a type whose environment profile declares a hook that write runs on AIC. `<hook>` is the first in the measured order (docs/api/24: an update or patch runs its read hooks before `onUpdate`; property `onValidate`/`onStore` run before the object's), or `<property>.<hook>` for a property hook. Read hooks (`onRead`, `onRetrieve`, object or property) count only for an update or patch, which read the record first; a create runs none and a delete runs `onDelete → postDelete → onSync` (docs/api/24). Unknown hook names count for every write |
 | `openidm-managed-policy/<type>`                                                   | script tester (E15b): the same, on a type that declares no such hook but declares policies (`required`, an `enum`, property `policies`, `conditionalPolicies` or `fallbackPolicies`). A delete is not judged on policy. Also, on a hookless, policy-free type, an implicit-policy outcome the lane does not emulate: a `null` or top-level type refusal outside a create of a new record, a mismatch against a declared `number`/`integer`/`boolean`, a top-level array item of the wrong `items.type`, a `null` on a nullable property (or, with no `required` array, on a `relationship`/untyped one), and a PATCH `remove` of a property with any `default` (see `idm-policy/required`). The measured refusals on a create of a new record (defaulted `null`, `null` with no `required` array, top-level mismatch against `string`/`object`/`array`) are emulated as AIC's catchable `403 Policy validation failed` |
 | `openidm-managed-profile-stale`                                                   | script tester (E15b): any write under a profile whose `profileVersion` is not an integer at or above the package's (2): absent, older, or a string such as `"2"`. Such a profile cannot say a type declares no hooks, defaults or conditional policies. Re-pull it; for a hand-written profile, add `hooks` per type (and `noRequiredArray: true` where the schema has no `required` array) and `default`/`conditionalPolicies`/`fallbackPolicies` per property where the tenant has them, then set `"profileVersion": 2` |
-| `openidm-managed-invalid-default/<type>.<property>`                               | script tester (sol-r1 P1-1): any `openidm` call (`read`, `query`, `create`, `update`, `patch`, `delete`, `action`) on a type whose profile records a `default` that does not match the property's declared type, as judged by the IDM emulator's rule (`src/declared-default.ts`), or a `default` nested inside `items`. AIC accepts such a config and 404s every call on the type (measured for a boolean declaring `"nope"`, docs/api/10); what a script's call answers then is unmeasured. Fix the default on the tenant and re-pull |
+| `openidm-managed-invalid-default/<type>.<property>`                               | both lanes (sol-r1 P1-1, widened sol-r1c): the profile or config declares a `default` that `src/declared-default.ts` judges invalid (a top-level type mismatch, or an array item not of `items.type`; an object default's `properties` and a string's `null` are not mismatches). AIC stores such a config and keeps serving its last good compile for **every** managed type (measured 2026-11-08, docs/api/10), so the script tester faults every `openidm` call on any `managed/…` resource (`read`, `query`, `create`, `update`, `patch`, `delete`, `action`), and the IDM emulator refuses the config before every request. `openidm-managed-unmeasured-default/<type>.<property>` is the same for a default no probe covered (a `null` default on a non-string type, a `relationship` or untyped default, arrays of arrays, a `default` nested inside `items` in the script tester; the IDM emulator reports a nested default as `nested property behavior default`). Fix the default on the tenant and re-pull |
 | `openidm-patch-add-null`                                                          | script tester: `openidm.patch` with an `add` whose `value` is `null`, `undefined` or absent (see `idm-patch/add-null`). A `replace` with any of those is AIC's invalid-patch refusal, emulated as a catchable error before the record lookup, the revision check and any hook or policy fault |
 | `openidm-policy-detail`                                                           | script tester: `e.javaException.getDetail()` on an emulated policy `403` (`NOT_NULL`, or `VALID_TYPE` for a top-level mismatch or a `null` with no `required` key). AIC's detail is measured over REST and from an IDM script (docs/api/10) and from a next-gen script for `NOT_NULL` (docs/api/12); its Java type and string form on this path are not |
 | `openidm-managed-collection-action/<action>`                                      | script tester (E15b): `patch`, `triggerSyncCheck` or `updateLastSync` on `managed/<type>` with no `given.openidmActions` reply. The names are measured; the result, and the write chain or sync it runs on AIC, are not |
