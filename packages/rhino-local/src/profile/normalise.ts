@@ -90,16 +90,24 @@ function normaliseProperty(value: unknown): PropertySchema {
   if (!isPlainObject(value)) {
     return { type: "any" };
   }
-  const { type, nullable } = normaliseType(value.type);
+  const { type, nullable, types } = normaliseType(value.type);
   const out: PropertySchema = { type };
   if (nullable) {
     out.nullable = true;
+  }
+  if (types) {
+    out.types = types;
   }
   if (Array.isArray(value.enum)) {
     out.enum = value.enum as JsonValue[];
   }
   if (value.items !== undefined) {
     out.items = normaliseProperty(value.items);
+  }
+  if (isPlainObject(value.properties)) {
+    // Kept for what they declare (a nested `default` is judged, sol-r2 P2-1), not to enforce
+    // nested values: AIC stores those unchecked (measured 2026-11-08, docs/api/10).
+    out.properties = Object.fromEntries(Object.entries(value.properties).map(([key, child]) => [key, normaliseProperty(child)]));
   }
   const targets = normaliseResourceCollection(value.resourceCollection);
   if (targets.length > 0) {
@@ -146,18 +154,24 @@ function hookNames(config: Record<string, unknown>): string[] {
 /**
  * IDM spells a nullable scalar as `["string", "null"]`. Collapse that to one
  * type plus a flag so no consumer has to re-derive it.
+ *
+ * Any other list (several concrete types, or an entry that is not a string) is
+ * not one type, and must not read as its first entry (sol-r2 P2-1): the type is
+ * `any`, which no write check treats as known, and the list is kept verbatim in
+ * `types` so a default on it is judged against what was declared.
  */
-function normaliseType(raw: unknown): { type: string; nullable: boolean } {
+function normaliseType(raw: unknown): { type: string; nullable: boolean; types?: unknown[] } {
   if (typeof raw === "string") {
     return { type: raw, nullable: false };
   }
   if (Array.isArray(raw)) {
     const names = raw.filter((item): item is string => typeof item === "string");
     const concrete = names.filter((item) => item !== "null");
-    return {
-      type: concrete[0] ?? "any",
-      nullable: names.length !== concrete.length,
-    };
+    const nullable = names.length !== concrete.length;
+    if (concrete.length === 1 && names.length === raw.length) {
+      return { type: concrete[0]!, nullable };
+    }
+    return { type: "any", nullable, types: [...raw] as unknown[] };
   }
   return { type: "any", nullable: false };
 }

@@ -3656,7 +3656,7 @@ export const realCases: RealEntry[] = [
     // (`fields` on create/update/patch/delete, the duplicate-create message).
     liveHooks: { probed: "2026-09-29", hooks: { alpha_role: ["postCreate", "onDelete"] } },
     profile: {
-      profileVersion: 2,
+      profileVersion: 3,
       tenant: "sandbox",
       pulledAt: "2026-09-29T00:00:00.000Z",
       sources: [],

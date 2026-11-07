@@ -12,7 +12,9 @@
  *
  * - **Only the top-level property's `type` is checked.** A top-level mismatch is
  *   `403 Policy validation failed`, `VALID_TYPE` with `{invalidType, validTypes:[type]}`, measured
- *   for declared `string`, `object` and `array`. Schemas under `properties` and `items` are stored
+ *   for declared `string`, `object` and `array` (zzemu_pol) and `boolean`, `number` and `integer`
+ *   (zzemu_nd, 2026-11-08). Every JSON number is `"number"` to the check, so a declared `integer`
+ *   refuses `3` and `3.5` alike (`invalidType "number"`) and admits only `null`. Schemas under `properties` and `items` are stored
  *   and **not** enforced: `{box:{tags:[2]}}` and `{rows:[{inner:"bad"}]}` were 201, stored as sent.
  * - **A null passes the type check only when `schema.required` exists and does not name the
  *   property.** `required: []` (or a list omitting it) and an undefaulted property: 201, stored and
@@ -23,22 +25,26 @@
  *   `default: null` does not (zzemu_def probe, 2026-11-08).
  * - **`default: null` is a valid declaration, applied as a stored `null`** on a create that omits
  *   the property, and an explicit `null` is accepted with no `NOT_NULL` (measured with
- *   `required: []`, on `string` and `["string","null"]`).
+ *   `required: []` on every type, 2026-11-08). **On an `array` both are stored as `[]`.** With no
+ *   `required` key, a string's omitted null is stored and an explicit one is `VALID_TYPE`
+ *   `invalidType "null"`, as for an undefaulted property.
  * - **A PATCH `remove` of an undefaulted, non-required property is accepted** (200), the key gone.
  *
- * Faulted, because unmeasured: a mismatch against any other declared type (`number`, `boolean`,
- * `integer`, `relationship`, …) or on any write but a new record's create (`idm-policy/valid-type`);
+ * Faulted, because unmeasured: a mismatch against any other declared type (`relationship`, …) or
+ * on any write but a new record's create (`idm-policy/valid-type`);
  * a value or null for a property with no `type`; a null on an undefaulted property outside a create
  * when the schema has no `required` array; a null (sent or applied from `default: null`) on a
- * null-defaulted property when the schema has no `required` array, which the null-default probe
- * did not cover (`idm-policy/valid-type`); any defaulted null outside a create
+ * null-defaulted non-string property when the schema has no `required` array, which the
+ * null-default probes did not cover (`idm-policy/valid-type`); a null on an array declaring
+ * `default: null` outside a create (on create it becomes `[]`); any defaulted null outside a create
  * (`idm-policy/not-null`); a refusal naming more than one property, whose order is unmeasured; a
  * PATCH removing a property that declares a `default` (`idm-policy/required`); and an item of a
  * top-level array whose JSON type is not `items.type` (`idm-policy/valid-array-items`): only
  * *nested* `items` were measured unenforced, never a top-level array's.
  *
  * Assumed, with its reason: a null on an undefaulted property outside a create, when the schema has
- * a `required` array not naming it, is accepted as on create (the probe measured create only).
+ * a `required` array not naming it, is accepted as on create (the probe measured create only); and
+ * an array's null becomes `[]` before the create hooks run (the probe saw only the stored value).
  *
  * Pure: the caller decides what an outcome does to the request.
  */
@@ -72,6 +78,8 @@ export type PolicyWrite = {
   readonly patchedFrom?: Document;
   /** The PATCH's operations, for the properties they name even where the value is unchanged. */
   readonly operations?: JsonValue;
+  /** Properties whose value this create took from their `default`, not from the request. */
+  readonly applied?: readonly string[];
 };
 
 /** True: with no evaluator, `checkCapabilities` has already refused every explicit policy. */
@@ -86,11 +94,21 @@ export const POLICY_MEASURED = {
   notNull: "explicit null on a property with a non-null default is refused NOT_NULL on create",
   nullDefault: "default: null is applied as a stored null, and a null on that property is accepted with no NOT_NULL, when schema.required exists",
   optionalRemove: "PATCH remove of an undefaulted, non-required property is accepted and the key removed",
+  nullDefaultNoRequired: "with no required array, a string declaring default: null stores null when omitted and refuses an explicit null VALID_TYPE",
+  arrayNullDefault: "an array declaring default: null stores [] on create, whether the null is omitted or sent",
 } as const;
+
+/** Assumed with {@link POLICY_MEASURED.arrayNullDefault}: when, relative to the create hooks, the null becomes `[]`. */
+export const ARRAY_NULL_TIMING = "an array's null default becomes [] before the create hooks run (only the stored value was measured)";
+
+/** An array property whose null is stored as `[]` on create (measured with a `required` array only). */
+export function emptyOnNull(type: ManagedType, config: PropertyConfig): boolean {
+  return config.type === "array" && Object.hasOwn(config, "default") && config.default === null && Array.isArray(type.schema.required);
+}
 export const POLICY_SOURCE = "docs/api/10-managed-objects.md";
 
-/** Declared types a top-level mismatch was measured for (2026-11-08 probe). */
-const MEASURED_TYPES = new Set(["string", "object", "array"]);
+/** Declared types a top-level mismatch was measured for (zzemu_pol and zzemu_nd, 2026-11-08). */
+const MEASURED_TYPES = new Set(["string", "object", "array", "boolean", "number", "integer"]);
 
 /** The refusal body's `detail`: the measured envelope, one entry per failing requirement. */
 export function policyRefusalDetail(failed: readonly FailedRequirement[]): Document {
@@ -172,6 +190,11 @@ export function implicitPolicy(type: ManagedType, object: Document, write: Polic
       const defaulted = Object.hasOwn(config, "default") && config.default !== null;
       const nullDefault = Object.hasOwn(config, "default") && config.default === null;
       if (!newRecord) {
+        if (emptyOnNull(type, config)) {
+          return fault("idm-policy/valid-type", `${path} declares default: null on an array and the write sends null. AIC ` +
+            "stores [] for that on a create of a new record (docs/api/10-managed-objects.md); this write is not one, so " +
+            "what AIC stores is unmeasured");
+        }
         if (defaulted) {
           return fault("idm-policy/not-null", `${path} has a default and the write sends null. AIC's NOT_NULL is measured only ` +
             "on a create of a new record, and a PATCH replace with null is a measured 400 refused before policy " +
@@ -186,10 +209,15 @@ export function implicitPolicy(type: ManagedType, object: Document, write: Polic
           "as measured on create");
         continue;
       }
+      if (nullDefault && !hasRequired && config.type === "string") {
+        measured.add(POLICY_MEASURED.nullDefaultNoRequired);
+        if (!(write.applied ?? []).includes(name)) failed.push(requirement(name, "VALID_TYPE", "null", config.type));
+        continue;
+      }
       if (nullDefault && !hasRequired) {
         return fault("idm-policy/valid-type", `${path} declares default: null and the schema has no required array. A null ` +
           "default is measured accepted only with a required array, and an undefaulted null with none is a VALID_TYPE " +
-          "refusal (docs/api/10-managed-objects.md); which applies here is unmeasured");
+          "refusal (docs/api/10-managed-objects.md); which applies here is unmeasured for a non-string type");
       }
       if (defaulted) {
         measured.add(POLICY_MEASURED.notNull);
@@ -208,7 +236,8 @@ export function implicitPolicy(type: ManagedType, object: Document, write: Polic
     if (actual !== config.type) {
       if (!newRecord || !MEASURED_TYPES.has(config.type)) {
         return fault("idm-policy/valid-type", `${path} is declared ${config.type} and the write sends ${actual}. AIC's ` +
-          "VALID_TYPE refusal is measured on a create of a new record for declared string, object and array " +
+          "VALID_TYPE refusal is measured on a create of a new record for declared string, object, array, boolean, number " +
+          "and integer " +
           "(docs/api/10-managed-objects.md); this write is not that case, so what AIC does is unmeasured");
       }
       measured.add(POLICY_MEASURED.topLevelType);

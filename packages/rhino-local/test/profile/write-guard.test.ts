@@ -70,7 +70,8 @@ describe("staleness is the profile's format version (P3-5)", () => {
   const quiet: ObjectSchema = { name: "quiet", properties: { n: { type: "number", default: 0 } }, required: [], hooks: [] };
   // P3-4 (fix round 2): the discriminating rows are the strings "2" and "two" and the fraction 2.5,
   // which a numeric `< PROFILE_VERSION` comparison read as current.
-  it.each([["absent", undefined], ["1", 1], ['"2"', "2"], ['"two"', "two"], ["2.5", 2.5], ["null", null]])("version %s faults every write on every type, with a hand-written remedy", (_name, version) => {
+  // sol-r2 P2-1: integer 2 is stale too; a version-2 profile collapsed type lists and dropped nested properties.
+  it.each([["absent", undefined], ["1", 1], ["2", 2], ['"3"', "3"], ['"two"', "two"], ["2.5", 2.5], ["null", null]])("version %s faults every write on every type, with a hand-written remedy", (_name, version) => {
     const profile = { ...META, ...(version === undefined ? {} : { profileVersion: version }), sources: [], objects: { quiet } } as unknown as EnvProfile;
     const table = managedWriteFaults(profile);
     expect(Object.keys(table["managed/quiet"] ?? {})).toEqual(["create", "update", "patch", "delete"]);
@@ -79,9 +80,10 @@ describe("staleness is the profile's format version (P3-5)", () => {
     expect(message).toContain("aic-script-tester-pull-profile");
     expect(message).toContain(`"profileVersion": ${PROFILE_VERSION}`);
     expect(message).toContain("noRequiredArray");
+    expect(message).toContain("`types`");
     expect(managedPolicy(profile)).toEqual({});
   });
-  it.each([["2", 2], ["3", 3]])("integer version %s is current", (_name, version) => {
+  it.each([["3", 3], ["4", 4]])("integer version %s is current", (_name, version) => {
     expect(managedWriteFaults({ ...META, profileVersion: version, sources: [], objects: { quiet } })).toEqual({});
   });
   // Discriminating: the old sniff read an absent `hooks` as stale; a current profile that omits it declares none.
@@ -95,29 +97,39 @@ describe("managedPolicy gives the lane plain lists (P2-2, sol-r1b)", () => {
   const object = (extra: Partial<ObjectSchema>): ObjectSchema => ({ name: "gizmo", required: [], hooks: [], properties: {
     n: { type: "number", default: 0 }, b: { type: "boolean", default: false }, cleared: { type: "string", default: null }, plain: { type: "string" },
     maybe: { type: "string", nullable: true }, tags: { type: "array", items: { type: "string" } }, box: { type: "object" },
-    owner: { type: "relationship" },
+    owner: { type: "relationship" }, count: { type: "integer" }, list: { type: "array", items: { type: "string" }, default: null },
+    flag: { type: "boolean", default: null },
   }, ...extra });
   const rule = (extra: Partial<ObjectSchema>) =>
     managedPolicy({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: object(extra) } })["managed/gizmo"];
   it("with a required array: only non-null defaults refuse a null; types split measured from unmeasured", () => {
-    expect(rule({})).toEqual({ defaults: { n: 0, b: false, cleared: null }, notNull: ["n", "b"], nullRefused: ["n", "b"], nullUnmeasured: ["maybe"],
-      checked: { cleared: "string", plain: "string", tags: "array", box: "object" }, unmeasured: { n: "number", b: "boolean" },
-      itemTypes: { tags: "string" }, defaulted: ["n", "b", "cleared"] });
+    // sol-r2 (zzemu_nd, 2026-11-08): number/boolean/integer mismatches are measured, so `checked`; an
+    // array's null default is stored as [] (emptyOnNull), a boolean's as null.
+    expect(rule({})).toEqual({ defaults: { n: 0, b: false, cleared: null, list: [], flag: null }, notNull: ["n", "b"], nullRefused: ["n", "b"],
+      emptyOnNull: ["list"], nullUnmeasured: ["maybe"],
+      checked: { n: "number", b: "boolean", cleared: "string", plain: "string", tags: "array", box: "object", count: "integer", list: "array", flag: "boolean" },
+      itemTypes: { tags: "string", list: "string" }, defaulted: ["n", "b", "cleared", "list", "flag"] });
   });
   // Discriminating (measured 2026-11-08): the same type with no required key refuses every typed null.
-  // A null default without a required array was not probed (the null-default probe used required: []).
-  it("with no required array: every typed property refuses a null, a null default's and an unknown type's are unmeasured", () => {
+  // zzemu_nd N6: a string's null default there is measured (omitted → null stored, sent → VALID_TYPE),
+  // so `cleared` is refused, not unmeasured; a non-string null default without a required array was
+  // not probed (`list`, `flag`), and an array's [] is measured only with a required array.
+  it("with no required array: every typed property refuses a null, a non-string null default's and an unknown type's are unmeasured", () => {
     const loose = rule({ noRequiredArray: true });
-    expect(loose?.nullRefused).toEqual(["n", "b", "plain", "tags", "box"]);
-    expect(loose?.nullUnmeasured).toEqual(["cleared", "maybe", "owner"]);
+    expect(loose?.nullRefused).toEqual(["n", "b", "cleared", "plain", "tags", "box", "count"]);
+    expect(loose?.nullUnmeasured).toEqual(["maybe", "owner", "list", "flag"]);
+    expect(loose?.emptyOnNull).toEqual([]);
+    expect(loose?.defaults).toEqual({ n: 0, b: false, cleared: null, list: null, flag: null });
   });
   // sol-r1c, zzemu_def probe D1/D2: `default: null` is applied (stored as null) and gives no NOT_NULL.
   // P3-1 (fix round 2): it is still a default to stock policy.js, so the lane faults a PATCH remove of it.
   it("a null default is applied as null, listed as defaulted, and is not a NOT_NULL", () => {
     const profile: EnvProfile = { ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
-      properties: { cleared: { type: "string", default: null }, both: { type: "string", nullable: true, default: null } } } } };
-    expect(managedPolicy(profile)["managed/gizmo"]).toEqual({ defaults: { cleared: null, both: null }, notNull: [], nullRefused: [],
-      nullUnmeasured: [], checked: { cleared: "string", both: "string" }, unmeasured: {}, itemTypes: {}, defaulted: ["cleared", "both"] });
+      properties: { cleared: { type: "string", default: null }, both: { type: "string", nullable: true, default: null },
+        nb: { type: "boolean", nullable: true, default: null } } } } };
+    // Discriminating: D2's nullable null default is measured on a string only; a nullable boolean's is not.
+    expect(managedPolicy(profile)["managed/gizmo"]).toEqual({ defaults: { cleared: null, both: null, nb: null }, notNull: [], nullRefused: [],
+      emptyOnNull: [], nullUnmeasured: ["nb"], checked: { cleared: "string", both: "string" }, itemTypes: {}, defaulted: ["cleared", "both", "nb"] });
   });
   it("a type with nothing defaulted still gets a rule", () => {
     expect(managedPolicy({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
