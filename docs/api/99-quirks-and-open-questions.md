@@ -251,6 +251,15 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
   `{"<undefaulted>": null}` (expect 201 if stock holds), then with the property
   added to `required` and, separately, with the `required` key removed. Keep
   the defaulted `null` create as the positive control (403 `NOT_NULL`).
+- **Same gap, `PATCH remove` (added 2026-11-08):** the measured 403 `REQUIRED`
+  for removing a defaulted property was taken with the property also in
+  `schema.required`. With it not required, stock `policy.js` still adds an
+  implicit `required` for any `default` (`null` included) and predicts 403;
+  doc 10 used to state 200. Both rhino-local lanes fault it
+  (`idm-policy/required`, `openidm-managed-policy/<type>`). To settle it, on
+  the same type: `PATCH remove` a defaulted property not in `required`, then an
+  undefaulted optional one (expected 200 either way), with the measured
+  required-named remove as the positive control.
 
 ### Q5. Log API keys not present in `.envrc`
 

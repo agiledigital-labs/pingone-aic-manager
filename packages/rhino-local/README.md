@@ -798,11 +798,13 @@ record first; hook names the harness does not know count for every write), or
 `fallbackPolicies`; a delete is not judged on policy). A write a test stubs with `given.openidmFailures`
 never reaches the store and does not fault. A type with neither keeps writing
 silently, and without a profile nothing changes. A profile whose
-`profileVersion` is absent or below 2 cannot say a type declares nothing, so
-every write under it is `openidm-managed-profile-stale` until it is pulled
-again. A hand-written profile cannot be re-pulled: add `hooks` to each type
-(`[]` for none) and `default`, `conditionalPolicies` and `fallbackPolicies` to
-each property the tenant gives them, then set `"profileVersion": 2`. A type's
+`profileVersion` is absent, below 2 or not an integer (`"2"` is a string)
+cannot say a type declares nothing, so every write under it is
+`openidm-managed-profile-stale` until it is pulled again. A hand-written
+profile cannot be re-pulled: add `hooks` to each type (`[]` for none) and
+`noRequiredArray: true` to a type whose schema has no `required` array, add
+`default`, `conditionalPolicies` and `fallbackPolicies` to each property the
+tenant gives them, then set `"profileVersion": 2`. A type's
 defaults are applied on create, and a `null` sent for a defaulted property is
 AIC's measured `403 Policy validation failed` on a create of a new record and
 a harness fault otherwise (`docs/rhino-local-gaps.md`). Expect this to fail
