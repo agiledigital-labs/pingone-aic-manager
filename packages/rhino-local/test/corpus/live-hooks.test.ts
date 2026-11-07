@@ -3,7 +3,11 @@
  * so the lane does not fault them for that case. Three constraints keep it from becoming a bypass,
  * and each is pinned here against the real `realCase` and `profileForRun`.
  */
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { runCase } from "../../src/bindings/run.ts";
+import { defineCase } from "../../src/case/index.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
+import { RhinoRunner } from "../../src/runner.ts";
 import type { Given } from "../../src/case/types.ts";
 import type { RunCaseOptions } from "../../src/bindings/run.ts";
 import type { EnvProfile } from "../../src/profile/types.ts";
@@ -69,7 +73,43 @@ describe("liveHooks is a corpus-only, profile-bound, live-anchored acknowledgeme
   it("refuses a blocked case", () => {
     expect(() => build({ blocked: { method: "openidm.create", throw: "x" } })).toThrow(/needs a live payload/);
   });
-  it("refuses a missing probe date", () => {
-    expect(() => build({ liveHooks: { probed: "soon", hooks: live.hooks } })).toThrow(/names no probe date/);
+  it.each([["soon"], ["2026-13-45"], ["2026-02-30"]])("refuses probe date %s", (probed) => {
+    expect(() => build({ liveHooks: { probed, hooks: live.hooks } })).toThrow(/names no probe date/);
+  });
+});
+
+// sol-r1 P2-2: the corpus runner consumes profileForRun, and a RealEntry built by spreading the
+// committed one never went through realCase. Each of these used to return the hook-free profile.
+describe("profileForRun re-checks the acknowledgement on the entry it is given", () => {
+  const spread: [string, RealEntry, RegExp][] = [
+    ["no payload", { ...writes, kase: { ...writes.kase, expect: { outcome: "true" } } }, /needs a live payload/],
+    ["a blocked entry", { ...writes, blocked: { method: "openidm.create", throw: "refused" } }, /needs a live payload/],
+    ["an invalid date", { ...writes, liveHooks: { ...writes.liveHooks!, probed: "soon" } }, /names no probe date/],
+    ["a hook the profile lacks", { ...writes, liveHooks: { ...writes.liveHooks!, hooks: { alpha_role: ["postUpdate"] } } }, /does not declare/],
+    ["no profile", (({ profile: _p, ...rest }) => rest)(writes), /needs the case's own profile/],
+  ];
+  it.each(spread)("refuses %s", (_name, entry, message) => {
+    expect(() => profileForRun(entry)).toThrow(message);
+  });
+  it("the committed entry, untouched, still gets its exemption (positive control)", () => {
+    expect(profileForRun(writes)?.objects.alpha_role?.hooks).toEqual([]);
+  });
+
+  describe("on the JVM, the path the corpus runner takes", () => {
+    let runner: RhinoRunner;
+    beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+    afterAll(async () => { await runner.close(); });
+    // The reviewer's repro: a create with no live payload and an invalid date passed through
+    // runCase(profileForRun(entry)). Now no profile comes back to run with.
+    const kase = defineCase({ name: "no-live-payload", script: 'openidm.create("managed/alpha_role", "g1", {}); action.goTo("true");',
+      given: { managed: { "managed/alpha_role": [] } }, expect: { outcome: "true", allowUndeclared: { openidmWrites: true } } });
+    const entry: RealEntry = { ...writes, liveHooks: { ...writes.liveHooks!, probed: "soon" }, kase };
+    it("refuses before the run, where it used to pass", async () => {
+      await expect(async () => runCase(runner, entry.kase, { profile: profileForRun(entry)! })).rejects.toThrow(/names no probe date/);
+    });
+    it("with the case's own profile the hook still faults (positive control)", async () => {
+      expectHarnessFault("openidm-managed-hook/alpha_role.postCreate");
+      await expect(runCase(runner, entry.kase, { profile: entry.profile! })).rejects.toThrow(/managed\/alpha_role: on AIC a create runs postCreate/);
+    });
   });
 });

@@ -28,6 +28,7 @@ var __rhinoLocal = {
   openidmFailures: [],
   managedWriteFaults: null,
   managedDefaults: null,
+  managedUnavailable: null,
   openidmCallCounts: {},
   generatedId: 0,
   outcome: null,
@@ -2276,6 +2277,18 @@ function __rhinoLocalManagedWriteFault(method, collection) {
   throw __rhinoLocalFault(fault.id, "rhino-local: openidm." + method + ": " + fault.message);
 }
 
+// A type whose profile declaration AIC cannot serve (sol-r1 P1-1): a default
+// that does not match its declared type. AIC accepts the config and then 404s
+// every call on the type (docs/api/10); what a script's openidm call answers is
+// unmeasured, so every call faults, before anything else about it is judged.
+function __rhinoLocalUnavailableType(method, collection) {
+  var table = __rhinoLocal.managedUnavailable;
+  if (!table || !__rhinoLocalHas(table, collection)) {
+    return;
+  }
+  throw __rhinoLocalFault(table[collection].id, "rhino-local: openidm." + method + ": " + table[collection].message);
+}
+
 // A type a profile says the tenant does not have. Without a profile an
 // unseeded collection cannot be told from a typo, so it is never absent.
 function __rhinoLocalAbsentType(collection) {
@@ -2524,6 +2537,7 @@ openidm.read = function (resourceName, _params, fields) {
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("read", resource);
   var split = __rhinoLocalSplitResource(resource);
+  __rhinoLocalUnavailableType("read", split.collection);
   if (split.recordId === null) {
     throw __rhinoLocalFault("openidm-collection-path-as-record", 
       "rhino-local: openidm.read: " +
@@ -2554,6 +2568,7 @@ openidm.query = function (resourceName, params, fields) {
   }
   var collection = String(resourceName);
   __rhinoLocalPushOpenidm("query", collection, params);
+  __rhinoLocalUnavailableType("query", collection);
   // AIC's text, HTML-escaped as it comes back (corpus binding-openidm-writes
   // query/2/absent-type, live; docs/api/12 openidm query).
   if (__rhinoLocalAbsentType(collection)) {
@@ -2647,6 +2662,7 @@ openidm.create = function (resourceName, newResourceId, content) {
     recordedResource = collection + "/" + id;
   }
   __rhinoLocalPushOpenidm("create", recordedResource, content);
+  __rhinoLocalUnavailableType("create", collection);
   if (__rhinoLocalAbsentType(collection)) {
     throw __rhinoLocalUnknownTypeFault("create", collection);
   }
@@ -2696,6 +2712,7 @@ openidm.update = function (id, _rev, value) {
   }
   var resource = String(id);
   __rhinoLocalPushOpenidm("update", resource, value);
+  __rhinoLocalUnavailableType("update", __rhinoLocalSplitResource(resource).collection);
   var found = __rhinoLocalRequireRecord("update", resource);
   __rhinoLocalBagAccess("update", resource, found.record);
   __rhinoLocalCheckRev("update", _rev, found.record);
@@ -2714,6 +2731,7 @@ openidm.patch = function (resourceName, _rev, patch) {
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("patch", resource, patch);
+  __rhinoLocalUnavailableType("patch", __rhinoLocalSplitResource(resource).collection);
   var i;
   var op;
   var field;
@@ -2783,6 +2801,7 @@ openidm.delete = function (resourceName, _rev) {
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("delete", resource);
+  __rhinoLocalUnavailableType("delete", __rhinoLocalSplitResource(resource).collection);
   var found = __rhinoLocalRequireRecord("delete", resource);
   __rhinoLocalBagAccess("delete", resource, found.record);
   if (_rev !== null && _rev !== undefined && String(_rev) !== String(found.record._rev)) {
@@ -2810,6 +2829,9 @@ openidm.action = function (resource, actionName, content, params) {
   // Checked before the measured action-name refusal: which of the two AIC
   // raises for an absent type is unmeasured, and a stub cannot make it exist.
   var managedType = /^(managed\/[^/]+)(?:\/|$)/.exec(String(resource));
+  if (managedType) {
+    __rhinoLocalUnavailableType("action", managedType[1]);
+  }
   if (managedType && __rhinoLocalAbsentType(managedType[1])) {
     throw __rhinoLocalUnknownTypeFault("action", managedType[1]);
   }
@@ -4241,6 +4263,11 @@ function __rhinoLocalSeed(given) {
   // properties (P2-2), decided in src/profile/write-guard.ts managedDefaults.
   __rhinoLocal.managedDefaults = given.managedDefaults
     ? __rhinoLocalClone(given.managedDefaults)
+    : null;
+  // `managed/<type>` → { id, message }: types an invalid declaration makes
+  // unavailable (sol-r1 P1-1), decided in write-guard.ts managedUnavailable.
+  __rhinoLocal.managedUnavailable = given.managedUnavailable
+    ? __rhinoLocalClone(given.managedUnavailable)
     : null;
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
   __rhinoLocal.esvProvided = given.esv !== undefined;

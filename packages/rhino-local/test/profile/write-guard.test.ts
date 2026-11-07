@@ -7,7 +7,11 @@ import { runCase } from "../../src/bindings/run.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { normaliseManagedConfig } from "../../src/profile/normalise.ts";
 import { type EnvProfile, type ObjectSchema, PROFILE_VERSION } from "../../src/profile/types.ts";
-import { managedDefaults, managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
+import { hooksRun, managedDefaults, managedUnavailable, managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
+import { parseProfile } from "../../src/profile/store.ts";
+import { IdmConfig } from "../../src/idm/config.ts";
+import { validateDeclarations } from "../../src/idm/declarations.ts";
+import { Evidence } from "../../src/idm/provenance.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { caseWith } from "../aic/helpers.ts";
 import { runScriptWithFaults } from "../bindings/load-behaviour.ts";
@@ -150,7 +154,8 @@ describe("writeFault decides per type and method", () => {
 
   it("the message names every hook and the remedy", () => {
     const fault = writeFault(object({ hooks: ["onCreate", "postCreate"], properties: { secret: { type: "string", hooks: ["onStore"] } } }), "create");
-    expect(fault?.message).toContain("runs onCreate, postCreate, secret.onStore");
+    // Measured order (doc 24): property onStore runs before postCreate.
+    expect(fault?.message).toContain("runs onCreate, secret.onStore, postCreate");
     expect(fault?.message).toContain("given.openidmFailures");
   });
 
@@ -318,20 +323,132 @@ describe("the lane's PATCH null refusals (P2-1)", () => {
 describe("the lane's PATCH remove of a defaulted property (fix round 2, P3-1)", () => {
   // Stock policy.js adds an implicit required for any default; AIC's 403 REQUIRED was measured only
   // with the property also in schema.required. Unmeasured either way, so it faults.
+  // sol-r1 P1-1: a `default: null` on a string no longer reaches this check. It does not match its
+  // declared type, which the IDM emulator already refused, so the whole type is unavailable.
   it.each([
-    ["a non-null default", "defaulted", "d1", "/count"],
-    // Discriminating: a null default gives the type no defaults to apply, and is still a default.
-    ["a null default", "nulldef", "n1", "/cleared"],
-  ])("removing a property with %s faults and writes nothing", (_name, type, id, field) => {
+    ["a non-null default", "defaulted", "d1", "/count", "openidm-managed-policy/defaulted"],
+    ["a null default (the type is unavailable)", "nulldef", "n1", "/cleared", "openidm-managed-invalid-default/nulldef.cleared"],
+  ])("removing a property with %s faults and writes nothing", (_name, type, id, field, fault) => {
     const run = runScriptWithFaults(catching(`openidm.patch('managed/${type}/${id}', null, [{operation: 'remove', field: '${field}'}])`),
       seeded, { profile: lane });
-    expect(run.faults.map((fault) => fault.id)).toEqual([`openidm-managed-policy/${type}`]);
+    expect(run.faults.map((fault) => fault.id)).toEqual([fault]);
     expect(run.effects.managedStore?.[`managed/${type}`]).toEqual(seeded.managed[`managed/${type}` as keyof typeof seeded.managed]);
   });
   it("removing an undefaulted property of the same type still writes", () => {
-    const run = runScriptWithFaults("openidm.patch('managed/nulldef/n1', null, [{operation: 'remove', field: '/note'}]);", seeded, { profile: lane });
+    const run = runScriptWithFaults("openidm.patch('managed/defaulted/d1', null, [{operation: 'add', field: '/mail', value: 'm'}, " +
+      "{operation: 'remove', field: '/mail'}]);", seeded, { profile: lane });
     expect(run.faults).toEqual([]);
-    expect(run.effects.managedStore?.["managed/nulldef"]).toEqual([{ _id: "n1", _rev: "1", cleared: "x" }]);
+    expect(run.effects.managedStore?.["managed/defaulted"]).toEqual([{ _id: "d1", _rev: "1", count: 1, flag: true, tags: [] }]);
+  });
+});
+
+describe("hooksRun follows the measured phase order (sol-r1 P3-1)", () => {
+  // Doc 24 "Managed-object hooks / Order". Discriminating: the reviewer's mixed type. The old list put
+  // every write hook before every read hook, so its first hook (the fault id) was onUpdate.
+  const reviewed: ObjectSchema = { name: "gizmo", required: [], hooks: ["onRead", "onRetrieve", "onUpdate", "postUpdate"],
+    properties: { p: { type: "string", hooks: ["onRetrieve", "onStore"] } } };
+  it("an update reads first: object and property retrieval, then onRead, then the write chain", () => {
+    expect(hooksRun(reviewed, "update")).toEqual(["onRetrieve", "p.onRetrieve", "onRead", "onUpdate", "p.onStore", "postUpdate"]);
+    expect(writeFault(reviewed, "patch")?.id).toBe("openidm-managed-hook/gizmo.onRetrieve");
+  });
+  // Every property's onValidate before the object's, every property's onStore before the object's.
+  const full: ObjectSchema = { name: "gizmo", required: [],
+    hooks: ["onCreate", "onDelete", "onRead", "onRetrieve", "onStore", "onSync", "onUpdate", "onValidate", "postCreate", "postDelete", "postUpdate"],
+    properties: { a: { type: "string", hooks: ["onRetrieve", "onStore", "onValidate"] }, b: { type: "string", hooks: ["onValidate"] } } };
+  it.each([
+    ["create", ["onCreate", "a.onValidate", "b.onValidate", "onValidate", "a.onStore", "onStore", "postCreate", "onSync"]],
+    ["update", ["onRetrieve", "a.onRetrieve", "onRead", "onUpdate", "a.onValidate", "b.onValidate", "onValidate", "a.onStore", "onStore", "postUpdate", "onSync"]],
+    ["patch", ["onRetrieve", "a.onRetrieve", "onRead", "onUpdate", "a.onValidate", "b.onValidate", "onValidate", "a.onStore", "onStore", "postUpdate", "onSync"]],
+    ["delete", ["onDelete", "postDelete", "onSync"]],
+  ] as const)("%s", (method, order) => {
+    expect(hooksRun(full, method)).toEqual(order);
+  });
+});
+
+describe("one name per type: map key and object.name must agree (sol-r1 P1-2)", () => {
+  // The reviewer's profile: existence says managed/gizmo, the object calls itself "other".
+  const aliased = (version?: number): EnvProfile => ({ tenant: "sandbox", pulledAt: META.pulledAt, sources: [],
+    ...(version === undefined ? {} : { profileVersion: version }),
+    objects: { gizmo: { name: "other", required: [], properties: { n: { type: "number", default: 0 } }, hooks: ["onCreate", "onUpdate", "onDelete"] } } });
+  const writes = "openidm.create('managed/gizmo', 'g1', {}); openidm.update('managed/gizmo/g1', null, {}); " +
+    "openidm.patch('managed/gizmo/g1', null, []); openidm.delete('managed/gizmo/g1', null);";
+  it.each([["absent (stale)", undefined], ["current", PROFILE_VERSION]])("parseProfile refuses version %s", (_name, version) => {
+    expect(() => parseProfile(JSON.stringify(aliased(version)), "/x/profile.json")).toThrow(/objects\["gizmo"\]\.name is "other", not "gizmo"/);
+  });
+  it("parseProfile refuses an entry that is not an object, and accepts a consistent profile", () => {
+    expect(() => parseProfile(JSON.stringify({ ...aliased(2), objects: { gizmo: 7 } }), "/x")).toThrow(/objects\["gizmo"\]\.name is missing/);
+    expect(parseProfile(JSON.stringify(lane), "/x").objects.hooked?.name).toBe("hooked");
+  });
+  // A runner caller can pass a profile object directly; the preamble refuses it there too.
+  it.each([["absent (stale)", undefined], ["current", PROFILE_VERSION]])("the preamble refuses a version-%s profile before any write runs", (_name, version) => {
+    expect(() => runScriptWithFaults(writes, {}, { profile: aliased(version) })).toThrow(/objects\["gizmo"\]\.name is "other"/);
+  });
+  // Independent of the refusal: every table is keyed by the map key, so none can name another type.
+  it("the tables key by the map key", () => {
+    expect(Object.keys(managedWriteFaults(aliased()))).toEqual(["managed/gizmo"]);
+    expect(managedWriteFaults(aliased(2))["managed/gizmo"]?.create?.id).toBe("openidm-managed-hook/gizmo.onCreate");
+    expect(Object.keys(managedDefaults(aliased(2)))).toEqual(["managed/gizmo"]);
+    const bad = aliased(2);
+    bad.objects.gizmo!.properties.flag = { type: "boolean", default: "nope" };
+    expect(Object.keys(managedUnavailable(bad))).toEqual(["managed/gizmo"]);
+  });
+});
+
+describe("a default that does not match its type makes the type unavailable (sol-r1 P1-1)", () => {
+  const config = (flag: unknown) => ({ objects: [{ name: "gizmo", schema: { required: [], properties: { flag, note: { type: "string" } } } }] });
+  const profileOf = (flag: unknown) => normaliseManagedConfig(config(flag), META);
+  /** What the IDM emulator's config check says about the same raw config. */
+  const idmRefuses = async (flag: unknown): Promise<boolean> => {
+    const evidence = new Evidence();
+    try {
+      await evidence.run(async () => validateDeclarations(new IdmConfig({ sync: { mappings: [] }, managed: config(flag) } as never), evidence));
+      return false;
+    } catch (error) {
+      return /invalid default|nested property behavior default/.test(String(error));
+    }
+  };
+  // Both lanes judge the same raw declaration with the same function, so they must agree on every row.
+  it.each([
+    ["the measured case: boolean, default \"nope\"", { type: "boolean", default: "nope" }, true],
+    ["boolean false", { type: "boolean", default: false }, false],
+    ["number 0", { type: "number", default: 0 }, false],
+    ["number as string", { type: "number", default: "0" }, true],
+    ["string", { type: "string", default: "x" }, false],
+    ["null on a string", { type: "string", default: null }, true],
+    ["array of strings", { type: "array", items: { type: "string" }, default: ["a", "b"] }, false],
+    // Discriminating for the recursive check: the outer value is an array, an item is not a string.
+    ["array with a wrong-typed item", { type: "array", items: { type: "string" }, default: ["a", 2] }, true],
+    ["a default nested inside items", { type: "array", items: { type: "string", default: "a" } }, true],
+    ["no default", { type: "boolean" }, false],
+  ])("%s", async (_name, flag, invalid) => {
+    expect(await idmRefuses(flag)).toBe(invalid);
+    const table = managedUnavailable(profileOf(flag));
+    expect(table["managed/gizmo"]?.id).toBe(invalid ? "openidm-managed-invalid-default/gizmo.flag" : undefined);
+  });
+
+  // The lane: omitted and valid explicit values both fault, on every method, and nothing is stored.
+  const bad = profileOf({ type: "boolean", default: "nope" });
+  const given = { managed: { "managed/gizmo": [{ _id: "g0", _rev: "1", note: "a" }] } };
+  it.each([
+    ["create omitting the property", "openidm.create('managed/gizmo', 'g1', {})"],
+    ["create with a valid explicit value", "openidm.create('managed/gizmo', 'g1', {flag: true})"],
+    ["read", "openidm.read('managed/gizmo/g0')"],
+    ["query", "openidm.query('managed/gizmo', {_queryFilter: 'true'})"],
+    ["update", "openidm.update('managed/gizmo/g0', null, {note: 'b', flag: true})"],
+    ["patch", "openidm.patch('managed/gizmo/g0', null, [{operation: 'replace', field: '/note', value: 'b'}])"],
+    ["delete", "openidm.delete('managed/gizmo/g0', null)"],
+  ])("%s faults and leaves the store alone", (_name, call) => {
+    const run = runScriptWithFaults(catching(call), given, { profile: bad });
+    expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-managed-invalid-default/gizmo.flag"]);
+    expect(run.effects.managedStore?.["managed/gizmo"]).toEqual(given.managed["managed/gizmo"]);
+  });
+  it("the profile is not repaired: the default is still in it, and a valid sibling type still writes", () => {
+    const mixed = normaliseManagedConfig({ objects: [...config({ type: "boolean", default: "nope" }).objects,
+      { name: "fine", schema: { required: [], properties: { flag: { type: "boolean", default: false } } } }] }, META);
+    expect(mixed.objects.gizmo?.properties.flag?.default).toBe("nope");
+    const run = runScriptWithFaults("openidm.create('managed/fine', 'f1', {});", {}, { profile: mixed });
+    expect(run.faults).toEqual([]);
+    expect(run.effects.managedStore?.["managed/fine"]).toEqual([{ _id: "f1", _rev: "local-rev", flag: false }]);
   });
 });
 
@@ -347,5 +464,24 @@ describe("on the real JVM the fault fails the run and is tallied", () => {
       script: `${catching("openidm.create('managed/hooked', 'h2', {mail: 'b'})")} action.goTo("true");`,
       expect: { outcome: "true", allowUndeclared: { openidmWrites: true } },
     }), { profile: lane })).rejects.toThrow(/openidm-managed-hook\/hooked\.onCreate/);
+  });
+
+  // The reviewer's JVM repros, through the public runCase.
+  it("a create on a type with a mismatched default fails the run (was pass: true, flag \"nope\" stored)", async () => {
+    expectHarnessFault("openidm-managed-invalid-default/gizmo.flag");
+    const bad = normaliseManagedConfig({ objects: [{ name: "gizmo", schema: { required: [], properties: { flag: { type: "boolean", default: "nope" } } } }] }, META);
+    await expect(runCase(runner, caseWith({
+      // Caught, as a probe would: the fault still fails the run.
+      script: 'var r = {}; try { r = openidm.create("managed/gizmo", "g1", {}); } catch (e) {} action.goTo(r.flag === "nope" ? "true" : "false");',
+      expect: { outcome: "true", allowUndeclared: { openidmWrites: true } },
+    }), { profile: bad })).rejects.toThrow(/openidm-managed-invalid-default\/gizmo\.flag/);
+  });
+  it("a profile whose key and name disagree is refused (was pass: true across four writes)", async () => {
+    const aliased: EnvProfile = { tenant: "sandbox", pulledAt: META.pulledAt, sources: [],
+      objects: { gizmo: { name: "other", properties: {}, required: [], hooks: ["onCreate", "onUpdate", "onDelete"] } } };
+    await expect(runCase(runner, caseWith({
+      script: 'openidm.create("managed/gizmo", "g1", {}); openidm.delete("managed/gizmo/g1", null); action.goTo("true");',
+      expect: { outcome: "true", allowUndeclared: { openidmWrites: true } },
+    }), { profile: aliased })).rejects.toThrow(/objects\["gizmo"\]\.name is "other"/);
   });
 });

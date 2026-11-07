@@ -10,6 +10,27 @@ export class ProfileShapeError extends Error {
 }
 
 /**
+ * Refuse a profile whose `objects` map does not key each type by its own `name` (sol-r1 P1-2).
+ * The map key is what says a type exists (`knownTypes`, fixture validation), so a type whose
+ * `name` disagrees would split existence from the write-fault and defaults tables, and its writes
+ * would escape every fault. A pull never writes one; a hand-written or edited profile can. Called
+ * wherever a profile enters: `parseProfile` and the case preamble.
+ */
+export function checkProfileObjects(profile: { objects?: unknown }, where: string): void {
+  const objects = profile.objects;
+  if (!isPlainObject(objects)) {
+    throw new ProfileShapeError(`profile ${where}: \`objects\` is not an object`);
+  }
+  for (const [key, object] of Object.entries(objects)) {
+    if (!isPlainObject(object) || object.name !== key) {
+      const name = isPlainObject(object) ? JSON.stringify(object.name) : "missing (not an object)";
+      throw new ProfileShapeError(`profile ${where}: objects[${JSON.stringify(key)}].name is ${name}, not ${JSON.stringify(key)}. ` +
+        "Each type must be keyed by its own name; re-pull the profile, or fix the hand-written entry");
+    }
+  }
+}
+
+/**
  * Normalise `GET /openidm/config/managed` into an `EnvProfile`.
  *
  * Pure, so the wire shape is testable without a tenant. Unknown keys are

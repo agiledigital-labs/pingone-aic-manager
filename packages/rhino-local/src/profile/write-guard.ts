@@ -17,6 +17,7 @@
  * (docs/api/10). {@link managedDefaults} gives the lane those per type as plain lists.
  */
 import type { JsonValue } from "../case/types.ts";
+import { defaultMatches } from "../declared-default.ts";
 import { type EnvProfile, type ObjectSchema, PROFILE_VERSION, type PropertySchema } from "./types.ts";
 
 export type WriteMethod = "create" | "update" | "patch" | "delete";
@@ -24,20 +25,24 @@ export const WRITE_METHODS: readonly WriteMethod[] = ["create", "update", "patch
 export type WriteFault = { readonly id: string; readonly message: string };
 
 /**
- * Object-level hooks a write runs, in chain order (docs/api/10; the emulator's measured order).
- * Read hooks run only around an update or PATCH, which read the record first: a create runs none
- * and a delete runs `onDelete → postDelete → onSync` (docs/api/24-idm-script-runtime.md). A hook
- * name this list does not know counts for every method.
+ * The hook phases a write runs, in the measured order (docs/api/24-idm-script-runtime.md,
+ * "Managed-object hooks / Order"). An update or PATCH reads the record first, so its read hooks
+ * come before `onUpdate`; property `onValidate` hooks (every property, schema order) run before the
+ * object's `onValidate`, and property `onStore` hooks before the object's `onStore`. A create runs
+ * no read hooks and a delete runs no property hooks. A hook name these phases do not know counts
+ * for every method, after the known ones.
  */
-const CHAIN: Record<"create" | "update" | "delete", readonly string[]> = {
-  create: ["onCreate", "onValidate", "onStore", "postCreate", "onSync"],
-  update: ["onUpdate", "onValidate", "onStore", "postUpdate", "onSync"],
-  delete: ["onDelete", "postDelete", "onSync"],
+type Phase = { readonly object: string } | { readonly property: string };
+const o = (object: string): Phase => ({ object });
+const p = (property: string): Phase => ({ property });
+const PHASES: Record<"create" | "update" | "delete", readonly Phase[]> = {
+  create: [o("onCreate"), p("onValidate"), o("onValidate"), p("onStore"), o("onStore"), o("postCreate"), o("onSync")],
+  update: [o("onRetrieve"), p("onRetrieve"), o("onRead"),
+    o("onUpdate"), p("onValidate"), o("onValidate"), p("onStore"), o("onStore"), o("postUpdate"), o("onSync")],
+  delete: [o("onDelete"), o("postDelete"), o("onSync")],
 };
-const READ_HOOKS = ["onRead", "onRetrieve"];
-const KNOWN = new Set([...CHAIN.create, ...CHAIN.update, ...CHAIN.delete, ...READ_HOOKS]);
-const PROPERTY_WRITE_HOOKS = ["onValidate", "onStore"];
-const READS_FIRST: readonly WriteMethod[] = ["update", "patch"];
+const KNOWN_OBJECT = new Set(Object.values(PHASES).flat().flatMap((phase) => "object" in phase ? [phase.object] : []));
+const KNOWN_PROPERTY = new Set(Object.values(PHASES).flat().flatMap((phase) => "property" in phase ? [phase.property] : []));
 
 function propertyHooks(object: ObjectSchema, wanted: (hook: string) => boolean): string[] {
   const out: string[] = [];
@@ -49,17 +54,14 @@ function propertyHooks(object: ObjectSchema, wanted: (hook: string) => boolean):
 
 /** The hooks a write of `method` would run on AIC, first one first. */
 export function hooksRun(object: ObjectSchema, method: WriteMethod): string[] {
-  const chain = CHAIN[method === "patch" ? "update" : method];
   const declared = object.hooks ?? [];
-  const writes = method === "delete" ? [] : propertyHooks(object, (hook) => PROPERTY_WRITE_HOOKS.includes(hook));
-  const reads = READS_FIRST.includes(method);
+  const known = PHASES[method === "patch" ? "update" : method].flatMap((phase) => "object" in phase
+    ? declared.filter((hook) => hook === phase.object)
+    : propertyHooks(object, (hook) => hook === phase.property));
   return [
-    ...chain.filter((hook) => declared.includes(hook)),
-    ...writes,
-    ...(reads ? READ_HOOKS.filter((hook) => declared.includes(hook)) : []),
-    ...(reads ? propertyHooks(object, (hook) => READ_HOOKS.includes(hook)) : []),
-    ...propertyHooks(object, (hook) => !PROPERTY_WRITE_HOOKS.includes(hook) && !READ_HOOKS.includes(hook)),
-    ...declared.filter((hook) => !KNOWN.has(hook)),
+    ...known,
+    ...propertyHooks(object, (hook) => !KNOWN_PROPERTY.has(hook)),
+    ...declared.filter((hook) => !KNOWN_OBJECT.has(hook)),
   ];
 }
 
@@ -119,11 +121,20 @@ export function writeFault(object: ObjectSchema, method: WriteMethod): WriteFaul
   return undefined;
 }
 
+/**
+ * Every type of the profile, named by its map key: the key is what declares the type exists, so
+ * every table is keyed the same way. `checkProfileObjects` refuses a profile where they disagree
+ * before any table is built; this keeps the tables from depending on that check alone.
+ */
+function byKey(profile: EnvProfile): ObjectSchema[] {
+  return Object.entries(profile.objects).map(([key, object]) => object.name === key ? object : { ...object, name: key });
+}
+
 /** The lane's lookup table: `managed/<type>` → method → fault, for every type that has one. */
 export function managedWriteFaults(profile: EnvProfile): Record<string, Partial<Record<WriteMethod, WriteFault>>> {
   const out: Record<string, Partial<Record<WriteMethod, WriteFault>>> = {};
   const stale = profileStale(profile);
-  for (const object of Object.values(profile.objects)) {
+  for (const object of byKey(profile)) {
     const faults: Partial<Record<WriteMethod, WriteFault>> = {};
     for (const method of WRITE_METHODS) {
       const fault = stale ? staleFault(object, profile) : writeFault(object, method);
@@ -162,7 +173,7 @@ export type DefaultsRule = {
 export function managedDefaults(profile: EnvProfile): Record<string, DefaultsRule> {
   const out: Record<string, DefaultsRule> = {};
   if (profileStale(profile)) return out;
-  for (const object of Object.values(profile.objects)) {
+  for (const object of byKey(profile)) {
     const defaults: Record<string, JsonValue> = {};
     const defaulted: string[] = [];
     for (const [name, property] of Object.entries(object.properties)) {
@@ -174,6 +185,48 @@ export function managedDefaults(profile: EnvProfile): Record<string, DefaultsRul
     const notNull = Object.keys(defaults);
     const emulable = object.noRequiredArray ? [] : notNull.filter((name) => !object.required.includes(name));
     out[`managed/${object.name}`] = { defaults, notNull, emulable, defaulted };
+  }
+  return out;
+}
+
+/**
+ * Why a property's declaration makes its type unavailable, if it does (sol-r1 P1-1): a `default`
+ * that does not match the declared type ({@link defaultMatches}, the IDM emulator's rule), or a
+ * `default` nested inside `items`, which the emulator refuses too and nothing measured.
+ */
+function declarationProblem(name: string, property: PropertySchema, depth = 0): string | undefined {
+  if (property.default !== undefined) {
+    if (depth > 0) return `${name} declares a nested default, which nothing measured`;
+    if (!defaultMatches(property.default, property)) {
+      return `${name} declares default ${JSON.stringify(property.default)}, which does not match its type ` +
+        `${JSON.stringify(property.type)}${property.nullable ? " (a nullable type is judged by its non-null type)" : ""}`;
+    }
+  }
+  return property.items ? declarationProblem(`${name}[]`, property.items, depth + 1) : undefined;
+}
+
+/**
+ * The lane's unavailable-type table: `managed/<type>` → the fault every `openidm` call on it raises.
+ *
+ * Measured (docs/api/10): a config with `{"type": "boolean", "default": "nope"}` is accepted, and
+ * the type then answers 404 to every `/openidm/managed/<type>` call, indefinitely. What a script's
+ * `openidm.read`/`create`/… returns for such a type is not measured (a type the config does not
+ * declare at all reads as `null`, but that is a different tenant state), so the lane faults every
+ * call rather than emulate an answer. Never repaired: the profile is used as written. Judged on any
+ * profile version, because a default is in the profile or it is not.
+ */
+export function managedUnavailable(profile: EnvProfile): Record<string, WriteFault> {
+  const out: Record<string, WriteFault> = {};
+  for (const object of byKey(profile)) {
+    for (const [name, property] of Object.entries(object.properties)) {
+      const problem = declarationProblem(name, property);
+      if (problem === undefined) continue;
+      out[`managed/${object.name}`] = { id: `openidm-managed-invalid-default/${object.name}.${name}`,
+        message: `managed/${object.name}: ${problem}. On AIC a type-mismatched default leaves the type unavailable ` +
+          "(every record call 404, measured for a boolean declaring default \"nope\", docs/api/10), and what an openidm " +
+          "call answers then is unmeasured. Fix the default on the tenant and re-pull the profile" };
+      break;
+    }
   }
   return out;
 }
