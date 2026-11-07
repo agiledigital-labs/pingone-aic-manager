@@ -629,6 +629,8 @@ describe("an invalid default anywhere in the profile faults every managed call (
   it("an unmeasured default faults the lane under its own id", () => {
     const run = runScriptWithFaults(catching("openidm.read('managed/gizmo/g0')"), given, { profile: profileOf({ type: ["string", "number"], default: "a" }) });
     expect(run.faults.map((fault) => fault.id)).toEqual(["openidm-managed-unmeasured-default/gizmo.flag"]);
+    // Discriminating for P2-1: the profile keeps the list, so the fault names the declaration the tenant holds.
+    expect(run.faults[0]?.message).toContain('on type ["string","number"]');
   });
   // Positive control: the same two types with the default fixed write as before.
   it("with every default valid, the sibling writes and its default lands", () => {
