@@ -41,6 +41,7 @@ export interface EvalOptions {
 export class HostCallError extends Error {
   readonly class: string;
   readonly code: number;
+  readonly reason: string | undefined;
   readonly detail: JsonValue;
   readonly emulation: HostError["emulation"];
   readonly missing: string[] | undefined;
@@ -49,6 +50,7 @@ export class HostCallError extends Error {
     this.name = "HostCallError";
     this.class = error.class;
     this.code = error.code;
+    this.reason = error.reason;
     this.detail = error.detail;
     this.missing = error.missing;
     this.emulation = error.emulation;
@@ -66,7 +68,9 @@ function hostError(error: unknown): HostError {
     class: typeof record.class === "string" ? record.class : "rhino.local.HostCallException",
     message: typeof record.message === "string" ? record.message : String(error),
     code: typeof record.code === "number" ? record.code : 500,
-    detail: (record.detail ?? {}) as JsonValue,
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+    // A null detail stays null: a script reads it as a Java null (measured for a 404).
+    detail: (record.detail === undefined ? {} : record.detail) as JsonValue,
     ...(error instanceof HostCallError && error.missing ? { missing: error.missing } : {}),
     ...(fatal ? { emulation: fatal } : {}),
   };

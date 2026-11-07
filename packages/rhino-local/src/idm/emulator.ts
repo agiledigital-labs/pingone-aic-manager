@@ -124,6 +124,7 @@ export class IdmEmulator {
       const body = document(result.body);
       const error = new IdmError(absent.length > 0 ? 501 : result.status, String(body.message), body.detail).host();
       throw new HostCallError({ class: error.class, code: error.code, message: error.message, detail: error.detail,
+        ...(error.reason === undefined ? {} : { reason: error.reason }),
         ...(absent.length > 0 ? { missing: absent } : {}) });
     }
     return result.body;

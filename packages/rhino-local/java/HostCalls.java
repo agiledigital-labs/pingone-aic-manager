@@ -103,7 +103,7 @@ public final class HostCalls {
           fatal.info.put("missing", absent);
           throw fail(fatal);
         }
-        throw new WrappedException(new HostException(error, values));
+        throw new WrappedException(new HostException(error, values, this));
       }
       return reply.get("result");
     } catch (TimeoutException e) {
@@ -141,27 +141,55 @@ public final class HostCalls {
     }
   }
 
-  /** Public methods are intentionally visible through Rhino's JavaException wrapper. */
+  /**
+   * The tenant exception a script catches as {@code e.javaException}. Rhino exposes it through
+   * {@link IdmExceptionView} (IdmContextFactory's wrap factory), which admits only the members
+   * measured on AIC and faults the rest: the real object is a CREST ResourceException subclass,
+   * and this class is not one, so its other members would answer for the wrong class.
+   */
   public static final class HostException extends Exception {
+    /** The harness-fault id an unmeasured member or rendering of a caught exception faults under. */
+    static final String FAULT = "idm-exception/unmeasured";
     private final IdmValues values;
+    private final HostCalls host;
     private final String exceptionClass;
+    private final String reason;
     private final Object code;
     private final Object detail;
 
-    HostException(Map<String, Object> error, IdmValues values) {
+    HostException(Map<String, Object> error, IdmValues values, HostCalls host) {
       super(Json.optionalString(error, "message"));
       this.values = values;
+      this.host = host;
       exceptionClass = Json.optionalString(error, "class");
+      reason = Json.optionalString(error, "reason");
       code = error.get("code");
       detail = error.get("detail");
     }
 
     public int getCode() { return code instanceof Number ? ((Number) code).intValue() : 500; }
+    /** A Java null when the error carries none (measured for a 404: {@code String(getDetail())} is "null"). */
     public Object getDetail() {
-      return values.wrap(detail);
+      return detail == null ? null : values.wrapDetail(detail, this);
+    }
+    /** CREST's reason phrase (measured "Not Found" for a 404); an error that names none faults. */
+    public String getReason() {
+      if (reason == null) throw unmeasured("getReason() of an exception that carries no reason phrase");
+      return reason;
     }
     String exceptionClass() { return exceptionClass; }
     Object detail() { return detail; }
     @Override public String toString() { return exceptionClass + ": " + getMessage(); }
+
+    EmulationFailure unmeasured(String behavior) {
+      String cause = FAULT + ": " + behavior;
+      EmulationFailure error = new EmulationFailure("missing", "Missing IDM behavior: " + cause);
+      error.info.put("missing", java.util.Collections.singletonList(cause));
+      Map<String, Object> fault = new LinkedHashMap<String, Object>();
+      fault.put("id", FAULT);
+      fault.put("message", behavior);
+      error.info.put("faults", java.util.Collections.singletonList(fault));
+      return host.fail(error);
+    }
   }
 }

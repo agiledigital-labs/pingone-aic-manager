@@ -142,6 +142,8 @@ export interface HostError {
   class: string;
   message: string;
   code: number;
+  /** CREST's reason phrase, for a script's `getReason()`; absent, that call faults. */
+  reason?: string;
   detail: JsonValue;
 }
 

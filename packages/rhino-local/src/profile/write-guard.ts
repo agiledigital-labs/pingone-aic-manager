@@ -248,6 +248,9 @@ function declared(property: PropertySchema): { type: unknown; items?: unknown } 
   return property.items ? { type, items: { type: property.items.types ?? property.items.type } } : { type };
 }
 
+/** IDM's VALID_TYPE calls every JSON number "number", so no numeric value is an `integer` (zzemu_nd, 2026-11-08). */
+const INTEGER_NOTE = ' (IDM types every JSON number as "number", so an integer accepts no number at all)';
+
 /**
  * Why a property's declaration is one AIC refuses or might, if it is (judged by {@link judgeDefault}).
  * A default nested under `items` or `properties` is unmeasured whatever its value, as in the IDM
@@ -260,7 +263,8 @@ function declarationProblem(name: string, property: PropertySchema, depth = 0): 
     if (verdict !== "valid") {
       const type = JSON.stringify(property.types ?? property.type) + (property.nullable && !property.types ? " (nullable)" : "");
       return { kind: verdict, why: verdict === "invalid"
-        ? `${name} declares default ${JSON.stringify(property.default)}, which does not match its type ${type}`
+        ? `${name} declares default ${JSON.stringify(property.default)}, which does not match its type ${type}` +
+          (property.type === "integer" || property.items?.type === "integer" ? INTEGER_NOTE : "")
         : `${name} declares default ${JSON.stringify(property.default)} on type ${type}, which no probe covered` };
     }
   }
