@@ -233,33 +233,48 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
 
 ## Open
 
-### Q18. Is `null` on an undefaulted property accepted? (2026-11-06)
+### Q18. Is `null` on an undefaulted property accepted? (2026-11-06; create answered 2026-11-08)
 
 - **Question:** every measured `null` refusal on a managed write (`403
   NOT_NULL` on create; see `10-managed-objects.md`, `default` and `required`
   table) used a property with a non-null `default`. Does a create or update
   sending `null` for a property with **no** `default` succeed?
-- **Status: unmeasured.** Stock `policy.js` predicts: accepted when the
-  schema's `required` array exists and does not name the property, refused
-  `VALID_TYPE` when the schema has no `required` array, and `REQUIRED` +
-  `VALID_TYPE` when it names it. That is a reading of shipped code, not an
-  observation.
-- **Why it matters:** the rhino-local IDM emulator assumes acceptance in the
-  first case and faults the second (`idm-policy/valid-type`); the script
-  tester does not check it at all (`docs/rhino-local-gaps.md`).
-- **To settle it:** on a throwaway type with `required: []`, create with
-  `{"<undefaulted>": null}` (expect 201 if stock holds), then with the property
-  added to `required` and, separately, with the `required` key removed. Keep
-  the defaulted `null` create as the positive control (403 `NOT_NULL`).
-- **Same gap, `PATCH remove` (added 2026-11-08):** the measured 403 `REQUIRED`
-  for removing a defaulted property was taken with the property also in
-  `schema.required`. With it not required, stock `policy.js` still adds an
-  implicit `required` for any `default` (`null` included) and predicts 403;
-  doc 10 used to state 200. Both rhino-local lanes fault it
-  (`idm-policy/required`, `openidm-managed-policy/<type>`). To settle it, on
-  the same type: `PATCH remove` a defaulted property not in `required`, then an
-  undefaulted optional one (expected 200 either way), with the measured
-  required-named remove as the positive control.
+- **Answered for a create of a new record (2026-11-08, orchestrator probe note
+  `probe-pol/note.md`, REST and IDM-script lanes; doc 10, "Explicit `null`,
+  nested types and optional removes"):** accepted and stored as `null` when
+  `schema.required` exists and does not name the property; 403 `VALID_TYPE`
+  (`invalidType "null"`) when the schema has no `required` key; 403
+  `VALID_TYPE` when `required` names it. The last **diverges from the stock
+  `policy.js` reading** this entry recorded (`REQUIRED` + `VALID_TYPE`): a null
+  counts as present, so only `VALID_TYPE` is listed. The same probe found that
+  only the top-level `type` is checked — nested `properties`/`items` schemas are
+  stored and not enforced — and that a `PATCH remove` of an undefaulted,
+  non-required property is 200 with the key gone.
+- **Still open:**
+  - an **update** (whole-record `PUT`) sending `null` for an undefaulted
+    property; rhino-local assumes it behaves as on create where a create would
+    accept it, and faults it where a create would refuse it;
+  - a `PATCH remove` of a **defaulted** property that `required` does not name.
+    The measured 403 `REQUIRED` was taken with the property also in
+    `schema.required`; stock `policy.js` adds an implicit `required` for any
+    `default` (`null` included) and predicts 403; doc 10 used to state 200.
+    Both rhino-local lanes fault it (`idm-policy/required`,
+    `openidm-managed-policy/<type>`);
+  - what triggers `NOT_NULL`: the probe's only `NOT_NULL` property was a
+    defaulted boolean, so a default-less boolean (or a defaulted string) would
+    separate the `default` from the type;
+  - a **top-level** array whose own items mismatch `items.type`
+    (`{tags: [2]}` with `tags` a top-level `string[]`); both rhino-local lanes
+    fault it;
+  - a top-level mismatch against a declared `number`, `integer` or `boolean`
+    (measured: `string`, `object`, `array`); both lanes fault it;
+  - all of the above from a next-gen journey script's `openidm` binding.
+- **To settle the rest:** on a throwaway type with `required: []`, an
+  undefaulted string and a defaulted property not in `required`: `PUT` a whole
+  record with the string `null`; `PATCH remove` the defaulted property (with
+  the measured required-named remove as the positive control); create
+  `{tags: [2]}` and a number property sent as a string; add a default-less
+  boolean and send it `null`.
 
 ### Q5. Log API keys not present in `.envrc`
 
