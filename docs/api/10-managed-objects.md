@@ -435,13 +435,33 @@ from the same probe (each type added alone, with `required: []`):
 | `{type: "array", items: {type: "string"}, default: ["a", "b"]}`     | yes    | `create {}` stores `["a", "b"]`                                                         |
 | `{type: "array", items: {type: "string"}, default: ["a", 2]}`       | **no** | an item mismatching `items.type` is fatal, though a record's nested items are not checked |
 | `{type: "object", properties: {x: {type: "string"}}, default: {x: 1}}` | yes  | nested `properties` are **not** checked against an object default; stored `{x: 1}`      |
+| `{type: "boolean", default: null}`                                  | yes    | `create {}` stores `flag: null` (present); zzemu_nd                                     |
+| `{type: "number", default: null}`                                   | yes    | `create {}` stores `null`; zzemu_nd                                                     |
+| `{type: "integer", default: null}`                                  | yes    | `create {}` stores `null`; zzemu_nd                                                     |
+| `{type: "object", default: null}`                                   | yes    | `create {}` stores `null`; zzemu_nd                                                     |
+| `{type: "array", items: {type: "string"}, default: null}`           | yes    | `create {}` stores **`[]`**, not `null`; zzemu_nd                                       |
+| `{type: "string", default: null}`, no `required` key                | yes    | `create {}` stores `null`; zzemu_nd                                                     |
+| `{type: "number", default: 3}` / `default: 3.5`                     | yes    | applies `3` / `3.5`; zzemu_nd                                                           |
+| `{type: "integer", default: 3}` / `default: 3.5`                    | **no** | **both** freeze the config: no JSON number is an `integer` (below); zzemu_nd            |
 
 So the check is the top-level `type` against the default, plus each item of an
-array default against `items.type`. It does not recurse into an object
-default's `properties`, and `null` is not a mismatch on a string. Not measured:
-a `null` default on any other type, arrays of arrays, fractional values against
-`integer`, `required` other than `[]`, and whether the frozen state survives an
+array default against `items.type` — the same `VALID_TYPE` check a record
+gets. It does not recurse into an object default's `properties`, and a `null`
+default passes on every type tried (string, boolean, number, integer, object,
+array). Not measured: arrays of arrays, a `null` default nested under `items`,
+a type list naming two concrete types, a default nested under `properties` or
+`items`, non-empty `required` lists, and whether the frozen state survives an
 IDM restart.
+
+**`integer` admits no number (verified 2026-11-08, zzemu_nd).** `integer` is an
+accepted declared type, but IDM's type check classifies every JSON number as
+`"number"`, never `"integer"`. On `i: {type: "integer", default: null}`, in
+both lanes: `{i: 3}` and `{i: 3.5}` are each 403
+`VALID_TYPE {invalidType: "number", validTypes: ["integer"]}`, `{i: "x"}` is
+403 `invalidType: "string"`, and only `null` or omitting the key succeed. A
+numeric `default` on `integer` — `3` as much as `3.5` — is therefore invalid
+and freezes `config/managed` like any other invalid default; the `number`
+controls with defaults `3` and `3.5` came live and applied them.
 
 **`default: null` (verified 2026-11-08).** On `string` and `["string", "null"]`
 with `required: []`, in both lanes: `create {}` is 201 holding `text: null`;
@@ -452,6 +472,18 @@ verbatim (`["string"]`, or `["string", "null"]` for the nullable form).
 `flag: {type: "boolean", default: true}` and an object defaulting to `{x: 1}`
 both refuse `null` with 403 `NOT_NULL`, while the null-defaulted string does
 not.
+
+The zzemu_nd probe extended this to every type, with `required: []`: on
+`boolean`, `number`, `integer`, `object` and `array` a `default: null` is
+valid, `create {}` stores the property, and an explicit `null` is 201 with no
+`NOT_NULL`. **An array is the exception in what it stores**: both `create {}`
+and an explicit `{a: null}` store and read back `a: []`. A wrong-typed value is
+403 `VALID_TYPE` on each (`{flag: "x"}`, `{n: "x"}`, `{o: "x"}`, `{a: "x"}`,
+all `invalidType: "string"`). Dropping the `required` key flips the explicit
+null on a string: `text: {type: "string", default: null}` with no `required`
+key still stores `null` for `create {}`, but `{text: null}` is 403
+`VALID_TYPE {invalidType: "null", validTypes: ["string"]}`. Whether the other
+types flip the same way without the key was not measured.
 
 **An unavailable type looks exactly like an undeclared one (verified
 2026-11-08).** Captured for an invalid type, a valid type frozen behind it, and
@@ -470,9 +502,11 @@ The next-gen journey (AM) `openidm` binding was not probed for an unavailable
 type.
 
 **What rhino-local does with this.** Both lanes judge a default with one
-function (`packages/rhino-local/src/declared-default.ts`). A default it calls
-invalid, or one no probe covered (a `null` default on a non-string type, for
-example), means the tenant is serving an earlier config the local one does not
+function (`packages/rhino-local/src/declared-default.ts`): a default is invalid
+exactly when it fails `VALID_TYPE` for the declared type, `null` always passes,
+and so every numeric default on `integer` is invalid. A default it calls
+invalid, or one no probe covered (a type list naming two concrete types, or a
+default nested under `items` or `properties`, for example), means the tenant is serving an earlier config the local one does not
 describe, so neither lane answers **any** managed call. The IDM emulator refuses
 the whole config before every request. The AM lane faults every `openidm` call
 on a `managed/…` resource. Both use one stable id naming the first offending
@@ -492,7 +526,10 @@ other:
 | **Create** from a next-gen journey script's `openidm.create` with the property `undefined` | **403 `NOT_NULL`**, exactly as `null` — the key is sent as `null`, not dropped, so the default does not land (2026-11-04, below) |
 | Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — for a defaulted property the null guard is independent of `required` |
 | **Create** omitting a property declaring `default: null` (`required: []`) | 201, stored and read back as `null` (2026-11-08) |
-| **Create** sending `null` on a property declaring `default: null` (`required: []`) | **201**, no `NOT_NULL` (2026-11-08) |
+| **Create** sending `null` on a property declaring `default: null` (`required: []`) | **201**, no `NOT_NULL` (2026-11-08), on every type tried |
+| **Create** omitting, or sending `null` on, an **array** declaring `default: null` (`required: []`) | 201, stored and read back as **`[]`** (2026-11-08, zzemu_nd) |
+| **Create** sending `null` on a **string** declaring `default: null`, the schema has **no `required` key** | **403 `VALID_TYPE`** `{invalidType: "null", validTypes: ["string"]}`; omitting it still stores `null` (2026-11-08, zzemu_nd) |
+| **Create** sending any number (`3`, `3.5`) to an `integer` property | **403 `VALID_TYPE`** `{invalidType: "number", validTypes: ["integer"]}` (2026-11-08, zzemu_nd) |
 | **Create** sending `null` on an **undefaulted** property, `schema.required` present and not naming it (`[]` or a list of others) | **201**, stored and read back as JSON `null` (2026-11-08) |
 | Same, the schema has **no `required` key**                     | **403 `VALID_TYPE`**, `{invalidType: "null", validTypes: [<type>]}` (2026-11-08) |
 | **Create** sending `null` on an undefaulted property that `required` names | **403 `VALID_TYPE`**, not `REQUIRED`: a null counts as present (2026-11-08) |
@@ -550,7 +587,15 @@ wherever both ran.
   IDM script (`openidm.create`): a catchable `JavaException`; `e.message` is
   `org.forgerock.json.resource.ForbiddenException: Policy validation failed`,
   `e.javaException.getCode()` is 403, and `getDetail()` holds the same
-  `failedPolicyRequirements`.
+  `failedPolicyRequirements`. `e.javaException.getClass().getName()` is
+  `org.forgerock.json.resource.ForbiddenException`, and
+  `String(e.javaException.getDetail())` is CREST's **one-line** JsonValue
+  form, `{ "result": false, "failedPolicyRequirements": [ { "policyRequirements": [ { "policyRequirement": "NOT_NULL" } ], "property": "zready" } ] }`
+  (probe-pol and probe-def, 2026-11-08). The rhino-local IDM emulator
+  reproduces exactly those four reads — `getCode()`, `getReason()`,
+  `getClass().getName()` and `String(getDetail())` — and faults every other
+  member of `e.javaException` as `idm-exception/unmeasured`, because its
+  exception is not a CREST class and would otherwise answer for the wrong one.
 
 Not measured: `PATCH replace` with `null` beyond the existing 400 rows, a
 whole-record `PUT` with `null`, the next-gen journey `openidm` lane for these
@@ -1945,6 +1990,26 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-11-08 — `default: null` on non-string types and `integer`
+  defaults (orchestrator probe note `probe-nd/note.md` with its driver,
+  scripts and redacted log; sandbox tenant, REST and IDM-script lanes; run by
+  someone else and read by the rhino-local writer, not re-run). Fourteen
+  throwaway types `zzemu_nd*`, each added alone by one confirmed
+  `PUT /openidm/config/managed` with the `zready` readiness sentinel and
+  `required: []` unless stated, polled up to 150 s. Calls:
+  `POST /openidm/managed/<t>?_action=create`, `GET …/<id>?_fields=*`, and
+  `POST /openidm/script?_action=eval` running `openidm.create/read`; REST and
+  IDM agreed on every row. Results: `default: null` valid on boolean, number,
+  integer, object, array and string (no `required` key too), each live at 0 s;
+  explicit `null` 201 with no `NOT_NULL` on all of them; an array's null
+  default and an explicit null both stored `[]`; `{i: 3}` and `{i: 3.5}` on an
+  `integer` 403 `VALID_TYPE invalidType: "number"`; `integer` defaults `3` and
+  `3.5` each left the type 404 for 150 s (unfrozen by removal, proved by a
+  fresh control), while `number` defaults `3` and `3.5` applied; a string
+  `default: null` with no `required` key refused an explicit `null` with 403
+  `VALID_TYPE` and accepted it with `required: []`. Records (75) deleted, each
+  confirmed by a 404; the config restored and compared equal to the backup,
+  ignoring `_rev`, on 8/8 re-reads.
 - Date: 2026-11-08 — edge and invalid `default` declarations (orchestrator
   probe note `probe-def/note.md` with its driver, scripts and redacted log;
   sandbox tenant, REST and IDM-script lanes; run by someone else and read by

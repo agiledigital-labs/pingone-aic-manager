@@ -780,7 +780,9 @@ process, where the Vitest registration does not reach.
   `policies`, `conditionalPolicies` and `fallbackPolicies`, and the **names**
   of its script hooks (object-level `onCreate`, `postUpdate`, …, and
   property-level `onStore`, …), never their source or conditions. It carries
-  `profileVersion: 2`.
+  `profileVersion: 3`: version 3 keeps a `type` list naming two concrete types
+  (as `type: "any"` plus `types`) and the `properties` nested under a property,
+  so a default the earlier versions erased is still judged.
 
 **Writes on types with hooks or policies (E15b).** The script tester's
 `openidm.create`/`update`/`patch`/`delete` write `given.managed` directly: they
@@ -799,23 +801,30 @@ hook names the harness does not know count for every write), or
 `fallbackPolicies`; a delete is not judged on policy). A write a test stubs with `given.openidmFailures`
 never reaches the store and does not fault. A type with neither keeps writing
 silently, and without a profile nothing changes. A profile whose
-`profileVersion` is absent, below 2 or not an integer (`"2"` is a string)
-cannot say a type declares nothing, so every write under it is
+`profileVersion` is absent, below 3 or not an integer (`"3"` is a string)
+cannot say a type declares nothing, nor describe every default, so every write under it is
 `openidm-managed-profile-stale` until it is pulled again. A hand-written
 profile cannot be re-pulled: add `hooks` to each type (`[]` for none) and
 `noRequiredArray: true` to a type whose schema has no `required` array, add
 `default`, `conditionalPolicies` and `fallbackPolicies` to each property the
-tenant gives them, then set `"profileVersion": 2`. A type's
-defaults are applied on create (`default: null` stores `null`), and a `null`
+tenant gives them, record a `type` list naming two concrete types as
+`"type": "any"` with the list in `types`, and copy any `properties` nested under
+a property, then set `"profileVersion": 3`. A type's
+defaults are applied on create (`default: null` stores `null`, and `[]` on an
+array, as does a `null` sent to that array), and a `null`
 sent for a property with a non-null default is AIC's measured `403 Policy
 validation failed` on a create of a new record and a harness fault otherwise
 (`docs/rhino-local-gaps.md`). If any type's profile records an invalid
-`default` (a type mismatch such as `{"type": "boolean", "default": "nope"}`, or
-an array item not of `items.type`), every `openidm` call on any `managed/…`
+`default` (a type mismatch such as `{"type": "boolean", "default": "nope"}`,
+any numeric default on `integer` — AIC calls every JSON number `"number"`, so
+`3` fails too — or an array item not of `items.type`), every `openidm` call on any `managed/…`
 resource faults, reads included, as
 `openidm-managed-invalid-default/<type>.<property>`: AIC stores such a config
 but keeps serving an earlier one for every type, which the profile does not
-describe. The IDM emulator refuses the same declarations with the same rule. A profile must key each type by its
+describe. A default no probe covered — on a `type` list naming two concrete
+types, or nested under `items` or `properties` — faults the same way as
+`openidm-managed-unmeasured-default/<type>.<property>`. A `null` default is
+valid on every type. The IDM emulator refuses the same declarations with the same rule. A profile must key each type by its
 own `name`: one whose `objects` key and `name` disagree is refused when read
 and when a case is given it. Expect this to fail
 client tests that write without stubs; the fault tally counts them, by type
@@ -977,9 +986,14 @@ runs on the JVM once per returned row, with `result` and `resultCount` removed
 from the query completion. Resource routing, missing-resource behavior, query
 validation, and storage policy belong to `onCall`; the experimental IDM core
 below provides that handler. A job without `onCall` fails with a protocol diagnostic. A handler must return a JSON value (use `null` for no result).
-Throw `HostCallError` to preserve a CREST class, message, numeric code and detail;
-the script receives a Rhino `JavaException` with `javaException.getCode()` and
-`getDetail()`, including in joined shell `spawn` threads. Ordinary handler errors
+Throw `HostCallError` to preserve a CREST class, message, numeric code, reason and detail;
+the script receives a Rhino `JavaException` with `javaException.getCode()`,
+`getReason()`, `getDetail()` and `getClass().getName()` (the CREST class you
+named), including in joined shell `spawn` threads. `String(getDetail())` is
+CREST's one-line JsonValue form, and a `null` detail is a Java null; any other
+member of `javaException`, and a detail spelling no probe captured (an empty
+object or array, a string needing an escape), faults
+`idm-exception/unmeasured`, because the exception is not the CREST class it names. Ordinary handler errors
 are internal emulation failures; use an explicit CREST HostCallError for a
 catchable tenant failure.
 Emulation failures (missing behavior, admission/protocol failures and harness
@@ -1410,23 +1424,32 @@ where they were measured, and faults where they were not (E15a,
   An IDM script's `openidm.create` catches it as CREST's
   `ForbiddenException` with `getCode()` 403 and the same `getDetail()`:
   - **only the top-level `type` is checked**: a value whose JSON type is not
-    the declared `string`, `object` or `array` is `VALID_TYPE`
-    (`invalidType`, `validTypes`). Schemas under `properties` and `items` are
-    **not** enforced, and nested values are stored as sent;
+    the declared `string`, `boolean`, `number`, `integer`, `object` or `array`
+    is `VALID_TYPE` (`invalidType`, `validTypes`). Every JSON number is
+    `"number"`, so **any number sent to an `integer` is refused**, `3` as much
+    as `3.5`. Schemas under `properties` and `items` are **not** enforced, and
+    nested values are stored as sent;
   - a `null` on a property with a non-null `default` is `NOT_NULL`;
   - a `null` passes the type check only when the schema's `required` key
     exists and does not name the property (without an evaluator a `required`
     array can only be empty). With no `required` key it is `VALID_TYPE`,
     `invalidType "null"`, after any `NOT_NULL` for the same property;
-    otherwise an undefaulted property's `null` is stored as `null`.
+    otherwise an undefaulted property's `null` is stored as `null`;
+  - a `default: null` is applied on create, and a `null` sent to such a
+    property passes with no `NOT_NULL`; on an array both store `[]`. With no
+    `required` key a string's sent `null` is still `VALID_TYPE`, while its
+    applied default is stored.
 - A PATCH `remove` of an undefaulted, non-required property commits (measured
   200).
-- Faults (`idm-policy/*`), because unmeasured: a mismatch against any other
-  declared type (`number`, `boolean`, …) or on any write but a new record's
-  create, and any value for a property with no `type`
+- Faults (`idm-policy/*`), because unmeasured: a mismatch on any write but a
+  new record's create, and any value for a property with no `type`
   (`idm-policy/valid-type`); a defaulted `null` outside a new record's create,
   or an undefaulted one when the schema has no `required` array
-  (`idm-policy/not-null`, `idm-policy/valid-type`); a refusal naming more than
+  (`idm-policy/not-null`, `idm-policy/valid-type`); a non-string's
+  `default: null` when the schema has no `required` array, and a `null` sent
+  to a null-defaulted array outside a create (`idm-policy/valid-type`); a
+  property whose `type` lists two concrete types is not checked at all; a
+  refusal naming more than
   one property, whose order is unmeasured; a PATCH `remove` of a defaulted
   property (`idm-policy/required`); and an item of a top-level array that is
   not the declared `items.type` (`idm-policy/valid-array-items`: only nested
