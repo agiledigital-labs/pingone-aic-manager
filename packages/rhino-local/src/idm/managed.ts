@@ -6,7 +6,7 @@ import { HostCallError } from "../runner.ts";
 import type { JsonValue } from "../protocol.ts";
 import type { JsonStorage, SyncMapping } from "./config.ts";
 import { checkCapabilities } from "./capabilities.ts";
-import { ASSUMED_POLICY, implicitPolicy, notNullDetail } from "./policy.ts";
+import { ASSUMED_POLICY, implicitPolicy, POLICY_SOURCE, policyRefusalDetail } from "./policy.ts";
 import { applyPatch, document, fields, own, project, refuseNullPatch } from "./document.ts";
 import { IdmError, invalidInput, missing } from "./errors.ts";
 import { type Operator, type RuleDimension, type StringPolicy, type StringRule, classifyFilter, fieldRule, fieldValue, illegalAssertion, matchesFilter } from "./filter.ts";
@@ -314,11 +314,9 @@ export class ManagedStore {
         ...(patching ? { patchedFrom: oldObject, operations: op.request.body } : {}),
       });
       if (verdict.kind === "fault") missing(this.evidence, `implicit policy: ${verdict.reason}`, verdict.id);
-      if (verdict.kind === "notNull") {
-        this.evidence.measured("explicit null on a defaulted property is refused NOT_NULL on create", "docs/api/10-managed-objects.md");
-        this.evidence.assumed("NOT_NULL detail lists only NOT_NULL when the schema's required array omits the property (stock policy.js reading)");
-        throw new IdmError(403, "Policy validation failed", notNullDetail(verdict.property));
-      }
+      for (const behavior of verdict.measured) this.evidence.measured(behavior, POLICY_SOURCE);
+      if (verdict.kind === "refuse") throw new IdmError(403, "Policy validation failed", policyRefusalDetail(verdict.failed));
+      for (const behavior of verdict.assumed) this.evidence.assumed(behavior);
       this.evidence.assumed(ASSUMED_POLICY);
     }
     this.evidence.measured("property onStore always replaces the property including absent and undefined values");
