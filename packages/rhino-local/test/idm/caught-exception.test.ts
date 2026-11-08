@@ -88,6 +88,12 @@ describe("a caught emulated CREST error matches the captured observation", () =>
     ["`in` for a class member no probe read", "'getSimpleName' in e.javaException.getClass()"],
     ["Object.keys of the class", "Object.keys(e.javaException.getClass())"],
     ["for…in over the class", "(function () { var k = []; for (var x in e.javaException.getClass()) k.push(x); return k; })()"],
+    // sol-e15ab r4 P2-1: a borrowed toString reads the class tag without calling get (a real Java
+    // class answers [object JavaObject], the old shim [object JavaClass]), and symbol access on a
+    // plain Scriptable was Rhino's catchable TypeError where a real Java class answers false/undefined.
+    ["a borrowed toString of the class", "Object.prototype.toString.call(e.javaException.getClass())"],
+    ["a symbol `in` on the class", "Symbol.iterator in e.javaException.getClass()"],
+    ["a symbol read on the class", "e.javaException.getClass()[Symbol.iterator]"],
     // An assignment asks `in` first, so only an admitted name reaches the write itself.
     ["a write to the class's measured member", "(e.javaException.getClass().getName = 1)"],
   ])("%s faults idm-exception/unmeasured", async (_name, read) => {
