@@ -212,6 +212,7 @@ class JvmProcess {
     child.stdout.on("data", (chunk: string) => this.#onStdout(chunk));
     child.stderr.on("data", (chunk: string) => {
       this.#stderrBuf += chunk;
+      this.#wake();
     });
     child.stdin.on("error", () => {
       // EPIPE after a crash is reported via the exit handler.
@@ -219,6 +220,7 @@ class JvmProcess {
     child.on("error", (error) => {
       this.#spawnError = error;
       this.#stderrBuf += `\n${error.message}`;
+      this.#wake();
     });
     child.on("exit", (code, signal) => {
       this.#exit = { code, signal };
@@ -231,7 +233,14 @@ class JvmProcess {
         waiter();
       }
       this.#exitWaiters = [];
+      this.#wake();
     });
+  }
+
+  /** Readiness waiters, woken by anything that can change its answer: stderr, a spawn error, exit. */
+  readonly #wakers = new Set<() => void>();
+  #wake(): void {
+    for (const waker of [...this.#wakers]) waker();
   }
 
   get stderr(): string {
@@ -273,7 +282,17 @@ class JvmProcess {
           `rhino-local: ${this.lane} runner did not become ready within ${timeoutMs}ms: ${this.#stderrBuf}`
         );
       }
-      await sleep(25);
+      // Event-driven: a warm pooled JVM's ready line arrives within a
+      // millisecond, and a fixed poll made every lease wait for the tick.
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          clearTimeout(timer);
+          this.#wakers.delete(done);
+          resolve();
+        };
+        const timer = setTimeout(done, Math.max(1, timeoutMs - (Date.now() - started) + 1));
+        this.#wakers.add(done);
+      });
     }
   }
 
