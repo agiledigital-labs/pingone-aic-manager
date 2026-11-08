@@ -125,6 +125,13 @@ describe("request map forEach matches the live capture", () => {
     ['contains("a")', 'v.contains("a")'],
     ['indexOf("a")', 'v.indexOf("a")'],
     ["iterator()", "v.iterator()"],
+    ['set(0, "z")', 'v.set(0, "z")'],
+    ["remove(0)", "v.remove(0)"],
+    ["listIterator()", "v.listIterator()"],
+    ["forEach(fn)", "v.forEach(function () {})"],
+    ["sort()", "v.sort()"],
+    ["get(an object whose toString throws)", 'v.get({ toString: function () { throw new Error("conversion"); } })'],
+    ["get(0, an object whose toString throws)", 'v.get(0, { toString: function () { throw new Error("conversion"); } })'],
   ])("%s on a value list faults request-list-unmeasured, even when caught", async (_name, call) => {
     expectHarnessFault("request-list-unmeasured");
     const response = await runner.eval({

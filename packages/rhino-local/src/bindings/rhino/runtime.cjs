@@ -807,13 +807,22 @@ function __rhinoLocalRequestList(items) {
   });
   __rhinoLocalHide(list, "get", function (index) {
     if (arguments.length !== 1 || typeof index !== "number" || index % 1 !== 0 || index < 0 || index >= items.length) {
+      // Labels only: converting an author's argument to text runs its
+      // toString, which could throw a catchable error before the fault.
       throw unmeasured("get(" + Array.prototype.map.call(arguments, function (a) {
-        return typeof a === "string" ? JSON.stringify(a) : String(a);
+        return typeof a === "number" ? String(a) : a === null ? "null" : typeof a;
       }).join(", ") + ")");
     }
     return items[index];
   });
-  ["isEmpty", "contains", "toArray", "indexOf", "iterator", "subList", "stream", "equals", "hashCode"].forEach(function (name) {
+  // Every public java.util.List / SequencedCollection / Collection / Iterable /
+  // Object method name except the measured size, get, toString and getClass.
+  // A name left off would be a catchable "Cannot find function", which a
+  // script's try/catch turns into a pass.
+  ["add", "addAll", "addFirst", "addLast", "clear", "contains", "containsAll", "equals", "forEach", "getFirst",
+    "getLast", "hashCode", "indexOf", "isEmpty", "iterator", "lastIndexOf", "listIterator", "notify", "notifyAll",
+    "parallelStream", "remove", "removeAll", "removeFirst", "removeIf", "removeLast", "replaceAll", "retainAll",
+    "reversed", "set", "sort", "spliterator", "stream", "subList", "toArray", "wait"].forEach(function (name) {
     __rhinoLocalHide(list, name, function () {
       throw unmeasured(name + "()");
     });
