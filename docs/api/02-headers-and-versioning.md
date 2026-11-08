@@ -99,6 +99,21 @@ request did not run, and a `GET` is not side-effect free here: a `GET` of
 runs `onRead`/`onRetrieve` hooks, and a connector read runs connector scripts.
 Those, and every write, are never retried.
 
+The failures recur on direct REST calls too (client report, 2026-11-09), so
+the cause is upstream of `aic`. A probe of 310 reads on the sandbox the same
+day (`config/managed`, `config/repo.ds`, a one-record managed query, an AM
+script query, `/environment/variables`; 150 sequential and 160 eight at a
+time) got no `5xx` at all, so the cause is not isolated. What is measured is
+that a caller-chosen `X-ForgeRock-TransactionId` reaches the AM and IDM logs
+(above), and that AM and IDM answer errors with a JSON body. So when a `5xx`
+arrives with a body that is not JSON, `aic` appends the transaction ids it
+sent for that call — every attempt, retries included — as `aic logs tx <id>`
+lookups. No entries for an id says AM and IDM did not record it; how long the
+logs take to show a request is not measured, so look again after a few
+minutes before concluding that. A JSON `5xx` body is passed through unchanged.
+Separately, `/environment/variables` took 6–9 s on every one of its 62 reads
+in that probe, against under 0.25 s for the other four paths.
+
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
