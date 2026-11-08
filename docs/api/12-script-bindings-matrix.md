@@ -1022,6 +1022,32 @@ are `undefined`, and `v.getClass()` is the shutter's `Access to Java class
 "java.lang.Class" is prohibited.` A cookie's value is a JS string. Header keys
 arrive lowercased, as with `for…in`. The legacy engine was not probed.
 
+### `openidm.query` result and relationship arrays — next-gen (verified 2026-11-08)
+
+`fixtures/openidm-query-result-type.script.js`, run through `test-cycle.sh` on a
+next-gen scripted decision, described `openidm.query("managed/alpha_user",
+{_queryFilter: "true", _pageSize: 2}, ["_id"]).result` (two records), the
+`result` of a query matching nothing, and the empty `roles` of a user read with
+`fields: ["roles"]`. All three answered alike, apart from their length:
+
+| Probe                                  | Result                                                         |
+| -------------------------------------- | -------------------------------------------------------------- |
+| `typeof v` / `Array.isArray(v)`        | `"object"` / `false`                                           |
+| `v.length`, `v.size()`                 | the element count                                              |
+| `typeof v[0]`, `typeof v.get(0)`       | `"object"` (two-record query); `v.get(0)` on an empty list throws `InternalError: Index 0 out of bounds for length 0` |
+| `typeof` `some` / `map` / `filter` / `join` | `"undefined"`; calling `v.some(fn)` throws `TypeError: Cannot find function some` |
+| `typeof v.forEach`                     | `"function"` (not called)                                      |
+| `[].concat(v)`                         | a JS array (`Array.isArray` true) holding every element        |
+| `Array.prototype.slice.call(v).length` | the element count                                              |
+| `for (k in v)`                         | one key per element                                            |
+| `v.getClass()`                         | the shutter's `Access to Java class "java.lang.Class" is prohibited.` |
+
+So a query's `result`, and a has-many relationship array on a read, are Java
+lists, not JS arrays: array methods are absent, and `[].concat(v)` is the
+measured way to get one. A populated relationship array was not probed; that it
+is the same kind of list as the empty one is an inference from the query result.
+`forEach`'s callback arguments were not probed.
+
 ### `openidm` failure `getDetail()` — next-gen (verified 2026-11-08)
 
 `fixtures/openidm-error-detail.script.js`, run through `run-journey.sh`, made
