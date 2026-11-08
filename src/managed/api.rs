@@ -630,7 +630,9 @@ where
     const ATTEMPTS: u32 = 6;
     let mut failed = None;
     for attempt in 0..ATTEMPTS {
-        put(doc.clone()).await?;
+        if let Err(error) = put(doc.clone()).await {
+            return settle_failed_put(error, expect, get().await, tenant);
+        }
         let fetched = get().await?;
         failed = expect.iter().find(|condition| !condition.holds(&fetched));
         if failed.is_none() {
@@ -649,6 +651,45 @@ where
         "managed config write for tenant '{tenant}' was accepted but not persisted: expected {failed}; \
          see scripts/experiment-managed-lost-updates.sh and docs/api/99-quirks-and-open-questions.md Q14"
     )))
+}
+
+/// A `PUT` that errored has not necessarily failed. A server error or a lost
+/// response says nothing about whether the document landed, and AIC has
+/// answered a `relationship set` with a bare 500 that a retry cleared — so
+/// re-read once and say which it was, rather than surface the bare status.
+/// A 4xx is the server's own refusal and is returned as it came.
+fn settle_failed_put(
+    error: Error,
+    expect: &[ConfigConfirm],
+    reread: Result<Value>,
+    tenant: &str,
+) -> Result<()> {
+    let ambiguous = match &error {
+        Error::Api { status, .. } => *status >= 500,
+        Error::Http(_) => true,
+        _ => false,
+    };
+    if !ambiguous {
+        return Err(error);
+    }
+    Err(Error::Config(match reread {
+        Ok(fetched) if expect.iter().all(|condition| condition.holds(&fetched)) => {
+            eprintln!(
+                "note: the managed config write answered {error}, but a re-read shows it landed"
+            );
+            return Ok(());
+        }
+        Ok(_) => format!(
+            "managed config write for tenant '{tenant}' failed ({error}); a re-read shows it \
+             has not landed, so nothing changed and retrying is safe. AIC answers these writes \
+             with an occasional bare 500 that a retry clears"
+        ),
+        Err(read) => format!(
+            "managed config write for tenant '{tenant}' failed ({error}), and the re-read failed \
+             too ({read}), so whether it landed is unknown. Check with `aic managed get` before \
+             retrying"
+        ),
+    }))
 }
 
 /// The `objects` array of a managed document.
@@ -1116,6 +1157,47 @@ mod tests {
             .await;
             assert_eq!(result.is_err(), refused, "{result:?}");
             assert_eq!(puts.get(), usize::from(!refused));
+        }
+    }
+
+    /// A 5xx is settled by a re-read; a 4xx is the server's answer.
+    #[tokio::test]
+    async fn a_server_error_on_put_is_settled_by_a_reread() {
+        let before = json!({"objects": [{"name": "a", "schema": {"properties": {}}}]});
+        let after = json!({"objects": [{"name": "a", "schema": {"properties": {"x": {}}}}]});
+        let cases = [
+            (500, true, Ok(())),
+            (500, false, Err("has not landed")),
+            (502, false, Err("retrying is safe")),
+            (409, true, Err("AIC API error: 409")),
+        ];
+        for (status, lands, want) in cases {
+            let stored = std::cell::RefCell::new(before.clone());
+            let result = replace_managed_confirmed_with(
+                &before,
+                after.clone(),
+                &[ConfigConfirm::DocumentEquals(after.clone())],
+                || std::future::ready(Ok(stored.borrow().clone())),
+                || std::future::ready(Ok(json!({}))),
+                |doc| {
+                    if lands {
+                        *stored.borrow_mut() = doc;
+                    }
+                    std::future::ready(Err(Error::Api {
+                        status,
+                        body: String::new(),
+                    }))
+                },
+                "t",
+            )
+            .await;
+            match (want, result) {
+                (Ok(()), Ok(())) => {}
+                (Err(text), Err(error)) => {
+                    assert!(error.to_string().contains(text), "{status}: {error}");
+                }
+                (want, got) => panic!("{status} lands={lands}: want {want:?}, got {got:?}"),
+            }
         }
     }
 
