@@ -1,4 +1,4 @@
-import { isPlainObject } from "../case/util.ts";
+import { defineOwn, isPlainObject } from "../case/util.ts";
 import type { JsonValue } from "../case/types.ts";
 import { type EnvProfile, type ObjectSchema, PROFILE_VERSION, type PropertySchema } from "./types.ts";
 
@@ -53,7 +53,7 @@ export function normaliseManagedConfig(
     if (!isPlainObject(entry) || typeof entry.name !== "string") {
       throw new ProfileShapeError("managed object entry has no `name`");
     }
-    out[entry.name] = normaliseObject(entry.name, entry);
+    defineOwn(out, entry.name, normaliseObject(entry.name, entry));
   }
   return {
     profileVersion: PROFILE_VERSION,
@@ -77,7 +77,8 @@ function normaliseObject(name: string, entry: Record<string, unknown>): ObjectSc
   const properties: Record<string, PropertySchema> = {};
   if (isPlainObject(schema.properties)) {
     for (const [key, value] of Object.entries(schema.properties)) {
-      properties[key] = normaliseProperty(value);
+      // Not `properties[key] =`: a property named `__proto__` would vanish (astra-r1 P2-2).
+      defineOwn(properties, key, normaliseProperty(value));
     }
   }
   const required = Array.isArray(schema.required)
@@ -104,9 +105,14 @@ function normaliseProperty(value: unknown): PropertySchema {
   if (value.items !== undefined) {
     out.items = normaliseProperty(value.items);
   }
+  if (Array.isArray(value.required) && value.required.length > 0) {
+    // An object property's own `required` is a policy AIC may run (astra-r1 P2-1); unreadable names still count.
+    out.required = value.required.map((item) => typeof item === "string" ? item : "?");
+  }
   if (isPlainObject(value.properties)) {
     // Kept for what they declare (a nested `default` is judged, sol-r2 P2-1), not to enforce
-    // nested values: AIC stores those unchecked (measured 2026-11-08, docs/api/10).
+    // nested values: AIC stores those unchecked (measured 2026-11-08, docs/api/10). Object.fromEntries
+    // defines own keys, so a member named `__proto__` survives.
     out.properties = Object.fromEntries(Object.entries(value.properties).map(([key, child]) => [key, normaliseProperty(child)]));
   }
   const targets = normaliseResourceCollection(value.resourceCollection);
