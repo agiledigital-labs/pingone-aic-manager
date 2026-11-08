@@ -809,13 +809,13 @@ function __rhinoLocalArgShape(args) {
 //   size() and get(i) in range, String() is Java's "[a, b]", getClass() is the
 //   class shutter's refusal, and Array.prototype methods are absent;
 // - an openidm.query `result` and a has-many relationship array on a read
-//   (openidm-query-result-type probe, 2026-11-08): the same, except that
-//   get(i) one past the end throws Java's IndexOutOfBounds as an
-//   InternalError, `[].concat(v)` copies the elements into a JS array, and
-//   JSON.stringify writes a JSON array (array-relationship-fields probe).
-//   String() was not probed, but Rhino calls it to word the measured
-//   "Cannot find function some" TypeError, so it cannot fault: it answers a
-//   placeholder no script can mistake for AIC's rendering.
+//   (openidm-query-result-type and -string probes, 2026-11-08): the same,
+//   plus get(i) out of range either way throws Java's IndexOutOfBounds as an
+//   InternalError, `[].concat(v)` copies the elements into a JS array,
+//   JSON.stringify writes a JSON array, `typeof v.toJSON` is "undefined", and
+//   String(v) has the shape of Java's AbstractCollection form,
+//   `[{_id=…, _rev=…}]`, which is also how Rhino words "Cannot find function
+//   some in object [].".
 //
 // Not a JS array, so a script that calls an array method fails here as it
 // fails there. Every other call shape and List member faults `kind.id`. The
@@ -825,9 +825,7 @@ var __rhinoLocalListKinds = {
     id: "request-list-unmeasured",
     noun: "a request map's value list",
     measured: "only size(), get(i) with an index in range, String(v) and the getClass() refusal were measured",
-    toString: "java",
-    serialize: false,
-    pastEnd: false,
+    outOfRange: false,
     concat: false,
     serializeId: "request-list-serialize",
     serializeHint: "copy the values into an array first, e.g. with a loop over size() and get(i)",
@@ -835,30 +833,26 @@ var __rhinoLocalListKinds = {
   openidm: {
     id: "openidm-list-unmeasured",
     noun: "an openidm query result or relationship list",
-    measured: "only size(), get(i) with an index in range or one past the end, [].concat(v), JSON.stringify and the getClass() refusal were measured",
-    toString: "placeholder",
-    serialize: true,
-    pastEnd: true,
+    measured: "only size(), get(i), [].concat(v), JSON.stringify, String(v) and the getClass() refusal were measured",
+    outOfRange: true,
     concat: true,
+    serializeId: null,
+    serializeHint: null,
   },
 };
 
-// Lists `[].concat` may spread, as {list, items, kind} rows. Rhino 1.7.14 has
-// no WeakMap and no Symbol.isConcatSpreadable, so a plain object can only be
-// spread by the concat replacement below finding it here.
-var __rhinoLocalConcatLists = [];
+// Each list view carries its {list, items, kind} row under this hidden key,
+// so finding one is a property read, not a scan. Rhino 1.7.14 has no WeakMap
+// and no Symbol.isConcatSpreadable. `row.list === value` refuses an object
+// that merely inherits or copied the key.
+var __rhinoLocalListKey = "__rhinoLocalList";
 
 function __rhinoLocalListRow(value) {
-  var k;
   if (value === null || typeof value !== "object") {
     return null;
   }
-  for (k = 0; k < __rhinoLocalConcatLists.length; k += 1) {
-    if (__rhinoLocalConcatLists[k].list === value) {
-      return __rhinoLocalConcatLists[k];
-    }
-  }
-  return null;
+  var row = value[__rhinoLocalListKey];
+  return row !== undefined && row !== null && row.list === value ? row : null;
 }
 
 function __rhinoLocalListUnmeasured(kind, call) {
@@ -869,7 +863,10 @@ function __rhinoLocalListUnmeasured(kind, call) {
 // Array.prototype.concat, as AIC's Rhino treats a Java list argument: copied
 // element by element (measured for openidm lists only). A request list as an
 // argument, and any emulated list as the receiver, is unmeasured and faults.
+// Strict, so a null or undefined receiver reaches the native concat as itself
+// and throws there, as it does without this wrapper.
 (function () {
+  "use strict";
   var original = Array.prototype.concat;
   var concat = function concat(item) {
     var receiver = __rhinoLocalListRow(this);
@@ -891,6 +888,109 @@ function __rhinoLocalListUnmeasured(kind, call) {
   __rhinoLocalHide(Array.prototype, "concat", concat);
 })();
 
+// What JSON.stringify serialises: `value` itself when no list view is
+// reachable, otherwise a copy of just the containers on the way to one, with
+// each openidm list as a JS array of its elements. A request list faults: its
+// serialisation was never measured. Objects with their own toJSON and
+// anything that is not a plain object or array are left to the native
+// stringify, and so is a cycle, which it reports, and so is a getter.
+function __rhinoLocalJsonReady(value, stack) {
+  var row = __rhinoLocalListRow(value);
+  if (row !== null) {
+    if (row.kind.serializeId !== null) {
+      throw __rhinoLocalFault(row.kind.serializeId,
+        "rhino-local: JSON.stringify of " + row.kind.noun + " is unmeasured (AIC hands over a Java list); " + row.kind.serializeHint);
+    }
+    return __rhinoLocalJsonReady(row.items.slice(), stack);
+  }
+  if (value === null || typeof value !== "object" || typeof value.toJSON === "function") {
+    return value;
+  }
+  var isArray = Array.isArray(value);
+  if (!isArray && Object.prototype.toString.call(value) !== "[object Object]") {
+    return value;
+  }
+  if (stack.indexOf(value) !== -1) {
+    return value;
+  }
+  stack.push(value);
+  var copy = null;
+  var keys = isArray ? null : Object.keys(value);
+  var n = isArray ? value.length : keys.length;
+  var i;
+  var key;
+  var ready;
+  var own;
+  for (i = 0; i < n; i += 1) {
+    key = isArray ? i : keys[i];
+    own = Object.getOwnPropertyDescriptor(value, key);
+    // An accessor is left to the native stringify, so a getter runs once, as
+    // it would without this wrapper; a list behind one is not converted.
+    if (own === undefined || !("value" in own)) {
+      continue;
+    }
+    ready = __rhinoLocalJsonReady(own.value, stack);
+    if (ready !== own.value) {
+      if (copy === null) {
+        copy = isArray ? value.slice() : __rhinoLocalShallowCopy(value, keys);
+      }
+      copy[key] = ready;
+    }
+  }
+  stack.pop();
+  return copy === null ? value : copy;
+}
+
+function __rhinoLocalShallowCopy(value, keys) {
+  var copy = {};
+  var i;
+  for (i = 0; i < keys.length; i += 1) {
+    copy[keys[i]] = value[keys[i]];
+  }
+  return copy;
+}
+
+(function () {
+  "use strict";
+  var original = JSON.stringify;
+  __rhinoLocalHide(JSON, "stringify", function stringify(value, replacer, space) {
+    return original.call(JSON, __rhinoLocalJsonReady(value, []), replacer, space);
+  });
+})();
+
+// Java's String form of an openidm list's contents: AbstractCollection's
+// "[a, b]" around AbstractMap's "{k=v, k2=v2}" (measured shape, 2026-11-08:
+// brackets, braces, `=`, no JSON quoting; `[]` empty verbatim; the ", "
+// separators are Java's, not seen). A number is refused,
+// because Java prints Integer and Double differently and which one AIC holds
+// was not measured. Key order is the record's own, which is unmeasured.
+function __rhinoLocalJavaForm(value, kind) {
+  var row = __rhinoLocalListRow(value);
+  var parts = [];
+  var i;
+  var keys;
+  if (row !== null || Array.isArray(value)) {
+    var items = row !== null ? row.items : value;
+    for (i = 0; i < items.length; i += 1) {
+      parts.push(__rhinoLocalJavaForm(items[i], kind));
+    }
+    return "[" + parts.join(", ") + "]";
+  }
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "object" && Object.prototype.toString.call(value) === "[object Object]") {
+    keys = Object.keys(value);
+    for (i = 0; i < keys.length; i += 1) {
+      parts.push(keys[i] + "=" + __rhinoLocalJavaForm(value[keys[i]], kind));
+    }
+    return "{" + parts.join(", ") + "}";
+  }
+  throw __rhinoLocalListUnmeasured(kind, "String(v) holding a " + typeof value +
+    " (Java's rendering of it is unmeasured; if this came from calling an array method such as .map or .some, " +
+    "AIC has none: copy the list with [].concat(v) first)");
+}
+
 function __rhinoLocalListView(items, kind) {
   var list = {};
   var i;
@@ -909,7 +1009,7 @@ function __rhinoLocalListView(items, kind) {
   });
   __rhinoLocalHide(list, "get", function (index) {
     var integer = arguments.length === 1 && typeof index === "number" && index % 1 === 0;
-    if (integer && kind.pastEnd && index === items.length) {
+    if (integer && kind.outOfRange && (index < 0 || index >= items.length)) {
       throw __rhinoLocalInternalError("Index " + index + " out of bounds for length " + items.length);
     }
     if (!integer || index < 0 || index >= items.length) {
@@ -934,8 +1034,8 @@ function __rhinoLocalListView(items, kind) {
     if (arguments.length !== 0) {
       throw unmeasured("toString(" + __rhinoLocalArgShape(arguments) + ")");
     }
-    if (kind.toString === "placeholder") {
-      return "[Java list of " + items.length + " (its String form is unmeasured)]";
+    if (kind.outOfRange) {
+      return __rhinoLocalJavaForm(list, kind);
     }
     var parts = [];
     var j;
@@ -950,17 +1050,7 @@ function __rhinoLocalListView(items, kind) {
     }
     throw __rhinoLocalShutterError("java.lang.Class");
   });
-  // A request list's JSON.stringify was never measured, and the object above
-  // would serialise as {"0":…,"1":…}, which nothing says AIC produces: refuse
-  // rather than bless it. An openidm list's was measured: a JSON array.
-  __rhinoLocalHide(list, "toJSON", function () {
-    if (kind.serialize) {
-      return items.slice();
-    }
-    throw __rhinoLocalFault(kind.serializeId,
-      "rhino-local: JSON.stringify of " + kind.noun + " is unmeasured (AIC hands over a Java list); " + kind.serializeHint);
-  });
-  __rhinoLocalConcatLists.push({ list: list, items: items.slice(), kind: kind });
+  __rhinoLocalHide(list, __rhinoLocalListKey, { list: list, items: items.slice(), kind: kind });
   return list;
 }
 
@@ -2876,8 +2966,12 @@ function __rhinoLocalProject(record, fields, context) {
   var i;
   if (wildcard) {
     result = {};
+    // A relationship named on its own beside `*` is selected as it is
+    // without `*`: the same projected list.
     Object.keys(record).forEach(function (key) {
-      __rhinoLocalSetOwn(result, key, record[key]);
+      __rhinoLocalSetOwn(result, key, fields.indexOf(key) !== -1 && __rhinoLocalIsReferenceArray(record[key])
+        ? __rhinoLocalOpenidmList(__rhinoLocalProjectReferences(record[key], [key], context))
+        : record[key]);
     });
   } else {
     result = {};
@@ -3291,12 +3385,16 @@ openidm.query = function (resourceName, params, fields) {
       result.push(__rhinoLocalProject(rows[i], fields, { method: "query", resource: collection }));
     }
   }
+  // Key order as for-in and Object.keys see it on AIC, the same on every
+  // response (openidm-query-response-order probe, 2026-11-09). AIC's
+  // JSON.stringify of a response writes the keys in an order that varies
+  // between calls, so this is the one stable order there is.
   return {
-    result: __rhinoLocalOpenidmList(result),
     pagedResultsCookie: null,
     totalPagedResultsPolicy: "NONE",
     totalPagedResults: -1,
     resultCount: result.length,
+    result: __rhinoLocalOpenidmList(result),
   };
 };
 
