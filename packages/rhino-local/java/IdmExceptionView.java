@@ -26,6 +26,14 @@ import org.mozilla.javascript.Scriptable;
  * HostException's. {@code Object.getOwnPropertyNames} and {@code Object.getOwnPropertyDescriptor}
  * are refused by Rhino with a TypeError for every Java object before it asks the object. Symbol-keyed
  * operations are left as Rhino answers them for any Java object.
+ *
+ * <p><b>Known limit, not gated</b> (sol-e15ab r7): this gate is on member lookup. A native Java
+ * method borrowed from another object ({@code new java.lang.Object().getClass.call(e.javaException)},
+ * {@code Function.prototype.call}, {@code java.lang.reflect.Method.invoke}) has Rhino unwrap the
+ * receiver itself, and so reaches the backing {@link HostCalls.HostException} and answers for it,
+ * with no fault. Closing that would mean gating Rhino's receiver unwrapping while keeping the
+ * admitted calls working, or withholding {@code javaException} altogether; neither is worth it for
+ * a reflective idiom no observed script uses. docs/rhino-local-gaps.md records it.
  */
 final class IdmExceptionView extends NativeJavaObject {
   private static final long serialVersionUID = 1L;
