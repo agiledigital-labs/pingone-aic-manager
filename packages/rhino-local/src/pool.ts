@@ -153,6 +153,8 @@ class PooledJvm {
   #exitWaiters: Array<() => void> = [];
   readonly #kind: string;
   readonly #startedAt = performance.now();
+  /** Names this JVM process to its clients, so a client can remember what it has already sent it. */
+  readonly id = randomUUID();
 
   constructor(key: string, build: string, launch: Launch) {
     this.key = key;
@@ -208,6 +210,8 @@ class PooledJvm {
     // Only the ready line: a later client must not inherit an earlier one's diagnostics.
     void this.#whenReady().then(() => {
       if (this.#client !== client) return;
+      // Before the ready line, so the client knows which JVM it holds once it is ready.
+      this.#send(client, { jvm: this.id });
       if (this.#readyLine !== undefined) this.#send(client, { stderr: `${this.#readyLine}\n` });
       if (this.exit !== undefined) this.#send(client, { stderr: this.#stderr, exit: this.exit });
     });
@@ -626,6 +630,8 @@ export class PooledChild extends EventEmitter {
   }
 
   #released = false;
+  /** The pool's name for the JVM this connection holds; set before its ready line arrives. */
+  jvmId: string | undefined;
 
   /** Return the JVM to the pool. */
   release(): void {
@@ -652,7 +658,8 @@ export class PooledChild extends EventEmitter {
         this.stdout.write(line);
         continue;
       }
-      const frame = JSON.parse(line) as { stderr?: string; exit?: { code: number | null; signal: NodeJS.Signals | null } };
+      const frame = JSON.parse(line) as { jvm?: unknown; stderr?: string; exit?: { code: number | null; signal: NodeJS.Signals | null } };
+      if (typeof frame.jvm === "string") this.jvmId = frame.jvm;
       if (frame.stderr !== undefined) this.stderr.write(frame.stderr);
       if (frame.exit !== undefined) this.#exit(frame.exit.code, frame.exit.signal);
     }
