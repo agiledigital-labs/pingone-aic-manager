@@ -261,9 +261,43 @@ describe("toGiven", () => {
     // Measured: overriding one fails the whole login with a bare 401, so the
     // alternative to refusing is an unexplained authentication failure.
     expect(() => toGiven(mergeChannels({ session: { UserId: "bob" } }, undefined)))
-      .toThrow(/set by AM.*state\.username/s);
+      .toThrow(/set by AM.*`sessionPrincipal`/s);
     expect(() => toGiven(mergeChannels({ session: { AuthLevel: "9" } }, undefined)))
       .toThrow(/set by AM/);
+  });
+
+  // IMPROVEMENTS #9: a principal separate from shared-state username.
+  it("mints the session for a declared sessionPrincipal, over state.username, and asks for a session", () => {
+    const given = toGiven(mergeChannels({ state: { shared: { username: "alice" } } }, { sessionPrincipal: "bob" }));
+    expect(given.existingSession).toEqual({
+      UserId: "bob",
+      Principals: "bob",
+      UserToken: "bob",
+      Principal: "id=bob,ou=user,o=alpha,ou=services,ou=am-config",
+      "sun.am.UniversalIdentifier": "id=bob,ou=user,o=alpha,ou=services,ou=am-config",
+    });
+    // Shared state is untouched: the script still sees alice in nodeState.
+    expect(given.sharedState).toEqual({ username: "alice" });
+  });
+
+  it("a case's sessionPrincipal overrides the suite's", () => {
+    expect(toGiven(mergeChannels({ sessionPrincipal: "suite" }, { sessionPrincipal: "case" })).existingSession?.UserId)
+      .toBe("case");
+    expect(toGiven(mergeChannels({ sessionPrincipal: "suite", session: { tier: "gold" } }, undefined)).existingSession)
+      .toMatchObject({ UserId: "suite", tier: "gold" });
+  });
+
+  it.each(["a,b", "a=b", "a+b", 'a"b', "a\\b", "a<b", "a;b", " a", "a ", ""])(
+    "refuses a principal that would need DN escaping or is empty: %j",
+    (principal) => {
+      expect(() => toGiven(mergeChannels({ sessionPrincipal: principal }, undefined)))
+        .toThrow(/rhino-local: sessionPrincipal/);
+    },
+  );
+
+  it("applies the same DN check to a principal taken from state.username", () => {
+    expect(() => toGiven(mergeChannels({ state: { shared: { username: "a,b" } }, session: {} }, undefined)))
+      .toThrow(/state\.username "a,b" would need escaping/);
   });
 
   it("leaves existingSession absent when no session is declared", () => {
