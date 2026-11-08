@@ -398,6 +398,9 @@ async fn handle(
             Ok(None) => Response::Locked,
             Err(Error::ProdConfirmRequired) => Response::ProdConfirmRequired,
             Err(Error::Api { status, body }) => Response::ApiError { status, body },
+            Err(e @ Error::Http(_)) => Response::Transport {
+                message: e.to_string(),
+            },
             Err(e) => Response::Error {
                 message: e.to_string(),
             },

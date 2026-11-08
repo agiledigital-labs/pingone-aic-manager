@@ -631,7 +631,7 @@ where
     let mut failed = None;
     for attempt in 0..ATTEMPTS {
         if let Err(error) = put(doc.clone()).await {
-            return settle_failed_put(error, expect, get().await, tenant);
+            return settle_failed_put(error, expect, (&current, &doc), get().await, tenant);
         }
         let fetched = get().await?;
         failed = expect.iter().find(|condition| !condition.holds(&fetched));
@@ -656,33 +656,43 @@ where
 /// A `PUT` that errored has not necessarily failed. A server error or a lost
 /// response says nothing about whether the document landed, and AIC has
 /// answered a `relationship set` with a bare 500 that a retry cleared — so
-/// re-read once and say which it was, rather than surface the bare status.
+/// re-read once. Only a read showing **every** change the write made — each
+/// object it changed or added, as sent, and each it removed, gone — plus the
+/// caller's conditions counts as landed. Anything less is *unknown*, never
+/// "not landed": a write can complete after its error, a read can lag it
+/// (Q14), and a concurrent writer can make a weaker predicate hold.
 /// A 4xx is the server's own refusal and is returned as it came.
 fn settle_failed_put(
     error: Error,
     expect: &[ConfigConfirm],
+    (before, proposed): (&Value, &Value),
     reread: Result<Value>,
     tenant: &str,
 ) -> Result<()> {
     let ambiguous = match &error {
         Error::Api { status, .. } => *status >= 500,
-        Error::Http(_) => true,
+        Error::Http(_) | Error::Transport(_) => true,
         _ => false,
     };
     if !ambiguous {
         return Err(error);
     }
     Err(Error::Config(match reread {
-        Ok(fetched) if expect.iter().all(|condition| condition.holds(&fetched)) => {
+        Ok(fetched)
+            if expect.iter().all(|condition| condition.holds(&fetched))
+                && intended_changes_visible(before, proposed, &fetched) =>
+        {
             eprintln!(
-                "note: the managed config write answered {error}, but a re-read shows it landed"
+                "note: the managed config write answered {error}, but a re-read shows every \
+                 change it made"
             );
             return Ok(());
         }
         Ok(_) => format!(
-            "managed config write for tenant '{tenant}' failed ({error}); a re-read shows it \
-             has not landed, so nothing changed and retrying is safe. AIC answers these writes \
-             with an occasional bare 500 that a retry clears"
+            "managed config write for tenant '{tenant}' failed ({error}). A re-read does not \
+             show every change it made, which does not prove it did not land: a write can \
+             complete after its error and a read can lag it (Q14). Whether it landed is \
+             unknown; check with `aic managed get` before retrying"
         ),
         Err(read) => format!(
             "managed config write for tenant '{tenant}' failed ({error}), and the re-read failed \
@@ -690,6 +700,33 @@ fn settle_failed_put(
              retrying"
         ),
     }))
+}
+
+/// Whether `fetched` holds every change from `before` to `proposed`, object by
+/// object (keyed by `name`): each object `proposed` changed or added is in
+/// `fetched` exactly as sent, and each it removed is absent. Objects the write
+/// did not touch may differ, since another writer may own them.
+fn intended_changes_visible(before: &Value, proposed: &Value, fetched: &Value) -> bool {
+    fn by_name(doc: &Value) -> Option<std::collections::BTreeMap<&str, &Value>> {
+        objects(doc)
+            .ok()?
+            .iter()
+            .map(|object| Some((object.get("name")?.as_str()?, object)))
+            .collect()
+    }
+    let (Some(before), Some(proposed), Some(fetched)) =
+        (by_name(before), by_name(proposed), by_name(fetched))
+    else {
+        return false;
+    };
+    proposed
+        .iter()
+        .filter(|(name, object)| before.get(*name) != Some(*object))
+        .all(|(name, object)| fetched.get(name) == Some(object))
+        && before
+            .keys()
+            .filter(|name| !proposed.contains_key(*name))
+            .all(|name| !fetched.contains_key(name))
 }
 
 /// The `objects` array of a managed document.
@@ -1160,33 +1197,70 @@ mod tests {
         }
     }
 
-    /// A 5xx is settled by a re-read; a 4xx is the server's answer.
+    /// A 5xx or a transport failure is settled by a re-read showing every
+    /// change; anything less is unknown, never "not landed"; a 4xx or a local
+    /// error is returned as it came.
     #[tokio::test]
-    async fn a_server_error_on_put_is_settled_by_a_reread() {
-        let before = json!({"objects": [{"name": "a", "schema": {"properties": {}}}]});
-        let after = json!({"objects": [{"name": "a", "schema": {"properties": {"x": {}}}}]});
-        let cases = [
-            (500, true, Ok(())),
-            (500, false, Err("has not landed")),
-            (502, false, Err("retrying is safe")),
-            (409, true, Err("AIC API error: 409")),
+    async fn a_failed_put_lands_only_when_a_reread_shows_every_change() {
+        let widget =
+            |props: Value| json!({"name": "custom_widget", "schema": {"properties": props}});
+        let other = json!({"name": "other", "schema": {"properties": {}}});
+        let before = json!({"objects": [widget(json!({})), other.clone()]});
+        let after = json!({"objects": [widget(json!({"x": {}})), other.clone()]});
+        let server = |status| Error::Api {
+            status,
+            body: String::new(),
+        };
+        // (label, error, what the tenant holds once the PUT has failed, want)
+        let cases: Vec<(&str, Error, Value, std::result::Result<(), &str>)> = vec![
+            ("500, landed", server(500), after.clone(), Ok(())),
+            (
+                "transport, landed",
+                Error::Transport("reset".into()),
+                after.clone(),
+                Ok(()),
+            ),
+            // A landed write behind a stale read looks exactly like this.
+            (
+                "500, not visible",
+                server(500),
+                before.clone(),
+                Err("unknown"),
+            ),
+            (
+                "transport, not visible",
+                Error::Transport("reset".into()),
+                before.clone(),
+                Err("unknown"),
+            ),
+            (
+                "500, another writer changed an untouched object",
+                server(502),
+                json!({"objects": [widget(json!({"x": {}})), {"name": "other", "schema": {"properties": {"y": {}}}}]}),
+                Ok(()),
+            ),
+            ("409", server(409), after.clone(), Err("AIC API error: 409")),
+            (
+                "a local error",
+                Error::Config("refused here".into()),
+                after.clone(),
+                Err("refused here"),
+            ),
         ];
-        for (status, lands, want) in cases {
+        for (label, error, holds, want) in cases {
             let stored = std::cell::RefCell::new(before.clone());
+            let error = std::cell::RefCell::new(Some(error));
             let result = replace_managed_confirmed_with(
                 &before,
                 after.clone(),
-                &[ConfigConfirm::DocumentEquals(after.clone())],
+                &[ConfigConfirm::ObjectPresent {
+                    name: "custom_widget".into(),
+                }],
                 || std::future::ready(Ok(stored.borrow().clone())),
                 || std::future::ready(Ok(json!({}))),
-                |doc| {
-                    if lands {
-                        *stored.borrow_mut() = doc;
-                    }
-                    std::future::ready(Err(Error::Api {
-                        status,
-                        body: String::new(),
-                    }))
+                |_| {
+                    *stored.borrow_mut() = holds.clone();
+                    std::future::ready(Err(error.borrow_mut().take().expect("one PUT")))
                 },
                 "t",
             )
@@ -1194,11 +1268,39 @@ mod tests {
             match (want, result) {
                 (Ok(()), Ok(())) => {}
                 (Err(text), Err(error)) => {
-                    assert!(error.to_string().contains(text), "{status}: {error}");
+                    let error = error.to_string();
+                    assert!(error.contains(text), "{label}: {error}");
+                    assert!(!error.contains("retrying is safe"), "{label}: {error}");
                 }
-                (want, got) => panic!("{status} lands={lands}: want {want:?}, got {got:?}"),
+                (want, got) => panic!("{label}: want {want:?}, got {got:?}"),
             }
         }
+    }
+
+    /// The caller's predicate alone is not enough: a concurrent create of the
+    /// same name with other content satisfies `ObjectPresent`, and a delete's
+    /// cleanup of another object must show too.
+    #[tokio::test]
+    async fn a_weak_predicate_does_not_turn_a_failed_put_into_success() {
+        let before = json!({"objects": [{"name": "keep", "schema": {"properties": {"ref": {}}}}]});
+        let mine = json!({"name": "custom_widget", "schema": {"properties": {"a": {}}}});
+        let theirs = json!({"name": "custom_widget", "schema": {"properties": {"b": {}}}});
+        let proposed = json!({"objects": [before["objects"][0].clone(), mine]});
+        let raced = json!({"objects": [before["objects"][0].clone(), theirs]});
+        assert!(!intended_changes_visible(&before, &proposed, &raced));
+        assert!(intended_changes_visible(&before, &proposed, &proposed));
+
+        // Delete `gone`, clearing `keep`'s reference to it: absence alone is
+        // not the whole change.
+        let before = json!({"objects": [
+            {"name": "keep", "schema": {"properties": {"ref": {}}}},
+            {"name": "gone", "schema": {"properties": {}}},
+        ]});
+        let proposed = json!({"objects": [{"name": "keep", "schema": {"properties": {}}}]});
+        let half = json!({"objects": [{"name": "keep", "schema": {"properties": {"ref": {}}}}]});
+        assert!(!intended_changes_visible(&before, &proposed, &half));
+        assert!(intended_changes_visible(&before, &proposed, &proposed));
+        assert!(!intended_changes_visible(&before, &proposed, &before));
     }
 
     #[tokio::test]

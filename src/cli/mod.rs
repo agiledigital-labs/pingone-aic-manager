@@ -2014,6 +2014,62 @@ mod tests {
         assert!(user >= 20, "only {user} UserPath arguments found");
     }
 
+    /// The base a path argument resolves against is the start directory that
+    /// rooting chose, through a real clap parse: from the working directory, a
+    /// relative `--project`, an absolute one, and `AIC_PROJECT` (which reaches
+    /// the same resolver; only the error wording differs).
+    #[test]
+    fn a_path_argument_parses_against_the_start_directory_rooting_chose() {
+        use clap::Parser;
+
+        let root = project_tree();
+        let nested = root.join("nested");
+        let cases: [(&str, Option<PathBuf>, &str, PathBuf); 4] = [
+            ("working directory", None, "--project ", nested.clone()),
+            (
+                "relative --project",
+                Some("nested".into()),
+                "--project ",
+                root.clone(),
+            ),
+            (
+                "absolute --project",
+                Some(nested.clone()),
+                "--project ",
+                bare_dir(),
+            ),
+            (
+                "AIC_PROJECT",
+                Some(nested.clone()),
+                "AIC_PROJECT=",
+                bare_dir(),
+            ),
+        ];
+        for (name, explicit, source, cwd) in cases {
+            let (_, start) =
+                resolve_project_root(explicit.as_deref().map(Path::as_os_str), source, &cwd)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(start, nested, "{name}");
+            crate::config::clear_user_base();
+            crate::config::set_user_base(start.clone());
+            for (typed, want) in [
+                ("rel/x.json", nested.join("rel/x.json")),
+                ("/abs/x.json", PathBuf::from("/abs/x.json")),
+            ] {
+                let cli = Cli::try_parse_from(["aic", "access", "get", "--out", typed]).unwrap();
+                let Some(Command::Access {
+                    command: crate::access::cli::AccessCommand::Get { out: Some(out), .. },
+                }) = cli.command
+                else {
+                    panic!("{name}: not access get --out");
+                };
+                assert_eq!(out.into_path_buf(), want, "{name}: {typed}");
+            }
+        }
+        crate::config::clear_user_base();
+    }
+
     /// `--token`'s floor sits strictly between the daemon's own floor and what
     /// the tenant issues. Above the issue TTL it would mint on every call while
     /// handing out no more life; at or below the daemon's floor it would be a

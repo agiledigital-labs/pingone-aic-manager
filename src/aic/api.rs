@@ -298,6 +298,7 @@ impl<'a> ApiCall<'a> {
             Response::ProdConfirmRequired => Err(Error::ProdConfirmRequired),
             Response::ApiError { status, body } => Err(Error::Api { status, body }),
             Response::Error { message } => Err(Error::Config(message)),
+            Response::Transport { message } => Err(Error::Transport(message)),
             other => Err(Error::Config(format!("unexpected agent reply: {other:?}"))),
         }
     }
