@@ -32,6 +32,8 @@ pub mod tenant;
 pub mod user_path;
 pub mod wraps;
 
+#[cfg(test)]
+pub(crate) use user_path::clear_user_base;
 pub use user_path::{UserPath, set_user_base};
 
 use std::collections::HashMap;

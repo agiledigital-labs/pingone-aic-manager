@@ -1541,27 +1541,19 @@ pub(crate) async fn run_with_runtime(
                 }
             }
             println!(
-                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {} · remote missing {}{}{}{}",
-                if stopped { " (stopped, partial)" } else { "" },
-                conflicts.len(),
-                remote_missing.len(),
-                if forgotten > 0 {
-                    format!(" · forgotten {forgotten}")
-                } else {
-                    String::new()
-                },
-                if invalid > 0 {
-                    format!(" · refused {invalid}")
-                } else {
-                    // Stay off the happy-path line: a zero here would invite
-                    // reading its absence elsewhere as "checked and fine".
-                    String::new()
-                },
-                if failed > 0 {
-                    format!(" · failed {failed}")
-                } else {
-                    String::new()
+                "\n{}",
+                SyncSummary {
+                    stopped,
+                    pushed,
+                    pulled,
+                    in_sync,
+                    conflicts: conflicts.len(),
+                    remote_missing: remote_missing.len(),
+                    forgotten,
+                    refused: invalid,
+                    failed,
                 }
+                .line()
             );
             if !conflicts.is_empty() {
                 println!("unresolved (try `aic script diff <ref>`, then push/pull --force):");
@@ -3667,8 +3659,82 @@ fn print_conflict(name: &str, tw: &crate::scripts::sync::ThreeWay) {
     println!("=== {name}: local ===\n{}", tw.local);
 }
 
+/// The closing line of `aic script sync`.
+struct SyncSummary {
+    stopped: bool,
+    pushed: u32,
+    pulled: u32,
+    in_sync: u32,
+    conflicts: usize,
+    remote_missing: usize,
+    forgotten: u32,
+    refused: u32,
+    failed: u32,
+}
+
+impl SyncSummary {
+    fn line(&self) -> String {
+        // Forgotten, refused and failed stay off the happy-path line when
+        // zero: a zero there would invite reading its absence elsewhere as
+        // "checked and fine".
+        let counted = |label: &str, n: u32| {
+            if n > 0 {
+                format!(" · {label} {n}")
+            } else {
+                String::new()
+            }
+        };
+        format!(
+            "sync{}: pushed {} · pulled {} · in sync {} · conflicts {} · remote missing {}{}{}{}",
+            if self.stopped {
+                " (stopped, partial)"
+            } else {
+                ""
+            },
+            self.pushed,
+            self.pulled,
+            self.in_sync,
+            self.conflicts,
+            self.remote_missing,
+            counted("forgotten", self.forgotten),
+            counted("refused", self.refused),
+            counted("failed", self.failed),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_sync_summary_names_forgotten_refused_and_failed_only_when_nonzero() {
+        let quiet = super::SyncSummary {
+            stopped: false,
+            pushed: 1,
+            pulled: 2,
+            in_sync: 3,
+            conflicts: 0,
+            remote_missing: 1,
+            forgotten: 0,
+            refused: 0,
+            failed: 0,
+        };
+        assert_eq!(
+            quiet.line(),
+            "sync: pushed 1 · pulled 2 · in sync 3 · conflicts 0 · remote missing 1"
+        );
+        let busy = super::SyncSummary {
+            stopped: true,
+            forgotten: 2,
+            refused: 1,
+            failed: 4,
+            ..quiet
+        };
+        assert_eq!(
+            busy.line(),
+            "sync (stopped, partial): pushed 1 · pulled 2 · in sync 3 · conflicts 0 · remote missing 1 · forgotten 2 · refused 1 · failed 4"
+        );
+    }
+
     #[test]
     fn preview_version_note_covers_old_current_and_uninitialised_workspaces() {
         use crate::scripts::workspace::TEMPLATES_VERSION;

@@ -164,6 +164,12 @@ pub enum Response {
     /// tenant. Caller should surface a confirmation modal (TUI) or refuse
     /// without `--yes` (CLI) and retry with `confirmed_prod: true`.
     ProdConfirmRequired,
+    /// The agent's HTTP request failed in transport (connection reset, lost
+    /// response, timeout), so whether it reached the tenant is unknown.
+    /// Distinct from `Error` so a writer can settle the outcome by re-reading.
+    Transport {
+        message: String,
+    },
     /// Reply to `GetDek` (or any op that needs an unlocked session) when the
     /// agent isn't holding a DEK. Distinct from `Error` so the TUI can quietly
     /// fall through to the unlock screen.
@@ -219,7 +225,7 @@ mod tests {
 
         let actual = serde_json::to_value(&wire).expect("serialise");
         let expected = serde_json::json!({
-            "protocol_version": 4,
+            "protocol_version": 5,
             "op": "api_call",
             "tenant": "sandbox",
             "method": "PUT",
@@ -253,7 +259,7 @@ mod tests {
 
         let actual = serde_json::to_value(&wire).expect("serialise");
         let expected = serde_json::json!({
-            "protocol_version": 4,
+            "protocol_version": 5,
             "op": "api_call",
             "tenant": "sandbox",
             "method": "GET",

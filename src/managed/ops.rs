@@ -2826,6 +2826,26 @@ pub struct AddFieldApplied {
 
 // ── Allowed-value constraints ────────────────────────────────────────────
 
+/// A node's declared type: the string itself, or the one non-null member of a
+/// nullable `["<type>", "null"]` (what `field add --nullable` writes), so the
+/// enum and default editors treat a nullable field as its base type.
+fn declared_kind(node: &Value) -> Option<&str> {
+    match node.get("type")? {
+        Value::String(kind) => Some(kind),
+        Value::Array(kinds) if kinds.iter().any(|kind| kind.as_str() == Some("null")) => {
+            let mut bases = kinds
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|kind| *kind != "null");
+            match (bases.next(), bases.next()) {
+                (Some(base), None) => Some(base),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Returns the node which owns an enum constraint and its declared type.
 ///
 /// Scalars store it on the property; arrays store it on `items`. Keeping that
@@ -2834,7 +2854,7 @@ fn enum_target(property: &Value) -> Result<(&Value, &str), String> {
     if crate::managed::state::is_relationship_property(property) {
         return Err("enum constraints are not supported for type 'relationship'".into());
     }
-    let target = match property.get("type").and_then(Value::as_str) {
+    let target = match declared_kind(property) {
         Some("string" | "number" | "integer") => property,
         Some("array") => property.get("items").ok_or_else(|| {
             "enum constraints are not supported for array items of missing type".to_string()
@@ -2848,10 +2868,7 @@ fn enum_target(property: &Value) -> Result<(&Value, &str), String> {
             return Err("enum constraints are not supported for a property with no type".into());
         }
     };
-    let kind = target
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("missing");
+    let kind = declared_kind(target).unwrap_or("missing");
     if matches!(kind, "string" | "number" | "integer") {
         Ok((target, kind))
     } else {
@@ -2879,7 +2896,7 @@ pub fn scalar_type_supports_enum(field_type: ScalarFieldType) -> bool {
 
 fn enum_target_mut(property: &mut Value) -> Result<(&mut Value, String), String> {
     let kind = enum_target(property)?.1.to_string();
-    let target = if property.get("type").and_then(Value::as_str) == Some("array") {
+    let target = if declared_kind(property) == Some("array") {
         property.get_mut("items").ok_or_else(|| {
             "enum constraints are not supported for array items of missing type".to_string()
         })?
@@ -2989,10 +3006,7 @@ fn default_error(kind: &str, detail: impl std::fmt::Display) -> String {
 }
 
 fn coerce_default_value(raw: &str, property: &Value) -> Result<Value, String> {
-    let kind = property
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("missing");
+    let kind = declared_kind(property).unwrap_or("missing");
     match kind {
         "string" => Ok(Value::String(raw.to_string())),
         "boolean" => match raw {
@@ -3038,10 +3052,7 @@ fn matches_property_type(value: &Value, kind: &str) -> bool {
 }
 
 fn validate_default_enum(property: &Value, value: &Value) -> Result<(), String> {
-    let kind = property
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("missing");
+    let kind = declared_kind(property).unwrap_or("missing");
     let permitted = if kind == "array" {
         property.pointer("/items/enum")
     } else {
@@ -3861,6 +3872,37 @@ mod tests {
         assert_eq!(code["type"], json!(["string", "null"]));
         assert_eq!(code["default"], json!("x"));
         assert_eq!(crate::managed::state::property_type(code), "string?");
+        // And a nullable field stays editable as its base type afterwards.
+        assert_eq!(property_enum(code).map(|e| e.values.len()), Some(2));
+        let edit = |spec: FieldEditSpec| apply_field_edit(&nullable, "code", &spec);
+        let reset = edit(FieldEditSpec {
+            default_change: DefaultChange::Set("y".into()),
+            ..FieldEditSpec::default()
+        })
+        .unwrap();
+        let code = &reset.object["schema"]["properties"]["code"];
+        assert_eq!(
+            (&code["type"], &code["default"]),
+            (&json!(["string", "null"]), &json!("y"))
+        );
+        let cleared = edit(FieldEditSpec {
+            enum_change: EnumChange::Clear,
+            ..FieldEditSpec::default()
+        })
+        .unwrap();
+        let code = &cleared.object["schema"]["properties"]["code"];
+        assert_eq!(
+            (&code["type"], code.get("enum")),
+            (&json!(["string", "null"]), None)
+        );
+        assert!(
+            edit(FieldEditSpec {
+                enum_change: EnumChange::Set(enum_spec(&[("x", None)])),
+                ..FieldEditSpec::default()
+            })
+            .is_err(),
+            "narrowing a nullable field's enum still needs consent"
+        );
 
         let placed = add(AddFieldSpec {
             after: Some("a".into()),
