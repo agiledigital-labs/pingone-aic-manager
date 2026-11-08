@@ -651,11 +651,64 @@ function __rhinoLocalJavaList(items) {
   return list;
 }
 
+// A request map's value list as next-gen AM hands it over, measured 2026-11-08
+// (docs/api/12, request-map-foreach probe): typeof "object", Array.isArray
+// false, `length` and `[i]` work, so do size() and get(i), String() is Java's
+// "[a, b]", getClass() is the class shutter's refusal, and Array.prototype
+// methods (map, join) are absent. Not a JS
+// array, so a script that calls one fails here as it fails there. The legacy
+// engine is not measured and keeps the older shape.
+function __rhinoLocalRequestList(items) {
+  var list = {};
+  var i;
+  for (i = 0; i < items.length; i += 1) {
+    list[i] = items[i];
+  }
+  __rhinoLocalHide(list, "length", items.length);
+  __rhinoLocalHide(list, "size", function () {
+    return items.length;
+  });
+  __rhinoLocalHide(list, "get", function (index) {
+    return list[index];
+  });
+  __rhinoLocalHide(list, "isEmpty", function () {
+    return items.length === 0;
+  });
+  __rhinoLocalHide(list, "contains", function (value) {
+    var j;
+    for (j = 0; j < items.length; j += 1) {
+      if (items[j] === value) {
+        return true;
+      }
+    }
+    return false;
+  });
+  __rhinoLocalHide(list, "toArray", function () {
+    return __rhinoLocalArrayLike(items);
+  });
+  __rhinoLocalHide(list, "toString", function () {
+    var parts = [];
+    var j;
+    for (j = 0; j < items.length; j += 1) {
+      parts.push(String(items[j]));
+    }
+    return "[" + parts.join(", ") + "]";
+  });
+  __rhinoLocalHide(list, "getClass", function () {
+    throw __rhinoLocalShutterError("java.lang.Class");
+  });
+  return list;
+}
+
 function __rhinoLocalRequestMap(values, options) {
   var caseInsensitive = Boolean(options && options.caseInsensitive);
   var asList = !(options && options.asList === false);
+  var label = (options && options.label) || "request map";
+  var legacy = Boolean(options && options.engine === "legacy");
+  var makeList = legacy ? __rhinoLocalJavaList : __rhinoLocalRequestList;
   var map = {};
   var store = {};
+  var order = [];
   var keyCount = 0;
   var names = values ? Object.keys(values) : [];
   var i;
@@ -668,14 +721,17 @@ function __rhinoLocalRequestMap(values, options) {
     value = values[raw];
     if (asList) {
       if (typeof value === "string") {
-        store[stored] = __rhinoLocalJavaList([value]);
+        store[stored] = makeList([value]);
       } else {
-        store[stored] = __rhinoLocalJavaList(value);
+        store[stored] = makeList(value);
       }
     } else {
       store[stored] = value;
     }
     map[stored] = store[stored];
+    if (order.indexOf(stored) === -1) {
+      order.push(stored);
+    }
     keyCount += 1;
   }
   __rhinoLocalHide(map, "get", function (name) {
@@ -701,6 +757,33 @@ function __rhinoLocalRequestMap(values, options) {
     throw __rhinoLocalEmulated(
       "rhino-local: keySet is blocked by AM's class shutter; iterate with for...in"
     );
+  });
+  // java.util.Map.forEach(BiConsumer), measured 2026-11-08 on all three request
+  // maps (docs/api/12, request-map-foreach probe): the callback gets exactly
+  // (key, value) with `this` not the map, forEach returns undefined, and a
+  // throw inside the callback reaches the caller as the same error. No
+  // argument, or a number, is Rhino's overload refusal. Key order on AIC is the
+  // map's hash order and is not reproduced: seeding order is used, as for
+  // existingSession. Anything else passed is unmeasured.
+  __rhinoLocalHide(map, "forEach", function (action) {
+    var k;
+    if (legacy) {
+      throw __rhinoLocalFault("request-map-foreach-legacy",
+        "rhino-local: " + label + ".forEach on the legacy engine is unmeasured (measured on next-gen only)");
+    }
+    if (arguments.length === 1 && typeof action === "function") {
+      for (k = 0; k < order.length; k += 1) {
+        action.call(undefined, order[k], store[order[k]]);
+      }
+      return undefined;
+    }
+    if (arguments.length === 0 || (arguments.length === 1 && typeof action === "number")) {
+      throw __rhinoLocalInternalError("Can't find method java.util.Map.forEach(" +
+        __rhinoLocalScriptSignature(arguments) + ").");
+    }
+    throw __rhinoLocalFault("request-map-foreach-argument",
+      "rhino-local: " + label + ".forEach(" + __rhinoLocalScriptSignature(arguments) +
+        "): AIC's answer is measured for one function, no argument, or a number only");
   });
   return map;
 }
@@ -4411,10 +4494,14 @@ function __rhinoLocalSeed(given) {
   requestHeaders = __rhinoLocalRequestMap(given.requestHeaders || {}, {
     caseInsensitive: true,
     asList: true,
+    label: "requestHeaders",
+    engine: given.engine,
   });
   requestParameters = __rhinoLocalRequestMap(given.requestParameters || {}, {
     caseInsensitive: false,
     asList: true,
+    label: "requestParameters",
+    engine: given.engine,
   });
 
   // Assigned either way: the runner's scope outlives one case, so leaving a
@@ -4453,6 +4540,8 @@ function __rhinoLocalSeed(given) {
   requestCookies = __rhinoLocalRequestMap(cookies, {
     caseInsensitive: false,
     asList: false,
+    label: "requestCookies",
+    engine: given.engine,
   });
   if (given.resumedFromSuspend !== undefined) {
     resumedFromSuspend = given.resumedFromSuspend;
