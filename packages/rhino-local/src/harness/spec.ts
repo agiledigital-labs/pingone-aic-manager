@@ -191,9 +191,9 @@ export function toGiven(
   if (input.esvUndeclared !== undefined) {
     given.esvUndeclared = draft.esvUndeclared;
   }
-  // A principal present now asks for a session even when it was assigned in
-  // beforeRun, after mergeChannels computed sessionRequested.
-  if (draft.sessionRequested || draft.sessionPrincipal !== undefined) {
+  // A principal or a session key present now asks for a session even when it
+  // was assigned in beforeRun, after mergeChannels computed sessionRequested.
+  if (draft.sessionRequested || draft.sessionPrincipal !== undefined || Object.keys(draft.session).length > 0) {
     given.existingSession = {
       ...sessionFromPrincipal(sessionPrincipal(draft), realm),
       ...(base.existingSession ?? {}),

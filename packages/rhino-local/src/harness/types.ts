@@ -108,6 +108,7 @@ export interface RequestDraft {
   openidmFailures?: OpenidmFailureStub[];
   bindingOverrides?: Record<string, string>;
   identityAttributes?: Record<string, IdentityAttributeMapping>;
+  /** Session properties; a key present (including one assigned in beforeRun) asks for a session. */
   session: JsonObject;
   /** The session's principal; present (including when assigned in beforeRun) it asks for a session. */
   sessionPrincipal?: string;
