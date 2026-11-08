@@ -6,6 +6,8 @@ import org.mozilla.javascript.Context;
 import org.mozilla.javascript.NativeJavaObject;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
+import org.mozilla.javascript.Symbol;
+import org.mozilla.javascript.SymbolScriptable;
 
 /**
  * {@code e.javaException} for a tenant error caught in an IDM script. On AIC it is a CREST
@@ -25,7 +27,8 @@ import org.mozilla.javascript.ScriptableObject;
  * list is HostException's, except {@code Object.getOwnPropertyNames} and
  * {@code Object.getOwnPropertyDescriptor}, which Rhino refuses with a TypeError for every Java
  * object before asking it. The {@code getClass()} shim does the same with {@code getName}.
- * Symbol-keyed operations are left as Rhino answers them for any Java object.
+ * Symbol-keyed operations on the view are left as Rhino answers them for any Java object; on the
+ * {@code getClass()} shim they fault, because the shim is not a Java object.
  */
 final class IdmExceptionView extends NativeJavaObject {
   private static final long serialVersionUID = 1L;
@@ -82,15 +85,22 @@ final class IdmExceptionView extends NativeJavaObject {
    * that Rhino treats it as it treats any Java object (AIC's real {@code Class} is one): the
    * {@code Object.getOwnPropertyNames} / {@code getOwnPropertyDescriptor} family refuses it with a
    * TypeError before asking it, as it does the exception view, instead of answering an empty list.
-   * Every other operation but {@code getName} faults.
+   * Every other operation but {@code getName} faults, including the two a plain {@link Scriptable}
+   * would otherwise answer for itself (sol-e15ab r4 P2-1): its class tag, which a borrowed
+   * {@code Object.prototype.toString} reads without going through {@code get}, and symbol-keyed
+   * access, which Rhino refuses with a catchable TypeError for a non-{@link SymbolScriptable}.
    */
-  private final class ClassView implements Scriptable {
+  private final class ClassView implements Scriptable, SymbolScriptable {
     private Scriptable parent;
     ClassView(Scriptable scope) { parent = scope; }
     private EmulationFailure unmeasured(String what) {
       return exception.unmeasured(what + " on e.javaException.getClass() (only getName() is measured)");
     }
-    @Override public String getClassName() { return "JavaClass"; }
+    @Override public String getClassName() { throw unmeasured("the class tag (Object.prototype.toString)"); }
+    @Override public Object get(Symbol key, Scriptable start) { throw unmeasured("reading a symbol-keyed member"); }
+    @Override public boolean has(Symbol key, Scriptable start) { throw unmeasured("a symbol-keyed `in`"); }
+    @Override public void put(Symbol key, Scriptable start, Object value) { throw unmeasured("writing a symbol-keyed member"); }
+    @Override public void delete(Symbol key) { throw unmeasured("deleting a symbol-keyed member"); }
     @Override public Object get(String name, Scriptable start) {
       if ("getName".equals(name)) {
         return new BaseFunction(parent, ScriptableObject.getFunctionPrototype(parent)) {
