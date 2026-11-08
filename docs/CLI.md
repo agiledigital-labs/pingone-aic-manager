@@ -3013,7 +3013,10 @@ wrapper with it, when that is a plain file holding exactly the generated
 bytes); an edited file, a symlink, or a file under a symlinked folder is kept
 and named. The record is
 forgotten either way. It cannot be combined with `--resolve local`, which
-never forgets.
+never forgets. Exercised live on 2026-11-09 with two managed hooks deleted on the
+tenant: the unedited `.cjs` was removed and the edited one kept with "it differs
+from the last sync". The folder's generated `tsconfig.json` stays when its last
+script goes. The summary line counts forgotten entries as `forgotten N`.
 
 - `status` with a full `<namespace>/<name>` selects exactly that script,
   case-sensitively, and prints the SHA-256 of the local file and of the
