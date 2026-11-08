@@ -93,6 +93,11 @@ pub enum ObjectCommand {
     Rename {
         old: String,
         new: String,
+        /// Override the guard for an object that carries Ping's
+        /// `"Managed Object"` marker under a name that is not a Ping object
+        /// (console-created objects carry it). Ping's own objects stay refused.
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -103,6 +108,11 @@ pub enum ObjectCommand {
     },
     Delete {
         name: String,
+        /// Override the guard for an object that carries Ping's
+        /// `"Managed Object"` marker under a name that is not a Ping object
+        /// (console-created objects carry it). Ping's own objects stay refused.
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -592,6 +602,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
         ObjectCommand::Rename {
             old,
             new,
+            force,
             tenant,
             yes,
             json,
@@ -600,7 +611,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let doc = api::get_managed(&tenant).await?;
             let old_object = api::object_named(&doc, &old)?;
-            refuse_shipped(old_object, "renamed")?;
+            refuse_shipped(old_object, "renamed", force.operation())?;
             state::validate_object_name(&new, &object_names(&doc), &old)
                 .map_err(crate::Error::Config)?;
             ops::refuse_mapped_rename(&tenant, &old).await?;
@@ -618,6 +629,7 @@ async fn object(command: ObjectCommand) -> Result<()> {
         }
         ObjectCommand::Delete {
             name,
+            force,
             tenant,
             yes,
             json,
@@ -625,7 +637,11 @@ async fn object(command: ObjectCommand) -> Result<()> {
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let doc = api::get_managed(&tenant).await?;
-            refuse_shipped(api::object_named(&doc, &name)?, "deleted")?;
+            refuse_shipped(
+                api::object_named(&doc, &name)?,
+                "deleted",
+                force.operation(),
+            )?;
             let (updated, inbound) =
                 ops::delete_object_in_doc(&doc, &name).map_err(crate::Error::Config)?;
             let mut undo = DiskLog::load_default()?;
@@ -3585,13 +3601,21 @@ fn object_names(doc: &Value) -> Vec<String> {
         })
         .unwrap_or_default()
 }
-fn refuse_shipped(object: &Value, action: &str) -> Result<()> {
-    if state::is_ping_shipped_object(object) {
-        Err(crate::Error::Config(format!(
+fn refuse_shipped(object: &Value, action: &str, force: bool) -> Result<()> {
+    match state::object_protection(object) {
+        state::ObjectProtection::Shipped => Err(crate::Error::Config(format!(
             "Ping-shipped objects cannot be {action}"
-        )))
-    } else {
-        Ok(())
+        ))),
+        state::ObjectProtection::Marked if !force => {
+            let name = object.get("name").and_then(Value::as_str).unwrap_or("?");
+            Err(crate::Error::Config(format!(
+                "{name} carries Ping's \"type\": \"Managed Object\" marker but is not a Ping \
+                 object (alpha_/bravo_ user, role, group, organization, application, \
+                 assignment); console-created objects carry it too. Pass --force if {name} \
+                 is yours and should be {action}"
+            )))
+        }
+        _ => Ok(()),
     }
 }
 /// After a delete, stop tracking the object's hooks: their slots went with
@@ -3690,6 +3714,18 @@ fn join_or_dash(values: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::cli::Cli;
+
+    /// `--force` overrides the marker and never a Ping object.
+    #[test]
+    fn force_overrides_the_marker_but_never_a_ping_object() {
+        let marked = serde_json::json!({"name": "console_widget", "type": "Managed Object"});
+        let ping = serde_json::json!({"name": "alpha_user", "type": "Managed Object"});
+        let custom = serde_json::json!({"name": "alpha_lock"});
+        assert!(refuse_shipped(&marked, "deleted", false).is_err());
+        assert!(refuse_shipped(&marked, "deleted", true).is_ok());
+        assert!(refuse_shipped(&ping, "deleted", true).is_err());
+        assert!(refuse_shipped(&custom, "deleted", false).is_ok());
+    }
     use clap::Parser;
 
     #[test]
