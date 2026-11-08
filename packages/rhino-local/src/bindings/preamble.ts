@@ -36,7 +36,18 @@ export function mockPreamble(
   options: MockPreambleOptions = {}
 ): string {
   const { seed, overrides } = seedAndOverrides(given, options);
-  return `${prelude()}__rhinoLocalSeed(${serializeSeed(seed)});\n${overrides}\n`;
+  return `${prelude()}__rhinoLocalSeed(${seedLiteral(serializeSeed(seed))});\n${overrides}\n`;
+}
+
+/**
+ * The seed as source text. JSON is a JavaScript literal except for one key: in an object literal
+ * `"__proto__": value` sets the prototype, where JSON.parse defines an own key (astra-r1 P2-2), so a
+ * profile property of that name would vanish from the policy tables. A seed holding that key is
+ * parsed instead; every other seed stays a literal, as before.
+ */
+function seedLiteral(data: string): string {
+  if (!data.includes('"__proto__"')) return data;
+  return `JSON.parse(${JSON.stringify(data).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029")})`;
 }
 
 /** {@link mockPreamble} as the runner job fields that carry it. */

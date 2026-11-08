@@ -4,12 +4,15 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/run.ts";
-import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
+import { expectEmulationFailure, expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { normaliseManagedConfig } from "../../src/profile/normalise.ts";
 import { type EnvProfile, type ObjectSchema, PROFILE_VERSION, type PropertySchema } from "../../src/profile/types.ts";
-import { hooksRun, managedInvalidDefault, managedPolicy, managedWriteFaults, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
+import { hooksRun, managedInvalidDefault, managedPolicy, managedWriteFaults, nestedHooks, type WriteMethod, writeFault } from "../../src/profile/write-guard.ts";
+import { parseJsonValue } from "../../src/case/util.ts";
 import { parseProfile } from "../../src/profile/store.ts";
+import { checkRecord, SchemaViolation } from "../../src/profile/validate.ts";
 import { IdmConfig } from "../../src/idm/config.ts";
+import { IdmEmulator } from "../../src/idm/emulator.ts";
 import { validateDeclarations } from "../../src/idm/declarations.ts";
 import { Evidence } from "../../src/idm/provenance.ts";
 import { RhinoRunner } from "../../src/runner.ts";
@@ -171,6 +174,35 @@ describe("writeFault decides per type and method", () => {
     ["a default alone is not a write fault: the lane answers it", object({ properties: { n: { type: "number", default: 0 } } }), "create", undefined],
     ["policy does not judge a delete", object({ required: ["mail"] }), "delete", undefined],
     ["a hook outranks a policy", object({ hooks: ["onUpdate"], required: ["mail"] }), "update", "openidm-managed-hook/gizmo.onUpdate"],
+    // astra-r1 P2-1: declarations below a top-level property. Discriminating: at d7212ed the hook rows
+    // were undefined (only top-level property hooks were read) and so were the policy rows under
+    // `properties` (policies recursed through `items` only).
+    ["a hook under an object property", object({ properties: { box: { type: "object", properties: { p: { type: "string", hooks: ["onValidate"] } } } } }),
+      "create", "openidm-managed-unmeasured-hook/gizmo.box.p.onValidate"],
+    ["a hook under array items", object({ properties: { box: { type: "array", items: { type: "string", hooks: ["onValidate"] } } } }),
+      "create", "openidm-managed-unmeasured-hook/gizmo.box[].onValidate"],
+    ["a hook two levels down, through items then properties", object({ properties: { rows: { type: "array", items: { type: "object",
+      properties: { p: { type: "string", hooks: ["onStore"] } } } } } }), "update", "openidm-managed-unmeasured-hook/gizmo.rows[].p.onStore"],
+    // Unmeasured, so every write faults: unlike a top-level property hook, delete is not exempt.
+    ["a nested hook faults a delete too", object({ properties: { box: { type: "object", properties: { p: { type: "string", hooks: ["onStore"] } } } } }),
+      "delete", "openidm-managed-unmeasured-hook/gizmo.box.p.onStore"],
+    ["a measured top-level hook outranks a nested one", object({ hooks: ["onCreate"], properties: { box: { type: "object",
+      properties: { p: { type: "string", hooks: ["onValidate"] } } } } }), "create", "openidm-managed-hook/gizmo.onCreate"],
+    ["a nested hook outranks a policy", object({ required: ["mail"], properties: { box: { type: "object",
+      properties: { p: { type: "string", hooks: ["onValidate"] } } } } }), "create", "openidm-managed-unmeasured-hook/gizmo.box.p.onValidate"],
+    ["an enum under object properties", object({ properties: { box: { type: "object", properties: { p: { type: "string", enum: ["yes"] } } } } }),
+      "create", "openidm-managed-policy/gizmo"],
+    ["policies under object properties", object({ properties: { box: { type: "object", properties: { p: { type: "string", policies: ["minimum-length"] } } } } }),
+      "patch", "openidm-managed-policy/gizmo"],
+    ["conditional policies under object properties", object({ properties: { box: { type: "object",
+      properties: { p: { type: "string", conditionalPolicies: ["minimum-length"] } } } } }), "update", "openidm-managed-policy/gizmo"],
+    ["a required list on an object property", object({ properties: { box: { type: "object", required: ["p"], properties: { p: { type: "string" } } } } }),
+      "create", "openidm-managed-policy/gizmo"],
+    ["an enum under items under properties", object({ properties: { box: { type: "object", properties: { tags: { type: "array",
+      items: { type: "string", enum: ["a"] } } } } } }), "create", "openidm-managed-policy/gizmo"],
+    // Control: a nested schema that declares only types is stored unchecked on AIC (measured), so it stays quiet.
+    ["nested types alone stay quiet", object({ properties: { box: { type: "object", properties: { p: { type: "string" } } },
+      rows: { type: "array", items: { type: "object", properties: { q: { type: "number" } } } } } }), "create", undefined],
   ];
   it.each(cases)("%s", (_name, schema, method, id) => {
     expect(writeFault(schema, method)?.id).toBe(id);
@@ -181,6 +213,19 @@ describe("writeFault decides per type and method", () => {
     // Measured order (doc 24): property onStore runs before postCreate.
     expect(fault?.message).toContain("runs onCreate, secret.onStore, postCreate");
     expect(fault?.message).toContain("given.openidmFailures");
+  });
+
+  it("a nested hook's message names every nested hook and says it is unmeasured", () => {
+    const schema = object({ properties: { box: { type: "object", properties: { p: { type: "string", hooks: ["onValidate"] } } },
+      tags: { type: "array", items: { type: "string", hooks: ["onStore"] } } } });
+    expect(nestedHooks(schema)).toEqual(["box.p.onValidate", "tags[].onStore"]);
+    expect(writeFault(schema, "create")?.message).toContain("declares box.p.onValidate, tags[].onStore, nested inside items or properties");
+    expect(writeFault(schema, "create")?.message).toContain("was never measured");
+  });
+
+  it("a nested policy's message names its path", () => {
+    expect(writeFault(object({ properties: { box: { type: "object", required: ["p"], properties: { p: { type: "string", enum: ["yes"] } } } } }), "create")?.message)
+      .toContain("checked against box required p; box.p enum");
   });
 
   it("the lane table holds only types that fault", () => {
@@ -618,6 +663,12 @@ describe("an invalid default anywhere in the profile faults every managed call (
     expect(profileOf({ type: "array", items: { type } }).objects.gizmo?.properties.flag?.items).toEqual(expected);
   });
 
+  // astra-r1 P2-1: an object property's own non-empty `required` is recorded; an empty one is not.
+  it("a nested required list is recorded only when non-empty", () => {
+    expect(profileOf({ type: "object", required: ["p", 3], properties: { p: { type: "string" } } }).objects.gizmo?.properties.flag?.required).toEqual(["p", "?"]);
+    expect(profileOf({ type: "object", required: [], properties: { p: { type: "string" } } }).objects.gizmo?.properties.flag).not.toHaveProperty("required");
+  });
+
   // The lane: every call faults, on the bad type, on a valid sibling, and on a type the profile lacks.
   const mixed = normaliseManagedConfig({ objects: [...config({ type: "boolean", default: "nope" }).objects,
     { name: "fine", schema: { required: [], properties: { flag: { type: "boolean", default: false } } } }] }, META);
@@ -749,6 +800,78 @@ describe("the lane answers a null default (sol-r1c, zzemu_def probe D1/D2)", () 
   });
 });
 
+describe("a property name is data, whatever it spells (astra-r1 P2-2)", () => {
+  // Every input comes from JSON.parse: an object literal cannot hold an own `__proto__` key.
+  // `constructor` and `toString` are the names a plain-object lookup finds on Object.prototype.
+  const NAMES = ["__proto__", "constructor", "toString"] as const;
+  const config = (name: string, property: string) => JSON.parse(`{"objects":[{"name":"gizmo","schema":{"required":[],"properties":{` +
+    `${JSON.stringify(name)}:${property},"q":{"type":"string"}}}}]}`) as unknown;
+  const own = (object: object, key: string) => Object.hasOwn(object, key);
+
+  it.each(NAMES)("the normaliser keeps a property named %s, at the top and nested", (name) => {
+    const top = normaliseManagedConfig(config(name, '{"type":"boolean","default":"nope"}'), META).objects.gizmo!.properties;
+    expect(Object.keys(top)).toEqual([name, "q"]);
+    expect(Object.getPrototypeOf(top)).toBe(Object.prototype);
+    expect(own(top, name) && top[name]).toEqual({ type: "boolean", default: "nope" });
+    const nested = normaliseManagedConfig(config("box", `{"type":"object","properties":{${JSON.stringify(name)}:{"type":"string","onValidate":{"type":"text/javascript","source":"1"}}}}`), META)
+      .objects.gizmo!.properties.box!.properties!;
+    expect(Object.keys(nested)).toEqual([name]);
+  });
+  it("the normaliser keeps a type named __proto__", () => {
+    const objects = normaliseManagedConfig(JSON.parse('{"objects":[{"name":"__proto__","schema":{"required":[],"properties":{}}}]}'), META).objects;
+    expect(Object.keys(objects)).toEqual(["__proto__"]);
+    expect(Object.getPrototypeOf(objects)).toBe(Object.prototype);
+  });
+  it.each(NAMES)("an invalid default on %s faults the lane, as the IDM emulator does", async (name) => {
+    expect(managedInvalidDefault(normaliseManagedConfig(config(name, '{"type":"boolean","default":"nope"}'), META))?.id)
+      .toBe(`openidm-managed-invalid-default/gizmo.${name}`);
+    const evidence = new Evidence();
+    await expect(evidence.run(async () => validateDeclarations(new IdmConfig({ sync: { mappings: [] },
+      managed: config(name, '{"type":"boolean","default":"nope"}') } as never), evidence))).rejects.toThrow(`openidm-managed-invalid-default/gizmo.${name}`);
+  });
+  it.each(NAMES)("every policy table keeps %s as an own key", (name) => {
+    const rule = managedPolicy(normaliseManagedConfig(config(name, '{"type":"array","items":{"type":"string"},"default":["a"]}'), META))["managed/gizmo"]!;
+    for (const table of [rule.defaults, rule.checked, rule.itemTypes]) expect(own(table, name)).toBe(true);
+    expect(rule.defaults[name]).toEqual(["a"]);
+    expect(rule.checked[name]).toBe("array");
+    expect(rule.defaulted).toContain(name);
+    const nullable = managedPolicy(normaliseManagedConfig(config(name, '{"type":["boolean","null"]}'), META))["managed/gizmo"]!;
+    expect(own(nullable.mismatchUnmeasured, name) && nullable.mismatchUnmeasured[name]).toBe("boolean");
+  });
+  it.each(NAMES)("the lane applies a default on %s and refuses a mismatch on it", (name) => {
+    const profile = normaliseManagedConfig(config(name, '{"type":"string","default":"dflt"}'), META);
+    const made = runScriptWithFaults("openidm.create('managed/gizmo', 'g1', {});", { managed: { "managed/gizmo": [] } }, { profile });
+    expect(made.faults).toEqual([]);
+    const row = made.effects.managedStore?.["managed/gizmo"]?.[0] ?? {};
+    expect(own(row, name) ? row[name] : "absent").toBe("dflt");
+    const refused = runScriptWithFaults(catching(`openidm.create('managed/gizmo', 'g1', JSON.parse('{"${name}": 5}'))`),
+      { managed: { "managed/gizmo": [] } }, { profile });
+    expect(refused.faults).toEqual([]);
+    expect(String(refused.effects.sharedState.final.error)).toContain("Policy validation failed");
+    expect(refused.effects.managedStore?.["managed/gizmo"]).toEqual([]);
+  });
+  // The seed check: an inherited member is not a declared property, nor a declared type.
+  it.each(["constructor", "toString"])("a seeded record key %s the type does not declare is an unknown property", (name) => {
+    const profile = normaliseManagedConfig(config("q2", '{"type":"string"}'), META);
+    expect(() => checkRecord(profile, "managed/gizmo/g1", JSON.parse(`{"${name}": "x"}`), "seed")).toThrow(/is not a property of managed\/gizmo/);
+  });
+  it("a seeded record key __proto__ the type does not declare is an unknown property", () => {
+    const profile = normaliseManagedConfig(config("q2", '{"type":"string"}'), META);
+    expect(() => checkRecord(profile, "managed/gizmo/g1", JSON.parse('{"__proto__": "x"}'), "seed")).toThrow(/"__proto__" is not a property/);
+  });
+  it.each(["constructor", "toString"])("managed/%s is an unknown type, not Object.prototype's member", (name) => {
+    const profile = normaliseManagedConfig(config("q2", '{"type":"string"}'), META);
+    expect(() => checkRecord(profile, `managed/${name}/g1`, {}, "seed")).toThrow(SchemaViolation);
+    expect(() => checkRecord(profile, `managed/${name}/g1`, {}, "seed")).toThrow(/is not a managed object/);
+  });
+  it("the harvest parser keeps a recorded __proto__ key as data", () => {
+    const parsed = parseJsonValue(JSON.parse('{"__proto__": {"polluted": true}, "a": 1}'), "effects") as Record<string, unknown>;
+    expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
+    expect(Object.keys(parsed)).toEqual(["__proto__", "a"]);
+    expect((parsed as { polluted?: unknown }).polluted).toBeUndefined();
+  });
+});
+
 describe("on the real JVM the fault fails the run and is tallied", () => {
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
@@ -796,6 +919,76 @@ describe("on the real JVM the fault fails the run and is tallied", () => {
     expect(ok.verdict.pass).toBe(true);
     expect(ok.effects.managedStore?.["managed/gizmo"]).toEqual([{ _id: "g1", _rev: "local-rev", ...controlBody }]);
   });
+  // astra-r1 P2-1, the cross-lane matrix: the same raw declaration of `box`, a create through the AM
+  // lane's public runCase and through the IDM emulator. A nested hook, enum, policy or required is
+  // unmeasured, so both lanes must fault; neither emulates a hook run or a 403. At d7212ed every AM
+  // row but the control returned pass: true with the record stored.
+  const hook = { type: "text/javascript", source: 'throw "reject";' };
+  const boxed = (box: unknown) => ({ objects: [{ name: "gizmo", schema: { required: [], properties: { box } } }] });
+  it.each([
+    ["a hook under an object property", { type: "object", properties: { p: { type: "string", onValidate: hook } } }, { p: "no" },
+      "openidm-managed-unmeasured-hook/gizmo.box.p.onValidate", "nested property behavior onValidate: gizmo/box/p"],
+    ["a hook under array items", { type: "array", items: { type: "string", onValidate: hook } }, ["no"],
+      "openidm-managed-unmeasured-hook/gizmo.box[].onValidate", "nested property behavior onValidate: gizmo/box/items"],
+    ["an enum under properties", { type: "object", properties: { p: { type: "string", enum: ["yes"] } } }, { p: "no" },
+      "openidm-managed-policy/gizmo", "schema policy enum: gizmo/box/p"],
+    ["policies under properties", { type: "object", properties: { p: { type: "string", policies: [{ policyId: "minimum-length", params: { minLength: 10 } }] } } },
+      { p: "no" }, "openidm-managed-policy/gizmo", "schema policy policies: gizmo/box/p"],
+    ["a required list on an object property", { type: "object", required: ["p"], properties: { p: { type: "string" } } }, {},
+      "openidm-managed-policy/gizmo", "schema policy required: gizmo/box"],
+  ] as const)("%s: both lanes fault", async (_name, box, value, amId, idmMissing) => {
+    expectHarnessFault(amId);
+    expectEmulationFailure(idmMissing);
+    // Caught, as a probe would: the harness fault still fails the run, and names its id.
+    const caught = `${catching(`openidm.create("managed/gizmo", "g1", ${JSON.stringify({ box: value })})`)} action.goTo("true");`;
+    await expect(runCase(runner, caseWith({ script: caught, expect: expectAll }), { profile: normaliseManagedConfig(boxed(box), META) }))
+      .rejects.toThrow(new RegExp(amId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    const idm = await new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: boxed(box) } as never), runner)
+      .request({ method: "POST", path: "managed/gizmo", query: { _action: "create" }, body: { box: value } });
+    expect(idm.status).toBe(501);
+    expect(idm.emulation?.missing).toContain(idmMissing);
+  });
+  it("control: a nested type mismatch alone is stored by both lanes (measured unenforced)", async () => {
+    const box = { type: "object", properties: { p: { type: "string" } } };
+    const ok = await runCase(runner, caseWith({ script: create({ box: { p: 4 } }), expect: expectAll }), { profile: normaliseManagedConfig(boxed(box), META) });
+    expect(ok.verdict.pass).toBe(true);
+    expect(ok.effects.managedStore?.["managed/gizmo"]).toEqual([{ _id: "g1", _rev: "local-rev", box: { p: 4 } }]);
+    const idm = await new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: boxed(box) } as never), runner)
+      .request({ method: "POST", path: "managed/gizmo", query: { _action: "create" }, body: { box: { p: 4 } } });
+    expect(idm.status).toBe(201);
+    expect(idm.body).toMatchObject({ box: { p: 4 } });
+  });
+
+  // astra-r1 P2-2 on the JVM: the reviewer's repro, and a valid default under the same name, whose
+  // record must come back through the harvest with the key intact.
+  const protoConfig = (property: string) => JSON.parse(
+    `{"objects":[{"name":"gizmo","schema":{"required":[],"properties":{"__proto__":${property},"q":{"type":"string"}}}}]}`) as unknown;
+  it("a __proto__ property's invalid default fails the run (was pass: true, properties {})", async () => {
+    expectHarnessFault("openidm-managed-invalid-default/gizmo.__proto__");
+    await expect(runCase(runner, caseWith({ script: `${catching('openidm.create("managed/gizmo", "g1", {})')} action.goTo("true");`, expect: expectAll }),
+      { profile: normaliseManagedConfig(protoConfig('{"type":"boolean","default":"nope"}'), META) }))
+      .rejects.toThrow(/openidm-managed-invalid-default\/gizmo\.__proto__/);
+  });
+  it("a __proto__ property's valid default lands, and a mismatch on it is the measured refusal", async () => {
+    const profile = normaliseManagedConfig(protoConfig('{"type":"string","default":"dflt"}'), META);
+    const ok = await runCase(runner, caseWith({ script: create({}), expect: expectAll }), { profile });
+    expect(ok.verdict.pass).toBe(true);
+    const row = ok.effects.managedStore?.["managed/gizmo"]?.[0];
+    expect(row !== undefined && Object.hasOwn(row, "__proto__") ? row.__proto__ : "absent").toBe("dflt");
+    const refused = await runCase(runner, caseWith({ script: 'try { openidm.create("managed/gizmo", "g1", JSON.parse(\'{"__proto__": 5}\')); } ' +
+      'catch (e) { nodeState.putShared("e", String(e)); } action.goTo("true");', expect: { ...expectAll, allowUndeclared: { openidmWrites: true, sharedState: true } } }), { profile });
+    expect(String(refused.effects.sharedState.final.e)).toContain("Policy validation failed");
+    expect(refused.effects.managedStore?.["managed/gizmo"]).toEqual([]);
+  });
+
+  // An object value is where an assignment would replace the record's prototype instead of dropping the key.
+  it.each([["an object", '{"type":"object","default":{"a":1}}', { a: 1 }], ["an array", '{"type":"array","items":{"type":"string"},"default":["x"]}', ["x"]]] as const)(
+    "a __proto__ property's %s default lands as an own key", async (_name, property, value) => {
+      const ok = await runCase(runner, caseWith({ script: create({}), expect: expectAll }), { profile: normaliseManagedConfig(protoConfig(property), META) });
+      const row = ok.effects.managedStore?.["managed/gizmo"]?.[0];
+      expect(row !== undefined && Object.hasOwn(row, "__proto__") ? row.__proto__ : "absent").toEqual(value);
+    });
+
   it("a profile whose key and name disagree is refused (was pass: true across four writes)", async () => {
     const aliased: EnvProfile = { tenant: "sandbox", pulledAt: META.pulledAt, sources: [],
       objects: { gizmo: { name: "other", properties: {}, required: [], hooks: ["onCreate", "onUpdate", "onDelete"] } } };

@@ -2301,13 +2301,20 @@ function __rhinoLocalApplyDefaults(collection, stored) {
           "type with a required array, and on a string without one (docs/api/10); this case was not, so what AIC " +
           "stores is unmeasured. Send the property, or expect the fault (E19)");
     }
-    stored[name] = __rhinoLocalClone(rule.defaults[name]);
+    // defineProperty, not assignment: the name is the schema's, and a property
+    // named __proto__ would otherwise hit the prototype setter (astra-r1 P2-2).
+    Object.defineProperty(stored, name, {
+      value: __rhinoLocalClone(rule.defaults[name]),
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
   });
   // An explicit null on an array declaring default: null is stored as [] too
   // (measured 2026-11-08, docs/api/10); only a new record's create gets here.
   rule.emptyOnNull.forEach(function (name) {
-    if (stored[name] === null) {
-      stored[name] = [];
+    if (__rhinoLocalHas(stored, name) && stored[name] === null) {
+      Object.defineProperty(stored, name, { value: [], enumerable: true, writable: true, configurable: true });
     }
   });
 }
@@ -2553,7 +2560,8 @@ function __rhinoLocalOpenidmRecord(value, id, rev) {
   var i;
   for (i = 0; i < keys.length; i += 1) {
     if (keys[i] !== "_id" && keys[i] !== "_rev") {
-      record[keys[i]] = value[keys[i]];
+      // A key named __proto__ (a schema default's, or the script's) stays data (astra-r1 P2-2).
+      Object.defineProperty(record, keys[i], { value: value[keys[i]], enumerable: true, writable: true, configurable: true });
     }
   }
   return record;
