@@ -145,6 +145,8 @@ interface Array<T> {
   // A request map's value list is not accepted: its concat is unmeasured
   // (the emulator faults request-list-unmeasured).
   concat<U>(list: OpenidmJavaList<U>): (T | U)[];
+  // Several lists, mixed with arrays and values, anywhere among the arguments.
+  concat<U>(...items: (T | ConcatArray<T> | OpenidmJavaList<U>)[]): (T | U)[];
   concat<U extends T[]>(...items: U[]): T[];
   concat(...items: (T | JavaArray<T>)[]): T[];
 }

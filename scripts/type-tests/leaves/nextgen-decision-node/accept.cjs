@@ -174,6 +174,10 @@ var allRows = openidm.query("managed/__aic_fixture_user", { _queryFilter: "true"
 /** @type {string[]} */
 var allIds = [].concat(allRows.result).map(function (r) { return r._id; });
 logger.info("ids {} {}", allIds.length, allRows.result.size());
+// Several lists, among arrays and values, as the emulator accepts.
+var twice = [allRows.result.get(0)].concat(allRows.result, allRows.result);
+var mixed = [0].concat(allRows.result, [9], allRows.result);
+logger.info("{} {}", twice.length, mixed.length);
 // `*` beside a named relationship: the relationship is the Java list, the
 // rest of the record is as stored; `*` alone leaves the stored array.
 var starRoles = openidm.read("managed/__aic_fixture_user/alice", null, ["*", "authzRoles"]);

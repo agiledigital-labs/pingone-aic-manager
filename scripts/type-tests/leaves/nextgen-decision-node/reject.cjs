@@ -111,6 +111,7 @@ var qParam = requestParameters.get("q");
 if (qParam) {
   qParam.includes("x"); // expect: TS2339 — a request value list has no includes
   [].concat(qParam); // expect: TS2769 — concat of a request list is unmeasured
+  [0].concat(qrows.result, qParam); // expect: TS2769 — a request list among several is still unmeasured
 }
 var starChild = openidm.read("managed/__aic_fixture_user/alice", null, ["*", "authzRoles/name"]);
 if (starChild && starChild.authzRoles) {
