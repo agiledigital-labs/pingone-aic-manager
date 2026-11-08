@@ -133,6 +133,29 @@ const listedRoutes = (list: string): Array<[string, string]> => [
   ["nested", `JSON.stringify({ v: ${list} }, ["v", "_id"])`],
   ["from a getter", `var o = {}; Object.defineProperty(o, "v", { enumerable: true, get: function () { return ${list}; } }); JSON.stringify(o, ["v", "_id"])`],
 ];
+// A getter in a property list that runs a function-replacer call of its own.
+const inListGetter = (inner: string) =>
+  'var r = ["x"], inner; Object.defineProperty(r, "0", { get: function () { ' +
+  `try { inner = ${inner}; } catch (e) { inner = "threw"; } return "x"; } }); JSON.stringify({ x: 1 }, r) + ":" + inner`;
+const nestedInListed: Array<[string, string, string]> = [
+  ["a nested function replacer removes a request list before it is judged",
+    'var l = requestParameters.get("x"); ' + inListGetter('JSON.stringify({ v: l }, function (k, v) { return k === "v" ? undefined : v; })'),
+    '{"x":1}:{}'],
+  ["a nested function replacer sees the openidm list itself",
+    `var l = ${QUERY}; ` + inListGetter('String(JSON.stringify({ v: l }, function (k, v) { return k === "v" ? String(v === l) : v; }))'),
+    '{"x":1}:{"v":"true"}'],
+  ["a nested call does not end the outer call's conversion",
+    `var l = ${QUERY}; var o = { x: 1 }; Object.defineProperty(o, "v", { enumerable: true, get: function () { JSON.stringify({ a: 1 }); return l; } }); ` +
+      'JSON.stringify(o, ["v", "_id"])',
+    '{"v":[{"_id":"u1"}]}'],
+];
+const frozen = (list: string): Array<[string, string, string]> => [
+  ["frozen before the call", `var l = ${list}; Object.freeze(l); JSON.stringify(l, ["_id"])`, '[{"_id":"u1"}]'],
+  ["frozen during the call, then serialised again",
+    `var l = ${list}; var r = ["x"]; Object.defineProperty(r, "0", { get: function () { Object.freeze(l); return "x"; } }); ` +
+      'JSON.stringify({ x: 1 }, r) + ":" + typeof l.toJSON + ":" + JSON.stringify(l, ["_id"])',
+    '{"x":1}:undefined:[{"_id":"u1"}]'],
+];
 const arrayOf = (route: string, items: string) =>
   route === "nested" || route === "from a getter" || route === "from a replacer" ? `{"v":${items}}` : items;
 
@@ -178,9 +201,26 @@ describe("JSON.stringify of the emulated lists", () => {
     expect(await value(`JSON.stringify({ toJSON: function () { return ${QUERY}; } }, ["_id"])`)).toBe("{}");
   });
 
-  it("the list hooks are gone after the call, and an author's own toJSON on a list wins", async () => {
-    expect(await value(`var r = ${QUERY}; JSON.stringify(r, ["_id"]); String(Object.prototype.hasOwnProperty.call(r, "toJSON"))`)).toBe("false");
+  it("a list has no toJSON outside a property-list call, and an author's own toJSON on a list wins", async () => {
+    expect(await value(`var r = ${QUERY}; var before = typeof r.toJSON; JSON.stringify(r, ["_id"]); before + ":" + typeof r.toJSON`)).toBe("undefined:undefined");
     expect(await value(`var r = ${QUERY}; r.toJSON = function () { return "mine"; }; JSON.stringify({ v: r }, ["v"])`)).toBe('{"v":"mine"}');
+  });
+
+  // Astra r7 P1-1: a function-replacer call nested in a property-list call.
+  it.each(nestedInListed)("%s", async (_name, source, want) => {
+    expect(await value(source)).toBe(want);
+  });
+
+  // Astra r7 P1-2: freezing a list, before the call or during it.
+  it.each(frozen(QUERY))("a frozen openidm list: %s", async (_name, source, want) => {
+    expect(await value(source)).toBe(want);
+  });
+
+  it("a frozen request list under a property list faults request-list-serialize", async () => {
+    expectHarnessFault("request-list-serialize");
+    const response = await runner.eval({ preamble: mockPreamble(given),
+      source: withHarvest(`var l = requestParameters.get("x"); Object.freeze(l); try { JSON.stringify(l, ["0"]); } catch (e) {} finally { 1; }`) });
+    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-serialize"]);
   });
 
   it("a request list a replacer removes is never judged", async () => {
@@ -235,6 +275,24 @@ describe("JSON.stringify of an openidm list in node:vm", () => {
   it.each(listedRoutes('requestParameters.get("x")'))("a request list reached %s under a property list faults request-list-serialize", (_route, source) => {
     const sandbox = loadBehaviour(given);
     vm.runInContext(`try { ${source}; } catch (e) {}`, sandbox);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["request-list-serialize"]);
+  });
+
+  it.each(nestedInListed)("%s", (_name, source, want) => {
+    const sandbox = loadBehaviour(given);
+    expect(vm.runInContext(source, sandbox)).toBe(want);
+    expect(sandboxFaults(sandbox)).toEqual([]);
+  });
+
+  it.each(frozen(QUERY))("a frozen openidm list: %s", (_name, source, want) => {
+    const sandbox = loadBehaviour(given);
+    expect(vm.runInContext(source, sandbox)).toBe(want);
+    expect(sandboxFaults(sandbox)).toEqual([]);
+  });
+
+  it("a frozen request list under a property list faults request-list-serialize", () => {
+    const sandbox = loadBehaviour(given);
+    vm.runInContext('var l = requestParameters.get("x"); Object.freeze(l); try { JSON.stringify(l, ["0"]); } catch (e) {}', sandbox);
     expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["request-list-serialize"]);
   });
 
