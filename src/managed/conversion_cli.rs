@@ -591,6 +591,9 @@ async fn write_plan(
             applied.readback
         )));
     }
+    if let Some(warning) = plan.addition().and_then(storage::activation_warning) {
+        eprintln!("{warning}");
+    }
     Ok(())
 }
 

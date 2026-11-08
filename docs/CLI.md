@@ -938,7 +938,9 @@ tenant name and base URL. Keep their sidecars alongside them during recovery.
 (or accepts `--force`, required without a terminal), passes the prod `--yes`
 gate, repeats the census, rechecks declarations, backs up `repo.ds`, PUTs both
 ends and any per-type entries in one document with `waitForCompletion=true`,
-and confirms by re-read. Columns remain 1–10 per object, including
+and confirms by re-read. When that gives an object its first per-type entry it
+warns: a record created there before IDM activates the entry can be lost to the
+old store, so wait before creating records. Columns remain 1–10 per object, including
 `explicitMapping` usage. Before restoring, `/<key> pr` must find no orphaned
 column data. A finding leaves mapping and data intact and exits non-zero.
 
