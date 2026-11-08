@@ -37,8 +37,12 @@ here and failed on the tenant.
 | `String(v)` gives Java's `"[a, b]"`               | `Array.isArray(v)` is `false`                        |
 | `requestParameters.forEach(function (k, v) {…})`  | `v.getClass()` (the class shutter refuses it)        |
 
-`JSON.stringify` of a value list was not measured, so it faults
-`request-list-serialize`; copy the values into an array first:
+Only `size()` and `get(i)` with an index in range were measured. Any other
+call shape (`get()`, `get("0")`, an out-of-range index, `size(1)`) and every
+other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`, `iterator`,
+…) faults `request-list-unmeasured`. `JSON.stringify` of a value list was not
+measured either, so it faults `request-list-serialize`; copy the values into an
+array first:
 
 ```js
 var values = requestParameters.get("q");

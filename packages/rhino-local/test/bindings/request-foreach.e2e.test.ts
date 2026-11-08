@@ -112,6 +112,39 @@ describe("request map forEach matches the live capture", () => {
   });
 
   it.each([
+    ["get()", "v.get()"],
+    ['get("length")', 'v.get("length")'],
+    ['get("0")', 'v.get("0")'],
+    ["get(0, 1)", "v.get(0, 1)"],
+    ["get(2), out of range", "v.get(2)"],
+    ["get(-1)", "v.get(-1)"],
+    ["get(0.5)", "v.get(0.5)"],
+    ["size(1)", "v.size(1)"],
+    ["toArray()", "JSON.stringify(v.toArray())"],
+    ["isEmpty()", "v.isEmpty()"],
+    ['contains("a")', 'v.contains("a")'],
+    ['indexOf("a")', 'v.indexOf("a")'],
+    ["iterator()", "v.iterator()"],
+  ])("%s on a value list faults request-list-unmeasured, even when caught", async (_name, call) => {
+    expectHarnessFault("request-list-unmeasured");
+    const response = await runner.eval({
+      preamble: mockPreamble({ requestParameters: { q: ["a", "b"] } }),
+      source: withHarvest(`var v = requestParameters.get("q"); try { ${call}; } catch (e) {} finally { 1; }`),
+    });
+    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-unmeasured"]);
+  });
+
+  it("the measured list calls still answer: size(), get(i) in range, and the README's copy loop", async () => {
+    const response = await runner.eval({
+      preamble: mockPreamble({ requestParameters: { q: ["a", "b"] } }),
+      source: 'var v = requestParameters.get("q"); var out = []; for (var i = 0; i < v.size(); i++) out.push(v.get(i)); ' +
+        'JSON.stringify([v.size(), v.get(0), v.get(1), v.length, v[1], out])',
+    });
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(response.value).toBe('[2,"a","b",2,"b",["a","b"]]');
+  });
+
+  it.each([
     ["parameters via get", 'JSON.stringify(requestParameters.get("q"))'],
     ["parameters via brackets", 'JSON.stringify(requestParameters["q"])'],
     ["parameters via the forEach callback", "requestParameters.forEach(function (k, v) { JSON.stringify(v); })"],

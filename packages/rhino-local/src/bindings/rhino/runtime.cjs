@@ -790,27 +790,33 @@ function __rhinoLocalRequestList(items) {
   for (i = 0; i < items.length; i += 1) {
     list[i] = items[i];
   }
+  // Only size() and get(i) with an in-range index were probed; any other
+  // call shape, and every other List member, faults rather than answering
+  // with JavaScript's ignore-the-extra-argument rules.
+  var unmeasured = function (call) {
+    return __rhinoLocalFault("request-list-unmeasured",
+      "rhino-local: " + call + " on a request map's value list is unmeasured (AIC hands over a Java list; " +
+        "only size() and get(i) with an index in range were measured)");
+  };
   __rhinoLocalHide(list, "length", items.length);
   __rhinoLocalHide(list, "size", function () {
+    if (arguments.length !== 0) {
+      throw unmeasured("size() with " + arguments.length + " argument(s)");
+    }
     return items.length;
   });
   __rhinoLocalHide(list, "get", function (index) {
-    return list[index];
-  });
-  __rhinoLocalHide(list, "isEmpty", function () {
-    return items.length === 0;
-  });
-  __rhinoLocalHide(list, "contains", function (value) {
-    var j;
-    for (j = 0; j < items.length; j += 1) {
-      if (items[j] === value) {
-        return true;
-      }
+    if (arguments.length !== 1 || typeof index !== "number" || index % 1 !== 0 || index < 0 || index >= items.length) {
+      throw unmeasured("get(" + Array.prototype.map.call(arguments, function (a) {
+        return typeof a === "string" ? JSON.stringify(a) : String(a);
+      }).join(", ") + ")");
     }
-    return false;
+    return items[index];
   });
-  __rhinoLocalHide(list, "toArray", function () {
-    return __rhinoLocalArrayLike(items);
+  ["isEmpty", "contains", "toArray", "indexOf", "iterator", "subList", "stream", "equals", "hashCode"].forEach(function (name) {
+    __rhinoLocalHide(list, name, function () {
+      throw unmeasured(name + "()");
+    });
   });
   __rhinoLocalHide(list, "toString", function () {
     var parts = [];
