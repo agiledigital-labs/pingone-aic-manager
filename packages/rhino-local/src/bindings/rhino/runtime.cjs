@@ -318,7 +318,9 @@ var __rhinoLocalCrestReasons = {
 // getReason(), and its string is the message; nothing else is exposed
 // (getMessage and getClass are TypeErrors on AIC). A status with no reason
 // in CREST's table faults on getReason() rather than invent one.
-function __rhinoLocalAdapterException(text, code) {
+// `detail`, when known, is `{ value }`: what getDetail() wraps. Unknown, the
+// detail is a fault on call, never an invented null.
+function __rhinoLocalAdapterException(text, code, detail) {
   var error = __rhinoLocalJavaException(
     "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: " + text
   );
@@ -331,9 +333,115 @@ function __rhinoLocalAdapterException(text, code) {
     }
     return __rhinoLocalCrestReasons[code];
   });
+  __rhinoLocalHide(adapter, "getDetail", function () {
+    if (detail === undefined) {
+      throw __rhinoLocalFault("openidm-failure-detail",
+        "rhino-local: javaException.getDetail(): this failure's detail is unknown; give the openidmFailures stub a reply.detail (null for a 404 or 400)");
+    }
+    return __rhinoLocalDetailValue(detail.value);
+  });
   __rhinoLocalHide(adapter, "toString", function () { return error.message; });
   __rhinoLocalHide(error, "javaException", adapter);
   return error;
+}
+
+// What AM's adapter getDetail() returns: a CREST org.forgerock.json.JsonValue,
+// measured 2026-11-08 (docs/api/12, openidm-error-detail probe) for a policy
+// 403 (an object) and a 404 and a 400 (null). Measured: get(key) (a JsonValue
+// again), isNull(), getObject() (the plain value), String() (CREST's one-line
+// form; the same JsonValue.toString the IDM lane measured, with its limits),
+// JSON.stringify (that string, quoted), and Object.keys/for...in (the
+// member list below, in that order). Every other member is the class's own
+// and unmeasured: reading one faults.
+var __rhinoLocalDetailMembers = ("getClass,equalTo,setObject,put,asList,required,patch,number,putPermissive,iterator," +
+  "putIfNotNull,isNumber,merge,asString,defined,isNotNull,add,getObject,pointer,spliterator,notNull,asMapOfList," +
+  "asAsync,diff,collection,list,isMap,asInteger,asLong,contains,as,size,null,asDouble,asBoolean,object,wait,string," +
+  "keys,asMap,notifyAll,isCollection,isList,notify,remove,isBoolean,stream,addIfNotNull,hashCode,get,isString,copy," +
+  "class,map,asCollection,forEach,asNumber,clear,defaultTo,getPointer,expect,boolean,addPermissive,isDefined," +
+  "equals,isNull,clone,toString,isEqualTo").split(",");
+
+function __rhinoLocalDetailUnmeasured(what) {
+  return __rhinoLocalFault("openidm-failure-detail", "rhino-local: javaException.getDetail()" + what + " is unmeasured");
+}
+
+function __rhinoLocalDetailString(value) {
+  var i;
+  var keys;
+  var parts = [];
+  if (value === null || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "number") {
+    if (Math.floor(value) !== value || Math.abs(value) > 1e15) {
+      throw __rhinoLocalDetailUnmeasured(": the string form of a non-integral number");
+    }
+    return String(value);
+  }
+  if (typeof value === "string") {
+    if (/[^\x20-\x7e]|["\\]/.test(value)) {
+      throw __rhinoLocalDetailUnmeasured(": the string form of a string needing an escape");
+    }
+    return '"' + value + '"';
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      throw __rhinoLocalDetailUnmeasured(": the string form of an empty array");
+    }
+    for (i = 0; i < value.length; i += 1) {
+      parts.push(__rhinoLocalDetailString(value[i]));
+    }
+    return "[ " + parts.join(", ") + " ]";
+  }
+  keys = Object.keys(value);
+  if (keys.length === 0) {
+    throw __rhinoLocalDetailUnmeasured(": the string form of an empty object");
+  }
+  for (i = 0; i < keys.length; i += 1) {
+    parts.push(JSON.stringify(keys[i]) + ": " + __rhinoLocalDetailString(value[keys[i]]));
+  }
+  return "{ " + parts.join(", ") + " }";
+}
+
+function __rhinoLocalDetailValue(value) {
+  var jv = {};
+  var measured = {
+    get: function (key) {
+      if (value !== null && (typeof value !== "object" || Array.isArray(value))) {
+        throw __rhinoLocalDetailUnmeasured(".get on a non-object value");
+      }
+      var k = String(key);
+      return __rhinoLocalDetailValue(value !== null && Object.prototype.hasOwnProperty.call(value, k) ? value[k] : null);
+    },
+    isNull: function () {
+      return value === null;
+    },
+    getObject: function () {
+      return __rhinoLocalClone(value);
+    },
+    toString: function () {
+      return __rhinoLocalDetailString(value);
+    },
+  };
+  var i;
+  for (i = 0; i < __rhinoLocalDetailMembers.length; i += 1) {
+    (function (name) {
+      if (Object.prototype.hasOwnProperty.call(measured, name)) {
+        Object.defineProperty(jv, name, { enumerable: true, configurable: true, writable: true, value: measured[name] });
+      } else {
+        Object.defineProperty(jv, name, {
+          enumerable: true,
+          configurable: true,
+          get: function () {
+            throw __rhinoLocalDetailUnmeasured("." + name);
+          },
+        });
+      }
+    })(__rhinoLocalDetailMembers[i]);
+  }
+  __rhinoLocalHide(jv, "toJSON", function () {
+    return __rhinoLocalDetailString(value);
+  });
+  return jv;
 }
 
 // Where each method's accepted argument count comes from (E19, decision B).
@@ -2597,7 +2705,11 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
     // "undefined"). The code is in the message text and, as on every
     // adapter, behind e.javaException.getCode(); the stub's code is the
     // status this failure stands for.
-    throw __rhinoLocalAdapterException("injected ResourceException code " + stub.reply.code, stub.reply.code);
+    throw __rhinoLocalAdapterException(
+      stub.reply.message !== undefined ? stub.reply.message : "injected ResourceException code " + stub.reply.code,
+      stub.reply.code,
+      Object.prototype.hasOwnProperty.call(stub.reply, "detail") ? { value: stub.reply.detail } : undefined
+    );
   }
 }
 

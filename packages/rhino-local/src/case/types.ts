@@ -232,7 +232,14 @@ export interface HttpStub {
 /** One numbered call among calls with the same method and resource. */
 export interface OpenidmFailureStub {
   match: { method: OpenidmMethod; resource: Pattern; ordinal: number };
-  reply: { code: number };
+  /**
+   * `detail` is what `e.javaException.getDetail()` wraps, as AIC's CREST
+   * `JsonValue` (measured 2026-11-08: a policy 403 carries the
+   * `failedPolicyRequirements` object, a 404 and a 400 carry null). Omitted,
+   * reading the detail is a harness fault. `message` replaces the harness's
+   * own text after `ResourceExceptionScriptAdapter: `.
+   */
+  reply: { code: number; detail?: JsonValue; message?: string };
 }
 
 export interface HttpExpect {

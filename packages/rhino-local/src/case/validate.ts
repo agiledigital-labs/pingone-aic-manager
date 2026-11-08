@@ -399,7 +399,7 @@ function parseCallCounts(raw: unknown, path: string): Record<string, number> {
 function parseOpenidmFailureStub(raw: unknown, path: string): OpenidmFailureStub {
   const stub = parseStub(raw, path);
   rejectUnknownKeys(`${path}.match`, stub.match, ["method", "resource", "ordinal"]);
-  rejectUnknownKeys(`${path}.reply`, stub.reply, ["code"]);
+  rejectUnknownKeys(`${path}.reply`, stub.reply, ["code", "detail", "message"]);
   if (!Number.isInteger(stub.match.ordinal) || (stub.match.ordinal as number) < 1) {
     throw new Error(`rhino-local: ${path}.match.ordinal must be a positive integer`);
   }
@@ -412,7 +412,11 @@ function parseOpenidmFailureStub(raw: unknown, path: string): OpenidmFailureStub
       resource: parseRequiredPattern(stub.match.resource, `${path}.match.resource`),
       ordinal: stub.match.ordinal as number,
     },
-    reply: { code: stub.reply.code as number },
+    reply: {
+      code: stub.reply.code as number,
+      ...(stub.reply.detail === undefined ? {} : { detail: parseJsonValue(stub.reply.detail, `${path}.reply.detail`) }),
+      ...(stub.reply.message === undefined ? {} : { message: parseNonEmptyString(stub.reply.message, `${path}.reply.message`) }),
+    },
   };
 }
 
