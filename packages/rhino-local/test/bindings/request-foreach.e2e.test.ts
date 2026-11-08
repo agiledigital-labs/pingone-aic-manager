@@ -132,6 +132,11 @@ describe("request map forEach matches the live capture", () => {
     ["sort()", "v.sort()"],
     ["get(an object whose toString throws)", 'v.get({ toString: function () { throw new Error("conversion"); } })'],
     ["get(0, an object whose toString throws)", 'v.get(0, { toString: function () { throw new Error("conversion"); } })'],
+    ["get(2) while String is replaced", 'var S = String; String = function () { throw new Error("s"); }; try { v.get(2); } finally { String = S; }'],
+    ['get("0") while Array.prototype.map is replaced', 'var M = Array.prototype.map; Array.prototype.map = function () { throw new Error("m"); }; try { v.get("0"); } finally { Array.prototype.map = M; }'],
+    ["toString(1)", "v.toString(1)"],
+    ["toString(an object whose toString throws)", 'v.toString({ toString: function () { throw new Error("conversion"); } })'],
+    ["getClass(1)", "v.getClass(1)"],
   ])("%s on a value list faults request-list-unmeasured, even when caught", async (_name, call) => {
     expectHarnessFault("request-list-unmeasured");
     const response = await runner.eval({
@@ -145,10 +150,10 @@ describe("request map forEach matches the live capture", () => {
     const response = await runner.eval({
       preamble: mockPreamble({ requestParameters: { q: ["a", "b"] } }),
       source: 'var v = requestParameters.get("q"); var out = []; for (var i = 0; i < v.size(); i++) out.push(v.get(i)); ' +
-        'JSON.stringify([v.size(), v.get(0), v.get(1), v.length, v[1], out])',
+        'JSON.stringify([v.size(), v.get(0), v.get(1), v.length, v[1], out, String(v), "" + v, v.toString()])',
     });
     expect(response.emulation?.faults ?? []).toEqual([]);
-    expect(response.value).toBe('[2,"a","b",2,"b",["a","b"]]');
+    expect(response.value).toBe('[2,"a","b",2,"b",["a","b"],"[a, b]","[a, b]","[a, b]"]');
   });
 
   it.each([

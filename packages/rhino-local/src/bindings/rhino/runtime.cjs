@@ -784,6 +784,21 @@ function __rhinoLocalJavaList(items) {
 // methods (map, join) are absent. Not a JS
 // array, so a script that calls one fails here as it fails there. The legacy
 // engine is not measured and keeps the older shape.
+// An unmeasured call's argument list for a refusal message, built before the
+// fault is recorded and so without running anything a script can replace:
+// no argument's toString, no String(), no Array.prototype method. A number
+// primitive concatenates without calling out; everything else is its typeof.
+function __rhinoLocalArgShape(args) {
+  var shape = "";
+  var k;
+  var a;
+  for (k = 0; k < args.length; k += 1) {
+    a = args[k];
+    shape += (k === 0 ? "" : ", ") + (typeof a === "number" ? "" + a : a === null ? "null" : typeof a);
+  }
+  return shape;
+}
+
 function __rhinoLocalRequestList(items) {
   var list = {};
   var i;
@@ -796,7 +811,7 @@ function __rhinoLocalRequestList(items) {
   var unmeasured = function (call) {
     return __rhinoLocalFault("request-list-unmeasured",
       "rhino-local: " + call + " on a request map's value list is unmeasured (AIC hands over a Java list; " +
-        "only size() and get(i) with an index in range were measured)");
+        "only size(), get(i) with an index in range, String(v) and the getClass() refusal were measured)");
   };
   __rhinoLocalHide(list, "length", items.length);
   __rhinoLocalHide(list, "size", function () {
@@ -807,11 +822,7 @@ function __rhinoLocalRequestList(items) {
   });
   __rhinoLocalHide(list, "get", function (index) {
     if (arguments.length !== 1 || typeof index !== "number" || index % 1 !== 0 || index < 0 || index >= items.length) {
-      // Labels only: converting an author's argument to text runs its
-      // toString, which could throw a catchable error before the fault.
-      throw unmeasured("get(" + Array.prototype.map.call(arguments, function (a) {
-        return typeof a === "number" ? String(a) : a === null ? "null" : typeof a;
-      }).join(", ") + ")");
+      throw unmeasured("get(" + __rhinoLocalArgShape(arguments) + ")");
     }
     return items[index];
   });
@@ -828,6 +839,9 @@ function __rhinoLocalRequestList(items) {
     });
   });
   __rhinoLocalHide(list, "toString", function () {
+    if (arguments.length !== 0) {
+      throw unmeasured("toString(" + __rhinoLocalArgShape(arguments) + ")");
+    }
     var parts = [];
     var j;
     for (j = 0; j < items.length; j += 1) {
@@ -836,6 +850,9 @@ function __rhinoLocalRequestList(items) {
     return "[" + parts.join(", ") + "]";
   });
   __rhinoLocalHide(list, "getClass", function () {
+    if (arguments.length !== 0) {
+      throw unmeasured("getClass(" + __rhinoLocalArgShape(arguments) + ")");
+    }
     throw __rhinoLocalShutterError("java.lang.Class");
   });
   // JSON.stringify of the list was never measured (the probe serialised its
