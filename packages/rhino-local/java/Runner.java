@@ -404,21 +404,25 @@ public final class Runner {
             int line = 1;
             if (preludeHash != null) {
               final ScriptCache.Source prelude = ScriptCache.source(preludeHash);
+              // Every started phase is recorded in a finally, so one that threw
+              // or timed out still reports the time it took.
+              Script compiled;
               phase = Timing.now();
-              Script compiled = ScriptCache.compile(cx, "prelude:" + preludeHash, () -> prelude.text, preambleName, 1);
-              Timing.add("preludeCompile", phase);
+              try { compiled = ScriptCache.compile(cx, "prelude:" + preludeHash, () -> prelude.text, preambleName, 1); }
+              finally { Timing.add("preludeCompile", phase); }
               phase = Timing.now();
-              compiled.exec(cx, scope);
-              Timing.add("preludeExec", phase);
+              try { compiled.exec(cx, scope); }
+              finally { Timing.add("preludeExec", phase); }
               line = prelude.lines + 1;
             }
             if (hasPreamble) {
+              Script preambleScript;
               phase = Timing.now();
-              Script preambleScript = cx.compileString(preamble, preambleName, line, null);
-              Timing.add("preambleCompile", phase);
+              try { preambleScript = cx.compileString(preamble, preambleName, line, null); }
+              finally { Timing.add("preambleCompile", phase); }
               phase = Timing.now();
-              preambleScript.exec(cx, scope);
-              Timing.add("preambleExec", phase);
+              try { preambleScript.exec(cx, scope); }
+              finally { Timing.add("preambleExec", phase); }
             }
           } finally {
             ScriptableObject.deleteProperty(scope, hostOpName);
@@ -448,9 +452,10 @@ public final class Runner {
         return errorFromRhino(id, "compile_error", e);
       } catch (RhinoException e) {
         return errorFromRhino(id, "compile_error", e);
+      } finally {
+        Timing.add("subjectCompile", phase);
       }
 
-      Timing.add("subjectCompile", phase);
       final Object completion;
       phase = Timing.now();
       try {
@@ -462,8 +467,9 @@ public final class Runner {
           return timeoutResponse(id);
         }
         throw e;
+      } finally {
+        Timing.add("subjectExec", phase);
       }
-      Timing.add("subjectExec", phase);
       // Harvest outside the author try: its failures are emulation failures, not script errors.
       if (bridge != null) {
         phase = Timing.now();

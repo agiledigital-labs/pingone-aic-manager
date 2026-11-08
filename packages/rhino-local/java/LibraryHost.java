@@ -49,8 +49,9 @@ final class LibraryHost extends BaseFunction {
       // What the runtime's eval path threw before the cache: a catchable SyntaxError.
       throw ScriptRuntime.constructError("SyntaxError", e.details(), e.sourceName(), e.lineNumber(),
           e.lineSource(), e.columnNumber());
+    } finally {
+      Timing.add("libraryCompile", phase);
     }
-    Timing.add("libraryCompile", phase);
     phase = Timing.now();
     try {
       return loader.exec(cx, ScriptableObject.getTopLevelScope(this));

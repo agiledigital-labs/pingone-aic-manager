@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../src/bindings/run.ts";
 import { RhinoRunner } from "../src/runner.ts";
 import { TIMING_ENV } from "../src/timing.ts";
+import { expectEmulationFailure } from "../src/harness/emulation-guard.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "rl-timing-"));
 const kase = {
@@ -64,6 +65,50 @@ describe("phase timing", () => {
     expect(second?.lineBytes as number).toBeLessThan((first?.lineBytes as number) - 100_000);
     expect(second?.jvm).toMatchObject({ cacheHits: 2 });
     expect((second?.jvm as Record<string, unknown>).cacheMisses).toBeUndefined();
+  }, 60_000);
+
+  it.each([
+    ["a throwing subject", { source: 'var t = Date.now(); while (Date.now() - t < 40) {} throw new Error("x");' }, "runtime_error", ["subjectCompileMs", "subjectExecMs"]],
+    ["a timed-out subject", { source: "for (;;) {}", timeoutMs: 40 }, "timeout", ["subjectCompileMs", "subjectExecMs"]],
+    ["a subject that does not compile", { source: "var = ;" }, "compile_error", ["subjectCompileMs"]],
+    ["a throwing preamble", { preamble: 'var t = Date.now(); while (Date.now() - t < 40) {} throw new Error("p");', source: "1" }, "runtime_error", ["preambleCompileMs", "preambleExecMs"]],
+  ])("records the phases of %s, not only of successful ones", async (_name, job, outcome, phases) => {
+    const file = join(dir, `fail-${String(outcome)}-${phases.length}.jsonl`);
+    rmSync(file, { force: true });
+    process.env[TIMING_ENV] = file;
+    const runner = await RhinoRunner.spawn({ lane: "host" });
+    try {
+      if (outcome === "timeout") expectEmulationFailure("Rhino harness timeout");
+      const response = await runner.eval({ classAllowList: [], ...job });
+      expect(response.outcome).toBe(outcome);
+    } finally {
+      await runner.close();
+    }
+    const jvm = rows(file).find((r) => r.type === "job")?.jvm as Record<string, number>;
+    for (const phase of phases) expect(jvm[phase], phase).toBeGreaterThanOrEqual(0);
+    // The 40 ms busy-wait lands in exec (a timeout counts from job start, so its exec share varies).
+    if (outcome === "runtime_error") expect(jvm[phases[1] as string]).toBeGreaterThanOrEqual(30);
+  }, 60_000);
+
+  it("records a library's compile time when its syntax error is caught", async () => {
+    const file = join(dir, "lib-syntax.jsonl");
+    process.env[TIMING_ENV] = file;
+    const runner = await RhinoRunner.spawn({ lane: "host" });
+    try {
+      const result = await runCase(runner, {
+        name: "timed",
+        outcomes: ["true"],
+        script: 'try { require("lib-bad"); } catch (e) { action.goTo("true"); }',
+        given: { libraries: { "lib-bad": "exports.value = ;" } },
+        expect: { outcome: "true" },
+      });
+      expect(result.effects.outcome).toBe("true");
+    } finally {
+      await runner.close();
+    }
+    const jvm = rows(file).find((r) => r.type === "job")?.jvm as Record<string, number>;
+    expect(jvm).toMatchObject({ libraryLoads: 1 });
+    expect(jvm.libraryCompileMs).toBeGreaterThanOrEqual(0);
   }, 60_000);
 
   it("leaves the response unchanged and writes nothing when off", async () => {

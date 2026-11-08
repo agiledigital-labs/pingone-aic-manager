@@ -19,8 +19,11 @@
  *   `libraryCompileMs`/`libraryLoaderExecMs`/`libraryLoads`,
  *   `subjectCompileMs`/`subjectExecMs`, `harvestMs`, `hostWaitMs`/`hostCalls`,
  *   `cacheHits`/`cacheMisses` (compiled-script cache). Exec phases include any
- *   library module bodies and host-call waits that ran inside them; a phase
- *   that did not happen is absent.
+ *   library module bodies and host-call waits that ran inside them. A phase
+ *   that started is recorded even when it threw or timed out; one that did
+ *   not happen is absent. `harvestMs` covers journey-bridge jobs only: an
+ *   ordinary case appends its harvest call to the subject, so that cost is
+ *   inside `subjectExecMs`.
  *
  * Every worker appends to the same file; each line is one `appendFileSync`,
  * which Linux and macOS keep whole for lines this size.
