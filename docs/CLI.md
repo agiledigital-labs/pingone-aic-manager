@@ -607,6 +607,7 @@ aic managed field edit custom_widget.code --searchable true [--enum value[:Title
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
+aic managed hook delete custom_widget onCreate [--yes] [--json]
 aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--check] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--remove-mapping [--force]] [--yes] [--json]
 aic managed relationship verify custom_widget[.owner] [--sample 5] [--scan 200] [--probe [--force] [--yes]] [--json]
@@ -668,7 +669,7 @@ neither. It exits non-zero when anything differs; `--json` prints
 `{"object", "normalised", "differences"}`.
 
 `--json` on a write prints what it changed, never the whole `config/managed`
-document: `object create`/`object rename`, `field …` and `hook add` print the
+document: `object create`/`object rename`, `field …` and `hook add`/`hook delete` print the
 one object they wrote; `relationship set`/`relationship delete` print
 `{"changed": [objects]}`, every object whose definition changed (both ends of a
 pair); `object delete` prints `{"deleted": "<name>", "changed": [objects]}`,

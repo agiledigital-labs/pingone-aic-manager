@@ -207,6 +207,20 @@ pub enum HookCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Remove a lifecycle hook and its source from the object's definition.
+    /// Undo it from the TUI history overlay. A synced workspace copy is left
+    /// in place.
+    Delete {
+        object: String,
+        hook: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -743,25 +757,42 @@ async fn field(command: FieldCommand) -> Result<()> {
 }
 
 async fn hook(command: HookCommand) -> Result<()> {
-    let HookCommand::Add {
-        object,
-        hook,
-        tenant,
-        yes,
-        json,
-    } = command;
+    let (object, hook, tenant, yes, json, add) = match command {
+        HookCommand::Add {
+            object,
+            hook,
+            tenant,
+            yes,
+            json,
+        } => (object, hook, tenant, yes, json, true),
+        HookCommand::Delete {
+            object,
+            hook,
+            tenant,
+            yes,
+            json,
+        } => (object, hook, tenant, yes, json, false),
+    };
     let tenant = tenant_for(tenant)?;
     let ok = ensure_prod_confirmed(&tenant, yes)?;
     let mut doc = api::get_managed(&tenant).await?;
     let previous = api::object_named(&doc, &object)?.clone();
-    let updated = ops::apply_add_hook(&previous, &object, &hook).map_err(crate::Error::Config)?;
+    let updated = if add {
+        ops::apply_add_hook(&previous, &object, &hook)
+    } else {
+        ops::apply_delete_hook(&previous, &object, &hook)
+    }
+    .map_err(crate::Error::Config)?;
     if updated == previous {
         return Err(crate::Error::Config(format!(
             "hook '{hook}' already exists on {object}"
         )));
     }
     replace_object_write(&ok, &mut doc, &object, &previous, updated.clone()).await?;
-    confirmation(&format!("hook {object}.{hook} added"));
+    confirmation(&format!(
+        "hook {object}.{hook} {}",
+        if add { "added" } else { "deleted" }
+    ));
     output(json, &updated)
 }
 
