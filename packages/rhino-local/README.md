@@ -987,9 +987,12 @@ from the query completion. Resource routing, missing-resource behavior, query
 validation, and storage policy belong to `onCall`; the experimental IDM core
 below provides that handler. A job without `onCall` fails with a protocol diagnostic. A handler must return a JSON value (use `null` for no result).
 Throw `HostCallError` to preserve a CREST class, message, numeric code, reason and detail;
-the script receives a Rhino `JavaException` with `javaException.getCode()`,
-`getReason()`, `getDetail()` and `getClass().getName()` (the CREST class you
-named), including in joined shell `spawn` threads. `String(getDetail())` is
+the script receives a Rhino `JavaException` whose `message` names the CREST
+class you named, with `javaException.getCode()`, `getReason()` and
+`getDetail()`, including in joined shell `spawn` threads. Reading
+`javaException.getClass` faults, although AIC's `getClass().getName()` is
+measured: the emulator cannot reproduce the Java method and class faithfully,
+so match on `e.message` instead. `String(getDetail())` is
 CREST's one-line JsonValue form, and a `null` detail is a Java null; any other
 member of `javaException` (read, tested with `in`, or enumerated; `in` is `true`
 for the members above), and a detail spelling no probe captured (an empty

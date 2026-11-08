@@ -592,13 +592,17 @@ wherever both ran.
   `String(e.javaException.getDetail())` is CREST's **one-line** JsonValue
   form, `{ "result": false, "failedPolicyRequirements": [ { "policyRequirements": [ { "policyRequirement": "NOT_NULL" } ], "property": "zready" } ] }`
   (probe-pol and probe-def, 2026-11-08). The rhino-local IDM emulator
-  reproduces exactly those four reads — `getCode()`, `getReason()`,
-  `getClass().getName()` and `String(getDetail())` — and faults every other
-  member of `e.javaException` as `idm-exception/unmeasured`, because its
-  exception is not a CREST class and would otherwise answer for the wrong one.
-  Membership follows the same gate: `name in e.javaException` is `true` for
-  those members (and `getClass`, and `getName` on its result) and faults for
-  any other name; `Object.keys`, `for…in` and `JSON.stringify` fault, since no
+  reproduces three of those reads — `getCode()`, `getReason()` and
+  `String(getDetail())` — and faults every other member of `e.javaException`
+  as `idm-exception/unmeasured`, because its exception is not a CREST class
+  and would otherwise answer for the wrong one. That includes **reading
+  `getClass`**, although `getClass().getName()` is measured: a stand-in for
+  the Java method and class could not be made indistinguishable from Rhino's
+  native ones (function names, source text, arity and receiver checks,
+  identity, the Java string returned, engine diagnostics; three review rounds,
+  sol-e15ab r4–r6). Match on `e.message`, which names the class. Membership
+  follows the same gate: `name in e.javaException` is `true` for those members
+  and for `getClass`, and faults for any other name; `Object.keys`, `for…in` and `JSON.stringify` fault, since no
   probe listed AIC's members. `Object.getOwnPropertyNames` is Rhino's
   `TypeError` for any Java object, before the object is asked (assumed the same
   on AIC's Rhino; not probed).
