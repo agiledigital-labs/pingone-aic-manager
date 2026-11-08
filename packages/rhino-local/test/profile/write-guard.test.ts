@@ -944,7 +944,7 @@ describe("on the real JVM the fault fails the run and is tallied", () => {
     await expect(runCase(runner, caseWith({ script: caught, expect: expectAll }), { profile: normaliseManagedConfig(boxed(box), META) }))
       .rejects.toThrow(new RegExp(amId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     const idm = await new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: boxed(box) } as never), runner)
-      .request({ method: "POST", path: "managed/gizmo", query: { _action: "create" }, body: { box: value } });
+      .request({ method: "POST", path: "managed/gizmo", query: { _action: "create" }, body: { box: value } as never });
     expect(idm.status).toBe(501);
     expect(idm.emulation?.missing).toContain(idmMissing);
   });
