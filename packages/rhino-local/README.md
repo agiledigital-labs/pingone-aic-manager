@@ -780,8 +780,8 @@ process, where the Vitest registration does not reach.
   `policies`, `conditionalPolicies` and `fallbackPolicies`, and the **names**
   of its script hooks (object-level `onCreate`, `postUpdate`, …, and
   property-level `onStore`, …), never their source or conditions. It carries
-  `profileVersion: 3`: version 3 keeps a `type` list naming two concrete types
-  (as `type: "any"` plus `types`) and the `properties` nested under a property,
+  `profileVersion: 3`: version 3 keeps any `type` list other than the exact
+  `["<type>", "null"]` pair (as `type: "any"` plus `types`) and the `properties` nested under a property,
   so a default the earlier versions erased is still judged.
 
 **Writes on types with hooks or policies (E15b).** The script tester's
@@ -807,7 +807,7 @@ cannot say a type declares nothing, nor describe every default, so every write u
 profile cannot be re-pulled: add `hooks` to each type (`[]` for none) and
 `noRequiredArray: true` to a type whose schema has no `required` array, add
 `default`, `conditionalPolicies` and `fallbackPolicies` to each property the
-tenant gives them, record a `type` list naming two concrete types as
+tenant gives them, record any `type` list other than the exact `["<type>", "null"]` pair as
 `"type": "any"` with the list in `types`, and copy any `properties` nested under
 a property, then set `"profileVersion": 3`. A type's
 defaults are applied on create (`default: null` stores `null`, and `[]` on an
@@ -821,8 +821,8 @@ any numeric default on `integer` — AIC calls every JSON number `"number"`, so
 resource faults, reads included, as
 `openidm-managed-invalid-default/<type>.<property>`: AIC stores such a config
 but keeps serving an earlier one for every type, which the profile does not
-describe. A default no probe covered — on a `type` list naming two concrete
-types, or nested under `items` or `properties` — faults the same way as
+describe. A default no probe covered — on any `type` list other than the exact
+`["<type>", "null"]` pair, or nested under `items` or `properties` — faults the same way as
 `openidm-managed-unmeasured-default/<type>.<property>`. A `null` default is
 valid on every type. The IDM emulator refuses the same declarations with the same rule. A profile must key each type by its
 own `name`: one whose `objects` key and `name` disagree is refused when read
@@ -991,7 +991,8 @@ the script receives a Rhino `JavaException` with `javaException.getCode()`,
 `getReason()`, `getDetail()` and `getClass().getName()` (the CREST class you
 named), including in joined shell `spawn` threads. `String(getDetail())` is
 CREST's one-line JsonValue form, and a `null` detail is a Java null; any other
-member of `javaException`, and a detail spelling no probe captured (an empty
+member of `javaException` (read, tested with `in`, or enumerated; `in` is `true`
+for the members above), and a detail spelling no probe captured (an empty
 object or array, a string needing an escape), faults
 `idm-exception/unmeasured`, because the exception is not the CREST class it names. Ordinary handler errors
 are internal emulation failures; use an explicit CREST HostCallError for a
