@@ -29,9 +29,11 @@ import org.mozilla.javascript.Scriptable;
  *
  * <p><b>Known limit, not gated</b> (sol-e15ab r7): this gate is on member lookup. A native Java
  * method borrowed from another object ({@code new java.lang.Object().getClass.call(e.javaException)},
- * {@code Function.prototype.call}, {@code java.lang.reflect.Method.invoke}) has Rhino unwrap the
- * receiver itself, and so reaches the backing {@link HostCalls.HostException} and answers for it,
- * with no fault. Closing that would mean gating Rhino's receiver unwrapping while keeping the
+ * {@code Function.prototype.call}, {@code java.lang.reflect.Method.invoke}, a borrowed
+ * {@code Throwable.getMessage}) has Rhino unwrap the receiver itself, and passing the view as a
+ * Java argument ({@code Class.isInstance(e.javaException)}) unwraps it too; either way native code
+ * reaches the backing {@link HostCalls.HostException} and answers with its class, membership or
+ * method results, with no fault. Closing that would mean gating Rhino's receiver unwrapping while keeping the
  * admitted calls working, or withholding {@code javaException} altogether; neither is worth it for
  * a reflective idiom no observed script uses. docs/rhino-local-gaps.md records it.
  */
