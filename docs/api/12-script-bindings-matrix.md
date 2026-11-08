@@ -1048,6 +1048,18 @@ measured way to get one. A populated relationship array was not probed; that it
 is the same kind of list as the empty one is an inference from the query result.
 `forEach`'s callback arguments were not probed.
 
+`rhino-local` emulates the table on the next-gen engine (the legacy engine has
+no `openidm`): `result` and every has-many array a read projects are a list
+with `length`, `[i]`, `size()` and `get(i)`, no array methods, and the
+measured `get(n)` one past the end. `[].concat(v)` copies it into a JS array,
+and `JSON.stringify` writes a JSON array, as the relationship probe above
+measured. Every other call shape and `List` member, `forEach` included, faults
+`openidm-list-unmeasured`. `String(v)` was not probed but cannot fault, because
+Rhino calls it to word the `Cannot find function` error, so it answers a
+placeholder that names itself as unmeasured. Other array-valued fields of a
+record are still JS arrays; whether AIC hands those over as Java lists too is
+not measured.
+
 ### `openidm` failure `getDetail()` — next-gen (verified 2026-11-08)
 
 `fixtures/openidm-error-detail.script.js`, run through `run-journey.sh`, made
@@ -1101,7 +1113,8 @@ deleted all four. Per element of `roles`:
 `rhino-local` emulates the table for a seeded array of `_ref` objects. It
 derives `_refResourceCollection`, `_refResourceId` and `_id` from `_ref` when
 the seed leaves them out, and fills `_rev` and `_refResourceRev` from each
-other. It keeps the seeded order and returns a JS array. Three cases are
+other. It keeps the seeded order and returns the same emulated Java list as a
+query's `result` (next section). Three cases are
 unmeasured and fault: `parent/*` on an element seeded as a bare reference
 (`openidm-fields-unresolved-ref`), a path below an object field of an element,
 below an envelope key (`parent/*/_refProperties/_id`) or more than one segment
