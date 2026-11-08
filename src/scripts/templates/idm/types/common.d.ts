@@ -152,8 +152,12 @@ type ManagedField<T> =
 // requires `remainingPagedResults` on a query handler's return value (see
 // `IdmQueryResult` in endpoint.d.ts) but never sent it on a script-side query
 // result in any observed response (verified 2026-08-17), hence optional here.
+// The list type of a query result and a has-many read. A JS array here: the
+// AM workspace's copy is a measured Java list, IDM's is not measured.
+type ReadList<T> = T[];
+
 interface QueryResult<T> {
-  result: T[];
+  result: ReadList<T>;
   resultCount: number;
   pagedResultsCookie: string | null;
   totalPagedResultsPolicy: string;
@@ -235,9 +239,16 @@ type MetaMemberOf<F extends string> = [
 // multi-valued as an array — `[]` when unset, never `null`. Typing a
 // single-valued one as always present cost a live 500 on the first request
 // against a user with no manager, which every gate had passed.
+// A multi-valued one is a `ReadList`: on AM a Java list (measured 2026-11-08).
 type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]
-  ? RelationshipExpansion[]
+  ? ReadList<RelationshipExpansion>
   : RelationshipExpansion | null;
+
+// A selected has-many relationship (an array of references) is a `ReadList`
+// too; every other value keeps its declared type.
+type ReadValue<V> = V extends readonly { _ref: string }[]
+  ? ReadList<V[number]>
+  : V;
 
 /**
  * A requested member as the store actually returns it: the key is ALWAYS
@@ -251,10 +262,17 @@ type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]
  * key might be missing, and it kept the value non-null, which is the shape that
  * cost a live 500 on `manager`.
  */
+// `*` returns every member as stored, except that a relationship also named
+// on its own is the same `ReadList` it is without `*`. Homomorphic, so an
+// optional member stays optional: `*` does not turn absent into null.
+type WildcardMembers<T, F extends string> = {
+  [K in keyof T]: K extends F ? ReadValue<T[K]> : T[K];
+};
+
 type SelectedMembers<T, F extends string> = {
   [K in Extract<F, keyof T>]-?: undefined extends T[K]
-    ? NonNullable<T[K]> | null
-    : T[K];
+    ? ReadValue<NonNullable<T[K]>> | null
+    : ReadValue<T[K]>;
 };
 
 // The record shape a `fields` selector actually yields.
@@ -271,7 +289,7 @@ type SelectedMembers<T, F extends string> = {
 type Projected<T, F extends string> = string extends F
   ? StoredRecord<T>
   : StoredRecord<
-      ("*" extends F ? T : SelectedMembers<T, F>) & {
+      ("*" extends F ? WildcardMembers<T, F> : SelectedMembers<T, F>) & {
         [K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;
       } & MetaMemberOf<F>
     >;

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 101;
+pub const TEMPLATES_VERSION: u32 = 102;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -992,8 +992,8 @@ mod tests {
     #[test]
     fn every_template_edit_is_covered_by_a_version_bump() {
         const TEMPLATE_RELEASE: (u32, &str) = (
-            101,
-            "3dd53d03393271b741222ec61b753ab489ee94b497970839ec6d4b6ead421b52",
+            102,
+            "f3eca5fc24f9c76836c5735a58cf4ade0f99e246ab66388492dcd7d7740eb987",
         );
         const LOCAL_ARTIFACTS: &[&str] = &[
             "node_modules",
@@ -1163,6 +1163,8 @@ mod tests {
             "MetaMemberOf",
             "ExpansionOf",
             "SelectedMembers",
+            "WildcardMembers",
+            "ReadValue",
             "Projected",
         ] {
             assert_eq!(
@@ -1663,13 +1665,18 @@ mod tests {
             "type Projected<T, F extends string> = string extends F",
             "? StoredRecord<T>",
             ": StoredRecord<",
-            "(\"*\" extends F ? T : SelectedMembers<T, F>) & {",
+            "(\"*\" extends F ? WildcardMembers<T, F> : SelectedMembers<T, F>) & {",
+            "type WildcardMembers<T, F extends string> = {",
+            "[K in keyof T]: K extends F ? ReadValue<T[K]> : T[K];",
             "type SelectedMembers<T, F extends string> = {",
             "[K in Extract<F, keyof T>]-?: undefined extends T[K]",
-            "? NonNullable<T[K]> | null",
+            "? ReadValue<NonNullable<T[K]>> | null",
+            ": ReadValue<T[K]>;",
+            "type ReadValue<V> = V extends readonly { _ref: string }[]",
+            "? ReadList<V[number]>",
             "[K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;",
             "type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]",
-            "? RelationshipExpansion[]",
+            "? ReadList<RelationshipExpansion>",
             ": RelationshipExpansion | null;",
             "} & MetaMemberOf<F>",
             "type PathParentOf<F extends string> = F extends `${infer P}/${string}`",
