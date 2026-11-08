@@ -1039,6 +1039,16 @@ links. An empty collection is therefore not evidence the record exists; `aic`
 reads the record itself before treating an empty far end as "does not list
 it".
 
+### Nullable, object and array-of-object property declarations (verified 2026-11-09)
+
+A whole-document `PUT config/managed` that added, to a fresh custom object,
+`{"type": ["string", "null"]}`, `{"type": "object"}` and
+`{"type": "array", "items": {"type": "object"}}` was accepted, and the re-read
+returned each declaration verbatim, with `schema.order` in the order written
+(a key inserted mid-order stayed there). This is what `aic managed field add
+--nullable`, `--type object`, `--type object[]` and `--after` write. Record
+writes against those declarations were **not** exercised.
+
 ### Object-type rename orphans records (verified 2026-07-27)
 
 Renaming a custom object type by changing its `objects[].name` (X → Y) and

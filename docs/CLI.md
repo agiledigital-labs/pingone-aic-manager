@@ -602,7 +602,7 @@ aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --p
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
 aic managed object rename custom_widget custom_gadget [--force] [--yes] [--json]
 aic managed object delete custom_gadget [--force] [--yes] [--json]
-aic managed field add custom_widget.code --type string [--title T] [--required false] [--enum value[:Title] ...] [--default VALUE] [--yes] [--json]
+aic managed field add custom_widget.code --type string|boolean|number|string[]|object|object[] [--nullable] [--after KEY] [--title T] [--required false] [--enum value[:Title] ...] [--default VALUE] [--yes] [--json]
 aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--default VALUE | --clear-default] [--force] [--yes] [--json]
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]

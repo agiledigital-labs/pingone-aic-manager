@@ -1380,6 +1380,12 @@ fn scalar_type_for_property(property: &Value) -> ScalarFieldType {
         && property.pointer("/items/type").and_then(Value::as_str) == Some("string")
     {
         ScalarFieldType::StringArray
+    } else if kinds.contains(&"array")
+        && property.pointer("/items/type").and_then(Value::as_str) == Some("object")
+    {
+        ScalarFieldType::ObjectArray
+    } else if kinds.contains(&"object") {
+        ScalarFieldType::Object
     } else {
         ScalarFieldType::String
     }
