@@ -46,6 +46,8 @@ var __rhinoLocal = {
   identityGenerations: {},
   libraries: {},
   requireCache: {},
+  lists: [],
+  listHooks: null,
 };
 
 var sharedState;
@@ -846,6 +848,27 @@ var __rhinoLocalListKinds = {
 // and no Symbol.isConcatSpreadable. `row.list === value` refuses an object
 // that merely inherits or copied the key.
 var __rhinoLocalListKey = "__rhinoLocalList";
+// `__rhinoLocal.lists` holds every list made in this run, for JSON.stringify
+// under an array replacer (below); only that call walks it, once per call.
+// While such a call is running, `__rhinoLocal.listHooks` holds the lists it
+// hooked, and a list made meanwhile (a getter that queries) is hooked as it is
+// made. Both live on `__rhinoLocal`, which `__rhinoLocalSeed` resets per case:
+// on the JVM the runtime's top-level bindings are shared by every case and a
+// case cannot assign them.
+function __rhinoLocalHookList(list) {
+  if (Object.prototype.hasOwnProperty.call(list, "toJSON")) {
+    return; // the author's own wins, as native would have it
+  }
+  try {
+    Object.defineProperty(list, "toJSON", { value: __rhinoLocalListToJSON, writable: true, enumerable: false, configurable: true });
+  } catch (e) {
+    return; // a frozen list keeps no hook; nothing makes one on AIC either
+  }
+  __rhinoLocal.listHooks.push(list);
+}
+function __rhinoLocalListToJSON() {
+  return __rhinoLocalJsonList(this);
+}
 
 function __rhinoLocalListRow(value) {
   if (value === null || typeof value !== "object") {
@@ -898,21 +921,22 @@ function __rhinoLocalListUnmeasured(kind, call) {
 })();
 
 // JSON.stringify with the lists converted where serialisation reaches them.
-// Native stringify does all the walking: the wrapper passes a replacer that
-// runs the author's replacer first, then turns an openidm list into an array
-// of its elements and faults on a request list (its serialisation was never
+// Native stringify does all the walking. With no replacer or a function
+// replacer, the wrapper passes a replacer that runs the author's first (with
+// the real holder as `this`), then turns an openidm list into an array of its
+// elements and faults on a request list (its serialisation was never
 // measured). So `toJSON`, getters and replacer results are seen exactly once
-// and in native order, a value a replacer drops is never judged, and the
-// author's replacer still gets the real holder as `this`.
+// and in native order, and a value a replacer drops is never judged.
 //
 // An array replacer (a property list) cannot ride alongside a function, so it
-// is applied here as native does it: each value native would write as an object
-// (not a boxed primitive, array, Java value or list, or a RegExp where Rhino
-// drops it) becomes one whose keys are the list's, in the list's order, each
-// read with an ordinary [[Get]] (inherited included) at the moment native
-// serialisation reaches it. A per-call
-// cache returns the same substitute for the same object, so a cycle is still
-// the native cyclic-value TypeError rather than a stack overflow.
+// goes to native unchanged, and native applies it to every value exactly as it
+// would anyway. The lists are reached instead through `toJSON`, which native
+// asks of every object value: for the length of the call, each list made in
+// this run carries a hidden own `toJSON` that does the same conversion or
+// fault, removed afterwards. Not covered: a list returned by an author's own
+// `toJSON` under a property list. Native asks `toJSON` once per value, so that
+// list is written as an object of the listed keys, unfaulted; catching it would
+// mean reading the property list a second time, which a getter in it could see.
 function __rhinoLocalJsonList(value) {
   var row = __rhinoLocalListRow(value);
   if (row === null) {
@@ -925,102 +949,41 @@ function __rhinoLocalJsonList(value) {
   return row.items.slice();
 }
 
-function __rhinoLocalPropertyList(replacer) {
-  var list = [];
-  var i;
-  var item;
-  var tag;
-  // Native reads the length once, so a getter that grows the array adds nothing.
-  var length = replacer.length;
-  for (i = 0; i < length; i += 1) {
-    item = replacer[i];
-    tag = item !== null && typeof item === "object" ? Object.prototype.toString.call(item) : null;
-    if (typeof item === "number" || tag === "[object Number]" || tag === "[object String]") {
-      item = String(item);
-    }
-    if (typeof item === "string" && list.indexOf(item) === -1) {
-      list.push(item);
-    }
-  }
-  return list;
-}
-
 (function () {
   "use strict";
   var original = JSON.stringify;
-  var tagOf = Object.prototype.toString;
-  // Rhino serialises nothing for a RegExp (it is callable there); V8 writes an object.
-  var regexpDropped = original.call(JSON, { r: /x/ }) === "{}";
-  // V8 enumerates integer keys in ascending order whatever the insertion
-  // order, so a property list's order needs a Proxy there; Rhino keeps
-  // insertion order and has no Proxy.
-  var sortsIndexKeys = Object.keys({ 2: 1, 1: 1 })[0] === "1";
-  // Whether native would serialise v as an object, so that a property list
-  // applies to it. Boxed primitives are unboxed first; a Java object other than
-  // a map is written as its value and a Java list as an array.
-  var selectable = function (v) {
-    if (v === null || typeof v !== "object" || Array.isArray(v)) {
-      return false;
+  // A nested call made while one is running finds the hooks already in place.
+  var withListsSerialisable = function (run) {
+    if (__rhinoLocal.listHooks !== null) {
+      return run();
     }
-    var tag = tagOf.call(v);
-    return tag !== "[object Number]" && tag !== "[object String]" && tag !== "[object Boolean]" &&
-      tag !== "[object JavaObject]" && tag !== "[object JavaList]" &&
-      !(regexpDropped && tag === "[object RegExp]");
+    var hooked = [];
+    var lists = __rhinoLocal.lists.slice();
+    var result;
+    var i;
+    __rhinoLocal.listHooks = hooked;
+    try {
+      for (i = 0; i < lists.length; i += 1) {
+        __rhinoLocalHookList(lists[i]);
+      }
+      result = run();
+    } finally {
+      __rhinoLocal.listHooks = null;
+      for (i = 0; i < hooked.length; i += 1) {
+        delete hooked[i].toJSON;
+      }
+    }
+    return result;
   };
   __rhinoLocalHide(JSON, "stringify", function stringify(value, replacer, space) {
+    if (Array.isArray(replacer)) {
+      return withListsSerialisable(function () {
+        return original.call(JSON, value, replacer, space);
+      });
+    }
     var author = typeof replacer === "function" ? replacer : null;
-    var keys = author === null && Array.isArray(replacer) ? __rhinoLocalPropertyList(replacer) : null;
-    var seen = [];
-    var made = [];
-    // Each key is read when native serialisation reaches it, as with a native
-    // property list, so getters on sibling keys run in the same interleaving;
-    // an undefined read is omitted natively, as a missing key is.
-    var read = function (v, key) {
-      return function () {
-        return v[key];
-      };
-    };
-    var substitute = function (v) {
-      var out;
-      var i;
-      if (sortsIndexKeys) {
-        // Reached only where integer keys sort, which is V8 (node:vm), never
-        // AM's Rhino, where Proxy is absent and insertion order already holds.
-        // eslint-disable-next-line no-restricted-globals
-        return new Proxy({}, {
-          ownKeys: function () {
-            return keys.slice();
-          },
-          getOwnPropertyDescriptor: function (target, key) {
-            return keys.indexOf(key) === -1 ? undefined : { value: undefined, writable: true, enumerable: true, configurable: true };
-          },
-          get: function (target, key) {
-            return v[key];
-          },
-        });
-      }
-      out = {};
-      for (i = 0; i < keys.length; i += 1) {
-        Object.defineProperty(out, keys[i], { get: read(v, keys[i]), enumerable: true, configurable: true });
-      }
-      return out;
-    };
-    var select = function (v) {
-      if (!selectable(v)) {
-        return v;
-      }
-      var at = seen.indexOf(v);
-      if (at !== -1) {
-        return made[at];
-      }
-      var out = substitute(v);
-      seen.push(v);
-      made.push(out);
-      return out;
-    };
     return original.call(JSON, value, function (key, v) {
-      var reached = __rhinoLocalJsonList(author === null ? v : author.call(this, key, v));
-      return keys === null ? reached : select(reached);
+      return __rhinoLocalJsonList(author === null ? v : author.call(this, key, v));
     }, space);
   });
 })();
@@ -1118,6 +1081,10 @@ function __rhinoLocalListView(items, kind) {
     throw __rhinoLocalShutterError("java.lang.Class");
   });
   __rhinoLocalHide(list, __rhinoLocalListKey, { list: list, items: items.slice(), kind: kind });
+  __rhinoLocal.lists.push(list);
+  if (__rhinoLocal.listHooks !== null) {
+    __rhinoLocalHookList(list);
+  }
   return list;
 }
 
@@ -5131,6 +5098,8 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.generatedId = 0;
   __rhinoLocal.outcome = null;
   __rhinoLocal.callbacks = [];
+  __rhinoLocal.lists = [];
+  __rhinoLocal.listHooks = null;
   __rhinoLocal.openidm = [];
   __rhinoLocal.http = [];
   __rhinoLocal.logs = [];
