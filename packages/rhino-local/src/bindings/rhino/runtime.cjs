@@ -851,8 +851,17 @@ function __rhinoLocalListRow(value) {
   if (value === null || typeof value !== "object") {
     return null;
   }
-  var row = value[__rhinoLocalListKey];
-  return row !== undefined && row !== null && row.list === value ? row : null;
+  // An own data property only, read through its descriptor, so an author's
+  // getter of this name never runs and an inherited one never counts. A Java
+  // object is not an ES5 object to the descriptor read, and is not a list.
+  var own;
+  try {
+    own = Object.getOwnPropertyDescriptor(value, __rhinoLocalListKey);
+  } catch (e) {
+    return null;
+  }
+  var row = own !== undefined && "value" in own ? own.value : null;
+  return row !== null && typeof row === "object" && row.list === value ? row : null;
 }
 
 function __rhinoLocalListUnmeasured(kind, call) {
@@ -888,73 +897,87 @@ function __rhinoLocalListUnmeasured(kind, call) {
   __rhinoLocalHide(Array.prototype, "concat", concat);
 })();
 
-// What JSON.stringify serialises: `value` itself when no list view is
-// reachable, otherwise a copy of just the containers on the way to one, with
-// each openidm list as a JS array of its elements. A request list faults: its
-// serialisation was never measured. Objects with their own toJSON and
-// anything that is not a plain object or array are left to the native
-// stringify, and so is a cycle, which it reports, and so is a getter.
-function __rhinoLocalJsonReady(value, stack) {
+// JSON.stringify with the lists converted where serialisation reaches them.
+// Native stringify does all the walking: the wrapper passes a replacer that
+// runs the author's replacer first, then turns an openidm list into an array
+// of its elements and faults on a request list (its serialisation was never
+// measured). So `toJSON`, getters and replacer results are seen exactly once
+// and in native order, a value a replacer drops is never judged, and the
+// author's replacer still gets the real holder as `this`.
+//
+// An array replacer (a property list) cannot ride alongside a function, so it
+// is applied here as native does it: each non-array object becomes one whose
+// keys are the list's, in the list's order, each read with an ordinary [[Get]]
+// (inherited included) at the moment native serialisation reaches it. A per-call
+// cache returns the same substitute for the same object, so a cycle is still
+// the native cyclic-value TypeError rather than a stack overflow.
+function __rhinoLocalJsonList(value) {
   var row = __rhinoLocalListRow(value);
-  if (row !== null) {
-    if (row.kind.serializeId !== null) {
-      throw __rhinoLocalFault(row.kind.serializeId,
-        "rhino-local: JSON.stringify of " + row.kind.noun + " is unmeasured (AIC hands over a Java list); " + row.kind.serializeHint);
-    }
-    return __rhinoLocalJsonReady(row.items.slice(), stack);
-  }
-  if (value === null || typeof value !== "object" || typeof value.toJSON === "function") {
+  if (row === null) {
     return value;
   }
-  var isArray = Array.isArray(value);
-  if (!isArray && Object.prototype.toString.call(value) !== "[object Object]") {
-    return value;
+  if (row.kind.serializeId !== null) {
+    throw __rhinoLocalFault(row.kind.serializeId,
+      "rhino-local: JSON.stringify of " + row.kind.noun + " is unmeasured (AIC hands over a Java list); " + row.kind.serializeHint);
   }
-  if (stack.indexOf(value) !== -1) {
-    return value;
-  }
-  stack.push(value);
-  var copy = null;
-  var keys = isArray ? null : Object.keys(value);
-  var n = isArray ? value.length : keys.length;
-  var i;
-  var key;
-  var ready;
-  var own;
-  for (i = 0; i < n; i += 1) {
-    key = isArray ? i : keys[i];
-    own = Object.getOwnPropertyDescriptor(value, key);
-    // An accessor is left to the native stringify, so a getter runs once, as
-    // it would without this wrapper; a list behind one is not converted.
-    if (own === undefined || !("value" in own)) {
-      continue;
-    }
-    ready = __rhinoLocalJsonReady(own.value, stack);
-    if (ready !== own.value) {
-      if (copy === null) {
-        copy = isArray ? value.slice() : __rhinoLocalShallowCopy(value, keys);
-      }
-      copy[key] = ready;
-    }
-  }
-  stack.pop();
-  return copy === null ? value : copy;
+  return row.items.slice();
 }
 
-function __rhinoLocalShallowCopy(value, keys) {
-  var copy = {};
+function __rhinoLocalPropertyList(replacer) {
+  var list = [];
   var i;
-  for (i = 0; i < keys.length; i += 1) {
-    copy[keys[i]] = value[keys[i]];
+  var item;
+  var tag;
+  for (i = 0; i < replacer.length; i += 1) {
+    item = replacer[i];
+    tag = item !== null && typeof item === "object" ? Object.prototype.toString.call(item) : null;
+    if (typeof item === "number" || tag === "[object Number]" || tag === "[object String]") {
+      item = String(item);
+    }
+    if (typeof item === "string" && list.indexOf(item) === -1) {
+      list.push(item);
+    }
   }
-  return copy;
+  return list;
 }
 
 (function () {
   "use strict";
   var original = JSON.stringify;
   __rhinoLocalHide(JSON, "stringify", function stringify(value, replacer, space) {
-    return original.call(JSON, __rhinoLocalJsonReady(value, []), replacer, space);
+    var author = typeof replacer === "function" ? replacer : null;
+    var keys = author === null && Array.isArray(replacer) ? __rhinoLocalPropertyList(replacer) : null;
+    var seen = [];
+    var made = [];
+    // Each key is read when native serialisation reaches it, as with a native
+    // property list, so getters on sibling keys run in the same interleaving;
+    // an undefined read is omitted natively, as a missing key is.
+    var read = function (v, key) {
+      return function () {
+        return v[key];
+      };
+    };
+    var select = function (v) {
+      if (v === null || typeof v !== "object" || Array.isArray(v)) {
+        return v;
+      }
+      var at = seen.indexOf(v);
+      if (at !== -1) {
+        return made[at];
+      }
+      var out = {};
+      var i;
+      seen.push(v);
+      made.push(out);
+      for (i = 0; i < keys.length; i += 1) {
+        Object.defineProperty(out, keys[i], { get: read(v, keys[i]), enumerable: true, configurable: true });
+      }
+      return out;
+    };
+    return original.call(JSON, value, function (key, v) {
+      var reached = __rhinoLocalJsonList(author === null ? v : author.call(this, key, v));
+      return keys === null ? reached : select(reached);
+    }, space);
   });
 })();
 
