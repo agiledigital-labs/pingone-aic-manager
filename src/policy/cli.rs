@@ -234,7 +234,7 @@ pub struct EvalArgs {
     pub subject_jwt: Option<String>,
     /// Read the subject token from a file, keeping it out of shell history.
     #[arg(long = "subject-jwt-file", conflicts_with = "subject_sso")]
-    pub subject_jwt_file: Option<PathBuf>,
+    pub subject_jwt_file: Option<crate::config::UserPath>,
     /// An AM SSO token. An OAuth2 access token here is a 400.
     #[arg(long = "subject-sso")]
     pub subject_sso: Option<String>,

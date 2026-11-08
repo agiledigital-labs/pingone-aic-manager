@@ -23,7 +23,7 @@ use crate::{Error, Result};
 pub struct CreateArgs {
     /// Seed the template from a JSON object (including `aic oauth pull` output).
     #[arg(long, value_name = "FILE")]
-    from: Option<PathBuf>,
+    from: Option<crate::config::UserPath>,
     /// coreOAuth2ClientConfig.clientName (one array value).
     #[arg(long)]
     name: Option<String>,
@@ -2267,7 +2267,7 @@ mod tests {
             panic!("expected oauth create");
         };
         assert_eq!(id, "test-client");
-        assert_eq!(options.from, Some(PathBuf::from("source.json")));
+        assert_eq!(options.from, Some("source.json".into()));
         assert_eq!(options.name.as_deref(), Some("Test client"));
         assert_eq!(options.scope, ["openid", "profile"]);
         assert!(options.secret_stdin);

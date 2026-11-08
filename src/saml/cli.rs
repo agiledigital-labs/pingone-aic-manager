@@ -29,7 +29,7 @@
 //!   both before and after. A refusal is the only honest answer.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use clap::Subcommand;
 
@@ -114,7 +114,7 @@ pub enum SamlCommand {
     /// collision refuses, and nothing deletes and re-imports.
     Import {
         /// Path to a SAML 2.0 `EntityDescriptor` or `EntitiesDescriptor` file.
-        file: PathBuf,
+        file: crate::config::UserPath,
         #[arg(long)]
         realm: Option<String>,
         #[arg(long)]
@@ -203,15 +203,15 @@ pub enum MetadataCommand {
     /// what sanitise would remove.
     Inspect {
         /// Path to a SAML 2.0 `EntityDescriptor` XML file.
-        file: PathBuf,
+        file: crate::config::UserPath,
     },
     /// Strip what an AM import cannot take, splicing the original buffer.
     Sanitise {
         /// Path to a SAML 2.0 `EntityDescriptor` XML file.
-        file: PathBuf,
+        file: crate::config::UserPath,
         /// Write the spliced XML here. Default: stdout.
         #[arg(long, value_name = "PATH")]
-        out: Option<PathBuf>,
+        out: Option<crate::config::UserPath>,
         /// Keep an enveloped signature that no longer matches the content.
         #[arg(long)]
         keep_signature: bool,
@@ -228,7 +228,7 @@ pub enum MetadataCommand {
         tenant: Option<String>,
         /// Write the XML here. Default: stdout.
         #[arg(long, value_name = "PATH")]
-        out: Option<PathBuf>,
+        out: Option<crate::config::UserPath>,
     },
 }
 
@@ -1051,8 +1051,8 @@ mod tests {
 
         run(SamlCommand::Metadata {
             command: MetadataCommand::Sanitise {
-                file: input,
-                out: Some(output.clone()),
+                file: input.into(),
+                out: Some(output.clone().into()),
                 keep_signature: false,
             },
         })
@@ -1074,7 +1074,7 @@ mod tests {
 
         run(SamlCommand::Metadata {
             command: MetadataCommand::Inspect {
-                file: input.clone(),
+                file: input.clone().into(),
             },
         })
         .await
@@ -1107,8 +1107,8 @@ mod tests {
 
         run(SamlCommand::Metadata {
             command: MetadataCommand::Sanitise {
-                file: input,
-                out: Some(output.clone()),
+                file: input.into(),
+                out: Some(output.clone().into()),
                 keep_signature: true,
             },
         })
@@ -1613,7 +1613,7 @@ mod tests {
             panic!("expected saml cert add");
         };
         assert_eq!(entity_id, "https://sp-a.example.com");
-        assert_eq!(cert_file, PathBuf::from("c.pem"));
+        assert_eq!(cert_file, std::path::PathBuf::from("c.pem"));
         assert_eq!(role, Some(Role::Idp));
         assert!(dry_run && force.operation());
 
@@ -1675,7 +1675,7 @@ mod tests {
         else {
             panic!("expected saml import");
         };
-        assert_eq!(file, PathBuf::from("peer.xml"));
+        assert_eq!(file, std::path::PathBuf::from("peer.xml"));
         assert_eq!(realm.as_deref(), Some("bravo"));
         assert!(dry_run && no_sanitise && yes && force.operation());
 
@@ -1730,7 +1730,7 @@ mod tests {
         .expect("write input");
 
         let error = run(SamlCommand::Import {
-            file: truncated,
+            file: truncated.into(),
             realm: Some("bravo".into()),
             tenant: Some("no-such-tenant".into()),
             dry_run: true,
@@ -1749,7 +1749,7 @@ mod tests {
         let missing = dir.join("nothing-here.xml");
         assert!(
             run(SamlCommand::Import {
-                file: missing,
+                file: missing.into(),
                 realm: Some("bravo".into()),
                 tenant: Some("no-such-tenant".into()),
                 dry_run: true,

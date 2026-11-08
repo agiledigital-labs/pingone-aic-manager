@@ -41,7 +41,7 @@ pub enum AccessCommand {
         #[arg(long)]
         tenant: Option<String>,
         #[arg(long)]
-        out: Option<PathBuf>,
+        out: Option<crate::config::UserPath>,
     },
     /// Append a rule. Because rules are OR-ed, this can only grant access.
     Add {
@@ -93,7 +93,7 @@ pub enum AccessCommand {
     },
     /// Replace config/access from a hand-edited document or backup.
     Apply {
-        file: PathBuf,
+        file: crate::config::UserPath,
         #[command(flatten)]
         write: AccessWriteArgs,
     },
@@ -154,7 +154,7 @@ pub async fn run(command: AccessCommand) -> Result<()> {
             tenant,
             json,
         } => show(&index_or_digest, tenant, json).await,
-        AccessCommand::Get { tenant, out } => get(tenant, out).await,
+        AccessCommand::Get { tenant, out } => get(tenant, out.map(Into::into)).await,
         AccessCommand::Add {
             pattern,
             roles,

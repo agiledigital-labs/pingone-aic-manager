@@ -38,7 +38,7 @@ pub enum SecretCommand {
         value: Option<String>,
         /// Read the value from a file (a single trailing newline is stripped).
         #[arg(long)]
-        value_file: Option<std::path::PathBuf>,
+        value_file: Option<crate::config::UserPath>,
         /// Read the value from stdin (a single trailing newline is stripped).
         #[arg(long)]
         value_stdin: bool,
@@ -88,7 +88,7 @@ pub enum SecretCommand {
         value: Option<String>,
         /// Read the value from a file (a single trailing newline is stripped).
         #[arg(long)]
-        value_file: Option<std::path::PathBuf>,
+        value_file: Option<crate::config::UserPath>,
         /// Read the value from stdin (a single trailing newline is stripped).
         #[arg(long)]
         value_stdin: bool,
@@ -296,7 +296,7 @@ async fn set_version_status(
 
 fn resolve_secret_value(
     value: Option<String>,
-    value_file: Option<std::path::PathBuf>,
+    value_file: Option<crate::config::UserPath>,
     value_stdin: bool,
     prompt: &str,
 ) -> Result<String> {

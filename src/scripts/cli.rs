@@ -174,7 +174,7 @@ pub enum ScriptCommand {
         #[arg(long, help = "AM scripting context or workspace folder slug")]
         context: Option<String>,
         #[arg(long, value_name = "FILE", help = "Read the source from FILE")]
-        from: Option<std::path::PathBuf>,
+        from: Option<crate::config::UserPath>,
         #[arg(long)]
         language: Option<String>,
         #[arg(long = "evaluator-version")]
@@ -213,7 +213,7 @@ pub enum ScriptCommand {
     /// tenant's, by name. Read-only; exits non-zero on any disagreement.
     Ids {
         /// A directory of exported config, e.g. an fr-config-manager tree.
-        dir: std::path::PathBuf,
+        dir: crate::config::UserPath,
         /// Realm for files whose path has no `realms/<realm>/` component.
         #[arg(long, default_value = "alpha")]
         realm: String,
@@ -300,7 +300,7 @@ pub enum ScriptCommand {
         /// Compare the tenant's copy of an exact ref against this file — a
         /// build artefact, say — by SHA-256. Records nothing.
         #[arg(long, value_name = "FILE")]
-        against: Option<std::path::PathBuf>,
+        against: Option<crate::config::UserPath>,
         /// Exit non-zero unless every selected script matches the tenant (in
         /// sync, or converged) and at least one was selected — or, with
         /// --against, unless the file matches the tenant's copy (the workspace
@@ -392,7 +392,7 @@ pub enum ScriptCommand {
             value_name = "REPO",
             conflicts_with_all = ["local_vs_snapshot", "snapshot_vs_remote"]
         )]
-        find_in_git: Option<std::path::PathBuf>,
+        find_in_git: Option<crate::config::UserPath>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
