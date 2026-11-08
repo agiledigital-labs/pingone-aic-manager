@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { cacheDir, ensureRhinoJar, ensureRunnerClasses } from "../../src/jvm.ts";
 import { JvmPool, PooledChild } from "../../src/pool.ts";
 import { RhinoRunner } from "../../src/runner.ts";
+import { TIMING_ENV } from "../../src/timing.ts";
 import { FRESH, LIBRARIES, PID_PROBE, POLLUTER, PROBE } from "./isolation-scripts.ts";
 
 
@@ -128,6 +129,52 @@ describe("case isolation across files on a pooled JVM", () => {
     });
     expect(second).toBe(first);
   });
+
+  it("the next file on the same JVM ships no source text; a replacement JVM gets it again", async () => {
+    // Shipped-source bookkeeping is per JVM, not per lease: the JVM's source
+    // registry outlives a lease, so a re-borrow names prelude and libraries
+    // by hash. A JVM the pool discarded starts empty, and must be sent them.
+    const scratch = mkdtempSync(join(tmpdir(), "rl-shipped-"));
+    const timing = join(scratch, "timing.jsonl");
+    const previous = process.env[TIMING_ENV];
+    process.env[TIMING_ENV] = timing;
+    const jobs = (): Array<Record<string, unknown>> =>
+      readFileSync(timing, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((row) => row.type === "job" && row.sourceName === "isolation");
+    try {
+      const pid = await file(async (runner) => {
+        await runScript(runner, PROBE);
+        return jvmPid(runner);
+      });
+      await file(async (runner) => {
+        await runScript(runner, PROBE);
+        expect(await jvmPid(runner)).toBe(pid);
+      });
+      expect(jobs().at(-1)).toMatchObject({ sourcesShipped: 0, sourceBytes: 0 });
+      expect(jobs().at(-1)?.resent).toBeUndefined();
+      // Retire this JVM: a lease closed with a job pending discards it.
+      const doomed = await RhinoRunner.borrow(pool.address, { lane: "host", shutdownWaitMs: 200 });
+      expectEmulationFailure(/(?:Error: )?rhino-local: lease closed with 1 job\(s\) still pending; JVM discarded/);
+      const pending = doomed.eval({ timeoutMs: 0, source: "for (;;) {}", classAllowList: [] }).catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await doomed.close();
+      await pending;
+      await file(async (runner) => {
+        const effects = await runScript(runner, PROBE);
+        expect(effects.outcome).toBe("done");
+        expect(await jvmPid(runner)).not.toBe(pid);
+      });
+      // Earlier tests may have warmed the first JVM, so only the fresh one is
+      // known to need everything: prelude plus every library the case loads.
+      // ...shipped up front, not recovered by the unknown-source resend.
+      expect(jobs().at(-1)?.sourcesShipped).toBe(1 + Object.keys(LIBRARIES).length);
+      expect(jobs().at(-1)?.resent).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env[TIMING_ENV];
+      else process.env[TIMING_ENV] = previous;
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it("a timed-out case does not poison the JVM for the next file", async () => {
     const first = await file(async (runner) => {

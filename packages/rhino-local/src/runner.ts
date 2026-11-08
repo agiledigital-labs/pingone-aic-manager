@@ -177,8 +177,13 @@ class JvmProcess {
   #closed = false;
   readonly #shutdownWaitMs: number;
   #spawnError: Error | undefined;
-  /** What this JVM has been sent; a separate set per process, so each lane gets every text once. */
-  readonly #sources = new ShippedSources();
+  /**
+   * What this JVM has been sent; a separate set per process, so each lane gets
+   * every text once. A pooled JVM's set outlives the lease: it is looked up by
+   * the pool's id for the JVM once the lease is ready, so the next file that
+   * borrows the same JVM does not send the prelude and libraries again.
+   */
+  #sources = new ShippedSources();
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   #exitWaiters: Array<() => void> = [];
   /** JVM phase timing by job id, taken off the response line before it is parsed. */
@@ -242,6 +247,7 @@ class JvmProcess {
         const env = parseEnvironment(this.#stderrBuf.slice(at, end));
         checkEnvironment(env, this.lane);
         this.environment = env;
+        if (this.#pooled?.jvmId !== undefined) this.#sources = shippedTo(this.#pooled.jvmId);
         recordTiming(this.#pooled === undefined
           ? { type: "spawn", lane: this.lane, pooled: false, spawnToReadyMs: since(this.#startedAt) }
           : { type: "borrow", lane: this.lane, readyMs: since(this.#startedAt) });
@@ -571,6 +577,25 @@ class ShippedSources {
     if (Object.keys(sources).length > 0) out.sources = sources;
     return out;
   }
+}
+
+const SHIPPED_LIMIT = 256;
+const shippedByJvm = new Map<string, ShippedSources>();
+
+/**
+ * The texts this process has sent the pooled JVM `id`, across leases. The JVM
+ * keeps every registered source for its life, and the pool never reuses an id
+ * for another process, so a remembered hash is still there; if one ever is
+ * not, the job's unknown-source reply forgets the set and resends.
+ */
+function shippedTo(id: string): ShippedSources {
+  let sources = shippedByJvm.get(id);
+  if (sources === undefined) {
+    if (shippedByJvm.size >= SHIPPED_LIMIT) shippedByJvm.delete(shippedByJvm.keys().next().value as string);
+    sources = new ShippedSources();
+    shippedByJvm.set(id, sources);
+  }
+  return sources;
 }
 
 function unknownSource(response: JobResponse): boolean {
