@@ -84,9 +84,13 @@ public final class HostCalls {
       line.put("args", args);
       Runner.write(line);
     }
+    Timing.count("hostCalls");
+    long waitStarted = Timing.now();
     try {
       long remaining = factory.remainingMillis();
-      Map<String, Object> reply = remaining == 0 ? future.get() : future.get(remaining, TimeUnit.MILLISECONDS);
+      Map<String, Object> reply;
+      try { reply = remaining == 0 ? future.get() : future.get(remaining, TimeUnit.MILLISECONDS); }
+      finally { Timing.add("hostWait", waitStarted); }
       unanswered.remove(seq); // Authoritative: this worker consumed the reply, not merely received stdin.
       // A failed reply's own emulation map wins over one rebuilt from its missing evidence:
       // it carries the harness-fault ids (`faults`), which the behaviour strings do not.

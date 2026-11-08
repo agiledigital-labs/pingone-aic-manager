@@ -40,6 +40,7 @@
  * Opt out with `AIC_SCRIPT_TESTER_JVM_POOL=0`: each `useLease` then spawns and
  * closes its own JVM, as before.
  */
+import { recordTiming, since } from "./timing.ts";
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -150,9 +151,12 @@ class PooledJvm {
   retired = false;
   exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
   #exitWaiters: Array<() => void> = [];
+  readonly #kind: string;
+  readonly #startedAt = performance.now();
 
   constructor(key: string, build: string, launch: Launch) {
     this.key = key;
+    this.#kind = launch.containerName === undefined ? "host" : "container";
     this.build = build;
     this.#containerName = launch.containerName;
     this.#child = spawn(launch.command, launch.args, { env: launch.env, stdio: ["pipe", "pipe", "pipe"] });
@@ -294,6 +298,7 @@ class PooledJvm {
       if (end !== -1) {
         this.#readyLine = this.#stderr.slice(at, end);
         this.#stderr = this.#stderr.slice(end + 1);
+        recordTiming({ type: "spawn", lane: this.#kind, pooled: true, spawnToReadyMs: since(this.#startedAt) });
         for (const waiter of this.#readyWaiters.splice(0)) waiter();
       }
       return;

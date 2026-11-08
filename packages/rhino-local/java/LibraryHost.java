@@ -40,6 +40,8 @@ final class LibraryHost extends BaseFunction {
     if (hash == null) return Undefined.instance;
     ScriptCache.Source source = ScriptCache.source(hash);
     Script loader;
+    Timing.count("libraryLoads");
+    long phase = Timing.now();
     try {
       // Line 0: PREFIX ends in a newline, so the body's first line is reported as line 1.
       loader = ScriptCache.compile(cx, "library:" + hash, () -> PREFIX + source.text + SUFFIX, id, 0);
@@ -48,6 +50,12 @@ final class LibraryHost extends BaseFunction {
       throw ScriptRuntime.constructError("SyntaxError", e.details(), e.sourceName(), e.lineNumber(),
           e.lineSource(), e.columnNumber());
     }
-    return loader.exec(cx, ScriptableObject.getTopLevelScope(this));
+    Timing.add("libraryCompile", phase);
+    phase = Timing.now();
+    try {
+      return loader.exec(cx, ScriptableObject.getTopLevelScope(this));
+    } finally {
+      Timing.add("libraryLoaderExec", phase);
+    }
   }
 }

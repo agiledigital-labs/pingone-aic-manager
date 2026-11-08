@@ -58,7 +58,8 @@
   "bin": {
     "aic-script-tester-show-log": "dist/bin/show-log.js",
     "aic-script-tester-pull-profile": "dist/bin/pull-profile.js",
-    "aic-script-tester-fetch-jar": "dist/bin/fetch-jar.js"
+    "aic-script-tester-fetch-jar": "dist/bin/fetch-jar.js",
+    "aic-script-tester-timing": "dist/bin/timing.js"
   },
   "files": [
     "dist/",

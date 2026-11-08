@@ -1,4 +1,5 @@
 import { withHostEvidence, reportResponseEvidence } from "./host-evidence.ts";
+import { recordTiming, since, timingPath } from "./timing.ts";
 import { decodeProtocol, stringifyProtocol } from "./protocol-values.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EmulationFailure, EmulationFailureJournal, bindEmulationOwner, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
@@ -180,6 +181,9 @@ class JvmProcess {
   readonly #sources = new ShippedSources();
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   #exitWaiters: Array<() => void> = [];
+  /** JVM phase timing by job id, taken off the response line before it is parsed. */
+  readonly #timings = new Map<string, unknown>();
+  readonly #startedAt = performance.now();
   environment: RunnerEnvironment | undefined;
 
   constructor(lane: "host" | "container", launch: Launch | PooledChild, shutdownWaitMs = 5000) {
@@ -238,6 +242,9 @@ class JvmProcess {
         const env = parseEnvironment(this.#stderrBuf.slice(at, end));
         checkEnvironment(env, this.lane);
         this.environment = env;
+        recordTiming(this.#pooled === undefined
+          ? { type: "spawn", lane: this.lane, pooled: false, spawnToReadyMs: since(this.#startedAt) }
+          : { type: "borrow", lane: this.lane, readyMs: since(this.#startedAt) });
         return;
       }
       if (this.#spawnError) {
@@ -278,9 +285,25 @@ class JvmProcess {
     if (this.#pending.has(id)) {
       return Promise.reject(new Error(`rhino-local: duplicate active job id: ${id}`));
     }
+    const timed = timingPath() !== undefined;
+    const job = timed ? { ...payload, timing: true } : payload;
+    let measure: { lineBytes: number; sourceBytes: number; sourcesShipped: number; stringifyMs: number; sentAt: number } | undefined;
     return new Promise<JobResponse>((resolve, reject) => {
       const write = (): void => {
-        const ok = this.#child.stdin.write(`${stringifyProtocol(this.#sources.address(payload))}\n`);
+        const startedAt = timed ? performance.now() : 0;
+        const addressed = this.#sources.address(job);
+        const line = `${stringifyProtocol(addressed)}\n`;
+        if (timed) {
+          const shipped = Object.values((addressed.sources ?? {}) as Record<string, string>);
+          measure = {
+            lineBytes: Buffer.byteLength(line),
+            sourceBytes: shipped.reduce((n, text) => n + Buffer.byteLength(text), 0),
+            sourcesShipped: shipped.length,
+            stringifyMs: since(startedAt),
+            sentAt: performance.now(),
+          };
+        }
+        const ok = this.#child.stdin.write(line);
         if (!ok) {
           const onError = (error: Error): void => {
             this.#child.stdin.off("drain", onDrain);
@@ -306,10 +329,38 @@ class JvmProcess {
           write();
           return;
         }
+        if (timed) this.#recordJob(id, payload, response, measure, resent);
         resolve(response);
       };
       this.#pending.set(id, { resolve: settle, reject, onCall });
       write();
+    });
+  }
+
+  #recordJob(
+    id: string,
+    payload: Record<string, unknown>,
+    response: JobResponse,
+    measure: { lineBytes: number; sourceBytes: number; sourcesShipped: number; stringifyMs: number; sentAt: number } | undefined,
+    resent: boolean
+  ): void {
+    const jvm = this.#timings.get(id) as { totalMs?: number } | undefined;
+    this.#timings.delete(id);
+    if (measure === undefined) return;
+    const roundTripMs = since(measure.sentAt);
+    const { sentAt: _sentAt, ...sizes } = measure;
+    recordTiming({
+      type: "job",
+      lane: this.lane,
+      id,
+      ...(typeof payload.sourceName === "string" ? { sourceName: payload.sourceName } : {}),
+      engine: typeof payload.engine === "string" ? payload.engine : "am",
+      outcome: response.outcome,
+      ...sizes,
+      roundTripMs,
+      ...(typeof jvm?.totalMs === "number" ? { transportMs: Math.round((roundTripMs - jvm.totalMs) * 1000) / 1000 } : {}),
+      ...(resent ? { resent: true } : {}),
+      ...(jvm === undefined ? {} : { jvm }),
     });
   }
 
@@ -414,6 +465,8 @@ class JvmProcess {
         void this.#answerCall(call);
         return;
       }
+      const timing = typeof parsed === "object" && parsed !== null ? (parsed as { id?: unknown; timing?: unknown }) : undefined;
+      if (timing?.timing !== undefined && typeof timing.id === "string") this.#timings.set(timing.id, timing.timing);
       response = parseJobResponse(parsed, line);
     } catch (error) {
       const first = this.#pending.entries().next().value;
