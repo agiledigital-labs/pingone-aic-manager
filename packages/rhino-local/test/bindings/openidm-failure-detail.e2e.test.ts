@@ -68,6 +68,14 @@ describe("an injected failure's getDetail matches the live capture", () => {
     ["a stub with no detail", undefined, "String(e.javaException.getDetail())"],
     ["an unmeasured member", null, "e.javaException.getDetail().asMap"],
     ["an empty object's string form", {}, "String(e.javaException.getDetail())"],
+    ["getDetail with an argument", { result: false }, "String(e.javaException.getDetail(1))"],
+    ["get with no argument", { result: false }, "String(e.javaException.getDetail().get())"],
+    ["get with two arguments", { result: false }, 'String(e.javaException.getDetail().get("result", 1))'],
+    ["get with an object key", { result: false }, 'String(e.javaException.getDetail().get({ toString: function () { return "result"; } }))'],
+    ["get with a number key", { result: false }, "String(e.javaException.getDetail().get(0))"],
+    ["isNull with an argument", null, "e.javaException.getDetail().isNull(1)"],
+    ["getObject with an argument", null, "e.javaException.getDetail().getObject(1)"],
+    ["toString with an argument", { result: false }, "e.javaException.getDetail().toString(1)"],
   ])("%s faults openidm-failure-detail, even when caught", async (_name, d, read) => {
     expectHarnessFault("openidm-failure-detail");
     const reply = d === undefined ? { code: 404 } : { code: 404, detail: d };

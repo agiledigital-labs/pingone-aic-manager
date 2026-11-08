@@ -295,6 +295,16 @@ describe("toGiven", () => {
     },
   );
 
+  it("a principal assigned after mergeChannels (as beforeRun does) still asks for a session and is checked", () => {
+    const draft = mergeChannels(undefined, undefined);
+    expect(draft.sessionRequested).toBe(false);
+    draft.sessionPrincipal = "alice";
+    expect(toGiven(draft).existingSession).toMatchObject({ UserId: "alice" });
+    const bad = mergeChannels(undefined, undefined);
+    bad.sessionPrincipal = "a,b";
+    expect(() => toGiven(bad)).toThrow(/rhino-local: sessionPrincipal "a,b"/);
+  });
+
   it("applies the same DN check to a principal taken from state.username", () => {
     expect(() => toGiven(mergeChannels({ state: { shared: { username: "a,b" } }, session: {} }, undefined)))
       .toThrow(/state\.username "a,b" would need escaping/);

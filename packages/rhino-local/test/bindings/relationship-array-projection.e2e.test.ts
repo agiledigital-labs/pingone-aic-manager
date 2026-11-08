@@ -116,6 +116,31 @@ describe("has-many relationship projection matches the live capture", () => {
     expect(JSON.stringify(response)).toContain("openidm-fields-relationship-deep-path");
   });
 
+  it.each([
+    [["roles/*/_refProperties/_id"], "a path below the reference envelope key _refProperties is unmeasured"],
+    [["roles/*", "roles/*/_refProperties/_id"], "a path below the reference envelope key _refProperties is unmeasured"],
+    [["roles/*/_refProperties/_id", "roles/*"], "a path below the reference envelope key _refProperties is unmeasured"],
+    [["roles/*/_id/x"], "a path below the reference envelope key _id is unmeasured"],
+    [["roles/_refProperties/_id"], "a path below roles/_refProperties is unmeasured"],
+    [["roles/name/x"], "a path below roles/name is unmeasured"],
+  ])("a deeper path under an envelope key or a non-* name faults: %j", async (selectors, message) => {
+    expectHarnessFault("openidm-fields-relationship-deep-path");
+    const edged = { ...user, roles: [{ ...role("role-a"), _refProperties: { _id: "edge", extra: "unselected" } }] };
+    const response = await run(`try { ${read(selectors)} } catch (e) {} finally { 1; }`, given(edged));
+    expect(response.outcome).not.toBe("ok");
+    const faults = (response as { emulation?: { faults?: { id: string; message: string }[] } }).emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toEqual(["openidm-fields-relationship-deep-path"]);
+    expect(faults[0]?.message).toContain(message);
+  });
+
+  it("the measured shallow envelope selectors still succeed", async () => {
+    const edged = { ...user, roles: [{ ...role("role-a"), _refProperties: { _id: "edge", extra: "unselected" } }] };
+    for (const selectors of [["roles/*/_refProperties"], ["roles/_refProperties"], ["roles/*/name/x"]]) {
+      const response = await run(read(selectors), given(edged));
+      expect(response.outcome, JSON.stringify(selectors)).toBe("ok");
+    }
+  });
+
   it("a child of a non-reference array still faults, saying what the parent is", async () => {
     expectHarnessFault("openidm-fields-non-object-parent");
     const response = await run(read(["tags/x"]), given({ ...user, tags: ["a", "b"] }));

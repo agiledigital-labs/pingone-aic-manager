@@ -1077,8 +1077,10 @@ derives `_refResourceCollection`, `_refResourceId` and `_id` from `_ref` when
 the seed leaves them out, and fills `_rev` and `_refResourceRev` from each
 other. It keeps the seeded order and returns a JS array. Three cases are
 unmeasured and fault: `parent/*` on an element seeded as a bare reference
-(`openidm-fields-unresolved-ref`), a path below an object field of an element
-(`openidm-fields-relationship-deep-path`), and `*` with a child of anything
+(`openidm-fields-unresolved-ref`), a path below an object field of an element,
+below an envelope key (`parent/*/_refProperties/_id`) or more than one segment
+past a non-`*` name (`parent/name/x`) (`openidm-fields-relationship-deep-path`),
+and `*` with a child of anything
 other than a relationship array (`openidm-fields-wildcard-with-path`). It does
 not yet drop a seeded relationship under `*` alone.
 

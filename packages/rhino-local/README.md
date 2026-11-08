@@ -24,6 +24,31 @@ library bodies; a missing id throws naming `given.libraries`), legacy
 `JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
 in `cases/`.
 
+## Breaking change in 0.4.0-emulator.1: request values are Java lists
+
+On the next-gen engine, a `requestParameters` or `requestHeaders` value is now
+the Java list AIC hands over (measured 2026-11-08), not a JavaScript array.
+Earlier builds returned an array, so a script calling an array method passed
+here and failed on the tenant.
+
+| Works, as on AIC                                  | Fails, as on AIC                                     |
+| ------------------------------------------------- | ---------------------------------------------------- |
+| `v.length`, `v[0]`, `v.size()`, `v.get(0)`        | `v.map(…)`, `v.join(…)`, any `Array.prototype` method |
+| `String(v)` gives Java's `"[a, b]"`               | `Array.isArray(v)` is `false`                        |
+| `requestParameters.forEach(function (k, v) {…})`  | `v.getClass()` (the class shutter refuses it)        |
+
+`JSON.stringify` of a value list was not measured, so it faults
+`request-list-serialize`; copy the values into an array first:
+
+```js
+var values = requestParameters.get("q");
+var copy = [];
+for (var i = 0; i < values.size(); i++) copy.push(String(values.get(i)));
+```
+
+`requestCookies` values are still plain strings (measured). The legacy engine
+was not measured and keeps the older array shape.
+
 ## Using the installed package
 
 ```sh
