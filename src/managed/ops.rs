@@ -2886,6 +2886,28 @@ pub fn enum_constraint_eligible(property: &Value) -> bool {
     enum_target(property).is_ok()
 }
 
+/// Whether a property's kind takes a `default` this tool can write.
+///
+/// Object and object-array defaults are refused, not merely unvalidated: how IDM
+/// applies one is unmeasured, and a default the server accepts but cannot apply
+/// costs the whole object (see [`default_error`]).
+pub fn default_eligible(property: &Value) -> bool {
+    let scalar =
+        |kind: Option<&str>| matches!(kind, Some("string" | "boolean" | "number" | "integer"));
+    match declared_kind(property) {
+        Some("array") => scalar(property.pointer("/items/type").and_then(Value::as_str)),
+        kind => scalar(kind),
+    }
+}
+
+/// Whether a field type offered by the scalar-field form takes a default.
+pub fn scalar_type_supports_default(field_type: ScalarFieldType) -> bool {
+    !matches!(
+        field_type,
+        ScalarFieldType::Object | ScalarFieldType::ObjectArray
+    )
+}
+
 /// Whether a field type offered by the scalar-field form supports a constraint.
 pub fn scalar_type_supports_enum(field_type: ScalarFieldType) -> bool {
     matches!(
@@ -3007,6 +3029,17 @@ fn default_error(kind: &str, detail: impl std::fmt::Display) -> String {
 
 fn coerce_default_value(raw: &str, property: &Value) -> Result<Value, String> {
     let kind = declared_kind(property).unwrap_or("missing");
+    let item_kind = property.pointer("/items/type").and_then(Value::as_str);
+    if kind == "object" || (kind == "array" && item_kind == Some("object")) {
+        return Err(format!(
+            "a default for an {} field is not offered: how IDM applies one is unmeasured, and a default it accepts but cannot apply makes the object 404",
+            if kind == "object" {
+                "object"
+            } else {
+                "object[]"
+            }
+        ));
+    }
     match kind {
         "string" => Ok(Value::String(raw.to_string())),
         "boolean" => match raw {
@@ -3729,19 +3762,29 @@ pub fn cancel_active_draft(app: &mut App) {
 
 pub fn advance_focus(edit: &mut FieldEditState, forward: bool) {
     edit.focused = if forward {
-        edit.focused
-            .next(edit.caps, enum_constraint_eligible(&edit.original_property))
+        edit.focused.next(
+            edit.caps,
+            enum_constraint_eligible(&edit.original_property),
+            default_eligible(&edit.original_property),
+        )
     } else {
-        edit.focused
-            .prev(edit.caps, enum_constraint_eligible(&edit.original_property))
+        edit.focused.prev(
+            edit.caps,
+            enum_constraint_eligible(&edit.original_property),
+            default_eligible(&edit.original_property),
+        )
     };
 }
 
 pub fn advance_add_field_focus(draft: &mut AddFieldState, forward: bool) {
     draft.focused = if forward {
-        draft.focused.next(draft.enum_eligible())
+        draft
+            .focused
+            .next(draft.enum_eligible(), draft.default_eligible())
     } else {
-        draft.focused.prev(draft.enum_eligible())
+        draft
+            .focused
+            .prev(draft.enum_eligible(), draft.default_eligible())
     };
 }
 
@@ -3830,6 +3873,72 @@ mod tests {
                 "order": ["a", "b"]
             }
         })
+    }
+
+    #[test]
+    fn object_fields_refuse_a_default_on_add_and_on_edit() {
+        // `[]` is the discriminating object[] case: element validation is
+        // vacuous over it, so it slipped through before the refusal existed.
+        for (field_type, nullable, raw) in [
+            (ScalarFieldType::Object, false, "{}"),
+            (ScalarFieldType::Object, true, "{}"),
+            (ScalarFieldType::ObjectArray, false, "[{}]"),
+            (ScalarFieldType::ObjectArray, false, "[]"),
+        ] {
+            let spec = AddFieldSpec {
+                field_type,
+                nullable,
+                default_value: Some(raw.into()),
+                ..add_field_spec("details")
+            };
+            let error = apply_add_field(&widget(), &spec).map(|_| ()).unwrap_err();
+            assert!(
+                error.contains("is not offered"),
+                "{field_type:?} {raw}: {error}"
+            );
+            assert!(!scalar_type_supports_default(field_type));
+        }
+
+        let added = apply_add_field(
+            &widget(),
+            &AddFieldSpec {
+                field_type: ScalarFieldType::Object,
+                ..add_field_spec("details")
+            },
+        )
+        .unwrap()
+        .object;
+        let property = &added["schema"]["properties"]["details"];
+        assert!(!default_eligible(property));
+        let edit = FieldEditSpec {
+            default_change: DefaultChange::Set("{}".into()),
+            ..FieldEditSpec::default()
+        };
+        let error = apply_field_edit(&added, "details", &edit)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(error.contains("is not offered"), "{error}");
+    }
+
+    #[test]
+    fn default_eligibility_accepts_scalar_and_scalar_array_kinds_only() {
+        for property in [
+            json!({"type": "string"}),
+            json!({"type": ["boolean", "null"]}),
+            json!({"type": "integer"}),
+            json!({"type": "array", "items": {"type": "number"}}),
+        ] {
+            assert!(default_eligible(&property), "{property}");
+        }
+        for property in [
+            json!({"type": "object"}),
+            json!({"type": ["object", "null"]}),
+            json!({"type": "array", "items": {"type": "object"}}),
+            json!({"type": "array"}),
+            json!({"type": "relationship"}),
+        ] {
+            assert!(!default_eligible(&property), "{property}");
+        }
     }
 
     #[test]

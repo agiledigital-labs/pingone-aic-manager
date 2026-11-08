@@ -663,6 +663,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         0
     };
     let enum_eligible = crate::managed::ops::enum_constraint_eligible(&edit.original_property);
+    let default_eligible = crate::managed::ops::default_eligible(&edit.original_property);
     let rows = Layout::vertical([
         Constraint::Length(1), // field id
         Constraint::Length(1), // type/capability
@@ -675,7 +676,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(if enum_eligible { 2 } else { 0 }),
         Constraint::Length(if enum_eligible { 1 } else { 0 }),
-        Constraint::Length(2), // default
+        Constraint::Length(if default_eligible { 2 } else { 0 }), // default
         Constraint::Length(1),
         Constraint::Length(1), // required
         Constraint::Length(1), // searchable
@@ -774,8 +775,10 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         edit.enum_values
             .draw(f, rows[9], edit.focused == EditFieldFocus::Enum);
     }
-    edit.default_value
-        .draw(f, rows[11], edit.focused == EditFieldFocus::Default);
+    if default_eligible {
+        edit.default_value
+            .draw(f, rows[11], edit.focused == EditFieldFocus::Default);
+    }
     draw_save_button(f, rows[18], edit.focused == EditFieldFocus::Save);
 }
 
@@ -789,6 +792,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         0
     };
     let enum_eligible = draft.enum_eligible();
+    let default_eligible = draft.default_eligible();
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -801,7 +805,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // type
         Constraint::Length(if enum_eligible { 2 } else { 0 }),
         Constraint::Length(if enum_eligible { 1 } else { 0 }),
-        Constraint::Length(2), // default
+        Constraint::Length(if default_eligible { 2 } else { 0 }), // default
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -834,9 +838,11 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
             .enum_values
             .draw(f, rows[9], draft.focused == AddFieldFocus::Enum);
     }
-    draft
-        .default_value
-        .draw(f, rows[11], draft.focused == AddFieldFocus::Default);
+    if default_eligible {
+        draft
+            .default_value
+            .draw(f, rows[11], draft.focused == AddFieldFocus::Default);
+    }
     draw_bool_row(
         f,
         rows[13],

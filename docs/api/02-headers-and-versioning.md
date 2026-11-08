@@ -111,6 +111,8 @@ sent for that call — every attempt, retries included — as `aic logs tx <id>`
 lookups. No entries for an id says AM and IDM did not record it; how long the
 logs take to show a request is not measured, so look again after a few
 minutes before concluding that. A JSON `5xx` body is passed through unchanged.
+The one unauthenticated text read (`exportmetadata.jsp`, behind
+`aic saml metadata export`) sends an id but does not name it on a `5xx`.
 Separately, `/environment/variables` took 6–9 s on every one of its 62 reads
 in that probe, against under 0.25 s for the other four paths.
 
