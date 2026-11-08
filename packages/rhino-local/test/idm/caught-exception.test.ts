@@ -88,7 +88,8 @@ describe("a caught emulated CREST error matches the captured observation", () =>
     ["`in` for a class member no probe read", "'getSimpleName' in e.javaException.getClass()"],
     ["Object.keys of the class", "Object.keys(e.javaException.getClass())"],
     ["for…in over the class", "(function () { var k = []; for (var x in e.javaException.getClass()) k.push(x); return k; })()"],
-    ["a write to the class", "(e.javaException.getClass().x = 1)"],
+    // An assignment asks `in` first, so only an admitted name reaches the write itself.
+    ["a write to the class's measured member", "(e.javaException.getClass().getName = 1)"],
   ])("%s faults idm-exception/unmeasured", async (_name, read) => {
     expectHarnessFault("idm-exception/unmeasured");
     const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [pol] } }), runner);
