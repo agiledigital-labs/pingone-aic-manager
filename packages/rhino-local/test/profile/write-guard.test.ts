@@ -108,6 +108,7 @@ describe("managedPolicy gives the lane plain lists (P2-2, sol-r1b)", () => {
     expect(rule({})).toEqual({ defaults: { n: 0, b: false, cleared: null, list: [], flag: null }, notNull: ["n", "b"], nullRefused: ["n", "b"],
       emptyOnNull: ["list"], nullUnmeasured: ["maybe"],
       checked: { n: "number", b: "boolean", cleared: "string", plain: "string", tags: "array", box: "object", count: "integer", list: "array", flag: "boolean" },
+      mismatchUnmeasured: { maybe: "string" },
       itemTypes: { tags: "string", list: "string" }, defaulted: ["n", "b", "cleared", "list", "flag"] });
   });
   // Discriminating (measured 2026-11-08): the same type with no required key refuses every typed null.
@@ -129,7 +130,8 @@ describe("managedPolicy gives the lane plain lists (P2-2, sol-r1b)", () => {
         nb: { type: "boolean", nullable: true, default: null } } } } };
     // Discriminating: D2's nullable null default is measured on a string only; a nullable boolean's is not.
     expect(managedPolicy(profile)["managed/gizmo"]).toEqual({ defaults: { cleared: null, both: null, nb: null }, notNull: [], nullRefused: [],
-      emptyOnNull: [], nullUnmeasured: ["nb"], checked: { cleared: "string", both: "string" }, itemTypes: {}, defaulted: ["cleared", "both", "nb"] });
+      emptyOnNull: [], nullUnmeasured: ["nb"], checked: { cleared: "string", both: "string" }, mismatchUnmeasured: { nb: "boolean" }, itemTypes: {},
+      defaulted: ["cleared", "both", "nb"] });
   });
   it("a type with nothing defaulted still gets a rule", () => {
     expect(managedPolicy({ ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
@@ -754,6 +756,29 @@ describe("on the real JVM the fault fails the run and is tallied", () => {
       script: 'var r = {}; try { r = openidm.create("managed/gizmo", "g1", {}); } catch (e) {} action.goTo(r.flag === "nope" ? "true" : "false");',
       expect: { outcome: "true", allowUndeclared: { openidmWrites: true } },
     }), { profile: bad })).rejects.toThrow(/openidm-managed-invalid-default\/gizmo\.flag/);
+  });
+  // sol-r3 P2-3: the reviewer's repro. Each nullable spelling accepts its null default, and a
+  // wrong-typed non-null value used to pass and be stored. It must fault as unmeasured (the plain
+  // type's 403 was measured, the nullable spelling's never was), and the concrete type must still write.
+  // `integer` has no valid non-null value at all (IDM types every number "number", zzemu_nd), so its
+  // control is the same nullable declaration without the default, written with p omitted.
+  const nullable = (p: unknown) =>
+    normaliseManagedConfig({ objects: [{ name: "gizmo", schema: { required: [], properties: { p, q: { type: "string" } } } }] }, META);
+  const create = (body: Record<string, unknown>) =>
+    `var r = openidm.create("managed/gizmo", "g1", ${JSON.stringify(body)}); action.goTo(r._id === "g1" ? "true" : "false");`;
+  const expectAll = { outcome: "true", allowUndeclared: { openidmWrites: true } } as const;
+  it.each([
+    ["boolean", { type: ["boolean", "null"], default: null }, "x", { type: ["boolean", "null"], default: null }, { p: true }],
+    ["integer", { type: ["integer", "null"], default: null }, 3, { type: ["integer", "null"] }, { q: "a" }],
+    ["array of strings", { type: ["array", "null"], items: { type: "string" }, default: null }, "x",
+      { type: ["array", "null"], items: { type: "string" }, default: null }, { p: ["a", "b"] }],
+  ] as const)("a nullable %s: a wrong-typed value faults unmeasured; the control writes", async (_name, p, wrong, controlDecl, controlBody) => {
+    expectHarnessFault("openidm-managed-policy/gizmo");
+    await expect(runCase(runner, caseWith({ script: create({ p: wrong }), expect: expectAll }), { profile: nullable(p) }))
+      .rejects.toThrow(/openidm\.create: managed\/gizmo: p is \w+ on a nullable \w+ property; the plain type's VALID_TYPE refusal was measured/);
+    const ok = await runCase(runner, caseWith({ script: create(controlBody), expect: expectAll }), { profile: nullable(controlDecl) });
+    expect(ok.verdict.pass).toBe(true);
+    expect(ok.effects.managedStore?.["managed/gizmo"]).toEqual([{ _id: "g1", _rev: "local-rev", ...controlBody }]);
   });
   it("a profile whose key and name disagree is refused (was pass: true across four writes)", async () => {
     const aliased: EnvProfile = { tenant: "sandbox", pulledAt: META.pulledAt, sources: [],

@@ -185,6 +185,12 @@ const MEASURED_TYPES = new Set(["string", "object", "array", "boolean", "number"
  * - `checked`: property → declared type, for `string`/`object`/`array`/`boolean`/`number`/
  *   `integer`, where a mismatching top-level value on a create of a new record is a measured
  *   `403 VALID_TYPE`. A nullable property is checked only where its null default was measured.
+ * - `mismatchUnmeasured`: property → concrete type, for every other nullable property of a measured
+ *   type (`["boolean","null"]`, `["integer","null"]`, `["array","null"]`, a nullable string with no
+ *   measured null default, …). A non-null value of another JSON type faults as unmeasured (sol-r3
+ *   P2-3): the plain type's `403 VALID_TYPE` was measured, the nullable spelling's never was, so the
+ *   lane neither passes the value nor borrows the plain type's 403. A value of the concrete type
+ *   writes, as on the plain type.
  * - `itemTypes`: array property → its `items.type`. An item of another type faults: nested `items`
  *   were measured unenforced, a top-level array's own items were not tested.
  * - `defaulted`: every property that declares a `default`, `null` included. Stock `policy.js` adds
@@ -201,6 +207,7 @@ export type PolicyRule = {
   readonly emptyOnNull: readonly string[];
   readonly nullUnmeasured: readonly string[];
   readonly checked: Record<string, string>;
+  readonly mismatchUnmeasured: Record<string, string>;
   readonly itemTypes: Record<string, string>;
   readonly defaulted: readonly string[];
 };
@@ -215,6 +222,7 @@ export function managedPolicy(profile: EnvProfile): Record<string, PolicyRule> {
     const nullUnmeasured: string[] = [];
     const emptyOnNull: string[] = [];
     const checked: Record<string, string> = {};
+    const mismatchUnmeasured: Record<string, string> = {};
     const itemTypes: Record<string, string> = {};
     const notNull: string[] = [];
     for (const [name, property] of Object.entries(object.properties)) {
@@ -232,12 +240,13 @@ export function managedPolicy(profile: EnvProfile): Record<string, PolicyRule> {
       if ((property.nullable && !nullableMeasured) || noRequiredNull) nullUnmeasured.push(name);
       else if (nullMeasured && property.type === "array") emptyOnNull.push(name);
       if (known && (!property.nullable || nullableMeasured)) checked[name] = property.type;
+      else if (known) mismatchUnmeasured[name] = property.type;
       const item = property.items?.type;
       if (property.type === "array" && item !== undefined && MEASURED_TYPES.has(item)) itemTypes[name] = item;
     }
     const typed = Object.keys(object.properties).filter((name) => !nullUnmeasured.includes(name));
     const nullRefused = object.noRequiredArray ? typed : notNull.filter((name) => !nullUnmeasured.includes(name));
-    out[`managed/${object.name}`] = { defaults, notNull, nullRefused, emptyOnNull, nullUnmeasured, checked, itemTypes, defaulted };
+    out[`managed/${object.name}`] = { defaults, notNull, nullRefused, emptyOnNull, nullUnmeasured, checked, mismatchUnmeasured, itemTypes, defaulted };
   }
   return out;
 }
