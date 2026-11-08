@@ -48,14 +48,14 @@ describe("request maps", () => {
       requestParameters: { probeq: ["alpha", "bravo"], realm: ["alpha"] },
     });
     const params = sandbox.requestParameters as {
-      get: (key: string) => { contains: (v: string) => boolean; includes?: unknown; length: number } | null;
+      get: (key: string) => { get: (i: number) => string; includes?: unknown; length: number } | null;
       containsKey: (key: string) => boolean;
     };
     const headers = sandbox.requestHeaders as {
       get: (key: string) => unknown;
     };
     expect(params.get("probeq")?.length).toBe(2);
-    expect(params.get("realm")?.contains("alpha")).toBe(true);
+    expect(params.get("realm")?.get(0)).toBe("alpha");
     // A Java List, not a JS array: no Array.prototype methods (measured 2026-11-08).
     expect(params.get("realm")?.includes).toBeUndefined();
     expect(params.get("Probeq")).toBeNull();
