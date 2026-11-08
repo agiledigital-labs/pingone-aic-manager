@@ -24,6 +24,11 @@
  *   not happen is absent. `harvestMs` covers journey-bridge jobs only: an
  *   ordinary case appends its harvest call to the subject, so that cost is
  *   inside `subjectExecMs`.
+ * - `publish`: the emulation runner sending a worker's failure audit to the
+ *   main process (on every job start and end, and at file boundaries):
+ *   `publishMs`, and the audit's size as `failures`, `outstanding` and
+ *   `packs` (task results re-sent with it). Only under the package's Vitest
+ *   runner.
  *
  * Every worker appends to the same file; each line is one `appendFileSync`,
  * which Linux and macOS keep whole for lines this size.
@@ -40,7 +45,7 @@ export function timingPath(): string | undefined {
   return path === undefined || path === "" ? undefined : path;
 }
 
-export function recordTiming(row: { type: "spawn" | "borrow" | "job" } & Record<string, unknown>): void {
+export function recordTiming(row: { type: "spawn" | "borrow" | "job" | "publish" } & Record<string, unknown>): void {
   const path = timingPath();
   if (path === undefined) return;
   try {
@@ -71,6 +76,8 @@ export interface TimingSummary {
   jobs: number;
   spawns: number;
   borrows: number;
+  /** Audit publishes by the emulation runner (`publish` rows). */
+  publishes: number;
   /** Jobs whose line carried at least one source text. */
   jobsShippingSources: number;
   /** Per numeric field, over the rows that have it (`jvm.*` for JVM phases). */
@@ -91,13 +98,14 @@ export function summarizeTiming(text: string): TimingSummary {
     list.push(value);
     values.set(field, list);
   };
-  let jobs = 0, spawns = 0, borrows = 0, jobsShippingSources = 0;
+  let jobs = 0, spawns = 0, borrows = 0, publishes = 0, jobsShippingSources = 0;
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     const row = JSON.parse(line) as Record<string, unknown>;
     const prefix = `${String(row.type)}.`;
     if (row.type === "spawn") spawns++;
     if (row.type === "borrow") borrows++;
+    if (row.type === "publish") publishes++;
     if (row.type === "job") { jobs++; if (typeof row.sourcesShipped === "number" && row.sourcesShipped > 0) jobsShippingSources++; }
     for (const [key, value] of Object.entries(row)) {
       if (key === "at" || key === "pid") continue;
@@ -113,12 +121,12 @@ export function summarizeTiming(text: string): TimingSummary {
       return { field, n: list.length, sum, p50: percentile(sorted, 50), p90: percentile(sorted, 90), max: sorted[sorted.length - 1] as number };
     })
     .sort((a, b) => a.field.localeCompare(b.field));
-  return { jobs, spawns, borrows, jobsShippingSources, fields };
+  return { jobs, spawns, borrows, publishes, jobsShippingSources, fields };
 }
 
 export function formatTimingSummary(summary: TimingSummary): string {
   const lines = [
-    `jobs ${summary.jobs} (${summary.jobsShippingSources} shipped source text), spawns ${summary.spawns}, borrows ${summary.borrows}`,
+    `jobs ${summary.jobs} (${summary.jobsShippingSources} shipped source text), spawns ${summary.spawns}, borrows ${summary.borrows}, publishes ${summary.publishes}`,
     "",
     ["field".padEnd(32), "n".padStart(7), "sum".padStart(12), "p50".padStart(10), "p90".padStart(10), "max".padStart(10)].join(" "),
   ];

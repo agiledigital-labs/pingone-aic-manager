@@ -1,5 +1,6 @@
 /** Vitest worker transport. All final checks run outside test retry/skip/fails. */
 import { TestRunner, type RunnerTaskResultPack, type RunnerTaskEventPack, type RunnerTestFile, type RunnerTestSuite, type RunnerTask } from "vitest";
+import { recordTiming, since, timingPath } from "../timing.ts";
 import { emulationAudit, emulationAuditDiagnostics, finishEmulationFile, setEmulationFile, attachEmulationAuditTransport, type EmulationAudit } from "../emulation.ts";
 
 // Keep file task handles across worker module graphs/batches, just as the core
@@ -85,8 +86,16 @@ export default class EmulationTestRunner extends TestRunner {
   onTaskUpdate?: (packs: RunnerTaskResultPack[], events: RunnerTaskEventPack[]) => Promise<void>;
 
   #publish = (target?: RunnerTestFile): void => {
+    if (timingPath() === undefined) { this.#publishAudit(target); return; }
+    const started = performance.now();
+    const counts = this.#publishAudit(target);
+    if (counts) recordTiming({ type: "publish", publishMs: since(started), ...counts });
+  };
+
+  /** Sends the worker's audit to the main process; returns its size for the timing row. */
+  #publishAudit = (target?: RunnerTestFile): { failures: number; outstanding: number; packs: number } | undefined => {
     const file = target ?? [...this.#files.values()].at(-1);
-    if (!file) return;
+    if (!file) return undefined;
     const audit = emulationAudit();
     const packs = new Map<string, RunnerTaskResultPack>();
     const include = (task: RunnerTask) => {
@@ -105,10 +114,12 @@ export default class EmulationTestRunner extends TestRunner {
       };
       updateOwner(completed);
     }
-    if (!this.onTaskUpdate) return;
+    const counts = { failures: audit.failures.length, outstanding: audit.outstanding.length, packs: packs.size };
+    if (!this.onTaskUpdate) return counts;
     const update = this.onTaskUpdate([...packs.values()], []).catch((error: unknown) => { this.#transportError = error; });
     this.#updates.add(update);
     void update.finally(() => { this.#updates.delete(update); });
+    return counts;
   };
 
   override onCollectStart(file: RunnerTestFile): void {
