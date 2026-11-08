@@ -91,6 +91,15 @@ aic <command> <subcommand> --help
   process has to be rooted before `--tenant`'s default can be read out of the
   project's own config.
 
+  **Relative file paths** given to any flag or argument (`--from`, `--file`,
+  `--out`, `--key-file`, …) resolve against the same start directory: your cwd,
+  or the `--project` / `AIC_PROJECT` directory when one is given. Before this
+  they resolved against the project root, because `aic` moves into the root
+  before parsing, so `--from idm/endpoint/x.cjs` typed inside
+  `workspace/sandbox/` looked for `<root>/idm/endpoint/x.cjs`. A script that
+  passed root-relative paths from a subdirectory should pass them relative to
+  where it runs, or absolute. Absolute paths are unchanged.
+
 - **Non-interactive mode.** Pass the global `--no-prompt` flag, or set
   `AIC_NO_PROMPT=1`, to disable every interactive prompt. If input is required,
   the command fails instead of waiting on a terminal. Confirming a missing

@@ -29,7 +29,10 @@
 pub mod crypto;
 pub mod operator;
 pub mod tenant;
+pub mod user_path;
 pub mod wraps;
+
+pub use user_path::{UserPath, set_user_base};
 
 use std::collections::HashMap;
 use std::fs;

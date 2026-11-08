@@ -695,18 +695,20 @@ fn resolve_project_root(
         return Ok(Some(cwd.to_path_buf())
             .and_then(|cwd| config::find_project_root(&cwd).map(|root| (root, cwd))));
     };
-    let start = PathBuf::from(explicit);
+    // Absolute, because it becomes the base relative path arguments resolve
+    // against once the process has moved to the root.
+    let start = cwd.join(explicit);
     if !start.is_dir() {
         return Err(Error::Config(format!(
             "{source}{} is not a directory",
-            start.display()
+            Path::new(explicit).display()
         )));
     }
     match config::find_project_root(&start) {
         Some(root) => Ok(Some((root, start))),
         None => Err(Error::Config(format!(
             "{source}{} is not inside a project: no .aic/ there or in any parent",
-            start.display()
+            Path::new(explicit).display()
         ))),
     }
 }
@@ -787,18 +789,23 @@ pub fn bootstrap_project_root() -> Result<()> {
         // carries that project's `--tenant` default, which is most of why it is
         // worth reading — and only the failure is dropped.
         Err(_) if wants_help_or_version(std::env::args_os()) => {
+            config::set_user_base(cwd.clone());
             config::set_project_root(cwd)?;
             return Ok(());
         }
         other => other?,
     };
     let Some((root, start)) = resolved else {
+        config::set_user_base(cwd.clone());
         config::set_project_root(cwd)?;
         return Ok(());
     };
     let explicit = explicit
         .filter(|value| !value.is_empty())
         .map(|_| source.trim_end_matches([' ', '=']));
+    // Relative path arguments resolve where the command behaves as if it
+    // started (config::UserPath), not at the root it is about to enter.
+    config::set_user_base(start.clone());
     config::set_workspace_context(choose_workspace_context(&root, &start, &cwd, explicit));
     config::set_project_root(root.clone())?;
     // Still load-bearing for relative user arguments and `workspace/` paths.
@@ -1975,6 +1982,38 @@ pub(crate) fn redact(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Every path argument resolves against where the operator is, not the
+    /// project root the process moved into (`config::user_path`). Walks the
+    /// whole command tree and refuses any argument whose value is a plain
+    /// `PathBuf`, except `--project` itself, which is resolved before the move.
+    /// The `--project` hit is the positive control: it proves the walk can see a
+    /// `PathBuf` at all, so an empty violation list is not a blind walk.
+    #[test]
+    fn every_path_argument_resolves_against_the_start_directory() {
+        use clap::CommandFactory;
+        use std::path::PathBuf;
+
+        fn walk(cmd: &clap::Command, trail: &str, plain: &mut Vec<String>, user: &mut usize) {
+            let trail = format!("{trail} {}", cmd.get_name());
+            for arg in cmd.get_arguments() {
+                let ty = arg.get_value_parser().type_id();
+                if ty == std::any::TypeId::of::<PathBuf>() {
+                    plain.push(format!("{trail} --{}", arg.get_id()));
+                } else if ty == std::any::TypeId::of::<crate::config::UserPath>() {
+                    *user += 1;
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &trail, plain, user);
+            }
+        }
+
+        let (mut plain, mut user) = (Vec::new(), 0);
+        walk(&super::Cli::command(), "", &mut plain, &mut user);
+        assert_eq!(plain, vec![" aic --project".to_string()]);
+        assert!(user >= 20, "only {user} UserPath arguments found");
+    }
+
     /// `--token`'s floor sits strictly between the daemon's own floor and what
     /// the tenant issues. Above the issue TTL it would mint on every call while
     /// handing out no more life; at or below the daemon's floor it would be a

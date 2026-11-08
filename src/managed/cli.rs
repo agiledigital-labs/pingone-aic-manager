@@ -43,7 +43,7 @@ pub enum ManagedCommand {
     /// non-zero when they differ.
     Diff {
         name: String,
-        file: std::path::PathBuf,
+        file: crate::config::UserPath,
         /// Compare exactly, applying no normalisation.
         #[arg(long)]
         strict: bool,
@@ -289,7 +289,7 @@ pub enum RelationshipCommand {
         field: String,
         /// Durable capture path; an existing in-place capture resumes this pair.
         #[arg(long)]
-        capture: Option<std::path::PathBuf>,
+        capture: Option<crate::config::UserPath>,
         #[arg(long)]
         dry_run: bool,
         /// Acknowledge that the saved pending request has finished and cannot complete later.
@@ -312,7 +312,7 @@ pub enum RelationshipCommand {
         #[arg(long)]
         upper: String,
         #[arg(long)]
-        output: std::path::PathBuf,
+        output: crate::config::UserPath,
         /// Explicitly acknowledge an upper pair that has never existed there.
         /// All bound and schema reverse ends must be absent in upper; never bypass Q14.
         #[arg(long = "new-pair")]
@@ -322,7 +322,7 @@ pub enum RelationshipCommand {
     },
     /// Restore links after map or promotion, using the durable capture.
     RestoreLinks {
-        file: std::path::PathBuf,
+        file: crate::config::UserPath,
         #[arg(long)]
         tenant: Option<String>,
         #[command(flatten)]
@@ -330,7 +330,7 @@ pub enum RelationshipCommand {
     },
     /// Explicitly undo an in-place conversion; unavailable for promotion captures.
     RollbackMap {
-        file: std::path::PathBuf,
+        file: crate::config::UserPath,
         #[arg(long)]
         tenant: Option<String>,
         #[command(flatten)]
@@ -364,14 +364,14 @@ pub enum RelationshipCommand {
     Snapshot {
         field: String,
         #[arg(long, short)]
-        output: Option<std::path::PathBuf>,
+        output: Option<crate::config::UserPath>,
         #[arg(long)]
         tenant: Option<String>,
     },
     /// Merge a snapshot's `title`, `description` and `query.fields` back
     /// into the relationship ends it names. Changes nothing else.
     Restore {
-        file: std::path::PathBuf,
+        file: crate::config::UserPath,
         /// Report what would change; write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -1253,7 +1253,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
         } => {
             super::conversion_cli::map(
                 field,
-                capture,
+                capture.map(Into::into),
                 tenant,
                 super::conversion_cli::Flags {
                     dry_run,
@@ -1271,17 +1271,20 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             output,
             new_pairs,
             options,
-        } => super::conversion_cli::capture_links(lower, upper, output, new_pairs, options).await,
+        } => {
+            super::conversion_cli::capture_links(lower, upper, output.into(), new_pairs, options)
+                .await
+        }
         RelationshipCommand::RestoreLinks {
             file,
             tenant,
             options,
-        } => super::conversion_cli::restore_links(file, tenant, options).await,
+        } => super::conversion_cli::restore_links(file.into(), tenant, options).await,
         RelationshipCommand::RollbackMap {
             file,
             tenant,
             options,
-        } => super::conversion_cli::rollback_map(file, tenant, options).await,
+        } => super::conversion_cli::rollback_map(file.into(), tenant, options).await,
         RelationshipCommand::Repair {
             field,
             dry_run,
@@ -1295,7 +1298,7 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
 
 async fn managed_diff(
     name: String,
-    file: std::path::PathBuf,
+    file: crate::config::UserPath,
     strict: bool,
     tenant: Option<String>,
     json: bool,

@@ -9,7 +9,7 @@
 //! production gate → the write. `import`'s `--certs` picks a mode; it is not
 //! consent.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use clap::Subcommand;
 
@@ -56,7 +56,7 @@ pub enum CertCommand {
         entity_id: String,
         /// The certificate: one PEM `CERTIFICATE` block, or DER.
         #[arg(long)]
-        cert_file: PathBuf,
+        cert_file: crate::config::UserPath,
         /// Required when the entity holds both roles.
         #[arg(long, value_enum)]
         role: Option<Role>,

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
@@ -39,7 +39,7 @@ pub enum LogsCommand {
             value_name = "PATH",
             help = "Write the JSON source list to a file"
         )]
-        output: Option<PathBuf>,
+        output: Option<crate::config::UserPath>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -49,7 +49,7 @@ pub enum LogsCommand {
         #[arg(long, value_name = "CSV", help = "Comma-separated log sources")]
         source: Option<String>,
         #[arg(long, value_name = "PATH", help = "Write the JSON result to a file")]
-        output: Option<PathBuf>,
+        output: Option<crate::config::UserPath>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         /// Poll until the transaction's completion event arrives:
@@ -71,7 +71,7 @@ pub enum LogsCommand {
         #[arg(long, help = "Optional CREST _queryFilter")]
         query: Option<String>,
         #[arg(long, value_name = "PATH", help = "Write the JSON result to a file")]
-        output: Option<PathBuf>,
+        output: Option<crate::config::UserPath>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -85,7 +85,7 @@ pub enum LogsCommand {
         #[arg(long, value_name = "CSV", help = "Comma-separated log sources")]
         source: Option<String>,
         #[arg(long, value_name = "PATH", help = "Write the JSON result to a file")]
-        output: Option<PathBuf>,
+        output: Option<crate::config::UserPath>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -127,7 +127,7 @@ pub enum LogsCommand {
         #[arg(long, value_name = "DURATION")]
         max_time: Option<String>,
         #[arg(long, value_name = "PATH", help = "Write the JSON result to a file")]
-        output: Option<PathBuf>,
+        output: Option<crate::config::UserPath>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -193,7 +193,7 @@ pub enum LogsCommand {
             value_name = "PATH",
             help = "Write the JSON result to a file (ignored with --count)"
         )]
-        output: Option<PathBuf>,
+        output: Option<crate::config::UserPath>,
     },
     #[cfg(feature = "logs-store")]
     /// Roll up am-authentication into the journey model and prune old raw events.
