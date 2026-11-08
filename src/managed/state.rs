@@ -319,7 +319,7 @@ pub enum EditFieldFocus {
 }
 
 impl EditFieldFocus {
-    fn order(caps: FieldCaps, enum_eligible: bool) -> Vec<EditFieldFocus> {
+    fn order(caps: FieldCaps, enum_eligible: bool, default_eligible: bool) -> Vec<EditFieldFocus> {
         let mut order = Vec::new();
         if caps.rename_key {
             order.push(EditFieldFocus::Key);
@@ -333,7 +333,7 @@ impl EditFieldFocus {
         if enum_eligible && caps.can_edit_attr(FieldAttr::Enum) {
             order.push(EditFieldFocus::Enum);
         }
-        if caps.can_edit_attr(FieldAttr::Default) {
+        if default_eligible && caps.can_edit_attr(FieldAttr::Default) {
             order.push(EditFieldFocus::Default);
         }
         if caps.can_edit_attr(FieldAttr::Required) {
@@ -352,14 +352,14 @@ impl EditFieldFocus {
         order
     }
 
-    pub fn next(self, caps: FieldCaps, enum_eligible: bool) -> Self {
-        let order = Self::order(caps, enum_eligible);
+    pub fn next(self, caps: FieldCaps, enum_eligible: bool, default_eligible: bool) -> Self {
+        let order = Self::order(caps, enum_eligible, default_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + 1) % order.len()]
     }
 
-    pub fn prev(self, caps: FieldCaps, enum_eligible: bool) -> Self {
-        let order = Self::order(caps, enum_eligible);
+    pub fn prev(self, caps: FieldCaps, enum_eligible: bool, default_eligible: bool) -> Self {
+        let order = Self::order(caps, enum_eligible, default_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + order.len() - 1) % order.len()]
     }
@@ -723,22 +723,25 @@ impl AddFieldFocus {
         AddFieldFocus::Save,
     ];
 
-    pub fn next(self, enum_eligible: bool) -> Self {
-        let order = Self::order(enum_eligible);
+    pub fn next(self, enum_eligible: bool, default_eligible: bool) -> Self {
+        let order = Self::order(enum_eligible, default_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + 1) % order.len()]
     }
 
-    pub fn prev(self, enum_eligible: bool) -> Self {
-        let order = Self::order(enum_eligible);
+    pub fn prev(self, enum_eligible: bool, default_eligible: bool) -> Self {
+        let order = Self::order(enum_eligible, default_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + order.len() - 1) % order.len()]
     }
 
-    fn order(enum_eligible: bool) -> Vec<AddFieldFocus> {
+    fn order(enum_eligible: bool, default_eligible: bool) -> Vec<AddFieldFocus> {
         let mut order = Self::ORDER.to_vec();
         if !enum_eligible {
             order.retain(|focus| *focus != Self::Enum);
+        }
+        if !default_eligible {
+            order.retain(|focus| *focus != Self::Default);
         }
         order
     }
@@ -808,6 +811,14 @@ impl AddFieldState {
     pub fn set_field_type(&mut self, field_type: ScalarFieldType) {
         self.field_type = field_type;
         self.default_value.set_shape(field_type.shape());
+        if !self.default_eligible() {
+            // A hidden row must not carry a value into the save.
+            self.default_value = TypedValueField::new("Default", field_type.shape(), false);
+        }
+    }
+
+    pub fn default_eligible(&self) -> bool {
+        crate::managed::ops::scalar_type_supports_default(self.field_type)
     }
 
     pub fn enum_eligible(&self) -> bool {
@@ -823,6 +834,9 @@ impl AddFieldState {
     }
 
     pub fn parsed_default(&self) -> Option<String> {
+        if !self.default_eligible() {
+            return None;
+        }
         let value = self.default_value.trimmed();
         (!value.is_empty()).then(|| value.to_string())
     }
@@ -1953,6 +1967,21 @@ mod tests {
         assert_eq!(draft.default_value.error(), None);
     }
 
+    /// An object type hides the default row, so a value typed under another
+    /// type must not ride along into the save.
+    #[test]
+    fn retyping_to_an_object_drops_the_hidden_default() {
+        let mut draft = AddFieldState::new("sandbox".into(), "thing".into(), json!({}));
+        draft.set_field_type(ScalarFieldType::StringArray);
+        draft.default_value.set("[\"a\"]");
+        assert_eq!(draft.parsed_default().as_deref(), Some("[\"a\"]"));
+        draft.set_field_type(ScalarFieldType::ObjectArray);
+        assert!(!draft.default_eligible());
+        assert_eq!(draft.parsed_default(), None);
+        draft.set_field_type(ScalarFieldType::String);
+        assert_eq!(draft.parsed_default(), None);
+    }
+
     #[test]
     fn untouched_default_survives_an_edit_form_save() {
         let object = json!({
@@ -1993,23 +2022,35 @@ mod tests {
             delete: true,
         };
         assert_eq!(
-            EditFieldFocus::Description.next(caps, true),
+            EditFieldFocus::Description.next(caps, true, true),
             EditFieldFocus::Enum
         );
         assert_eq!(
-            EditFieldFocus::Enum.prev(caps, true),
+            EditFieldFocus::Enum.prev(caps, true, true),
             EditFieldFocus::Description
         );
         assert_eq!(
-            EditFieldFocus::Enum.next(caps, true),
+            EditFieldFocus::Enum.next(caps, true, true),
             EditFieldFocus::Default
         );
         // On the add form the type is still being chosen, and choosing a
         // boolean removes this row — so it follows Type rather than preceding
         // it.
-        assert_eq!(AddFieldFocus::Type.next(true), AddFieldFocus::Enum);
-        assert_eq!(AddFieldFocus::Enum.prev(true), AddFieldFocus::Type);
-        assert_eq!(AddFieldFocus::Enum.next(true), AddFieldFocus::Default);
-        assert_eq!(AddFieldFocus::Type.next(false), AddFieldFocus::Default);
+        assert_eq!(AddFieldFocus::Type.next(true, true), AddFieldFocus::Enum);
+        assert_eq!(AddFieldFocus::Enum.prev(true, true), AddFieldFocus::Type);
+        assert_eq!(AddFieldFocus::Enum.next(true, true), AddFieldFocus::Default);
+        assert_eq!(
+            AddFieldFocus::Type.next(false, true),
+            AddFieldFocus::Default
+        );
+        // An object type has neither row, so focus skips both.
+        assert_eq!(
+            AddFieldFocus::Type.next(false, false),
+            AddFieldFocus::Searchable
+        );
+        assert_eq!(
+            EditFieldFocus::Description.next(caps, false, false),
+            EditFieldFocus::Required
+        );
     }
 }

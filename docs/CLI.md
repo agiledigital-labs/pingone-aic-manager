@@ -1110,7 +1110,9 @@ create; it is not UI prefill and also satisfies `required`. The value must match
 the field type. The CLI validates this locally because IDM accepts a mismatched
 schema default with 200, then the managed object returns 404 forever. Use
 `--clear-default` on `field edit` to remove it (`field add` rejects it). For a
-`string[]` field, pass JSON such as `'["a","b"]'`.
+`string[]` field, pass JSON such as `'["a","b"]'`. `object` and `object[]`
+fields take no `--default`: how IDM applies one is unmeasured, so it is refused
+rather than risk the 404.
 
 Removing a value from an existing set requires bare `--force`, and warns on
 stderr even then. `field add` and `relationship set` reject `--force` because
