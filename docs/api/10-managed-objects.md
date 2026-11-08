@@ -608,8 +608,11 @@ wherever both ran.
   on AIC's Rhino; not probed).
 
 Not measured: `PATCH replace` with `null` beyond the existing 400 rows, a
-whole-record `PUT` with `null`, the next-gen journey `openidm` lane for these
-cases, and a default-less boolean sent `null`. Open remainder: Q18 in
+`PATCH` operation with no `value` key (rhino-local treats it as `value: null`
+in both lanes, an inference), a hook, `enum`, `policies` or `required`
+declared under `properties` or `items` (rhino-local faults such a write in
+both lanes rather than guess), a whole-record `PUT` with `null`, the next-gen
+journey `openidm` lane for these cases, and a default-less boolean sent `null`. Open remainder: Q18 in
 `99-quirks-and-open-questions.md`.
 
 Three consequences worth carrying:
