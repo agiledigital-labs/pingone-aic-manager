@@ -1252,6 +1252,7 @@ pub(crate) async fn run_with_runtime(
             }
             let (mut pushed, mut pulled, mut in_sync, mut invalid) = (0u32, 0u32, 0u32, 0u32);
             let mut failed = 0u32;
+            let mut forgotten = 0u32;
             let mut conflicts: Vec<String> = Vec::new();
             let mut remote_missing: Vec<(String, Option<String>)> = Vec::new();
             let mut stopped = false;
@@ -1376,12 +1377,15 @@ pub(crate) async fn run_with_runtime(
                                     &c.name,
                                 ) {
                                     Ok(sync::LocalDisposition::Removed) => {
+                                        forgotten += 1;
                                         println!("forgot {full} from sync (local file removed)")
                                     }
                                     Ok(sync::LocalDisposition::Absent) => {
+                                        forgotten += 1;
                                         println!("forgot {full} from sync (no local file)")
                                     }
                                     Ok(sync::LocalDisposition::Kept(why)) => {
+                                        forgotten += 1;
                                         println!("forgot {full} from sync (local file kept: {why})")
                                     }
                                     Err(error) => {
@@ -1392,7 +1396,10 @@ pub(crate) async fn run_with_runtime(
                             }
                             RemoteMissingChoice::Forget => {
                                 match sync::forget(&t, ns.realm_arg(), c.kind, &c.name) {
-                                    Ok(()) => println!("forgot {full} from sync (local file kept)"),
+                                    Ok(()) => {
+                                        forgotten += 1;
+                                        println!("forgot {full} from sync (local file kept)")
+                                    }
                                     Err(error) => {
                                         eprintln!("! {full}: {error}");
                                         failed += 1;
@@ -1534,10 +1541,15 @@ pub(crate) async fn run_with_runtime(
                 }
             }
             println!(
-                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {} · remote missing {}{}{}",
+                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {} · remote missing {}{}{}{}",
                 if stopped { " (stopped, partial)" } else { "" },
                 conflicts.len(),
                 remote_missing.len(),
+                if forgotten > 0 {
+                    format!(" · forgotten {forgotten}")
+                } else {
+                    String::new()
+                },
                 if invalid > 0 {
                     format!(" · refused {invalid}")
                 } else {
