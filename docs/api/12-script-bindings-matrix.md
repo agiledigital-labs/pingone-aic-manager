@@ -1046,6 +1046,42 @@ only for the null detail, `JSON.stringify(d.getObject())` is plain JSON, and
 Java members, not the detail's fields. The 404's message names the directory
 entry it looked for, so it carries the record's id.
 
+### `openidm.read` fields on a has-many relationship — next-gen (verified 2026-11-08)
+
+`fixtures/array-relationship-fields.script.js`, run through `run-journey.sh`,
+created two throwaway `alpha_role` records, one `alpha_user` holding both in
+`roles` and one holding none, read each user with the selectors below, and
+deleted all four. Per element of `roles`:
+
+| Selector                                                    | Each element carries                                                                         |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `roles`                                                     | `_ref`, `_refResourceCollection`, `_refResourceId`, `_refProperties`                         |
+| `roles/*`                                                   | those, plus `_id`, `_rev`, `_refResourceRev` and every field of the role                     |
+| `roles/*/name`, `roles/*/name/x`                            | the envelope with `_id`, `_rev`, `_refResourceRev`, plus `name` (whole: `/x` below a string is ignored) |
+| `roles/_id`, `roles/name`, `roles/_ref`, `roles/_refProperties`, `roles/0`, `roles/*/_id`, `roles/*/_refProperties` | the envelope with `_id`, `_rev`, `_refResourceRev` only. `roles/name` does **not** return `name` |
+| `roles/*` with `roles/_id`; `roles` with `roles/*`          | the union: the same as `roles/*`                                                             |
+
+- **`*` combines with a child selector.** `["*", "roles/*"]` and
+  `["*", "roles/name"]` return every top-level field, with `roles` projected as
+  the child selector alone would project it.
+- **`*` alone omits `roles`**: a relationship is not returned by default.
+- **An empty relationship** reads as `[]`, key present, under every selector.
+- **The value is a Java list**, not a JS array: `Array.isArray` is `false`,
+  `length` and `size()` are both 2, `roles[0]` is an object and `roles.map` is
+  `undefined`. `JSON.stringify` gives a JSON array.
+- **Order is not stable.** The element order flipped between reads of the same
+  record, and so did key order within an element.
+
+`rhino-local` emulates the table for a seeded array of `_ref` objects. It
+derives `_refResourceCollection`, `_refResourceId` and `_id` from `_ref` when
+the seed leaves them out, and fills `_rev` and `_refResourceRev` from each
+other. It keeps the seeded order and returns a JS array. Three cases are
+unmeasured and fault: `parent/*` on an element seeded as a bare reference
+(`openidm-fields-unresolved-ref`), a path below an object field of an element
+(`openidm-fields-relationship-deep-path`), and `*` with a child of anything
+other than a relationship array (`openidm-fields-wildcard-with-path`). It does
+not yet drop a seeded relationship under `*` alone.
+
 ### `requestProperties` arity — next-gen validate scope (verified 2026-09-08)
 
 The token-endpoint contexts reach the same two maps through

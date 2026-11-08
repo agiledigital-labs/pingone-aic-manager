@@ -2599,70 +2599,253 @@ function __rhinoLocalRequireRecord(method, resource) {
   return found;
 }
 
-function __rhinoLocalProject(record, fields) {
+// Where the script called in from: the first frame of Rhino's
+// `\tat <file>:<line>` stack outside this runtime's own source. Null where
+// the stack has another shape (the in-process vm lane) or no such frame.
+function __rhinoLocalCallSite() {
+  var stack;
+  try {
+    stack = String(new Error("call site").stack);
+  } catch (e) {
+    return null;
+  }
+  var frames = [];
+  stack.split("\n").forEach(function (line) {
+    var m = /^\tat (.+?):(\d+)(?: \(.*\))?\s*$/.exec(line);
+    if (m) {
+      frames.push({ file: m[1], line: m[2] });
+    }
+  });
+  var i;
+  for (i = 1; i < frames.length; i += 1) {
+    if (frames[i].file !== frames[0].file) {
+      return frames[i].file + ":" + frames[i].line;
+    }
+  }
+  return null;
+}
+
+// What a `fields` parent is, with its article, for fault text.
+function __rhinoLocalKind(value) {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return __rhinoLocalIsReferenceArray(value) ? "a relationship array" : "an array of non-references";
+  }
+  return (typeof value === "object" ? "an " : "a ") + typeof value;
+}
+
+// One fault shape for every unmeasured `fields` projection: the operation,
+// the resource, the selector, what the parent was and the script's call site.
+function __rhinoLocalFieldsFault(id, context, selector, detail, remedy) {
+  var site = __rhinoLocalCallSite();
+  return __rhinoLocalFault(id,
+    "rhino-local: openidm." + context.method + " " + context.resource + " fields " + JSON.stringify(selector) +
+      ": " + detail + "; " + remedy + (site ? " (called from " + site + ")" : ""));
+}
+
+// A has-many relationship as a seed holds it: an array whose every element is
+// an object carrying a `_ref` string. An empty array is one too: AIC answers
+// `[]` for every selector on an empty relationship (measured 2026-11-08).
+function __rhinoLocalIsReferenceArray(value) {
+  return Array.isArray(value) && value.every(function (el) {
+    return __rhinoLocalIsPlainObject(el) && typeof el._ref === "string";
+  });
+}
+
+function __rhinoLocalProject(record, fields, context) {
   if (!fields || !Array.isArray(fields) || fields.length === 0) {
     return record;
   }
+  context = context || { method: "read", resource: "?" };
   // AM splits every selector element on commas without trimming whitespace.
   fields = fields.reduce(function (names, entry) {
     return names.concat(String(entry).split(","));
   }, []);
+  var wildcard = fields.indexOf("*") !== -1;
+  // Every child selector is judged before anything is returned, so neither a
+  // wildcard nor a whole-parent selector hides an unmeasured one.
+  var parents = [];
+  var byParent = {};
+  fields.forEach(function (field) {
+    if (field.indexOf("/") === -1) {
+      return;
+    }
+    var parent = field.split("/")[0];
+    if (!byParent[parent]) {
+      byParent[parent] = [];
+      parents.push(parent);
+    }
+    byParent[parent].push(field);
+  });
+  var projected = {};
+  parents.forEach(function (parent) {
+    if (!__rhinoLocalHas(record, parent)) {
+      return;
+    }
+    var value = record[parent];
+    if (__rhinoLocalIsReferenceArray(value)) {
+      var selectors = byParent[parent].slice();
+      if (fields.indexOf(parent) !== -1) {
+        selectors.push(parent);
+      }
+      projected[parent] = __rhinoLocalProjectReferences(value, selectors, context);
+      return;
+    }
+    if (wildcard) {
+      throw __rhinoLocalFieldsFault("openidm-fields-wildcard-with-path", context, byParent[parent][0],
+        "combining * with a child selector is unmeasured unless the parent is a relationship array, and " + parent + " is " + __rhinoLocalKind(value),
+        "use separate selectors without a wildcard");
+    }
+    var out;
+    byParent[parent].forEach(function (field) {
+      out = __rhinoLocalProjectChild(value, field.split("/").slice(1), out, context, field);
+    });
+    if (fields.indexOf(parent) === -1) {
+      projected[parent] = out;
+    }
+  });
+  var result;
   var i;
-  var hasChild = false;
-  for (i = 0; i < fields.length; i += 1) {
-    var parts = fields[i].split("/");
-    if (parts.length > 1) {
-      hasChild = true;
-      if (__rhinoLocalHas(record, parts[0])) {
-        __rhinoLocalProjectChild(record[parts[0]], parts.slice(1));
+  if (wildcard) {
+    result = {};
+    Object.keys(record).forEach(function (key) {
+      result[key] = record[key];
+    });
+  } else {
+    result = {};
+    if (record._id !== undefined) {
+      result._id = record._id;
+    }
+    if (record._rev !== undefined) {
+      result._rev = record._rev;
+    }
+    for (i = 0; i < fields.length; i += 1) {
+      if (__rhinoLocalHas(record, fields[i])) {
+        result[fields[i]] = __rhinoLocalIsReferenceArray(record[fields[i]])
+          ? __rhinoLocalProjectReferences(record[fields[i]], [fields[i]], context)
+          : record[fields[i]];
       }
     }
   }
-  for (i = 0; i < fields.length; i += 1) {
-    if (fields[i] === "*") {
-      if (hasChild) {
-        throw __rhinoLocalFault("openidm-fields-wildcard-with-path", "rhino-local: openidm fields: combining * with parent/child selectors is unmeasured; use separate selectors without a wildcard");
-      }
-      return record;
-    }
-  }
-  var out = {};
-  if (record._id !== undefined) {
-    out._id = record._id;
-  }
-  if (record._rev !== undefined) {
-    out._rev = record._rev;
-  }
-  var field;
-  var parent;
-  for (i = 0; i < fields.length; i += 1) {
-    field = String(fields[i]);
-    if (__rhinoLocalHas(record, field)) {
-      out[field] = record[field];
-    } else if (field.indexOf("/") !== -1) {
-      parent = field.split("/")[0];
-      if (__rhinoLocalHas(record, parent)) {
-        var projected = __rhinoLocalProjectChild(record[parent], field.split("/").slice(1), fields.indexOf(parent) === -1 ? out[parent] : undefined);
-        if (fields.indexOf(parent) === -1) {
-          out[parent] = projected;
-        }
-      }
-    }
-  }
-  return out;
+  Object.keys(projected).forEach(function (parent) {
+    result[parent] = projected[parent];
+  });
+  return result;
 }
 
 // Only the reference envelope documented with _meta/lastChanged is measured.
 var __rhinoLocalReferenceEnvelope = [
   "_id", "_rev", "_ref", "_refResourceCollection", "_refResourceId", "_refResourceRev", "_refProperties"
 ];
-function __rhinoLocalProjectChild(value, path, previous) {
+// What a bare has-many selector returns per element (measured 2026-11-08).
+var __rhinoLocalReferenceBare = ["_ref", "_refResourceCollection", "_refResourceId", "_refProperties"];
+
+// One element's reference envelope. `_refResourceCollection` and
+// `_refResourceId` are spellings of `_ref`, so they are derived when the seed
+// leaves them out; `_id` is the target's id, and `_rev` / `_refResourceRev`
+// are both the target's revision, so either fills the other. Nothing else is
+// invented: a seed without a revision reads without one.
+function __rhinoLocalEnvelopeOf(el, keys) {
+  var ref = String(el._ref);
+  var slash = ref.lastIndexOf("/");
+  var derived = {
+    _ref: ref,
+    _refResourceCollection: __rhinoLocalHas(el, "_refResourceCollection") ? el._refResourceCollection : ref.substring(0, slash),
+    _refResourceId: __rhinoLocalHas(el, "_refResourceId") ? el._refResourceId : ref.substring(slash + 1),
+  };
+  derived._id = __rhinoLocalHas(el, "_id") ? el._id : derived._refResourceId;
+  if (__rhinoLocalHas(el, "_rev") || __rhinoLocalHas(el, "_refResourceRev")) {
+    derived._rev = __rhinoLocalHas(el, "_rev") ? el._rev : el._refResourceRev;
+    derived._refResourceRev = __rhinoLocalHas(el, "_refResourceRev") ? el._refResourceRev : el._rev;
+  }
+  if (__rhinoLocalHas(el, "_refProperties")) {
+    derived._refProperties = el._refProperties;
+  }
+  var out = {};
+  keys.forEach(function (key) {
+    if (__rhinoLocalHas(derived, key)) {
+      out[key] = derived[key];
+    }
+  });
+  return out;
+}
+
+// An element carries its target's fields only if the seed put some there.
+// One holding nothing past the envelope is a bare reference, and expanding it
+// from another seeded collection is unmeasured.
+function __rhinoLocalRequireExpanded(el, index, parent, selector, context) {
+  var expanded = Object.keys(el).some(function (key) {
+    return __rhinoLocalReferenceEnvelope.indexOf(key) === -1;
+  });
+  if (!expanded) {
+    throw __rhinoLocalFieldsFault("openidm-fields-unresolved-ref", context, selector,
+      "element " + index + " of " + parent + " (" + String(el._ref) + ") is a bare reference, and reference expansion is unmeasured",
+      "seed that element pre-expanded with the target's fields alongside its _ref");
+  }
+}
+
+// A has-many relationship under the selectors that name it. Measured
+// 2026-11-08 on a two-element alpha_user.roles (docs/api/12): the bare name
+// gives the reference envelope; `parent/*` adds `_id`, `_rev`,
+// `_refResourceRev` and every target field; `parent/*/<f>` (any deeper
+// suffix, when <f> is not an object) adds those three and <f>; any other
+// `parent/<x>` adds only the three, never <x>. Several selectors give their
+// union. AIC's element order varied between reads; seeded order is kept.
+function __rhinoLocalProjectReferences(value, selectors, context) {
+  var parent = selectors[0].split("/")[0];
+  return value.map(function (el, index) {
+    var out = __rhinoLocalEnvelopeOf(el, __rhinoLocalReferenceBare);
+    selectors.forEach(function (selector) {
+      var path = selector.split("/").slice(1);
+      if (path.length === 0) {
+        return;
+      }
+      var system = __rhinoLocalEnvelopeOf(el, __rhinoLocalReferenceEnvelope);
+      Object.keys(system).forEach(function (key) {
+        out[key] = system[key];
+      });
+      if (path[0] !== "*") {
+        return;
+      }
+      __rhinoLocalRequireExpanded(el, index, parent, selector, context);
+      if (path.length === 1) {
+        Object.keys(el).forEach(function (key) {
+          if (!__rhinoLocalHas(out, key)) {
+            out[key] = el[key];
+          }
+        });
+        return;
+      }
+      var field = path[1];
+      if (!__rhinoLocalHas(el, field) || __rhinoLocalHas(system, field)) {
+        return;
+      }
+      if (path.length > 2 && el[field] !== null && typeof el[field] === "object") {
+        throw __rhinoLocalFieldsFault("openidm-fields-relationship-deep-path", context, selector,
+          "a path below an object field of a relationship element is unmeasured (" + field + " is " + __rhinoLocalKind(el[field]) + ")",
+          "select " + parent + "/*/" + field + " and read the nested value in the script");
+      }
+      out[field] = el[field];
+    });
+    return out;
+  });
+}
+
+function __rhinoLocalProjectChild(value, path, previous, context, selector) {
   if (!__rhinoLocalIsPlainObject(value)) {
-    throw __rhinoLocalFault("openidm-fields-non-object-parent", "rhino-local: openidm fields: parent/child projection of a scalar or array parent is unmeasured; seed a pre-expanded object parent");
+    throw __rhinoLocalFieldsFault("openidm-fields-non-object-parent", context, selector,
+      "projecting a child of " + __rhinoLocalKind(value) + " is unmeasured (a single-reference object and a relationship array are)",
+      Array.isArray(value)
+        ? "seed each element as a reference object with a _ref, or select the whole property"
+        : "select the whole property and read the child in the script");
   }
   var child = path[0];
   if (__rhinoLocalHas(value, "_ref") && !__rhinoLocalHas(value, child)) {
-    throw __rhinoLocalFault("openidm-fields-unresolved-ref", "rhino-local: openidm fields: unresolved _ref or reference expansion is unmeasured; seed the requested child in a pre-expanded object parent");
+    throw __rhinoLocalFieldsFault("openidm-fields-unresolved-ref", context, selector,
+      "the reference " + String(value._ref) + " carries no " + child + ", and reference expansion is unmeasured",
+      "seed the requested child in a pre-expanded object parent");
   }
   var out = previous || {};
   __rhinoLocalReferenceEnvelope.forEach(function (key) {
@@ -2671,7 +2854,7 @@ function __rhinoLocalProjectChild(value, path, previous) {
     }
   });
   if (__rhinoLocalHas(value, child)) {
-    out[child] = path.length === 1 ? value[child] : __rhinoLocalProjectChild(value[child], path.slice(1), out[child]);
+    out[child] = path.length === 1 ? value[child] : __rhinoLocalProjectChild(value[child], path.slice(1), out[child], context, selector);
   }
   return out;
 }
@@ -2842,7 +3025,7 @@ openidm.read = function (resourceName, _params, fields) {
     return null;
   }
   __rhinoLocalBagAccess("read", resource, found.record, fields);
-  return __rhinoLocalProject(found.record, fields);
+  return __rhinoLocalProject(found.record, fields, { method: "read", resource: resource });
 };
 
 openidm.query = function (resourceName, params, fields) {
@@ -2917,7 +3100,7 @@ openidm.query = function (resourceName, params, fields) {
     }
     if (verdict === true) {
       __rhinoLocalBagAccess("query", collection + "/" + rows[i]._id, rows[i], fields, params);
-      result.push(__rhinoLocalProject(rows[i], fields));
+      result.push(__rhinoLocalProject(rows[i], fields, { method: "query", resource: collection }));
     }
   }
   return {
@@ -2986,7 +3169,7 @@ openidm.create = function (resourceName, newResourceId, content) {
   );
   __rhinoLocalBagIdmWrite("create", collection + "/" + stored._id, stored);
   rows.push(stored);
-  return __rhinoLocalProject(stored, arguments.length >= 5 ? arguments[4] : null);
+  return __rhinoLocalProject(stored, arguments.length >= 5 ? arguments[4] : null, { method: "create", resource: String(resourceName) });
 };
 
 openidm.update = function (id, _rev, value) {
@@ -3005,7 +3188,7 @@ openidm.update = function (id, _rev, value) {
   next = __rhinoLocalOpenidmRecord(next, found.record._id, found.record._rev);
   __rhinoLocalBagIdmWrite("update", resource, next);
   found.rows[found.index] = next;
-  return __rhinoLocalProject(next, arguments.length >= 5 ? arguments[4] : null);
+  return __rhinoLocalProject(next, arguments.length >= 5 ? arguments[4] : null, { method: "update", resource: String(id) });
 };
 
 openidm.patch = function (resourceName, _rev, patch) {
@@ -3085,7 +3268,7 @@ openidm.patch = function (resourceName, _rev, patch) {
   __rhinoLocalBagIdmWrite("patch", resource, next);
   Object.keys(found.record).forEach(function (key) { delete found.record[key]; });
   Object.keys(next).forEach(function (key) { __rhinoLocalSetOwn(found.record, key, next[key]); });
-  return __rhinoLocalProject(found.record, arguments.length >= 5 ? arguments[4] : null);
+  return __rhinoLocalProject(found.record, arguments.length >= 5 ? arguments[4] : null, { method: "patch", resource: String(resourceName) });
 };
 
 openidm.delete = function (resourceName, _rev) {
@@ -3106,7 +3289,7 @@ openidm.delete = function (resourceName, _rev) {
   var removed = found.record;
   __rhinoLocalBagIdmWrite("delete", resource, removed);
   found.rows.splice(found.index, 1);
-  return __rhinoLocalProject(removed, arguments.length >= 4 ? arguments[3] : null);
+  return __rhinoLocalProject(removed, arguments.length >= 4 ? arguments[3] : null, { method: "delete", resource: String(resourceName) });
 };
 
 openidm.action = function (resource, actionName, content, params) {
