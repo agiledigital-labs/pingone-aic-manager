@@ -76,6 +76,10 @@ describe("an injected failure's getDetail matches the live capture", () => {
     ["isNull with an argument", null, "e.javaException.getDetail().isNull(1)"],
     ["getObject with an argument", null, "e.javaException.getDetail().getObject(1)"],
     ["toString with an argument", { result: false }, "e.javaException.getDetail().toString(1)"],
+    // The refusal is formatted before it is recorded, so it must not call a builtin the script replaced.
+    ["getDetail(1) while join/push are replaced", { result: false }, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
+    ["isNull(1) while join/push are replaced", null, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail().isNull(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
+    ["get(1) while join/push are replaced", { result: false }, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail().get(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
   ])("%s faults openidm-failure-detail, even when caught", async (_name, d, read) => {
     expectHarnessFault("openidm-failure-detail");
     const reply = d === undefined ? { code: 404 } : { code: 404, detail: d };

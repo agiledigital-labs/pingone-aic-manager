@@ -934,3 +934,13 @@ yields `"0,0,0"` (`lib-const-loop-consumer`), matching live.
 - `require()` is a CommonJS eval of seeded source, not AM's wrap factory. The
   library probes in this corpus do not need the shutter to load; they need it
   for the Java names they then construct (`lib-java-collections-consumer`).
+- Faults are not proof against a script that replaces a standard builtin
+  (`String`, `JSON`, `Array.prototype.*`, `Function.prototype.call`) while it
+  calls a binding. The emulator's own code uses the standard library to decide
+  and to describe a refusal, so a replaced builtin can throw an ordinary,
+  catchable error before the fault is recorded. The request-list, JsonValue and
+  request-map `forEach` refusal messages are built by primitive concatenation,
+  because those paths were the ones reported; the rest are not, and closing
+  them all is not possible from script (any helper, `call` included, is
+  replaceable). Real scripts do not do this; a test that does is outside what a
+  fault guarantees.

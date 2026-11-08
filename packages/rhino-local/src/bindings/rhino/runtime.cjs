@@ -588,32 +588,41 @@ var __rhinoLocalArityBasis = (function () {
   return basis;
 })();
 
+// Captured at load, before a script could shadow the global `java`.
+var __rhinoLocalJavaObject = typeof java !== "undefined" ? java.lang.Object : undefined;
+
 // Rhino's NativeJavaMethod.scriptSignature: how a refused call names its
 // arguments.
 function __rhinoLocalScriptSignature(args) {
-  var out = [];
+  // Primitive concatenation only: a refusal is built before its fault is
+  // recorded, so nothing here may call a builtin a script can replace
+  // (Array.prototype.push/join, String).
+  var out = "";
   var i;
   var value;
   for (i = 0; i < args.length; i += 1) {
     value = args[i];
+    if (i > 0) {
+      out += ",";
+    }
     if (value === null) {
-      out.push("null");
+      out += "null";
     } else if (value === undefined) {
       // Rhino 1.7.14's Undefined.instance is not a Scriptable, so it is named
       // by its Java class: AIC's `mergeShared(org.mozilla.javascript.Undefined).`
       // (E19 live probe, 2026-11-06).
-      out.push("org.mozilla.javascript.Undefined");
+      out += "org.mozilla.javascript.Undefined";
     } else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") {
-      out.push(typeof value);
+      out += typeof value;
     } else if (typeof value === "function") {
-      out.push("function");
-    } else if (typeof java !== "undefined" && value instanceof java.lang.Object) {
-      out.push(String(value.getClass().getName()));
+      out += "function";
+    } else if (__rhinoLocalJavaObject !== undefined && value instanceof __rhinoLocalJavaObject) {
+      out += "" + value.getClass().getName();
     } else {
-      out.push("object");
+      out += "object";
     }
   }
-  return out.join(",");
+  return out;
 }
 
 function __rhinoLocalInternalError(message) {
@@ -2854,26 +2863,32 @@ function __rhinoLocalRequireExpanded(el, index, parent, selector, context) {
 // union. AIC's element order varied between reads; seeded order is kept.
 function __rhinoLocalProjectReferences(value, selectors, context) {
   var parent = selectors[0].split("/")[0];
+  var s;
+  var path;
+  // Checked once, before any element and so on an empty array too: only one
+  // segment past a non-`*` name, and nothing below an envelope key, was
+  // measured. These depend on the selector alone, so a deeper path refuses
+  // whatever the relationship holds, even where the shallow form returns the
+  // envelope.
+  for (s = 0; s < selectors.length; s += 1) {
+    path = selectors[s].split("/").slice(1);
+    if (path.length > 1 && path[0] !== "*") {
+      throw __rhinoLocalFieldsFault("openidm-fields-relationship-deep-path", context, selectors[s],
+        "a path below " + parent + "/" + path[0] + " is unmeasured (only " + parent + "/<name> and " + parent + "/*/... were measured)",
+        "select " + parent + "/" + path[0] + " or " + parent + "/*");
+    }
+    if (path.length > 2 && path[0] === "*" && __rhinoLocalReferenceEnvelope.indexOf(path[1]) !== -1) {
+      throw __rhinoLocalFieldsFault("openidm-fields-relationship-deep-path", context, selectors[s],
+        "a path below the reference envelope key " + path[1] + " is unmeasured",
+        "select " + parent + "/*/" + path[1] + " and read the nested value in the script");
+    }
+  }
   return value.map(function (el, index) {
     var out = __rhinoLocalEnvelopeOf(el, __rhinoLocalReferenceBare);
     selectors.forEach(function (selector) {
       var path = selector.split("/").slice(1);
       if (path.length === 0) {
         return;
-      }
-      // Checked before any early return: only one segment past a non-`*`
-      // name, and nothing below an envelope key, was measured, so a deeper
-      // path under either refuses even where the shallow form returns the
-      // envelope.
-      if (path[0] !== "*" && path.length > 1) {
-        throw __rhinoLocalFieldsFault("openidm-fields-relationship-deep-path", context, selector,
-          "a path below " + parent + "/" + path[0] + " is unmeasured (only " + parent + "/<name> and " + parent + "/*/... were measured)",
-          "select " + parent + "/" + path[0] + " or " + parent + "/*");
-      }
-      if (path[0] === "*" && path.length > 2 && __rhinoLocalReferenceEnvelope.indexOf(path[1]) !== -1) {
-        throw __rhinoLocalFieldsFault("openidm-fields-relationship-deep-path", context, selector,
-          "a path below the reference envelope key " + path[1] + " is unmeasured",
-          "select " + parent + "/*/" + path[1] + " and read the nested value in the script");
       }
       var system = __rhinoLocalEnvelopeOf(el, __rhinoLocalReferenceEnvelope);
       Object.keys(system).forEach(function (key) {
