@@ -125,10 +125,22 @@ pub enum ObjectCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum FieldCommand {
+    /// Add a property to a managed object.
+    #[command(
+        after_help = "Examples:\n  aic managed field add custom_widget.code --type string --nullable\n  aic managed field add custom_widget.details --type object --after code\n  aic managed field add custom_widget.items --type object[]"
+    )]
     Add {
+        /// `<object>.<key>`, e.g. `custom_widget.code` (a `/` is not accepted).
         field: String,
-        #[arg(long = "type")]
+        #[arg(long = "type", value_parser = ["string", "boolean", "number", "string[]", "object", "object[]"])]
         field_type: String,
+        /// Declare the type as `[<type>, "null"]`, as repo-exported schemas do.
+        #[arg(long)]
+        nullable: bool,
+        /// Place the new key right after this property in `schema.order`
+        /// instead of at the end.
+        #[arg(long, value_name = "KEY")]
+        after: Option<String>,
         #[command(flatten)]
         attrs: FieldAttrs,
         #[arg(long)]
@@ -669,6 +681,8 @@ async fn field(command: FieldCommand) -> Result<()> {
         FieldCommand::Add {
             field,
             field_type,
+            nullable,
+            after,
             attrs,
             tenant,
             yes,
@@ -702,6 +716,8 @@ async fn field(command: FieldCommand) -> Result<()> {
                 user_editable: attrs.user_editable.unwrap_or(true),
                 enum_values,
                 default_value: attrs.default_value,
+                nullable,
+                after,
             };
             let applied = ops::apply_add_field(&previous, &spec).map_err(crate::Error::Config)?;
             replace_object_write(&ok, &mut doc, &object, &previous, applied.object.clone()).await?;
@@ -3467,15 +3483,11 @@ pub(super) fn parse_object_key(value: &str) -> Result<(String, String)> {
     Ok((object.into(), key.into()))
 }
 fn scalar_type(value: &str) -> Result<spec::ScalarFieldType> {
-    match value {
-        "string" => Ok(spec::ScalarFieldType::String),
-        "boolean" => Ok(spec::ScalarFieldType::Boolean),
-        "number" => Ok(spec::ScalarFieldType::Number),
-        "string[]" => Ok(spec::ScalarFieldType::StringArray),
-        _ => Err(crate::Error::Config(
-            "--type must be string, boolean, number, or string[]".into(),
-        )),
-    }
+    spec::ScalarFieldType::from_label(value).ok_or_else(|| {
+        crate::Error::Config(
+            "--type must be string, boolean, number, string[], object, or object[]".into(),
+        )
+    })
 }
 fn cardinality(value: &str) -> Result<state::Cardinality> {
     match value {

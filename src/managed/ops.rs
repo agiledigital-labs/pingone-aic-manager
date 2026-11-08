@@ -2170,6 +2170,8 @@ fn add_field_spec_from_draft(draft: &AddFieldState) -> Result<AddFieldSpec, Stri
         user_editable: draft.user_editable,
         enum_values: draft.parsed_enum_values()?,
         default_value: draft.parsed_default(),
+        nullable: false,
+        after: None,
     })
 }
 
@@ -3305,6 +3307,8 @@ pub fn apply_add_field(object_def: &Value, spec: &AddFieldSpec) -> Result<AddFie
         ScalarFieldType::Boolean => json!({"type": "boolean"}),
         ScalarFieldType::Number => json!({"type": "number"}),
         ScalarFieldType::StringArray => json!({"type": "array", "items": {"type": "string"}}),
+        ScalarFieldType::Object => json!({"type": "object"}),
+        ScalarFieldType::ObjectArray => json!({"type": "array", "items": {"type": "object"}}),
     };
     let property_map = property
         .as_object_mut()
@@ -3325,7 +3329,16 @@ pub fn apply_add_field(object_def: &Value, spec: &AddFieldSpec) -> Result<AddFie
         apply_default_change(&mut property, &DefaultChange::Set(default_value.clone()))?;
     }
 
+    // Last, so the enum and default above saw the plain `type` they key on.
+    if spec.nullable {
+        let kind = property["type"].take();
+        property["type"] = json!([kind, "null"]);
+    }
+
     insert_new_property(&mut object, &field_key, property, spec.required)?;
+    if let Some(after) = &spec.after {
+        move_order_key_after(&mut object, &field_key, after)?;
+    }
     Ok(AddFieldApplied {
         object,
         field_key,
@@ -3538,6 +3551,32 @@ fn append_order_key(object: &mut Value, field_key: &str) -> Result<(), String> {
     if !order.iter().any(|value| value.as_str() == Some(field_key)) {
         order.push(Value::String(field_key.to_string()));
     }
+    Ok(())
+}
+
+/// Moves `field_key` to sit right after `after` in `schema.order`. `after`
+/// must be a declared property and already listed in the order.
+fn move_order_key_after(object: &mut Value, field_key: &str, after: &str) -> Result<(), String> {
+    if after == field_key {
+        return Err(format!(
+            "--after cannot name the new field '{field_key}' itself"
+        ));
+    }
+    if crate::managed::state::properties(object).is_none_or(|p| !p.contains_key(after)) {
+        return Err(format!(
+            "--after '{after}' is not a property of this object"
+        ));
+    }
+    let order = schema_mut(object)?
+        .get_mut("order")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "schema.order is not an array".to_string())?;
+    order.retain(|value| value.as_str() != Some(field_key));
+    let at = order
+        .iter()
+        .position(|value| value.as_str() == Some(after))
+        .ok_or_else(|| format!("--after '{after}' is not listed in schema.order"))?;
+    order.insert(at + 1, Value::String(field_key.to_string()));
     Ok(())
 }
 
@@ -3766,6 +3805,85 @@ mod tests {
             user_editable: true,
             enum_values: None,
             default_value: None,
+            nullable: false,
+            after: None,
+        }
+    }
+
+    fn widget() -> Value {
+        json!({
+            "name": "custom_widget",
+            "schema": {
+                "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                "required": [],
+                "order": ["a", "b"]
+            }
+        })
+    }
+
+    #[test]
+    fn add_field_writes_object_types_nullable_and_order_position() {
+        let add = |spec: AddFieldSpec| apply_add_field(&widget(), &spec).map(|a| a.object);
+
+        let object = add(AddFieldSpec {
+            field_type: ScalarFieldType::Object,
+            ..add_field_spec("details")
+        })
+        .unwrap();
+        assert_eq!(
+            object["schema"]["properties"]["details"]["type"],
+            json!("object")
+        );
+        let list = add(AddFieldSpec {
+            field_type: ScalarFieldType::ObjectArray,
+            ..add_field_spec("items")
+        })
+        .unwrap();
+        assert_eq!(
+            list["schema"]["properties"]["items"]["type"],
+            json!("array")
+        );
+        assert_eq!(
+            list["schema"]["properties"]["items"]["items"],
+            json!({"type": "object"})
+        );
+
+        // Discriminating: the enum and default key on a plain `type`, so the
+        // nullable wrap must come after them, not before.
+        let nullable = add(AddFieldSpec {
+            nullable: true,
+            enum_values: Some(enum_spec(&[("x", None), ("y", None)])),
+            default_value: Some("x".into()),
+            ..add_field_spec("code")
+        })
+        .unwrap();
+        let code = &nullable["schema"]["properties"]["code"];
+        assert_eq!(code["type"], json!(["string", "null"]));
+        assert_eq!(code["default"], json!("x"));
+        assert_eq!(crate::managed::state::property_type(code), "string?");
+
+        let placed = add(AddFieldSpec {
+            after: Some("a".into()),
+            ..add_field_spec("code")
+        })
+        .unwrap();
+        assert_eq!(placed["schema"]["order"], json!(["a", "code", "b"]));
+        let appended = add(add_field_spec("code")).unwrap();
+        assert_eq!(appended["schema"]["order"], json!(["a", "b", "code"]));
+
+        for after in ["missing", "code"] {
+            assert!(
+                add(AddFieldSpec {
+                    after: Some(after.into()),
+                    ..add_field_spec("code")
+                })
+                .is_err(),
+                "{after}"
+            );
+        }
+        for kind in ScalarFieldType::ALL {
+            assert_eq!(ScalarFieldType::from_label(kind.label()), Some(kind));
+            assert_eq!(kind.next().prev(), kind);
         }
     }
 
@@ -4134,6 +4252,8 @@ mod tests {
                 &AddFieldSpec {
                     field_type,
                     default_value: Some(raw.into()),
+                    nullable: false,
+                    after: None,
                     ..add_field_spec("value")
                 },
             )
@@ -4148,6 +4268,8 @@ mod tests {
             &AddFieldSpec {
                 field_type: ScalarFieldType::StringArray,
                 default_value: Some(r#"["a"]"#.into()),
+                nullable: false,
+                after: None,
                 ..add_field_spec("values")
             },
         )
@@ -4234,6 +4356,8 @@ mod tests {
             &AddFieldSpec {
                 enum_values: Some(enum_spec(&[("new", None)])),
                 default_value: Some("done".into()),
+                nullable: false,
+                after: None,
                 ..add_field_spec("status")
             },
         )
