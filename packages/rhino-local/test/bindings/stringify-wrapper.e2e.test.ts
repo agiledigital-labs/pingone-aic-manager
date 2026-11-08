@@ -73,6 +73,20 @@ const javaListFree: Array<[string, string]> = [
     'var m = new java.util.HashMap(); m.put("a", 1); m.put("b", 2); JSON.stringify({ m: m }, ["m", "a"])'],
   ["an array replacer leaves a Java list whole",
     'var l = new java.util.ArrayList(); l.add(1); l.add(2); JSON.stringify({ l: l }, ["l"])'],
+  ["an array replacer writes a Java byte array as native does",
+    'JSON.stringify({ b: new java.lang.String("ab").getBytes() }, ["b"])'],
+  ["an array replacer over a nested Java String array behaves as native",
+    'try { JSON.stringify({ a: new java.lang.String("x,y").split(",") }, ["a"]); } catch (e) { "threw:" + e.name; }'],
+  ["an array replacer over a Java map with an Integer key",
+    'var m = new java.util.HashMap(); m.put(new java.lang.Integer(1), "a"); JSON.stringify({ m: m }, ["m", "1"])'],
+];
+
+// V8 values with no Rhino counterpart.
+const v8ListFree: Array<[string, string]> = [
+  ["an object tagged Number by Symbol.toStringTag is an object, and its tag is not read",
+    'var n = 0, o = { x: 1 }; Object.defineProperty(o, Symbol.toStringTag, { get: function () { n++; return "Number"; } }); JSON.stringify(o, ["x"]) + ":" + n'],
+  ["a boxed BigInt under an empty property list",
+    'try { JSON.stringify({ b: Object(BigInt(1)) }, []); } catch (e) { "threw:" + e.name; }'],
 ];
 
 const native = (source: string): unknown => vm.runInContext(source, vm.createContext({}));
@@ -82,7 +96,7 @@ describe("JSON.stringify without lists matches native", () => {
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
 
-  it.each(listFree)("%s (node:vm)", (_name, source) => {
+  it.each([...listFree, ...v8ListFree])("%s (node:vm)", (_name, source) => {
     const sandbox = loadBehaviour({});
     expect(vm.runInContext(source, sandbox)).toBe(native(source));
     expect(sandboxFaults(sandbox)).toEqual([]);
@@ -113,6 +127,12 @@ const routes = (list: string): Array<[string, string]> => [
   ["from a getter", `var o = {}; Object.defineProperty(o, "v", { enumerable: true, get: function () { return ${list}; } }); JSON.stringify(o)`],
   ["from a replacer", `JSON.stringify({ v: 1 }, function (k, v) { return k === "v" ? ${list} : v; })`],
 ];
+// The same routes under a property list, which native applies to the records too.
+const listedRoutes = (list: string): Array<[string, string]> => [
+  ["directly", `JSON.stringify(${list}, ["_id"])`],
+  ["nested", `JSON.stringify({ v: ${list} }, ["v", "_id"])`],
+  ["from a getter", `var o = {}; Object.defineProperty(o, "v", { enumerable: true, get: function () { return ${list}; } }); JSON.stringify(o, ["v", "_id"])`],
+];
 const arrayOf = (route: string, items: string) =>
   route === "nested" || route === "from a getter" || route === "from a replacer" ? `{"v":${items}}` : items;
 
@@ -139,6 +159,28 @@ describe("JSON.stringify of the emulated lists", () => {
     expectHarnessFault("request-list-serialize");
     const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(`try { ${source}; } catch (e) {} finally { 1; }`) });
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-serialize"]);
+  });
+
+  it.each(listedRoutes(QUERY))("an openidm list reached %s under a property list is a JSON array of selected records", async (route, source) => {
+    expect(await value(source)).toBe(arrayOf(route, '[{"_id":"u1"}]'));
+  });
+
+  it.each(listedRoutes('requestParameters.get("x")'))("a request list reached %s under a property list faults request-list-serialize", async (_route, source) => {
+    expectHarnessFault("request-list-serialize");
+    const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(`try { ${source}; } catch (e) {} finally { 1; }`) });
+    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-serialize"]);
+  });
+
+  // Disclosed gap (docs/rhino-local-gaps.md, request-list-serialize): native asks
+  // toJSON once per value, so a list an author's toJSON returns is written as an
+  // object of the listed keys. Pinned so a change of behaviour is seen.
+  it("a list an author's toJSON returns under a property list is not converted", async () => {
+    expect(await value(`JSON.stringify({ toJSON: function () { return ${QUERY}; } }, ["_id"])`)).toBe("{}");
+  });
+
+  it("the list hooks are gone after the call, and an author's own toJSON on a list wins", async () => {
+    expect(await value(`var r = ${QUERY}; JSON.stringify(r, ["_id"]); String(Object.prototype.hasOwnProperty.call(r, "toJSON"))`)).toBe("false");
+    expect(await value(`var r = ${QUERY}; r.toJSON = function () { return "mine"; }; JSON.stringify({ v: r }, ["v"])`)).toBe('{"v":"mine"}');
   });
 
   it("a request list a replacer removes is never judged", async () => {
@@ -179,6 +221,18 @@ describe("JSON.stringify of an openidm list in node:vm", () => {
   });
 
   it.each(routes('requestParameters.get("x")'))("a request list reached %s faults request-list-serialize, even when caught", (_route, source) => {
+    const sandbox = loadBehaviour(given);
+    vm.runInContext(`try { ${source}; } catch (e) {}`, sandbox);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["request-list-serialize"]);
+  });
+
+  it.each(listedRoutes(QUERY))("an openidm list reached %s under a property list is a JSON array of selected records", (route, source) => {
+    const sandbox = loadBehaviour(given);
+    expect(vm.runInContext(source, sandbox)).toBe(arrayOf(route, '[{"_id":"u1"}]'));
+    expect(sandboxFaults(sandbox)).toEqual([]);
+  });
+
+  it.each(listedRoutes('requestParameters.get("x")'))("a request list reached %s under a property list faults request-list-serialize", (_route, source) => {
     const sandbox = loadBehaviour(given);
     vm.runInContext(`try { ${source}; } catch (e) {}`, sandbox);
     expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["request-list-serialize"]);

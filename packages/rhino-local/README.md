@@ -44,8 +44,9 @@ other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`, `iterator`,
 (`v[5]`) returns `undefined` without a fault, because an index read cannot be
 intercepted here; AIC's answer is unmeasured, so use `get(i)` with an index
 below `size()`. `JSON.stringify` of a value list was not
-measured either, so it faults `request-list-serialize`; copy the values into an
-array first:
+measured either, so it faults `request-list-serialize` (one miss: a list an
+author's own `toJSON` returns under an array replacer is written unfaulted);
+copy the values into an array first:
 
 ```js
 var values = requestParameters.get("q");
