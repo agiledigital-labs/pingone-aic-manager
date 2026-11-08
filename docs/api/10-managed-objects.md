@@ -644,6 +644,14 @@ type falls under `genericMapping."managed/*"` (`dnTemplate
 `properties {}`) left an existing record and its generic link readable and new
 records creatable; mapping the pair then behaved as in the table.
 
+**Reported from a client tenant (2026-11-03), not reproduced here:** a record
+created *immediately* after a new per-type entry went in landed in the old
+generic store; once the entry activated the record could no longer be read, and
+reverting the entry exposed it again. Waiting before creating records avoided
+it. How long activation takes is unmeasured, so `relationship set`/`map` print a
+warning after any write that adds a per-type entry
+(`storage::activation_warning`) rather than wait a guessed interval.
+
 **Promotion (measured 2026-11-02, three real dev → UAT promotions of
 throwaway types).** `repo.ds` is promoted as a **whole document**: after each
 promotion UAT's `repo.ds` was byte-equal to dev's, including when the

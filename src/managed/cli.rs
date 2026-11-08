@@ -2002,6 +2002,9 @@ async fn apply_mapping(
         .map_or("unknown column", |addition| addition.column.as_str());
     check_orphans(ok.tenant, &plan.object, &plan.key, column).await?;
     eprintln!("mapped {field} (config confirmed by re-read; no orphaned values found)");
+    if let Some(warning) = plan.addition().and_then(storage::activation_warning) {
+        eprintln!("{warning}");
+    }
     Ok(applied)
 }
 

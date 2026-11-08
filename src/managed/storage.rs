@@ -300,6 +300,30 @@ pub fn no_orphans(object: &str, key: &str, column: &str, records: &[String]) -> 
     ))
 }
 
+/// The warning owed after a write that gave an object its first per-type
+/// `genericMapping`. A record created through that object before IDM activates
+/// the new mapping lands in the old generic store and becomes unreadable once
+/// it does; reverting the mapping exposes it again. Seen on a client tenant
+/// (2026-11-03); how long activation takes is unmeasured, so this warns rather
+/// than waits.
+pub fn activation_warning(addition: &Addition) -> Option<String> {
+    if addition.added_types.is_empty() {
+        return None;
+    }
+    let objects: Vec<String> = addition
+        .added_types
+        .keys()
+        .map(|object| format!("managed/{object}"))
+        .collect();
+    Some(format!(
+        "warning: {} now {} its own config/repo.ds mapping. Until IDM activates it, a record \
+         created there can land in the old generic store and become unreadable once it does. \
+         How long that takes is unmeasured: wait before creating records, then read one back",
+        objects.join(" and "),
+        if objects.len() == 1 { "has" } else { "have" }
+    ))
+}
+
 /// The CLI's real write sequence. Editing never changes storage mode.
 /// Managed confirmation precedes even planning/writing the mapping.
 pub async fn set_with<T>(
@@ -344,6 +368,23 @@ mod tests {
                 json!({"ldapAttribute": format!("fr-idm-reference-{number}")});
         }
         repo
+    }
+
+    #[test]
+    fn activation_warning_only_for_a_first_per_type_mapping() {
+        let generic = plan(&managed(), &repo(), "a", "link").unwrap();
+        assert_eq!(generic.added_types.len(), 2);
+        let warning = activation_warning(&generic).unwrap();
+        assert!(
+            warning.contains("managed/a and managed/b now have"),
+            "{warning}"
+        );
+
+        let mut existing = repo();
+        existing["resourceMapping"]["genericMapping"]["managed/a"] = json!({"properties": {}});
+        existing["resourceMapping"]["genericMapping"]["managed/b"] = json!({"properties": {}});
+        let typed = plan(&managed(), &existing, "a", "link").unwrap();
+        assert_eq!(activation_warning(&typed), None);
     }
 
     #[test]
