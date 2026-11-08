@@ -156,7 +156,7 @@ export function writeFault(object: ObjectSchema, method: WriteMethod): WriteFaul
   const policies = method === "delete" ? [] : policiesDeclared(object);
   if (policies.length > 0) {
     return { id: `openidm-managed-policy/${object.name}`,
-      message: `${type}: on AIC a ${method} is checked against ${policies.join("; ")}. ${remedy}` };
+      message: `${type}: declares policy behaviour this lane cannot evaluate on a ${method}: ${policies.join("; ")}. ${remedy}` };
   }
   return undefined;
 }
