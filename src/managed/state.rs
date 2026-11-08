@@ -115,11 +115,54 @@ pub fn is_standard_object(object_def: &Value) -> bool {
     object_class(object_def) == ObjectClass::Standard
 }
 
-/// Ping-provided objects cannot be renamed or deleted. Keyed on the top-level
-/// `type` marker value, so it covers all ten realm objects — a wider set than
-/// [`object_class`], which keys on `meta` to decide field freedom.
+/// The object kinds Ping ships in each realm, as `<realm>_<kind>`. The sandbox
+/// carries ten of them (no `group`); `group` is included because tenants
+/// with groups enabled ship it.
+pub const PING_SHIPPED_KINDS: [&str; 6] = [
+    "user",
+    "role",
+    "group",
+    "organization",
+    "application",
+    "assignment",
+];
+
+/// How strongly an object is protected from rename and delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectProtection {
+    /// One of Ping's realm objects, by name. Never renamed or deleted.
+    Shipped,
+    /// Carries Ping's top-level `"type": "Managed Object"` marker under a name
+    /// that is not a known Ping object. Console-created custom objects carry
+    /// the marker too (reported from a client tenant, 2026-11-05), so the
+    /// marker alone is not proof; the operator may override it.
+    Marked,
+    /// Neither: an ordinary custom object.
+    None,
+}
+
+/// Keyed on the name first, because the `type` marker is shared with
+/// console-created custom objects; the marker alone only asks for consent. A
+/// wider set than [`object_class`], which keys on `meta` to decide field
+/// freedom.
+pub fn object_protection(object_def: &Value) -> ObjectProtection {
+    let name = object_def.get("name").and_then(Value::as_str).unwrap_or("");
+    let shipped = name.split_once('_').is_some_and(|(realm, kind)| {
+        matches!(realm, "alpha" | "bravo") && PING_SHIPPED_KINDS.contains(&kind)
+    });
+    if shipped {
+        ObjectProtection::Shipped
+    } else if object_def.get("type").and_then(Value::as_str) == Some("Managed Object") {
+        ObjectProtection::Marked
+    } else {
+        ObjectProtection::None
+    }
+}
+
+/// Ping-provided objects cannot be renamed or deleted. True only for
+/// [`ObjectProtection::Shipped`]; see [`object_protection`].
 pub fn is_ping_shipped_object(object_def: &Value) -> bool {
-    object_def.get("type").and_then(Value::as_str) == Some("Managed Object")
+    object_protection(object_def) == ObjectProtection::Shipped
 }
 
 /// Validates the identity used as an IDM managed-object path component.
@@ -1660,11 +1703,33 @@ mod tests {
         assert!(validate_object_name("gamma_2", &names, "alpha").is_ok());
     }
 
+    /// The name decides; the marker alone only asks for consent, because
+    /// console-created custom objects carry it too. The discriminating rows
+    /// are a marked custom name (`Marked`, not `Shipped`) and an unmarked
+    /// Ping name (`Shipped` regardless).
     #[test]
-    fn ping_shipped_guard_uses_verified_type_value_without_meta() {
-        assert!(is_ping_shipped_object(&json!({"type": "Managed Object"})));
-        assert!(!is_ping_shipped_object(&json!({"type": "custom"})));
-        assert!(!is_ping_shipped_object(&json!({"name": "test_object"})));
+    fn ping_shipped_guard_keys_on_the_name_and_the_marker_only_asks() {
+        use ObjectProtection::*;
+        let marker = |name: &str| json!({"name": name, "type": "Managed Object"});
+        for realm in ["alpha", "bravo"] {
+            for kind in PING_SHIPPED_KINDS {
+                let name = format!("{realm}_{kind}");
+                assert_eq!(object_protection(&marker(&name)), Shipped, "{name}");
+                assert_eq!(object_protection(&json!({"name": name})), Shipped, "{name}");
+            }
+        }
+        for (def, want) in [
+            (marker("console_widget"), Marked),
+            (marker("alpha_widget"), Marked),
+            (marker("gamma_user"), Marked),
+            (marker("alpha_user_extra"), Marked),
+            (json!({"type": "Managed Object"}), Marked),
+            (json!({"name": "test_object"}), None),
+            (json!({"name": "alpha_lock", "type": "custom"}), None),
+        ] {
+            assert_eq!(object_protection(&def), want, "{def}");
+        }
+        assert!(!is_ping_shipped_object(&marker("console_widget")));
     }
 
     #[test]

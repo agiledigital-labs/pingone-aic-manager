@@ -600,8 +600,8 @@ as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 aic managed list [--json]                        # object types with property + hook counts
 aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME]
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
-aic managed object rename custom_widget custom_gadget [--yes] [--json]
-aic managed object delete custom_gadget [--yes] [--json]
+aic managed object rename custom_widget custom_gadget [--force] [--yes] [--json]
+aic managed object delete custom_gadget [--force] [--yes] [--json]
 aic managed field add custom_widget.code --type string [--title T] [--required false] [--enum value[:Title] ...] [--default VALUE] [--yes] [--json]
 aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--default VALUE | --clear-default] [--force] [--yes] [--json]
 aic managed field rename custom_widget.code external_code [--yes] [--json]
@@ -667,6 +667,12 @@ perhaps `file` in a repository) is left to `aic script status`, while the
 hook's presence, `type` and `globals` are still compared. `--strict` applies
 neither. It exits non-zero when anything differs; `--json` prints
 `{"object", "normalised", "differences"}`.
+
+`object rename` and `object delete` refuse Ping's realm objects
+(`alpha_`/`bravo_` × `user`, `role`, `group`, `organization`, `application`,
+`assignment`) outright. An object that carries Ping's `"type": "Managed Object"`
+marker under any other name is refused unless `--force` is given, because
+console-created custom objects carry that marker too.
 
 `--json` on a write prints what it changed, never the whole `config/managed`
 document: `object create`/`object rename`, `field …` and `hook add`/`hook delete` print the
