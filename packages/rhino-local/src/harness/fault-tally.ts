@@ -14,6 +14,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { EmulationAudit } from "../emulation.ts";
+import { packageVersion } from "../paths.ts";
 import { ensureStateSubdir, stateDir } from "../project.ts";
 
 /** The fault-id family for measured AIC behaviour a script gets wrong, not a harness gap. */
@@ -41,6 +42,8 @@ export interface FaultTallyRow {
 
 export interface FaultTally {
   version: 1;
+  /** The package version that produced the tally (`package.json`'s `version`). */
+  harness: string;
   /** Rows sorted by `cases` descending, then id. */
   faults: FaultTallyRow[];
   /** Missing behaviour with no fault id (journey and IDM emulator sites). */
@@ -95,7 +98,7 @@ export function tallyFaults(source: Iterable<EmulationAudit>, root?: string): Fa
       }
     }
   }
-  return { version: 1, faults: rows(byId), unidentified: rows(byCause) };
+  return { version: 1, harness: packageVersion, faults: rows(byId), unidentified: rows(byCause) };
 }
 
 function rows(from: Map<string, Acc>): FaultTallyRow[] {
@@ -129,7 +132,7 @@ export function writeFaultTally(tally: FaultTally, env: NodeJS.ProcessEnv = proc
 /** The end-of-run summary, one line per id; empty when the run hit none. */
 export function formatFaultTally(tally: FaultTally, path: string): string {
   if (tally.faults.length === 0 && tally.unidentified.length === 0) return "";
-  const lines = ["", "rhino-local harness faults (a case that hits one fails unless it declared it):"];
+  const lines = ["", `rhino-local ${tally.harness} harness faults (a case that hits one fails unless it declared it):`];
   const declared = (row: FaultTallyRow): string => (row.failed === row.cases ? "" : `, ${row.cases - row.failed} declared`);
   const line = (row: FaultTallyRow): string =>
     `  ${String(row.cases).padStart(4)} case${row.cases === 1 ? " " : "s"}  ${row.id}  (${row.files.length} file${row.files.length === 1 ? "" : "s"}${declared(row)})`;

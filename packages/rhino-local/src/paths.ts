@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +22,12 @@ function findPackageRoot(start: string): string {
     }
   }
 }
+
+/**
+ * This package's own version, as `package.json` states it. Printed in the
+ * fault tally and benchmark output so a report says which build produced it.
+ */
+export const packageVersion: string = (JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { version: string }).version;
 
 /**
  * pingone-aic-manager repo root. **Repo-only**: generation and this repo's
