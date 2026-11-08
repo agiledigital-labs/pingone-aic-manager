@@ -631,7 +631,7 @@ where
     let mut failed = None;
     for attempt in 0..ATTEMPTS {
         if let Err(error) = put(doc.clone()).await {
-            return settle_failed_put(error, expect, (&current, &doc), get().await, tenant);
+            return settle_failed_put(error, expect, (&baselines, &doc), get().await, tenant);
         }
         let fetched = get().await?;
         failed = expect.iter().find(|condition| !condition.holds(&fetched));
@@ -660,12 +660,15 @@ where
 /// object it changed or added, as sent, and each it removed, gone — plus the
 /// caller's conditions counts as landed. Anything less is *unknown*, never
 /// "not landed": a write can complete after its error, a read can lag it
-/// (Q14), and a concurrent writer can make a weaker predicate hold.
+/// (Q14), and a concurrent writer can make a weaker predicate hold. "Every
+/// change" is counted from **both** baselines, the caller's and the preflight
+/// read: a preflight that already matched the proposal (a concurrent writer,
+/// or a lagging read) must not exempt an object the caller meant to change.
 /// A 4xx is the server's own refusal and is returned as it came.
 fn settle_failed_put(
     error: Error,
     expect: &[ConfigConfirm],
-    (before, proposed): (&Value, &Value),
+    (baselines, proposed): (&[&Value], &Value),
     reread: Result<Value>,
     tenant: &str,
 ) -> Result<()> {
@@ -680,7 +683,9 @@ fn settle_failed_put(
     Err(Error::Config(match reread {
         Ok(fetched)
             if expect.iter().all(|condition| condition.holds(&fetched))
-                && intended_changes_visible(before, proposed, &fetched) =>
+                && baselines
+                    .iter()
+                    .all(|before| intended_changes_visible(before, proposed, &fetched)) =>
         {
             eprintln!(
                 "note: the managed config write answered {error}, but a re-read shows every \
@@ -1275,6 +1280,28 @@ mod tests {
                 (want, got) => panic!("{label}: want {want:?}, got {got:?}"),
             }
         }
+
+        // Sol r2: the preflight read already shows the proposal (a concurrent
+        // writer, or a lagging read), the PUT fails, and the re-read shows a
+        // different `custom_widget`. The caller's own baseline still counts.
+        let theirs = json!({"objects": [widget(json!({"y": {}})), other.clone()]});
+        let reads = std::cell::RefCell::new(vec![theirs, after.clone()]);
+        let result = replace_managed_confirmed_with(
+            &before,
+            after.clone(),
+            &[ConfigConfirm::ObjectPresent {
+                name: "custom_widget".into(),
+            }],
+            || std::future::ready(Ok(reads.borrow_mut().pop().expect("two reads"))),
+            || std::future::ready(Ok(json!({}))),
+            |_| std::future::ready(Err(server(500))),
+            "t",
+        )
+        .await;
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains("unknown")),
+            "a matching preflight exempted the change: {result:?}"
+        );
     }
 
     /// The caller's predicate alone is not enough: a concurrent create of the
