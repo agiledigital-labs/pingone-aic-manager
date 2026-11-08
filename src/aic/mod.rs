@@ -126,24 +126,27 @@ impl AicClient {
         let url = self.url(path);
         let retryable = retry_safe(path);
         let mut attempt = 0;
+        let mut sent = Vec::new();
         loop {
             let token = self.bearer().await?;
-            let resp = self
-                .http
-                .get(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
-                .header("Accept", "application/json")
-                .aic_transaction_id()
-                .send()
+            let (resp, transaction) = self
+                .send(
+                    self.http
+                        .get(&url)
+                        .header("Authorization", format!("Bearer {token}"))
+                        .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
+                        .header("Accept", "application/json")
+                        .aic_transaction_id(),
+                )
                 .await?;
+            sent.extend(transaction);
             if retryable && let Some(delay) = gateway_retry_delay(resp.status(), attempt) {
                 tracing::warn!(status = %resp.status(), path, attempt, "retrying GET after a gateway error");
                 attempt += 1;
                 tokio::time::sleep(delay).await;
                 continue;
             }
-            return self.check_response(resp).await;
+            return self.check_response(resp, &sent).await;
         }
     }
 
@@ -210,11 +213,10 @@ impl AicClient {
     ) -> Result<serde_json::Value> {
         self.ensure_write_allowed(confirmed_prod)?;
         let token = self.bearer().await?;
-        let resp = self
-            .json_request(method, path, body, &token, headers)
-            .send()
+        let (resp, transaction) = self
+            .send(self.json_request(method, path, body, &token, headers))
             .await?;
-        self.check_response(resp).await
+        self.check_response(resp, transaction.as_slice()).await
     }
 
     fn json_request(
@@ -274,11 +276,10 @@ impl AicClient {
         authorization: Option<&str>,
     ) -> Result<serde_json::Value> {
         self.ensure_write_allowed(confirmed_prod)?;
-        let resp = self
-            .form_request(method, path, body, authorization)
-            .send()
+        let (resp, transaction) = self
+            .send(self.form_request(method, path, body, authorization))
             .await?;
-        self.check_response(resp).await
+        self.check_response(resp, transaction.as_slice()).await
     }
 
     fn form_request(
@@ -318,7 +319,28 @@ impl AicClient {
         format!("{}{path}", self.tenant.base_url)
     }
 
-    async fn check_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
+    /// Send `request` and return the response with the transaction id it
+    /// carried, so an error can name the id an operator looks up in the logs.
+    async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<(reqwest::Response, Option<String>)> {
+        let request = request.build()?;
+        let transaction = request
+            .headers()
+            .get(crate::http::TRANSACTION_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok((self.http.execute(request).await?, transaction))
+    }
+
+    /// `transactions` are the ids sent for this call, oldest first — more
+    /// than one when a read was retried.
+    async fn check_response(
+        &self,
+        resp: reqwest::Response,
+        transactions: &[String],
+    ) -> Result<serde_json::Value> {
         let status = resp.status();
         if status.is_success() {
             // Some AIC write actions return `200` with an **empty body** —
@@ -331,13 +353,51 @@ impl AicClient {
             }
             Ok(serde_json::from_slice(&bytes)?)
         } else {
+            let server = resp
+                .headers()
+                .get(reqwest::header::SERVER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
             let body = resp.text().await.unwrap_or_default();
             Err(Error::Api {
                 status: status.as_u16(),
-                body,
+                body: trace_gateway_body(status, body, server.as_deref(), transactions),
             })
         }
     }
+}
+
+/// Name the transaction ids on a `5xx` whose body is not JSON.
+///
+/// AM and IDM answer errors with a JSON body; a gateway in front of them
+/// answers with a page or a bare line, and that is the failure operators
+/// see recur with no diagnostic (`docs/api/02-headers-and-versioning.md`). Whether the
+/// request reached AM or IDM at all is answered by the tenant's own logs,
+/// keyed by the id `aic` chose (`docs/api/08-logs.md`), so the error says
+/// which ids to look up. A JSON body is left byte-for-byte alone, because
+/// callers parse it.
+fn trace_gateway_body(
+    status: reqwest::StatusCode,
+    body: String,
+    server: Option<&str>,
+    transactions: &[String],
+) -> String {
+    if !status.is_server_error()
+        || transactions.is_empty()
+        || serde_json::from_str::<serde_json::Value>(&body).is_ok()
+    {
+        return body;
+    }
+    let server = server.map_or(String::new(), |server| format!(" (server: {server})"));
+    let lookups = transactions
+        .iter()
+        .map(|id| format!("`aic logs tx {id}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{body}\n\na non-JSON {status} answer{server}, the shape a gateway gives rather than AM \
+         or IDM. {lookups} shows whether AM or IDM recorded the request."
+    )
 }
 
 /// Backoff before retry `attempt + 1` of a read that answered `status`, or
@@ -694,6 +754,14 @@ mod tests {
     /// Drives the real `get` against a server that answers each status in
     /// `script` in turn, and returns the result and how many requests arrived.
     async fn get_against(path: &str, script: &'static [u16]) -> (Result<serde_json::Value>, usize) {
+        get_serving(path, script, "{\"ok\":true}").await
+    }
+
+    async fn get_serving(
+        path: &str,
+        script: &'static [u16],
+        body: &'static str,
+    ) -> (Result<serde_json::Value>, usize) {
         use std::io::{BufRead, BufReader, Write};
         use std::net::TcpListener;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -711,7 +779,6 @@ mod tests {
                     line.clear();
                 }
                 let status = script.get(n).copied().unwrap_or(500);
-                let body = "{\"ok\":true}";
                 let _ = stream.write_all(
                     format!(
                         "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -794,5 +861,28 @@ mod tests {
         let (result, requests) = get_against(CONFIG, &[500, 200]).await;
         assert!(matches!(result, Err(Error::Api { status: 500, .. })));
         assert_eq!(requests, 1);
+    }
+
+    #[tokio::test]
+    async fn a_gateway_page_names_every_transaction_id_and_a_json_error_is_untouched() {
+        let (result, requests) = get_serving(CONFIG, &[502, 502, 503], "no healthy upstream").await;
+        assert_eq!(requests, 3);
+        let Err(Error::Api { status: 503, body }) = result else {
+            panic!("503")
+        };
+        assert!(body.starts_with("no healthy upstream\n\n"), "{body}");
+        assert_eq!(body.matches("`aic logs tx aic-").count(), 3, "{body}");
+
+        let (result, _) = get_serving(CONFIG, &[500], "{\"code\":500}").await;
+        let Err(Error::Api { status: 500, body }) = result else {
+            panic!("500")
+        };
+        assert_eq!(body, "{\"code\":500}");
+
+        let (result, _) = get_serving(CONFIG, &[404], "not found").await;
+        let Err(Error::Api { status: 404, body }) = result else {
+            panic!("404")
+        };
+        assert_eq!(body, "not found");
     }
 }
