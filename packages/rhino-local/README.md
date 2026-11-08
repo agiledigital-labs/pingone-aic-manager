@@ -984,6 +984,44 @@ end of the subject script, so its cost (large for a big fixture store) is inside
 `subjectExecMs`. Timing is off unless the variable is set, and it never changes a
 response or a lane comparison. `src/timing.ts` documents every field.
 
+### Vitest settings for a fast suite
+
+Vitest's default isolation re-evaluates every module in every test file. One
+client suite of 97 files evaluated 117 modules 666 times under it, and took
+58 s; with `isolate: false` it took 26 s (client measurement, Node 24 and
+Java 25 on 4 cores). Both settings are supported: the readiness suite runs the
+`forks` and `threads` pools with isolation on and off.
+
+```ts
+// vitest.config.ts
+export default defineConfig({
+  test: {
+    isolate: false,
+    maxWorkers: 3, // see below
+    setupFiles: ["@agiledigital/pingone-aic-script-tester/vitest-setup"],
+    runner: "@agiledigital/pingone-aic-script-tester/vitest-runner",
+    reporters: ["default", "@agiledigital/pingone-aic-script-tester/vitest-reporter"],
+  },
+});
+```
+
+With `isolate: false`, module-level state in a test file or a setup module
+carries into the next file on the same worker, so keep fixtures inside
+`defineSuite` and `useLease`. In watch mode the fault tally also spans reruns
+(above).
+
+Each Vitest worker borrows one warm JVM from the pool, and in that client's
+suite the Node workers were idle 81–83% of the time, waiting on Java. A worker
+beyond the core count therefore adds a JVM competing for the same CPUs; they
+ran 3 workers on 4 cores. The best number for another machine is not measured
+here: try one or two values with phase timing on.
+
+A suite on the local lane does not load the tenant lane's modules; they load
+in `beforeAll` only for a suite given `aicWhenEnabled(...)` options with
+`AIC_SCRIPT_TESTER_AIC=1` set. That halves the package entry's import time
+(63 ms to 33 ms here), which counts once per worker with `isolate: false` and
+once per file without it.
+
 ## JVM runner client
 
 `src/runner.ts` launches Java 25 from `AIC_SCRIPT_TESTER_JAVA_HOME` or `JAVA_HOME`
