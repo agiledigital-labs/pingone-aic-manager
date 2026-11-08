@@ -8,6 +8,7 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Symbol;
 import org.mozilla.javascript.SymbolScriptable;
+import org.mozilla.javascript.Wrapper;
 
 /**
  * {@code e.javaException} for a tenant error caught in an IDM script. On AIC it is a CREST
@@ -35,6 +36,7 @@ final class IdmExceptionView extends NativeJavaObject {
   /** Members passed to the real object. Rhino's own String conversion calls Object.toString directly. */
   private static final Set<String> ADMITTED = new HashSet<String>(Arrays.asList("getCode", "getDetail", "getReason", "toString"));
   private final transient HostCalls.HostException exception;
+  private transient ClassFunction classFunction;
 
   IdmExceptionView(Scriptable scope, HostCalls.HostException exception) {
     super(scope, exception, HostCalls.HostException.class);
@@ -44,7 +46,8 @@ final class IdmExceptionView extends NativeJavaObject {
   @Override
   public Object get(String name, Scriptable start) {
     if (ADMITTED.contains(name)) return super.get(name, start);
-    if ("getClass".equals(name)) return new ClassFunction(getParentScope());
+    // One function per view, as Rhino keeps one NativeJavaMethod per member: getClass === getClass.
+    if ("getClass".equals(name)) { if (classFunction == null) classFunction = new ClassFunction(getParentScope()); return classFunction; }
     throw exception.unmeasured("e.javaException." + name + " (only getCode, getDetail, getReason, toString and getClass().getName() are measured)");
   }
 
@@ -89,13 +92,18 @@ final class IdmExceptionView extends NativeJavaObject {
    * would otherwise answer for itself (sol-e15ab r4 P2-1): its class tag, which a borrowed
    * {@code Object.prototype.toString} reads without going through {@code get}, and symbol-keyed
    * access, which Rhino refuses with a catchable TypeError for a non-{@link SymbolScriptable}.
+   * It is a {@link Wrapper} whose {@code unwrap} faults (sol-e15ab r5 P2-1): a Java
+   * {@code instanceof} with the shim on the left ({@code c instanceof java.lang.Class}) and strict
+   * equality between two {@code getClass()} results both unwrap their operands, and otherwise
+   * answered from the shim's own type and fresh identity (false, where a real Java class is true).
    */
-  private final class ClassView implements Scriptable, SymbolScriptable {
+  private final class ClassView implements Scriptable, SymbolScriptable, Wrapper {
     private Scriptable parent;
     ClassView(Scriptable scope) { parent = scope; }
     private EmulationFailure unmeasured(String what) {
       return exception.unmeasured(what + " on e.javaException.getClass() (only getName() is measured)");
     }
+    @Override public Object unwrap() { throw unmeasured("Java identity or type (instanceof a Java class, or comparing two getClass() results)"); }
     @Override public String getClassName() { throw unmeasured("the class tag (Object.prototype.toString)"); }
     @Override public Object get(Symbol key, Scriptable start) { throw unmeasured("reading a symbol-keyed member"); }
     @Override public boolean has(Symbol key, Scriptable start) { throw unmeasured("a symbol-keyed `in`"); }

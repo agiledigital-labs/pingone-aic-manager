@@ -94,6 +94,11 @@ describe("a caught emulated CREST error matches the captured observation", () =>
     ["a borrowed toString of the class", "Object.prototype.toString.call(e.javaException.getClass())"],
     ["a symbol `in` on the class", "Symbol.iterator in e.javaException.getClass()"],
     ["a symbol read on the class", "e.javaException.getClass()[Symbol.iterator]"],
+    // sol-e15ab r5 P2-1: with the shim on the left a Java instanceof, and === between two getClass()
+    // results, answered false from the shim's own type and identity; a real Java class gives true.
+    ["the class instanceof java.lang.Class", "e.javaException.getClass() instanceof java.lang.Class"],
+    ["the class instanceof java.lang.Object", "e.javaException.getClass() instanceof java.lang.Object"],
+    ["two getClass() results compared", "e.javaException.getClass() === e.javaException.getClass()"],
     // An assignment asks `in` first, so only an admitted name reaches the write itself.
     ["a write to the class's measured member", "(e.javaException.getClass().getName = 1)"],
   ])("%s faults idm-exception/unmeasured", async (_name, read) => {
@@ -116,6 +121,15 @@ describe("a caught emulated CREST error matches the captured observation", () =>
         .concat(['getName' in j.getClass(), String(j.getClass().getName()), Number(j.getCode())]); } out;` }, { onCall: emu.onCall });
     expect(response.error).toBeNull();
     expect(response.value).toEqual([true, true, true, true, true, true, "org.forgerock.json.resource.ForbiddenException", 403]);
+  });
+
+  // A real Java member reads back as the same method object each time.
+  it("e.javaException.getClass reads back as the same function", async () => {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [pol] } }), runner);
+    const response = await runner.eval({ engine: "idm", source: `var out; try { openidm.create('managed/zzemu_pol', null, {text: 5}); } catch (e) {
+      out = e.javaException.getClass === e.javaException.getClass; } out;` }, { onCall: emu.onCall });
+    expect(response.error).toBeNull();
+    expect(response.value).toBe(true);
   });
 
   // Object.getOwnPropertyNames and getOwnPropertyDescriptor never reach the view: Rhino refuses them
