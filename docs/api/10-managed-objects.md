@@ -794,8 +794,12 @@ repaired first — the order the second row above used) — looked for in every
 section of `resourceMapping` and on every resource, because the sandbox's
 `explicitMapping."internal/role".authzMembers` and
 `genericMapping."internal/notification".target` are `reverseReference`s
-reading through `managed/alpha_user` — the last mapped
-property of an object, and an object `config/managed` does not declare.
+reading through `managed/alpha_user` — and an object `config/managed` does
+not declare. An object's last mapped property is removed and its per-type
+entry kept with `properties: {}` (since 2026-11-09): that is the state a newly
+added per-type entry starts in, measured above to keep records readable and
+creatable. Removing the entry itself would change where the object's records
+are looked up and is not done.
 Whether links written while a key was mapped reappear if the key is
 recreated after a repair was not measured.
 

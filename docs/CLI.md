@@ -1080,9 +1080,11 @@ only removes; it never adds or edits a mapping. It refuses a declared
 property, IDM's `_meta` / `_notifications`, a mapping another
 `reverseReference` reads through — in any section of `resourceMapping` and on
 any resource, `internal/…` and `explicitMapping` included (naming it; repair
-a stale managed one first), the
-last mapped property of an object, and an object `config/managed` does not
-declare — the cases not measured. `--dry-run` prints the plan and writes
+a stale managed one first), and an object `config/managed` does not
+declare — the cases not measured. The last mapped property of an object is
+removed like any other, and the object keeps its per-type entry with no
+properties, the state a new per-type entry starts in; the entry itself is never
+removed. `--dry-run` prints the plan and writes
 nothing; otherwise it asks, or takes `--force`, and passes the production
 gate. Immediately before writing it re-reads both documents and refuses if
 `repo.ds` changed at all. It backs the current document up to

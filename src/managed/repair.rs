@@ -27,8 +27,10 @@
 //!   one) and broke nothing that was read afterwards.
 //!
 //! What was **not** measured, and is therefore refused: removing a mapping
-//! that another mapping reads through, removing the last mapped property of
-//! an object, and anything on an object `config/managed` does not declare.
+//! that another mapping reads through, and anything on an object
+//! `config/managed` does not declare. Removing an object's last mapped
+//! property is allowed and keeps its per-type entry with `properties: {}`,
+//! the measured state of a freshly added entry; the entry is never removed.
 //!
 //! Additions use the measured 2026-11-01 shape and waitForCompletion=true.
 //! A WritePermit proves consent outside dry-run; callers also gate production.
@@ -191,13 +193,6 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
             names.join(", ")
         ));
     }
-    if entries.len() == 1 {
-        return Err(format!(
-            "refusing to repair {label}: it is the last mapped property of managed/{object}, \
-             and removing an object's last mapping is unmeasured"
-        ));
-    }
-
     let mut after = repo_ds.clone();
     let removed = after
         .pointer_mut(&format!(
@@ -215,6 +210,16 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
     }
 
     let mut notes = Vec::new();
+    if entries.len() == 1 {
+        // The entry stays, with `properties: {}`: the state a new per-type
+        // entry starts in, measured to keep records readable and creatable
+        // (docs/api/10). Removing the entry itself would move where the
+        // object's records are looked up, which is not measured.
+        notes.push(format!(
+            "{label} is the last mapped property of managed/{object}; its per-type entry \
+             stays, with no properties — the state a new per-type entry starts in"
+        ));
+    }
     if mapping.kind == "reverseReference"
         && let (Some(partner_object), Some(partner_key)) = (
             mapping
@@ -391,12 +396,6 @@ fn dependents(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Vec<
                     }
                     Some(_) if verify::SYSTEM_RELATIONSHIPS.contains(&located.key.as_str()) => {
                         Owner::StaleBlocked("it is one of IDM's own relationships")
-                    }
-                    Some(_)
-                        if verify::generic_mappings_of(repo_ds, other)
-                            .is_some_and(|entries| entries.len() == 1) =>
-                    {
-                        Owner::StaleBlocked("it is its object's last mapping")
                     }
                     Some(_) => Owner::Stale,
                 },
@@ -683,6 +682,26 @@ mod tests {
         }
     }
 
+    /// The client case: each end is the only mapping on its type. Both come
+    /// out, reader first, and both per-type entries stay with no properties.
+    #[test]
+    fn a_sequence_empties_a_pair_whose_ends_are_each_types_last_mapping() {
+        let before = repo(json!({}), json!({}));
+        let plans = plan_sequence(
+            &managed_without_the_pair(),
+            &before,
+            &[("a".into(), "live".into()), ("b".into(), "back".into())],
+        )
+        .unwrap();
+        let labels: Vec<_> = plans.iter().map(Plan::label).collect();
+        assert_eq!(labels, ["b.back", "a.live"]);
+        let expected = json!({"dbType": "DS", "resourceMapping": {"genericMapping": {
+            "managed/a": {"objectClasses": ["x"], "properties": {}},
+            "managed/b": {"properties": {}},
+        }}});
+        assert_eq!(plans[1].after(), &expected);
+    }
+
     /// All or nothing: if one end cannot come out, no plan is returned — not
     /// even for the end that could.
     #[test]
@@ -816,12 +835,16 @@ mod tests {
             json!({"managed/b": {"properties": {"gone": {"type": "string"}}}});
         let error = plan(&managed(), &before, "a", "old").unwrap_err();
         assert!(error.contains("b.gone (also stale, but repair refuses it too: it is mapped in more than one section)"), "{error}");
-        // It is its object's last mapping.
+        // Its object's last mapping is an ordinary stale dependent now:
+        // repair it first, which plan_sequence does.
         let mut before = repo(json!({"old": reference("b")}), json!({}));
         before["resourceMapping"]["genericMapping"]["managed/b"]["properties"] =
             json!({"gone": reverse("a", "old")});
         let error = plan(&managed(), &before, "a", "old").unwrap_err();
-        assert!(error.contains("its object's last mapping"), "{error}");
+        assert!(
+            error.contains("b.gone (also stale: repair it first)"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -877,12 +900,23 @@ mod tests {
         let error = plan(&managed(), &column, "a", "gone").unwrap_err();
         assert!(error.contains("is `string`"), "{error}");
 
-        // Last mapping on the object: `b` holds only the stale one.
+        // Last mapping on the object: `b` holds only the stale one. Allowed;
+        // the per-type entry stays, emptied, with its other members intact.
         let mut last = repo(json!({}), json!({}));
         last["resourceMapping"]["genericMapping"]["managed/b"]["properties"] =
             json!({"gone": reverse("a", "live")});
-        let error = plan(&managed(), &last, "b", "gone").unwrap_err();
-        assert!(error.contains("last mapped property"), "{error}");
+        let emptied = plan(&managed(), &last, "b", "gone").unwrap();
+        let mut expected = last.clone();
+        expected["resourceMapping"]["genericMapping"]["managed/b"]["properties"] = json!({});
+        assert_eq!(emptied.after(), &expected);
+        assert!(
+            emptied
+                .notes
+                .iter()
+                .any(|note| note.contains("last mapped property")),
+            "{:?}",
+            emptied.notes
+        );
     }
 
     #[test]
