@@ -2217,7 +2217,8 @@ function __rhinoLocalTypeMatches(value, declared) {
 // string form here are unmeasured, so reading it faults. Everything else that
 // policy would judge is unmeasured and faults: a top-level array item of the
 // wrong items type (only nested items were measured), a null on a nullable
-// property, a null on an emptyOnNull array outside a new record's create, and
+// property, a non-null value of the wrong type on a nullable property whose
+// spelling was never probed (mismatchUnmeasured, sol-r3 P2-3), a null on an emptyOnNull array outside a new record's create, and
 // any refusal or
 // defaulted null outside a new record's create. A null on an undefaulted
 // property outside a create, where a create would accept it, writes as on
@@ -2245,6 +2246,9 @@ function __rhinoLocalImplicitPolicy(method, collection, content, creatingNew) {
     }
     if (__rhinoLocalHas(rule.checked, name) && !__rhinoLocalTypeMatches(value, rule.checked[name])) {
       refused.push(name + " (VALID_TYPE: declared " + rule.checked[name] + ", sent " + __rhinoLocalJsonType(value) + ")");
+    } else if (__rhinoLocalHas(rule.mismatchUnmeasured, name) && !__rhinoLocalTypeMatches(value, rule.mismatchUnmeasured[name])) {
+      unmeasured.push(name + " is " + __rhinoLocalJsonType(value) + " on a nullable " + rule.mismatchUnmeasured[name] +
+        " property; the plain type's VALID_TYPE refusal was measured, this nullable spelling's never was");
     } else if (Array.isArray(value) && __rhinoLocalHas(rule.itemTypes, name)) {
       value.forEach(function (item, index) {
         if (!__rhinoLocalTypeMatches(item, rule.itemTypes[name])) {
@@ -4336,7 +4340,7 @@ function __rhinoLocalSeed(given) {
     ? __rhinoLocalClone(given.managedWriteFaults)
     : null;
   // `managed/<type>` → { defaults, notNull, nullRefused, emptyOnNull,
-  // nullUnmeasured, checked, itemTypes, defaulted }: the type's implicit policies (P2-2,
+  // nullUnmeasured, checked, mismatchUnmeasured, itemTypes, defaulted }: the type's implicit policies (P2-2,
   // sol-r1b), decided in src/profile/write-guard.ts managedPolicy.
   __rhinoLocal.managedPolicy = given.managedPolicy
     ? __rhinoLocalClone(given.managedPolicy)
