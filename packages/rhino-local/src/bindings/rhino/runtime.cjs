@@ -334,6 +334,10 @@ function __rhinoLocalAdapterException(text, code, detail) {
     return __rhinoLocalCrestReasons[code];
   });
   __rhinoLocalHide(adapter, "getDetail", function () {
+    if (arguments.length !== 0) {
+      throw __rhinoLocalFault("openidm-failure-detail",
+        "rhino-local: javaException.getDetail(" + __rhinoLocalScriptSignature(arguments) + ") is unmeasured (only getDetail() was probed)");
+    }
     if (detail === undefined) {
       throw __rhinoLocalFault("openidm-failure-detail",
         "rhino-local: javaException.getDetail(): this failure's detail is unknown; give the openidmFailures stub a reply.detail (null for a 404 or 400)");
@@ -402,23 +406,37 @@ function __rhinoLocalDetailString(value) {
   return "{ " + parts.join(", ") + " }";
 }
 
+// The probe called get with one string and the other three with none; any
+// other call shape is unmeasured, so it faults before JavaScript's ignored-
+// argument and string-coercion rules can answer for it.
+function __rhinoLocalDetailNoArgs(name, args) {
+  if (args.length !== 0) {
+    throw __rhinoLocalDetailUnmeasured("." + name + "(" + __rhinoLocalScriptSignature(args) + ")");
+  }
+}
+
 function __rhinoLocalDetailValue(value) {
   var jv = {};
   var measured = {
     get: function (key) {
+      if (arguments.length !== 1 || typeof key !== "string") {
+        throw __rhinoLocalDetailUnmeasured(".get(" + __rhinoLocalScriptSignature(arguments) + ")");
+      }
       if (value !== null && (typeof value !== "object" || Array.isArray(value))) {
         throw __rhinoLocalDetailUnmeasured(".get on a non-object value");
       }
-      var k = String(key);
-      return __rhinoLocalDetailValue(value !== null && Object.prototype.hasOwnProperty.call(value, k) ? value[k] : null);
+      return __rhinoLocalDetailValue(value !== null && Object.prototype.hasOwnProperty.call(value, key) ? value[key] : null);
     },
     isNull: function () {
+      __rhinoLocalDetailNoArgs("isNull", arguments);
       return value === null;
     },
     getObject: function () {
+      __rhinoLocalDetailNoArgs("getObject", arguments);
       return __rhinoLocalClone(value);
     },
     toString: function () {
+      __rhinoLocalDetailNoArgs("toString", arguments);
       return __rhinoLocalDetailString(value);
     },
   };
@@ -804,6 +822,14 @@ function __rhinoLocalRequestList(items) {
   });
   __rhinoLocalHide(list, "getClass", function () {
     throw __rhinoLocalShutterError("java.lang.Class");
+  });
+  // JSON.stringify of the list was never measured (the probe serialised its
+  // own description, not the list), and the object above would serialise as
+  // {"0":…,"1":…}, which nothing says AIC produces. Refuse rather than bless it.
+  __rhinoLocalHide(list, "toJSON", function () {
+    throw __rhinoLocalFault("request-list-serialize",
+      "rhino-local: JSON.stringify of a request map's value list is unmeasured (AIC hands over a Java list); " +
+        "copy the values into an array first, e.g. with a loop over size() and get(i)");
   });
   return list;
 }
@@ -2802,6 +2828,20 @@ function __rhinoLocalProjectReferences(value, selectors, context) {
       var path = selector.split("/").slice(1);
       if (path.length === 0) {
         return;
+      }
+      // Checked before any early return: only one segment past a non-`*`
+      // name, and nothing below an envelope key, was measured, so a deeper
+      // path under either refuses even where the shallow form returns the
+      // envelope.
+      if (path[0] !== "*" && path.length > 1) {
+        throw __rhinoLocalFieldsFault("openidm-fields-relationship-deep-path", context, selector,
+          "a path below " + parent + "/" + path[0] + " is unmeasured (only " + parent + "/<name> and " + parent + "/*/... were measured)",
+          "select " + parent + "/" + path[0] + " or " + parent + "/*");
+      }
+      if (path[0] === "*" && path.length > 2 && __rhinoLocalReferenceEnvelope.indexOf(path[1]) !== -1) {
+        throw __rhinoLocalFieldsFault("openidm-fields-relationship-deep-path", context, selector,
+          "a path below the reference envelope key " + path[1] + " is unmeasured",
+          "select " + parent + "/*/" + path[1] + " and read the nested value in the script");
       }
       var system = __rhinoLocalEnvelopeOf(el, __rhinoLocalReferenceEnvelope);
       Object.keys(system).forEach(function (key) {

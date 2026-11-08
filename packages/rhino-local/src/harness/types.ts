@@ -109,6 +109,7 @@ export interface RequestDraft {
   bindingOverrides?: Record<string, string>;
   identityAttributes?: Record<string, IdentityAttributeMapping>;
   session: JsonObject;
+  /** The session's principal; present (including when assigned in beforeRun) it asks for a session. */
   sessionPrincipal?: string;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;

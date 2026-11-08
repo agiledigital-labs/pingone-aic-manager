@@ -111,6 +111,27 @@ describe("request map forEach matches the live capture", () => {
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-map-foreach-argument"]);
   });
 
+  it.each([
+    ["parameters via get", 'JSON.stringify(requestParameters.get("q"))'],
+    ["parameters via brackets", 'JSON.stringify(requestParameters["q"])'],
+    ["parameters via the forEach callback", "requestParameters.forEach(function (k, v) { JSON.stringify(v); })"],
+    ["headers via get", 'JSON.stringify(requestHeaders.get("x-h"))'],
+    ["a list nested in an object", 'JSON.stringify({ q: requestParameters.get("q") })'],
+  ])("serialising a value list (%s) faults request-list-serialize, even when caught", async (_name, call) => {
+    expectHarnessFault("request-list-serialize");
+    const response = await runner.eval({
+      preamble: mockPreamble({ requestParameters: { q: ["a", "b"] }, requestHeaders: { "X-H": ["a", "b"] } }),
+      source: withHarvest(`try { ${call}; } catch (e) {} finally { 1; }`),
+    });
+    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-serialize"]);
+  });
+
+  it("a cookie value still serialises as the string it is", async () => {
+    const response = await runner.eval({ preamble: mockPreamble({ requestCookies: { c: "v" } }), source: 'JSON.stringify(requestCookies.get("c"))' });
+    expect(response.outcome).toBe("ok");
+    expect(response.value).toBe('"v"');
+  });
+
   it("the legacy engine faults request-map-foreach-legacy", async () => {
     expectHarnessFault("request-map-foreach-legacy");
     const response = await runner.eval({ preamble: mockPreamble({ engine: "legacy", requestParameters: { a: ["1"] } }), source: withHarvest("try { requestParameters.forEach(function () {}); } catch (e) {}") });
