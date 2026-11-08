@@ -16,6 +16,16 @@ import org.mozilla.javascript.ScriptableObject;
  * {@code getClass().getName()}, the last equal to the class the message names. Reproducing the
  * class itself would mean shipping the vendor class, so {@code getClass()} answers only
  * {@code getName()}.
+ *
+ * <p>Membership and enumeration follow the same gate as a read (sol-r3 P2-2): {@code name in view}
+ * is {@code true} for a name a read admits, because that member exists on AIC's object too, and
+ * faults for every other name, because answering {@code false} (or {@code true}) would be the local
+ * class's answer. Enumeration ({@code Object.keys}, {@code for…in}, {@code JSON.stringify},
+ * {@code Object.getOwnPropertyNames}) always faults: no probe listed AIC's members, and the local
+ * list is HostException's, except {@code Object.getOwnPropertyNames} and
+ * {@code Object.getOwnPropertyDescriptor}, which Rhino refuses with a TypeError for every Java
+ * object before asking it. The {@code getClass()} shim does the same with {@code getName}.
+ * Symbol-keyed operations are left as Rhino answers them for any Java object.
  */
 final class IdmExceptionView extends NativeJavaObject {
   private static final long serialVersionUID = 1L;
@@ -40,6 +50,24 @@ final class IdmExceptionView extends NativeJavaObject {
     throw exception.unmeasured("e.javaException[" + index + "]");
   }
 
+  @Override
+  public boolean has(String name, Scriptable start) {
+    if (ADMITTED.contains(name) || "getClass".equals(name)) return true;
+    // for…in asks for an __iterator__ before it enumerates.
+    if ("__iterator__".equals(name)) throw exception.unmeasured("enumerating e.javaException's members (no probe listed them)");
+    throw exception.unmeasured("'" + name + "' in e.javaException (only getCode, getDetail, getReason, toString and getClass are measured members)");
+  }
+
+  @Override
+  public boolean has(int index, Scriptable start) {
+    throw exception.unmeasured(index + " in e.javaException");
+  }
+
+  @Override
+  public Object[] getIds() {
+    throw exception.unmeasured("enumerating e.javaException's members (no probe listed them)");
+  }
+
   /** {@code getClass()}: an object answering only {@code getName()}. */
   private final class ClassFunction extends BaseFunction {
     private static final long serialVersionUID = 1L;
@@ -49,13 +77,23 @@ final class IdmExceptionView extends NativeJavaObject {
     }
   }
 
-  private final class ClassView extends ScriptableObject {
-    private static final long serialVersionUID = 1L;
-    ClassView(Scriptable scope) { setParentScope(scope); }
+  /**
+   * The {@code getClass()} result. A plain {@link Scriptable}, not a {@link ScriptableObject}, so
+   * that Rhino treats it as it treats any Java object (AIC's real {@code Class} is one): the
+   * {@code Object.getOwnPropertyNames} / {@code getOwnPropertyDescriptor} family refuses it with a
+   * TypeError before asking it, as it does the exception view, instead of answering an empty list.
+   * Every other operation but {@code getName} faults.
+   */
+  private final class ClassView implements Scriptable {
+    private Scriptable parent;
+    ClassView(Scriptable scope) { parent = scope; }
+    private EmulationFailure unmeasured(String what) {
+      return exception.unmeasured(what + " on e.javaException.getClass() (only getName() is measured)");
+    }
     @Override public String getClassName() { return "JavaClass"; }
     @Override public Object get(String name, Scriptable start) {
       if ("getName".equals(name)) {
-        return new BaseFunction(getParentScope(), ScriptableObject.getFunctionPrototype(getParentScope())) {
+        return new BaseFunction(parent, ScriptableObject.getFunctionPrototype(parent)) {
           private static final long serialVersionUID = 1L;
           @Override public Object call(Context cx, Scriptable scope, Scriptable self, Object[] args) {
             return exception.exceptionClass();
@@ -67,8 +105,24 @@ final class IdmExceptionView extends NativeJavaObject {
     @Override public Object get(int index, Scriptable start) {
       throw exception.unmeasured("e.javaException.getClass()[" + index + "]");
     }
+    @Override public boolean has(String name, Scriptable start) {
+      if ("getName".equals(name)) return true;
+      if ("__iterator__".equals(name)) throw unmeasured("enumerating the members");
+      throw exception.unmeasured("'" + name + "' in e.javaException.getClass() (only getName is a measured member)");
+    }
+    @Override public boolean has(int index, Scriptable start) { throw unmeasured(index + " in"); }
+    @Override public void put(String name, Scriptable start, Object value) { throw unmeasured("writing " + name); }
+    @Override public void put(int index, Scriptable start, Object value) { throw unmeasured("writing [" + index + "]"); }
+    @Override public void delete(String name) { throw unmeasured("deleting " + name); }
+    @Override public void delete(int index) { throw unmeasured("deleting [" + index + "]"); }
+    @Override public Scriptable getPrototype() { return null; }
+    @Override public void setPrototype(Scriptable prototype) { throw unmeasured("setting the prototype"); }
+    @Override public Scriptable getParentScope() { return parent; }
+    @Override public void setParentScope(Scriptable scope) { parent = scope; }
+    @Override public Object[] getIds() { throw unmeasured("enumerating the members"); }
     @Override public Object getDefaultValue(Class<?> hint) {
       throw exception.unmeasured("the string form of e.javaException.getClass()");
     }
+    @Override public boolean hasInstance(Scriptable instance) { throw unmeasured("instanceof"); }
   }
 }
