@@ -2956,7 +2956,8 @@ engine:
 
 Scripts are addressed by a **full-name** `<namespace>/<name>`, where the
 namespace is `alpha`/`bravo` (AM realm), `endpoint`, `schedule`, `sync`, or
-`managed` (hook name is `<object>.<hook>`, e.g. `managed/alpha_user.onCreate`).
+`managed` (hook name is `<object>.<hook>`, e.g. `managed/alpha_user.onCreate`;
+the workspace-path form `managed/alpha_user/onCreate` names the same hook).
 So you never pass `--kind`/`--realm` to script commands. A bare `<name>`
 resolves its namespace from your current directory. A bare namespace (`bravo`,
 `endpoint`) means "all of it"; `all` means everything.

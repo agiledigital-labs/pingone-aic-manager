@@ -2077,8 +2077,14 @@ async fn push_with(
         name,
     } = request;
     let entry = context.store.lookup(kind, name, realm)?.ok_or_else(|| {
+        // Name the namespace, so the hint works from any directory.
+        let ns = super::Namespace {
+            kind,
+            realm: (!realm.is_empty()).then(|| realm.to_string()),
+        };
         Error::Config(format!(
-            "{name:?} not synced yet — `aic script pull {name}` first"
+            "{name:?} not synced yet — `aic script pull {}/{name}` first",
+            ns.label()
         ))
     })?;
     let r = &entry.reference;

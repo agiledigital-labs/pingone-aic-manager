@@ -2225,9 +2225,10 @@ fn parse_ref(arg: Option<String>) -> Result<Vec<Job>> {
     };
     if let Some((prefix, name)) = s.split_once('/') {
         let ns = Namespace::parse(prefix).ok_or_else(|| unknown_ns(prefix))?;
+        let name = ns.canonical_name(name);
         return Ok(vec![Job {
             ns,
-            selector: script::sync::Selector::Name(name.to_string()),
+            selector: script::sync::Selector::Name(name),
         }]);
     }
     if let Some(ns) = Namespace::parse(&s) {
@@ -2247,7 +2248,8 @@ fn parse_ref(arg: Option<String>) -> Result<Vec<Job>> {
 fn parse_one(arg: &str) -> Result<(Namespace, String)> {
     if let Some((prefix, name)) = arg.split_once('/') {
         let ns = Namespace::parse(prefix).ok_or_else(|| unknown_ns(prefix))?;
-        return Ok((ns, name.to_string()));
+        let name = ns.canonical_name(name);
+        return Ok((ns, name));
     }
     if Namespace::parse(arg).is_some() {
         return Err(Error::Config(format!(
@@ -2318,12 +2320,14 @@ fn scripts_are_writable(theme: TenantTheme) -> bool {
 /// A `status` argument naming exactly one script: `<namespace>/<name>` with a
 /// known namespace and a non-empty name. Anything else stays a free-text
 /// filter, which keeps `endpoint/` (a namespace) and fragments working.
-fn exact_status_ref(reference: &str) -> Option<(Namespace, &str)> {
+fn exact_status_ref(reference: &str) -> Option<(Namespace, String)> {
     let (prefix, name) = reference.split_once('/')?;
     if name.is_empty() {
         return None;
     }
-    Some((Namespace::parse(prefix)?, name))
+    let ns = Namespace::parse(prefix)?;
+    let name = ns.canonical_name(name);
+    Some((ns, name))
 }
 
 /// One line of `script status`, tracked or not, in the shape `--json` prints.
@@ -3668,8 +3672,7 @@ mod tests {
 
     #[test]
     fn status_ref_is_exact_only_for_a_known_namespace_and_a_name() {
-        let exact =
-            |r: &str| exact_status_ref(r).map(|(ns, name)| (ns.kind, ns.realm, name.to_string()));
+        let exact = |r: &str| exact_status_ref(r).map(|(ns, name)| (ns.kind, ns.realm, name));
         assert_eq!(
             exact("endpoint/foo"),
             Some((script::Kind::IdmEndpoint, None, "foo".into()))
@@ -3681,6 +3684,46 @@ mod tests {
         assert_eq!(exact("endpoint/"), None);
         assert_eq!(exact("Email"), None);
         assert_eq!(exact("bogus/foo"), None);
+        assert_eq!(
+            exact("managed/custom_widget/onCreate"),
+            Some((
+                script::Kind::IdmManagedHook,
+                None,
+                "custom_widget.onCreate".into()
+            ))
+        );
+    }
+
+    /// A managed hook can be named by its workspace path
+    /// (`idm/managed/<object>/<hook>.cjs`) as well as its dotted ref, on every
+    /// verb that parses one; other kinds keep their slashes.
+    #[test]
+    fn managed_hook_refs_accept_the_workspace_path_form() {
+        for arg in [
+            "managed/custom_widget/onCreate",
+            "managed/custom_widget.onCreate",
+        ] {
+            let (ns, name) = parse_one(arg).unwrap();
+            assert_eq!(
+                (ns.kind, name.as_str()),
+                (script::Kind::IdmManagedHook, "custom_widget.onCreate"),
+                "{arg}"
+            );
+            let jobs = parse_ref(Some(arg.into())).unwrap();
+            assert!(
+                matches!(&jobs[..], [Job { selector: script::sync::Selector::Name(n), .. }] if n == "custom_widget.onCreate"),
+                "{arg}"
+            );
+        }
+        // Discriminating: the rewrite is managed-only, and not applied to a
+        // name that already has its dot or to an empty side.
+        assert_eq!(parse_one("endpoint/a/b").unwrap().1, "a/b");
+        assert_eq!(parse_one("sync/Map/x").unwrap().1, "Map/x");
+        assert_eq!(parse_one("managed/a.b/c.d").unwrap().1, "a.b/c.d");
+        assert_eq!(
+            parse_one("managed/custom_widget/").unwrap().1,
+            "custom_widget/"
+        );
     }
 
     /// D-S2b: with `--against`, the file is the whole verdict. The
