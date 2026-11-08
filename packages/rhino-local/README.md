@@ -1004,7 +1004,8 @@ start a JVM per lease as before.
 
 Within a JVM, the case prelude (generated mocks, identity policy, runtime) and
 each library body are compiled once and cached by content hash, and each
-distinct text crosses the pipe once. A case therefore costs a few
+distinct text crosses the pipe once per JVM, whichever lease, worker or file
+sends it: the pool hands each lease the hashes earlier leases shipped. A case therefore costs a few
 milliseconds, plus executing the libraries it `require`s, however large the
 library map. `node bench/run.ts [--workers=N]` and `node bench/micro.ts`
 measure this on invented fixtures.

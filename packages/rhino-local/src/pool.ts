@@ -90,6 +90,7 @@ interface Status {
 
 /** Frames the pool adds to the runner's stdout stream; the runner never prints this prefix. */
 const CONTROL = '{"type":"rhino-local-pool"';
+const SOURCE_HASH = /^[0-9a-f]{64}$/;
 const READY = "rhino-local-runner ready";
 const RETIRED = "rhino-local-runner retired";
 const STATUS_OP = "pool-status";
@@ -153,8 +154,15 @@ class PooledJvm {
   #exitWaiters: Array<() => void> = [];
   readonly #kind: string;
   readonly #startedAt = performance.now();
-  /** Names this JVM process to its clients, so a client can remember what it has already sent it. */
+  /** Names this JVM process to its clients (timing rows carry it). */
   readonly id = randomUUID();
+  /**
+   * Source hashes earlier clients reported having shipped to this process,
+   * handed to the next client so it names them rather than sending them
+   * again. The JVM keeps every registered source for its life. A hash a
+   * client claims wrongly costs one unknown-source reply and a resend.
+   */
+  readonly known = new Set<string>();
 
   constructor(key: string, build: string, launch: Launch) {
     this.key = key;
@@ -210,8 +218,8 @@ class PooledJvm {
     // Only the ready line: a later client must not inherit an earlier one's diagnostics.
     void this.#whenReady().then(() => {
       if (this.#client !== client) return;
-      // Before the ready line, so the client knows which JVM it holds once it is ready.
-      this.#send(client, { jvm: this.id });
+      // Before the ready line, so the client knows what this JVM holds once it is ready.
+      this.#send(client, { jvm: this.id, known: [...this.known] });
       if (this.#readyLine !== undefined) this.#send(client, { stderr: `${this.#readyLine}\n` });
       if (this.exit !== undefined) this.#send(client, { stderr: this.#stderr, exit: this.exit });
     });
@@ -432,7 +440,14 @@ export class JvmPool {
     };
     const forward = (held: PooledJvm, line: string): void => {
       if (line.startsWith(CONTROL)) {
-        // The only control a client sends: kill the JVM it holds.
+        // A client sends two controls: kill the JVM it holds, or (on release)
+        // the source hashes it shipped to it.
+        let frame: { kill?: unknown; known?: unknown } = {};
+        try { frame = JSON.parse(line) as typeof frame; } catch { /* treated as kill below */ }
+        if (frame.kill === undefined && Array.isArray(frame.known)) {
+          for (const hash of frame.known) if (typeof hash === "string" && SOURCE_HASH.test(hash)) held.known.add(hash);
+          return;
+        }
         held.kill();
         return;
       }
@@ -632,11 +647,15 @@ export class PooledChild extends EventEmitter {
   #released = false;
   /** The pool's name for the JVM this connection holds; set before its ready line arrives. */
   jvmId: string | undefined;
+  /** Source hashes the pool says this JVM already holds; set before its ready line arrives. */
+  knownSources: readonly string[] = [];
 
-  /** Return the JVM to the pool. */
-  release(): void {
+  /** Return the JVM to the pool, telling it which source hashes this lease shipped. */
+  release(shipped: Iterable<string> = []): void {
     this.#released = true;
-    this.#socket.end();
+    const known = [...shipped];
+    if (known.length === 0) this.#socket.end();
+    else this.#socket.end(`${JSON.stringify({ type: "rhino-local-pool", known })}\n`);
   }
 
   /** Destroy the JVM rather than return it: the pool will start a fresh one for the slot. */
@@ -658,8 +677,9 @@ export class PooledChild extends EventEmitter {
         this.stdout.write(line);
         continue;
       }
-      const frame = JSON.parse(line) as { jvm?: unknown; stderr?: string; exit?: { code: number | null; signal: NodeJS.Signals | null } };
+      const frame = JSON.parse(line) as { jvm?: unknown; known?: unknown; stderr?: string; exit?: { code: number | null; signal: NodeJS.Signals | null } };
       if (typeof frame.jvm === "string") this.jvmId = frame.jvm;
+      if (Array.isArray(frame.known)) this.knownSources = frame.known.filter((h): h is string => typeof h === "string");
       if (frame.stderr !== undefined) this.stderr.write(frame.stderr);
       if (frame.exit !== undefined) this.#exit(frame.exit.code, frame.exit.signal);
     }

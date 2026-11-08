@@ -179,9 +179,9 @@ class JvmProcess {
   #spawnError: Error | undefined;
   /**
    * What this JVM has been sent; a separate set per process, so each lane gets
-   * every text once. A pooled JVM's set outlives the lease: it is looked up by
-   * the pool's id for the JVM once the lease is ready, so the next file that
-   * borrows the same JVM does not send the prelude and libraries again.
+   * every text once. A pooled JVM's set outlives the lease: the pool hands the
+   * next lease the hashes earlier ones shipped, so a file that borrows a warm
+   * JVM does not send the prelude and libraries again.
    */
   #sources = new ShippedSources();
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
@@ -247,10 +247,11 @@ class JvmProcess {
         const env = parseEnvironment(this.#stderrBuf.slice(at, end));
         checkEnvironment(env, this.lane);
         this.environment = env;
-        if (this.#pooled?.jvmId !== undefined) this.#sources = shippedTo(this.#pooled.jvmId);
+        if (this.#pooled !== undefined) this.#sources = new ShippedSources(this.#pooled.knownSources);
         recordTiming(this.#pooled === undefined
           ? { type: "spawn", lane: this.lane, pooled: false, spawnToReadyMs: since(this.#startedAt) }
-          : { type: "borrow", lane: this.lane, readyMs: since(this.#startedAt) });
+          : { type: "borrow", lane: this.lane, readyMs: since(this.#startedAt), knownSources: this.#pooled.knownSources.length,
+            ...(this.#pooled.jvmId === undefined ? {} : { jvmId: this.#pooled.jvmId }) });
         return;
       }
       if (this.#spawnError) {
@@ -395,7 +396,7 @@ class JvmProcess {
         }
         this.#pooled.kill();
       } else {
-        this.#pooled.release();
+        this.#pooled.release(this.#sources.hashes());
       }
     } else {
       try {
@@ -546,7 +547,15 @@ class JvmProcess {
  * refuses the job, so a text counts as shipped as soon as its line is written.
  */
 class ShippedSources {
-  readonly #sent = new Set<string>();
+  readonly #sent: Set<string>;
+
+  constructor(known: Iterable<string> = []) {
+    this.#sent = new Set(known);
+  }
+
+  hashes(): Iterable<string> {
+    return this.#sent;
+  }
 
   forget(): void {
     this.#sent.clear();
@@ -577,25 +586,6 @@ class ShippedSources {
     if (Object.keys(sources).length > 0) out.sources = sources;
     return out;
   }
-}
-
-const SHIPPED_LIMIT = 256;
-const shippedByJvm = new Map<string, ShippedSources>();
-
-/**
- * The texts this process has sent the pooled JVM `id`, across leases. The JVM
- * keeps every registered source for its life, and the pool never reuses an id
- * for another process, so a remembered hash is still there; if one ever is
- * not, the job's unknown-source reply forgets the set and resends.
- */
-function shippedTo(id: string): ShippedSources {
-  let sources = shippedByJvm.get(id);
-  if (sources === undefined) {
-    if (shippedByJvm.size >= SHIPPED_LIMIT) shippedByJvm.delete(shippedByJvm.keys().next().value as string);
-    sources = new ShippedSources();
-    shippedByJvm.set(id, sources);
-  }
-  return sources;
 }
 
 function unknownSource(response: JobResponse): boolean {
