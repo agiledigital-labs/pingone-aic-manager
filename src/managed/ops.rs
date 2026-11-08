@@ -3355,6 +3355,27 @@ pub fn apply_add_hook(object_def: &Value, object_name: &str, event: &str) -> Res
     Ok(object)
 }
 
+/// Removes a lifecycle hook from an object definition. Unlike `apply_add_hook`
+/// an absent hook is an error, not a no-op: a delete that found nothing to
+/// delete should not report success.
+pub fn apply_delete_hook(
+    object_def: &Value,
+    object_name: &str,
+    event: &str,
+) -> Result<Value, String> {
+    if !crate::managed::state::HOOK_EVENTS.contains(&event) {
+        return Err(format!("unsupported managed lifecycle hook '{event}'"));
+    }
+    let mut object = object_def.clone();
+    let object_map = object
+        .as_object_mut()
+        .ok_or_else(|| format!("managed object '{object_name}' is not object-valued"))?;
+    object_map
+        .remove(event)
+        .ok_or_else(|| format!("{object_name} has no {event} hook"))?;
+    Ok(object)
+}
+
 /// Deletes a managed property from an object definition.
 pub fn apply_delete_field(
     object_def: &Value,
@@ -4402,6 +4423,27 @@ mod tests {
         });
         let unchanged = apply_add_hook(&existing, "alpha_lock", "onCreate").unwrap();
         assert_eq!(unchanged, existing);
+    }
+
+    #[test]
+    fn delete_hook_removes_only_that_hook_and_refuses_an_absent_one() {
+        let object = json!({
+            "name": "alpha_lock",
+            "schema": {"properties": {}, "required": [], "order": []},
+            "onCreate": {"type": "text/javascript", "source": "a();"},
+            "onUpdate": {"type": "text/javascript", "source": "b();"}
+        });
+        let deleted = apply_delete_hook(&object, "alpha_lock", "onCreate").unwrap();
+        let mut expected = object.clone();
+        expected.as_object_mut().unwrap().remove("onCreate");
+        assert_eq!(deleted, expected);
+
+        assert_eq!(
+            apply_delete_hook(&deleted, "alpha_lock", "onCreate").unwrap_err(),
+            "alpha_lock has no onCreate hook"
+        );
+        // `schema` is a top-level key too; only lifecycle events are hooks.
+        assert!(apply_delete_hook(&object, "alpha_lock", "schema").is_err());
     }
 
     #[test]
