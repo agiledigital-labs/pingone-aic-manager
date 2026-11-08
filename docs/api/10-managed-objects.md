@@ -652,6 +652,18 @@ it. How long activation takes is unmeasured, so `relationship set`/`map` print a
 warning after any write that adds a per-type entry
 (`storage::activation_warning`) rather than wait a guessed interval.
 
+**Not reproduced on the sandbox (2026-11-09).** Two throwaway pairs, plain
+`{}` creates, every record read back by id and counted by `_queryFilter=true`
+60 s or more after the last create. Run 1 created a record every ~1.1 s from
+0.8 s to 52 s after `relationship set` returned (45 records). Run 2 created one
+every ~0.4 s from 3 s *before* `set` started, through the 4 s it ran, to 25 s
+after it returned (76 records). Every record in both runs read back `200` and
+both query counts were complete, including those created before the per-type
+entry existed and during its write, and the run-2 records again several minutes
+later. So no activation lag was observable here at any timing, and there is no
+measured interval to wait for; the warning stays. What differs on the reporting
+tenant is unknown.
+
 **Promotion (measured 2026-11-02, three real dev → UAT promotions of
 throwaway types).** `repo.ds` is promoted as a **whole document**: after each
 promotion UAT's `repo.ds` was byte-equal to dev's, including when the
@@ -800,6 +812,11 @@ entry kept with `properties: {}` (since 2026-11-09): that is the state a newly
 added per-type entry starts in, measured above to keep records readable and
 creatable. Removing the entry itself would change where the object's records
 are looked up and is not done.
+Measured 2026-11-09 on a throwaway pair whose ends were each their type's only
+mapping, one end holding 45 records: `delete --remove-mapping --force` removed
+both mappings reverse end first, each confirmed by re-read, leaving both
+per-type entries with `properties: {}`. After 30 s all 45 records still counted
+by query, and a new record on each type created and read back `200`.
 Whether links written while a key was mapped reappear if the key is
 recreated after a repair was not measured.
 
@@ -2170,6 +2187,17 @@ on create, or when actually rotating it.
   script calls as well as REST ones.
 
 ## Verified against
+
+- Date: 2026-11-09 — mapping activation and last-mapping removal, sandbox,
+  throwaway `zzemu_act_a`–`zzemu_act_d` built with `aic managed object create`
+  and `relationship set --forward one --reverse one`. Creates spanning
+  `relationship set` (3 s before to 52 s after) all read back by id and query;
+  no activation loss reproduced. `relationship delete --remove-mapping` of each
+  type's only mapping kept 45 records readable and new records creatable. All
+  records deleted, the four types deleted, and the four empty per-type entries
+  then removed from `config/repo.ds` by a backed-up whole-document `PUT`
+  confirmed by re-read (`object delete` leaves them, as recorded in
+  `99-quirks-and-open-questions.md`).
 
 - Date: 2026-11-05 — concurrent `PATCH` and managed hooks, sandbox, throwaway
   `alpha_poc_agg` / `alpha_poc_child` / `alpha_poc_sink`. Parent and sink

@@ -1772,7 +1772,8 @@ removing an object's last mapping, are both unmeasured
 (`src/managed/repair.rs`). *(2026-11-09: the last-mapping refusal is gone —
 the property is removed and the per-type entry kept with no properties, the
 measured state of a new entry — so this teardown would now go through, reverse
-end first.)* The refusal is judged on the managed document the
+end first. Removal of a last mapping was measured live the same day: records
+stayed readable and creatable, `10-managed-objects.md`.)* The refusal is judged on the managed document the
 delete would write, so both ends already look stale while the live objects are
 still there, and the command returns before either write. The three object
 deletes then removed the types from `config/managed` and left the two
