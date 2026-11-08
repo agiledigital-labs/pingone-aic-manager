@@ -6,9 +6,12 @@ import type {
   RunnerTestFile as File,
   RunnerTestSuite as VitestSuite,
 } from "vitest";
-import { AicFileLease } from "../aic/file-lease.ts";
+// The tenant lane's heavy modules load only when a suite opts into it: a
+// local-only run (every run without AIC_SCRIPT_TESTER_AIC) never pays for
+// them, which matters most under Vitest's default per-file isolation.
+import type { AicFileLease } from "../aic/file-lease.ts";
+import type { chainFromRunResult as ChainFromRunResult } from "../aic/conform.ts";
 import { createLeaseIdentity } from "../aic/lease-identity.ts";
-import { chainFromRunResult } from "../aic/conform.ts";
 import type { AicIo } from "../aic/tenant.ts";
 import type { TenantProvider } from "../aic/provider.ts";
 import { clearAicTrace, takeAicTrace } from "../aic/trace.ts";
@@ -104,13 +107,14 @@ export function useLease<TSchema extends z.ZodType>(
   const uploadedName = uploadedIdentity === undefined ? undefined : `${uploadedIdentity.treeName}-subject`;
   let runner: RhinoRunner | undefined;
   let aicLease: AicFileLease | undefined;
+  let chainFromRunResult: typeof ChainFromRunResult | undefined;
   let tenantCookieName: string | undefined;
   const lane: LeaseLane | undefined =
     options.aic === undefined
       ? undefined
       : {
           run: ({ result, source, hooks }) => {
-            if (aicLease === undefined) {
+            if (aicLease === undefined || chainFromRunResult === undefined) {
               throw new Error("rhino-local: AIC lease used before beforeAll completed");
             }
             return aicLease.run({ ...chainFromRunResult(result), source, hooks });
@@ -153,6 +157,11 @@ export function useLease<TSchema extends z.ZodType>(
     lease.open();
     if (options.aic !== undefined) {
       claimAicLeaseForFile(vitestFilePath(scope), options.aic.id);
+      const [{ AicFileLease }, conform] = await Promise.all([
+        import("../aic/file-lease.ts"),
+        import("../aic/conform.ts"),
+      ]);
+      chainFromRunResult = conform.chainFromRunResult;
       aicLease = new AicFileLease({
         id: options.aic.id,
         suiteName: suite.spec.name,
