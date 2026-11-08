@@ -421,6 +421,52 @@ describe("PATCH replace with null is the measured 400, whatever the property (P2
     expect((await trace(emu)).length).toBe(before);
   });
 
+  // astra-r1 P2-3: an operation with no `value` key is the same null, refused at the same point
+  // (before lookup and read hooks), as the AM lane refuses it. Discriminating: at d7212ed every
+  // "omitted" row answered 404 on the absent record and ran the read hooks on the existing one.
+  // The "undefined" rows send a host object whose `value` key is present and undefined.
+  const VALUES = [["omitted", {}], ["null", { value: null }], ["undefined", { value: undefined }]] as const;
+  const RECORDS = [["an absent record", "absent"], ["an existing record with read hooks", "one"]] as const;
+  const crossed = VALUES.flatMap(([value, extra]) => RECORDS.flatMap(([record, id]) =>
+    (["replace", "add"] as const).map((operation) => [operation, value, record, id, extra] as const)));
+  it.each(crossed)("REST: %s with value %s on %s is refused before lookup", async (operation, _value, _record, id, extra) => {
+    const emu = traced(runner);
+    await create(emu);
+    const before = (await trace(emu)).length;
+    if (operation === "add") expectHarnessFault("idm-patch/add-null");
+    const result = await emu.request({ method: "PATCH", path: `managed/widget/${id}`, body: [{ operation, field: "/text", ...extra } as Document] });
+    if (operation === "replace") {
+      expect(result.status).toBe(400);
+      expect(String((result.body as Document).message)).toContain("not a valid JSON patch: replace /text with null");
+    } else {
+      expect(result.status).toBe(501);
+      expect(JSON.stringify(result.body)).toContain("idm-patch/add-null");
+    }
+    expect((await trace(emu)).length).toBe(before);
+    expect((await emu.request({ method: "GET", path: "managed/widget/one" })).body).toMatchObject({ text: "a" });
+  });
+  // The script path: an IDM script's openidm.patch, through the emulator's host call.
+  const SCRIPT_VALUES = [["omitted", ""], ["null", ", value: null"], ["undefined", ", value: undefined"]] as const;
+  const scripted = SCRIPT_VALUES.flatMap(([value, literal]) => RECORDS.flatMap(([record, id]) =>
+    (["replace", "add"] as const).map((operation) => [operation, value, record, id, literal] as const)));
+  it.each(scripted)("script: %s with value %s on %s is refused before lookup", async (operation, _value, _record, id, literal) => {
+    const emu = traced(runner);
+    await create(emu);
+    const before = (await trace(emu)).length;
+    if (operation === "add") expectHarnessFault("idm-patch/add-null");
+    const result = await runner.eval({ engine: "idm", source:
+      `var out; try { openidm.patch('managed/widget/${id}', null, [{operation: '${operation}', field: '/text'${literal}}]); out = 'patched'; } ` +
+      "catch (e) { out = String(e); } out;" }, { onCall: emu.onCall });
+    if (operation === "replace") {
+      expect(result.outcome).toBe("ok");
+      expect(String(result.value)).toContain("not a valid JSON patch: replace /text with null");
+    } else {
+      expect(result.outcome).toBe("runtime_error");
+      expect(JSON.stringify(result.emulation)).toContain("idm-patch/add-null");
+    }
+    expect((await trace(emu)).length).toBe(before);
+  });
+
   // Fix round 2, P3-3 end to end: removing an optional undefaulted property commits.
   // Measured 2026-11-08 under both required shapes. The tenant then reads the key as absent; this
   // emulator's generic materialization still reads it back as null (open: see the gaps doc).

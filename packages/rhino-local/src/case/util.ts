@@ -156,7 +156,9 @@ export function parseJsonValue(raw: unknown, path: string): JsonValue {
   if (isPlainObject(raw)) {
     const object: JsonObject = {};
     for (const [key, value] of Object.entries(raw)) {
-      object[key] = parseJsonValue(value, `${path}.${key}`);
+      // A recorded key `__proto__` is data: assignment would drop it, or with an object value
+      // replace this object's prototype (astra-r1 P2-2).
+      defineOwn(object, key, parseJsonValue(value, `${path}.${key}`));
     }
     return object;
   }
