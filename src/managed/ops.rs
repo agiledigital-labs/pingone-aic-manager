@@ -617,6 +617,35 @@ fn carry_unmodelled(old: &Value, rebuilt: &mut Value, repointed_from: Option<&st
     });
 }
 
+/// Keeps an unchanged reverse end's own attributes ([`ATTRIBUTE_KEYS`] and
+/// the node's `validate`) exactly as the tenant has them, absent keys
+/// included. The relationship form collects these for the source end only, so
+/// without this a save rewrote the reverse with `wrap_with_attrs`' defaults
+/// (`searchable: false`, `userEditable: true`, `validate: false`), whatever
+/// the tenant held. Called only when the reverse keeps its object, key and
+/// cardinality.
+fn keep_reverse_attributes(old: &Value, rebuilt: &mut Value) {
+    fn keep(from: &Value, into: &mut Value, key: &str) {
+        let Some(into) = into.as_object_mut() else {
+            return;
+        };
+        match from.get(key) {
+            Some(value) => {
+                into.insert(key.to_string(), value.clone());
+            }
+            None => {
+                into.remove(key);
+            }
+        }
+    }
+    for key in ATTRIBUTE_KEYS {
+        keep(old, rebuilt, key);
+    }
+    if let (Some(old_node), Some(node)) = (relationship_node(old), relationship_node_mut(rebuilt)) {
+        keep(old_node, node, "validate");
+    }
+}
+
 /// Keeps the resource collection the tenant has rather than the one the builder
 /// would invent.
 ///
@@ -905,6 +934,14 @@ pub fn apply_relationship_spec(
         // cannot change, so none of its entries is ever repointed away.
         if let Some(old) = &old_reverse {
             carry_unmodelled(old, &mut property, None);
+            // The form models the source end only; the reverse end's flags
+            // are the builder's defaults. Rewriting the same reverse in place
+            // keeps the tenant's instead.
+            if previous.is_some_and(|previous| previous.old_target == spec.target_object)
+                && is_many(old) == is_many(&property)
+            {
+                keep_reverse_attributes(old, &mut property);
+            }
         }
         let target = crate::managed::api::object_named_mut(&mut updated, &spec.target_object)
             .map_err(|error| error.to_string())?;
@@ -5817,6 +5854,69 @@ mod tests {
 
             assert_eq!(saved, tenant, "{order}");
         }
+    }
+
+    #[test]
+    fn editing_either_end_keeps_the_other_ends_flags() {
+        // Each end carries flags the builder would never write, and different
+        // from each other, so a reset to defaults or a copy across ends shows.
+        for (forward, reverse) in [
+            (Cardinality::Many, ReverseCardinality::One),
+            (Cardinality::One, ReverseCardinality::Many),
+        ] {
+            let spec = relationship_spec(forward, reverse);
+            let mut tenant =
+                apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+            let owned = &mut tenant["objects"][1]["schema"]["properties"]["owned"];
+            owned["searchable"] = json!(true);
+            owned["userEditable"] = json!(false);
+            owned["viewable"] = json!(false);
+            owned["title"] = json!("Owned things");
+            owned.as_object_mut().unwrap().remove("returnByDefault");
+            relationship_node_mut(owned).unwrap()["validate"] = json!(true);
+            let previous = PreviousRelationship {
+                old_key: "owner".into(),
+                old_target: "b".into(),
+                old_reverse_key: Some("owned".into()),
+            };
+            let mut edited = spec.clone();
+            edited.searchable = !spec.searchable;
+
+            let saved = apply_relationship_spec(&tenant, &edited, Some(&previous)).unwrap();
+
+            let reverse_end =
+                |doc: &Value| doc["objects"][1]["schema"]["properties"]["owned"].clone();
+            assert_eq!(
+                reverse_end(&saved),
+                reverse_end(&tenant),
+                "{forward:?}/{reverse:?}"
+            );
+            assert_eq!(
+                saved["objects"][0]["schema"]["properties"]["owner"]["searchable"],
+                json!(edited.searchable),
+            );
+        }
+    }
+
+    #[test]
+    fn a_reverse_whose_cardinality_changes_is_rebuilt() {
+        let spec = relationship_spec(Cardinality::One, ReverseCardinality::One);
+        let mut tenant =
+            apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+        tenant["objects"][1]["schema"]["properties"]["owned"]["searchable"] = json!(true);
+        let previous = PreviousRelationship {
+            old_key: "owner".into(),
+            old_target: "b".into(),
+            old_reverse_key: Some("owned".into()),
+        };
+        let flipped = relationship_spec(Cardinality::One, ReverseCardinality::Many);
+
+        let saved = apply_relationship_spec(&tenant, &flipped, Some(&previous)).unwrap();
+
+        assert_eq!(
+            saved["objects"][1]["schema"]["properties"]["owned"],
+            reverse_property(&flipped).unwrap(),
+        );
     }
 
     #[test]
