@@ -17,7 +17,10 @@ import { repoRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 
 const probe = readFileSync(join(repoRoot, "scripts/rhino-script-tester/fixtures/openidm-error-detail.script.js"), "utf8");
-const capture = `${probe}\nfunction emit(payload) { nodeState.putShared("r", JSON.stringify(payload)); }`;
+// The probe names its throwaway users with randomUUID; pin it so the host and
+// container lanes see the same ids and the both-lane comparison stays exact.
+const pinUuid = 'var __uuidN = 0; utils.crypto.randomUUID = function () { __uuidN++; return "00000000-0000-4000-8000-" + ("000000000000" + __uuidN).slice(-12); };\n';
+const capture = `${pinUuid}${probe}\nfunction emit(payload) { nodeState.putShared("r", JSON.stringify(payload)); }`;
 
 const ADAPTER = "org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: ";
 const POLICY = { result: false, failedPolicyRequirements: [{ policyRequirements: [{ policyRequirement: "NOT_NULL" }], property: "frIndexedInteger1" }] };
