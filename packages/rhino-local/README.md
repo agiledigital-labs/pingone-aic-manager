@@ -952,7 +952,10 @@ carries the bytes written (`lineBytes`), the source text shipped with it
 prelude, preamble (where the seed is parsed) and subject compile and exec,
 library compile and load, harvest, host-call wait, and compile-cache hits and
 misses. Exec phases include the library bodies and host-call waits that ran
-inside them. Timing is off unless the variable is set, and it never changes a
+inside them. A phase that threw or timed out still reports its time. `harvestMs`
+is measured only for journey-bridge jobs: an ordinary case's harvest runs at the
+end of the subject script, so its cost (large for a big fixture store) is inside
+`subjectExecMs`. Timing is off unless the variable is set, and it never changes a
 response or a lane comparison. `src/timing.ts` documents every field.
 
 ## JVM runner client
