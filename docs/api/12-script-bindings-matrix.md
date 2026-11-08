@@ -1022,6 +1022,30 @@ are `undefined`, and `v.getClass()` is the shutter's `Access to Java class
 "java.lang.Class" is prohibited.` A cookie's value is a JS string. Header keys
 arrive lowercased, as with `for…in`. The legacy engine was not probed.
 
+### `openidm` failure `getDetail()` — next-gen (verified 2026-11-08)
+
+`fixtures/openidm-error-detail.script.js`, run through `run-journey.sh`, made
+three `openidm` calls fail from a next-gen scripted decision: a `bravo_user`
+create with `frIndexedInteger1: null` (policy), a delete of a missing
+`alpha_user`, and an unknown managed-collection action. Nothing was created.
+Each threw a `JavaException` whose `e.javaException` answered
+`typeof getDetail === "function"`:
+
+| Call            | `getCode()` / `getReason()` | `String(e.javaException.getDetail())`                             |
+| --------------- | --------------------------- | ----------------------------------------------------------------- |
+| policy create   | `403` / `Forbidden`         | `{ "result": false, "failedPolicyRequirements": [ { "policyRequirements": [ { "policyRequirement": "NOT_NULL" } ], "property": "frIndexedInteger1" } ] }` |
+| missing delete  | `404` / `Not Found`         | `null`                                                            |
+| unknown action  | `400` / `Bad Request`       | `null`                                                            |
+
+The detail is never a JS `null`: it is a CREST `org.forgerock.json.JsonValue`
+(`typeof` `"object"`) in every case. `d.get("result")` is another `JsonValue`
+(`String` gives `false`, or `null` on the null detail), `d.isNull()` is `true`
+only for the null detail, `JSON.stringify(d.getObject())` is plain JSON, and
+`JSON.stringify(d)` is the string form above, quoted. Dot access to a field
+(`d.result`) is `undefined`. `Object.keys(d)` and `for…in` list the class's
+Java members, not the detail's fields. The 404's message names the directory
+entry it looked for, so it carries the record's id.
+
 ### `requestProperties` arity — next-gen validate scope (verified 2026-09-08)
 
 The token-endpoint contexts reach the same two maps through

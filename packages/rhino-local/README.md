@@ -641,7 +641,7 @@ Action replies are local only: like HTTP replies, they make cases AIC-ineligible
 and report the same observation gap (`aic.unsupported: "skip"` opts into skipping).
 
 Use `openidmFailures` to make one local IDM call fail: each stub has
-`match: { method, resource, ordinal }` and `reply: { code }`. `ordinal` is
+`match: { method, resource, ordinal }` and `reply: { code, detail?, message? }`. `ordinal` is
 one-based among calls with the same method and resource, so a second patch
 can fail after the first succeeds. On a `.step()` chain the count runs across
 the whole journey, not per pass: "patch #1" fails once, so a retry on the
@@ -656,7 +656,15 @@ no `code` property — AIC's adapter has none (`typeof error.code` measured
 `e.javaException.getCode()`, which answers the stub's code, as AIC's adapter
 answers its status; `getReason()` answers CREST's reason phrase for it (a code
 outside CREST's table faults, `openidm-failure-reason`). The message text
-is the harness's own; AIC's carries the reason phrase, not the number. These
+is the harness's own unless the stub gives `message`, which replaces the text
+after `ResourceExceptionScriptAdapter: `; AIC's carries the reason phrase or
+IDM's own words, not the number. `detail` is what `getDetail()` returns, as
+AIC's CREST `JsonValue` (measured 2026-11-08, docs/api/12): `get(key)`,
+`isNull()`, `getObject()` and its one-line string form. A policy failure's
+detail is its `{ result: false, failedPolicyRequirements: [...] }` object; a
+404 or 400 from `openidm` carries `null`. Without `detail`, calling
+`getDetail()` is the fault `openidm-failure-detail`, as is any `JsonValue`
+member the probe did not exercise. These
 stubs are AIC-ineligible. An AIC-enabled file lease refuses such a case unless
 its `aic.unsupported` is `"skip"`, which keeps the local verdict and reports
 the observation gap.
