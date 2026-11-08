@@ -78,6 +78,12 @@ export interface PropertySchema {
    * can be judged; nested values are not checked on write (AIC stores them unenforced, docs/api/10).
    */
   properties?: Record<string, PropertySchema>;
+  /**
+   * A non-empty `required` list declared on the property itself (an object property's members).
+   * Recorded so the script tester can fault a write it cannot check (astra-r1 P2-1): what AIC does
+   * with a nested `required` was never measured.
+   */
+  required?: string[];
   /** `managed/<target>` paths, for `type: "relationship"`. */
   resourceCollection?: string[];
   /** Property-level script hooks (`onValidate`, `onStore`, `onRetrieve`), names only, sorted. */

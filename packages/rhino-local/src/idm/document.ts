@@ -76,6 +76,7 @@ export function project(object: Document, selectors: string[], evidence: Evidenc
  * policy (docs/api/10-managed-objects.md: measured on a defaulted boolean and on an undefaulted has-one
  * relationship, so the rule is the patch parser's, not the property's). Only the status and that
  * phrase are measured; the rest of the message is local. `add` with `null` is unmeasured and faults.
+ * An operation with no `value` key is treated as `value: null`, as the AM lane treats it.
  * Checked over every operation before any is applied, as a parse-time refusal would be, and called
  * by the managed dispatcher before the record lookup, the revision check, read hooks and the
  * capability gate: CREST parses a request body before routing it (structural over REST, assumed for
@@ -85,7 +86,10 @@ export function project(object: Document, selectors: string[], evidence: Evidenc
 export function refuseNullPatch(operations: JsonValue | undefined, evidence: Evidence): void {
   if (!Array.isArray(operations)) return;
   for (const op of operations) {
-    if (!isDocument(op) || op.value !== null) continue;
+    // An absent `value` (or an undefined one, from a host object) is the same null: the AM lane
+    // refuses it at the same point (runtime.cjs openidm.patch), and to the patch parser an
+    // operation without a value is a null value. Inferred, not measured (astra-r1 P2-3).
+    if (!isDocument(op) || (op.value !== null && op.value !== undefined)) continue;
     if (op.operation === "replace") {
       evidence.measured("PATCH replace with null is refused 400 as an invalid JSON patch, before policy", "docs/api/10-managed-objects.md");
       throw new IdmError(400, `not a valid JSON patch: replace ${String(op.field)} with null`, undefined, undefined, false,

@@ -20,6 +20,7 @@
  * {@link managedPolicy} gives the lane those per type as plain lists.
  */
 import type { JsonValue } from "../case/types.ts";
+import { defineOwn } from "../case/util.ts";
 import { judgeDefault } from "../declared-default.ts";
 import { type EnvProfile, type ObjectSchema, PROFILE_VERSION, type PropertySchema } from "./types.ts";
 
@@ -68,14 +69,42 @@ export function hooksRun(object: ObjectSchema, method: WriteMethod): string[] {
   ];
 }
 
-function propertyPolicies(path: string, property: PropertySchema): string[] {
-  const own = [
+/**
+ * Every schema below a top-level property, under `items` (`path[]`) and `properties`
+ * (`path.member`), at any depth, with its path. What AIC does with a hook, enum, policy or
+ * `required` declared down there was never measured (only nested type mismatches were: stored
+ * unchecked, docs/api/10), so each counts as a declaration the lane cannot answer (astra-r1 P2-1).
+ */
+function nestedSchemas(path: string, property: PropertySchema): [string, PropertySchema][] {
+  return [
+    ...(property.items ? [[`${path}[]`, property.items] as [string, PropertySchema], ...nestedSchemas(`${path}[]`, property.items)] : []),
+    ...Object.entries(property.properties ?? {}).flatMap(([member, schema]) =>
+      [[`${path}.${member}`, schema] as [string, PropertySchema], ...nestedSchemas(`${path}.${member}`, schema)]),
+  ];
+}
+
+function ownPolicies(path: string, property: PropertySchema): string[] {
+  return [
     ...(property.enum ? [`${path} enum`] : []),
+    ...(property.required ? [`${path} required ${property.required.join(", ")}`] : []),
     ...(property.policies ?? []).map((id) => `${path} ${id}`),
     ...(property.conditionalPolicies ?? []).map((id) => `${path} ${id} (conditional)`),
     ...(property.fallbackPolicies ?? []).map((id) => `${path} ${id} (fallback)`),
   ];
-  return property.items ? [...own, ...propertyPolicies(`${path}[]`, property.items)] : own;
+}
+
+function propertyPolicies(path: string, property: PropertySchema): string[] {
+  return [...ownPolicies(path, property), ...nestedSchemas(path, property).flatMap(([at, schema]) => ownPolicies(at, schema))];
+}
+
+/**
+ * Hooks declared below a top-level property, as `path.hook`. The IDM emulator refuses these
+ * (`nested property behavior <hook>`): whether AIC runs one, on which writes and in what order,
+ * was never measured, so the lane faults every write of the type rather than guess (astra-r1 P2-1).
+ */
+export function nestedHooks(object: ObjectSchema): string[] {
+  return Object.entries(object.properties).flatMap(([name, property]) =>
+    nestedSchemas(name, property).flatMap(([at, schema]) => (schema.hooks ?? []).map((hook) => `${at}.${hook}`)));
 }
 
 /** The declared policies a create or update is checked against on AIC. */
@@ -117,6 +146,12 @@ export function writeFault(object: ObjectSchema, method: WriteMethod): WriteFaul
   if (hooks.length > 0) {
     return { id: `openidm-managed-hook/${object.name}.${hooks[0]}`,
       message: `${type}: on AIC a ${method} runs ${hooks.join(", ")}. ${remedy}` };
+  }
+  const nested = nestedHooks(object);
+  if (nested.length > 0) {
+    return { id: `openidm-managed-unmeasured-hook/${object.name}.${nested[0]}`,
+      message: `${type}: declares ${nested.join(", ")}, nested inside items or properties. Whether AIC runs a nested ` +
+        `property hook on a ${method}, and when, was never measured (the IDM emulator refuses the declaration too). ${remedy}` };
   }
   const policies = method === "delete" ? [] : policiesDeclared(object);
   if (policies.length > 0) {
@@ -233,16 +268,17 @@ export function managedPolicy(profile: EnvProfile): Record<string, PolicyRule> {
       const nullableMeasured = nullMeasured && property.type === "string";
       if (property.default !== undefined) {
         defaulted.push(name);
-        defaults[name] = nullMeasured && property.type === "array" && !property.nullable ? [] : property.default;
+        defineOwn(defaults, name, nullMeasured && property.type === "array" && !property.nullable ? [] : property.default);
         if (property.default !== null) notNull.push(name);
       }
       const noRequiredNull = object.noRequiredArray && (!known || (nullDefault && property.type !== "string"));
       if ((property.nullable && !nullableMeasured) || noRequiredNull) nullUnmeasured.push(name);
       else if (nullMeasured && property.type === "array") emptyOnNull.push(name);
-      if (known && (!property.nullable || nullableMeasured)) checked[name] = property.type;
-      else if (known) mismatchUnmeasured[name] = property.type;
+      // defineOwn, not assignment: a property named `__proto__` must stay in every table (astra-r1 P2-2).
+      if (known && (!property.nullable || nullableMeasured)) defineOwn(checked, name, property.type);
+      else if (known) defineOwn(mismatchUnmeasured, name, property.type);
       const item = property.items?.type;
-      if (property.type === "array" && item !== undefined && MEASURED_TYPES.has(item)) itemTypes[name] = item;
+      if (property.type === "array" && item !== undefined && MEASURED_TYPES.has(item)) defineOwn(itemTypes, name, item);
     }
     const typed = Object.keys(object.properties).filter((name) => !nullUnmeasured.includes(name));
     const nullRefused = object.noRequiredArray ? typed : notNull.filter((name) => !nullUnmeasured.includes(name));
