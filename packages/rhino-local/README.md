@@ -798,7 +798,11 @@ equivalents of the create chain; a delete `onDelete`, `postDelete`, `onSync`;
 hook names the harness does not know count for every write), or
 `openidm-managed-policy/<type>` when the type declares only policies
 (`required`, an `enum`, property `policies`, `conditionalPolicies` or
-`fallbackPolicies`; a delete is not judged on policy). A write a test stubs with `given.openidmFailures`
+`fallbackPolicies`; a delete is not judged on policy). Declarations nested
+under a property's `properties` or `items` count as well, since what AIC does
+with them was never measured: a nested hook faults every write as
+`openidm-managed-unmeasured-hook/<type>.<path>.<hook>`, and a nested policy or
+non-empty `required` as `openidm-managed-policy/<type>`. A write a test stubs with `given.openidmFailures`
 never reaches the store and does not fault. A type with neither keeps writing
 silently, and without a profile nothing changes. A profile whose
 `profileVersion` is absent, below 3 or not an integer (`"3"` is a string)
