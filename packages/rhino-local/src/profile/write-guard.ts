@@ -271,8 +271,12 @@ function declarationProblem(name: string, property: PropertySchema, depth = 0): 
     const verdict = judgeDefault(property.default, declared(property));
     if (verdict !== "valid") {
       const type = JSON.stringify(property.types ?? property.type) + (property.nullable && !property.types ? " (nullable)" : "");
+      // An array default that is an array can be invalid only for an item: name the items' type.
+      const against = property.type === "array" && Array.isArray(property.default)
+        ? `its items' type ${JSON.stringify(property.items?.types ?? property.items?.type)}`
+        : `its type ${type}`;
       return { kind: verdict, why: verdict === "invalid"
-        ? `${name} declares default ${JSON.stringify(property.default)}, which does not match its type ${type}` +
+        ? `${name} declares default ${JSON.stringify(property.default)}, which does not match ${against}` +
           (property.type === "integer" || property.items?.type === "integer" ? INTEGER_NOTE : "")
         : `${name} declares default ${JSON.stringify(property.default)} on type ${type}, which no probe covered` };
     }

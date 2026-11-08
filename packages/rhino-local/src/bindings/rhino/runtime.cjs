@@ -2356,7 +2356,11 @@ function __rhinoLocalInvalidDefault(method, collection) {
   if (!fault || !/^managed\/[^/]+/.test(String(collection))) {
     return;
   }
-  throw __rhinoLocalFault(fault.id, "rhino-local: openidm." + method + ": " + collection + ": " + fault.message);
+  // The message starts with the offending type ("managed/gizmo: ..."); name the
+  // called collection only when it is another type, so the prefix is not repeated.
+  var own = fault.message.indexOf(collection + ": ") === 0;
+  throw __rhinoLocalFault(fault.id, "rhino-local: openidm." + method + ": " +
+    (own ? "" : collection + ": faulted for another type's declaration: ") + fault.message);
 }
 
 // A type a profile says the tenant does not have. Without a profile an
