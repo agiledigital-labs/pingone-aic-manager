@@ -45,7 +45,8 @@ other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`, `iterator`,
 intercepted here; AIC's answer is unmeasured, so use `get(i)` with an index
 below `size()`. `JSON.stringify` of a value list was not
 measured either, so it faults `request-list-serialize` (one miss: a list an
-author's own `toJSON` returns under an array replacer is written unfaulted);
+author's own `toJSON` returns under an array replacer is written unfaulted, and
+during such a call a list reads as having a `toJSON` function);
 copy the values into an array first:
 
 ```js

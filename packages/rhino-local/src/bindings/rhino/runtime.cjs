@@ -46,8 +46,7 @@ var __rhinoLocal = {
   identityGenerations: {},
   libraries: {},
   requireCache: {},
-  lists: [],
-  listHooks: null,
+  listsToJSON: false,
 };
 
 var sharedState;
@@ -848,23 +847,24 @@ var __rhinoLocalListKinds = {
 // and no Symbol.isConcatSpreadable. `row.list === value` refuses an object
 // that merely inherits or copied the key.
 var __rhinoLocalListKey = "__rhinoLocalList";
-// `__rhinoLocal.lists` holds every list made in this run, for JSON.stringify
-// under an array replacer (below); only that call walks it, once per call.
-// While such a call is running, `__rhinoLocal.listHooks` holds the lists it
-// hooked, and a list made meanwhile (a getter that queries) is hooked as it is
-// made. Both live on `__rhinoLocal`, which `__rhinoLocalSeed` resets per case:
-// on the JVM the runtime's top-level bindings are shared by every case and a
-// case cannot assign them.
-function __rhinoLocalHookList(list) {
-  if (Object.prototype.hasOwnProperty.call(list, "toJSON")) {
-    return; // the author's own wins, as native would have it
-  }
+// Each list carries one hidden `toJSON` accessor from birth, for
+// JSON.stringify under an array replacer (below). It answers only while the
+// innermost JSON.stringify running is such a call (`__rhinoLocal.listsToJSON`,
+// on `__rhinoLocal` because the JVM shares the runtime's top-level bindings
+// between cases and a case cannot assign them), and is `undefined` otherwise,
+// so a function-replacer call nested inside sees the list itself. Nothing is
+// installed or removed per call, so freezing a list changes nothing. An
+// author's assignment replaces it with their own, which then wins, as native
+// would have it.
+function __rhinoLocalListToJSONGet() {
+  return __rhinoLocal.listsToJSON ? __rhinoLocalListToJSON : undefined;
+}
+function __rhinoLocalListToJSONSet(value) {
   try {
-    Object.defineProperty(list, "toJSON", { value: __rhinoLocalListToJSON, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(this, "toJSON", { value: value, writable: true, enumerable: true, configurable: true });
   } catch (e) {
-    return; // a frozen list keeps no hook; nothing makes one on AIC either
+    // A frozen list keeps what it has, as a frozen object would.
   }
-  __rhinoLocal.listHooks.push(list);
 }
 function __rhinoLocalListToJSON() {
   return __rhinoLocalJsonList(this);
@@ -931,12 +931,14 @@ function __rhinoLocalListUnmeasured(kind, call) {
 // An array replacer (a property list) cannot ride alongside a function, so it
 // goes to native unchanged, and native applies it to every value exactly as it
 // would anyway. The lists are reached instead through `toJSON`, which native
-// asks of every object value: for the length of the call, each list made in
-// this run carries a hidden own `toJSON` that does the same conversion or
-// fault, removed afterwards. Not covered: a list returned by an author's own
-// `toJSON` under a property list. Native asks `toJSON` once per value, so that
-// list is written as an object of the listed keys, unfaulted; catching it would
-// mean reading the property list a second time, which a getter in it could see.
+// asks of every object value: each list's hidden `toJSON` accessor (above)
+// does the same conversion or fault while the call runs. Not covered: a list
+// returned by an author's own `toJSON` under a property list. Native asks
+// `toJSON` once per value, so that list is written as an object of the listed
+// keys, unfaulted; catching it would mean reading the property list a second
+// time, which a getter in it could see. And for the length of such a call a
+// getter that reads `list.toJSON` itself sees a function, where AIC's Java
+// list has no such member.
 function __rhinoLocalJsonList(value) {
   var row = __rhinoLocalListRow(value);
   if (row === null) {
@@ -952,39 +954,30 @@ function __rhinoLocalJsonList(value) {
 (function () {
   "use strict";
   var original = JSON.stringify;
-  // A nested call made while one is running finds the hooks already in place.
-  var withListsSerialisable = function (run) {
-    if (__rhinoLocal.listHooks !== null) {
-      return run();
-    }
-    var hooked = [];
-    var lists = __rhinoLocal.lists.slice();
+  // The innermost call decides whether a list's toJSON answers.
+  var within = function (listsToJSON, run) {
+    var outer = __rhinoLocal.listsToJSON;
     var result;
-    var i;
-    __rhinoLocal.listHooks = hooked;
+    __rhinoLocal.listsToJSON = listsToJSON;
     try {
-      for (i = 0; i < lists.length; i += 1) {
-        __rhinoLocalHookList(lists[i]);
-      }
       result = run();
     } finally {
-      __rhinoLocal.listHooks = null;
-      for (i = 0; i < hooked.length; i += 1) {
-        delete hooked[i].toJSON;
-      }
+      __rhinoLocal.listsToJSON = outer;
     }
     return result;
   };
   __rhinoLocalHide(JSON, "stringify", function stringify(value, replacer, space) {
     if (Array.isArray(replacer)) {
-      return withListsSerialisable(function () {
+      return within(true, function () {
         return original.call(JSON, value, replacer, space);
       });
     }
     var author = typeof replacer === "function" ? replacer : null;
-    return original.call(JSON, value, function (key, v) {
-      return __rhinoLocalJsonList(author === null ? v : author.call(this, key, v));
-    }, space);
+    return within(false, function () {
+      return original.call(JSON, value, function (key, v) {
+        return __rhinoLocalJsonList(author === null ? v : author.call(this, key, v));
+      }, space);
+    });
   });
 })();
 
@@ -1081,10 +1074,9 @@ function __rhinoLocalListView(items, kind) {
     throw __rhinoLocalShutterError("java.lang.Class");
   });
   __rhinoLocalHide(list, __rhinoLocalListKey, { list: list, items: items.slice(), kind: kind });
-  __rhinoLocal.lists.push(list);
-  if (__rhinoLocal.listHooks !== null) {
-    __rhinoLocalHookList(list);
-  }
+  Object.defineProperty(list, "toJSON", {
+    get: __rhinoLocalListToJSONGet, set: __rhinoLocalListToJSONSet, enumerable: false, configurable: true,
+  });
   return list;
 }
 
@@ -5098,8 +5090,7 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.generatedId = 0;
   __rhinoLocal.outcome = null;
   __rhinoLocal.callbacks = [];
-  __rhinoLocal.lists = [];
-  __rhinoLocal.listHooks = null;
+  __rhinoLocal.listsToJSON = false;
   __rhinoLocal.openidm = [];
   __rhinoLocal.http = [];
   __rhinoLocal.logs = [];
