@@ -48,6 +48,21 @@ interface JavaArray<T = JavaString> {
   toArray(): T[];
 }
 
+// A Java list whose script-side surface was measured member by member on the
+// next-gen engine (2026-11-08, docs/api/12): a request map's value list, an
+// `openidm.query` `result`, and a has-many relationship array on a read.
+// `typeof` is "object" and `Array.isArray` is false; `length`, `[i]`, `size()`
+// and in-range `get(i)` work, and NO `Array.prototype` method exists — `map`,
+// `some`, `filter`, `join`, `includes` throw `Cannot find function`. Copy one
+// into a JS array with `[].concat(list)` (measured for the openidm lists).
+// Other `List` members are left off because nothing measured them.
+interface MeasuredJavaList<T> {
+  readonly [index: number]: T | undefined;
+  readonly length: number;
+  size(): number;
+  get(index: number): T;
+}
+
 interface JavaMap<Key = JavaString, Value = JavaString> {
   get(key: Lookup<Key>): Value | null;
   containsKey?(key: Lookup<Key>): boolean;
@@ -83,8 +98,13 @@ interface RequestMap {
    *
    * Header keys are matched case-insensitively; a single header whose value
    * contains a comma stays ONE element (it is not split).
+   *
+   * Each element is a JS string, and the list is a `MeasuredJavaList`: no
+   * `includes`, `indexOf` or `join` (measured on the next-gen engine,
+   * 2026-11-08; the legacy engine's list was not measured and is typed the
+   * same, the narrower claim).
    */
-  get(key: StringLike): JavaArray<JavaString> | null;
+  get(key: StringLike): MeasuredJavaList<string> | null;
   containsKey(key: StringLike): boolean;
 }
 
@@ -109,8 +129,11 @@ interface JavaSet<T = JavaString> {
 // Rhino lets a JS Array concat Java arrays; widen the lib signature so scripts
 // that concat a JavaArray<T> into a JS array still type-check.
 interface Array<T> {
+  // `[].concat(q.result)`: the empty literal is `never[]`, so the copy takes
+  // its element type from the list.
+  concat<U>(list: MeasuredJavaList<U>): (T | U)[];
   concat<U extends T[]>(...items: U[]): T[];
-  concat(...items: (T | JavaArray<T>)[]): T[];
+  concat(...items: (T | JavaArray<T> | MeasuredJavaList<T>)[]): T[];
 }
 
 // ---- logger format strings ------------------------------------------------
