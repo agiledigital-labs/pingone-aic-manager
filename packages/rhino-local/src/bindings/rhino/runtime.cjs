@@ -2666,8 +2666,9 @@ function __rhinoLocalProject(record, fields, context) {
   var wildcard = fields.indexOf("*") !== -1;
   // Every child selector is judged before anything is returned, so neither a
   // wildcard nor a whole-parent selector hides an unmeasured one.
+  // Keyed by caller-chosen names, so no prototype: a `__proto__` parent is data.
   var parents = [];
-  var byParent = {};
+  var byParent = Object.create(null);
   fields.forEach(function (field) {
     if (field.indexOf("/") === -1) {
       return;
@@ -2679,7 +2680,7 @@ function __rhinoLocalProject(record, fields, context) {
     }
     byParent[parent].push(field);
   });
-  var projected = {};
+  var projected = Object.create(null);
   parents.forEach(function (parent) {
     if (!__rhinoLocalHas(record, parent)) {
       return;
@@ -2711,7 +2712,7 @@ function __rhinoLocalProject(record, fields, context) {
   if (wildcard) {
     result = {};
     Object.keys(record).forEach(function (key) {
-      result[key] = record[key];
+      __rhinoLocalSetOwn(result, key, record[key]);
     });
   } else {
     result = {};
@@ -2723,14 +2724,14 @@ function __rhinoLocalProject(record, fields, context) {
     }
     for (i = 0; i < fields.length; i += 1) {
       if (__rhinoLocalHas(record, fields[i])) {
-        result[fields[i]] = __rhinoLocalIsReferenceArray(record[fields[i]])
+        __rhinoLocalSetOwn(result, fields[i], __rhinoLocalIsReferenceArray(record[fields[i]])
           ? __rhinoLocalProjectReferences(record[fields[i]], [fields[i]], context)
-          : record[fields[i]];
+          : record[fields[i]]);
       }
     }
   }
   Object.keys(projected).forEach(function (parent) {
-    result[parent] = projected[parent];
+    __rhinoLocalSetOwn(result, parent, projected[parent]);
   });
   return result;
 }
@@ -2813,7 +2814,7 @@ function __rhinoLocalProjectReferences(value, selectors, context) {
       if (path.length === 1) {
         Object.keys(el).forEach(function (key) {
           if (!__rhinoLocalHas(out, key)) {
-            out[key] = el[key];
+            __rhinoLocalSetOwn(out, key, el[key]);
           }
         });
         return;
@@ -2827,7 +2828,7 @@ function __rhinoLocalProjectReferences(value, selectors, context) {
           "a path below an object field of a relationship element is unmeasured (" + field + " is " + __rhinoLocalKind(el[field]) + ")",
           "select " + parent + "/*/" + field + " and read the nested value in the script");
       }
-      out[field] = el[field];
+      __rhinoLocalSetOwn(out, field, el[field]);
     });
     return out;
   });
@@ -2854,7 +2855,9 @@ function __rhinoLocalProjectChild(value, path, previous, context, selector) {
     }
   });
   if (__rhinoLocalHas(value, child)) {
-    out[child] = path.length === 1 ? value[child] : __rhinoLocalProjectChild(value[child], path.slice(1), out[child], context, selector);
+    // Only an own accumulated child is reused: `out.__proto__` would be Object.prototype.
+    __rhinoLocalSetOwn(out, child, path.length === 1 ? value[child]
+      : __rhinoLocalProjectChild(value[child], path.slice(1), __rhinoLocalHas(out, child) ? out[child] : undefined, context, selector));
   }
   return out;
 }
