@@ -77,6 +77,18 @@ describe("a caught emulated CREST error matches the captured observation", () =>
     ["a member of the class", "e.javaException.getClass().getSimpleName()"],
     ["the class's string form", "String(e.javaException.getClass())"],
     ["an empty detail container", "String(e.javaException.getDetail())"],
+    // sol-r3 P2-2: membership and enumeration used to answer from the local HostException (true, its
+    // whole member list) or from the shim's empty inventory (false), with no fault.
+    ["`in` for a member no probe read", "'getMessage' in e.javaException"],
+    ["`in` for an index", "0 in e.javaException"],
+    ["hasOwnProperty for a member no probe read", "Object.prototype.hasOwnProperty.call(e.javaException, 'getMessage')"],
+    ["Object.keys", "Object.keys(e.javaException)"],
+    ["for…in", "(function () { var k = []; for (var x in e.javaException) k.push(x); return k; })()"],
+    ["JSON.stringify", "JSON.stringify(e.javaException)"],
+    ["`in` for a class member no probe read", "'getSimpleName' in e.javaException.getClass()"],
+    ["Object.keys of the class", "Object.keys(e.javaException.getClass())"],
+    ["for…in over the class", "(function () { var k = []; for (var x in e.javaException.getClass()) k.push(x); return k; })()"],
+    ["a write to the class", "(e.javaException.getClass().x = 1)"],
   ])("%s faults idm-exception/unmeasured", async (_name, read) => {
     expectHarnessFault("idm-exception/unmeasured");
     const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [pol] } }), runner);
@@ -85,5 +97,33 @@ describe("a caught emulated CREST error matches the captured observation", () =>
     const response = await runner.eval({ engine: "idm", source: `var out; try { ${call}; } catch (e) { out = ${read}; } out;` }, { onCall: emu.onCall });
     expect(response.outcome).not.toBe("ok");
     expect(JSON.stringify(response)).toContain("idm-exception/unmeasured");
+  });
+
+  // sol-r3 P2-2: a name a read admits answers `in` truthfully (the member exists on AIC's object
+  // too), and the direct reads still work, so the gate is consistent between read and membership.
+  it("`in` is true for every admitted member, on the view and on the class", async () => {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [pol] } }), runner);
+    const response = await runner.eval({ engine: "idm", source: `var out; try { openidm.create('managed/zzemu_pol', null, {text: 5}); } catch (e) {
+      var j = e.javaException;
+      out = ['getCode', 'getDetail', 'getReason', 'toString', 'getClass'].map(function (n) { return n in j; })
+        .concat(['getName' in j.getClass(), String(j.getClass().getName()), Number(j.getCode())]); } out;` }, { onCall: emu.onCall });
+    expect(response.error).toBeNull();
+    expect(response.value).toEqual([true, true, true, true, true, true, "org.forgerock.json.resource.ForbiddenException", 403]);
+  });
+
+  // Object.getOwnPropertyNames and getOwnPropertyDescriptor never reach the view: Rhino refuses them
+  // with a TypeError for every Java object, before asking it. The class shim is a plain Scriptable so it
+  // gets the same refusal; the old ScriptableObject shim answered an empty list. Neither lists members.
+  it.each([
+    ["Object.getOwnPropertyNames", "Object.getOwnPropertyNames(e.javaException)"],
+    ["Object.getOwnPropertyNames of the class", "Object.getOwnPropertyNames(e.javaException.getClass())"],
+    ["Object.getOwnPropertyDescriptor", "Object.getOwnPropertyDescriptor(e.javaException, 'getCode')"],
+    ["Object.getOwnPropertyDescriptor of the class", "Object.getOwnPropertyDescriptor(e.javaException.getClass(), 'getName')"],
+  ])("%s is Rhino's TypeError for a Java object, not an inventory", async (_name, read) => {
+    const emu = new IdmEmulator(new IdmConfig({ sync: { mappings: [] }, managed: { objects: [pol] } }), runner);
+    const response = await runner.eval({ engine: "idm", source: `var out; try { openidm.create('managed/zzemu_pol', null, {text: 5}); } catch (e) {
+      try { out = ${read}; out = "answered: " + JSON.stringify(out); } catch (x) { out = String(x); } } out;` }, { onCall: emu.onCall });
+    expect(response.error).toBeNull();
+    expect(response.value).toBe("TypeError: Expected argument of type object, but instead had type object");
   });
 });
