@@ -20,8 +20,10 @@ const kase = {
   given: { libraries: { "lib-timed": "exports.value = 7;" } },
   expect: { outcome: "true" },
 };
+// The package's Vitest runner appends its own `publish` rows while a test has the variable set.
 const rows = (file: string): Array<Record<string, unknown>> =>
-  readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+  readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>)
+    .filter((r) => r.type !== "publish");
 
 describe("phase timing", () => {
   let previous: string | undefined;
@@ -44,6 +46,11 @@ describe("phase timing", () => {
     }
     const [spawn, first, second, ...rest] = rows(file);
     expect(rest).toEqual([]);
+    // This file runs under the package's Vitest runner, which publishes its audit at job start.
+    const publishes = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((r) => r.type === "publish");
+    expect(publishes.length).toBeGreaterThan(0);
+    for (const p of publishes) for (const k of ["publishMs", "failures", "outstanding", "packs"]) expect(typeof p[k], k).toBe("number");
     expect(spawn).toMatchObject({ type: "spawn", lane: "host", pooled: false });
     expect(spawn?.spawnToReadyMs).toBeGreaterThan(0);
     for (const job of [first, second]) {
