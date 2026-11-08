@@ -60,22 +60,23 @@ was not measured and keeps the older array shape.
 
 `openidm.query(…).result`, and a has-many relationship array on an
 `openidm.read`, are Java lists on AIC (measured 2026-11-08), and now here.
-`length`, `[i]`, `size()` and `get(i)` work; `get(i)` one past the end throws
-AIC's `InternalError: Index 2 out of bounds for length 2`; `.map`, `.some`,
-`.filter`, `.join` and every other array method are absent, so calling one is
-the same `TypeError: Cannot find function …` the tenant throws.
-`JSON.stringify` writes a JSON array. Copy into a JS array with `[].concat(v)`,
-which is the measured way:
+`length`, `[i]`, `size()` and `get(i)` work; `get(i)` out of range either way
+throws AIC's `InternalError: Index 2 out of bounds for length 2`; `.map`,
+`.some`, `.filter`, `.join` and every other array method are absent, so calling
+one is the same `TypeError: Cannot find function some in object [].` the tenant
+throws. `String(v)` has Java's shape, `[{_id=u1, _rev=1}]`, and there is no
+`toJSON` member, but `JSON.stringify` still writes a JSON array. Copy into a JS
+array with `[].concat(v)`, which is the measured way:
 
 ```js
 var ids = [].concat(openidm.query("managed/alpha_user", params, ["_id"]).result)
   .map(function (r) { return r._id; });
 ```
 
-Any other `List` member or call shape (`forEach`, `isEmpty`, `get(-1)`, …)
-faults `openidm-list-unmeasured`. `String(v)` was not measured; it returns a
-placeholder rather than faulting, because Rhino calls it to word the
-`Cannot find function` error.
+Any other `List` member or call shape (`forEach`, `isEmpty`, `get(0.5)`, …)
+faults `openidm-list-unmeasured`, and so does `String(v)` of a list holding a
+number, whose Java rendering was not measured. A has-many array read with `*`
+alone, or with no field list, is still a JS array.
 
 ## Using the installed package
 

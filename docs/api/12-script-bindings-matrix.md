@@ -1048,17 +1048,51 @@ measured way to get one. A populated relationship array was not probed; that it
 is the same kind of list as the empty one is an inference from the query result.
 `forEach`'s callback arguments were not probed.
 
-`rhino-local` emulates the table on the next-gen engine (the legacy engine has
-no `openidm`): `result` and every has-many array a read projects are a list
-with `length`, `[i]`, `size()` and `get(i)`, no array methods, and the
-measured `get(n)` one past the end. `[].concat(v)` copies it into a JS array,
-and `JSON.stringify` writes a JSON array, as the relationship probe above
-measured. Every other call shape and `List` member, `forEach` included, faults
-`openidm-list-unmeasured`. `String(v)` was not probed but cannot fault, because
-Rhino calls it to word the `Cannot find function` error, so it answers a
-placeholder that names itself as unmeasured. Other array-valued fields of a
-record are still JS arrays; whether AIC hands those over as Java lists too is
-not measured.
+A second probe, `fixtures/openidm-query-result-string.script.js` (sandbox,
+2026-11-08), read the same query `result` populated (two records, fields
+`["_id"]`) and empty:
+
+| Probe                                   | Populated (2 records)                                    | Empty                                          |
+| --------------------------------------- | -------------------------------------------------------- | ---------------------------------------------- |
+| `typeof v.toJSON`                       | `"undefined"`                                            | `"undefined"`                                  |
+| `String(v)`, `"" + v`                   | shape only (the probe never emits a populated list's contents): starts `[`, ends `]`, holds `{`, `=` and `_id`, no `":` | `[]` |
+| `JSON.stringify(v)`                     | a JSON array of 2 objects, keys `_id,_rev`               | `[]`                                           |
+| `v.get(2)` / `v.get(-1)`                | `InternalError: Index 2 out of bounds for length 2` / `InternalError: Index -1 out of bounds for length 2` | — |
+| `v.some(fn)` / `v.map(fn)`              | `TypeError: Cannot find function some`                   | `TypeError: Cannot find function some in object [].` / `… map in object [].` |
+| `JSON.stringify(response)`              | —                                                        | `{"totalPagedResults":-1,"result":[],"resultCount":0,"totalPagedResultsPolicy":"NONE","pagedResultsCookie":null}` (one call; see below — the order varies) |
+
+So `JSON.stringify` serialises the list without any `toJSON` member, and the
+`String` form has the shape of Java's `AbstractCollection` / `AbstractMap`
+rendering (`[{_id=…, _rev=…}, …]`), which is also how Rhino words the `Cannot
+find function` message. The `", "` separators are Java's, inferred rather than
+seen; how a number inside a record renders (`Integer` versus `Double`) and the
+order of a record's keys in that form were not probed.
+
+A third probe, `fixtures/openidm-query-response-order.script.js` (sandbox,
+2026-11-09), read the key order of four responses (populated and empty, each
+with and without a field list) three ways:
+
+| Read                               | Order                                                                                   |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `for (k in resp)`, `Object.keys`   | `pagedResultsCookie, totalPagedResultsPolicy, totalPagedResults, resultCount, result` on all four |
+| `JSON.stringify(resp)`             | different between calls: `result` came second, third or fourth, and `resultCount` second or third, with `totalPagedResults` first and `pagedResultsCookie` last each time |
+
+So enumeration order is stable and serialisation order is not; a script or a
+test must not depend on the order of a serialised response.
+
+`rhino-local` emulates the three tables on the next-gen engine (the legacy engine
+has no `openidm`): `result` and every has-many array a read projects (a bare
+name beside `*` included) are a list with `length`, `[i]`, `size()` and
+`get(i)`, no array methods and no `toJSON` member. `get(i)` with any integer
+out of range throws the measured `InternalError`. `[].concat(v)` copies it into
+a JS array, and `JSON.stringify` writes a JSON array, nested lists included.
+`String(v)` renders Java's form of strings, booleans, null, maps and lists, in
+the record's own key order, and faults `openidm-list-unmeasured` on a number.
+The query response's keys come in the measured enumeration order, and `JSON.stringify` writes them in that order too (AIC's serialised order varies). Every other call shape
+and `List` member, `forEach` included, faults `openidm-list-unmeasured`. Other
+array-valued fields of a record, a has-many array read with `*` alone or with
+no field list, and nested arrays inside a record are still JS arrays; whether
+AIC hands those over as Java lists too is not measured.
 
 ### `openidm` failure `getDetail()` — next-gen (verified 2026-11-08)
 
