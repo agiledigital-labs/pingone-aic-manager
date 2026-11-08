@@ -57,6 +57,12 @@ function __rhinoLocalClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// A record field is data whatever its name: a plain assignment to `__proto__`
+// would set the prototype instead of storing the field (astra-r1 P2-2, r2 P2).
+function __rhinoLocalSetOwn(target, key, value) {
+  Object.defineProperty(target, key, { value: value, enumerable: true, writable: true, configurable: true });
+}
+
 // docs/api/12 (2026-11-04), as measured on the wire: an `undefined` field of
 // openidm.create content is sent as null (only the top level was measured, so
 // nested undefined still drops), and an httpClient.send body sends undefined as
@@ -2867,7 +2873,7 @@ openidm.patch = function (resourceName, _rev, patch) {
   for (i = 0; i < patch.length; i += 1) {
     field = String(patch[i].field).replace(/^\//, "");
     if (patch[i].operation !== "remove" && field.indexOf("/") < 0) {
-      written[field] = patch[i].value;
+      __rhinoLocalSetOwn(written, field, patch[i].value);
     }
   }
   __rhinoLocalImplicitPolicy("patch", collection, written, false);
@@ -2878,12 +2884,12 @@ openidm.patch = function (resourceName, _rev, patch) {
     if (op.operation === "remove") {
       delete next[field];
     } else {
-      next[field] = op.value;
+      __rhinoLocalSetOwn(next, field, op.value);
     }
   }
   __rhinoLocalBagIdmWrite("patch", resource, next);
   Object.keys(found.record).forEach(function (key) { delete found.record[key]; });
-  Object.keys(next).forEach(function (key) { found.record[key] = next[key]; });
+  Object.keys(next).forEach(function (key) { __rhinoLocalSetOwn(found.record, key, next[key]); });
   return __rhinoLocalProject(found.record, arguments.length >= 5 ? arguments[4] : null);
 };
 

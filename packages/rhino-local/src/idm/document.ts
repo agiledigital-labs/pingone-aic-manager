@@ -90,6 +90,7 @@ export function refuseNullPatch(operations: JsonValue | undefined, evidence: Evi
     // refuses it at the same point (runtime.cjs openidm.patch), and to the patch parser an
     // operation without a value is a null value. Inferred, not measured (astra-r1 P2-3).
     if (!isDocument(op) || (op.value !== null && op.value !== undefined)) continue;
+    if (op.value === undefined) evidence.assumed("a PATCH operation with no value is a null value to the patch parser");
     if (op.operation === "replace") {
       evidence.measured("PATCH replace with null is refused 400 as an invalid JSON patch, before policy", "docs/api/10-managed-objects.md");
       throw new IdmError(400, `not a valid JSON patch: replace ${String(op.field)} with null`, undefined, undefined, false,

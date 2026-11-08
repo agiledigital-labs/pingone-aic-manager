@@ -225,7 +225,7 @@ describe("writeFault decides per type and method", () => {
 
   it("a nested policy's message names its path", () => {
     expect(writeFault(object({ properties: { box: { type: "object", required: ["p"], properties: { p: { type: "string", enum: ["yes"] } } } } }), "create")?.message)
-      .toContain("checked against box required p; box.p enum");
+      .toContain("cannot evaluate on a create: box required p; box.p enum");
   });
 
   it("the lane table holds only types that fault", () => {
@@ -849,6 +849,29 @@ describe("a property name is data, whatever it spells (astra-r1 P2-2)", () => {
     expect(refused.faults).toEqual([]);
     expect(String(refused.effects.sharedState.final.error)).toContain("Policy validation failed");
     expect(refused.effects.managedStore?.["managed/gizmo"]).toEqual([]);
+  });
+  // astra-r2 P2: the PATCH path copied fields with plain assignment, so in node:vm a patch of
+  // `__proto__` set the copy's prototype: the policy table never saw the value, and nothing was stored.
+  const patchProto = (value: unknown) => {
+    const profile = normaliseManagedConfig(config("__proto__", '{"type":"string"}'), META);
+    return runScriptWithFaults(catching("openidm.create('managed/gizmo', 'g1', {q: 'a'}); " +
+      `openidm.patch('managed/gizmo/g1', null, [{operation: 'replace', field: '/__proto__', value: ${JSON.stringify(value)}}])`),
+    { managed: { "managed/gizmo": [] } }, { profile });
+  };
+  it("a PATCH of __proto__ with a mismatched value faults: AIC's answer on a patch is unmeasured", () => {
+    const run = patchProto(4);
+    expect(run.faults.map((f) => f.id)).toEqual(["openidm-managed-policy/gizmo"]);
+    expect(run.faults[0]!.message).toContain("policy on __proto__ (VALID_TYPE: declared string, sent number)");
+    const row = run.effects.managedStore?.["managed/gizmo"]?.[0] ?? {};
+    expect(own(row, "__proto__")).toBe(false);
+  });
+  it("a PATCH of __proto__ with a matching value stores an own key", () => {
+    const run = patchProto("yes");
+    expect(run.faults).toEqual([]);
+    expect(run.effects.sharedState.final.error).toBeUndefined();
+    const row = run.effects.managedStore?.["managed/gizmo"]?.[0] ?? {};
+    expect(own(row, "__proto__") ? row.__proto__ : "absent").toBe("yes");
+    expect(row.q).toBe("a");
   });
   // The seed check: an inherited member is not a declared property, nor a declared type.
   it.each(["constructor", "toString"])("a seeded record key %s the type does not declare is an unknown property", (name) => {
