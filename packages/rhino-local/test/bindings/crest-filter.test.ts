@@ -33,7 +33,7 @@ describe("openidm.query in node:vm", () => {
   it.each(filterTable.map((row) => [JSON.stringify(row.filter), row] as const))("%s", (_name, row) => {
     const sandbox = loadBehaviour(given);
     const openidm = sandbox.openidm as { query: (r: string, p: unknown) => { result: Array<{ _id: string }> } };
-    const call = () => openidm.query("managed/widget", { _queryFilter: row.filter }).result.map((r) => r._id);
+    const call = () => Array.from(openidm.query("managed/widget", { _queryFilter: row.filter }).result as ArrayLike<{ _id: string }>).map((r) => r._id);
     if (row.am === "parse") {
       expect(call, row.why).toThrow(parseText(row.filter));
       expect(sandboxFaults(sandbox)).toEqual([]);
@@ -64,7 +64,7 @@ describe("openidm.query by collection (node:vm)", () => {
   it.each(userRows)("%s on %s", (filter, collection, answer, why) => {
     const sandbox = loadBehaviour(structuredClone(users));
     const openidm = sandbox.openidm as { query: (r: string, p: unknown) => { result: Array<{ _id: string }> } };
-    const call = () => openidm.query(collection, { _queryFilter: filter }).result.map((r) => r._id);
+    const call = () => Array.from(openidm.query(collection, { _queryFilter: filter }).result as ArrayLike<{ _id: string }>).map((r) => r._id);
     if (answer === "fault") {
       expect(call, why).toThrow(/unmocked filter/);
       expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["openidm-query-filter"]);
@@ -113,7 +113,7 @@ describe("openidm.query by collection, probe table (node:vm)", () => {
   const run = (row: CollectionRow, given: unknown) => {
     const sandbox = loadBehaviour(structuredClone(given) as never);
     const openidm = sandbox.openidm as { query: (r: string, p: unknown) => { result: Array<{ _id: string }> } };
-    return { sandbox, call: () => openidm.query(`managed/${row.collection}`, { _queryFilter: row.filter }).result.map((r) => r._id) };
+    return { sandbox, call: () => Array.from(openidm.query(`managed/${row.collection}`, { _queryFilter: row.filter }).result as ArrayLike<{ _id: string }>).map((r) => r._id) };
   };
   it.each(collectionCases)("%s", (_name, row) => {
     const { sandbox, call } = run(row, byCollection(row));
@@ -158,7 +158,7 @@ describe("openidm.query on the JVM", () => {
 
   it.each(filterTable.map((row) => [JSON.stringify(row.filter), row] as const))("%s", async (_name, row) => {
     // The script catches, so a fault can only show up through the recorder.
-    const script = `try { nodeState.putShared("r", JSON.stringify(openidm.query("managed/widget", { _queryFilter: ${JSON.stringify(row.filter)} }).result.map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", "caught:" + e.message); }`;
+    const script = `try { nodeState.putShared("r", JSON.stringify([].concat(openidm.query("managed/widget", { _queryFilter: ${JSON.stringify(row.filter)} }).result).map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", "caught:" + e.message); }`;
     if (row.am === "fault") expectHarnessFault("openidm-query-filter");
     const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(script) });
     if (row.am === "fault") {
@@ -172,7 +172,7 @@ describe("openidm.query on the JVM", () => {
   });
 
   it.each(collectionCases)("probe table: %s", async (_name, row) => {
-    const script = `try { nodeState.putShared("r", JSON.stringify(openidm.query(${JSON.stringify(`managed/${row.collection}`)}, { _queryFilter: ${JSON.stringify(row.filter)} }).result.map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", JSON.stringify(["caught", e.name, e.message, String(e), e.javaException ? e.javaException.getCode() : null, e.javaException ? e.javaException.getReason() : null, (function () { var k = []; for (var p in e) k.push(p); return k.join(); })()])); }`;
+    const script = `try { nodeState.putShared("r", JSON.stringify([].concat(openidm.query(${JSON.stringify(`managed/${row.collection}`)}, { _queryFilter: ${JSON.stringify(row.filter)} }).result).map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", JSON.stringify(["caught", e.name, e.message, String(e), e.javaException ? e.javaException.getCode() : null, e.javaException ? e.javaException.getReason() : null, (function () { var k = []; for (var p in e) k.push(p); return k.join(); })()])); }`;
     if (row.am === "fault") expectHarnessFault("openidm-query-filter");
     const response = await runner.eval({ preamble: mockPreamble(byCollection(row) as never), source: withHarvest(script) });
     if (row.am === "fault") {
@@ -202,7 +202,7 @@ describe("openidm.query on the JVM", () => {
   });
 
   it.each(userRows)("by collection: %s on %s", async (filter, collection, answer, why) => {
-    const script = `try { nodeState.putShared("r", JSON.stringify(openidm.query(${JSON.stringify(collection)}, { _queryFilter: ${JSON.stringify(filter)} }).result.map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", "caught:" + e.message); }`;
+    const script = `try { nodeState.putShared("r", JSON.stringify([].concat(openidm.query(${JSON.stringify(collection)}, { _queryFilter: ${JSON.stringify(filter)} }).result).map(function (r) { return r._id; }))); } catch (e) { nodeState.putShared("r", "caught:" + e.message); }`;
     if (answer === "fault") expectHarnessFault("openidm-query-filter");
     const response = await runner.eval({ preamble: mockPreamble(users), source: withHarvest(script) });
     if (answer === "fault") {

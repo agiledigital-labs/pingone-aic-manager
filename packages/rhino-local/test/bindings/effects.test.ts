@@ -228,9 +228,9 @@ describe("openidm", () => {
       ) => { result: Array<{ _id: string }> };
     };
     function ids(filter: string): string[] {
-      return openidm
+      return Array.from(openidm
         .query("managed/alpha_user", { _queryFilter: filter })
-        .result.map((row) => row._id);
+        .result as ArrayLike<{ _id: string }>).map((row) => row._id);
     }
 
     // and binds tighter than or: bob OR (York AND alice-mail) → alice, bob.
@@ -270,11 +270,11 @@ describe("openidm", () => {
       ) => { result: Array<{ _id: string }> };
     };
     expect(
-      openidm
+      Array.from(openidm
         .query("managed/alpha_user", {
           _queryFilter: 'mail eq "alice@example.com"',
         })
-        .result.map((row) => row._id),
+        .result as ArrayLike<{ _id: string }>).map((row) => row._id),
     ).toEqual(["alice"]);
   });
 
@@ -295,9 +295,9 @@ describe("openidm", () => {
       ) => { result: Array<{ _id: string }> };
     };
     expect(
-      openidm
+      Array.from(openidm
         .query("managed/alpha_user", { _queryFilter: '/name/last eq "Smith"' })
-        .result.map((row) => row._id),
+        .result as ArrayLike<{ _id: string }>).map((row) => row._id),
     ).toEqual(["alice", "carol"]);
   });
 

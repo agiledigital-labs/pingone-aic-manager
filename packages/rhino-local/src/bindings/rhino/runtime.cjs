@@ -786,13 +786,6 @@ function __rhinoLocalJavaList(items) {
   return list;
 }
 
-// A request map's value list as next-gen AM hands it over, measured 2026-11-08
-// (docs/api/12, request-map-foreach probe): typeof "object", Array.isArray
-// false, `length` and `[i]` work, so do size() and get(i), String() is Java's
-// "[a, b]", getClass() is the class shutter's refusal, and Array.prototype
-// methods (map, join) are absent. Not a JS
-// array, so a script that calls one fails here as it fails there. The legacy
-// engine is not measured and keeps the older shape.
 // An unmeasured call's argument list for a refusal message, built before the
 // fault is recorded and so without running anything a script can replace:
 // no argument's toString, no String(), no Array.prototype method. A number
@@ -808,19 +801,104 @@ function __rhinoLocalArgShape(args) {
   return shape;
 }
 
-function __rhinoLocalRequestList(items) {
+// The two Java lists next-gen AM hands a script, as one emulation with two
+// measured surfaces (docs/api/12):
+//
+// - a request map's value list (request-map-foreach probe, 2026-11-08):
+//   typeof "object", Array.isArray false, `length` and `[i]` work, so do
+//   size() and get(i) in range, String() is Java's "[a, b]", getClass() is the
+//   class shutter's refusal, and Array.prototype methods are absent;
+// - an openidm.query `result` and a has-many relationship array on a read
+//   (openidm-query-result-type probe, 2026-11-08): the same, except that
+//   get(i) one past the end throws Java's IndexOutOfBounds as an
+//   InternalError, `[].concat(v)` copies the elements into a JS array, and
+//   JSON.stringify writes a JSON array (array-relationship-fields probe).
+//   String() was not probed, but Rhino calls it to word the measured
+//   "Cannot find function some" TypeError, so it cannot fault: it answers a
+//   placeholder no script can mistake for AIC's rendering.
+//
+// Not a JS array, so a script that calls an array method fails here as it
+// fails there. Every other call shape and List member faults `kind.id`. The
+// legacy engine is not measured and keeps the older shapes.
+var __rhinoLocalListKinds = {
+  request: {
+    id: "request-list-unmeasured",
+    noun: "a request map's value list",
+    measured: "only size(), get(i) with an index in range, String(v) and the getClass() refusal were measured",
+    toString: "java",
+    serialize: false,
+    pastEnd: false,
+    concat: false,
+    serializeId: "request-list-serialize",
+    serializeHint: "copy the values into an array first, e.g. with a loop over size() and get(i)",
+  },
+  openidm: {
+    id: "openidm-list-unmeasured",
+    noun: "an openidm query result or relationship list",
+    measured: "only size(), get(i) with an index in range or one past the end, [].concat(v), JSON.stringify and the getClass() refusal were measured",
+    toString: "placeholder",
+    serialize: true,
+    pastEnd: true,
+    concat: true,
+  },
+};
+
+// Lists `[].concat` may spread, as {list, items, kind} rows. Rhino 1.7.14 has
+// no WeakMap and no Symbol.isConcatSpreadable, so a plain object can only be
+// spread by the concat replacement below finding it here.
+var __rhinoLocalConcatLists = [];
+
+function __rhinoLocalListRow(value) {
+  var k;
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  for (k = 0; k < __rhinoLocalConcatLists.length; k += 1) {
+    if (__rhinoLocalConcatLists[k].list === value) {
+      return __rhinoLocalConcatLists[k];
+    }
+  }
+  return null;
+}
+
+function __rhinoLocalListUnmeasured(kind, call) {
+  return __rhinoLocalFault(kind.id,
+    "rhino-local: " + call + " on " + kind.noun + " is unmeasured (AIC hands over a Java list; " + kind.measured + ")");
+}
+
+// Array.prototype.concat, as AIC's Rhino treats a Java list argument: copied
+// element by element (measured for openidm lists only). A request list as an
+// argument, and any emulated list as the receiver, is unmeasured and faults.
+(function () {
+  var original = Array.prototype.concat;
+  var concat = function concat(item) {
+    var receiver = __rhinoLocalListRow(this);
+    if (receiver !== null) {
+      throw __rhinoLocalListUnmeasured(receiver.kind, "Array.prototype.concat.call(v, …)");
+    }
+    var args = [];
+    var k;
+    var row;
+    for (k = 0; k < arguments.length; k += 1) {
+      row = __rhinoLocalListRow(arguments[k]);
+      if (row !== null && !row.kind.concat) {
+        throw __rhinoLocalListUnmeasured(row.kind, "[].concat(v)");
+      }
+      args[k] = row === null ? arguments[k] : original.call([], row.items);
+    }
+    return original.apply(this, args);
+  };
+  __rhinoLocalHide(Array.prototype, "concat", concat);
+})();
+
+function __rhinoLocalListView(items, kind) {
   var list = {};
   var i;
   for (i = 0; i < items.length; i += 1) {
     list[i] = items[i];
   }
-  // Only size() and get(i) with an in-range index were probed; any other
-  // call shape, and every other List member, faults rather than answering
-  // with JavaScript's ignore-the-extra-argument rules.
   var unmeasured = function (call) {
-    return __rhinoLocalFault("request-list-unmeasured",
-      "rhino-local: " + call + " on a request map's value list is unmeasured (AIC hands over a Java list; " +
-        "only size(), get(i) with an index in range, String(v) and the getClass() refusal were measured)");
+    return __rhinoLocalListUnmeasured(kind, call);
   };
   __rhinoLocalHide(list, "length", items.length);
   __rhinoLocalHide(list, "size", function () {
@@ -830,7 +908,11 @@ function __rhinoLocalRequestList(items) {
     return items.length;
   });
   __rhinoLocalHide(list, "get", function (index) {
-    if (arguments.length !== 1 || typeof index !== "number" || index % 1 !== 0 || index < 0 || index >= items.length) {
+    var integer = arguments.length === 1 && typeof index === "number" && index % 1 === 0;
+    if (integer && kind.pastEnd && index === items.length) {
+      throw __rhinoLocalInternalError("Index " + index + " out of bounds for length " + items.length);
+    }
+    if (!integer || index < 0 || index >= items.length) {
       throw unmeasured("get(" + __rhinoLocalArgShape(arguments) + ")");
     }
     return items[index];
@@ -838,7 +920,8 @@ function __rhinoLocalRequestList(items) {
   // Every public java.util.List / SequencedCollection / Collection / Iterable /
   // Object method name except the measured size, get, toString and getClass.
   // A name left off would be a catchable "Cannot find function", which a
-  // script's try/catch turns into a pass.
+  // script's try/catch turns into a pass. forEach is present on AIC
+  // (measured: typeof "function"), but what its callback receives is not.
   ["add", "addAll", "addFirst", "addLast", "clear", "contains", "containsAll", "equals", "forEach", "getFirst",
     "getLast", "hashCode", "indexOf", "isEmpty", "iterator", "lastIndexOf", "listIterator", "notify", "notifyAll",
     "parallelStream", "remove", "removeAll", "removeFirst", "removeIf", "removeLast", "replaceAll", "retainAll",
@@ -850,6 +933,9 @@ function __rhinoLocalRequestList(items) {
   __rhinoLocalHide(list, "toString", function () {
     if (arguments.length !== 0) {
       throw unmeasured("toString(" + __rhinoLocalArgShape(arguments) + ")");
+    }
+    if (kind.toString === "placeholder") {
+      return "[Java list of " + items.length + " (its String form is unmeasured)]";
     }
     var parts = [];
     var j;
@@ -864,15 +950,27 @@ function __rhinoLocalRequestList(items) {
     }
     throw __rhinoLocalShutterError("java.lang.Class");
   });
-  // JSON.stringify of the list was never measured (the probe serialised its
-  // own description, not the list), and the object above would serialise as
-  // {"0":…,"1":…}, which nothing says AIC produces. Refuse rather than bless it.
+  // A request list's JSON.stringify was never measured, and the object above
+  // would serialise as {"0":…,"1":…}, which nothing says AIC produces: refuse
+  // rather than bless it. An openidm list's was measured: a JSON array.
   __rhinoLocalHide(list, "toJSON", function () {
-    throw __rhinoLocalFault("request-list-serialize",
-      "rhino-local: JSON.stringify of a request map's value list is unmeasured (AIC hands over a Java list); " +
-        "copy the values into an array first, e.g. with a loop over size() and get(i)");
+    if (kind.serialize) {
+      return items.slice();
+    }
+    throw __rhinoLocalFault(kind.serializeId,
+      "rhino-local: JSON.stringify of " + kind.noun + " is unmeasured (AIC hands over a Java list); " + kind.serializeHint);
   });
+  __rhinoLocalConcatLists.push({ list: list, items: items.slice(), kind: kind });
   return list;
+}
+
+function __rhinoLocalRequestList(items) {
+  return __rhinoLocalListView(items, __rhinoLocalListKinds.request);
+}
+
+// The legacy engine has no openidm binding, so every openidm list is next-gen.
+function __rhinoLocalOpenidmList(items) {
+  return __rhinoLocalListView(items, __rhinoLocalListKinds.openidm);
 }
 
 function __rhinoLocalRequestMap(values, options) {
@@ -2758,7 +2856,7 @@ function __rhinoLocalProject(record, fields, context) {
       if (fields.indexOf(parent) !== -1) {
         selectors.push(parent);
       }
-      projected[parent] = __rhinoLocalProjectReferences(value, selectors, context);
+      projected[parent] = __rhinoLocalOpenidmList(__rhinoLocalProjectReferences(value, selectors, context));
       return;
     }
     if (wildcard) {
@@ -2792,7 +2890,7 @@ function __rhinoLocalProject(record, fields, context) {
     for (i = 0; i < fields.length; i += 1) {
       if (__rhinoLocalHas(record, fields[i])) {
         __rhinoLocalSetOwn(result, fields[i], __rhinoLocalIsReferenceArray(record[fields[i]])
-          ? __rhinoLocalProjectReferences(record[fields[i]], [fields[i]], context)
+          ? __rhinoLocalOpenidmList(__rhinoLocalProjectReferences(record[fields[i]], [fields[i]], context))
           : record[fields[i]]);
       }
     }
@@ -3194,7 +3292,7 @@ openidm.query = function (resourceName, params, fields) {
     }
   }
   return {
-    result: result,
+    result: __rhinoLocalOpenidmList(result),
     pagedResultsCookie: null,
     totalPagedResultsPolicy: "NONE",
     totalPagedResults: -1,
