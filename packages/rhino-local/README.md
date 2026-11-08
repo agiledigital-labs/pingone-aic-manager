@@ -40,7 +40,10 @@ here and failed on the tenant.
 Only `size()` and `get(i)` with an index in range were measured. Any other
 call shape (`get()`, `get("0")`, an out-of-range index, `size(1)`) and every
 other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`, `iterator`,
-…) faults `request-list-unmeasured`. `JSON.stringify` of a value list was not
+…) faults `request-list-unmeasured`. One gap: an out-of-range bracket read
+(`v[5]`) returns `undefined` without a fault, because an index read cannot be
+intercepted here; AIC's answer is unmeasured, so use `get(i)` with an index
+below `size()`. `JSON.stringify` of a value list was not
 measured either, so it faults `request-list-serialize`; copy the values into an
 array first:
 
