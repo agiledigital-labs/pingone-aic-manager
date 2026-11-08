@@ -1,4 +1,6 @@
 export { defineSuite, Lease, managed, RunBuilder } from "./lease.ts";
+export { layerChannels, withSuiteDefaults } from "./defaults.ts";
+export type { SuiteDefaults } from "./defaults.ts";
 export type {
   LeaseOptions,
   LeaseLane,

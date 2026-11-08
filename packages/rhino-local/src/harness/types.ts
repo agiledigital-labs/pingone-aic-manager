@@ -168,6 +168,11 @@ export interface SuiteSpec<TSchema extends z.ZodType> {
   libraries?: Readonly<Record<string, string>>;
   inputs?: TSchema;
   always?: Channels;
+  /**
+   * `false` opts this suite out of the project defaults a `withSuiteDefaults`
+   * `defineSuite` would layer under `always`. Ignored by plain `defineSuite`.
+   */
+  defaults?: false;
   fixtures?: Readonly<Record<string, FixtureSpec>>;
   beforeRun?: (ctx: BeforeRunContext<z.output<TSchema>>) => void | Promise<void>;
   cleanup?: (idm: IdmHandle, ctx: CleanupContext<z.output<TSchema>>) => Promise<void>;
