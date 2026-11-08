@@ -152,24 +152,26 @@ function hookNames(config: Record<string, unknown>): string[] {
 }
 
 /**
- * IDM spells a nullable scalar as `["string", "null"]`. Collapse that to one
- * type plus a flag so no consumer has to re-derive it.
+ * IDM spells a nullable scalar as `["string", "null"]`. Collapse exactly that
+ * spelling (two entries: one concrete type name and `"null"`, in either order)
+ * to one type plus a flag so no consumer has to re-derive it. It is the one
+ * list shape `judgeDefault` admits.
  *
- * Any other list (several concrete types, or an entry that is not a string) is
- * not one type, and must not read as its first entry (sol-r2 P2-1): the type is
- * `any`, which no write check treats as known, and the list is kept verbatim in
- * `types` so a default on it is judged against what was declared.
+ * Any other list is not that spelling, and must not read as one type (sol-r2
+ * P2-1, sol-r3 P2-1): several concrete types, a singleton `["string"]`, a
+ * repeated `"null"`, or an entry that is not a string. The type is `any`, which
+ * no write check treats as known, and the list is kept verbatim in `types` so a
+ * default on it is judged against what was declared (`unmeasured`).
  */
 function normaliseType(raw: unknown): { type: string; nullable: boolean; types?: unknown[] } {
   if (typeof raw === "string") {
     return { type: raw, nullable: false };
   }
   if (Array.isArray(raw)) {
-    const names = raw.filter((item): item is string => typeof item === "string");
-    const concrete = names.filter((item) => item !== "null");
-    const nullable = names.length !== concrete.length;
-    if (concrete.length === 1 && names.length === raw.length) {
-      return { type: concrete[0]!, nullable };
+    const concrete = raw.filter((item) => item !== "null");
+    const nullable = concrete.length !== raw.length;
+    if (raw.length === 2 && concrete.length === 1 && typeof concrete[0] === "string") {
+      return { type: concrete[0], nullable: true };
     }
     return { type: "any", nullable, types: [...raw] as unknown[] };
   }

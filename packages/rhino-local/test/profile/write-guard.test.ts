@@ -578,6 +578,10 @@ describe("an invalid default anywhere in the profile faults every managed call (
     ["an empty array of integers", { type: "array", items: { type: "integer" }, default: [] }, "valid"],
     // sol-r2 P2-1: neither may be normalised into a supported declaration.
     ["several concrete types (not probed)", { type: ["string", "number"], default: "a" }, "unmeasured"],
+    // sol-r3 P2-1: only the exact two-entry nullable pair is one type; these lists are not, so they stay unmeasured.
+    ["a singleton type list (not probed)", { type: ["string"], default: "a" }, "unmeasured"],
+    ["a repeated null in a type list (not probed)", { type: ["string", "null", "null"], default: "a" }, "unmeasured"],
+    ["a singleton items type list (not probed)", { type: "array", items: { type: ["string"] }, default: ["a"] }, "unmeasured"],
     ["a default under object properties (not probed)", { type: "object", properties: { x: { type: "boolean", default: "nope" } } }, "unmeasured"],
     ["a valid-looking default under object properties (not probed)", { type: "object", properties: { x: { type: "string", default: "a" } } }, "unmeasured"],
     ["measured: array of strings (D3 control)", { type: "array", items: { type: "string" }, default: ["a", "b"] }, "valid"],
@@ -599,6 +603,17 @@ describe("an invalid default anywhere in the profile faults every managed call (
   // The IDM emulator refuses a type list outright (a shape it does not take), so this row is the lane's alone.
   it("measured: a nullable string with default: null (D2) is valid in the lane", () => {
     expect(laneVerdict({ type: ["string", "null"], default: null })).toBe("valid");
+  });
+  // Positive control for sol-r3 P2-1: the exact pair still collapses, in either order, and only it does.
+  it.each([
+    [["string", "null"], { type: "string", nullable: true }],
+    [["null", "string"], { type: "string", nullable: true }],
+    [["string"], { type: "any", types: ["string"] }],
+    [["string", "null", "null"], { type: "any", nullable: true, types: ["string", "null", "null"] }],
+    [["null", "null"], { type: "any", nullable: true, types: ["null", "null"] }],
+  ] as const)("the type list %j normalises to %j", (type, expected) => {
+    expect(profileOf({ type }).objects.gizmo?.properties.flag).toEqual(expected);
+    expect(profileOf({ type: "array", items: { type } }).objects.gizmo?.properties.flag?.items).toEqual(expected);
   });
 
   // The lane: every call faults, on the bad type, on a valid sibling, and on a type the profile lacks.
