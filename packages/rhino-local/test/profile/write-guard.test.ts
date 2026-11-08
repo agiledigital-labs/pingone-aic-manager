@@ -649,6 +649,22 @@ describe("an invalid default anywhere in the profile faults every managed call (
     // Discriminating for P2-1: the profile keeps the list, so the fault names the declaration the tenant holds.
     expect(run.faults[0]?.message).toContain('on type ["string","number"]');
   });
+  // sol-r3 P3: the called collection is named once, and only when it is not the offending type.
+  it.each([
+    ["the offending type", "openidm.read('managed/gizmo/g0')", "rhino-local: openidm.read: managed/gizmo: flag declares default"],
+    ["a sibling", "openidm.read('managed/fine/f0')",
+      "rhino-local: openidm.read: managed/fine: faulted for another type's declaration: managed/gizmo: flag declares default"],
+  ])("a call on %s names the resource once", (_name, call, start) => {
+    const run = runScriptWithFaults(catching(call), given, { profile: mixed });
+    expect(run.faults[0]?.message.startsWith(start)).toBe(true);
+  });
+  // sol-r3 P3: an array default fails on an item, so the message names the items' type, not "array".
+  it("an integer-items array default names the items' type", () => {
+    expect(managedInvalidDefault(profileOf({ type: "array", items: { type: "integer" }, default: [2] }))?.message)
+      .toContain('flag declares default [2], which does not match its items\' type "integer" (IDM types every JSON number');
+    expect(managedInvalidDefault(profileOf({ type: "boolean", default: "nope" }))?.message)
+      .toContain('flag declares default "nope", which does not match its type "boolean".');
+  });
   // Positive control: the same two types with the default fixed write as before.
   it("with every default valid, the sibling writes and its default lands", () => {
     const fixed = normaliseManagedConfig({ objects: [...config({ type: "boolean", default: true }).objects,
