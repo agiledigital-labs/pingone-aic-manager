@@ -532,6 +532,30 @@ fields. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
 0.1.2 export's shape against the current one, and `npm run typecheck` fails on
 any new break.
 
+### Project-wide suite defaults
+
+Channels and libraries that most suites in a project share, such as the ESVs a
+common library reads on most paths, can be declared once:
+
+```ts
+// test/suite.ts
+import { readFileSync } from "node:fs";
+import { withSuiteDefaults } from "@agiledigital/pingone-aic-script-tester";
+
+export const defineSuite = withSuiteDefaults({
+  always: { esv: { "common.url": "https://api.example.com" } },
+  libraries: { common: readFileSync("src/library/common.js", "utf8") },
+});
+```
+
+Each suite built with that `defineSuite` starts from the defaults. Precedence,
+lowest first: the defaults, the suite's `always`, then a case's `.run()`
+overrides. Maps merge per key, stub lists put the upper layer's entries first,
+and a suite's library replaces a default library of the same name. Set
+`defaults: false` on a suite to opt it out. Defaults only add declarations, so
+an ESV nobody declared is still refused unless a layer sets `esvUndeclared`.
+`layerChannels(base, top)` is the merge on its own, for composing defaults.
+
 ### ESV declarations
 
 Declare values read through `systemEnv.getProperty("esv.<name>")` with the
