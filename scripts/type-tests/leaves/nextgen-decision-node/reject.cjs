@@ -110,6 +110,11 @@ if (rolesExp) {
 var qParam = requestParameters.get("q");
 if (qParam) {
   qParam.includes("x"); // expect: TS2339 — a request value list has no includes
+  [].concat(qParam); // expect: TS2769 — concat of a request list is unmeasured
+}
+var starChild = openidm.read("managed/__aic_fixture_user/alice", null, ["*", "authzRoles/name"]);
+if (starChild && starChild.authzRoles) {
+  starChild.authzRoles.map(function (r) { return r; }); // expect: TS2339 — expanded beside `*`, still a Java list
 }
 
 // The discriminating half: a single-valued expansion on a QUERY row is

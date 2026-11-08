@@ -125,6 +125,12 @@ declare global {
     ? P
     : never;
 
+  // The parents named by a literal child path only. A widened field list
+  // (`ManagedField<T>[]`) names every key as a parent with an open path, and
+  // must not drop the declared members `*` brings in.
+  type LiteralPathParentOf<F extends string> =
+    F extends `${infer P}/${infer R}` ? (string extends R ? never : P) : never;
+
   /**
    * `_meta` is a relationship in its own right (to `managed/<realm>usermeta`),
    * so asking for it adds an expansion rather than a declared property.
@@ -170,9 +176,13 @@ declare global {
    */
   // `*` returns every member as stored, except that a relationship also named
   // on its own is the same `ReadList` it is without `*`. Homomorphic, so an
-  // optional member stays optional: `*` does not turn absent into null.
+  // optional member stays optional: `*` does not turn absent into null. A
+  // member with a child selector is left to `Projected`'s expansion, rather
+  // than intersected with it, so the stored array's methods do not survive.
   type WildcardMembers<T, F extends string> = {
-    [K in keyof T]: K extends F ? ReadValue<T[K]> : T[K];
+    [K in keyof T as K extends LiteralPathParentOf<F> ? never : K]: K extends F
+      ? ReadValue<T[K]>
+      : T[K];
   };
 
   type SelectedMembers<T, F extends string> = {

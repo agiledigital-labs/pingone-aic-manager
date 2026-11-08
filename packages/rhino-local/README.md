@@ -65,8 +65,9 @@ throws AIC's `InternalError: Index 2 out of bounds for length 2`; `.map`,
 `.some`, `.filter`, `.join` and every other array method are absent, so calling
 one is the same `TypeError: Cannot find function some in object [].` the tenant
 throws. `String(v)` has Java's shape, `[{_id=u1, _rev=1}]`, and there is no
-`toJSON` member, but `JSON.stringify` still writes a JSON array. Copy into a JS
-array with `[].concat(v)`, which is the measured way:
+`toJSON` member, but `JSON.stringify` still writes a JSON array, however it
+reaches the list (nested, through a `toJSON`, a getter or a replacer). Copy into
+a JS array with `[].concat(v)`, which is the measured way:
 
 ```js
 var ids = [].concat(openidm.query("managed/alpha_user", params, ["_id"]).result)

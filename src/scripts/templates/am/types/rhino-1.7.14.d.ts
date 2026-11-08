@@ -54,13 +54,24 @@ interface JavaArray<T = JavaString> {
 // `typeof` is "object" and `Array.isArray` is false; `length`, `[i]`, `size()`
 // and in-range `get(i)` work, and NO `Array.prototype` method exists — `map`,
 // `some`, `filter`, `join`, `includes` throw `Cannot find function`. Copy one
-// into a JS array with `[].concat(list)` (measured for the openidm lists).
-// Other `List` members are left off because nothing measured them.
+// into a JS array with `[].concat(list)` — measured for the openidm lists
+// only, so only `OpenidmJavaList` is accepted by `concat`. Other `List`
+// members are left off because nothing measured them.
 interface MeasuredJavaList<T> {
   readonly [index: number]: T | undefined;
   readonly length: number;
   size(): number;
   get(index: number): T;
+}
+
+// Marks the lists `[].concat` was measured to copy. Never present at runtime;
+// it only keeps a request map's value list out of the `concat` overload.
+declare const __aicConcatMeasured: unique symbol;
+
+// An `openidm.query` `result` or a has-many relationship array on a read:
+// a `MeasuredJavaList` that `[].concat(list)` copies into a JS array.
+interface OpenidmJavaList<T> extends MeasuredJavaList<T> {
+  readonly [__aicConcatMeasured]: true;
 }
 
 interface JavaMap<Key = JavaString, Value = JavaString> {
@@ -131,9 +142,11 @@ interface JavaSet<T = JavaString> {
 interface Array<T> {
   // `[].concat(q.result)`: the empty literal is `never[]`, so the copy takes
   // its element type from the list.
-  concat<U>(list: MeasuredJavaList<U>): (T | U)[];
+  // A request map's value list is not accepted: its concat is unmeasured
+  // (the emulator faults request-list-unmeasured).
+  concat<U>(list: OpenidmJavaList<U>): (T | U)[];
   concat<U extends T[]>(...items: U[]): T[];
-  concat(...items: (T | JavaArray<T> | MeasuredJavaList<T>)[]): T[];
+  concat(...items: (T | JavaArray<T>)[]): T[];
 }
 
 // ---- logger format strings ------------------------------------------------

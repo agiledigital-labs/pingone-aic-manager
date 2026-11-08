@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 102;
+pub const TEMPLATES_VERSION: u32 = 103;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -992,8 +992,8 @@ mod tests {
     #[test]
     fn every_template_edit_is_covered_by_a_version_bump() {
         const TEMPLATE_RELEASE: (u32, &str) = (
-            102,
-            "f3eca5fc24f9c76836c5735a58cf4ade0f99e246ab66388492dcd7d7740eb987",
+            103,
+            "6f8cd6903b6c9eac2f975fcd4c257e76740b5d69b5eeec6b4f0853e8db1d7343",
         );
         const LOCAL_ARTIFACTS: &[&str] = &[
             "node_modules",
@@ -1667,7 +1667,10 @@ mod tests {
             ": StoredRecord<",
             "(\"*\" extends F ? WildcardMembers<T, F> : SelectedMembers<T, F>) & {",
             "type WildcardMembers<T, F extends string> = {",
-            "[K in keyof T]: K extends F ? ReadValue<T[K]> : T[K];",
+            "[K in keyof T as K extends LiteralPathParentOf<F> ? never : K]: K extends F",
+            "F extends `${infer P}/${infer R}` ? (string extends R ? never : P) : never;",
+            "? ReadValue<T[K]>",
+            ": T[K];",
             "type SelectedMembers<T, F extends string> = {",
             "[K in Extract<F, keyof T>]-?: undefined extends T[K]",
             "? ReadValue<NonNullable<T[K]>> | null",

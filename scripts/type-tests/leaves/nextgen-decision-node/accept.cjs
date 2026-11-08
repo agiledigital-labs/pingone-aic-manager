@@ -188,6 +188,10 @@ var withRoles = openidm.read("managed/__aic_fixture_user/alice", null, ["authzRo
 if (withRoles && withRoles.authzRoles) {
   logger.info("roles {}", withRoles.authzRoles.size());
 }
+var starChildRoles = openidm.read("managed/__aic_fixture_user/alice", null, ["*", "authzRoles/name"]);
+if (starChildRoles && starChildRoles.authzRoles) {
+  logger.info("roles {}", starChildRoles.authzRoles.size());
+}
 
 // --- decision-node contract (next-gen) -------------------------------------
 // The rows above pin logger arity, Lookup<T>, and the managed-record
