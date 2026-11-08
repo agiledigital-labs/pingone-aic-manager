@@ -906,9 +906,11 @@ function __rhinoLocalListUnmeasured(kind, call) {
 // author's replacer still gets the real holder as `this`.
 //
 // An array replacer (a property list) cannot ride alongside a function, so it
-// is applied here as native does it: each non-array object becomes one whose
-// keys are the list's, in the list's order, each read with an ordinary [[Get]]
-// (inherited included) at the moment native serialisation reaches it. A per-call
+// is applied here as native does it: each value native would write as an object
+// (not a boxed primitive, array, Java value or list, or a RegExp where Rhino
+// drops it) becomes one whose keys are the list's, in the list's order, each
+// read with an ordinary [[Get]] (inherited included) at the moment native
+// serialisation reaches it. A per-call
 // cache returns the same substitute for the same object, so a cycle is still
 // the native cyclic-value TypeError rather than a stack overflow.
 function __rhinoLocalJsonList(value) {
@@ -928,7 +930,9 @@ function __rhinoLocalPropertyList(replacer) {
   var i;
   var item;
   var tag;
-  for (i = 0; i < replacer.length; i += 1) {
+  // Native reads the length once, so a getter that grows the array adds nothing.
+  var length = replacer.length;
+  for (i = 0; i < length; i += 1) {
     item = replacer[i];
     tag = item !== null && typeof item === "object" ? Object.prototype.toString.call(item) : null;
     if (typeof item === "number" || tag === "[object Number]" || tag === "[object String]") {
@@ -944,6 +948,25 @@ function __rhinoLocalPropertyList(replacer) {
 (function () {
   "use strict";
   var original = JSON.stringify;
+  var tagOf = Object.prototype.toString;
+  // Rhino serialises nothing for a RegExp (it is callable there); V8 writes an object.
+  var regexpDropped = original.call(JSON, { r: /x/ }) === "{}";
+  // V8 enumerates integer keys in ascending order whatever the insertion
+  // order, so a property list's order needs a Proxy there; Rhino keeps
+  // insertion order and has no Proxy.
+  var sortsIndexKeys = Object.keys({ 2: 1, 1: 1 })[0] === "1";
+  // Whether native would serialise v as an object, so that a property list
+  // applies to it. Boxed primitives are unboxed first; a Java object other than
+  // a map is written as its value and a Java list as an array.
+  var selectable = function (v) {
+    if (v === null || typeof v !== "object" || Array.isArray(v)) {
+      return false;
+    }
+    var tag = tagOf.call(v);
+    return tag !== "[object Number]" && tag !== "[object String]" && tag !== "[object Boolean]" &&
+      tag !== "[object JavaObject]" && tag !== "[object JavaList]" &&
+      !(regexpDropped && tag === "[object RegExp]");
+  };
   __rhinoLocalHide(JSON, "stringify", function stringify(value, replacer, space) {
     var author = typeof replacer === "function" ? replacer : null;
     var keys = author === null && Array.isArray(replacer) ? __rhinoLocalPropertyList(replacer) : null;
@@ -957,21 +980,42 @@ function __rhinoLocalPropertyList(replacer) {
         return v[key];
       };
     };
+    var substitute = function (v) {
+      var out;
+      var i;
+      if (sortsIndexKeys) {
+        // Reached only where integer keys sort, which is V8 (node:vm), never
+        // AM's Rhino, where Proxy is absent and insertion order already holds.
+        // eslint-disable-next-line no-restricted-globals
+        return new Proxy({}, {
+          ownKeys: function () {
+            return keys.slice();
+          },
+          getOwnPropertyDescriptor: function (target, key) {
+            return keys.indexOf(key) === -1 ? undefined : { value: undefined, writable: true, enumerable: true, configurable: true };
+          },
+          get: function (target, key) {
+            return v[key];
+          },
+        });
+      }
+      out = {};
+      for (i = 0; i < keys.length; i += 1) {
+        Object.defineProperty(out, keys[i], { get: read(v, keys[i]), enumerable: true, configurable: true });
+      }
+      return out;
+    };
     var select = function (v) {
-      if (v === null || typeof v !== "object" || Array.isArray(v)) {
+      if (!selectable(v)) {
         return v;
       }
       var at = seen.indexOf(v);
       if (at !== -1) {
         return made[at];
       }
-      var out = {};
-      var i;
+      var out = substitute(v);
       seen.push(v);
       made.push(out);
-      for (i = 0; i < keys.length; i += 1) {
-        Object.defineProperty(out, keys[i], { get: read(v, keys[i]), enumerable: true, configurable: true });
-      }
       return out;
     };
     return original.call(JSON, value, function (key, v) {

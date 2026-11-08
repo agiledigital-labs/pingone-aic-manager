@@ -40,6 +40,19 @@ const listFree: Array<[string, string]> = [
     'var o = {}; o.self = o; try { JSON.stringify(o, ["self"]); "returned"; } catch (e) { String(e instanceof TypeError); }'],
   ["a repeated, non-cyclic object under an array replacer serialises twice",
     'var c = { k: 1, z: 2 }; JSON.stringify({ a: c, b: c }, ["a", "b", "k"])'],
+  ["an array replacer unboxes Number, String and Boolean objects",
+    'JSON.stringify({ n: new Number(4), s: new String("ab"), b: new Boolean(false) }, ["n", "s", "b"])'],
+  ["a toJSON returning a Number object under an empty property list is a number",
+    'JSON.stringify({ toJSON: function () { return new Number(4); } }, [])'],
+  ["an array replacer keeps its order for integer keys",
+    'JSON.stringify({ 1: "a", 2: "b" }, ["2", "1"])'],
+  ["an array replacer reads integer-keyed getters in its order",
+    'var n = 0, o = {}; Object.defineProperty(o, "1", { enumerable: true, get: function () { return ++n; } }); ' +
+      'Object.defineProperty(o, "2", { enumerable: true, get: function () { return ++n; } }); JSON.stringify(o, ["2", "1"])'],
+  ["an array replacer that grows while it is read keeps its first length",
+    'var r = ["a"]; Object.defineProperty(r, "0", { get: function () { r.push("b"); return "a"; } }); JSON.stringify({ a: 1, b: 2 }, r)'],
+  ["a RegExp under an array replacer",
+    'JSON.stringify({ r: /x/g, k: 1 }, ["r", "k", "lastIndex"])'],
   ["a function replacer sees the real holder and its own key order",
     'var o = { v: 1, w: { x: 2 } }; var seen = []; JSON.stringify(o, function (k, v) { seen.push(k + ":" + (this === o)); return v; }); seen.join()'],
   ["a function replacer's undefined drops the key",
@@ -50,6 +63,16 @@ const listFree: Array<[string, string]> = [
     'JSON.stringify({ d: new Date(0), s: new String("x") })'],
   ["undefined, a function and no replacer at the root",
     'String(JSON.stringify(undefined)) + "|" + String(JSON.stringify(function () {})) + "|" + JSON.stringify("x")'],
+];
+
+// Java values exist on the JVM only.
+const javaListFree: Array<[string, string]> = [
+  ["an array replacer writes a Java String and Integer as their values",
+    'JSON.stringify({ s: new java.lang.String("ab"), n: new java.lang.Integer(4) }, ["s", "n"])'],
+  ["an array replacer selects from a Java map",
+    'var m = new java.util.HashMap(); m.put("a", 1); m.put("b", 2); JSON.stringify({ m: m }, ["m", "a"])'],
+  ["an array replacer leaves a Java list whole",
+    'var l = new java.util.ArrayList(); l.add(1); l.add(2); JSON.stringify({ l: l }, ["l"])'],
 ];
 
 const native = (source: string): unknown => vm.runInContext(source, vm.createContext({}));
@@ -65,11 +88,14 @@ describe("JSON.stringify without lists matches native", () => {
     expect(sandboxFaults(sandbox)).toEqual([]);
   });
 
-  it.each(listFree)("%s (JVM)", async (_name, source) => {
+  // The JVM oracle is Rhino without the runtime: the engines differ (a RegExp).
+  it.each([...listFree, ...javaListFree])("%s (JVM)", async (_name, source) => {
+    const bare = await runner.eval({ source });
+    expect(bare.outcome, JSON.stringify(bare.error)).toBe("ok");
     const response = await runner.eval({ preamble: mockPreamble({}), source });
     expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
     expect(response.emulation?.faults ?? []).toEqual([]);
-    expect(response.value).toBe(native(source));
+    expect(response.value).toBe(bare.value);
   });
 });
 
@@ -140,6 +166,24 @@ describe("JSON.stringify of the emulated lists", () => {
 });
 
 describe("JSON.stringify of an openidm list in node:vm", () => {
+  it.each(routes(QUERY))("an openidm list reached %s is a JSON array", (route, source) => {
+    const sandbox = loadBehaviour(given);
+    expect(vm.runInContext(source, sandbox)).toBe(arrayOf(route, '[{"_id":"u1","_rev":"1"}]'));
+    expect(sandboxFaults(sandbox)).toEqual([]);
+  });
+
+  it.each(routes(EMPTY))("an empty openidm list reached %s is []", (route, source) => {
+    const sandbox = loadBehaviour(given);
+    expect(vm.runInContext(source, sandbox)).toBe(arrayOf(route, "[]"));
+    expect(sandboxFaults(sandbox)).toEqual([]);
+  });
+
+  it.each(routes('requestParameters.get("x")'))("a request list reached %s faults request-list-serialize, even when caught", (_route, source) => {
+    const sandbox = loadBehaviour(given);
+    vm.runInContext(`try { ${source}; } catch (e) {}`, sandbox);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["request-list-serialize"]);
+  });
+
   it("an own __proto__ beside a list is kept, and the list is converted", () => {
     const sandbox = loadBehaviour(given);
     expect(vm.runInContext(

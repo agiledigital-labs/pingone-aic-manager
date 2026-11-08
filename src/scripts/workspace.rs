@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 103;
+pub const TEMPLATES_VERSION: u32 = 104;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -992,8 +992,8 @@ mod tests {
     #[test]
     fn every_template_edit_is_covered_by_a_version_bump() {
         const TEMPLATE_RELEASE: (u32, &str) = (
-            103,
-            "6f8cd6903b6c9eac2f975fcd4c257e76740b5d69b5eeec6b4f0853e8db1d7343",
+            104,
+            "fcc3e5938045f03bb164fbce4cf095d1d819340d245e4f246b95f77d36d67d73",
         );
         const LOCAL_ARTIFACTS: &[&str] = &[
             "node_modules",
