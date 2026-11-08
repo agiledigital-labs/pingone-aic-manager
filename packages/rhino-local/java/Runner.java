@@ -123,6 +123,7 @@ public final class Runner {
         continue;
       }
       final Object parsed;
+      final long decodeStarted = System.nanoTime();
       try {
         parsed = ProtocolValues.decode(Json.parse(line));
       } catch (RuntimeException e) {
@@ -139,6 +140,13 @@ public final class Runner {
           continue;
         }
         String id = (String) rawId;
+        if (Boolean.TRUE.equals(job.get("timing"))) {
+          job.put("timingReadNanos", Long.valueOf(System.nanoTime() - decodeStarted));
+          long chars = 0;
+          if (job.get("sources") instanceof Map)
+            for (Object text : ((Map<?, ?>) job.get("sources")).values()) if (text instanceof String) chars += ((String) text).length();
+          job.put("timingSourceBytes", Long.valueOf(chars));
+        }
         // Before any refusal: the client counts a source as shipped once its
         // line is written, whatever becomes of the job that carried it.
         String sourceError = registerSources(job.remove("sources"));
@@ -245,20 +253,25 @@ public final class Runner {
   /** The job map the reader already parsed; parsing it again here cost as much as the move. */
   static void handleJob(AmContextFactory factory, Map<String, Object> job) {
     final String id = (String) job.get("id");
+    final Timing timing = Timing.begin(job);
+    Map<String, Object> result;
     try {
       Object engine = job.get("engine");
       if (engine == null || "am".equals(engine)) {
-        respond(evalJob(factory, id, job));
+        result = evalJob(factory, id, job);
       } else if ("idm".equals(engine)) {
-        respond(IdmRuntime.eval(id, job));
+        result = IdmRuntime.eval(id, job);
       } else {
-        respond(errorResponse(id, "protocol_error", new IllegalArgumentException("unknown engine: " + engine), null, -1, -1, null));
+        result = errorResponse(id, "protocol_error", new IllegalArgumentException("unknown engine: " + engine), null, -1, -1, null);
       }
     } catch (Throwable t) {
-      Map<String, Object> failure = errorResponse(id, "runtime_error", t, null, -1, -1, null);
-      failure.put("emulation", new EmulationFailure("internal", t.toString()).info);
-      respond(failure);
+      result = errorResponse(id, "runtime_error", t, null, -1, -1, null);
+      result.put("emulation", new EmulationFailure("internal", t.toString()).info);
+    } finally {
+      Timing.end();
     }
+    if (timing != null) result.put("timing", timing.toJson());
+    respond(result);
   }
 
   static Map<String, Object> evalJob(
@@ -338,6 +351,7 @@ public final class Runner {
       return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
     }
 
+    long phase = Timing.now();
     final Context cx = factory.enterContext();
     try {
       cx.setLanguageVersion(languageVersion);
@@ -355,6 +369,7 @@ public final class Runner {
       final SimpleScriptContext scriptContext = AmScopes.newEngineContext(sourceName);
       injectGlobals(scriptContext, job.get("globals"));
       final Scriptable scope = AmScopes.makeScriptable(cx, scriptContext);
+      Timing.add("setup", phase);
 
       final boolean hasPreamble = preamble != null && !preamble.isEmpty();
       if (hasPreamble || preludeHash != null) {
@@ -389,12 +404,21 @@ public final class Runner {
             int line = 1;
             if (preludeHash != null) {
               final ScriptCache.Source prelude = ScriptCache.source(preludeHash);
-              ScriptCache.compile(cx, "prelude:" + preludeHash, () -> prelude.text, preambleName, 1).exec(cx, scope);
+              phase = Timing.now();
+              Script compiled = ScriptCache.compile(cx, "prelude:" + preludeHash, () -> prelude.text, preambleName, 1);
+              Timing.add("preludeCompile", phase);
+              phase = Timing.now();
+              compiled.exec(cx, scope);
+              Timing.add("preludeExec", phase);
               line = prelude.lines + 1;
             }
             if (hasPreamble) {
+              phase = Timing.now();
               Script preambleScript = cx.compileString(preamble, preambleName, line, null);
+              Timing.add("preambleCompile", phase);
+              phase = Timing.now();
               preambleScript.exec(cx, scope);
+              Timing.add("preambleExec", phase);
             }
           } finally {
             ScriptableObject.deleteProperty(scope, hostOpName);
@@ -417,6 +441,7 @@ public final class Runner {
       }
 
       final Script script;
+      phase = Timing.now();
       try {
         script = cx.compileString(source, sourceName, 1, null);
       } catch (EvaluatorException e) {
@@ -425,7 +450,9 @@ public final class Runner {
         return errorFromRhino(id, "compile_error", e);
       }
 
+      Timing.add("subjectCompile", phase);
       final Object completion;
+      phase = Timing.now();
       try {
         completion = script.exec(cx, scope);
       } catch (RhinoException e) {
@@ -436,8 +463,13 @@ public final class Runner {
         }
         throw e;
       }
+      Timing.add("subjectExec", phase);
       // Harvest outside the author try: its failures are emulation failures, not script errors.
-      if (bridge != null) return response(id, "ok", JsValues.of(bridge.harvest(cx)), null);
+      if (bridge != null) {
+        phase = Timing.now();
+        try { return response(id, "ok", JsValues.of(bridge.harvest(cx)), null); }
+        finally { Timing.add("harvest", phase); }
+      }
       final String resultGlobal = Json.optionalString(job, "resultGlobal");
       final Object result = resultGlobal == null
           ? completion

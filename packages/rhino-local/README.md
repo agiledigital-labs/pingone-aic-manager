@@ -931,6 +931,26 @@ and hook (E19).
 More detail lives in this repository's `docs/rhino-local-harness.md`, which is
 not shipped with the package.
 
+### Phase timing
+
+To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and
+summarise it afterwards:
+
+```sh
+AIC_SCRIPT_TESTER_TIMING=timing.jsonl npx vitest run
+npx aic-script-tester-timing timing.jsonl        # --json for machine output
+```
+
+Every JVM spawn, pool lease and eval job appends one JSON line. A job row
+carries the bytes written (`lineBytes`), the source text shipped with it
+(`sourceBytes`, `sourcesShipped`), `stringifyMs`, `roundTripMs` and
+`transportMs`, and the JVM's own phases under `jvm`: reader decode, setup,
+prelude, preamble (where the seed is parsed) and subject compile and exec,
+library compile and load, harvest, host-call wait, and compile-cache hits and
+misses. Exec phases include the library bodies and host-call waits that ran
+inside them. Timing is off unless the variable is set, and it never changes a
+response or a lane comparison. `src/timing.ts` documents every field.
+
 ## JVM runner client
 
 `src/runner.ts` launches Java 25 from `AIC_SCRIPT_TESTER_JAVA_HOME` or `JAVA_HOME`
