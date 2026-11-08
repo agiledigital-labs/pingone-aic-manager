@@ -64,12 +64,24 @@ export interface Channels {
    * Custom properties only. The ones AM sets itself — `UserId`, `AuthLevel`
    * and the rest — are refused, because `putSessionProperty` cannot override
    * them and trying fails the whole login with an unexplained 401. The five
-   * AM derives from the principal come from `state.username` instead.
+   * AM derives from the principal come from `sessionPrincipal`.
    *
    * Nothing about the subject tree changes, and the principal need not exist
    * as a managed object (both measured 2026-09-14).
    */
   session?: JsonObject;
+  /**
+   * Who the session belongs to: `UserId`, `Principals`, `UserToken`,
+   * `Principal` and `sun.am.UniversalIdentifier` derive from it, in both
+   * lanes (the AIC lane's mini journey logs in as this name). Declaring it
+   * asks for a session, as `session` does. Without it the principal is
+   * shared-state `username`, then `rl-session`. Independent of shared state,
+   * so a script can see one user in `existingSession` and another in
+   * `nodeState`. Must not need escaping in a DN (no `,+"\\<>;=` and no
+   * leading or trailing space): AM builds `id=<principal>,ou=user,…` from
+   * it, and an escaped principal is unmeasured.
+   */
+  sessionPrincipal?: string;
 }
 
 /**
@@ -97,6 +109,7 @@ export interface RequestDraft {
   bindingOverrides?: Record<string, string>;
   identityAttributes?: Record<string, IdentityAttributeMapping>;
   session: JsonObject;
+  sessionPrincipal?: string;
   /** Whether either level asked for a session at all. See mergeChannels. */
   sessionRequested: boolean;
 }

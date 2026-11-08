@@ -583,6 +583,25 @@ non-null default just as for a declared `null`; null bypasses conversion.
 it does not waive verdict checks. Cases remain AIC-eligible: AIC resolves real
 ESVs, so a tenant property that exists can still produce a disagreement.
 
+### Session and its principal
+
+`always: { session: { tier: "gold" } }` or `.run().session({ tier: "gold" })`
+asks for a logged-in session; the script sees it as `existingSession`, a flat
+string map. Custom properties only: `UserId`, `AuthLevel` and the other keys AM
+sets itself are refused, because the AIC lane cannot override them.
+
+The five keys AM derives from the principal (`UserId`, `Principals`,
+`UserToken`, `Principal`, `sun.am.UniversalIdentifier`) come from
+`sessionPrincipal`: `always: { sessionPrincipal: "alice" }` or
+`.run().sessionPrincipal("alice")`. Declaring it also asks for a session. It is
+independent of shared state, so a test can put one user in `existingSession`
+and another in `nodeState`. Without it, the principal is shared-state
+`username`, then `rl-session`. The AIC lane logs in as the principal through a
+mini journey (the principal need not exist), and the local lane mints the same
+five keys (`live-session-principal`). A principal that would need escaping in a
+DN (`,+"\<>;=`, or edge spaces) is refused, because AM's handling of it is
+unmeasured.
+
 ### Request cookies
 
 Declare cookies with `always: { cookies: { name: "value" } }`, override one

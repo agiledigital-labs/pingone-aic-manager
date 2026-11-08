@@ -30,6 +30,7 @@ export function mergeChannels(
   override: Channels | undefined
 ): ResolvedRequestDraft {
   const cookieName = override?.cookieName ?? always?.cookieName;
+  const sessionPrincipal = override?.sessionPrincipal ?? always?.sessionPrincipal;
   const registeredObjectAttributes = always?.registeredObjectAttributes === undefined &&
       override?.registeredObjectAttributes === undefined
     ? undefined
@@ -63,8 +64,9 @@ export function mergeChannels(
     // Declared-empty and not-declared are different requests: `session: {}`
     // asks for a logged-in session with no extra properties, which is a real
     // case and is invisible if you only look at the merged key count.
+    ...(sessionPrincipal === undefined ? {} : { sessionPrincipal }),
     sessionRequested:
-      always?.session !== undefined || override?.session !== undefined,
+      always?.session !== undefined || override?.session !== undefined || sessionPrincipal !== undefined,
   });
 }
 
@@ -317,7 +319,7 @@ function sessionStrings(session: JsonObject): Record<string, string> {
   for (const [key, value] of Object.entries(session)) {
     if (AM_OWNED_SESSION_SET.has(key)) {
       throw new Error(
-        `rhino-local: session.${key} is set by AM, not by the caller — a mini journey that tries to override it fails the whole login with an unexplained 401. ${key === "UserId" || key === "Principals" || key === "UserToken" || key === "Principal" || key === "sun.am.UniversalIdentifier" ? "Set `state.username` instead; the session is minted for that principal" : "Remove it"}`
+        `rhino-local: session.${key} is set by AM, not by the caller — a mini journey that tries to override it fails the whole login with an unexplained 401. ${key === "UserId" || key === "Principals" || key === "UserToken" || key === "Principal" || key === "sun.am.UniversalIdentifier" ? "Set `sessionPrincipal` instead (`.sessionPrincipal(name)` on a case, or `always.sessionPrincipal`); the session is minted for that principal" : "Remove it"}`
       );
     }
     if (value === null || typeof value === "object") {
@@ -331,14 +333,27 @@ function sessionStrings(session: JsonObject): Record<string, string> {
 }
 
 /**
- * Who the mini journey logs in as. The principal need not exist as a managed
- * object (measured 2026-09-14), so this is free; taking it from shared state
- * means a suite that already sets `username` gets a session for that user
- * without saying so twice.
+ * Who the mini journey logs in as: the declared `sessionPrincipal`, else
+ * shared-state `username` (so a suite that already sets it gets a session for
+ * that user without saying so twice), else the default. The principal need
+ * not exist as a managed object (measured 2026-09-14). One that needs DN
+ * escaping is refused: AM builds `id=<principal>,…` from it, the local lane
+ * would build that string verbatim, and what AM does with it is unmeasured.
  */
 export function sessionPrincipal(draft: RequestDraft): string {
   const username = draft.state.shared.username;
-  return typeof username === "string" && username.length > 0
-    ? username
-    : DEFAULT_SESSION_PRINCIPAL;
+  const [principal, from] = draft.sessionPrincipal !== undefined
+    ? [draft.sessionPrincipal, "sessionPrincipal"]
+    : typeof username === "string" && username.length > 0
+      ? [username, "state.username"]
+      : [DEFAULT_SESSION_PRINCIPAL, "default"];
+  if (typeof principal !== "string" || principal.length === 0) {
+    throw new Error(`rhino-local: ${from} must be a non-empty string`);
+  }
+  if (/[,+"\\<>;=]/.test(principal) || principal.trim() !== principal) {
+    throw new Error(
+      `rhino-local: ${from} ${JSON.stringify(principal)} would need escaping in the session DN (id=<principal>,ou=user,…); an escaped principal is unmeasured — use one without ,+"\\<>;= or edge spaces`
+    );
+  }
+  return principal;
 }
