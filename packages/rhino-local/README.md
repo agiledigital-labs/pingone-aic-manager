@@ -183,12 +183,14 @@ yet is listed separately, under its cause text. In watch mode with
 cases from earlier runs; read the tally from a plain `vitest run`.
 
 ```json
-{ "version": 1,
+{ "version": 1, "harness": "0.4.0-emulator.1",
   "faults": [{ "id": "script-defect/send-body-js-date", "cases": 2, "failed": 2,
                "files": ["test/a.test.ts", "test/b.test.ts"], "message": "…" }],
   "unidentified": [] }
 ```
 
+`harness` is the version of this package that ran the suite; the summary's
+heading names it too, so a pasted tally says which build produced it.
 `failed` is the number of cases the fault failed. The rest declared it on
 purpose with `expectHarnessFault(id)`, which is how a test that exercises the
 refusal itself asserts it:

@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import type { FaultTally } from "../../src/harness/fault-tally.ts";
+import { packageVersion } from "../../src/paths.ts";
 import { procAvailable, watchRunnerJvms } from "./runner-jvms.ts";
 
 interface JsonReport {
@@ -93,13 +94,14 @@ it("a caught true refusal fails its case, a caught emulated error passes, and th
     const b = "test/fixtures/harness-faults/b.fixture.ts";
     expect(tally).toEqual({
       version: 1,
+      harness: packageVersion,
       faults: [
         { id: "script-defect/send-body-js-date", cases: 2, failed: 2, files: [a, b], message: expect.stringContaining("httpClient.send body.d is a JS Date") as unknown },
         { id: "state-put-undefined", cases: 1, failed: 1, files: [b], message: "rhino-local: nodeState.putShared: value is undefined" },
       ],
       unidentified: [],
     });
-    expect(output).toContain("rhino-local harness faults");
+    expect(output).toContain(`rhino-local ${packageVersion} harness faults`);
     // The harness's gaps and the script defects are listed apart.
     expect(output).toMatch(/behaviour this harness does not emulate:\n {5}1 case {3}state-put-undefined {2}\(1 file\)\n/);
     expect(output).toMatch(/script defects \(AIC's behaviour is measured[^\n]*\n {5}2 cases {2}script-defect\/send-body-js-date {2}\(2 files\)\n/);

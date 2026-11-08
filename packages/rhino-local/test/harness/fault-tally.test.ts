@@ -88,21 +88,22 @@ describe("the tally file", () => {
     dir = mkdtempSync(join(tmpdir(), "rhino-tally-"));
     const env = { AIC_SCRIPT_TESTER_STATE_DIR: join(dir, "state") };
     expect(faultTallyPath(env)).toBe(join(dir, "state", "harness-faults", "tally.json"));
-    const path = writeFaultTally({ version: 1, faults: [], unidentified: [] }, env);
-    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ version: 1, faults: [], unidentified: [] });
+    const path = writeFaultTally({ version: 1, harness: "9.9.9-test", faults: [], unidentified: [] }, env);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ version: 1, harness: "9.9.9-test", faults: [], unidentified: [] });
     expect(statSync(path).mode & 0o777).toBe(0o600);
 
     const custom = join(dir, "deep", "out.json");
-    expect(writeFaultTally({ version: 1, faults: [], unidentified: [] }, { ...env, [FAULT_TALLY_ENV]: custom })).toBe(custom);
+    expect(writeFaultTally({ version: 1, harness: "9.9.9-test", faults: [], unidentified: [] }, { ...env, [FAULT_TALLY_ENV]: custom })).toBe(custom);
     expect(readFileSync(custom, "utf8")).toContain('"version": 1');
   });
 
   it("summarises nothing for a clean run, and marks declared cases", () => {
-    expect(formatFaultTally({ version: 1, faults: [], unidentified: [] }, "/t")).toBe("");
-    const text = formatFaultTally({ version: 1, faults: [{ id: "x", cases: 3, failed: 1, files: ["a", "b"], message: "m" }],
+    expect(formatFaultTally({ version: 1, harness: "9.9.9-test", faults: [], unidentified: [] }, "/t")).toBe("");
+    const text = formatFaultTally({ version: 1, harness: "9.9.9-test", faults: [{ id: "x", cases: 3, failed: 1, files: ["a", "b"], message: "m" }],
       unidentified: [{ id: "route", cases: 1, failed: 1, files: [], message: "route" }] }, "/t");
     expect(text).toContain("     3 cases  x  (2 files, 2 declared)");
     expect(text).toContain("     1 case   route");
     expect(text).toContain("tally: /t");
+    expect(text).toContain("rhino-local 9.9.9-test harness faults");
   });
 });
