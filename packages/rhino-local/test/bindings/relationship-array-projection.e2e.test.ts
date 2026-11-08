@@ -116,16 +116,22 @@ describe("has-many relationship projection matches the live capture", () => {
     expect(JSON.stringify(response)).toContain("openidm-fields-relationship-deep-path");
   });
 
-  it.each([
+  const deepCases: Array<[string[], string]> = [
     [["roles/*/_refProperties/_id"], "a path below the reference envelope key _refProperties is unmeasured"],
     [["roles/*", "roles/*/_refProperties/_id"], "a path below the reference envelope key _refProperties is unmeasured"],
     [["roles/*/_refProperties/_id", "roles/*"], "a path below the reference envelope key _refProperties is unmeasured"],
     [["roles/*/_id/x"], "a path below the reference envelope key _id is unmeasured"],
     [["roles/_refProperties/_id"], "a path below roles/_refProperties is unmeasured"],
     [["roles/name/x"], "a path below roles/name is unmeasured"],
-  ])("a deeper path under an envelope key or a non-* name faults: %j", async (selectors, message) => {
+  ];
+  // The selector's shape is what is unmeasured, so an empty relationship
+  // refuses too: a fixture with no elements must not bless the selector.
+  it.each(deepCases.flatMap(([selectors, message]) => [
+    [selectors, message, "populated"] as const,
+    [selectors, message, "empty"] as const,
+  ]))("a deeper path under an envelope key or a non-* name faults: %j (%s)", async (selectors, message, seed) => {
     expectHarnessFault("openidm-fields-relationship-deep-path");
-    const edged = { ...user, roles: [{ ...role("role-a"), _refProperties: { _id: "edge", extra: "unselected" } }] };
+    const edged = { ...user, roles: seed === "empty" ? [] : [{ ...role("role-a"), _refProperties: { _id: "edge", extra: "unselected" } }] };
     const response = await run(`try { ${read(selectors)} } catch (e) {} finally { 1; }`, given(edged));
     expect(response.outcome).not.toBe("ok");
     const faults = (response as { emulation?: { faults?: { id: string; message: string }[] } }).emulation?.faults ?? [];

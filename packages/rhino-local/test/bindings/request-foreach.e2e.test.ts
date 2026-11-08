@@ -105,6 +105,7 @@ describe("request map forEach matches the live capture", () => {
     ["a string", 'requestParameters.forEach("x")'],
     ["an object", "requestParameters.forEach({ accept: function () {} })"],
     ["a function and an extra argument", "requestParameters.forEach(function () {}, 1)"],
+    ["a string while join/push are replaced", 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { requestParameters.forEach("bad"); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
   ])("%s faults request-map-foreach-argument, even when caught", async (_name, call) => {
     expectHarnessFault("request-map-foreach-argument");
     const response = await runner.eval({ preamble: mockPreamble({ requestParameters: { a: ["1"] } }), source: withHarvest(`try { ${call}; } catch (e) {}`) });
