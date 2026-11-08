@@ -449,7 +449,7 @@ array default against `items.type` — the same `VALID_TYPE` check a record
 gets. It does not recurse into an object default's `properties`, and a `null`
 default passes on every type tried (string, boolean, number, integer, object,
 array). Not measured: arrays of arrays, a `null` default nested under `items`,
-a type list naming two concrete types, a default nested under `properties` or
+a type list other than one concrete type plus `"null"` (two concrete types, a singleton such as `["string"]`, a repeated `"null"`), a default nested under `properties` or
 `items`, non-empty `required` lists, and whether the frozen state survives an
 IDM restart.
 
@@ -505,7 +505,7 @@ type.
 function (`packages/rhino-local/src/declared-default.ts`): a default is invalid
 exactly when it fails `VALID_TYPE` for the declared type, `null` always passes,
 and so every numeric default on `integer` is invalid. A default it calls
-invalid, or one no probe covered (a type list naming two concrete types, or a
+invalid, or one no probe covered (a type list other than one concrete type plus `"null"` (two concrete types, a singleton such as `["string"]`, a repeated `"null"`), or a
 default nested under `items` or `properties`, for example), means the tenant is serving an earlier config the local one does not
 describe, so neither lane answers **any** managed call. The IDM emulator refuses
 the whole config before every request. The AM lane faults every `openidm` call
@@ -596,6 +596,12 @@ wherever both ran.
   `getClass().getName()` and `String(getDetail())` — and faults every other
   member of `e.javaException` as `idm-exception/unmeasured`, because its
   exception is not a CREST class and would otherwise answer for the wrong one.
+  Membership follows the same gate: `name in e.javaException` is `true` for
+  those members (and `getClass`, and `getName` on its result) and faults for
+  any other name; `Object.keys`, `for…in` and `JSON.stringify` fault, since no
+  probe listed AIC's members. `Object.getOwnPropertyNames` is Rhino's
+  `TypeError` for any Java object, before the object is asked (assumed the same
+  on AIC's Rhino; not probed).
 
 Not measured: `PATCH replace` with `null` beyond the existing 400 rows, a
 whole-record `PUT` with `null`, the next-gen journey `openidm` lane for these
