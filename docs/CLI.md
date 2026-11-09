@@ -3009,6 +3009,13 @@ id; `--resolve remote` forgets the record for missing resources. Embedded
 managed-hook and sync-mapping scripts cannot be re-created by this prompt; the
 prompt names the owning config or missing local file when re-create is unavailable.
 Skipped entries are listed and make the command exit non-zero.
+With no terminal there is no prompt, so a deleted script is skipped; to resolve
+it non-interactively the flags are `--resolve remote --force` (forget the
+record, keep the local file) or `--resolve remote --force --remove-local`
+(forget it and remove the local file if unedited). `--remove-local` on its own
+resolves nothing, and `--resolve remote` without `--force` is refused; both the
+refusal and the end-of-run list print the exact command. `--resolve` applies to
+every selected script, so give a `<ref>` to name the one you mean.
 `--remove-local` makes forgetting also remove the local file, but only one
 that still holds the last-synced bytes (and a LIBRARY script's generated
 wrapper with it, when that is a plain file holding exactly the generated

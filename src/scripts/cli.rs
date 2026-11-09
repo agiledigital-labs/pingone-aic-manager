@@ -341,15 +341,26 @@ pub enum ScriptCommand {
     /// Bidirectionally sync the workspace with the tenant: push local-only
     /// changes, pull remote-only changes, and resolve conflicts or deleted scripts.
     /// Scope with an optional <ref>; default reconciles everything synced.
+    ///
+    /// A script deleted on the tenant prompts (skip, re-create, forget); with no
+    /// terminal it is left unresolved and the command exits non-zero. To resolve
+    /// it without a prompt: `--resolve remote --force` forgets the sync record
+    /// and keeps the local file; add `--remove-local` to also remove the local
+    /// file when it is unedited (`--remove-local` alone resolves nothing).
+    /// `--resolve local --force` re-creates it. `--resolve` applies to every
+    /// selected entry, so name the script with <ref>.
     Sync {
         #[arg(help = "namespace, <namespace>/<name>, `all`, or empty for everything synced")]
         reference: Option<String>,
         /// Make this side win for every selected entry, including non-conflicts.
+        /// Needs bare --force beside it.
         #[arg(long, value_enum)]
         resolve: Option<Resolution>,
         /// When a script deleted on the tenant is forgotten, also remove its
         /// local file — only if it still holds the last-synced bytes. An
-        /// edited file, or a symlink, is kept and named.
+        /// edited file, or a symlink, is kept and named. It only takes effect
+        /// where the script is forgotten: at the prompt, or non-interactively
+        /// as `--resolve remote --force --remove-local`.
         #[arg(long)]
         remove_local: bool,
         #[arg(long, help = "Tenant to target")]
@@ -412,15 +423,45 @@ pub enum Resolution {
 fn validate_resolution_force(
     resolve: Option<Resolution>,
     force: OperationAndSyntaxCheckForce,
+    remove_local: bool,
 ) -> Result<()> {
     if resolve.is_some() == force.operation() {
-        Ok(())
-    } else {
-        Err(Error::Config(
-            "script sync requires --resolve local|remote with bare --force, and bare --force requires --resolve"
-                .into(),
-        ))
+        return Ok(());
     }
+    let extra = if remove_local { " --remove-local" } else { "" };
+    Err(Error::Config(match resolve {
+        Some(side) => {
+            let side = match side {
+                Resolution::Local => "local",
+                Resolution::Remote => "remote",
+            };
+            format!(
+                "--resolve {side} overwrites without prompting, so it also needs bare --force: \
+                 `aic script sync <ref> --resolve {side} --force{extra}`. \
+                 To forget a script deleted on the tenant and remove its unedited local file, \
+                 use `--resolve remote --force --remove-local`"
+            )
+        }
+        None => "bare --force on `script sync` needs --resolve local|remote beside it: \
+                 `aic script sync <ref> --resolve remote --force [--remove-local]` forgets \
+                 scripts deleted on the tenant (--remove-local also removes their unedited \
+                 local file); `--resolve local --force` re-creates them"
+            .into(),
+    }))
+}
+
+/// What a non-interactive run can do about scripts the tenant no longer has.
+/// `--resolve` applies to every selected entry, so the hint scopes to one
+/// script by ref instead of inviting a bare `--resolve remote --force`.
+fn remote_missing_hint(first: &str, remove_local: bool) -> String {
+    let extra = if remove_local { " --remove-local" } else { "" };
+    format!(
+        "to proceed without a prompt, name the script and say which side wins — \
+         forget the record: `aic script sync {first} --resolve remote --force{extra}` \
+         (add --remove-local to also remove the local file if it is unedited); \
+         re-create from the local copy: `aic script sync {first} --resolve local --force`. \
+         Without a ref, --resolve applies to every synced script"
+    )
 }
 
 #[derive(Subcommand, Debug)]
@@ -1236,7 +1277,7 @@ pub(crate) async fn run_with_runtime(
             yes,
             force,
         } => {
-            validate_resolution_force(resolve, force)?;
+            validate_resolution_force(resolve, force, remove_local)?;
             if remove_local && resolve == Some(Resolution::Local) {
                 return Err(Error::Config(
                     "--remove-local applies to forgetting a deleted script, which --resolve local never does"
@@ -1563,6 +1604,12 @@ pub(crate) async fn run_with_runtime(
             }
             if !remote_missing.is_empty() {
                 println!("remote scripts left unresolved (choose re-create or forget):");
+                if !prompt_available() {
+                    println!(
+                        "  {}",
+                        remote_missing_hint(&remote_missing[0].0, remove_local)
+                    );
+                }
                 for (name, reason) in &remote_missing {
                     if let Some(reason) = reason {
                         println!("  {name} — re-create unavailable: {reason}");
@@ -4245,10 +4292,32 @@ mod tests {
         ] {
             let (resolve, force) = parsed(&args);
             assert!(
-                validate_resolution_force(resolve, force).is_err(),
+                validate_resolution_force(resolve, force, false).is_err(),
                 "{args:?}"
             );
         }
+        // The refusal names the flags that would proceed, not just the rule.
+        let (resolve, force) = parsed(&["--resolve", "remote", "--remove-local"]);
+        let message = validate_resolution_force(resolve, force, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("--resolve remote --force --remove-local"),
+            "{message}"
+        );
+        let (resolve, force) = parsed(&["--force"]);
+        let message = validate_resolution_force(resolve, force, false)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("--resolve remote --force"), "{message}");
+        let hint = remote_missing_hint("managed/thing.onCreate", true);
+        assert!(
+            hint.contains(
+                "aic script sync managed/thing.onCreate --resolve remote --force --remove-local"
+            ),
+            "{hint}"
+        );
+        assert!(!remote_missing_hint("a/b", false).contains("--force --remove-local`"));
         for args in [
             vec![],
             vec!["--force=syntax-check"],
@@ -4258,7 +4327,7 @@ mod tests {
         ] {
             let (resolve, force) = parsed(&args);
             assert!(
-                validate_resolution_force(resolve, force).is_ok(),
+                validate_resolution_force(resolve, force, false).is_ok(),
                 "{args:?}"
             );
         }
