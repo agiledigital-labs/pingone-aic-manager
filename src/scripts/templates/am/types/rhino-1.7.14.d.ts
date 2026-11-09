@@ -54,9 +54,9 @@ interface JavaArray<T = JavaString> {
 // `typeof` is "object" and `Array.isArray` is false; `length`, `[i]`, `size()`
 // and in-range `get(i)` work, and NO `Array.prototype` method exists — `map`,
 // `some`, `filter`, `join`, `includes` throw `Cannot find function`. Copy one
-// into a JS array with `[].concat(list)` — measured for the openidm lists
-// only, so only `OpenidmJavaList` is accepted by `concat`. Other `List`
-// members are left off because nothing measured them.
+// into a JS array with `[].concat(list)` — measured for all three
+// (2026-11-08 for the openidm lists, 2026-11-10 for a request value list).
+// Other `List` members are left off because nothing measured them.
 interface MeasuredJavaList<T> {
   readonly [index: number]: T | undefined;
   readonly length: number;
@@ -64,15 +64,8 @@ interface MeasuredJavaList<T> {
   get(index: number): T;
 }
 
-// Marks the lists `[].concat` was measured to copy. Never present at runtime;
-// it only keeps a request map's value list out of the `concat` overload.
-declare const __aicConcatMeasured: unique symbol;
-
-// An `openidm.query` `result` or a has-many relationship array on a read:
-// a `MeasuredJavaList` that `[].concat(list)` copies into a JS array.
-interface OpenidmJavaList<T> extends MeasuredJavaList<T> {
-  readonly [__aicConcatMeasured]: true;
-}
+// An `openidm.query` `result` or a has-many relationship array on a read.
+type OpenidmJavaList<T> = MeasuredJavaList<T>;
 
 interface JavaMap<Key = JavaString, Value = JavaString> {
   get(key: Lookup<Key>): Value | null;
@@ -140,13 +133,11 @@ interface JavaSet<T = JavaString> {
 // Rhino lets a JS Array concat Java arrays; widen the lib signature so scripts
 // that concat a JavaArray<T> into a JS array still type-check.
 interface Array<T> {
-  // `[].concat(q.result)`: the empty literal is `never[]`, so the copy takes
-  // its element type from the list.
-  // A request map's value list is not accepted: its concat is unmeasured
-  // (the emulator faults request-list-unmeasured).
-  concat<U>(list: OpenidmJavaList<U>): (T | U)[];
+  // `[].concat(q.result)`, `[].concat(requestParameters.get(k))`: the empty
+  // literal is `never[]`, so the copy takes its element type from the list.
+  concat<U>(list: MeasuredJavaList<U>): (T | U)[];
   // Several lists, mixed with arrays and values, anywhere among the arguments.
-  concat<U>(...items: (T | ConcatArray<T> | OpenidmJavaList<U>)[]): (T | U)[];
+  concat<U>(...items: (T | ConcatArray<T> | MeasuredJavaList<U>)[]): (T | U)[];
   concat<U extends T[]>(...items: U[]): T[];
   concat(...items: (T | JavaArray<T>)[]): T[];
 }

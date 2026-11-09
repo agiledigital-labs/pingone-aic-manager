@@ -36,18 +36,21 @@ here and failed on the tenant.
 | `v.length`, `v[0]`, `v.size()`, `v.get(0)`        | `v.map(…)`, `v.join(…)`, any `Array.prototype` method |
 | `String(v)` gives Java's `"[a, b]"`               | `Array.isArray(v)` is `false`                        |
 | `requestParameters.forEach(function (k, v) {…})`  | `v.getClass()` (the class shutter refuses it)        |
+| `[].concat(v)` copies it into a JS array          |                                                      |
+| `JSON.stringify(v)` writes a JSON array           |                                                      |
 
-Only `size()` and `get(i)` with an index in range were measured. Any other
-call shape (`get()`, `get("0")`, an out-of-range index, `size(1)`) and every
-other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`, `iterator`,
-…) faults `request-list-unmeasured`. One gap: an out-of-range bracket read
-(`v[5]`) returns `undefined` without a fault, because an index read cannot be
-intercepted here; AIC's answer is unmeasured, so use `get(i)` with an index
-below `size()`. `JSON.stringify` of a value list was not
-measured either, so it faults `request-list-serialize` (one miss: a list an
-author's own `toJSON` returns under an array replacer is written unfaulted, and
-during such a call a list reads as having a `toJSON` function);
-copy the values into an array first:
+`[].concat(v)` (alone, among several lists or among plain values),
+`Array.prototype.concat.call(v, …)` and `JSON.stringify` by every route were
+measured on 2026-11-10. An empty header or parameter is a list of one empty
+string, and a key not sent is `null`, so `[].concat(missing)` is `[null]`.
+Beyond those, only `size()` and `get(i)` with an index in range were measured.
+Any other call shape (`get()`, `get("0")`, an out-of-range index, `size(1)`)
+and every other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`,
+`iterator`, …) faults `request-list-unmeasured`. One gap: an out-of-range
+bracket read (`v[5]`) returns `undefined` without a fault, because an index
+read cannot be intercepted here; AIC's answer is unmeasured, so use `get(i)`
+with an index below `size()`. The simplest copy is `[].concat(v)`; the loop
+below also works:
 
 ```js
 var values = requestParameters.get("q");

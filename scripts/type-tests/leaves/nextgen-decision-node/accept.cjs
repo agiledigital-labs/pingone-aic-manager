@@ -165,10 +165,14 @@ if (esvList.contains("alpha")) {
 // --- Java lists: the measured surface ---------------------------------------
 // A request value list, a query `result` and a has-many read answer `length`,
 // `[i]`, `size()` and `get(i)`, and `[].concat(list)` copies one into a JS
-// array (docs/api/12, 2026-11-08).
+// array (docs/api/12, 2026-11-08; a request list's concat 2026-11-10).
 var realmParam = requestParameters.get("realm");
 if (realmParam && realmParam.size() > 0) {
   logger.info("realm {} of {}", realmParam.get(0), realmParam.length);
+  /** @type {string[]} */
+  var realms = [].concat(realmParam);
+  var realmsAndMore = ["first"].concat(realmParam, ["x"], realmParam);
+  logger.info("{} {}", realms.join(","), realmsAndMore.length);
 }
 var allRows = openidm.query("managed/__aic_fixture_user", { _queryFilter: "true" }, ["userName"]);
 /** @type {string[]} */

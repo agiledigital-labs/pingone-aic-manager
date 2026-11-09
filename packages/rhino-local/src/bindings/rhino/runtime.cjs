@@ -808,7 +808,12 @@ function __rhinoLocalArgShape(args) {
 // - a request map's value list (request-map-foreach probe, 2026-11-08):
 //   typeof "object", Array.isArray false, `length` and `[i]` work, so do
 //   size() and get(i) in range, String() is Java's "[a, b]", getClass() is the
-//   class shutter's refusal, and Array.prototype methods are absent;
+//   class shutter's refusal, and Array.prototype methods are absent; and
+//   (request-list-concat probe, 2026-11-10) `[].concat(v)` copies the
+//   elements, as JS strings, into a JS array, among other arguments too, so
+//   does `Array.prototype.concat.call(v, …)` with the list as the receiver,
+//   and JSON.stringify writes a JSON array of the strings by every route the
+//   openidm lists were measured on;
 // - an openidm.query `result` and a has-many relationship array on a read
 //   (openidm-query-result-type and -string probes, 2026-11-08): the same,
 //   plus get(i) out of range either way throws Java's IndexOutOfBounds as an
@@ -825,20 +830,16 @@ var __rhinoLocalListKinds = {
   request: {
     id: "request-list-unmeasured",
     noun: "a request map's value list",
-    measured: "only size(), get(i) with an index in range, String(v) and the getClass() refusal were measured",
+    measured: "only size(), get(i) with an index in range, [].concat(v), Array.prototype.concat.call(v, …), JSON.stringify, String(v) and the getClass() refusal were measured",
     outOfRange: false,
-    concat: false,
-    serializeId: "request-list-serialize",
-    serializeHint: "copy the values into an array first, e.g. with a loop over size() and get(i)",
+    concatReceiver: true,
   },
   openidm: {
     id: "openidm-list-unmeasured",
     noun: "an openidm query result or relationship list",
     measured: "only size(), get(i), [].concat(v), JSON.stringify, String(v) and the getClass() refusal were measured",
     outOfRange: true,
-    concat: true,
-    serializeId: null,
-    serializeHint: null,
+    concatReceiver: false,
   },
 };
 
@@ -893,8 +894,9 @@ function __rhinoLocalListUnmeasured(kind, call) {
 }
 
 // Array.prototype.concat, as AIC's Rhino treats a Java list argument: copied
-// element by element (measured for openidm lists only). A request list as an
-// argument, and any emulated list as the receiver, is unmeasured and faults.
+// element by element (measured for both kinds). A request list as the
+// receiver is copied the same way (measured 2026-11-10); an openidm list as
+// the receiver is unmeasured and faults.
 // Strict, so a null or undefined receiver reaches the native concat as itself
 // and throws there, as it does without this wrapper.
 (function () {
@@ -902,7 +904,7 @@ function __rhinoLocalListUnmeasured(kind, call) {
   var original = Array.prototype.concat;
   var concat = function concat(item) {
     var receiver = __rhinoLocalListRow(this);
-    if (receiver !== null) {
+    if (receiver !== null && !receiver.kind.concatReceiver) {
       throw __rhinoLocalListUnmeasured(receiver.kind, "Array.prototype.concat.call(v, …)");
     }
     var args = [];
@@ -910,12 +912,9 @@ function __rhinoLocalListUnmeasured(kind, call) {
     var row;
     for (k = 0; k < arguments.length; k += 1) {
       row = __rhinoLocalListRow(arguments[k]);
-      if (row !== null && !row.kind.concat) {
-        throw __rhinoLocalListUnmeasured(row.kind, "[].concat(v)");
-      }
       args[k] = row === null ? arguments[k] : original.call([], row.items);
     }
-    return original.apply(this, args);
+    return original.apply(receiver === null ? this : original.call([], receiver.items), args);
   };
   __rhinoLocalHide(Array.prototype, "concat", concat);
 })();
@@ -923,19 +922,18 @@ function __rhinoLocalListUnmeasured(kind, call) {
 // JSON.stringify with the lists converted where serialisation reaches them.
 // Native stringify does all the walking. With no replacer or a function
 // replacer, the wrapper passes a replacer that runs the author's first (with
-// the real holder as `this`), then turns an openidm list into an array of its
-// elements and faults on a request list (its serialisation was never
-// measured). So `toJSON`, getters and replacer results are seen exactly once
+// the real holder as `this`), then turns a list into an array of its
+// elements. So `toJSON`, getters and replacer results are seen exactly once
 // and in native order, and a value a replacer drops is never judged.
 //
 // An array replacer (a property list) cannot ride alongside a function, so it
 // goes to native unchanged, and native applies it to every value exactly as it
 // would anyway. The lists are reached instead through `toJSON`, which native
 // asks of every object value: each list's hidden `toJSON` accessor (above)
-// does the same conversion or fault while the call runs. Not covered: a list
+// does the same conversion while the call runs. Not covered: a list
 // returned by an author's own `toJSON` under a property list. Native asks
 // `toJSON` once per value, so that list is written as an object of the listed
-// keys, unfaulted; catching it would mean reading the property list a second
+// keys; catching it would mean reading the property list a second
 // time, which a getter in it could see. And for the length of such a call a
 // getter that reads `list.toJSON` itself sees a function, where AIC's Java
 // list has no such member.
@@ -943,10 +941,6 @@ function __rhinoLocalJsonList(value) {
   var row = __rhinoLocalListRow(value);
   if (row === null) {
     return value;
-  }
-  if (row.kind.serializeId !== null) {
-    throw __rhinoLocalFault(row.kind.serializeId,
-      "rhino-local: JSON.stringify of " + row.kind.noun + " is unmeasured (AIC hands over a Java list); " + row.kind.serializeHint);
   }
   return row.items.slice();
 }
