@@ -385,9 +385,18 @@ pub enum RelationshipCommand {
     /// later `set` on that key refuse. Remove only: it never adds or edits a
     /// mapping. Replaces the whole document after backing it up locally, and
     /// confirms by reading it back.
+    ///
+    /// With `--empty-entry`, instead remove the empty per-type
+    /// `genericMapping."managed/<object>"` entry that deleting a type (or its
+    /// last mapped property) leaves behind. Only for a type `config/managed`
+    /// no longer declares, and only while the entry maps nothing.
     Repair {
-        /// `<object>.<key>` of the stale mapping.
+        /// `<object>.<key>` of the stale mapping; with `--empty-entry`, the
+        /// deleted `<object>` whose per-type entry to remove.
         field: String,
+        /// Remove `<object>`'s empty per-type entry rather than one mapping.
+        #[arg(long)]
+        empty_entry: bool,
         /// Report the plan; write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -1385,12 +1394,24 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
         } => super::conversion_cli::rollback_map(file.into(), tenant, options).await,
         RelationshipCommand::Repair {
             field,
+            empty_entry,
             dry_run,
             force,
             tenant,
             yes,
             json,
-        } => relationship_repair(field, dry_run, force.operation(), tenant, yes, json).await,
+        } => {
+            relationship_repair(
+                field,
+                empty_entry,
+                dry_run,
+                force.operation(),
+                tenant,
+                yes,
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -2057,23 +2078,41 @@ async fn check_orphans(tenant: &str, object: &str, key: &str, column: &str) -> R
 
 async fn relationship_repair(
     field: String,
+    empty_entry: bool,
     dry_run: bool,
     force: bool,
     tenant: Option<String>,
     yes: bool,
     json: bool,
 ) -> Result<()> {
-    let (object, key) = parse_object_key(&field)?;
     let tenant = tenant_for(tenant)?;
     let managed = api::get_managed(&tenant).await?;
     let repo_ds = api::get_repo_ds(&tenant).await?;
-    let plan = repair::plan(&managed, &repo_ds, &object, &key).map_err(crate::Error::Config)?;
+    let (object, plan) = if empty_entry {
+        if field.contains('.') {
+            return Err(crate::Error::Config(format!(
+                "--empty-entry takes an object name, not {field:?}; it removes the object's \
+                 per-type entry, not one mapping"
+            )));
+        }
+        let plan =
+            repair::plan_remove_entry(&managed, &repo_ds, &field).map_err(crate::Error::Config)?;
+        (field.clone(), plan)
+    } else {
+        let (object, key) = parse_object_key(&field)?;
+        let plan = repair::plan(&managed, &repo_ds, &object, &key).map_err(crate::Error::Config)?;
+        (object, plan)
+    };
     let mapping = match (&plan.mapping.resource_path, &plan.mapping.property_name) {
         (Some(path), Some(through)) => format!("{} of {path} through {through}", plan.mapping.kind),
         (Some(path), None) => format!("{} to {path}", plan.mapping.kind),
         _ => plan.mapping.kind.clone(),
     };
-    eprintln!("repair {field}: remove its config/repo.ds mapping ({mapping})");
+    if empty_entry {
+        eprintln!("repair {field}: remove its empty config/repo.ds per-type entry ({mapping})");
+    } else {
+        eprintln!("repair {field}: remove its config/repo.ds mapping ({mapping})");
+    }
     for note in &plan.notes {
         eprintln!("  note: {note}");
     }
@@ -2084,8 +2123,13 @@ async fn relationship_repair(
         || crate::cli::confirm_destructive(
             "relationship repair",
             &format!(
-                "Remove {field}'s mapping from config/repo.ds? The whole document is replaced; \
-                 the current one is backed up locally first"
+                "Remove {} from config/repo.ds? The whole document is replaced; \
+                 the current one is backed up locally first",
+                if empty_entry {
+                    format!("{field}'s empty per-type entry")
+                } else {
+                    format!("{field}'s mapping")
+                }
             ),
             "--force",
         )?;
@@ -2104,7 +2148,11 @@ async fn relationship_repair(
             }
             repair_readback(&field, &object, &applied)?;
             // No undo entry: the backup above is the way back.
-            eprintln!("removed {field}'s config/repo.ds mapping (confirmed by re-read)");
+            if empty_entry {
+                eprintln!("removed {field}'s per-type config/repo.ds entry (confirmed by re-read)");
+            } else {
+                eprintln!("removed {field}'s config/repo.ds mapping (confirmed by re-read)");
+            }
             Ok(())
         }
     }
@@ -4139,6 +4187,37 @@ mod tests {
             }
             other => panic!("not a managed get: {other:?}"),
         }
+    }
+
+    #[test]
+    fn repair_empty_entry_flag_parses() {
+        let parsed = Cli::try_parse_from([
+            "aic",
+            "managed",
+            "relationship",
+            "repair",
+            "gone",
+            "--empty-entry",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(crate::cli::Command::Managed {
+            command:
+                ManagedCommand::Relationship {
+                    command:
+                        RelationshipCommand::Repair {
+                            field,
+                            empty_entry,
+                            dry_run,
+                            ..
+                        },
+                },
+        }) = parsed.command
+        else {
+            panic!("not a relationship repair")
+        };
+        assert_eq!(field, "gone");
+        assert!(empty_entry && dry_run);
     }
 
     #[test]

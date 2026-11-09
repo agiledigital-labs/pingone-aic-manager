@@ -617,6 +617,7 @@ aic managed relationship capture-links --lower dev --upper uat --output FILE [--
 aic managed relationship restore-links FILE [--tenant uat] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship rollback-map FILE [--tenant dev] [--acknowledge-request-finished] [--dry-run] [--force] [--yes] [--json]
 aic managed relationship repair custom_widget.oldOwner [--dry-run] [--force] [--yes] [--json]
+aic managed relationship repair gone_widget --empty-entry [--dry-run] [--force] [--yes] [--json]
 aic managed relationship snapshot custom_widget.owner [--output FILE]
 aic managed relationship restore FILE [--dry-run] [--yes] [--json]
 aic managed diff custom_widget repo/managed-objects/custom_widget/custom_widget.json [--strict] [--json]
@@ -1092,8 +1093,7 @@ any resource, `internal/…` and `explicitMapping` included (naming it; repair
 a stale managed one first), and an object `config/managed` does not
 declare — the cases not measured. The last mapped property of an object is
 removed like any other, and the object keeps its per-type entry with no
-properties, the state a new per-type entry starts in; the entry itself is never
-removed. `--dry-run` prints the plan and writes
+properties, the state a new per-type entry starts in. `--dry-run` prints the plan and writes
 nothing; otherwise it asks, or takes `--force`, and passes the production
 gate. Immediately before writing it re-reads both documents and refuses if
 `repo.ds` changed at all. It backs the current document up to
@@ -1109,6 +1109,17 @@ only under another section such as `explicitMapping`, which `verify` and the
 write guards read as well, or a key mapped in more than one section. There is no undo
 entry: the backup is the way back (`docs/api/10-managed-objects.md`,
 "Removing a stale mapping").
+
+`relationship repair <object> --empty-entry` removes the empty per-type
+`genericMapping."managed/<object>"` entry that deleting a type
+(`managed object delete` leaves it) or its last mapped property leaves behind.
+It refuses unless the type is **not declared in `config/managed`** and the entry
+maps no property, and it refuses an entry another mapping names as its
+`resourcePath`. An entry for a type that still exists is refused whatever it
+holds: whether that type's records stay readable once the entry goes was not
+measured. It uses the same recheck, local backup, whole-document `PUT` and
+read-back as the mapping removal, with the same `--dry-run`, `--force`, `--yes`
+and `--json`.
 
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the

@@ -810,8 +810,13 @@ reading through `managed/alpha_user` — and an object `config/managed` does
 not declare. An object's last mapped property is removed and its per-type
 entry kept with `properties: {}` (since 2026-11-09): that is the state a newly
 added per-type entry starts in, measured above to keep records readable and
-creatable. Removing the entry itself would change where the object's records
-are looked up and is not done.
+creatable. Removing the entry of a type that still exists would change where
+its records are looked up and is not done. `relationship repair <object>
+--empty-entry` removes the empty entry of a type `config/managed` no longer
+declares (a deleted type), by the same recheck/backup/whole-document `PUT`/
+read-back path; the live removal of four such entries on 2026-11-09 is recorded
+in the dated entry at the end of this file. The verb itself has not been run
+against a tenant.
 Measured 2026-11-09 on a throwaway pair whose ends were each their type's only
 mapping, one end holding 45 records: `delete --remove-mapping --force` removed
 both mappings reverse end first, each confirmed by re-read, leaving both
