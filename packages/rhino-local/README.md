@@ -971,6 +971,7 @@ summarise it afterwards:
 ```sh
 AIC_SCRIPT_TESTER_TIMING=timing.jsonl npx vitest run
 npx aic-script-tester-timing timing.jsonl        # --json for machine output
+npx aic-script-tester-timing --share timing.jsonl  # names replaced by hashes
 ```
 
 Every JVM spawn, pool lease and eval job appends one JSON line. A job row
@@ -979,12 +980,26 @@ carries the bytes written (`lineBytes`), the source text shipped with it
 `transportMs`, and the JVM's own phases under `jvm`: reader decode, setup,
 prelude, preamble (where the seed is parsed) and subject compile and exec,
 library compile and load, harvest, host-call wait, and compile-cache hits and
-misses. Exec phases include the library bodies and host-call waits that ran
-inside them. A phase that threw or timed out still reports its time. `harvestMs`
-is measured only for journey-bridge jobs: an ordinary case's harvest runs at the
-end of the subject script, so its cost (large for a big fixture store) is inside
-`subjectExecMs`. Timing is off unless the variable is set, and it never changes a
-response or a lane comparison. `src/timing.ts` documents every field.
+misses. A phase that threw or timed out still reports its time.
+
+Subject execution breaks down further. `moduleBodyMs` is the time library
+module bodies ran (a body runs when a script first requires it, inside subject
+execution), and `moduleBodies` gives each library its own share, less the
+libraries it required in turn. `harvestMs` is collecting the case's result.
+`subjectOwnMs` is what is left: the script's own work and the bindings it
+called. `libraryLoaderExecMs` is only creating each module's loader function,
+not running its body.
+
+`outcome` is the script's own outcome, so a script that caught a harness
+refusal reads `"ok"`; `emulationFault` says whether the run failed the fault
+audit, and `faultIds` names the faults.
+
+The summary adds a table of module-body time per library and of JVM time per
+test source. `--share` replaces every library id and source name with a salted
+hash, so the summary can be sent to someone outside the project; the salt is
+random unless you pass `--salt=<text>`, which makes two summaries comparable.
+Timing is off unless the variable is set, and it never changes a response or a
+lane comparison. `src/timing.ts` documents every field.
 
 ### Vitest settings for a fast suite
 

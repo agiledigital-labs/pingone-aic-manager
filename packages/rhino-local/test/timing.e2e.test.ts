@@ -10,7 +10,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../src/bindings/run.ts";
 import { RhinoRunner } from "../src/runner.ts";
 import { TIMING_ENV } from "../src/timing.ts";
-import { expectEmulationFailure } from "../src/harness/emulation-guard.ts";
+import type { Case, Given } from "../src/case/types.ts";
+import { expectEmulationFailure, expectHarnessFault } from "../src/harness/emulation-guard.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "rl-timing-"));
 const kase = {
@@ -116,6 +117,82 @@ describe("phase timing", () => {
     const jvm = rows(file).find((r) => r.type === "job")?.jvm as Record<string, number>;
     expect(jvm).toMatchObject({ libraryLoads: 1 });
     expect(jvm.libraryCompileMs).toBeGreaterThanOrEqual(0);
+  }, 60_000);
+
+  it("brackets module bodies (self time per library) and the harvest inside subject execution", async () => {
+    const file = join(dir, "bodies.jsonl");
+    process.env[TIMING_ENV] = file;
+    const busy = (ms: number): string => `var t = Date.now(); while (Date.now() - t < ${ms}) {}`;
+    const runner = await RhinoRunner.spawn({ lane: "host" });
+    try {
+      await runCase(runner, {
+        name: "bodies",
+        outcomes: ["true"],
+        script: `var outer = require("lib-outer"); require("lib-outer"); ${busy(20)} if (outer.inner === 3) action.goTo("true");`,
+        given: { libraries: {
+          "lib-outer": `${busy(30)} exports.inner = require("lib-inner").value;`,
+          "lib-inner": `${busy(40)} exports.value = 3;`,
+        } },
+        expect: { outcome: "true" },
+      });
+    } finally {
+      await runner.close();
+    }
+    const job = rows(file).find((r) => r.type === "job");
+    expect(job).toMatchObject({ outcome: "ok", emulationFault: false });
+    expect(job?.faultIds).toBeUndefined();
+    const jvm = job?.jvm as Record<string, number> & { moduleBodies: Record<string, number> };
+    // Each body ran once (the second require is the cache); the inner nests in the outer.
+    expect(Object.keys(jvm.moduleBodies)).toEqual(["lib-inner", "lib-outer"]);
+    expect(jvm.moduleBodyRuns).toBe(2);
+    expect(jvm.moduleBodies["lib-inner"]).toBeGreaterThanOrEqual(35);
+    // Self time: the outer's 30 ms, not its 70 ms including the inner.
+    expect(jvm.moduleBodies["lib-outer"]).toBeGreaterThanOrEqual(25);
+    expect(jvm.moduleBodies["lib-outer"]).toBeLessThan(60);
+    // Outermost only: the inner is not counted twice.
+    expect(jvm.moduleBodyMs).toBeCloseTo((jvm.moduleBodies["lib-inner"] ?? 0) + (jvm.moduleBodies["lib-outer"] ?? 0), 1);
+    expect(jvm.harvestRuns).toBe(1);
+    expect(jvm.harvestMs).toBeGreaterThan(0);
+    // What is left of subject execution is the subject's own 20 ms busy-wait.
+    expect(jvm.subjectOwnMs).toBeGreaterThanOrEqual(15);
+    expect(jvm.subjectOwnMs).toBeCloseTo((jvm.subjectExecMs ?? 0) - (jvm.moduleBodyMs ?? 0) - (jvm.harvestMs ?? 0), 1);
+  }, 60_000);
+
+  it("flags a run whose script caught a harness fault, though its outcome is ok", async () => {
+    const file = join(dir, "fault.jsonl");
+    process.env[TIMING_ENV] = file;
+    const runner = await RhinoRunner.spawn({ lane: "host" });
+    try {
+      expectHarnessFault("openidm-failure-detail");
+      const given: Given = { managed: { "managed/widget": [] },
+        openidmFailures: [{ match: { method: "delete", resource: "managed/widget/w1", ordinal: 1 }, reply: { code: 404 } }] };
+      await runCase(runner, {
+        name: "faulted",
+        outcomes: ["true"],
+        script: 'try { openidm.delete("managed/widget/w1", null); } catch (e) { try { e.javaException.getDetail(); } catch (x) {} } action.goTo("true");',
+        given,
+        expect: { outcome: "true" },
+      }).catch(() => undefined);
+    } finally {
+      await runner.close();
+    }
+    const job = rows(file).find((r) => r.type === "job");
+    expect(job).toMatchObject({ outcome: "ok", emulationFault: true, faultIds: ["openidm-failure-detail"] });
+  }, 60_000);
+
+  it("gives an untimed job no timer: the runtime's bracket is null", async () => {
+    delete process.env[TIMING_ENV];
+    const runner = await RhinoRunner.spawn({ lane: "host" });
+    try {
+      const probe: Case = { name: "untimed", outcomes: ["true"], script: 'if (__rhinoLocalPhase === null && typeof __rhinoLocalTimer === "undefined") action.goTo("true");', given: {}, expect: { outcome: "true" } };
+      expect((await runCase(runner, probe)).effects.outcome).toBe("true");
+      process.env[TIMING_ENV] = join(dir, "timer.jsonl");
+      // Timed, the bracket is captured, and the hook itself is still gone before the script runs.
+      const timed = { ...probe, script: 'if (__rhinoLocalPhase !== null && typeof __rhinoLocalTimer === "undefined") action.goTo("true");' };
+      expect((await runCase(runner, timed)).effects.outcome).toBe("true");
+    } finally {
+      await runner.close();
+    }
   }, 60_000);
 
   it("leaves the response unchanged and writes nothing when off", async () => {
