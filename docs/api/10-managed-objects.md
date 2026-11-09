@@ -2211,6 +2211,16 @@ on create, or when actually rotating it.
   were not read after), a restart of IDM, or a larger collection. All records
   and both types were then deleted.
 
+- Date: 2026-11-10 — console-marker delete guard, sandbox, throwaway
+  `zzemuA_mark` (`object create`, no relationships). The whole `config/managed`
+  document was backed up, then re-sent with `"type": "Managed Object"` added to
+  that one object (`PUT` 200; re-read equal to the document sent). `aic managed
+  object delete zzemuA_mark --yes` refused, exit 1, naming the marker and
+  `--force`, and the object stayed in the config. With `--force --yes` it was
+  deleted, and the rest of `config/managed` equalled the backup minus that
+  object, key for key. The marker write went by `curl` rather than an `aic`
+  verb, since no `aic` verb sets it.
+
 - Date: 2026-11-09 — mapping activation and last-mapping removal, sandbox,
   throwaway `zzemu_act_a`–`zzemu_act_d` built with `aic managed object create`
   and `relationship set --forward one --reverse one`. Creates spanning
