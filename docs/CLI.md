@@ -1113,11 +1113,9 @@ entry: the backup is the way back (`docs/api/10-managed-objects.md`,
 `relationship repair <object> --empty-entry` removes the empty per-type
 `genericMapping."managed/<object>"` entry that deleting a type
 (`managed object delete` leaves it) or its last mapped property leaves behind.
-It refuses unless the type is **not declared in `config/managed`** and the entry
-maps no property, and it refuses an entry another mapping names as its
-`resourcePath`. An entry for a type that still exists is refused whatever it
-holds: whether that type's records stay readable once the entry goes was not
-measured. It uses the same recheck, local backup, whole-document `PUT` and
+It works for a deleted type and for one that still exists (measured 2026-11-10:
+records stayed readable and creatable, `docs/api/10`), and refuses an entry that
+still maps a property or that another mapping names as its `resourcePath`. It uses the same recheck, local backup, whole-document `PUT` and
 read-back as the mapping removal, with the same `--dry-run`, `--force`, `--yes`
 and `--json`.
 

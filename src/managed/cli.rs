@@ -388,11 +388,11 @@ pub enum RelationshipCommand {
     ///
     /// With `--empty-entry`, instead remove the empty per-type
     /// `genericMapping."managed/<object>"` entry that deleting a type (or its
-    /// last mapped property) leaves behind. Only for a type `config/managed`
-    /// no longer declares, and only while the entry maps nothing.
+    /// last mapped property) leaves behind, for a deleted or an existing
+    /// type. Only while the entry maps nothing and no mapping names the type.
     Repair {
         /// `<object>.<key>` of the stale mapping; with `--empty-entry`, the
-        /// deleted `<object>` whose per-type entry to remove.
+        /// `<object>` whose empty per-type entry to remove.
         field: String,
         /// Remove `<object>`'s empty per-type entry rather than one mapping.
         #[arg(long)]
