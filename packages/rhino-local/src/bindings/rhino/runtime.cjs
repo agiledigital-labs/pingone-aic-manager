@@ -343,7 +343,7 @@ function __rhinoLocalAdapterException(text, code, detail) {
       throw __rhinoLocalFault("openidm-failure-detail",
         "rhino-local: javaException.getDetail(): this failure's detail is unknown; give the openidmFailures stub a reply.detail (null for a 404 or 400)");
     }
-    return __rhinoLocalDetailValue(detail.value);
+    return __rhinoLocalDetailValue(detail.value, []);
   });
   __rhinoLocalHide(adapter, "toString", function () { return error.message; });
   __rhinoLocalHide(error, "javaException", adapter);
@@ -356,8 +356,18 @@ function __rhinoLocalAdapterException(text, code, detail) {
 // again), isNull(), getObject() (the plain value), String() (CREST's one-line
 // form; the same JsonValue.toString the IDM lane measured, with its limits),
 // JSON.stringify (that string, quoted), and Object.keys/for...in (the
-// member list below, in that order). Every other member is the class's own
-// and unmeasured: reading one faults.
+// member list below, in that order).
+//
+// Measured 2026-11-10 (openidm-detail-asstring probe): get(i) by index,
+// asString(), and presence. asString() is the JS string for a string value
+// and null for a null one (a null detail, a missing key, an index past the
+// end); on a boolean, object or array it throws AIC's catchable
+// "<pointer>: Expecting a java.lang.String but got <class>", where the
+// pointer starts at /detail. `typeof d.<member>` is "function" and
+// `<member> in d` is true for every method below, so a script's feature
+// detection answers as on AIC; only CALLING an unmeasured member (or using
+// it as a value beyond typeof, `in` and comparison) faults. `d.class` is the
+// class shutter's refusal.
 var __rhinoLocalDetailMembers = ("getClass,equalTo,setObject,put,asList,required,patch,number,putPermissive,iterator," +
   "putIfNotNull,isNumber,merge,asString,defined,isNotNull,add,getObject,pointer,spliterator,notNull,asMapOfList," +
   "asAsync,diff,collection,list,isMap,asInteger,asLong,contains,as,size,null,asDouble,asBoolean,object,wait,string," +
@@ -367,6 +377,35 @@ var __rhinoLocalDetailMembers = ("getClass,equalTo,setObject,put,asList,required
 
 function __rhinoLocalDetailUnmeasured(what) {
   return __rhinoLocalFault("openidm-failure-detail", "rhino-local: javaException.getDetail()" + what + " is unmeasured");
+}
+
+// CREST's JsonPointer for an error message: /detail, then each key or index.
+// A segment JSON Pointer would escape (`/`, `~`) was never seen, so it faults.
+function __rhinoLocalDetailPointer(path) {
+  var i;
+  var out = "/detail";
+  for (i = 0; i < path.length; i += 1) {
+    if (/[\/~]/.test(String(path[i]))) {
+      throw __rhinoLocalDetailUnmeasured(": a pointer segment needing an escape (" + JSON.stringify(String(path[i])) + ")");
+    }
+    out += "/" + path[i];
+  }
+  return out;
+}
+
+// The Java class CREST names for a value in "Expecting a java.lang.String but
+// got …" (measured for these three; a number's class was not).
+function __rhinoLocalDetailClass(value) {
+  if (typeof value === "boolean") {
+    return "java.lang.Boolean";
+  }
+  if (Array.isArray(value)) {
+    return "java.util.ArrayList";
+  }
+  if (value !== null && typeof value === "object") {
+    return "java.util.LinkedHashMap";
+  }
+  return null;
 }
 
 function __rhinoLocalDetailString(value) {
@@ -416,17 +455,58 @@ function __rhinoLocalDetailNoArgs(name, args) {
   }
 }
 
-function __rhinoLocalDetailValue(value) {
+function __rhinoLocalDetailValue(value, path) {
   var jv = {};
+  var child = function (key, next) {
+    return __rhinoLocalDetailValue(next, path.concat([key]));
+  };
+  var asString = function () {
+    if (arguments.length === 1 && typeof arguments[0] === "number") {
+      throw __rhinoLocalInternalError("Can't find method org.forgerock.json.JsonValue.asString(number).");
+    }
+    __rhinoLocalDetailNoArgs("asString", arguments);
+    if (value === null || typeof value === "string") {
+      return value;
+    }
+    var cls = __rhinoLocalDetailClass(value);
+    if (cls === null) {
+      throw __rhinoLocalDetailUnmeasured(".asString() on a " + typeof value);
+    }
+    throw __rhinoLocalInternalError(__rhinoLocalDetailPointer(path) + ": Expecting a java.lang.String but got " + cls);
+  };
+  __rhinoLocalHide(asString, "toString", function () {
+    return "function asString() {/*\njava.lang.String asString()\n*/}\n";
+  });
   var measured = {
     get: function (key) {
-      if (arguments.length !== 1 || typeof key !== "string") {
+      if (arguments.length !== 1 || (typeof key !== "string" && typeof key !== "number")) {
         throw __rhinoLocalDetailUnmeasured(".get(" + __rhinoLocalScriptSignature(arguments) + ")");
       }
-      if (value !== null && (typeof value !== "object" || Array.isArray(value))) {
-        throw __rhinoLocalDetailUnmeasured(".get on a non-object value");
+      if (value === null) {
+        return child(key, null);
       }
-      return __rhinoLocalDetailValue(value !== null && Object.prototype.hasOwnProperty.call(value, key) ? value[key] : null);
+      if (typeof key === "string") {
+        if (Array.isArray(value)) {
+          return child(key, null);
+        }
+        if (typeof value !== "object") {
+          throw __rhinoLocalDetailUnmeasured(".get(string) on a " + typeof value + " value");
+        }
+        return child(key, Object.prototype.hasOwnProperty.call(value, key) ? value[key] : null);
+      }
+      if (Math.floor(key) !== key) {
+        throw __rhinoLocalDetailUnmeasured(".get(" + key + ")");
+      }
+      if (Array.isArray(value)) {
+        if (key < 0) {
+          throw __rhinoLocalInternalError(__rhinoLocalDetailPointer(path) + ": List index out of range: " + key);
+        }
+        return child(key, key < value.length ? value[key] : null);
+      }
+      if (typeof value === "object" || typeof value === "string") {
+        return child(key, null);
+      }
+      throw __rhinoLocalDetailUnmeasured(".get(number) on a " + typeof value + " value");
     },
     isNull: function () {
       __rhinoLocalDetailNoArgs("isNull", arguments);
@@ -440,20 +520,23 @@ function __rhinoLocalDetailValue(value) {
       __rhinoLocalDetailNoArgs("toString", arguments);
       return __rhinoLocalDetailString(value);
     },
+    asString: asString,
   };
   var i;
   for (i = 0; i < __rhinoLocalDetailMembers.length; i += 1) {
     (function (name) {
       if (Object.prototype.hasOwnProperty.call(measured, name)) {
         Object.defineProperty(jv, name, { enumerable: true, configurable: true, writable: true, value: measured[name] });
-      } else {
+      } else if (name === "class") {
         Object.defineProperty(jv, name, {
           enumerable: true,
           configurable: true,
           get: function () {
-            throw __rhinoLocalDetailUnmeasured("." + name);
+            throw __rhinoLocalShutterError("java.lang.Class");
           },
         });
+      } else {
+        Object.defineProperty(jv, name, { enumerable: true, configurable: true, writable: true, value: __rhinoLocalDetailStub(name) });
       }
     })(__rhinoLocalDetailMembers[i]);
   }
@@ -461,6 +544,18 @@ function __rhinoLocalDetailValue(value) {
     return __rhinoLocalDetailString(value);
   });
   return jv;
+}
+
+// An unmeasured JsonValue method: present, so typeof and `in` answer as on
+// AIC (measured), but calling it, or rendering it as a string, faults.
+function __rhinoLocalDetailStub(name) {
+  var stub = function () {
+    throw __rhinoLocalDetailUnmeasured("." + name + "(" + __rhinoLocalScriptSignature(arguments) + ")");
+  };
+  __rhinoLocalHide(stub, "toString", function () {
+    throw __rhinoLocalDetailUnmeasured("." + name + " as a string");
+  });
+  return stub;
 }
 
 // Where each method's accepted argument count comes from (E19, decision B).

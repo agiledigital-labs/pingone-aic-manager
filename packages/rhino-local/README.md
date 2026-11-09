@@ -762,12 +762,19 @@ outside CREST's table faults, `openidm-failure-reason`). The message text
 is the harness's own unless the stub gives `message`, which replaces the text
 after `ResourceExceptionScriptAdapter: `; AIC's carries the reason phrase or
 IDM's own words, not the number. `detail` is what `getDetail()` returns, as
-AIC's CREST `JsonValue` (measured 2026-11-08, docs/api/12): `get(key)`,
-`isNull()`, `getObject()` and its one-line string form. A policy failure's
-detail is its `{ result: false, failedPolicyRequirements: [...] }` object; a
-404 or 400 from `openidm` carries `null`. Without `detail`, calling
-`getDetail()` is the fault `openidm-failure-detail`, as is any `JsonValue`
-member the probe did not exercise. These
+AIC's CREST `JsonValue` (measured 2026-11-08 and 2026-11-10, docs/api/12):
+`get(key)`, `get(index)`, `isNull()`, `getObject()`, `asString()` and its
+one-line string form. `asString()` is the string, or `null` for a null value
+(a null detail, a missing key, an index past the end), and on a boolean,
+object or array throws AIC's catchable `<pointer>: Expecting a
+java.lang.String but got <class>`. A policy failure's detail is its
+`{ result: false, failedPolicyRequirements: [...] }` object; a 404 or 400 from
+`openidm` carries `null`, so `getDetail().get("x").asString()` is `null`
+there. `typeof detail.<member>` is `"function"` and `"<member>" in detail` is
+`true` for every `JsonValue` method, as measured, so feature detection works;
+calling a member the probes did not exercise (or rendering it as a string) is
+the fault `openidm-failure-detail`, as is calling `getDetail()` on a stub
+without `detail`. These
 stubs are AIC-ineligible. An AIC-enabled file lease refuses such a case unless
 its `aic.unsupported` is `"skip"`, which keeps the local verdict and reports
 the observation gap.

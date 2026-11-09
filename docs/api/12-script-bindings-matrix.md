@@ -1148,6 +1148,30 @@ only for the null detail, `JSON.stringify(d.getObject())` is plain JSON, and
 Java members, not the detail's fields. The 404's message names the directory
 entry it looked for, so it carries the record's id.
 
+### `getDetail()` `asString()`, `get(index)` and member presence — next-gen (verified 2026-11-10)
+
+`fixtures/openidm-detail-asstring.script.js` failed the same policy create
+(403) and missing delete (404) from a next-gen scripted decision (nothing was
+created) and read their `getDetail()` `JsonValue`s:
+
+| Read                                                                      | Result |
+| ------------------------------------------------------------------------- | ------ |
+| `d.get("failedPolicyRequirements").get(0).get("property").asString()`     | `"frIndexedInteger1"`, a JS `string` (`===` a literal is `true`) |
+| `asString()` on the 404's null detail, on `.get("result")` of it, and on a missing key of the 403's | `null` |
+| `asString()` on `get("result")` (a boolean)                               | `InternalError: /detail/result: Expecting a java.lang.String but got java.lang.Boolean` |
+| `asString()` on the detail, `failedPolicyRequirements`, its element `0`, and that element's `policyRequirements` | the same, with `/detail`, `/detail/failedPolicyRequirements`, `…/0`, `…/0/policyRequirements` and `java.util.LinkedHashMap` / `java.util.ArrayList` |
+| `asString(1)`                                                             | `InternalError: Can't find method org.forgerock.json.JsonValue.asString(number).` |
+| `String(d.asString)`                                                      | `function asString() {/*\njava.lang.String asString()\n*/}\n` |
+| `get(5)` past the end of an array, `get("property")` on an array, `get(0)` on an object or a string, `get(…)` on a null value, a missing key | a `JsonValue` whose `isNull()` is `true` and `String` is `null` (never a JS `null`) |
+| `get(-1)` on an array                                                     | `InternalError: /detail/failedPolicyRequirements: List index out of range: -1` |
+| `typeof d.<m>` / `"<m>" in d` for `asString`, `isString`, `asBoolean`, `asInteger`, `asList`, `asMap`, `isNull`, `get`, `size`, `keys`, `expect`, `defaultTo`, `required` | `"function"` / `true`, on the object, null and string values alike |
+| `typeof d.class`                                                          | the class shutter's `InternalError: Access to Java class "java.lang.Class" is prohibited.`; `"class" in d` is `true` |
+| `typeof d.zzNotAMember` / `in`                                            | `"undefined"` / `false` |
+
+So a script can feature-detect a `JsonValue` method with `typeof`, and
+`asString()` is a safe read of an optional string field: `null` when absent,
+a catchable error when the field is not a string.
+
 ### `openidm.read` fields on a has-many relationship — next-gen (verified 2026-11-08)
 
 `fixtures/array-relationship-fields.script.js`, run through `run-journey.sh`,
