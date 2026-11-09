@@ -31,6 +31,33 @@ describe("summarizeTiming", () => {
       .toEqual({ jobs: 2, spawns: 1, borrows: 2, publishes: 1, shipped: 1 });
     expect(s.fields.find((r) => r.field === "publish.publishMs")).toMatchObject({ n: 1, sum: 0.5 });
     expect(s.fields.find((r) => r.field === "spawn.spawnToReadyMs")).toMatchObject({ n: 1, sum: 400 });
-    expect(formatTimingSummary(s)).toMatch(/^jobs 2 \(1 shipped source text\), spawns 1, borrows 2, publishes 1\n/);
+    expect(formatTimingSummary(s)).toMatch(/^jobs 2 \(1 shipped source text, 0 with an emulation fault\), spawns 1, borrows 2, publishes 1\n/);
+  });
+
+  it("tallies faulted jobs, library self time and per-source time; --share hashes every name", () => {
+    const text = [
+      job(10, { sourceName: "secret-script.js", emulationFault: true, faultIds: ["x"], jvm: { totalMs: 8, moduleBodies: { "client-lib": 3, other: 1 } } }),
+      job(10, { sourceName: "secret-script.js", emulationFault: false, jvm: { totalMs: 4, moduleBodies: { "client-lib": 2 } } }),
+      job(10, { sourceName: "plain.js", jvm: { totalMs: 1 } }),
+    ].join("\n");
+    const s = summarizeTiming(text);
+    expect(s.faultedJobs).toBe(1);
+    expect(s.libraries.map((r) => [r.field, r.n, r.sum])).toEqual([["client-lib", 2, 5], ["other", 1, 1]]);
+    expect(s.sources.map((r) => [r.field, r.n, r.sum])).toEqual([["secret-script.js", 2, 12], ["plain.js", 1, 1]]);
+    // The nested map is not a numeric field.
+    expect(s.fields.some((r) => r.field.startsWith("jvm.moduleBodies"))).toBe(false);
+    expect(formatTimingSummary(s)).toMatch(/1 with an emulation fault/);
+
+    const shared = summarizeTiming(text, { share: {} });
+    const out = `${JSON.stringify(shared)}\n${formatTimingSummary(shared)}`;
+    for (const name of ["secret-script", "client-lib", "other", "plain"]) expect(out).not.toContain(name);
+    expect(shared.libraries.map((r) => [r.n, r.sum])).toEqual([[2, 5], [1, 1]]);
+    expect(shared.libraries[0]?.field).toMatch(/^library-[0-9a-f]{12}$/);
+    expect(shared.sources[0]?.field).toMatch(/^source-[0-9a-f]{12}$/);
+    // A random salt by default: a guessable name cannot be looked up across summaries.
+    expect(summarizeTiming(text, { share: {} }).libraries[0]?.field).not.toBe(shared.libraries[0]?.field);
+    // A given salt makes two summaries comparable.
+    expect(summarizeTiming(text, { share: { salt: "s" } }).libraries[0]?.field)
+      .toBe(summarizeTiming(text, { share: { salt: "s" } }).libraries[0]?.field);
   });
 });

@@ -4757,6 +4757,25 @@ JavaImporter = function () {
   return wrapper;
 };
 
+// Opt-in phase timing (AIC_SCRIPT_TESTER_TIMING): the runner defines
+// __rhinoLocalTimer for the prelude of a timed job only (java/PhaseTimer.java)
+// and deletes it before the script runs. Untimed, this is null and a bracket
+// costs one comparison.
+var __rhinoLocalPhase = (function (timer) {
+  if (timer === null) {
+    return null;
+  }
+  var phase = {
+    begin: function (name, label) {
+      return timer("begin", name, label);
+    },
+    end: function (depth) {
+      timer("end", depth);
+    },
+  };
+  return typeof Object.freeze === "function" ? Object.freeze(phase) : phase;
+})(typeof __rhinoLocalTimer === "function" ? __rhinoLocalTimer : null);
+
 // The runner defines __rhinoLocalLibraries for the preamble only
 // (java/LibraryHost.java) and deletes it before the script runs: it answers a
 // declared id with the module's loader, evaluated in this case's scope from a
@@ -4784,7 +4803,14 @@ var __rhinoLocalLoadLibrary = (function (host) {
         "(function (require, exports, module) {\n" + String(__rhinoLocal.libraries[id]) + "\n})"
       );
     }
-    loader(require, exports, module);
+    var timed = __rhinoLocalPhase === null ? null : __rhinoLocalPhase.begin("moduleBody", id);
+    try {
+      loader(require, exports, module);
+    } finally {
+      if (timed !== null) {
+        __rhinoLocalPhase.end(timed);
+      }
+    }
     __rhinoLocal.requireCache[id] = module.exports;
     return module.exports;
   };
@@ -5173,6 +5199,18 @@ function __rhinoLocalSeed(given) {
 }
 
 function __rhinoLocalHarvest() {
+  if (__rhinoLocalPhase === null) {
+    return __rhinoLocalHarvestNow();
+  }
+  var timed = __rhinoLocalPhase.begin("harvest", null);
+  try {
+    return __rhinoLocalHarvestNow();
+  } finally {
+    __rhinoLocalPhase.end(timed);
+  }
+}
+
+function __rhinoLocalHarvestNow() {
   if (__rhinoLocal.faults.length > 0) {
     // The wording answers for every fault, not only the first one named
     // (round-3 P3-5): a case can hit a gap and a script defect together.
