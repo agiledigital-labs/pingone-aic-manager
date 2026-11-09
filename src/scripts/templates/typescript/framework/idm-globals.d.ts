@@ -125,6 +125,12 @@ declare global {
     ? P
     : never;
 
+  // The parents named by a literal child path only. A widened field list
+  // (`ManagedField<T>[]`) names every key as a parent with an open path, and
+  // must not drop the declared members `*` brings in.
+  type LiteralPathParentOf<F extends string> =
+    F extends `${infer P}/${infer R}` ? (string extends R ? never : P) : never;
+
   /**
    * `_meta` is a relationship in its own right (to `managed/<realm>usermeta`),
    * so asking for it adds an expansion rather than a declared property.
@@ -143,8 +149,18 @@ declare global {
    * against a user with no manager, which every gate had passed.
    */
   type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]
-    ? RelationshipExpansion[]
+    ? ReadList<RelationshipExpansion>
     : RelationshipExpansion | null;
+
+  // The list type of a query result and a has-many read: an array on IDM (the
+  // AM workspace's measured Java list is not IDM's, which is unmeasured).
+  type ReadList<T> = T[];
+
+  // A selected has-many relationship (an array of references) is a `ReadList`
+  // too; every other value keeps its declared type.
+  type ReadValue<V> = V extends readonly { _ref: string }[]
+    ? ReadList<V[number]>
+    : V;
 
   /**
    * A requested member as the store actually returns it: the key is ALWAYS
@@ -158,10 +174,21 @@ declare global {
    * key might be missing, and it kept the value non-null, which is the shape that
    * cost a live 500 on `manager`.
    */
+  // `*` returns every member as stored, except that a relationship also named
+  // on its own is the same `ReadList` it is without `*`. Homomorphic, so an
+  // optional member stays optional: `*` does not turn absent into null. A
+  // member with a child selector is left to `Projected`'s expansion, rather
+  // than intersected with it, so the stored array's methods do not survive.
+  type WildcardMembers<T, F extends string> = {
+    [K in keyof T as K extends LiteralPathParentOf<F> ? never : K]: K extends F
+      ? ReadValue<T[K]>
+      : T[K];
+  };
+
   type SelectedMembers<T, F extends string> = {
     [K in Extract<F, keyof T>]-?: undefined extends T[K]
-      ? NonNullable<T[K]> | null
-      : T[K];
+      ? ReadValue<NonNullable<T[K]>> | null
+      : ReadValue<T[K]>;
   };
 
   /**
@@ -182,7 +209,7 @@ declare global {
   type Projected<T, F extends string> = string extends F
     ? StoredRecord<T>
     : StoredRecord<
-        ("*" extends F ? T : SelectedMembers<T, F>) & {
+        ("*" extends F ? WildcardMembers<T, F> : SelectedMembers<T, F>) & {
           [K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;
         } & MetaMemberOf<F>
       >;

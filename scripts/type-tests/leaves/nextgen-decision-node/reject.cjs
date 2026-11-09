@@ -92,6 +92,32 @@ if (qrow) {
   qrow.mail; // expect: TS2339 — not selected, so not on the projected row
 }
 
+// A query `result`, a has-many read and a request value list are Java lists:
+// array methods throw `Cannot find function` on AIC (measured 2026-11-08).
+qrows.result.map(function (r) { return r._id; }); // expect: TS2339 — result is a Java list
+var rolesRead = openidm.read("managed/__aic_fixture_user/alice", null, ["authzRoles"]);
+if (rolesRead && rolesRead.authzRoles) {
+  rolesRead.authzRoles.some(function () { return true; }); // expect: TS2339 — a has-many read is a Java list
+}
+var starRead = openidm.read("managed/__aic_fixture_user/alice", null, ["authzRoles", "*"]);
+if (starRead && starRead.authzRoles) {
+  starRead.authzRoles.map(function (r) { return r; }); // expect: TS2339 — named beside `*`, still a Java list
+}
+var rolesExp = openidm.read("managed/__aic_fixture_user/alice", null, ["authzRoles/name"]);
+if (rolesExp) {
+  rolesExp.authzRoles.filter(function () { return true; }); // expect: TS2339 — expanded has-many is a Java list
+}
+var qParam = requestParameters.get("q");
+if (qParam) {
+  qParam.includes("x"); // expect: TS2339 — a request value list has no includes
+  [].concat(qParam); // expect: TS2769 — concat of a request list is unmeasured
+  [0].concat(qrows.result, qParam); // expect: TS2769 — a request list among several is still unmeasured
+}
+var starChild = openidm.read("managed/__aic_fixture_user/alice", null, ["*", "authzRoles/name"]);
+if (starChild && starChild.authzRoles) {
+  starChild.authzRoles.map(function (r) { return r; }); // expect: TS2339 — expanded beside `*`, still a Java list
+}
+
 // The discriminating half: a single-valued expansion on a QUERY row is
 // `expansion | null`, exactly as on a read. A `query` that merely narrowed
 // would leave `manager` absent and report TS2339 here instead.

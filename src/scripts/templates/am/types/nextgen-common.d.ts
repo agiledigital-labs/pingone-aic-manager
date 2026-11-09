@@ -128,7 +128,7 @@ type Patch =
     };
 
 type QueryResponse = {
-  result: Array<{ _id: string; _rev: string } & Record<string, any>>;
+  result: OpenidmJavaList<{ _id: string; _rev: string } & Record<string, any>>;
   resultCount: number;
   pagedResultsCookie: string | null;
   totalPagedResultsPolicy: string;
@@ -154,8 +154,16 @@ type ManagedField<T> =
 // What `openidm.query` hands back. `remainingPagedResults` was never present on
 // an observed script-side query result (verified 2026-08-17 from an IDM endpoint;
 // the same binding serves next-gen decision scripts), hence optional.
+//
+// `result` is a Java list, not a JS array (measured 2026-11-08 on a next-gen
+// scripted decision): copy it with `[].concat(q.result)` before `.map`. The
+// projection kernel below is byte-identical in the IDM workspace, so the list
+// type is this per-workspace `ReadList`: IDM's list was not measured and stays
+// an array there.
+type ReadList<T> = OpenidmJavaList<T>;
+
 interface QueryResult<T> {
-  result: T[];
+  result: ReadList<T>;
   resultCount: number;
   pagedResultsCookie: string | null;
   totalPagedResultsPolicy: string;
@@ -224,6 +232,12 @@ type PathParentOf<F extends string> = F extends `${infer P}/${string}`
   ? P
   : never;
 
+// The parents named by a literal child path only. A widened field list
+// (`ManagedField<T>[]`) names every key as a parent with an open path, and
+// must not drop the declared members `*` brings in.
+type LiteralPathParentOf<F extends string> =
+  F extends `${infer P}/${infer R}` ? (string extends R ? never : P) : never;
+
 // `_meta` is a relationship in its own right (to `managed/<realm>usermeta`), so
 // asking for it adds an expansion rather than a declared property.
 type MetaMemberOf<F extends string> = [
@@ -237,9 +251,16 @@ type MetaMemberOf<F extends string> = [
 // multi-valued as an array — `[]` when unset, never `null`. Typing a
 // single-valued one as always present cost a live 500 on the first request
 // against a user with no manager, which every gate had passed.
+// A multi-valued one is a `ReadList`: on AM a Java list (measured 2026-11-08).
 type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]
-  ? RelationshipExpansion[]
+  ? ReadList<RelationshipExpansion>
   : RelationshipExpansion | null;
+
+// A selected has-many relationship (an array of references) is a `ReadList`
+// too; every other value keeps its declared type.
+type ReadValue<V> = V extends readonly { _ref: string }[]
+  ? ReadList<V[number]>
+  : V;
 
 /**
  * A requested member as the store actually returns it: the key is ALWAYS
@@ -253,10 +274,21 @@ type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]
  * key might be missing, and it kept the value non-null, which is the shape that
  * cost a live 500 on `manager`.
  */
+// `*` returns every member as stored, except that a relationship also named
+// on its own is the same `ReadList` it is without `*`. Homomorphic, so an
+// optional member stays optional: `*` does not turn absent into null. A
+// member with a child selector is left to `Projected`'s expansion, rather
+// than intersected with it, so the stored array's methods do not survive.
+type WildcardMembers<T, F extends string> = {
+  [K in keyof T as K extends LiteralPathParentOf<F> ? never : K]: K extends F
+    ? ReadValue<T[K]>
+    : T[K];
+};
+
 type SelectedMembers<T, F extends string> = {
   [K in Extract<F, keyof T>]-?: undefined extends T[K]
-    ? NonNullable<T[K]> | null
-    : T[K];
+    ? ReadValue<NonNullable<T[K]>> | null
+    : ReadValue<T[K]>;
 };
 
 // The record shape a `fields` selector actually yields.
@@ -273,7 +305,7 @@ type SelectedMembers<T, F extends string> = {
 type Projected<T, F extends string> = string extends F
   ? StoredRecord<T>
   : StoredRecord<
-      ("*" extends F ? T : SelectedMembers<T, F>) & {
+      ("*" extends F ? WildcardMembers<T, F> : SelectedMembers<T, F>) & {
         [K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;
       } & MetaMemberOf<F>
     >;
