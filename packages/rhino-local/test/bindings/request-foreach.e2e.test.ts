@@ -157,19 +157,21 @@ describe("request map forEach matches the live capture", () => {
     expect(response.value).toBe('[2,"a","b",2,"b",["a","b"],"[a, b]","[a, b]","[a, b]"]');
   });
 
+  // Measured 2026-11-10 (request-list-concat probe; test/bindings/request-list-concat.e2e.test.ts).
   it.each([
-    ["parameters via get", 'JSON.stringify(requestParameters.get("q"))'],
-    ["parameters via brackets", 'JSON.stringify(requestParameters["q"])'],
-    ["parameters via the forEach callback", "requestParameters.forEach(function (k, v) { JSON.stringify(v); })"],
-    ["headers via get", 'JSON.stringify(requestHeaders.get("x-h"))'],
-    ["a list nested in an object", 'JSON.stringify({ q: requestParameters.get("q") })'],
-  ])("serialising a value list (%s) faults request-list-serialize, even when caught", async (_name, call) => {
-    expectHarnessFault("request-list-serialize");
+    ["parameters via get", 'JSON.stringify(requestParameters.get("q"))', '["a","b"]'],
+    ["parameters via brackets", 'JSON.stringify(requestParameters["q"])', '["a","b"]'],
+    ["parameters via the forEach callback", 'var o = []; requestParameters.forEach(function (k, v) { o.push(JSON.stringify(v)); }); o.join()', '["a","b"]'],
+    ["headers via get", 'JSON.stringify(requestHeaders.get("x-h"))', '["a","b"]'],
+    ["a list nested in an object", 'JSON.stringify({ q: requestParameters.get("q") })', '{"q":["a","b"]}'],
+  ])("serialising a value list (%s) writes a JSON array of its strings", async (_name, call, want) => {
     const response = await runner.eval({
       preamble: mockPreamble({ requestParameters: { q: ["a", "b"] }, requestHeaders: { "X-H": ["a", "b"] } }),
-      source: withHarvest(`try { ${call}; } catch (e) {} finally { 1; }`),
+      source: call,
     });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-serialize"]);
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(response.value).toBe(want);
   });
 
   it("a cookie value still serialises as the string it is", async () => {

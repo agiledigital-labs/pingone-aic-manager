@@ -1,15 +1,14 @@
 /**
- * The JSON.stringify wrapper (runtime.cjs) converts openidm lists and refuses
- * request lists wherever native serialisation reaches them, and otherwise
+ * The JSON.stringify wrapper (runtime.cjs) converts openidm and request lists
+ * wherever native serialisation reaches them, and otherwise
  * leaves serialisation exactly as native does it. List-free scripts run three
  * ways: a bare node:vm context with no runtime (the oracle), the runtime in
  * node:vm, and the runtime on the JVM; all three must agree.
  */
 import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mockPreamble, withHarvest } from "../../src/bindings/preamble.ts";
+import { mockPreamble } from "../../src/bindings/preamble.ts";
 import type { Given } from "../../src/case/types.ts";
-import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { loadBehaviour, sandboxFaults } from "./load-behaviour.ts";
 
@@ -119,6 +118,7 @@ const given = {
 } as Given;
 const QUERY = 'openidm.query("managed/alpha_user", { _queryFilter: "true" }, ["_id"]).result';
 const EMPTY = 'openidm.query("managed/alpha_user", { _queryFilter: "false" }, ["_id"]).result';
+const REQUEST = 'requestParameters.get("x")';
 // Every route by which native serialisation can reach a value: directly, nested, from toJSON, from a getter, from a replacer.
 const routes = (list: string): Array<[string, string]> => [
   ["directly", `JSON.stringify(${list})`],
@@ -138,7 +138,7 @@ const inListGetter = (inner: string) =>
   'var r = ["x"], inner; Object.defineProperty(r, "0", { get: function () { ' +
   `try { inner = ${inner}; } catch (e) { inner = "threw"; } return "x"; } }); JSON.stringify({ x: 1 }, r) + ":" + inner`;
 const nestedInListed: Array<[string, string, string]> = [
-  ["a nested function replacer removes a request list before it is judged",
+  ["a nested function replacer removes a request list before it is converted",
     'var l = requestParameters.get("x"); ' + inListGetter('JSON.stringify({ v: l }, function (k, v) { return k === "v" ? undefined : v; })'),
     '{"x":1}:{}'],
   ["a nested function replacer sees the openidm list itself",
@@ -178,23 +178,20 @@ describe("JSON.stringify of the emulated lists", () => {
     expect(await value(source)).toBe(arrayOf(route, "[]"));
   });
 
-  it.each(routes('requestParameters.get("x")'))("a request list reached %s faults request-list-serialize, even when caught", async (_route, source) => {
-    expectHarnessFault("request-list-serialize");
-    const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(`try { ${source}; } catch (e) {} finally { 1; }`) });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-serialize"]);
+  // Measured 2026-11-10 (request-list-concat probe): a JSON array of the strings by every route.
+  it.each(routes(REQUEST))("a request list reached %s is a JSON array", async (route, source) => {
+    expect(await value(source)).toBe(arrayOf(route, '["a"]'));
   });
 
   it.each(listedRoutes(QUERY))("an openidm list reached %s under a property list is a JSON array of selected records", async (route, source) => {
     expect(await value(source)).toBe(arrayOf(route, '[{"_id":"u1"}]'));
   });
 
-  it.each(listedRoutes('requestParameters.get("x")'))("a request list reached %s under a property list faults request-list-serialize", async (_route, source) => {
-    expectHarnessFault("request-list-serialize");
-    const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(`try { ${source}; } catch (e) {} finally { 1; }`) });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-serialize"]);
+  it.each(listedRoutes(REQUEST))("a request list reached %s under a property list is a JSON array", async (route, source) => {
+    expect(await value(source)).toBe(arrayOf(route, '["a"]'));
   });
 
-  // Disclosed gap (docs/rhino-local-gaps.md, request-list-serialize): native asks
+  // Disclosed gap (docs/rhino-local-gaps.md, request-list-unmeasured): native asks
   // toJSON once per value, so a list an author's toJSON returns is written as an
   // object of the listed keys. Pinned so a change of behaviour is seen.
   it("a list an author's toJSON returns under a property list is not converted", async () => {
@@ -216,11 +213,8 @@ describe("JSON.stringify of the emulated lists", () => {
     expect(await value(source)).toBe(want);
   });
 
-  it("a frozen request list under a property list faults request-list-serialize", async () => {
-    expectHarnessFault("request-list-serialize");
-    const response = await runner.eval({ preamble: mockPreamble(given),
-      source: withHarvest(`var l = requestParameters.get("x"); Object.freeze(l); try { JSON.stringify(l, ["0"]); } catch (e) {} finally { 1; }`) });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-serialize"]);
+  it("a frozen request list under a property list is a JSON array", async () => {
+    expect(await value('var l = requestParameters.get("x"); Object.freeze(l); JSON.stringify(l, ["0"])')).toBe('["a"]');
   });
 
   it("a request list a replacer removes is never judged", async () => {
@@ -260,10 +254,10 @@ describe("JSON.stringify of an openidm list in node:vm", () => {
     expect(sandboxFaults(sandbox)).toEqual([]);
   });
 
-  it.each(routes('requestParameters.get("x")'))("a request list reached %s faults request-list-serialize, even when caught", (_route, source) => {
+  it.each(routes(REQUEST))("a request list reached %s is a JSON array", (route, source) => {
     const sandbox = loadBehaviour(given);
-    vm.runInContext(`try { ${source}; } catch (e) {}`, sandbox);
-    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["request-list-serialize"]);
+    expect(vm.runInContext(source, sandbox)).toBe(arrayOf(route, '["a"]'));
+    expect(sandboxFaults(sandbox)).toEqual([]);
   });
 
   it.each(listedRoutes(QUERY))("an openidm list reached %s under a property list is a JSON array of selected records", (route, source) => {
@@ -272,10 +266,10 @@ describe("JSON.stringify of an openidm list in node:vm", () => {
     expect(sandboxFaults(sandbox)).toEqual([]);
   });
 
-  it.each(listedRoutes('requestParameters.get("x")'))("a request list reached %s under a property list faults request-list-serialize", (_route, source) => {
+  it.each(listedRoutes(REQUEST))("a request list reached %s under a property list is a JSON array", (route, source) => {
     const sandbox = loadBehaviour(given);
-    vm.runInContext(`try { ${source}; } catch (e) {}`, sandbox);
-    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["request-list-serialize"]);
+    expect(vm.runInContext(source, sandbox)).toBe(arrayOf(route, '["a"]'));
+    expect(sandboxFaults(sandbox)).toEqual([]);
   });
 
   it.each(nestedInListed)("%s", (_name, source, want) => {
@@ -290,10 +284,10 @@ describe("JSON.stringify of an openidm list in node:vm", () => {
     expect(sandboxFaults(sandbox)).toEqual([]);
   });
 
-  it("a frozen request list under a property list faults request-list-serialize", () => {
+  it("a frozen request list under a property list is a JSON array", () => {
     const sandbox = loadBehaviour(given);
-    vm.runInContext('var l = requestParameters.get("x"); Object.freeze(l); try { JSON.stringify(l, ["0"]); } catch (e) {}', sandbox);
-    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["request-list-serialize"]);
+    expect(vm.runInContext('var l = requestParameters.get("x"); Object.freeze(l); JSON.stringify(l, ["0"])', sandbox)).toBe('["a"]');
+    expect(sandboxFaults(sandbox)).toEqual([]);
   });
 
   it("an own __proto__ beside a list is kept, and the list is converted", () => {

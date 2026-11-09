@@ -223,15 +223,6 @@ describe("openidm lists match the live capture", () => {
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-list-unmeasured"]);
   });
 
-  it("[].concat of a request value list is unmeasured and faults request-list-unmeasured", async () => {
-    expectHarnessFault("request-list-unmeasured");
-    const response = await runner.eval({
-      preamble: mockPreamble({ requestParameters: { q: ["a", "b"] } }),
-      source: withHarvest('try { [].concat(requestParameters.get("q")); } catch (e) {} finally { 1; }'),
-    });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-unmeasured"]);
-  });
-
   it("Array.prototype.concat with a null or undefined receiver still throws TypeError", async () => {
     expect(await value('var out = []; [null, undefined].forEach(function (r) { try { Array.prototype.concat.call(r, 1); out.push("returned"); } ' +
       'catch (e) { out.push(e instanceof TypeError); } }); JSON.stringify(out)')).toBe("[true,true]");
