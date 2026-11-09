@@ -153,14 +153,48 @@ logger.info("deleted {}", deletedId);
 // typing the parameter as the collection's own element type rejected all of
 // them. The widening has to stay conditional: `any` would take anything.
 //
-// It has to go through `.get(...)`, whose declared return is
-// `JavaArray<JavaString> | null`. Indexing `requestParameters["realm"]` is
-// implicit `any` here (`RequestMap` has no index signature and `noImplicitAny`
-// is false), so an indexed version of this test passes whatever `Lookup<T>`
-// does — it touches the conditional without pinning it.
+// It goes through the ESV list read, whose declared return is
+// `JavaArray<JavaString>` (a real java.util.ArrayList). It used to go through
+// `requestParameters.get(...)`, but a request value list has no `includes`
+// on AIC (measured 2026-11-08), so that row pinned a runtime defect.
+var esvList = systemEnv.getProperty("esv.allowed.realms", "[]", "array");
+if (esvList.contains("alpha")) {
+  logger.info("realm allowed");
+}
+
+// --- Java lists: the measured surface ---------------------------------------
+// A request value list, a query `result` and a has-many read answer `length`,
+// `[i]`, `size()` and `get(i)`, and `[].concat(list)` copies one into a JS
+// array (docs/api/12, 2026-11-08).
 var realmParam = requestParameters.get("realm");
-if (realmParam && realmParam.includes("alpha")) {
-  logger.info("realm param present");
+if (realmParam && realmParam.size() > 0) {
+  logger.info("realm {} of {}", realmParam.get(0), realmParam.length);
+}
+var allRows = openidm.query("managed/__aic_fixture_user", { _queryFilter: "true" }, ["userName"]);
+/** @type {string[]} */
+var allIds = [].concat(allRows.result).map(function (r) { return r._id; });
+logger.info("ids {} {}", allIds.length, allRows.result.size());
+// Several lists, among arrays and values, as the emulator accepts.
+var twice = [allRows.result.get(0)].concat(allRows.result, allRows.result);
+var mixed = [0].concat(allRows.result, [9], allRows.result);
+logger.info("{} {}", twice.length, mixed.length);
+// `*` beside a named relationship: the relationship is the Java list, the
+// rest of the record is as stored; `*` alone leaves the stored array.
+var starRoles = openidm.read("managed/__aic_fixture_user/alice", null, ["*", "authzRoles"]);
+if (starRoles && starRoles.authzRoles) {
+  logger.info("roles {}", starRoles.authzRoles.size());
+}
+var starOnly = openidm.read("managed/__aic_fixture_user/alice", null, ["*"]);
+if (starOnly && starOnly.authzRoles) {
+  logger.info("roles {}", starOnly.authzRoles.map(function (r) { return r._ref; }).join(","));
+}
+var withRoles = openidm.read("managed/__aic_fixture_user/alice", null, ["authzRoles"]);
+if (withRoles && withRoles.authzRoles) {
+  logger.info("roles {}", withRoles.authzRoles.size());
+}
+var starChildRoles = openidm.read("managed/__aic_fixture_user/alice", null, ["*", "authzRoles/name"]);
+if (starChildRoles && starChildRoles.authzRoles) {
+  logger.info("roles {}", starChildRoles.authzRoles.size());
 }
 
 // --- decision-node contract (next-gen) -------------------------------------

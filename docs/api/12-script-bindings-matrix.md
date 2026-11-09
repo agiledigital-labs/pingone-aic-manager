@@ -1861,6 +1861,64 @@ only way to its values is `values().toArray()` or `map[k]`. A key named `get`,
   different tenant value. The corrected probe compares that evidence with
   the local serverinfo seed without printing the value.
 
+### `openidm.query` result and relationship arrays — next-gen (verified 2026-11-08)
+
+`fixtures/openidm-query-result-type.script.js`, run through `test-cycle.sh` on a
+next-gen scripted decision, described `openidm.query("managed/alpha_user",
+{_queryFilter: "true", _pageSize: 2}, ["_id"]).result` (two records), the
+`result` of a query matching nothing, and the empty `roles` of a user read with
+`fields: ["roles"]`. All three answered alike, apart from their length:
+
+| Probe                                  | Result                                                         |
+| -------------------------------------- | -------------------------------------------------------------- |
+| `typeof v` / `Array.isArray(v)`        | `"object"` / `false`                                           |
+| `v.length`, `v.size()`                 | the element count                                              |
+| `typeof v[0]`, `typeof v.get(0)`       | `"object"` (two-record query); `v.get(0)` on an empty list throws `InternalError: Index 0 out of bounds for length 0` |
+| `typeof` `some` / `map` / `filter` / `join` | `"undefined"`; calling `v.some(fn)` throws `TypeError: Cannot find function some` |
+| `typeof v.forEach`                     | `"function"` (not called)                                      |
+| `[].concat(v)`                         | a JS array (`Array.isArray` true) holding every element        |
+| `Array.prototype.slice.call(v).length` | the element count                                              |
+| `for (k in v)`                         | one key per element                                            |
+| `v.getClass()`                         | the shutter's `Access to Java class "java.lang.Class" is prohibited.` |
+
+So a query's `result`, and a has-many relationship array on a read, are Java
+lists, not JS arrays: array methods are absent, and `[].concat(v)` is the
+measured way to get one. A populated relationship array was not probed; that it
+is the same kind of list as the empty one is an inference from the query result.
+`forEach`'s callback arguments were not probed.
+
+A second probe, `fixtures/openidm-query-result-string.script.js` (sandbox,
+2026-11-08), read the same query `result` populated (two records, fields
+`["_id"]`) and empty:
+
+| Probe                                   | Populated (2 records)                                    | Empty                                          |
+| --------------------------------------- | -------------------------------------------------------- | ---------------------------------------------- |
+| `typeof v.toJSON`                       | `"undefined"`                                            | `"undefined"`                                  |
+| `String(v)`, `"" + v`                   | shape only (the probe never emits a populated list's contents): starts `[`, ends `]`, holds `{`, `=` and `_id`, no `":` | `[]` |
+| `JSON.stringify(v)`                     | a JSON array of 2 objects, keys `_id,_rev`               | `[]`                                           |
+| `v.get(2)` / `v.get(-1)`                | `InternalError: Index 2 out of bounds for length 2` / `InternalError: Index -1 out of bounds for length 2` | — |
+| `v.some(fn)` / `v.map(fn)`              | `TypeError: Cannot find function some`                   | `TypeError: Cannot find function some in object [].` / `… map in object [].` |
+| `JSON.stringify(response)`              | —                                                        | `{"totalPagedResults":-1,"result":[],"resultCount":0,"totalPagedResultsPolicy":"NONE","pagedResultsCookie":null}` (one call; see below — the order varies) |
+
+So `JSON.stringify` serialises the list without any `toJSON` member, and the
+`String` form has the shape of Java's `AbstractCollection` / `AbstractMap`
+rendering (`[{_id=…, _rev=…}, …]`), which is also how Rhino words the `Cannot
+find function` message. The `", "` separators are Java's, inferred rather than
+seen; how a number inside a record renders (`Integer` versus `Double`) and the
+order of a record's keys in that form were not probed.
+
+A third probe, `fixtures/openidm-query-response-order.script.js` (sandbox,
+2026-11-09), read the key order of four responses (populated and empty, each
+with and without a field list) three ways:
+
+| Read                               | Order                                                                                   |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `for (k in resp)`, `Object.keys`   | `pagedResultsCookie, totalPagedResultsPolicy, totalPagedResults, resultCount, result` on all four |
+| `JSON.stringify(resp)`             | different between calls: `result` came second, third or fourth, and `resultCount` second or third, with `totalPagedResults` first and `pagedResultsCookie` last each time |
+
+So enumeration order is stable and serialisation order is not; a script or a
+test must not depend on the order of a serialised response.
+
 ### AM script families (folder slugs)
 
 | Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                                                |
