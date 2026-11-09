@@ -1842,3 +1842,17 @@ no activity write: no `DELETE`, no relationship-removed event. `idm-core` in
 the window had no `ERROR` line. Nothing in Ping's relationship-notification
 page describes this. Detail: `pocs/managed-aggregate-cas/RESULTS.md`, "E21
 `cas` repeated".
+
+### Open: removing the empty per-type `repo.ds` entry of an existing type (2026-11-10)
+
+`object delete` leaves a type's `genericMapping."managed/<obj>"` entry behind,
+and `relationship delete --remove-mapping` of a type's last mapped property
+leaves it with `properties: {}`. For a type `config/managed` no longer declares,
+`aic managed relationship repair <object> --empty-entry` removes it. For a type
+that still exists the verb **refuses**: what happens to its records (read by id,
+by query, new creates, after a delay) once the entry is removed was **not
+measured**, so there is no entry in `10-managed-objects.md`'s "Verified against"
+list for it. To close it: on a throwaway type with records and links, remove its
+mapping, then its empty entry through a backed-up whole-document `PUT`, and read
+the records back before, immediately after and ~60 s after. (Not run on
+2026-11-10: no unlocked session was available to the run that wrote this.)
