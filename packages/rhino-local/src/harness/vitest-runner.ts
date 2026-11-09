@@ -1,13 +1,39 @@
 /** Vitest worker transport. All final checks run outside test retry/skip/fails. */
 import { TestRunner, type RunnerTaskResultPack, type RunnerTaskEventPack, type RunnerTestFile, type RunnerTestSuite, type RunnerTask } from "vitest";
 import { recordTiming, since, timingPath } from "../timing.ts";
-import { emulationAudit, emulationAuditDiagnostics, finishEmulationFile, setEmulationFile, attachEmulationAuditTransport, type EmulationAudit } from "../emulation.ts";
+import { emulationAudit, emulationAuditDelta, emulationAuditDiagnostics, emulationAuditWhere, finishEmulationFile, setEmulationFile, attachEmulationAuditTransport, type EmulationAudit } from "../emulation.ts";
 
 // Keep file task handles across worker module graphs/batches, just as the core
 // keeps journal history. A late owned entry can still fail its original file.
 const fileTasksKey = Symbol.for("@agiledigital/pingone-aic-script-tester/vitest-file-tasks-v1");
 const workerGlobal = process as typeof process & { [fileTasksKey]?: Map<string, RunnerTestFile> };
 const fileTasks = workerGlobal[fileTasksKey] ??= new Map<string, RunnerTestFile>();
+
+// Audit entries sent to the main process and not yet acknowledged, by
+// sequence: each later send carries them again, so an entry is dropped only
+// once a send that held it (or a newer version of it) has been answered.
+// Process-wide for the same reason as the file tasks.
+type AuditEntry = EmulationAudit["failures"][number];
+const unackedKey = Symbol.for("@agiledigital/pingone-aic-script-tester/vitest-unacked-audit-v1");
+const unackedGlobal = process as typeof process & { [unackedKey]?: Map<number, AuditEntry> };
+const unacked = unackedGlobal[unackedKey] ??= new Map<number, AuditEntry>();
+
+/**
+ * Diagnostic fallback: send the whole audit at every boundary, as releases
+ * before 0.4.0-emulator.2 did. The delta transport is compared against it in
+ * test/harness/audit-delta.e2e.test.ts.
+ */
+export const AUDIT_SNAPSHOTS_ENV = "AIC_SCRIPT_TESTER_AUDIT_SNAPSHOTS";
+
+function findTask(task: RunnerTask, id: string): RunnerTask | undefined {
+  if (task.id === id) return task;
+  if (task.type !== "suite") return undefined;
+  for (const child of task.tasks) {
+    const found = findTask(child, id);
+    if (found) return found;
+  }
+  return undefined;
+}
 
 export default class EmulationTestRunner extends TestRunner {
   #files = fileTasks;
@@ -92,31 +118,52 @@ export default class EmulationTestRunner extends TestRunner {
     if (counts) recordTiming({ type: "publish", publishMs: since(started), ...counts });
   };
 
-  /** Sends the worker's audit to the main process; returns its size for the timing row. */
+  /**
+   * Sends what changed in the worker's audit to the main process's ledger
+   * (src/emulation.ts EmulationAuditLedger, held by the reporter), plus every
+   * entry not yet acknowledged; returns its size for the timing row. A
+   * completed task that a new entry fails is marked and re-sent with it.
+   */
   #publishAudit = (target?: RunnerTestFile): { failures: number; outstanding: number; packs: number } | undefined => {
     const file = target ?? [...this.#files.values()].at(-1);
     if (!file) return undefined;
-    const audit = emulationAudit();
+    const snapshots = process.env[AUDIT_SNAPSHOTS_ENV] === "1";
+    const delta = snapshots ? emulationAudit() : emulationAuditDelta();
+    if (!snapshots) for (const entry of delta.failures) unacked.set(entry.sequence, entry);
+    const sent = snapshots ? delta.failures : [...unacked.values()].sort((a, b) => a.sequence - b.sequence);
+    const audit: EmulationAudit = { ...delta, failures: sent };
     const packs = new Map<string, RunnerTaskResultPack>();
     const include = (task: RunnerTask) => {
       (task.meta as { rhinoEmulationAudit?: EmulationAudit }).rhinoEmulationAudit = audit;
       packs.set(task.id, [task.id, task.result, task.meta]);
     };
     include(file);
-    for (const completed of this.#files.values()) if (completed.result && completed.result.state !== "run") {
-      const failures = audit.failures.filter((entry) => entry.file === completed.filepath || !entry.file);
-      if (this.#failTask(completed, emulationAuditDiagnostics({ ...audit, failures, outstanding: [] }))) include(completed);
-      const updateOwner = (task: RunnerTask): void => {
-        if (task.type === "suite") { for (const child of task.tasks) updateOwner(child); return; }
-        if (!task.result || task.result.state === "run" || task.result.state === "skip") return;
-        const owned = failures.filter((entry) => entry.owner?.taskId === task.id);
-        if (this.#failTask(task, emulationAuditDiagnostics({ ...audit, failures: owned, outstanding: [] }))) include(task);
-      };
-      updateOwner(completed);
+    // Only an entry in this delta can change a completed task's verdict: the
+    // rest were judged when they arrived.
+    const affected = new Set<RunnerTask>();
+    for (const entry of delta.failures) for (const completed of this.#files.values()) {
+      if (!completed.result || completed.result.state === "run") continue;
+      if (entry.file && entry.file !== completed.filepath) continue;
+      affected.add(completed);
+      const owner = entry.owner?.taskId === undefined ? undefined : findTask(completed, entry.owner.taskId);
+      if (owner && owner.type !== "suite" && owner.result && owner.result.state !== "run" && owner.result.state !== "skip") affected.add(owner);
     }
-    const counts = { failures: audit.failures.length, outstanding: audit.outstanding.length, packs: packs.size };
+    for (const task of affected) {
+      const filepath = task.file.filepath;
+      const inFile = (entry: { file?: string }) => entry.file === filepath || !entry.file;
+      const owned = task.type === "suite" && "filepath" in task
+        ? emulationAuditWhere(inFile)
+        : emulationAuditWhere((entry) => inFile(entry) && entry.owner?.taskId === task.id);
+      if (this.#failTask(task, emulationAuditDiagnostics({ ...owned, outstanding: [] }))) include(task);
+    }
+    const counts = { failures: sent.length, outstanding: audit.outstanding.length, packs: packs.size };
     if (!this.onTaskUpdate) return counts;
-    const update = this.onTaskUpdate([...packs.values()], []).catch((error: unknown) => { this.#transportError = error; });
+    const update = this.onTaskUpdate([...packs.values()], [])
+      .then(() => {
+        // Acknowledged: the reporter has merged this send. A newer version of an entry stays until its own send is.
+        for (const entry of sent) if (unacked.get(entry.sequence) === entry) unacked.delete(entry.sequence);
+      })
+      .catch((error: unknown) => { this.#transportError = error; });
     this.#updates.add(update);
     void update.finally(() => { this.#updates.delete(update); });
     return counts;
@@ -132,9 +179,8 @@ export default class EmulationTestRunner extends TestRunner {
 
   override onAfterRunTask(task: RunnerTask): void {
     super.onAfterRunTask(task);
-    const audit = emulationAudit();
-    const failures = audit.failures.filter((entry) => entry.owner?.taskId === task.id);
-    this.#failTask(task, emulationAuditDiagnostics({ ...audit, failures, outstanding: [] }));
+    const owned = emulationAuditWhere((entry) => entry.owner?.taskId === task.id);
+    this.#failTask(task, emulationAuditDiagnostics({ ...owned, outstanding: [] }));
   }
 
   #failTask(task: RunnerTask, messages: string[]): boolean {
@@ -158,9 +204,8 @@ export default class EmulationTestRunner extends TestRunner {
 
   #finishFile(file: RunnerTestFile): void {
     finishEmulationFile(file.filepath);
-    const audit = emulationAudit();
-    const failures = audit.failures.filter((entry) => entry.file === file.filepath || !entry.file);
-    const messages = emulationAuditDiagnostics({ ...audit, failures, outstanding: [] });
+    const failures = emulationAuditWhere((entry) => entry.file === file.filepath || !entry.file);
+    const messages = emulationAuditDiagnostics({ ...failures, outstanding: [] });
     this.#failTask(file, messages);
     this.#publish(file);
   }

@@ -1476,9 +1476,18 @@ naming sources. Vitest 5's `aroundEach` preserves separate contexts for concurre
 tests, including sibling forks; a clean sibling does not inherit another test's
 failures. `useLease` also installs ownership guarding automatically. Legacy
 `useEmulationGuard()` calls remain supported; their source arguments are ignored.
-The custom runner publishes audit snapshots in task metadata through Vitest's
-`onTaskUpdate` hook. Its `onAfterRunFiles` check runs outside test control flow;
-the reporter checks the snapshots in the main process at `onTestRunEnd` and
+The custom runner publishes audit deltas in task metadata through Vitest's
+`onTaskUpdate` hook: each boundary sends only the entries recorded or changed
+since the last acknowledged publish, plus any earlier ones not yet
+acknowledged, and the reporter merges them into one ledger per worker, newest
+revision of each entry winning. The hook resolves only after the main process
+has handled the update, so an entry is dropped from the worker's resend set
+only once the reporter holds it; a worker that crashes or times out loses
+nothing it had already published. `AIC_SCRIPT_TESTER_AUDIT_SNAPSHOTS=1` sends
+the whole audit at every boundary instead, as earlier releases did; it is a
+diagnostic fallback and gives the same verdict. Its `onAfterRunFiles` check
+runs outside test control flow; the reporter checks the ledger in the main
+process at `onTestRunEnd` and
 sets a non-zero exit status, naming every unexpected cause and its original
 owner. It also handles updates received after that final check. This backstop
 works in the `forks` and `threads` pools with either isolation setting. Import-time

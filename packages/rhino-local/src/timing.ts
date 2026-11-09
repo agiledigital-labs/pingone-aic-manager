@@ -33,11 +33,13 @@
  *   (a harness fault, missing behaviour, a protocol error or a timeout) —
  *   `outcome` alone says "ok" for a run whose script caught the refusal —
  *   and `faultIds` lists the harness-fault ids it named.
- * - `publish`: the emulation runner sending a worker's failure audit to the
- *   main process (on every job start and end, and at file boundaries):
- *   `publishMs`, and the audit's size as `failures`, `outstanding` and
- *   `packs` (task results re-sent with it). Only under the package's Vitest
- *   runner.
+ * - `publish`: the emulation runner sending a worker's failure-audit delta
+ *   to the main process (on every job start and end, and at file
+ *   boundaries): `publishMs`, and the send's size as `failures` (entries new
+ *   or changed since the last acknowledged send, plus those not yet
+ *   acknowledged; the whole audit under AIC_SCRIPT_TESTER_AUDIT_SNAPSHOTS=1),
+ *   `outstanding` and `packs` (task results re-sent with it). Only under the
+ *   package's Vitest runner.
  *
  * Every worker appends to the same file; each line is one `appendFileSync`,
  * which Linux and macOS keep whole for lines this size. Rows carry source
