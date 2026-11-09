@@ -810,13 +810,11 @@ reading through `managed/alpha_user` — and an object `config/managed` does
 not declare. An object's last mapped property is removed and its per-type
 entry kept with `properties: {}` (since 2026-11-09): that is the state a newly
 added per-type entry starts in, measured above to keep records readable and
-creatable. Removing the entry of a type that still exists would change where
-its records are looked up and is not done. `relationship repair <object>
---empty-entry` removes the empty entry of a type `config/managed` no longer
-declares (a deleted type), by the same recheck/backup/whole-document `PUT`/
-read-back path; the live removal of four such entries on 2026-11-09 is recorded
-in the dated entry at the end of this file. The verb itself has not been run
-against a tenant.
+creatable. `relationship repair <object> --empty-entry` removes the empty entry,
+for a deleted type or a type that still exists, by the same recheck/backup/
+whole-document `PUT`/read-back path. Measured 2026-11-10 for an existing type
+(below, "Empty per-type entry removal"); for a deleted type on 2026-11-09 (the
+dated entry at the end of this file).
 Measured 2026-11-09 on a throwaway pair whose ends were each their type's only
 mapping, one end holding 45 records: `delete --remove-mapping --force` removed
 both mappings reverse end first, each confirmed by re-read, leaving both
@@ -2192,6 +2190,26 @@ on create, or when actually rotating it.
   script calls as well as REST ones.
 
 ## Verified against
+
+- Date: 2026-11-10 — removing the empty per-type `repo.ds` entry of an
+  **existing** type, sandbox, throwaway `zzemuA_thing` and `zzemuA_owner`
+  (`object create`, a `label` string each, `relationship set thing.owner
+  --forward one --reverse many`). Five `zzemuA_thing` records written while
+  mapped, each linked to one owner; the owner showed 5 links. Reads, each of
+  by id (5), `_queryFilter=true`, `label eq "zz"` and a fresh `POST` create
+  read back by id, taken at four points: (1) mapped (positive control: 5/5 by
+  id, 201 create); (2) after `relationship delete --remove-mapping --force`,
+  which left `genericMapping."managed/zzemuA_thing"` with `properties: {}`
+  (5/5, 201); (3) immediately after a whole-document `PUT` of `config/repo.ds`
+  minus that entry (backed up; `PUT` 200, re-read equal to the document sent,
+  entry absent): 5/5, queries 200 with the expected counts, create 201 and
+  read back 200; (4) the same at ~30 s and ~65 s: unchanged. Records created
+  in states (2) and (3) also read back by id afterwards (5 of 5). So removing
+  the empty entry of an existing type did not make its records unreadable or
+  uncreatable in this run. Not measured: a type with links *still stored*
+  through a mapping (the mapping was removed first, so links through it
+  were not read after), a restart of IDM, or a larger collection. All records
+  and both types were then deleted.
 
 - Date: 2026-11-09 — mapping activation and last-mapping removal, sandbox,
   throwaway `zzemu_act_a`–`zzemu_act_d` built with `aic managed object create`

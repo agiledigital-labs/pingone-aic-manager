@@ -32,8 +32,7 @@
 //! `config/managed` does not declare. Removing an object's last mapped
 //! property is allowed and keeps its per-type entry with `properties: {}`,
 //! the measured state of a freshly added entry. That entry is removed only
-//! by [`plan_remove_entry`], and only for a type `config/managed` no longer
-//! declares.
+//! by [`plan_remove_entry`] (`--empty-entry`), for a deleted or an existing type.
 //!
 //! Additions use the measured 2026-11-01 shape and waitForCompletion=true.
 //! A WritePermit proves consent outside dry-run; callers also gate production.
@@ -271,24 +270,16 @@ pub fn plan(managed: &Value, repo_ds: &Value, object: &str, key: &str) -> Result
 /// The plan for removing `object`'s empty per-type `repo.ds` entry, or why it
 /// is refused.
 ///
-/// Allowed only for a type `config/managed` no longer declares (a type
-/// deleted by `managed object delete` or the console leaves its entry
-/// behind): removing four such entries by a backed-up whole-document `PUT`
-/// was `200`, re-read equal, and nothing else changed (2026-11-09). An entry
-/// for a type that still exists is refused, whatever it holds: whether its
-/// records stay readable once the entry goes is not measured by this verb.
-/// Nor is an entry removed while it still maps a property, or while another
-/// mapping names the type as a `resourcePath`.
+/// Measured on the sandbox (2026-11-10, `docs/api/10-managed-objects.md`):
+/// for a type that **still exists**, with records and links written while it
+/// was mapped, removing its empty entry by a backed-up whole-document `PUT`
+/// left every record readable by id and by query and new records creatable,
+/// immediately and after ~65 s. For a type `config/managed` no longer declares
+/// the same removal was measured on 2026-11-09. So both are allowed. Refused:
+/// an entry that still maps a property, and one another mapping names as its
+/// `resourcePath` (unmeasured).
 pub fn plan_remove_entry(managed: &Value, repo_ds: &Value, object: &str) -> Result<Plan, String> {
     let label = format!("managed/{object}");
-    if verify::properties(managed, object).is_some()
-        || crate::managed::api::object_named(managed, object).is_ok()
-    {
-        return Err(format!(
-            "refusing to remove {label}'s per-type config/repo.ds entry: '{object}' is declared \
-             in config/managed, and removing the entry of an existing type is unmeasured"
-        ));
-    }
     let key = format!("managed/{object}");
     let Some(entry) = repo_ds.pointer(&format!(
         "/resourceMapping/genericMapping/{}",
@@ -330,13 +321,19 @@ pub fn plan_remove_entry(managed: &Value, repo_ds: &Value, object: &str) -> Resu
         return Err(format!("internal: could not locate {label} to remove"));
     }
     let mut notes = Vec::new();
+    if crate::managed::api::object_named(managed, object).is_ok() {
+        notes.push(format!(
+            "{object} is still declared in config/managed; its records were measured to stay \
+             readable and creatable after its empty entry was removed (docs/api/10)"
+        ));
+    }
     if entry.as_object().is_some_and(|fields| {
         fields
             .keys()
-            .any(|name| name != "properties" && name != "objectClasses")
+            .any(|name| !STANDARD_ENTRY_FIELDS.contains(&name.as_str()))
     }) {
         notes.push(format!(
-            "{label}'s entry carries fields other than `properties` and `objectClasses`; \
+            "{label}'s entry carries fields beyond the standard per-type set; \
              they are removed with it (the backup keeps them)"
         ));
     }
@@ -354,6 +351,16 @@ pub fn plan_remove_entry(managed: &Value, repo_ds: &Value, object: &str) -> Resu
         after,
     })
 }
+
+/// The fields a per-type entry carries as `aic` and the console create it
+/// (seen on the sandbox 2026-11-10); anything else is reported on removal.
+const STANDARD_ENTRY_FIELDS: &[&str] = &[
+    "dnTemplate",
+    "jsonAttribute",
+    "jsonQueryEqualityMatchingRule",
+    "objectClasses",
+    "properties",
+];
 
 /// `object.key` labels of every `repo.ds` mapping, in any section, whose
 /// `resourcePath` is `managed/<object>`.
@@ -1487,6 +1494,22 @@ mod tests {
         assert_eq!(plan.after(), &expected);
         // The mapped pair on the live types is untouched.
         assert!(verify::mapped(plan.after(), "a", "live").is_some());
+        let mut extra = before.clone();
+        extra["resourceMapping"]["genericMapping"]["managed/gone"]["dnTemplate"] = json!("ou=gone");
+        assert!(
+            plan_remove_entry(&managed(), &extra, "gone")
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+        extra["resourceMapping"]["genericMapping"]["managed/gone"]["unusual"] = json!(1);
+        assert_eq!(
+            plan_remove_entry(&managed(), &extra, "gone")
+                .unwrap()
+                .notes
+                .len(),
+            1
+        );
         // An entry with no `properties` member at all is just as empty.
         let mut bare = before;
         bare["resourceMapping"]["genericMapping"]["managed/gone"] = json!({});
@@ -1496,13 +1519,23 @@ mod tests {
     /// The discriminating cases: each is an entry a looser rule ("remove any
     /// per-type entry that looks empty") would take.
     #[test]
-    fn an_entry_is_refused_unless_the_type_is_gone_and_the_entry_maps_nothing() {
-        // The type still exists, entry empty: unmeasured, refused.
+    fn an_entry_is_refused_while_it_maps_a_property_or_is_named_by_a_mapping() {
+        // The type still exists and its entry is empty: allowed (measured
+        // 2026-11-10), with a note; the same entry still mapping is refused.
+        let mut with_c = managed();
+        with_c["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "c", "schema": {"properties": {}}}));
         let mut existing = repo(json!({}), json!({}));
-        existing["resourceMapping"]["genericMapping"]["managed/b"]["properties"] = json!({});
-        let error = plan_remove_entry(&managed(), &existing, "b").unwrap_err();
-        assert!(error.contains("declared in config/managed"), "{error}");
-        // The type is gone but its entry still maps a property.
+        existing["resourceMapping"]["genericMapping"]["managed/c"] = json!({"properties": {}});
+        let plan = plan_remove_entry(&with_c, &existing, "c").unwrap();
+        assert!(plan.notes.iter().any(|n| n.contains("still declared")));
+        existing["resourceMapping"]["genericMapping"]["managed/c"]["properties"] =
+            json!({"p": reference("b")});
+        let error = plan_remove_entry(&with_c, &existing, "c").unwrap_err();
+        assert!(error.contains("still maps p"), "{error}");
+        // The entry still maps a property.
         let mut mapped = repo_with_empty_entry_for_gone();
         mapped["resourceMapping"]["genericMapping"]["managed/gone"]["properties"] =
             json!({"p": reference("b")});
@@ -1545,14 +1578,12 @@ mod tests {
                 "read repo.ds"
             ]
         );
-        // The type came back into config/managed between plan and write: the
-        // recheck refuses and nothing is sent.
-        let mut redeclared = managed();
-        redeclared["objects"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"name": "gone", "schema": {"properties": {}}}));
-        let tenant = Tenant::new(redeclared, vec![Ok(before)], Ok(()));
+        // A mapping started naming the type between plan and write: repo.ds
+        // differs from what was planned, so nothing is sent.
+        let mut drifted = before.clone();
+        drifted["resourceMapping"]["genericMapping"]["managed/b"]["properties"]["gone"] =
+            reference("gone");
+        let tenant = Tenant::new(managed(), vec![Ok(drifted)], Ok(()));
         assert!(matches!(
             tenant.run(&plan, 0).await,
             Err(Failure::NotWritten(_))
