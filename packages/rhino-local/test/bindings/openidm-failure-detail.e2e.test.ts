@@ -66,20 +66,27 @@ describe("an injected failure's getDetail matches the live capture", () => {
 
   it.each([
     ["a stub with no detail", undefined, "String(e.javaException.getDetail())"],
-    ["an unmeasured member", null, "e.javaException.getDetail().asMap"],
+    // Presence is measured (typeof, in: openidm-detail-asstring.e2e); calling or rendering is not.
+    ["calling an unmeasured member", null, "e.javaException.getDetail().asMap()"],
+    ["an unmeasured member as a string", null, "String(e.javaException.getDetail().asMap)"],
+    ["asString with a string argument", { result: false }, 'e.javaException.getDetail().asString("x")'],
+    ["asString on a number", { n: 1 }, 'e.javaException.getDetail().get("n").asString()'],
+    ["get(string) on a string value", { s: "v" }, 'e.javaException.getDetail().get("s").get("k")'],
+    ["get(number) on a boolean value", { result: false }, 'e.javaException.getDetail().get("result").get(0)'],
+    ["get with a non-integral index", { a: [1] }, 'e.javaException.getDetail().get("a").get(0.5)'],
+    ["a pointer segment needing an escape", { "a/b": true }, 'e.javaException.getDetail().get("a/b").asString()'],
     ["an empty object's string form", {}, "String(e.javaException.getDetail())"],
     ["getDetail with an argument", { result: false }, "String(e.javaException.getDetail(1))"],
     ["get with no argument", { result: false }, "String(e.javaException.getDetail().get())"],
     ["get with two arguments", { result: false }, 'String(e.javaException.getDetail().get("result", 1))'],
     ["get with an object key", { result: false }, 'String(e.javaException.getDetail().get({ toString: function () { return "result"; } }))'],
-    ["get with a number key", { result: false }, "String(e.javaException.getDetail().get(0))"],
     ["isNull with an argument", null, "e.javaException.getDetail().isNull(1)"],
     ["getObject with an argument", null, "e.javaException.getDetail().getObject(1)"],
     ["toString with an argument", { result: false }, "e.javaException.getDetail().toString(1)"],
     // The refusal is formatted before it is recorded, so it must not call a builtin the script replaced.
     ["getDetail(1) while join/push are replaced", { result: false }, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
     ["isNull(1) while join/push are replaced", null, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail().isNull(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
-    ["get(1) while join/push are replaced", { result: false }, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail().get(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
+    ["get(0.5) while join/push are replaced", { result: false }, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail().get(0.5); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
   ])("%s faults openidm-failure-detail, even when caught", async (_name, d, read) => {
     expectHarnessFault("openidm-failure-detail");
     const reply = d === undefined ? { code: 404 } : { code: 404, detail: d };
