@@ -15,7 +15,10 @@ import { repoRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 
 const probe = readFileSync(join(repoRoot, "scripts/rhino-script-tester/fixtures/openidm-detail-asstring.script.js"), "utf8");
-const capture = `${probe}\nfunction emit(payload) { nodeState.putShared("r", JSON.stringify(payload)); }`;
+// The probe names its throwaway user with randomUUID; pin it so the host and
+// container lanes see the same id and the both-lane comparison stays exact.
+const pinUuid = 'utils.crypto.randomUUID = function () { return "00000000-0000-4000-8000-000000000001"; };\n';
+const capture = `${pinUuid}${probe}\nfunction emit(payload) { nodeState.putShared("r", JSON.stringify(payload)); }`;
 
 const POLICY = { result: false, failedPolicyRequirements: [{ policyRequirements: [{ policyRequirement: "NOT_NULL" }], property: "frIndexedInteger1" }] };
 const given: Given = {
