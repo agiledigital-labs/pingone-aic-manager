@@ -598,7 +598,7 @@ as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 
 ```bash
 aic managed list [--json]                        # object types with property + hook counts
-aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME]
+aic managed get alpha_user [--fields GLOB] [--hook-sources] [--schema-only | --property NAME] [--json]
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
 aic managed object rename custom_widget custom_gadget [--force] [--yes] [--json]
 aic managed object delete custom_gadget [--force] [--yes] [--json]
@@ -651,6 +651,15 @@ unaffected. With `--property`, only that property's pair is shown. The TUI
 relationship editor shows the same line under its title. What neither can show
 is whether the running IDM has *picked up* a `repo.ds` change: `aic` knows of
 no endpoint that reports it, so the line describes configuration, not runtime.
+
+stdout is the definition alone with or without `--json`; the notes above and
+"omitted N inline hook sources" / "showing N of M properties" go to stderr, so
+`aic managed get X 2>/dev/null | jq` is already clean. `--json` is the explicit
+form for a caller that merges the streams: it prints the same definition and
+drops every note (and skips the `config/repo.ds` read behind the storage lines),
+except a `--fields` pattern that matched nothing, which is still named on
+stderr. Content does not change: inline hook sources stay replaced by their
+`<script: …>` references unless `--hook-sources` is given.
 
 `managed diff <object> <file>` compares the tenant's definition of one object
 with a repository file, read-only. The file holds that object's definition

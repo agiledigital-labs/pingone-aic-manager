@@ -34,6 +34,14 @@ pub enum ManagedCommand {
         /// Print only the `schema` member (still narrowed by --fields).
         #[arg(long)]
         schema_only: bool,
+        /// Print the definition and nothing else, on either stream: no
+        /// "omitted … hook sources" or "showing N of M" notes and no
+        /// relationship-storage lines (which also skips the `config/repo.ds`
+        /// read). Content is unchanged: hook sources stay replaced unless
+        /// --hook-sources is given. A --fields pattern that matched nothing is
+        /// still named on stderr, since that is usually a typo.
+        #[arg(long)]
+        json: bool,
         #[arg(long)]
         tenant: Option<String>,
     },
@@ -465,6 +473,7 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
             hook_sources,
             property,
             schema_only,
+            json,
             tenant,
         } => {
             let projection = match (property, schema_only) {
@@ -472,7 +481,7 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
                 (None, true) => spec::GetProjection::Schema,
                 (None, false) => spec::GetProjection::Object,
             };
-            get(name, fields, hook_sources, projection, tenant).await
+            get(name, fields, hook_sources, projection, json, tenant).await
         }
         ManagedCommand::Object { command } => object(command).await,
         ManagedCommand::Field { command } => field(command).await,
@@ -486,6 +495,7 @@ async fn get(
     fields: Vec<String>,
     hook_sources: bool,
     projection: spec::GetProjection,
+    json: bool,
     tenant: Option<String>,
 ) -> Result<()> {
     let tenant = tenant_for(tenant)?;
@@ -502,27 +512,52 @@ async fn get(
         &spec::project_managed_get(view.object, &name, &projection)
             .map_err(crate::Error::Config)?,
     )?;
-    if let Some((shown, total)) = view.fields_shown {
-        eprintln!("showing {shown} of {total} properties");
+    for note in get_notes(
+        json,
+        whole,
+        view.fields_shown,
+        &view.unmatched_patterns,
+        view.elided_hooks,
+    ) {
+        eprintln!("{note}");
     }
-    for pattern in &view.unmatched_patterns {
-        eprintln!("--fields {pattern:?} matched no properties");
+    if json {
+        return Ok(());
     }
-    // Object-level hooks sit outside `schema`, so a projection never shows
-    // them and has nothing to report about eliding them.
-    if whole && view.elided_hooks > 0 {
-        let noun = if view.elided_hooks == 1 {
+    print_relationship_storage(&tenant, &managed, &name, storage_key).await;
+    Ok(())
+}
+
+/// The stderr notes `managed get` prints after the definition. `--json` keeps
+/// only the unmatched-pattern warning: the rest is commentary on the output,
+/// and a caller that merges the streams must get the definition alone.
+/// Object-level hooks sit outside `schema`, so a projection (`whole` false)
+/// never shows them and has nothing to report about eliding them.
+fn get_notes(
+    json: bool,
+    whole: bool,
+    fields_shown: Option<(usize, usize)>,
+    unmatched_patterns: &[String],
+    elided_hooks: usize,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !json && let Some((shown, total)) = fields_shown {
+        notes.push(format!("showing {shown} of {total} properties"));
+    }
+    for pattern in unmatched_patterns {
+        notes.push(format!("--fields {pattern:?} matched no properties"));
+    }
+    if !json && whole && elided_hooks > 0 {
+        let noun = if elided_hooks == 1 {
             "source"
         } else {
             "sources"
         };
-        eprintln!(
-            "omitted {} inline hook {noun}; pass --hook-sources to include them",
-            view.elided_hooks
-        );
+        notes.push(format!(
+            "omitted {elided_hooks} inline hook {noun}; pass --hook-sources to include them"
+        ));
     }
-    print_relationship_storage(&tenant, &managed, &name, storage_key).await;
-    Ok(())
+    notes
 }
 
 /// Where each relationship's links are stored, on stderr so the JSON on
@@ -4104,6 +4139,29 @@ mod tests {
             }
             other => panic!("not a managed get: {other:?}"),
         }
+    }
+
+    #[test]
+    fn get_json_keeps_only_the_unmatched_pattern_warning() {
+        let unmatched = ["nope*".to_string()];
+        let plain = get_notes(false, true, Some((1, 4)), &unmatched, 2);
+        assert_eq!(plain.len(), 3, "{plain:?}");
+        assert!(plain.iter().any(|n| n.starts_with("omitted 2 inline hook")));
+        assert!(plain.iter().any(|n| n == "showing 1 of 4 properties"));
+        let json = get_notes(true, true, Some((1, 4)), &unmatched, 2);
+        assert_eq!(json, ["--fields \"nope*\" matched no properties"]);
+        assert!(get_notes(true, true, None, &[], 3).is_empty());
+        // A projection never reports elided hooks, json or not.
+        assert!(get_notes(false, false, None, &[], 3).is_empty());
+
+        let parsed =
+            Cli::try_parse_from(["aic", "managed", "get", "alpha_user", "--json"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(crate::cli::Command::Managed {
+                command: ManagedCommand::Get { json: true, .. }
+            })
+        ));
     }
 
     #[test]
