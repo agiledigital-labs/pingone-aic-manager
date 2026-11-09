@@ -63,15 +63,15 @@ describe("phase timing", () => {
       expect(jvm.libraryLoads).toBe(1);
       expect(job?.roundTripMs as number).toBeGreaterThanOrEqual(jvm.totalMs as number);
     }
-    // First case: prelude and library cross the pipe and compile.
+    // First case: prelude and library cross the pipe, and they and the subject compile.
     expect(first).toMatchObject({ sourcesShipped: 2 });
     expect(first?.sourceBytes as number).toBeGreaterThan(100_000);
-    expect(first?.jvm).toMatchObject({ cacheMisses: 2 });
+    expect(first?.jvm).toMatchObject({ cacheMisses: 3, subjectCacheMisses: 1 });
     expect((first?.jvm as Record<string, unknown>).cacheHits).toBeUndefined();
-    // Second: named by hash only, both compiled forms reused.
+    // Second: named by hash only, all three compiled forms reused.
     expect(second).toMatchObject({ sourcesShipped: 0, sourceBytes: 0 });
     expect(second?.lineBytes as number).toBeLessThan((first?.lineBytes as number) - 100_000);
-    expect(second?.jvm).toMatchObject({ cacheHits: 2 });
+    expect(second?.jvm).toMatchObject({ cacheHits: 3, subjectCacheHits: 1 });
     expect((second?.jvm as Record<string, unknown>).cacheMisses).toBeUndefined();
   }, 60_000);
 

@@ -454,7 +454,10 @@ public final class Runner {
       final Script script;
       phase = Timing.now();
       try {
-        script = cx.compileString(source, sourceName, 1, null);
+        // Cached like the prelude and the libraries: the key carries the
+        // source's hash, its name and every context setting the compiler
+        // reads, and only the compiled form is shared, never a scope.
+        script = ScriptCache.compile(cx, "subject:" + ScriptCache.sha256(source), () -> source, sourceName, 1, "subject");
       } catch (EvaluatorException e) {
         return errorFromRhino(id, "compile_error", e);
       } catch (RhinoException e) {
