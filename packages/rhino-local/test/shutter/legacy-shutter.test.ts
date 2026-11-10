@@ -99,18 +99,22 @@ outcome = "done";`;
     expect((error as CaseRunError).response.emulation?.faults?.map((f: { id: string }) => f.id)).toContain("engine-api-unmeasured/ContextFactory");
   }, 30_000);
 
-  // Regression for the Wrapper path in EngineGuard.wrap. NOTE: this route also
-  // faults without that override (first use of the wrapper re-wraps its target),
-  // so it does not discriminate the override; no route that does was found.
-  // XMLDecoder can build a NativeJavaObject (already a Scriptable) around a
-  // Context, over a real global scope: Rhino passes that straight through wrap(), not wrapAsJavaObject().
-  it("legacy: an already-wrapped Context (a Wrapper returned by Java) is a tallied fault", async () => {
-    expectHarnessFault("engine-api-unmeasured/Context");
-    const xml = '<java><void id="c" class="org.mozilla.javascript.Context"/><object class="org.mozilla.javascript.NativeJavaObject"><object class="org.mozilla.javascript.ScriptRuntime" method="initSafeStandardObjects"><object idref="c"/><null/><boolean>false</boolean></object><object idref="c"/><class>java.lang.Object</class></object></java>';
-    const script = viaXml("c.decompileFunction(function ordinary(a) { return a; }, 0)").replace(/var xml = '.*';/, `var xml = '${xml}';`);
+  // Regression for the Wrapper path in EngineGuard.wrap (Sol r8). A Java
+  // collection holding an already-wrapped NativeJavaObject hands it to the
+  // script through wrap(), which passes a Scriptable straight through and never
+  // reaches wrapAsJavaObject. Without the Wrapper check this route ran `ok`
+  // with no fault (decompiled source / isSealed() false); verified 2026-11-10
+  // by running it against the pre-fix EngineGuard.
+  it.each([
+    ["Context", "c.get(0).decompileFunction(function ordinary(a) { return a; }, 0)"],
+    ["ContextFactory", "c.get(0).isSealed()"],
+  ])("legacy: an already-wrapped %s held in a Java list is a tallied fault", async (kind, use) => {
+    expectHarnessFault(`engine-api-unmeasured/${kind}`);
+    const xml = `<java><object class="java.util.ArrayList"><void method="add"><object class="org.mozilla.javascript.Context" id="ctx"><void method="initStandardObjects" id="scope"/></object></void><void method="clear"/><void method="add"><object class="org.mozilla.javascript.NativeJavaObject"><object idref="scope"/><object class="org.mozilla.javascript.${kind}"/><null/></object></void></object></java>`;
+    const script = viaXml(use).replace(/var xml = '.*';/, `var xml = '${xml}';`);
     const error = await run(script, "legacy").then(() => undefined, (e: unknown) => e);
     expect(error).toBeInstanceOf(CaseRunError);
-    expect((error as CaseRunError).response.emulation?.faults?.map((f: { id: string }) => f.id)).toContain("engine-api-unmeasured/Context");
+    expect((error as CaseRunError).response.emulation?.faults?.map((f: { id: string }) => f.id)).toContain(`engine-api-unmeasured/${kind}`);
   }, 30_000);
 
   it("controls: HashMap, template literal and a caught EcmaError's message record no fault (legacy)", async () => {
