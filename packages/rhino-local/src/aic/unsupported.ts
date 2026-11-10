@@ -21,6 +21,9 @@ export function aicUnsupportedReason(
   kase: Case,
   options: { harnessOwnsManaged?: boolean; harnessOwnsScriptName?: boolean; harnessOwnsLoggerScriptId?: boolean; harnessOwnsCookieName?: boolean } = {}
 ): string | undefined {
+  if (kase.context !== undefined && kase.context !== "SCRIPTED_DECISION_NODE") {
+    return `case.context ${kase.context}: the AIC lane wraps the subject in a journey, which runs only decision-node scripts; a token-context case runs locally only`;
+  }
   if (kase.given.engine === "legacy") {
     return "legacy engine: AIC wrapper emit is next-gen only (legacy results go through JavaImporter + Action.send, not callbacksBuilder)";
   }

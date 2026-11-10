@@ -1,0 +1,8 @@
+{
+  "body": {
+    "error": "server_error",
+    "error_description": "Error running access token modification plugin"
+  },
+  "captured": "2026-11-10, sandbox tenant, stateless client_credentials token (rhino-local ctx1)",
+  "http": 500
+}

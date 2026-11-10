@@ -69,7 +69,8 @@
     "LICENSE-MIT",
     "src/bindings/rhino/runtime.cjs",
     "src/bindings/rhino/identity-policy.cjs",
-    "src/bindings/rhino/crest-filter.cjs"
+    "src/bindings/rhino/crest-filter.cjs",
+    "src/bindings/rhino/context-oauth2-access-token.cjs"
   ],
   "engines": {
     "node": ">=24"

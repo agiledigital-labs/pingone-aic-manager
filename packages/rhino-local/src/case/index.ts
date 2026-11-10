@@ -17,8 +17,22 @@ export {
   OPENIDM_WRITE_METHODS,
   STATE_DIFF_KEYS,
   STATE_CHANNELS,
+  SCRIPT_CONTEXTS,
+  DEFAULT_SCRIPT_CONTEXT,
 } from "./types.ts";
+export { CONTEXTS } from "./context.ts";
+export type { ContextDeclaration } from "./context.ts";
 export type {
+  AccessTokenCaseInit,
+  AccessTokenEffect,
+  AccessTokenExpect,
+  AccessTokenSeed,
+  AccessTokenState,
+  AnyCaseInit,
+  ClientSeed,
+  IdentitySeed,
+  ScriptContext,
+  TokenRequestSeed,
   AllowUndeclared,
   AllowUndeclaredChannel,
   CallbackEffect,

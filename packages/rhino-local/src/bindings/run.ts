@@ -4,7 +4,7 @@ import type { JobRequest, JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
 import { casePreamble, withHarvest, type MockPreambleOptions } from "./preamble.ts";
-import { decisionNodeClassAllowList } from "./allowlist.ts";
+import { accessTokenClassAllowList, decisionNodeClassAllowList } from "./allowlist.ts";
 import { checkSeededManaged } from "../profile/seed.ts";
 import type { EnvProfile } from "../profile/types.ts";
 
@@ -71,9 +71,9 @@ export async function runCase(
     checkSeededManaged(options.profile, kase.given.managed, kase.name, kase.given.identityCustomAttrs);
   }
   const request: JobRequest = {
-    source: withHarvest(kase.script),
+    source: withHarvest(kase.script, kase.context),
     sourceName: options.sourceName ?? kase.name,
-    ...casePreamble(kase.given, preambleOptions(options)),
+    ...casePreamble(kase.given, preambleOptions(options, kase)),
     preambleName: "rhino-local-mocks.cjs",
   };
   if (options.timeoutMs !== undefined) {
@@ -86,7 +86,11 @@ export async function runCase(
   const shutterApplies =
     options.classShutter !== false && kase.given.engine !== "legacy";
   if (shutterApplies) {
-    request.classAllowList = decisionNodeClassAllowList();
+    // Each next-gen context has its own allow-list (docs/api/bindings/).
+    request.classAllowList =
+      kase.context === "OAUTH2_ACCESS_TOKEN_MODIFICATION"
+        ? accessTokenClassAllowList()
+        : decisionNodeClassAllowList();
   }
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {
@@ -105,8 +109,11 @@ export async function runCase(
   return { effects, verdict: judge(kase, effects), response };
 }
 
-function preambleOptions(options: RunCaseOptions): MockPreambleOptions {
+function preambleOptions(options: RunCaseOptions, kase: Case): MockPreambleOptions {
   const out: MockPreambleOptions = {};
+  if (kase.context !== undefined) {
+    out.context = kase.context;
+  }
   if (options.libraries !== undefined) {
     out.libraries = options.libraries;
   }
