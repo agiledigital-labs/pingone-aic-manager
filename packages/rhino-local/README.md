@@ -782,7 +782,9 @@ there. `typeof detail.<member>` is `"function"` and `"<member>" in detail` is
 calling a member the probes did not exercise (or binding it, rendering it as a
 string, or serialising it with `JSON.stringify` by any route but one: an
 author's `toJSON` returning it under a property list is not caught) is the
-fault `openidm-failure-detail`, as
+fault `openidm-failure-detail`, as is rendering any member but `asString` as a
+string (`String(detail.get)`), whose text was not measured; `asString` renders
+as AIC's Java signature by every route, as
 is a `get` index that is not an integer within a Java `int` (on any value,
 a null one included), as is calling `getDetail()` on a stub
 without `detail`. These
