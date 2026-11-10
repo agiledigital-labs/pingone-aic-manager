@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runCase } from "../../src/bindings/index.ts";
+import { CaseRunError, runCase } from "../../src/bindings/index.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { defineCase } from "../../src/case/index.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 
@@ -56,5 +57,66 @@ outcome = "done";`.replace("EXPR", expr);
 
   it("control: template literals still work", async () => {
     expect(await legacy("`a${1 + 1}`")).toBe("a2");
+  });
+});
+
+// An engine Context handed over by a Java API, not named by the script: the
+// route is unmeasured on AIC, so it is a named, tallied fault on both engines.
+describe("an engine capability instance reaching a script indirectly", () => {
+  let runner: RhinoRunner;
+  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+  afterAll(async () => { await runner.close(); }, 30_000);
+
+  const viaXml = (use: string) => `
+var xml = '<java><object class="org.mozilla.javascript.Context"/></java>';
+var decoder = new java.beans.XMLDecoder(new java.io.ByteArrayInputStream(new java.lang.String(xml).getBytes("UTF-8")));
+var r;
+try { var c = decoder.readObject(); r = String(${use}); } catch (e) { r = "THROW " + String(e); } finally { decoder.close(); }
+nodeState.putShared("r", r);
+outcome = "done";`;
+
+  async function run(script: string, engine: "legacy" | "am") {
+    const given = engine === "legacy" ? { engine: "legacy" as const } : {};
+    return runCase(runner, defineCase({ name: "engine-guard", script, given, expect: { outcome: "done" } }), { timeoutMs: 5_000 });
+  }
+
+  it.each([
+    ["decompileFunction", `c.decompileFunction(function ordinary(a) { return a; }, 0)`],
+    ["initStandardObjects", `c.initStandardObjects().Function.prototype.toSource.call(function ordinary(a) { return a; })`],
+  ])("legacy: an XMLDecoder-built Context is a tallied fault (%s)", async (_name, use) => {
+    expectHarnessFault("engine-api-unmeasured/Context");
+    const error = await run(viaXml(use), "legacy").then(() => undefined, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const response = (error as CaseRunError).response;
+    expect(response.emulation?.faults?.map((f: { id: string }) => f.id)).toContain("engine-api-unmeasured/Context");
+  }, 30_000);
+
+  it("legacy: an XMLDecoder-built ContextFactory is a tallied fault too", async () => {
+    expectHarnessFault("engine-api-unmeasured/ContextFactory");
+    const script = viaXml("c.isSealed()").replace("org.mozilla.javascript.Context", "org.mozilla.javascript.ContextFactory");
+    const error = await run(script, "legacy").then(() => undefined, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect((error as CaseRunError).response.emulation?.faults?.map((f: { id: string }) => f.id)).toContain("engine-api-unmeasured/ContextFactory");
+  }, 30_000);
+
+  it("controls: HashMap, template literal and a caught EcmaError's message record no fault (legacy)", async () => {
+    const result = await run(
+      `var m = new java.util.HashMap(); m.put("a", 1);
+       var msg; try { null.x; } catch (e) { msg = String(e.message); }
+       nodeState.putShared("r", m.size() + "|" + \`t\${1 + 1}\` + "|" + msg); outcome = "done";`,
+      "legacy"
+    );
+    expect(String(result.effects.sharedState.final.r)).toMatch(/^1\|t2\|/);
+    expect(result.response.emulation?.faults ?? []).toEqual([]);
+  });
+
+  it("controls: the same on next-gen records no fault", async () => {
+    const result = await run(
+      `var msg; try { null.x; } catch (e) { msg = String(e.message); }
+       nodeState.putShared("r", \`t\${1 + 1}\` + "|" + msg); action.goTo("true");`,
+      "am"
+    );
+    expect(String(result.effects.sharedState.final.r)).toMatch(/^t2\|/);
+    expect(result.response.emulation?.faults ?? []).toEqual([]);
   });
 });

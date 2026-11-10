@@ -358,6 +358,12 @@ public final class Runner {
     try {
       cx.setLanguageVersion(languageVersion);
       cx.setLocale(Locale.US);
+      // Only under a shutter policy, like the shutter itself: a raw job (and
+      // `classShutter: false`) deliberately sees the engine, and the harness's
+      // own tests read the Context from script.
+      if (classAllowList != null || classDenyList != null) {
+        cx.setWrapFactory(new EngineGuard(faults, bridge));
+      }
       // No list means no shutter, which is the pre-shutter behaviour: every
       // Java name resolves. Callers that mean to reproduce a script context
       // pass that context's allowLists.
