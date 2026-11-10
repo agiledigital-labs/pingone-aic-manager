@@ -25,11 +25,21 @@ export interface ExpectedObject {
 
 export type Pattern = string | RegExp;
 
-export const CASE_KEYS = ["name", "script", "outcomes", "given", "expect"] as const;
+export const CASE_KEYS = ["name", "script", "outcomes", "given", "expect", "context"] as const;
 export type CaseKey = (typeof CASE_KEYS)[number];
 
 export const ENGINES = ["next-gen", "legacy"] as const;
 export type Engine = (typeof ENGINES)[number];
+
+/**
+ * The AM script context a case runs in, by AM's context id without the
+ * `_NEXT_GEN` suffix (the engine is `given.engine`). Absent means the
+ * scripted decision node, which is how every case ran before contexts
+ * existed. packages/rhino-local/docs/script-contexts.md.
+ */
+export const SCRIPT_CONTEXTS = ["SCRIPTED_DECISION_NODE", "OAUTH2_ACCESS_TOKEN_MODIFICATION"] as const;
+export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
+export const DEFAULT_SCRIPT_CONTEXT: ScriptContext = "SCRIPTED_DECISION_NODE";
 
 export const GIVEN_KEYS = [
   "sharedState",
@@ -62,6 +72,11 @@ export const GIVEN_KEYS = [
   "identityAttributes",
   "engine",
   "bindings",
+  "accessToken",
+  "identity",
+  "client",
+  "scopes",
+  "request",
 ] as const;
 export type GivenKey = (typeof GIVEN_KEYS)[number];
 
@@ -90,6 +105,7 @@ export const EXPECT_KEYS = [
   "logs",
   "identityWrites",
   "allowUndeclared",
+  "accessToken",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
 
@@ -106,6 +122,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "secureState",
   "sessionProperties",
   "identityWrites",
+  "accessToken",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -133,6 +150,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   secureState: false,
   sessionProperties: false,
   identityWrites: false,
+  accessToken: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -174,7 +192,8 @@ export const STATE_CHANNELS = [
   "secureState",
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-export type EvidenceChannel = Channel | "nodeState";
+/** `accessToken` is judged only for that context, so it is not a `Channel` every runner must record. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -378,6 +397,145 @@ export interface Given {
    * name throws when the case runs.
    */
   bindings?: Record<string, JsonValue>;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: the token as AM hands it to the script. */
+  accessToken?: AccessTokenSeed;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: the resource owner's identity. */
+  identity?: IdentitySeed;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: `clientProperties`. */
+  client?: ClientSeed;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: the `scopes` binding; defaults to the token's scope. */
+  scopes?: string[];
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: `requestProperties`. */
+  request?: TokenRequestSeed;
+}
+
+/**
+ * The access token at the moment AM runs the modification script. Every key
+ * is optional; the defaults are a `client_credentials` token as measured on
+ * 2026-11-10 (docs/api/12-script-bindings-matrix.md).
+ */
+export interface AccessTokenSeed {
+  /** Default `"test-client"`. */
+  clientId?: string;
+  /** Default `clientId` — what a `client_credentials` grant has. */
+  resourceOwnerId?: string;
+  /** Default `"client_credentials"`. */
+  grantType?: string;
+  /** Default `given.realm`, else `"/alpha"`. */
+  realm?: string;
+  /** Default `[]`. The granted scope, as `getScope()` and the `scope` claim show it. */
+  scope?: string[];
+  /** Default `[clientId]`. */
+  audience?: string[];
+  /** Default `"access_token"`. */
+  tokenName?: string;
+  /** Default `"Bearer"`. */
+  tokenType?: string;
+  /** Epoch seconds. Default: the time the case starts. */
+  authTimeSeconds?: number;
+  /** Epoch milliseconds. Default `authTimeSeconds * 1000 + 3600000`. */
+  expiryTime?: number;
+  /**
+   * The custom fields (`getCustomFields()`, the extra JWT claims). Default
+   * `{ subname: resourceOwnerId, expires_in: 3599 }`, as measured on a
+   * one-hour token.
+   */
+  fields?: JsonObject;
+  nonce?: string | null;
+  authLevel?: number | null;
+  claims?: string | null;
+  /** Default placeholders; AIC's are per token. */
+  tokenId?: string;
+  auditTrackingId?: string;
+  authGrantId?: string;
+}
+
+/** The identity bound as `identity`. Default: the client's own agent profile. */
+export interface IdentitySeed {
+  /** Default the token's `resourceOwnerId`. */
+  name?: string;
+  /** Default `id=<name>,ou=agentonly,o=<realm>,ou=services,ou=am-config` (measured for a client). */
+  universalId?: string;
+  /** Default `true`. */
+  exists?: boolean;
+  /** Attribute values by name; an unlisted name reads as an empty collection, as measured. */
+  attributes?: Record<string, string[]>;
+}
+
+/** `clientProperties`. */
+export interface ClientSeed {
+  /** Default the token's `clientId`. */
+  clientId?: string;
+  /** Screaming case, as AM gives them: default `["CLIENT_CREDENTIALS"]`. */
+  allowedGrantTypes?: string[];
+  /** Default the token's scope. */
+  allowedScopes?: string[];
+  /** Default `[]`. */
+  allowedResponseTypes?: string[];
+  /** Default `{}`. */
+  customProperties?: Record<string, string>;
+  /** Next-gen only (legacy does not list it). Default `[]`. */
+  redirectUris?: string[];
+}
+
+/** `requestProperties`: the token request as AM received it. */
+export interface TokenRequestSeed {
+  /** Default `{ grant_type, scope, client_id }` from the token. */
+  params?: Record<string, string[]>;
+  /** Looked up case-insensitively, as measured. Default `{}`. */
+  headers?: Record<string, string[]>;
+  /** Default `https://tenant.example.com/am/oauth2/realms/root/realms/<realm>/access_token`. */
+  uri?: string;
+}
+
+/**
+ * What the case asserts about the token the script leaves behind. Fail-closed:
+ * a change the case does not declare is a mismatch unless
+ * `allowUndeclared.accessToken` is set.
+ */
+export interface AccessTokenExpect {
+  /** Custom fields (JWT claims) added, changed or removed, against `given.accessToken.fields`. */
+  fields?: StateDiff;
+  /** Fields `addExtraData` / `addExtraJsonData` put in the token endpoint's JSON response. */
+  responseFields?: StateDiff;
+  /** The final scope, compared as a set (AM's order is a hash order). */
+  scope?: string[];
+  /** The final expiry, epoch milliseconds. */
+  expiryTime?: ExpectedValue;
+  nonce?: ExpectedValue;
+  authLevel?: ExpectedValue;
+  claims?: ExpectedValue;
+  /** Next-gen only: `setAct`, `setMayAct`, `setPermissions`. */
+  act?: ExpectedValue;
+  mayAct?: ExpectedValue;
+  permissions?: ExpectedValue;
+  /**
+   * `false` when AM would refuse to issue the token although the script
+   * returned (measured: after `removeScopes()`, a `500 server_error`). Default
+   * `true`.
+   */
+  issued?: boolean;
+}
+
+/** The token as the harvest reports it, before and after the script. */
+export interface AccessTokenState {
+  fields: JsonObject;
+  responseFields: JsonObject;
+  scope: string[];
+  expiryTime: number;
+  nonce: JsonValue;
+  authLevel: JsonValue;
+  claims: JsonValue;
+  act: JsonValue;
+  mayAct: JsonValue;
+  permissions: JsonValue;
+}
+
+export interface AccessTokenEffect {
+  initial: AccessTokenState;
+  final: AccessTokenState;
+  /** `null` when issued; otherwise AM's `error_description`. */
+  refusal: string | null;
 }
 
 export interface Expect {
@@ -399,6 +557,8 @@ export interface Expect {
   logs?: LogExpect[];
   identityWrites?: IdentityWriteExpect[];
   allowUndeclared?: AllowUndeclared;
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` only. */
+  accessToken?: AccessTokenExpect;
 }
 
 export interface CaseInit {
@@ -417,7 +577,43 @@ export interface CaseInit {
   outcomes?: readonly string[];
   given?: Given;
   expect: Expect;
+  /** Absent: the scripted decision node. */
+  context?: "SCRIPTED_DECISION_NODE";
 }
+
+/**
+ * A case for a context other than the decision node. `expect.outcome` does
+ * not exist there; each context accepts its own `given` and `expect` keys,
+ * and validation refuses the rest.
+ */
+export interface AccessTokenCaseInit {
+  name: string;
+  script: string;
+  context: "OAUTH2_ACCESS_TOKEN_MODIFICATION";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "accessToken"
+    | "identity"
+    | "client"
+    | "scopes"
+    | "request"
+  >;
+  expect: Pick<Expect, "accessToken" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+export type AnyCaseInit = CaseInit | AccessTokenCaseInit;
 
 export interface Case {
   name: string;
@@ -425,6 +621,8 @@ export interface Case {
   outcomes?: readonly string[];
   given: Given;
   expect: Expect;
+  /** Absent: the scripted decision node. */
+  context?: ScriptContext;
 }
 
 export interface StateBucket {
@@ -480,6 +678,8 @@ export interface RecordedEffects {
   http: HttpEffect[];
   logs: LogEffect[];
   identityWrites?: IdentityWriteEffect[] | undefined;
+  /** The token context's result; absent for every other context. */
+  accessToken?: AccessTokenEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**
