@@ -55,16 +55,6 @@ const STATE_CLAIMS: Record<string, keyof AccessTokenEffect["final"]> = {
   permissions: "permissions",
 };
 
-/**
- * Rhino reports a Java object's `Object.prototype.toString` tag as
- * `[object JavaObject]` (or JavaList, JavaMap); the emulator's views are script
- * objects and this Rhino has no Symbol.toStringTag to borrow, so the tag is a
- * known gap (docs/rhino-local-gaps.md) and is the one thing levelled here.
- */
-function untagged(value: JsonValue): JsonValue {
-  return JSON.parse(JSON.stringify(value).replace(/\[object Java(Object|List|Map)\]/g, "[object Object]")) as JsonValue;
-}
-
 /** The JWT the emulated token would become, in the capture's terms. */
 function asIssued(token: AccessTokenEffect): { claims: JsonObject; body: JsonObject; scope: string[]; lifetime: number } {
   const claims: JsonObject = {};
@@ -99,7 +89,7 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     expect(verdict.pass, verdict.summary).toBe(true);
     const token = effects.accessToken!;
     expect(token.refusal).toBeNull();
-    expect(JSON.parse(token.final.fields.aicprobe as string)).toEqual(untagged(live.probe!));
+    expect(JSON.parse(token.final.fields.aicprobe as string)).toEqual(live.probe!);
     const issued = asIssued(token);
     const liveClaims = Object.fromEntries(Object.entries(live.claims!).filter(([key]) => !AM_CLAIMS.has(key)));
     expect(issued.claims).toEqual(liveClaims);

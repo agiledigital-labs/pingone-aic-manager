@@ -933,10 +933,29 @@ leaves out:
 
 - **Java values are script objects.** A legacy `JavaString` is a null-prototype
   object with `toString`, `valueOf` and `length()`; it compares `==` but not
-  `===` with a literal, as on AIC. But `Object.prototype.toString` reports
-  `[object Object]` where AIC reports `[object JavaObject]` (or `JavaList`,
-  `JavaMap`): this Rhino has no `Symbol.toStringTag` to borrow. The conformance
-  test levels that one tag and nothing else.
+  `===` with a literal, as on AIC. `Object.prototype.toString` is emulated only
+  where a capture measured the tag: a legacy `JsonValue` (`getField`, `getAct`)
+  reports `[object JavaObject]`. On every other view the call is the named fault
+  `oauth2-token-unmeasured/Object.prototype.toString.call(<binding>)` (Sol ctx
+  r1 P2-5); the conformance test compares the captured tags unchanged.
+- **Mutating a binding is unmeasured, and faults.** Assigning a map entry or a
+  `HashSet` index faults at once. Adding, deleting or redefining a member of a
+  map, set, `accessToken` or `identity` cannot be intercepted in this Rhino (no
+  `Proxy`), so the harvest audits each view against its build-time snapshot and
+  records the fault then: the script may read its own write back before the run
+  fails. A seeded map key that shares a name with a `java.util.Map` method
+  (`get`, `size`, …) is refused at seed.
+- **Lists admit only their measured routes.** `JSON.stringify`, `[].concat(v)`
+  and `Array.prototype.<method>.call(v, …)` on a token-context list fault; the
+  decision node's request and openidm lists keep their measured behaviour.
+- **Unmeasured call counts fault.** Only `setField`/`getField` at a wrong count
+  are Rhino's ordinary overload error (measured); any other method at an
+  unmeasured count is a named fault rather than a catchable error.
+- **Setter values are JSON or a fault.** `setField`, `setFields`, `setAct`,
+  `setMayAct` and `setPermissions` accept strings, finite numbers, booleans,
+  dense arrays and objects whose prototype is `Object.prototype` (or `null`)
+  with only enumerable data properties, recursively. A `Date`, `RegExp`,
+  getter, list view or Java object is unmeasured and faults.
 - **Property reads cannot be intercepted.** A Java bean's missing member reads
   as `undefined` on both sides, but a member that exists on the script object
   only to raise a fault is visible to `typeof` and `in`.
