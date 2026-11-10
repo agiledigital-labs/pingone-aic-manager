@@ -1654,6 +1654,92 @@ Absent (`typeof undefined`, or a call that threw): `getType`, `getValue`,
 > and the `legacy-access-token` leaf in `scripts/type-tests/`, whose reject
 > fixture asserts that each next-gen-only member is a compile error here.
 
+### Access-token modification on both engines: the emulator's probes (verified 2026-11-10)
+
+`OAUTH2_ACCESS_TOKEN_MODIFICATION` (legacy, `1.0`) and
+`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` (`2.0`), measured for the
+rhino-local token context. **Method.** One throwaway confidential client
+(`zzemuC-atm`, `statelessTokensEnabled: true`, scopes `zzemuc-probe` and
+`zzemuc-other`) pointed in turn at a legacy and a next-gen script, and a
+`client_credentials` grant per probe. Each probe writes its record into the
+token with `accessToken.setField("aicprobe", …)`, so the JWT carries the result
+and the claims and response body show what the script changed. The six probe
+scripts and their sanitised captures are committed as
+`packages/rhino-local/test/fixtures/oauth2-atm/`, and
+`test/bindings/oauth2-access-token.e2e.test.ts` runs the same scripts in the
+emulator and requires the same record. Client and scripts were deleted
+afterwards. `identity.getAttributes()` was never called.
+
+#### Next-gen top-level bindings
+
+| Binding | Present | Notes |
+| --- | --- | --- |
+| `accessToken` | yes | `AccessTokenScriptWrapper`. Getters return JS strings and numbers: `getClientId() === "<id>"` is `true`. |
+| `identity` | yes | `ScriptedIdentityScriptWrapper`: `getName`, `getUniversalId`, `exists()`, `getAttributeValues` (a list; `[]` for an attribute it lacks). `getAttribute` and `isExists` are `Cannot find function`. |
+| `session` | **no** | Not bound at all: reading it is `ReferenceError: "session" is not defined.`, where legacy binds `null`. |
+| `scopes` | yes | A Java list: `size()`, `contains()`, `scopes[0]` and `length` work, and `add()` mutates it. |
+| `requestProperties` | yes | Four entries (`size()` is 4): `realm`, `requestHeaders`, `requestParams`, `requestUri`. Param and header values are lists; headers answer to lower and Title case. `requestParams` renders as JSON (`{ "grant_type": [ … ] }`). |
+| `clientProperties` | yes | Six entries: `clientId`, `allowedGrantTypes`, `allowedScopes`, `allowedResponseTypes`, `customProperties`, `redirectUris`. **Reading any of the three `allowed*` sets throws** `Access to Java class "java.util.HashSet"` (`TreeSet`, `LinkedHashSet`) `is prohibited.` |
+| `logger`, `httpClient`, `systemEnv`, `openidm`, `secrets`, `utils`, `require`, `cookieName`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `realm`, `scriptName` | yes | `typeof` only, except `realm` (`/alpha`). |
+| `nodeState`, `action`, `callbacksBuilder`, `requestHeaders`, `existingSession`, `idRepository`, … | no | `typeof` is `undefined`. |
+
+`String(identity)` is the wrapper's Java `toString` (`…ScriptedIdentityScriptWrapper@<hash>`),
+but `identity.toString()` is `TypeError: Cannot find function toString`.
+
+#### Next-gen `accessToken`
+
+Getters on a plain `client_credentials` token: `getCustomFields()` is
+`{ "subname": "<client>", "expires_in": 3599 }` (JSON-rendered),
+`getExpiryTime() - getAuthTimeSeconds() * 1000` is `3600000`, `getField` of an
+unset key and `getNonce`/`getAct`/`getMayAct`/`getPermissions`/`getClaims`/
+`getAuthLevel`/`getConfirmationKey` are `null`. `getType`, `getValue` and
+`getExpiresIn` are `undefined`. `getField` reads back what `setField` stored as
+a JS value (`42`, not `42.0`). `getField()` and `setField(key)` with the wrong
+argument count are `Can't find method …AccessTokenScriptWrapper.getField().`
+
+Writers measured: `setField`, `setFields`, `setNonce`, `setClaims`,
+`setAuthLevel`, `setAct`, `setMayAct`, `setPermissions` (all return
+`undefined`), `addExtraData(k, v)` and `addExtraJsonData(k, "<json>")`, which
+both land in the **token endpoint's response body** rather than the JWT — the
+JSON one as the string given, not parsed. `setScope` takes a JS array or the
+`scopes` list; the token copies it, so a later `scopes.add()` does not reach the
+token. `accessToken.getScope().add(…)` throws `InternalError: null`.
+`setExpiryTime(auth + 600000)` shortens both the JWT and the body's `expires_in`
+(599).
+
+#### Legacy additions to the 2026-08-27 surface
+
+- `getClientId() === "<id>"` is **`false`** and `==` is `true`: the getters
+  return `JavaString`s, so strict equality against a literal fails. The token,
+  audit and grant ids are `object` too; `getAuthTimeSeconds` and
+  `getExpiryTime` are numbers.
+- `getAct()` and `getConfirmationKey()` render as `null` but are objects with
+  `size()` 0, not JS `null`, on a stateless token. `getField` of an unset key
+  is the same.
+- `getField` of a value set by `setField` is a JSON value rendered with Java
+  doubles (`42.0`, `[ "a", 2.0, false ]`); `Object.prototype.toString` calls it
+  `[object JavaObject]`, and its members cannot be read as properties
+  (`v.a` is `undefined`).
+- `addExtraJsonData("<k>", "<json string>")` is `Can't find method
+  …StatelessAccessToken.addExtraJsonData(string,string).` The 2026-08-27 list
+  above calls it working without recording the argument types, so the
+  `(string, string)` shape is the one measured refusal.
+- `clientProperties` has five entries (no `redirectUris`), and the `allowed*`
+  sets are readable: `allowedScopes` rendered `[zzemuc-other, zzemuc-probe]`.
+- `accessToken.getScope().add(…)` returns `true` and does not change the
+  token.
+
+#### Both engines
+
+- **`removeScopes()` returns, and then AM cannot issue the token**: the token
+  endpoint answers `500 server_error` with `error_description`
+  `Cannot invoke "java.util.Collection.size()" because "c" is null`.
+- **An uncaught throw** is `500 server_error`,
+  `Error running access token modification plugin`, with nothing of the
+  script's message.
+- **The JWT's `expires_in` claim is `3600` while the custom field and the
+  response body say `3599`.**
+
 ### `AMIdentity.getAttribute` returns a HashSet (verified 2026-09-10)
 
 The 2026-08-27 sweep proved the two getters **resolve**. It never asked what

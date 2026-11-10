@@ -923,12 +923,66 @@ language-fidelity cases on the bindings runner. Library top-level `const` also
 passes (`lib-const-consumer`); loop-body `const` inside a library function still
 yields `"0,0,0"` (`lib-const-loop-consumer`), matching live.
 
+## Access-token modification context (listed 2026-11-10)
+
+`context: "OAUTH2_ACCESS_TOKEN_MODIFICATION"` runs on both engines from the
+overlay `packages/rhino-local/src/bindings/rhino/context-oauth2-access-token.cjs`.
+Its conformance test replays six live probes
+(`test/bindings/oauth2-access-token.e2e.test.ts`). What it approximates or
+leaves out:
+
+- **Java values are script objects.** A legacy `JavaString` is a null-prototype
+  object with `toString`, `valueOf` and `length()`; it compares `==` but not
+  `===` with a literal, as on AIC. But `Object.prototype.toString` reports
+  `[object Object]` where AIC reports `[object JavaObject]` (or `JavaList`,
+  `JavaMap`): this Rhino has no `Symbol.toStringTag` to borrow. The conformance
+  test levels that one tag and nothing else.
+- **Property reads cannot be intercepted.** A Java bean's missing member reads
+  as `undefined` on both sides, but a member that exists on the script object
+  only to raise a fault is visible to `typeof` and `in`.
+- **Hash order is not reproduced.** Sets and maps keep the fixture's order.
+  Live legacy `allowedScopes` came back in an order a `HashSet` chose; the
+  fixture has to list it that way to render the same `String()`.
+- **Header aliases are lower and Title case only.** AIC's header map is
+  case-insensitive; `requestHeaders["CONTENT-TYPE"]` is not emulated.
+- **JSON numbers.** Legacy `getField` renders numbers as Java doubles (`42.0`)
+  and is emulated; the JWT itself carries `42`, and the recorded effect holds
+  the JS value the script set.
+- **`expires_in`.** The default custom field and the response body say `3599`
+  and the JWT claim says `3600`, measured. The effect records the custom field.
+- **Shared bindings are the decision node's.** `logger`, `httpClient`,
+  `systemEnv`, and on next-gen `openidm`, `secrets`, `utils` and `require`, were
+  measured as present (`typeof`) in this context, not member by member. Their
+  behaviour is the decision node's implementation.
+- **The next-gen identity converts through `valueOf`.** `String(identity)` is
+  the wrapper's class name plus `@rhino-local` where AIC prints a hash code;
+  `identity.toString()` is a `Cannot find function` as on AIC, and so
+  `identity.valueOf()` answers where AIC is unmeasured.
+- **Assigning into a map.** `requestProperties.requestParams.x = …` and the
+  like are unmeasured and are not refused.
+- **`requestUri`'s type** on next-gen is inferred from its rendering (a path
+  after the host), not from a method call.
+- **Faults** (`oauth2-token-unmeasured/<binding>.<member>`): every
+  `accessToken` method not listed as measured in
+  `docs/api/12-script-bindings-matrix.md` (`toMap`, `getTokenInfo`, `setScope`
+  with anything but the measured shapes, the other `remove*`/`set*`,
+  next-gen `getResourceOwner`), Object methods on the views, `JSON.stringify` of
+  any view, empty-container `JsonValue` reads, legacy `scopes.add()` (callable
+  on AIC; its effect on the token is unmeasured), set iterators and streams,
+  next-gen `clientProperties.redirectUris`, overwriting a reserved claim, and
+  the `identity` writers. `identity.getAttributes()` is a fault on purpose: it
+  returns the client's password (`.ai/core.md` §8).
+- **The AIC lane** runs only decision-node scripts, so a token-context case is
+  reported unsupported there and runs locally only.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
   here.
-- It does not claim OAuth2 / ATM / may-act scripts were pointed at this harness.
-  They are a different binding surface.
+- It does not claim OAuth2 scripts in general run here. Access-token
+  modification does (section above); may-act, validate scope, OIDC claims and
+  the other OAuth2 contexts are a different binding surface and are not
+  emulated.
 - A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,
   and one of those (`identity-enum-attrs`) has no valid live measurement.
 - `require()` is a CommonJS eval of seeded source, not AM's wrap factory. The

@@ -60,7 +60,7 @@ per-context `*CaseInit` types enforce at compile time.
 
 ### What a context declares
 
-A context is one entry in `src/context/registry.ts`, plus one runtime overlay
+A context is one entry in `src/case/context.ts`, plus one runtime overlay
 file. It declares four things:
 
 1. **Bindings.** Which globals exist, which are refused, and per engine. The
