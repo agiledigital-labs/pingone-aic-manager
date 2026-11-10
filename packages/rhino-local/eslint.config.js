@@ -18,6 +18,7 @@ export default tseslint.config(
       // AM token-context probes, run byte-for-byte on AIC: ES5, AM globals,
       // and a deliberate `==` against a Java string.
       "test/fixtures/oauth2-atm/*.script.js",
+      "test/fixtures/oidc-claims/*.script.js",
     ],
   },
   eslint.configs.recommended,
