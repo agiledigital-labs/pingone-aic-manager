@@ -1135,6 +1135,82 @@ An OIDC case runs locally only. The types are exported from `./case`:
 `OidcClaimsCaseInit`, `OidcClaimsSeed`, `OidcClaimsExpect` and the recorded
 `OidcClaimsEffect`.
 
+### Social IdP profile transformation scripts
+
+`context: "SOCIAL_IDP_PROFILE_TRANSFORMATION"` runs a social identity
+provider's `transform` script, on either engine (legacy is AM's
+`SOCIAL_IDP_PROFILE_TRANSFORMATION`, next-gen is
+`SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN`). The script turns the provider's
+raw profile into the normalised profile that `SocialProviderHandlerNodeV2`
+reads. Its result is its **completion value**: a plain object on either
+engine, or on legacy also `new org.forgerock.json.JsonValue(map)` over a Java
+map.
+
+```ts
+defineCase({
+  name: "maps the provider's subject",
+  context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+  script, // ...; ({ id: rawProfile.sub, mail: rawProfile.get("email") });
+  given: {
+    engine: "next-gen",
+    socialIdp: { selectedIdp: "my-idp", rawProfile: { sub: "abc", email: "user@example.com" } },
+  },
+  expect: { socialIdp: { profile: { id: "abc", mail: "user@example.com" } } },
+});
+```
+
+**Fixtures.** `socialIdp.rawProfile` is the provider's profile (default `{}`)
+and `socialIdp.selectedIdp` the provider's name (default `rhino-local-idp`),
+which also seeds `nodeState.get("selectedIdp")` unless the case seeds that
+key. The node state comes from `sharedState` / `transientState`, as on the
+decision node. `requestHeaders`, `requestParameters`, `cookieName` and
+`loggerScriptId` are accepted too.
+
+**Assertions.** `expect.socialIdp.profile` is the profile the handler node
+receives, as a value or a matcher. A returned profile the case does not
+declare fails the verdict unless `allowUndeclared: { socialIdp: true }`.
+Numbers reach the node as doubles (`4` arrives as `4.0`), which JSON cannot
+tell apart. A top-level `undefined` property arrives as `null`. If the script
+evaluates to `undefined`, `null` or a string, AM fails the journey with 401
+Login failure. The run records that refusal; declare `accepted: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as it fails
+the journey. Node-state writes (`nodeState.putShared`/`putTransient`, and on
+legacy `sharedState.put`) persist to later nodes and are judged through
+`expect.sharedState` / `expect.transientState`, fail-closed.
+`expect.outcome` is refused.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- **Next-gen** `rawProfile` is a Java map with map access: `rawProfile.sub`
+  and `rawProfile.get("sub")` are JS strings, a missing key reads `undefined`
+  by dot and `null` by `get`, and `keys()`/`size()` work. `nodeState.keys()`
+  fails with AIC's class-shutter error. `httpClient`, `openidm`, `secrets`,
+  `utils`, `require` and the other next-gen shared bindings are the decision
+  node's. `sharedState`, `transientState` and `callbacks` are not bound.
+- **Legacy** `rawProfile` is a JsonValue: `rawProfile.sub` is `undefined`. Use
+  `rawProfile.get("sub").getObject()`, which is a Java string, or
+  `isDefined()`, `keys()` and `size()`. `nodeState.get()` also answers a
+  JsonValue, and `nodeState.keys()` lists the keys the state held when the
+  script started. Legacy binds `sharedState`, `transientState` and
+  `callbacks`, but not `httpClient`, `openidm`, `secrets`, `utils`, `require`
+  or `cookieName`.
+- **Neither engine** binds `existingSession` (a `ReferenceError`, although the
+  next-gen descriptor lists it), `normalizedProfile`, `action` or `outcome`.
+
+Only string profile values were measured, so reading any other value raises
+the harness fault `social-idp-unmeasured/rawProfile.<key>`. Every other
+unmeasured member raises `social-idp-unmeasured/<binding>.<member>`, as does a
+result of any other kind.
+
+The legacy context id is shared with `SocialProviderHandlerNodeV2`'s own
+`script`, which binds `normalizedProfile`. That second invocation is not
+emulated.
+
+A social IdP case runs locally only. The types are exported from `./case`:
+`SocialIdpCaseInit`, `SocialIdpSeed`, `SocialIdpExpect` and the recorded
+`SocialIdpEffect`.
+
 ### Phase timing
 
 To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and

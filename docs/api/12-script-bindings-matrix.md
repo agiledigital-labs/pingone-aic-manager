@@ -1906,6 +1906,86 @@ element-access error, so `identity.getAttribute("mail")[0]` and `scopes[0]`
 type-check and throw. `reject.cjs` records this rather than pretending to gate
 it.
 
+### Social IdP profile transformation on both engines: the emulator's probes (verified 2026-11-10)
+
+`SOCIAL_IDP_PROFILE_TRANSFORMATION` (legacy, `1.0`) and
+`SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN` (`2.0`), measured for the
+rhino-local social IdP context.
+
+**Method.** A headless social login inside the sandbox tenant:
+
+- **Provider.** A throwaway OAuth2 client in `bravo`, with a `bravo` login
+  journey and one throwaway `bravo_user`.
+- **Consumer.** A throwaway social identity provider (`oauth2Config`) in
+  `alpha`, pointing at that client. Its `transform` script was set in turn to
+  a legacy and a next-gen probe.
+- **Journey.** An `alpha` journey of `SelectIdPNode` →
+  `SocialProviderHandlerNodeV2` → a scripted decision node that recorded what
+  the handler left in the node state. The legacy runs also set the handler's
+  own `script` to a probe of `normalizedProfile`.
+
+The login was driven over REST. `SelectIdPNode` auto-selects a single
+provider, so the first response is the `RedirectCallback`. The `bravo` login
+and the authorize request give a `code`. The journey resumes by POSTing the
+previous step's JSON to `authenticate?…&code&state&iss&client_id`. Posting
+`{}` instead fails with `/state: Expecting a value`.
+
+The probe returns its record inside the profile (`aicprobe`). The probes,
+eight one-line result scripts per engine, and their sanitised captures are
+committed as `packages/rhino-local/test/fixtures/social-idp/`.
+`test/bindings/social-idp.e2e.test.ts` runs the same scripts in the emulator
+and requires the same record. Every object was deleted afterwards and its
+deletion confirmed by re-read. The login created no `alpha_user`.
+
+The context descriptor (`GET /am/json/realms/root/realms/alpha/contexts/SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN`)
+is committed as `docs/api/bindings/social-idp-profile-transformation-next.json`.
+Its three `allowLists` entries are the same as `SOCIAL_PROVIDER_HANDLER_NODE`'s.
+
+#### What AM does with the result
+
+The result is the script's **completion value**. It is the same on both
+engines except where noted.
+
+| Completion value | Outcome |
+| --- | --- |
+| a plain object (`{}` included) | accepted; the handler receives it |
+| legacy: `new org.forgerock.json.JsonValue(m)`, `m` a `java.util.LinkedHashMap` | accepted |
+| `undefined`, `null`, a string | journey fails, 401 `Login failure` |
+| an uncaught `throw` | journey fails, 401 |
+
+- **Numbers become doubles**: `4` reaches the handler as `4.0`, and
+  `[1, "b"]` as `[1.0, "b"]`.
+- **A top-level `undefined` property** arrives as `null`. A `null` stays
+  `null`.
+- **Node-state writes persist** to later nodes: `nodeState.putShared`,
+  `nodeState.putTransient`, and on legacy `sharedState.put`.
+- **Legacy `org.forgerock.json.JsonValue.json(...)`** fails with
+  `Access to Java class "java.lang.Class" is prohibited`.
+
+#### Bindings
+
+| Binding | Legacy | Next-gen |
+| --- | --- | --- |
+| `rawProfile` | a JsonValue (`[object JavaObject]`). `.sub` is `undefined`; `get("sub")` is a JsonValue printing `"…"` (quoted), whose `getObject()` is a Java string; `get(missing)` prints `null`; `isDefined()` a boolean; `getObject()` a `[object JavaMap]` printing `{k=v, …}`; `keys()` a `[object JavaObject]` printing `[k, …]`; `size()` a number. `for...in` lists the JsonValue's Java members. `JSON.stringify` gives its rendering as a JSON string | a Java map (`[object JavaMap]`). `.sub` and `get("sub")` are JS strings; `.missing` is `undefined`; `get(missing)` is `null`; `keys()` a `[object JavaList]`; `size()` a number; `for...in` lists the keys; `getObject` and `isDefined` are not functions. `JSON.stringify` gives the object, keys in hash order |
+| `selectedIdp` | JS string, `=== "<provider>"` true | same |
+| `nodeState` | `get("selectedIdp")` a JsonValue printing `"…"`; `putShared` works; `keys()` listed `expectProfileInformation,selectedIdp` and not a key the script had just put | `get` a JS string; `putShared` works; `keys()` throws `Access to Java class "java.util.HashSet" is prohibited` |
+| `sharedState`, `transientState`, `callbacks` | bound (`object`) | `undefined` |
+| `httpClient`, `openidm`, `secrets`, `utils`, `require`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `cookieName` | `undefined` | bound |
+| `existingSession` | `ReferenceError` | `ReferenceError`, although the descriptor lists it |
+| `requestHeaders`, `requestParameters` | bound (21 and 5 keys on this flow) | same |
+| `realm`, `scriptName`, `systemEnv`, `logger` | bound; `realm` is `/alpha` | same |
+| `logger.getName()` | a Java string, `scripts.SOCIAL_IDP_PROFILE_TRANSFORMATION.<script id>.(<script name>)` | a JS string, `scripts.SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN.<script id>.(<script name>)` |
+| `normalizedProfile`, `action`, `outcome`, `identity`, `session`, `callbacksBuilder`, `idRepository` | `undefined` | `undefined` |
+
+**The handler node's own script (legacy).** It runs under the same legacy
+context id and binds `normalizedProfile`, a JsonValue holding the
+transformation's result. `normalizedProfile.givenName` is `undefined`, and
+`normalizedProfile.get("givenName")` is a JsonValue. `nodeState`,
+`sharedState` and `transientState` are bound. Returning
+`new JsonValue(LinkedHashMap)` sets the managed object's attributes: the
+captured `givenName` reached the handler's `objectAttributes`. The emulator
+does not run this invocation.
+
 ### Library `require()` from next-gen access-token modification (verified 2026-07-29)
 
 Question: can an OAuth2 **access token modification** script use AM library

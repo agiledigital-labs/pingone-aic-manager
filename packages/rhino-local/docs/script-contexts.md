@@ -1,8 +1,9 @@
 # Script contexts
 
 Status: design note, 2026-11-10. Implemented: the selector,
-`OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`, each on both engines. The
-other five rows of the table below are sketches, not commitments.
+`OAUTH2_ACCESS_TOKEN_MODIFICATION`, `OIDC_CLAIMS` and
+`SOCIAL_IDP_PROFILE_TRANSFORMATION`, each on both engines. The other four rows
+of the table below are sketches, not commitments.
 
 ## The problem
 
@@ -99,7 +100,7 @@ the decision node.
 | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `OAUTH2_ACCESS_TOKEN_MODIFICATION` legacy + next-gen (**implemented**) | `accessToken`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `session` (null)                         | `accessToken` (starting state), `identity`, `client`, `scopes`, `request` | Top-level body; return value ignored; AM issues the mutated token                                                                | `expect.accessToken`: fields added/changed/removed, scope, expiry, and the other setters |
 | `OIDC_CLAIMS` legacy + next-gen (**implemented**) | `claims`, `requestedClaims`, `claimsLocales`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `claimObjects`, `requestedTypedClaims`, `session` (null) | `identity`, `scopes`, `client`, `request`, `oidc` (claims seed, `claimsLocales`) | Completion value: next-gen `{values, compositeScopes}`, legacy a `UserInfoClaims`; read through the runner's completion hook | `expect.oidc`: `userinfo`, `idToken`, `compositeScopes`, `issued` |
-| `SOCIAL_IDP_PROFILE_TRANSFORMATION` legacy + next-gen                 | `rawProfile`, `normalizedProfile`(?), `selectedIdp`                                                                           | the provider's raw profile                                                | Top-level body that returns the normalised profile                                                                               | `expect.profile`                                                                         |
+| `SOCIAL_IDP_PROFILE_TRANSFORMATION` legacy + next-gen (**implemented**) | `rawProfile` (next-gen a Java map, legacy a JsonValue), `selectedIdp`, `nodeState`; legacy `sharedState`, `transientState`, `callbacks` | `socialIdp` (`rawProfile`, `selectedIdp`), the node state | Completion value: a plain object, or on legacy `new JsonValue(map)`; undefined, null or a string fails the journey | `expect.socialIdp`: `profile`, `accepted`; the state channels |
 | `CONFIG_PROVIDER_NODE` (next-gen)                                     | `nodeState` (read), `config`                                                                                                  | node state seed                                                           | Top-level body that assigns `config`; AM configures the wrapped node from it                                                     | `expect.config`, plus the state channels it can read                                     |
 | `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`                                      | `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes`                                | requested / available / allowed scopes                                    | Named function (`validateAccessTokenScope`, …) AM calls after the body; returns the scope list or throws via `throwInvalidScope` | `expect.scopes` or `expect.invalidScope` (the measured fail-open row matters)            |
 | `OAUTH2_MAY_ACT_NEXT_GEN`                                             | `token` (with `setMayAct`)                                                                                                    | token starting state                                                      | Top-level body; AM stamps `may_act`                                                                                              | `expect.mayAct`                                                                          |
@@ -114,6 +115,18 @@ descriptor alone never makes a member callable.
 See the README section "Access-token modification scripts" for the author's
 view; the measured surface is in `docs/api/12-script-bindings-matrix.md` and the
 gaps in `docs/rhino-local-gaps.md`.
+
+## The social IdP profile transformation context in detail
+
+See the README section "Social IdP profile transformation scripts" for the
+author's view. The result is the completion value, read through the same
+`completion: true` hook as OIDC claims. Unlike the token contexts, this one
+binds the node state, so `sharedState` / `transientState` are accepted in
+`given` and judged in `expect` by the decision node's state verdict. The
+legacy context id is also used by `SocialProviderHandlerNodeV2`'s own `script`,
+which binds `normalizedProfile` and returns a JsonValue. That invocation was
+measured (docs/api/12) but is not emulated; a case for it would need its own
+fixture (the normalised profile) and result shape.
 
 ## The OIDC claims context in detail
 
