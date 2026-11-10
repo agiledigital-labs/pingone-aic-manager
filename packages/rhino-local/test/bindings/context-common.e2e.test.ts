@@ -19,13 +19,16 @@ interface Row {
   fault: string;
   given?: Record<string, unknown>;
   /** Default: the access-token context. */
-  context?: "OIDC_CLAIMS";
+  context?: "OIDC_CLAIMS" | "SOCIAL_IDP_PROFILE_TRANSFORMATION";
 }
 
 const both = ["next-gen", "legacy"] as const;
 const caught = (body: string) => `try { ${body} } catch (e) { accessToken.setField("out", "caught"); }`;
 // An OIDC script that catches the fault and returns nothing AIC would refuse.
 const oidcCaught = (body: string) => `var zzCaught = false; try { ${body} } catch (e) { zzCaught = true; } undefined;`;
+
+// A social IdP transform that catches the fault and returns a profile AIC accepts.
+const socialCaught = (body: string) => `var zzCaught = false; try { ${body} } catch (e) { zzCaught = true; } ({ out: "ran" });`;
 
 const ROWS: Row[] = [
   // P2-1: non-JSON objects handed to a setter.
@@ -137,9 +140,29 @@ const ROWS: Row[] = [
     script: oidcCaught(`claims.get();`), fault: "oidc-claims-unmeasured/claims.get(0 argument(s))" },
   { name: "r2 P2-6 assigning a legacy claims member", engines: ["legacy"], context: "OIDC_CLAIMS",
     script: oidcCaught(`claims.zz = "a";`), fault: "oidc-claims-unmeasured/claims.zz" },
+
+  // Sol ctx r3.
+  // P2-1: a measured scopes.add() must not adopt an earlier index write into its new baseline.
+  { name: "r3 P2-1 scopes[0] = changed; scopes.add(b)", engines: ["next-gen"],
+    script: `scopes[0] = "changed"; scopes.add("b"); accessToken.setField("out", [scopes[0], scopes.get(0), scopes.size()].join());`,
+    fault: "oauth2-token-unmeasured/scopes.0", given: { scopes: ["a"] } },
+  { name: "r3 P2-1 add, assign an existing index, add again", engines: ["next-gen"],
+    script: `scopes.add("b"); scopes[0] = "changed"; scopes.add("c"); accessToken.setField("out", "ran");`,
+    fault: "oauth2-token-unmeasured/scopes.0", given: { scopes: ["a"] } },
+  // P2-2: rendering a profile value nobody measured faults like reading it.
+  { name: "r3 P2-2 String(rawProfile) with a boolean value", engines: both, context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    script: socialCaught(`String(rawProfile);`), fault: "social-idp-unmeasured/rawProfile.verified",
+    given: { socialIdp: { rawProfile: { sub: "s", verified: true } } } },
+  { name: "r3 P2-2 String(rawProfile) with a nested object", engines: both, context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    script: socialCaught(`String(rawProfile);`), fault: "social-idp-unmeasured/rawProfile.address",
+    given: { socialIdp: { rawProfile: { sub: "s", address: { city: "c" } } } } },
+  // P2-3: a seeded key named like a context's own measured method is refused, not hidden.
+  { name: "r3 P2-3 a profile key named keys", engines: ["next-gen"], context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    script: socialCaught(`rawProfile.get("keys");`), fault: "social-idp-unmeasured/rawProfile.keys",
+    given: { socialIdp: { rawProfile: { sub: "s", keys: "value" } } } },
 ];
 
-describe("shared context views fault what no capture measured (Sol ctx r1, r2)", () => {
+describe("shared context views fault what no capture measured (Sol ctx r1, r2, r3)", () => {
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
@@ -147,7 +170,12 @@ describe("shared context views fault what no capture measured (Sol ctx r1, r2)",
   const cases = ROWS.flatMap((row) => row.engines.map((engine) => ({ ...row, engine })));
   it.each(cases)("$name ($engine)", async ({ name, engine, script, fault, given, context }) => {
     expectHarnessFault(fault);
-    const run = runCase(runner, context === "OIDC_CLAIMS"
+    const run = runCase(runner, context === "SOCIAL_IDP_PROFILE_TRANSFORMATION"
+      ? defineCase({
+        name: `${name} ${engine}`, context, script, given: { engine, ...given },
+        expect: { allowUndeclared: { socialIdp: true, sharedState: true, transientState: true, logs: true } },
+      })
+      : context === "OIDC_CLAIMS"
       ? defineCase({
         name: `${name} ${engine}`, context, script, given: { engine, ...given },
         expect: { allowUndeclared: { oidc: true, logs: true } },
@@ -190,11 +218,12 @@ describe("shared context views fault what no capture measured (Sol ctx r1, r2)",
     const added = await runCase(runner, defineCase({
       name: "scopes.add",
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
-      script: `scopes.add("zz-added"); accessToken.setField("out", scopes.size());`,
+      // Two measured adds in a row: the r3 pre-add audit finds nothing to fault.
+      script: `scopes.add("zz-added"); scopes.add("zz-again"); accessToken.setField("out", scopes.size());`,
       given: { engine: "next-gen", scopes: ["a"] },
       expect: { allowUndeclared: { accessToken: true } },
     }));
-    expect(added.effects.accessToken!.final.fields.out).toBe(2);
+    expect(added.effects.accessToken!.final.fields.out).toBe(3);
     const strings = await runCase(runner, defineCase({
       name: "legacy Java string surface",
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
