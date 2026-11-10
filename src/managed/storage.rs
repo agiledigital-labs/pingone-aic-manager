@@ -230,12 +230,7 @@ pub fn plan(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Ad
         }
         let path = format!("managed/{}", entry.object);
         if !generic.contains_key(&path) {
-            generic.insert(path.clone(), json!({
-                "dnTemplate": format!("ou={},ou=managed,dc=openidm,dc=example,dc=com", entry.object),
-                "objectClasses": ["uidObject", "fr-idm-generic-obj"],
-                "jsonAttribute": "fr-idm-json", "jsonQueryEqualityMatchingRule": "caseIgnoreJsonQueryMatch",
-                "properties": {}
-            }));
+            generic.insert(path.clone(), generated_entry(&entry.object));
             added_types.insert(entry.object.clone(), generic[&path].clone());
         }
         let properties = generic
@@ -255,6 +250,19 @@ pub fn plan(managed: &Value, repo: &Value, object: &str, key: &str) -> Result<Ad
         entries,
         added_types,
         after,
+    })
+}
+
+/// The per-type `genericMapping` entry `aic` writes for `managed/<object>`
+/// when it adds the type's first mapping. `repair --empty-entry` removes an
+/// entry only when it equals this with `properties: {}`.
+pub(crate) fn generated_entry(object: &str) -> Value {
+    json!({
+        "dnTemplate": format!("ou={object},ou=managed,dc=openidm,dc=example,dc=com"),
+        "objectClasses": ["uidObject", "fr-idm-generic-obj"],
+        "jsonAttribute": "fr-idm-json",
+        "jsonQueryEqualityMatchingRule": "caseIgnoreJsonQueryMatch",
+        "properties": {}
     })
 }
 

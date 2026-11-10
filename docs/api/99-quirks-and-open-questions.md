@@ -1849,5 +1849,8 @@ Measured live 2026-11-10 (`10-managed-objects.md`, "2026-11-10 — removing the
 empty per-type `repo.ds` entry of an **existing** type"): records written while
 the type was mapped stayed readable by id and by query, and new records stayed
 creatable, immediately and after ~65 s. `relationship repair <object>
---empty-entry` therefore accepts an existing type. Still refused: an entry that
-maps a property, and one another mapping names as a `resourcePath`.
+--empty-entry` therefore accepts an existing type, but only an entry equal to
+the layout `aic` generates (`storage::generated_entry`); a custom `dnTemplate`,
+`jsonAttribute`, object classes, matching rule or any extra field is refused by
+name, because it was not measured. Also refused: an entry that maps a property,
+and one another mapping names as a `resourcePath`.
