@@ -355,163 +355,6 @@ function __rhinoLocalAtBuildToken(seed) {
   return __rhinoLocalCtxWatch(token, "accessToken");
 }
 
-function __rhinoLocalAtBuildIdentity(seed) {
-  var legacy = __rhinoLocalCtx.engine === "legacy";
-  // Next-gen: measured 2026-11-10, String(identity) is the wrapper's Java
-  // toString (class@hash) while identity.toString() is "Cannot find function
-  // toString", so the view has no toString at all and converts through
-  // valueOf. A null prototype is what lets Rhino's own missing-member error
-  // read as it does on AIC.
-  var identity = __rhinoLocalCtx.engine === "legacy" ? {} : Object.create(null);
-  var attrs = seed.attributes;
-  if (legacy) {
-    var cls = "com.sun.identity.idm.AMIdentity";
-    __rhinoLocalCtxMethod(identity, "identity", cls, "getName", 0, function () {
-      return __rhinoLocalCtxJavaString(seed.name);
-    });
-    __rhinoLocalCtxMethod(identity, "identity", cls, "getUniversalId", 0, function () {
-      return __rhinoLocalCtxJavaString(seed.universalId);
-    });
-    __rhinoLocalCtxMethod(identity, "identity", cls, "isExists", 0, function () {
-      return seed.exists;
-    });
-    __rhinoLocalCtxMethod(identity, "identity", cls, "getAttribute", 1, function (name) {
-      var key = String(name);
-      // Measured 2026-09-10: an attribute the identity lacks is an empty set.
-      var values = Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key] : [];
-      return __rhinoLocalCtxJavaSet(values, "identity.getAttribute()", false);
-    });
-    // Measured: identity.exists() is "Cannot call property exists", Rhino's
-    // refusal to call a non-function (a bean property of isExists()).
-    __rhinoLocalHide(identity, "exists", seed.exists);
-    __rhinoLocalHide(identity, "toString", function () {
-      return seed.universalId;
-    });
-    // Never emulate getAttributes(): it returns the whole profile, password
-    // included, in clear (.ai/core.md §8).
-    __rhinoLocalCtxFaulting(identity, "identity", [
-      "getAttributes", "setAttributes", "removeAttributes", "getRealm", "getType", "isActive", "store",
-      "getMemberships", "isMember", "getAssignedServices", "getClass", "hashCode", "equals",
-    ]);
-  } else {
-    var ngCls = "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper";
-    __rhinoLocalCtxMethod(identity, "identity", ngCls, "getName", 0, function () {
-      return seed.name;
-    });
-    __rhinoLocalCtxMethod(identity, "identity", ngCls, "getUniversalId", 0, function () {
-      return seed.universalId;
-    });
-    __rhinoLocalCtxMethod(identity, "identity", ngCls, "exists", 0, function () {
-      return seed.exists;
-    });
-    __rhinoLocalCtxMethod(identity, "identity", ngCls, "getAttributeValues", 1, function (name) {
-      var key = String(name);
-      // Measured: an attribute the identity lacks reads as an empty list.
-      return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : []);
-    });
-    __rhinoLocalHide(identity, "valueOf", function () {
-      return ngCls + "@rhino-local";
-    });
-    __rhinoLocalCtxFaulting(identity, "identity", ["setAttribute", "addAttribute", "store", "getClass", "hashCode",
-      "equals", "wait", "notify", "notifyAll"]);
-  }
-  __rhinoLocalCtxToJSON(identity, "identity");
-  return __rhinoLocalCtxWatch(identity, "identity");
-}
-
-function __rhinoLocalAtBuildScopes(items) {
-  if (__rhinoLocalCtx.engine === "legacy") {
-    return __rhinoLocalCtxJavaSet(items, "scopes", false);
-  }
-  var store = items.slice();
-  var list = __rhinoLocalCtxList(store);
-  // Measured on next-gen: contains() answers, and add() works on this list
-  // (it is not the token's scope; setScope copies it).
-  __rhinoLocalHide(list, "contains", function (v) {
-    if (arguments.length !== 1) {
-      throw __rhinoLocalCtxUnmeasured("scopes.contains(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    return store.indexOf(String(v)) !== -1;
-  });
-  __rhinoLocalHide(list, "add", function (v) {
-    if (arguments.length !== 1 || typeof v !== "string") {
-      throw __rhinoLocalCtxUnmeasured("scopes.add(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    store.push(v);
-    list[store.length - 1] = v;
-    __rhinoLocalHide(list, "length", store.length);
-    list[__rhinoLocalListKey].items.push(v);
-    return true;
-  });
-  return list;
-}
-
-function __rhinoLocalAtBuildRequest(seed, token) {
-  var legacy = __rhinoLocalCtx.engine === "legacy";
-  var listOf = function (values) {
-    return __rhinoLocalCtxList(values.map(__rhinoLocalCtxString));
-  };
-  var listMap = function (label, values, aliases) {
-    var lists = __rhinoLocalCtxBare();
-    Object.keys(values).forEach(function (k) {
-      lists[k] = listOf(values[k]);
-    });
-    return __rhinoLocalCtxMap(label, Object.keys(values), function (k) {
-      return lists[k];
-    }, function () {
-      return __rhinoLocalCtxRenderMap(values, legacy);
-    }, aliases);
-  };
-  var params = listMap("requestProperties.requestParams", seed.params, null);
-  var headers = listMap("requestProperties.requestHeaders", seed.headers,
-    __rhinoLocalCtxHeaderAliases(Object.keys(seed.headers)));
-  var values = {
-    realm: __rhinoLocalCtxString(token.realm),
-    requestHeaders: headers,
-    requestParams: params,
-    requestUri: __rhinoLocalCtxString(seed.uri),
-  };
-  return __rhinoLocalCtxMap("requestProperties", ["realm", "requestHeaders", "requestParams", "requestUri"],
-    function (k) {
-      return values[k];
-    }, null);
-}
-
-function __rhinoLocalAtBuildClient(seed) {
-  var legacy = __rhinoLocalCtx.engine === "legacy";
-  var custom = __rhinoLocalCtxMap("clientProperties.customProperties", Object.keys(seed.customProperties),
-    function () {
-      throw __rhinoLocalCtxUnmeasured("clientProperties.customProperties", "entry values");
-    }, Object.keys(seed.customProperties).length === 0 ? function () {
-      return legacy ? "{}" : "{  }";
-    } : null);
-  var sets = {
-    allowedGrantTypes: { values: seed.allowedGrantTypes, javaClass: "java.util.HashSet" },
-    allowedScopes: { values: seed.allowedScopes, javaClass: "java.util.TreeSet" },
-    allowedResponseTypes: { values: seed.allowedResponseTypes, javaClass: "java.util.LinkedHashSet" },
-  };
-  var keys = legacy
-    ? ["allowedGrantTypes", "clientId", "customProperties", "allowedScopes", "allowedResponseTypes"]
-    : ["allowedGrantTypes", "clientId", "customProperties", "redirectUris", "allowedScopes", "allowedResponseTypes"];
-  return __rhinoLocalCtxMap("clientProperties", keys, function (k) {
-    if (k === "clientId") {
-      return __rhinoLocalCtxString(seed.clientId);
-    }
-    if (k === "customProperties") {
-      return custom;
-    }
-    if (k === "redirectUris") {
-      throw __rhinoLocalCtxUnmeasured("clientProperties.redirectUris");
-    }
-    if (legacy) {
-      return __rhinoLocalCtxJavaSet(sets[k].values, "clientProperties." + k, false);
-    }
-    // Measured: next-gen hands over the raw Java set, which the context's
-    // class shutter refuses.
-    throw __rhinoLocalShutterError(sets[k].javaClass);
-  }, null);
-}
-
 function __rhinoLocalAtDefaults(given) {
   var at = given.accessToken || {};
   var clientId = at.clientId !== undefined ? at.clientId : "test-client";
@@ -602,10 +445,10 @@ function __rhinoLocalSeedAccessToken(given) {
     realm = d.token.realm;
   }
   accessToken = __rhinoLocalAtBuildToken(d.token);
-  identity = __rhinoLocalAtBuildIdentity(d.identity);
-  scopes = __rhinoLocalAtBuildScopes(d.scopes);
-  requestProperties = __rhinoLocalAtBuildRequest(d.request, d.token);
-  clientProperties = __rhinoLocalAtBuildClient(d.client);
+  identity = __rhinoLocalCtxBuildIdentity(d.identity);
+  scopes = __rhinoLocalCtxBuildScopes(d.scopes, { add: true });
+  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm);
+  clientProperties = __rhinoLocalCtxBuildClient(d.client, null);
   if (engine === "legacy") {
     // Measured: bound, and null.
     session = null;
