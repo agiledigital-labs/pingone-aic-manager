@@ -1,0 +1,5 @@
+{
+  "caller": "decision-legacy",
+  "requireMsg": "ReferenceError: \"require\" is not defined.",
+  "required": "err"
+}
