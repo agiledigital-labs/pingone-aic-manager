@@ -1,8 +1,8 @@
 # Script contexts
 
-Status: design note, 2026-11-10. Implemented: the selector, and
-`OAUTH2_ACCESS_TOKEN_MODIFICATION` on both engines. The other six rows of the
-table below are sketches, not commitments.
+Status: design note, 2026-11-10. Implemented: the selector,
+`OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`, each on both engines. The
+other five rows of the table below are sketches, not commitments.
 
 ## The problem
 
@@ -97,8 +97,8 @@ the decision node.
 
 | Context (`context` + engine)                                          | Bindings beyond the shared set                                                                                                | Fixtures                                                                  | Invocation, and what AM does with it                                                                                             | Assertions                                                                               |
 | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `OAUTH2_ACCESS_TOKEN_MODIFICATION` legacy + next-gen (**this slice**) | `accessToken`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `session` (null)                         | `accessToken` (starting state), `identity`, `client`, `scopes`, `request` | Top-level body; return value ignored; AM issues the mutated token                                                                | `expect.accessToken`: fields added/changed/removed, scope, expiry, and the other setters |
-| `OIDC_CLAIMS` legacy + next-gen                                       | `claims`, `requestedClaims`, `claimsLocales`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `session` | identity attributes, requested claims, scopes, client                     | Top-level body that returns (or populates) the claims map; AM merges it into the id token / userinfo                             | `expect.claims` (the map AM would emit)                                                  |
+| `OAUTH2_ACCESS_TOKEN_MODIFICATION` legacy + next-gen (**implemented**) | `accessToken`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `session` (null)                         | `accessToken` (starting state), `identity`, `client`, `scopes`, `request` | Top-level body; return value ignored; AM issues the mutated token                                                                | `expect.accessToken`: fields added/changed/removed, scope, expiry, and the other setters |
+| `OIDC_CLAIMS` legacy + next-gen (**implemented**) | `claims`, `requestedClaims`, `claimsLocales`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `claimObjects`, `requestedTypedClaims`, `session` (null) | `identity`, `scopes`, `client`, `request`, `oidc` (claims seed, `claimsLocales`) | Completion value: next-gen `{values, compositeScopes}`, legacy a `UserInfoClaims`; read through the runner's completion hook | `expect.oidc`: `userinfo`, `idToken`, `compositeScopes`, `issued` |
 | `SOCIAL_IDP_PROFILE_TRANSFORMATION` legacy + next-gen                 | `rawProfile`, `normalizedProfile`(?), `selectedIdp`                                                                           | the provider's raw profile                                                | Top-level body that returns the normalised profile                                                                               | `expect.profile`                                                                         |
 | `CONFIG_PROVIDER_NODE` (next-gen)                                     | `nodeState` (read), `config`                                                                                                  | node state seed                                                           | Top-level body that assigns `config`; AM configures the wrapped node from it                                                     | `expect.config`, plus the state channels it can read                                     |
 | `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`                                      | `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes`                                | requested / available / allowed scopes                                    | Named function (`validateAccessTokenScope`, …) AM calls after the body; returns the scope list or throws via `throwInvalidScope` | `expect.scopes` or `expect.invalidScope` (the measured fail-open row matters)            |
@@ -114,3 +114,12 @@ descriptor alone never makes a member callable.
 See the README section "Access-token modification scripts" for the author's
 view; the measured surface is in `docs/api/12-script-bindings-matrix.md` and the
 gaps in `docs/rhino-local-gaps.md`.
+
+## The OIDC claims context in detail
+
+See the README section "OIDC claims scripts" for the author's view. The result
+is the script's completion value, which a harvest appended to the source cannot
+read without changing what the script evaluates to. So a context entry may set
+`completion: true` (`src/bindings/preamble.ts`). The runner then evaluates the
+script unchanged and calls the context's harvest function with the completion
+value. Every other context still gets the appended harvest.

@@ -173,8 +173,17 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
     expect(ids).toContain("oidc-claims-unmeasured/claims.subname");
   }, 60_000);
-});
 
+  // Legacy was measured with one plain object, the next-gen result shape;
+  // any other object is a guess, so it faults rather than answer the same 500.
+  it.runIf(engine === "legacy")("a plain object other than the measured shape is a named fault", async () => {
+    expectHarnessFault("oidc-claims-unmeasured/result");
+    const error = await run("plain", `({ zzPlain: "x" });`, "token").then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+    expect(ids).toContain("oidc-claims-unmeasured/result");
+  }, 60_000);
+});
 
 describe("one JVM running OIDC claims cases between other contexts' cases", () => {
   let runner: RhinoRunner;

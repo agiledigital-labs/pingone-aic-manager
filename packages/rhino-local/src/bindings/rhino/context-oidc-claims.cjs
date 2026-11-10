@@ -581,13 +581,14 @@ function __rhinoLocalOidcResult(completion) {
       none.refusal = "Cannot cast java.util.LinkedHashMap to org.forgerock.oauth2.core.UserInfoClaims";
       return none;
     }
+    // Measured with the next-gen shape only, `{values, compositeScopes}`.
     if (completion !== null && typeof completion === "object" && !__rhinoLocalOidcIsJava(completion) &&
-      __rhinoLocalCtxIsJsonObject(completion)) {
+      __rhinoLocalCtxIsJsonObject(completion) && Object.keys(completion).sort().join() === "compositeScopes,values") {
       none.refusal = "Error running OIDC claims plugin";
       return none;
     }
     throw __rhinoLocalCtxUnmeasured("result", "(the script evaluated to " + __rhinoLocalArgShape([completion]) +
-      "; only undefined, a UserInfoClaims, a LinkedHashMap and a plain object were measured)");
+      "; only undefined, a UserInfoClaims, a LinkedHashMap and {values, compositeScopes} were measured)");
   }
   if (completion === undefined) {
     return none;

@@ -1047,6 +1047,89 @@ The types are exported from `./case`: `AccessTokenCaseInit` (what
 `AccessTokenEffect`. Types for the script itself are the `aic` script
 workspace's `oauth2-access-token.d.ts` and `oauth2-access-token-ng.d.ts`.
 
+### OIDC claims scripts
+
+`context: "OIDC_CLAIMS"` runs an OIDC claims script, on either engine (legacy
+is AM's `OIDC_CLAIMS`, next-gen is `OIDC_CLAIMS_NEXT_GEN`). The script's
+result is its **completion value**, the value of its last expression, as AM
+reads it:
+
+- **next-gen**: `({ values: { … }, compositeScopes: { … } })`, with
+  `compositeScopes` optional;
+- **legacy**: `new org.forgerock.oauth2.core.UserInfoClaims(values,
+  compositeScopes)`, where `values` is a Java map and `compositeScopes` a Java
+  map or `null`.
+
+```ts
+defineCase({
+  name: "adds the mail claim",
+  context: "OIDC_CLAIMS",
+  script, // ...; ({ values: { mail: String(identity.getAttributeValues("mail")[0]) } });
+  given: {
+    engine: "next-gen",
+    identity: { name: "user-1", attributes: { mail: ["user@example.com"] } },
+    scopes: ["openid", "email"],
+  },
+  expect: { oidc: { userinfo: { mail: "user@example.com" } } },
+});
+```
+
+**Fixtures.** Every one is optional. `identity` is the user (name, universal
+id, `exists`, attributes); the name defaults to `rhino-local-user`. `scopes`
+defaults to `["openid"]`. `client` is what `clientProperties` reports (legacy
+has no `redirectUris`). `request` is `requestProperties`. By default it is a
+password-grant token request, with AM's filtering applied: no `password` and
+no `client_secret`. To model the userinfo endpoint, which runs the same script
+a second time, give the userinfo URI with empty params. `oidc` holds the
+`claims` binding's seed (`sub` and `subname`, both defaulting to the identity's
+name) and `claimsLocales`.
+
+**Assertions.** `expect.oidc` judges what AM would emit:
+
+- `userinfo`: the userinfo body, which is the returned values verbatim, nulls
+  included.
+- `idToken`: the id token's script claims. These are the values with nulls
+  dropped, under AM's subject rule: when the values hold `sub`, the token takes
+  `sub` and `subname` from them; otherwise the seed's `sub` and `subname` win.
+- `compositeScopes`: as returned.
+- `issued`: defaults to `true`.
+
+Any of the first three can be a value or a matcher. A non-empty userinfo body
+or composite-scopes map that the case does not declare fails the verdict
+unless `allowUndeclared: { oidc: true }` is set. The id token is never called
+undeclared, because it is derived from the values.
+
+AM fails the token request in two cases the script itself survives. On legacy,
+a completion value that is a Java map rather than a `UserInfoClaims` is 500
+`Cannot cast java.util.LinkedHashMap to …UserInfoClaims`, and the next-gen
+`{values, compositeScopes}` object is 500 `Error running OIDC claims plugin`. The run records that refusal; declare
+`issued: false` to expect it. An uncaught throw fails the run with
+`CaseRunError`. On both engines, a completion value of `undefined`, or (on
+next-gen) an object without `values`, is a 200 with no script claims.
+`expect.outcome` is refused.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- **Next-gen** `claims` is a JS-friendly map: its keys enumerate, `===`
+  works, and `get`/`put`/`remove`/`containsKey` are available. Changing it
+  changes nothing unless the script returns it.
+- **Legacy** `claims` is a real `java.util.LinkedHashMap` of real Java strings,
+  so `claims.get("sub") == identity.getName()` is true and `===` is false, as
+  on AIC. Legacy also binds `claimObjects`, `requestedTypedClaims`, `session`
+  (`null` on a password grant) and a Debug `logger`
+  (`message`/`warning`/`error`).
+- **Neither engine** binds `accessToken` or the decision-node bindings.
+
+Every unmeasured member raises the harness fault
+`oidc-claims-unmeasured/<binding>.<member>`. So does returning a claim AM
+writes itself (`aud`, `iss`, …) and deleting a key of next-gen `claims`
+(which AIC refuses quietly).
+
+An OIDC case runs locally only. The types are exported from `./case`:
+`OidcClaimsCaseInit`, `OidcClaimsSeed`, `OidcClaimsExpect` and the recorded
+`OidcClaimsEffect`.
+
 ### Phase timing
 
 To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and

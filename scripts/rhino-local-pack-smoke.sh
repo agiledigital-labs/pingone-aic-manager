@@ -181,6 +181,25 @@ describe("installed rhino-local", () => {
     } finally { await runner.close(); }
   });
 
+  // The OIDC claims overlay is a second packaged asset, and its result is
+  // the script's completion value, read through the runner's completion hook.
+  it("runs an OIDC claims case on both engines", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      for (const [engine, script] of [
+        ["next-gen", '({ values: { owner: String(identity.getName()) } });'],
+        ["legacy", 'var v = new java.util.HashMap(); v.put("owner", identity.getName()); new org.forgerock.oauth2.core.UserInfoClaims(v, null);'],
+      ] as const) {
+        const run = await runCase(runner, defineCase({
+          name: \`claims \${engine}\`, context: "OIDC_CLAIMS", script,
+          given: { engine, identity: { name: "widget-user" } },
+          expect: { oidc: { userinfo: { owner: "widget-user" } } },
+        }));
+        expect(run.verdict.summary, run.verdict.summary).toBe("");
+      }
+    } finally { await runner.close(); }
+  });
+
   // Positive control for step 1: were the declarations to resolve to \`any\`,
   // this directive would be unused and tsc would fail.
   it("types the inputs from the suite's schema", () => {
