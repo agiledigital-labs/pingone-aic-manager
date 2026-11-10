@@ -994,12 +994,63 @@ leaves out:
 - **The AIC lane** runs only decision-node scripts, so a token-context case is
   reported unsupported there and runs locally only.
 
+## OIDC claims context (listed 2026-11-10)
+
+`context: "OIDC_CLAIMS"` runs on both engines from the overlay
+`packages/rhino-local/src/bindings/rhino/context-oidc-claims.cjs`, on the same
+`context-common.cjs` views as the token context, so the view-level gaps listed
+above apply here too, with the prefix `oidc-claims-unmeasured/`. The
+conformance test (`test/bindings/oidc-claims.e2e.test.ts`) replays five live
+probes at both the token and the userinfo endpoint, plus twelve one-line
+result scripts (eighteen engine runs). What it approximates or leaves out:
+
+- **One invocation per run.** AM runs the script once for the id token and
+  again for each userinfo call. A case models one run. The userinfo run is
+  modelled by its request (the userinfo URI, no params and no
+  `claimsLocales`), not by a second pass.
+- **The id token is derived, not issued.** The effect's `idToken` holds only
+  the script's claims, under the measured subject rule, with nulls dropped. AM's
+  own claims (`aud`, `azp`, `realm`, `tokenName`, `tokenType`, `iss`, `exp`, …)
+  are not emulated. A returned value that names one of them faults, because
+  which side wins was not observed.
+- **`requestedClaims` and `requestedTypedClaims` are always empty.** The
+  sandbox realm has `claimsParameterSupported: false`, so a populated request
+  could not be measured without a realm-wide change. That change was declined.
+- **Composite scopes filter nothing.** As measured: a claim mapped to a scope
+  the token was not granted is still emitted. The recorded `compositeScopes`
+  is what the script returned.
+- **Legacy uses real Java strings.** The legacy `claims` map, the identity's
+  name and the other legacy getters return `java.lang.String`. The token
+  context's legacy views are script objects, not Java strings.
+- **Next-gen `claims` is a script object.** Its seeded `toString`/`toJSON`
+  render the measured `{sub, subname}` text. After the script changes the map,
+  either one faults. `put` over an existing key faults as unmeasured. `delete
+  claims.<key>` answers false on AIC and keeps the key; this Rhino cannot do
+  that while `remove()` works, so the delete is a fault, found by `remove()` or
+  by the harvest audit. A deleted key the script itself added is not detected.
+- **Numbers.** AM renders a returned `42` as `42.0` in both the userinfo body
+  and the id token. JSON cannot tell those apart, and the effect holds `42`.
+- **Results AM was not measured with fault.** On next-gen that is anything but
+  `undefined`, `{values}`, `{values, compositeScopes}` or an object without
+  `values`. On legacy it is anything but `undefined`, a `UserInfoClaims`, a
+  `LinkedHashMap` or a `{values, compositeScopes}` object. Inside the values, a nested null, a
+  non-finite number, a Java object other than a string, number, boolean, list
+  or map, and a map with a non-string key all fault.
+- **Shared bindings are the decision node's.** `logger` (next-gen),
+  `httpClient`, `systemEnv`, and on next-gen `openidm`, `secrets`, `utils`,
+  `require`, `jwtAssertion`, `jwtValidator`, `policy` and `emailService` were
+  measured as present only (`typeof`). The legacy Debug `logger`'s
+  `messageEnabled()`, `errorEnabled()` and `getName()`, and next-gen
+  `logger.getName()`, are faults.
+- **The AIC lane** runs only decision-node scripts, so an OIDC case runs
+  locally only.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
   here.
 - It does not claim OAuth2 scripts in general run here. Access-token
-  modification does (section above); may-act, validate scope, OIDC claims and
+  modification and OIDC claims do (sections above); may-act, validate scope and
   the other OAuth2 contexts are a different binding surface and are not
   emulated.
 - A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,

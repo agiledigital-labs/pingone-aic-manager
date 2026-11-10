@@ -341,7 +341,10 @@ partial guide:
   Enforcement matches neither the three nor the 51, and **differs between these
   contexts**: a `LIBRARY` script reaches `java.util.HashSet` and `ArrayList`
   perfectly well, while a next-gen validate-scope script cannot name
-  `java.util` at all. `oauth2-atm-next` and `oidc-claims-next` are unprobed.
+  `java.util` at all. `oauth2-atm-next` and `oidc-claims-next` are unprobed
+  as lists. One data point (2026-11-10): an OIDC claims next-gen script is
+  refused `java.util.HashSet`, `LinkedHashSet` and `TreeSet` on reading
+  `clientProperties.allowed*` ("OIDC claims on both engines" below).
 
 Read the per-context list as "classes this context's metadata bothered to
 declare", not as the sandbox boundary. This is the same metadata-is-not-behaviour
@@ -1742,6 +1745,92 @@ token. `accessToken.getScope().add(…)` throws `InternalError: null`.
 - **The JWT's `expires_in` claim is `3600` while the custom field and the
   response body say `3599`.**
 
+### OIDC claims on both engines: the emulator's probes (verified 2026-11-10)
+
+`OIDC_CLAIMS` (legacy, `1.0`) and `OIDC_CLAIMS_NEXT_GEN` (`2.0`), measured for
+the rhino-local OIDC claims context.
+
+**Method.** The probe setup was one throwaway managed user and one throwaway
+client (`zzemuC2-oidc`, password grant, scopes `openid profile email
+zzemuc2-probe zzemuc2-other`). The client's override block set
+`oidcClaimsPluginType: SCRIPTED` and pointed in turn at a legacy and a next-gen
+script. Each probe made a password-grant token request, then a `GET
+/oauth2/realms/root/realms/alpha/userinfo` with the access token.
+
+- The script runs on both calls.
+- The id token carries the script's claims, because the sandbox realm has
+  `alwaysAddClaimsToToken: true`.
+- Each probe returns its own record as an `aicprobe` claim.
+
+The five probe scripts, twelve one-line result scripts and their sanitised
+captures are committed as `packages/rhino-local/test/fixtures/oidc-claims/`.
+`test/bindings/oidc-claims.e2e.test.ts` runs the same scripts in the emulator
+and requires the same record. The user, client and scripts were deleted
+afterwards. `identity.getAttributes()` was never called.
+
+#### What AM does with the result
+
+The result is the script's **completion value** (its last expression), not a
+`return`.
+
+| Completion value | Legacy | Next-gen |
+| --- | --- | --- |
+| `new org.forgerock.oauth2.core.UserInfoClaims(values, compositeScopes)` (`values` a Java map, `compositeScopes` a Java map or `null`) | 200, claims emitted | not tried |
+| `{ values: {…}, compositeScopes: {…} }`, `compositeScopes` optional | 500 `Error running OIDC claims plugin` | 200, claims emitted |
+| a `java.util.LinkedHashMap` | 500 `Cannot cast java.util.LinkedHashMap to org.forgerock.oauth2.core.UserInfoClaims` | not tried |
+| a plain object with no `values` | not tried | 200, no script claims |
+| `undefined` | 200, no script claims | 200, no script claims |
+| an uncaught `throw` (legacy: also `InvalidRequestException`) | 500 `Error running OIDC claims plugin` | 500, same |
+
+**Emission.**
+
+- **Userinfo body**: the returned values verbatim. A null value is kept as
+  `null`, and there is no `sub` unless the script returns one.
+- **Id token**: AM's own claims plus the values, with nulls dropped.
+- **Subject rule**: when the values hold `sub`, the id token takes `sub` from
+  them, and `subname` too (absent if the values lack it). Otherwise AM's `sub`
+  and `subname` win, and a returned `subname` is ignored in the token.
+- **`compositeScopes` filters nothing**: a claim mapped to a scope the token
+  was not granted is still emitted.
+- **Numbers**: a returned `42` is `42.0` in both outputs, on both engines.
+
+#### The `claims` binding
+
+On both engines `claims` is a copy of AM's `{sub, subname}`, both holding the
+user's id. Changing it (`put`, `remove`, assignment) changes nothing unless the
+script returns it.
+
+| Probe | Legacy | Next-gen |
+| --- | --- | --- |
+| class | `java.util.LinkedHashMap` (`{sub=…, subname=…}`) | script-friendly map (`{ "sub": …, "subname": … }`) |
+| `claims.sub === identity.getName()` / `==` | `false` / `true` (Java strings) | `true` / `true` |
+| `Object.keys`, `in`, `hasOwnProperty` | `sub,subname`, true, true | same |
+| `JSON.stringify(claims)` | `{"sub":…,"subname":…}` | `{"subname":…,"sub":…}` (note the order) |
+| `put(k, v)` returns / `get(missing)` | `null` / `null` | `null` / `null` |
+| `remove("sub")` | returns the value; key gone | same |
+| `delete claims.subname` | `false`, key kept | `false`, key kept |
+
+#### Top-level bindings
+
+| | Legacy | Next-gen |
+| --- | --- | --- |
+| bound | `claims`, `claimObjects`, `claimsLocales`, `requestedClaims`, `requestedTypedClaims`, `identity`, `scopes`, `session`, `requestProperties`, `clientProperties`, `realm`, `scriptName`, `logger`, `httpClient`, `systemEnv`, `JavaImporter` | `claims`, `claimsLocales`, `requestedClaims`, `identity`, `scopes`, `requestProperties`, `clientProperties`, `realm`, `scriptName`, `cookieName`, `logger`, `httpClient`, `openidm`, `utils`, `secrets`, `systemEnv`, `jwtAssertion`, `jwtValidator`, `policy`, `emailService`, `require`, `JavaImporter` |
+| unbound (`typeof` `undefined`) | `accessToken`, `openidm`, `utils`, `secrets`, `require`, `cookieName`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, every decision-node binding | `session`, `claimObjects`, `requestedTypedClaims`, `accessToken`, every decision-node binding |
+| `session` | bound, `null` on a password grant | unbound |
+| `logger` | Debug: `message`, `warning`, `error`, `messageEnabled`, `warningEnabled` (`true`), `errorEnabled`, `getName`; no `info` | slf4j: `info`, `warn`, `error`, `debug`, `trace`, `isDebugEnabled`, `getName`; no `message` |
+| `identity` | `AMIdentity`: `getName()`/`getUniversalId()` Java strings, `isExists()` `true`, `getAttribute(name)` a `HashSet` (empty for an absent name); no `exists`, no `getAttributeValues` | `getName()`/`getUniversalId()` JS strings, `exists()` `true`, `getAttributeValues(name)` a list of JS strings (empty for an absent name); no `getAttribute`, no `isExists` |
+| `scopes` | `HashSet`: `size()`, `contains()`, `toArray()`; `scopes[0]` is `InternalError` | list: `length`, `[i]`, `contains()`, `toArray()` |
+| `claimsLocales` | Java list; `claims_locales=fr-CA en` gives `[fr-CA, en]` at the token endpoint, empty at userinfo | same, JS strings |
+| `requestedClaims` | empty map, renders `{}`, `get(x)` `null` | empty map, renders `{  }`, `get(x)` `null` |
+| `requestedTypedClaims` / `claimObjects` | empty list (`toArray()` `[]`) / two `Claim`s, `sub -> {values: [<id>], essential: false}` and the same for `subname` | unbound |
+| `requestProperties` | `realm`, `requestHeaders`, `requestParams`, `requestUri`; `password` and `client_secret` filtered out of the params; params empty at userinfo | same |
+| `clientProperties` | five keys (`allowedGrantTypes`, `allowedResponseTypes`, `allowedScopes`, `clientId`, `customProperties`), the `allowed*` readable `HashSet`s | six keys (adds `redirectUris`, a list); every `allowed*` member is `Access to Java class "java.util.{HashSet,LinkedHashSet,TreeSet}" is prohibited`, as in access-token modification |
+
+`requestedClaims` and `requestedTypedClaims` could be measured only empty. The
+`claims` request parameter is ignored because the realm has
+`claimsParameterSupported: false`, and the client override block has no such
+field. Measuring a populated one needs a realm-wide change, which was not made.
+
 ### `AMIdentity.getAttribute` returns a HashSet (verified 2026-09-10)
 
 The 2026-08-27 sweep proved the two getters **resolve**. It never asked what
@@ -1784,6 +1873,12 @@ Consequences for a script, and they are the reason this mattered:
 things the old declaration promised — `.length`, `[0]`, `.get(0)`, `.includes()`
 — all throw. The `legacy-access-token` accept fixture had been demonstrating
 `.get(0)` since `TEMPLATES_VERSION` 86.
+
+**Since measured through an OIDC flow (2026-11-10):** legacy
+`identity.getAttribute("mail")` is a one-element set, `[zzemuc2@example.com]`
+with `size()` 1 and no `length`, and an absent name is an empty set, as above.
+See "OIDC claims on both engines". `getAttributes()` was not called. The
+original caveat follows.
 
 Not measured through an OIDC flow: `oidc-claims.d.ts` was changed on the
 grounds that it binds the same `com.sun.identity.idm.AMIdentity` on the same
