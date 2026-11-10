@@ -811,7 +811,9 @@ not declare. An object's last mapped property is removed and its per-type
 entry kept with `properties: {}` (since 2026-11-09): that is the state a newly
 added per-type entry starts in, measured above to keep records readable and
 creatable. `relationship repair <object> --empty-entry` removes the empty entry,
-for a deleted type or a type that still exists, by the same recheck/backup/
+for a deleted type or a type that still exists, **only when it is the layout
+`aic` generates** (`storage::generated_entry`; any other value or extra field is
+refused by name), by the same recheck/backup/
 whole-document `PUT`/read-back path. Measured 2026-11-10 for an existing type
 (below, "Empty per-type entry removal"); for a deleted type on 2026-11-09 (the
 dated entry at the end of this file).
@@ -2206,7 +2208,9 @@ on create, or when actually rotating it.
   read back 200; (4) the same at ~30 s and ~65 s: unchanged. Records created
   in states (2) and (3) also read back by id afterwards (5 of 5). So removing
   the empty entry of an existing type did not make its records unreadable or
-  uncreatable in this run. Not measured: a type with links *still stored*
+  uncreatable in this run. The entry was the one `aic` generates; a custom
+  `dnTemplate`, `jsonAttribute`, object classes or matching rule was not
+  measured, and `--empty-entry` refuses it. Not measured: a type with links *still stored*
   through a mapping (the mapping was removed first, so links through it
   were not read after), a restart of IDM, or a larger collection. All records
   and both types were then deleted.

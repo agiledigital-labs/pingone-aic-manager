@@ -1114,8 +1114,14 @@ entry: the backup is the way back (`docs/api/10-managed-objects.md`,
 `genericMapping."managed/<object>"` entry that deleting a type
 (`managed object delete` leaves it) or its last mapped property leaves behind.
 It works for a deleted type and for one that still exists (measured 2026-11-10:
-records stayed readable and creatable, `docs/api/10`), and refuses an entry that
-still maps a property or that another mapping names as its `resourcePath`. It uses the same recheck, local backup, whole-document `PUT` and
+records stayed readable and creatable, `docs/api/10`), but only when the entry
+is exactly the layout `aic` itself generates for that type (`dnTemplate`,
+`objectClasses`, `jsonAttribute`, `jsonQueryEqualityMatchingRule` with the
+generated values, and `properties: {}`). Any other value or extra field is
+refused and named; there is no `--force` for it, because those values decide
+where records are stored and no other layout was measured. It also refuses an
+entry that still maps a property or that another mapping names as its
+`resourcePath`. It uses the same recheck, local backup, whole-document `PUT` and
 read-back as the mapping removal, with the same `--dry-run`, `--force`, `--yes`
 and `--json`.
 
