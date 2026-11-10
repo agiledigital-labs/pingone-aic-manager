@@ -19,7 +19,7 @@ import type {
   ScriptContext,
   TokenRequestSeed,
 } from "./types.ts";
-import { assertDenseArray, isPlainObject, parseJsonObject, unknownKeyError } from "./util.ts";
+import { assertDenseArray, defineOwn, isPlainObject, parseJsonObject, unknownKeyError } from "./util.ts";
 
 export interface ContextDeclaration {
   id: ScriptContext;
@@ -151,7 +151,7 @@ export function parseAccessTokenSeed(raw: unknown, path: string): AccessTokenSee
   for (const key of ["clientId", "resourceOwnerId", "grantType", "realm", "tokenName", "tokenType", "tokenId", "auditTrackingId", "authGrantId"] as const) {
     if (obj[key] !== undefined) out[key] = str(obj[key], `${path}.${key}`);
   }
-  if (obj.scope !== undefined) out.scope = strings(obj.scope, `${path}.scope`);
+  if (obj.scope !== undefined) out.scope = scopeSet(obj.scope, `${path}.scope`);
   if (obj.audience !== undefined) out.audience = strings(obj.audience, `${path}.audience`);
   if (obj.authTimeSeconds !== undefined) out.authTimeSeconds = integer(obj.authTimeSeconds, `${path}.authTimeSeconds`);
   if (obj.expiryTime !== undefined) out.expiryTime = integer(obj.expiryTime, `${path}.expiryTime`);
@@ -185,7 +185,7 @@ export function parseClientSeed(raw: unknown, path: string): ClientSeed {
   if (obj.customProperties !== undefined) {
     const custom = plain(obj.customProperties, `${path}.customProperties`);
     const map: Record<string, string> = {};
-    for (const [k, v] of Object.entries(custom)) map[k] = str(v, `${path}.customProperties.${k}`);
+    for (const [k, v] of Object.entries(custom)) defineOwn(map, k, str(v, `${path}.customProperties.${k}`));
     out.customProperties = map;
   }
   return out;
@@ -229,7 +229,7 @@ export function parseAccessTokenExpect(
   const out: AccessTokenExpect = {};
   if (obj.fields !== undefined) out.fields = parsers.stateDiff(obj.fields, `${path}.fields`);
   if (obj.responseFields !== undefined) out.responseFields = parsers.stateDiff(obj.responseFields, `${path}.responseFields`);
-  if (obj.scope !== undefined) out.scope = strings(obj.scope, `${path}.scope`);
+  if (obj.scope !== undefined) out.scope = scopeSet(obj.scope, `${path}.scope`);
   for (const key of TOKEN_VALUE_KEYS) {
     if (key in obj) out[key] = parsers.expectedValue(obj[key], `${path}.${key}`);
   }
@@ -270,9 +270,24 @@ function strings(raw: unknown, path: string): string[] {
   return raw.slice() as string[];
 }
 
+/**
+ * A scope is a set: AM's token holds each scope once, and the verdict compares
+ * scopes as sets. A repeated entry is refused rather than collapsed, so an
+ * expectation cannot look stricter than it is (Sol ctx r1 P1-1).
+ */
+function scopeSet(raw: unknown, path: string): string[] {
+  const list = strings(raw, path);
+  const seen = new Set<string>();
+  for (const item of list) {
+    if (seen.has(item)) throw new Error(`rhino-local: ${path} lists ${JSON.stringify(item)} twice; a scope is a set`);
+    seen.add(item);
+  }
+  return list;
+}
+
 function stringArrayMap(raw: unknown, path: string): Record<string, string[]> {
   const obj = plain(raw, path);
   const out: Record<string, string[]> = {};
-  for (const [key, value] of Object.entries(obj)) out[key] = strings(value, `${path}.${key}`);
+  for (const [key, value] of Object.entries(obj)) defineOwn(out, key, strings(value, `${path}.${key}`));
   return out;
 }
