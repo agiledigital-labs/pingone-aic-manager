@@ -8,6 +8,7 @@
  */
 import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { parseHarvest } from "../../src/bindings/harvest.ts";
 import { mockPreamble, withHarvest } from "../../src/bindings/preamble.ts";
 import type { Given } from "../../src/case/types.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
@@ -93,5 +94,49 @@ describe("a detail stub rendered by borrowed Function.prototype.toString", () =>
     expectHarnessFault("openidm-failure-detail");
     const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(inScript(read)) });
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-failure-detail"]);
+  });
+});
+
+// Measured members: only asString's string form was measured (docs/api/12). Every route that renders a
+// member must agree: its own toString, borrowed Function.prototype.toString, String() and concatenation.
+const renderings = (member: string): Array<[string, string]> => [
+  ["its own toString", `${member}.toString()`],
+  ["borrowed Function.prototype.toString", `Function.prototype.toString.call(${member})`],
+  ["String()", `String(${member})`],
+  ["concatenation", `"" + ${member}`],
+];
+const ASSTRING = "function asString() {/*\njava.lang.String asString()\n*/}\n";
+const rendered = (read: string) =>
+  `try { openidm.delete("managed/widget/w1", null); } catch (e) { var d = e.javaException.getDetail(); nodeState.putShared("r", ${read}); }`;
+
+describe("a measured detail member rendered as a string", () => {
+  let runner: RhinoRunner;
+  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+  afterAll(async () => { await runner?.close(); }, 30_000);
+
+  it.each([...renderings("d.get"), ...renderings('d.get("a").isNull')])(
+    "get through %s faults openidm-failure-detail (node:vm)", (_name, read) => {
+      const run = runScriptWithFaults(inScript(read), given);
+      expect(run.faults.map((f) => f.id)).toEqual(["openidm-failure-detail"]);
+    });
+
+  it.each([...renderings("d.get"), ...renderings('d.get("a").isNull')])(
+    "get through %s faults openidm-failure-detail, even when caught (JVM)", async (_name, read) => {
+      expectHarnessFault("openidm-failure-detail");
+      const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(inScript(read)) });
+      expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-failure-detail"]);
+    });
+
+  it.each(renderings("d.asString"))("asString through %s is the measured text (node:vm)", (_name, read) => {
+    const run = runScriptWithFaults(rendered(read), given);
+    expect(run.faults).toEqual([]);
+    expect(run.effects.sharedState.final.r).toBe(ASSTRING);
+  });
+
+  it.each(renderings("d.asString"))("asString through %s is the measured text (JVM)", async (_name, read) => {
+    const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(rendered(read)) });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(parseHarvest(response.value as string).sharedState.final.r).toBe(ASSTRING);
   });
 });

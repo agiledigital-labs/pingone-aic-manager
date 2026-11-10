@@ -474,9 +474,13 @@ function __rhinoLocalDetailValue(value, path) {
     }
     throw __rhinoLocalInternalError(__rhinoLocalDetailPointer(path) + ": Expecting a java.lang.String but got " + cls);
   };
+  var asStringText = "function asString() {/*\njava.lang.String asString()\n*/}\n";
   __rhinoLocalHide(asString, "toString", function () {
-    return "function asString() {/*\njava.lang.String asString()\n*/}\n";
+    return asStringText;
   });
+  // Rendered by any route (its own toString, a borrowed Function.prototype.
+  // toString, String(), concatenation), asString is the measured text.
+  __rhinoLocalBrandMember(asString, "asString", false, asStringText);
   var measured = {
     get: function (key) {
       if (arguments.length !== 1 || (typeof key !== "string" && typeof key !== "number")) {
@@ -529,6 +533,10 @@ function __rhinoLocalDetailValue(value, path) {
   for (i = 0; i < __rhinoLocalDetailMembers.length; i += 1) {
     (function (name) {
       if (Object.prototype.hasOwnProperty.call(measured, name)) {
+        if (name !== "asString") {
+          // Measured to call, not to render: any string form of it faults.
+          __rhinoLocalBrandMember(measured[name], name, false, null);
+        }
         Object.defineProperty(jv, name, { enumerable: true, configurable: true, writable: true, value: measured[name] });
       } else if (name === "class") {
         Object.defineProperty(jv, name, {
@@ -557,7 +565,16 @@ function __rhinoLocalDetailValue(value, path) {
 // covers the property-list path, where native asks it directly.
 var __rhinoLocalStubKey = "__rhinoLocalStub";
 
-// The stub's {stub, name} row, or null. Read as the list row is: an own data
+// Brands a detail member function with its {stub, name, unmeasured, text}
+// row. `unmeasured` marks a stub (every use but typeof/in faults); `text` is
+// the member's measured string form, or null when rendering it is
+// unmeasured. The Function.prototype.bind and toString replacements and the
+// JSON.stringify boundary decide per receiver from this row.
+function __rhinoLocalBrandMember(fn, name, unmeasured, text) {
+  __rhinoLocalHide(fn, __rhinoLocalStubKey, { stub: fn, name: name, unmeasured: unmeasured, text: text });
+}
+
+// A branded detail member's row, or null. Read as the list row is: an own data
 // property whose row points back at the value, so a copy or inheritor of the
 // key does not count.
 function __rhinoLocalStubRow(value) {
@@ -578,7 +595,7 @@ function __rhinoLocalDetailStub(name) {
   var stub = function () {
     throw __rhinoLocalDetailUnmeasured("." + name + "(" + __rhinoLocalScriptSignature(arguments) + ")");
   };
-  __rhinoLocalHide(stub, __rhinoLocalStubKey, { stub: stub, name: name });
+  __rhinoLocalBrandMember(stub, name, true, null);
   // A bound copy would carry none of the guards; call and apply would invoke
   // the stub anyway, and refuse here with the same fault for a clearer name.
   ["bind", "call", "apply"].forEach(function (method) {
@@ -1078,7 +1095,7 @@ function __rhinoLocalNativeMethod(name, original, body) {
   var nativeToString = Function.prototype.toString;
   __rhinoLocalHide(Function.prototype, "bind", __rhinoLocalNativeMethod("bind", nativeBind, function bind(thisArg) {
     var row = __rhinoLocalStubRow(this);
-    if (row !== null) {
+    if (row !== null && row.unmeasured) {
       throw __rhinoLocalDetailUnmeasured("." + row.name + ".bind(…)");
     }
     return nativeBind.apply(this, arguments);
@@ -1087,6 +1104,9 @@ function __rhinoLocalNativeMethod(name, original, body) {
     var row = __rhinoLocalStubRow(this);
     var i;
     if (row !== null) {
+      if (row.text !== null) {
+        return row.text;
+      }
       throw __rhinoLocalDetailUnmeasured("." + row.name + " as a string");
     }
     for (i = 0; i < __rhinoLocalNativeMethods.length; i += 1) {
@@ -1147,7 +1167,7 @@ function __rhinoLocalNativeMethod(name, original, body) {
 // list becomes an array of its elements.
 function __rhinoLocalJsonValue(value) {
   var stub = __rhinoLocalStubRow(value);
-  if (stub !== null) {
+  if (stub !== null && stub.unmeasured) {
     throw __rhinoLocalDetailUnmeasured("." + stub.name + " under JSON.stringify");
   }
   return __rhinoLocalJsonList(value);
