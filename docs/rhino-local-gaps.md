@@ -1026,6 +1026,15 @@ result scripts (eighteen engine runs). What it approximates or leaves out:
   measured `true`, which two script objects cannot reproduce). The identity's
   `getName()`/`getUniversalId()` return the same object on every call, as
   measured; other legacy getters make a new one per call, which is unmeasured.
+- **Known fidelity limits of the JS view representation** (Sol ctx r2 P2-2,
+  P2-4; not fixed by decision, 2026-11-10: the harness runs trusted scripts,
+  so it targets fidelity, not defence against reflective JS).
+  - An author's `toJSON` plus a property-list `JSON.stringify` replacer
+    serialises a list view as an object instead of refusing it.
+  - The mutation audit compares values only: a changed property descriptor
+    (`enumerable`, ...) or a replaced `__proto__` on a view is not detected.
+  - A write to a view that the script undoes before it ends (write, read,
+    delete) is not detected, because the audit compares final state.
 - **Legacy Java objects admit only measured members** (Sol ctx r2 P2-6). A
   legacy string answers `length()`, `toString()`, `==`, String conversion and
   the `[object JavaObject]` tag. Any other `java.lang.String` or
