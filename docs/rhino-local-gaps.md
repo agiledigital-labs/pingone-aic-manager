@@ -1223,15 +1223,17 @@ with the token's `scope` or AM's error. What it approximates or leaves out:
   `throwInvalidScope(msg)` or legacy `new InvalidScopeException(msg)` is the
   measured HTTP 400, with `msg` as the `error_description`. The thrown value
   is a plain object, matched by identity at the harvest. Reading `message` or
-  `name`, or calling `String(e)`, faults even inside `catch`
-  (`...throwInvalidScope().message`, `.name`, `.toString`, and the legacy
-  `InvalidScopeException` forms): none of those was measured. Rhino calls
-  `toString` once while it wraps the throw, and that one call does not fault;
-  the script's own `String(e)` is a later call and does. A script that catches
-  the exception and returns a list without reading it still succeeds
-  (measured). `throwInvalidScope()` with no argument, an object or a boolean
-  faults: AIC answers the request with a 500, but whether the call itself
-  throws something the script could catch was not observed.
+  `name`, calling `String(e)` (including on a legacy exception that has not
+  been thrown yet), or `JSON.stringify(e)` faults
+  (`...throwInvalidScope().message`, `.name`, `.toString`,
+  `JSON.stringify(...)`, and the legacy `InvalidScopeException` forms): none
+  of those was measured. Rhino calls `toString` from
+  `JavaScriptException.getDetails` while it wraps the throw; that frame is
+  the engine's and does not fault. A script that catches the exception and
+  returns a list without reading it still succeeds (measured).
+  `throwInvalidScope()` with no argument, an object or a boolean faults: AIC
+  answers the request with a 500, but whether the call itself throws something
+  the script could catch was not observed.
 - **`for...in` over the Java bindings.** AIC lists the Java members of
   `scopeValidatorHelper` and of the legacy sets, `java.lang.Object`'s
   included; the emulator lists only its own JS members.

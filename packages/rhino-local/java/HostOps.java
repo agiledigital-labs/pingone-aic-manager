@@ -57,6 +57,9 @@ public final class HostOps extends BaseFunction {
       case "guardMap":
       case "unguard":
         return ContextJavaGuard.dispatch(cx, scope, op, args);
+      // Prelude only: the invalid-scope replacement asks whether this toString is Rhino's wrap.
+      case "exceptionDetails":
+        return Boolean.valueOf(ContextJavaGuard.inExceptionDetails());
       case "base64Encode": {
         // AIC's encode(byte[]) overload refuses a JS array (measured), where
         // most of the crypto methods convert one.

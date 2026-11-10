@@ -326,6 +326,42 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     expect(ids).toContain(detailId);
   }, 60_000);
 
+  // Sol ctx r6 P2-1. The round-5 replacement treated the first toString as
+  // Rhino's wrap, so a legacy String() before the throw returned the constant.
+  // JSON.stringify of the caught object was an empty object on both engines.
+  // Neither representation was captured.
+  if (engine === "legacy") {
+    it("r6 P2-1 String() of a legacy exception before it is thrown is a named fault", async () => {
+      const id = "oauth2-validate-scope-unmeasured/InvalidScopeException.toString";
+      expectHarnessFault(id);
+      const error = await strict(
+        "r6-p2-1-string",
+        "function validateAccessTokenScope() { var e = new org.forgerock.oauth2.core.exceptions.InvalidScopeException(\"denied\"); return [String(e)]; }",
+        {},
+        ["JavaException"],
+      ).then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(CaseRunError);
+      const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+      expect(ids).toContain(id);
+    }, 60_000);
+  }
+
+  it("r6 P2-1 JSON.stringify of a caught denial is a named fault", async () => {
+    const id = engine === "next-gen"
+      ? "oauth2-validate-scope-unmeasured/JSON.stringify(scopeValidatorHelper.throwInvalidScope())"
+      : "oauth2-validate-scope-unmeasured/JSON.stringify(InvalidScopeException)";
+    expectHarnessFault(id);
+    const error = await strict(
+      "r6-p2-1-json",
+      `function validateAccessTokenScope() { try { ${caught}; } catch (e) { return [JSON.stringify(e)]; } }`,
+      {},
+      ["{}"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+    expect(ids).toContain(id);
+  }, 60_000);
+
   // Sol ctx r5 P2-6. Scope-list JSON, concat and slice must not apply to the
   // request value. String, length, size and [i] stay, because those were measured.
   // Legacy does not bind requestProperties (the capture is a ReferenceError).

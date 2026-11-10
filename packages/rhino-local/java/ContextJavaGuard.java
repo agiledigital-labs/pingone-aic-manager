@@ -209,6 +209,31 @@ final class ContextJavaGuard {
     }
   }
 
+  /**
+   * True while Rhino is filling {@code JavaScriptException.details} from the thrown value.
+   *
+   * <p>The constructor calls {@code getDetails}, which calls the value's {@code toString}. That
+   * call is the engine wrapping a throw, and it must not be tallied: an uncaught denial is the
+   * measured HTTP 400, and a script that catches the denial and ignores it still grants. A
+   * script's own {@code String(e)} is the same JS function with no {@code JavaScriptException}
+   * frame, including the first call on a legacy exception that has not been thrown yet, so call
+   * order is not the distinction. {@code <init>} is matched as well as {@code getDetails}: the
+   * constructor is the frame that remains if {@code getDetails} is inlined into it. HotSpot
+   * reconstructs inlined frames, so both names are normally present.
+   */
+  static boolean inExceptionDetails() {
+    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+      if (!"org.mozilla.javascript.JavaScriptException".equals(frame.getClassName())) {
+        continue;
+      }
+      String method = frame.getMethodName();
+      if ("getDetails".equals(method) || "<init>".equals(method)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** The {@code __rhinoLocalHostOp} entry points. */
   static Object dispatch(Context cx, Scriptable scope, String op, Object[] args) {
     switch (op) {
