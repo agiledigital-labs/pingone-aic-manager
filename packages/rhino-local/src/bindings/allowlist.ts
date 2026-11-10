@@ -5,6 +5,7 @@ import {
   configProviderBindingsJsonPath,
   oidcClaimsBindingsJsonPath,
   socialIdpBindingsJsonPath,
+  validateScopeBindingsJsonPath,
 } from "../paths.ts";
 
 let cached: string[] | undefined;
@@ -122,6 +123,23 @@ export function configProviderClassAllowList(): string[] {
     cachedConfigProvider = [...declaredAllowList(configProviderBindingsJsonPath), ...OBSERVED_BASE];
   }
   return cachedConfigProvider;
+}
+
+let cachedValidateScope: string[] | undefined;
+
+/**
+ * The next-gen validate scope context's allow-list, from its own descriptor
+ * (`docs/api/bindings/oauth2-validate-scope-next.json`) plus the same
+ * `OBSERVED_BASE`. It names no `java.util` class: a scope list's iterator()
+ * fails with `Access to Java class "java.util.ArrayList$Itr" is prohibited`,
+ * and clientProperties' sets with the HashSet/TreeSet/LinkedHashSet refusals
+ * (measured 2026-11-10).
+ */
+export function validateScopeClassAllowList(): string[] {
+  if (cachedValidateScope === undefined) {
+    cachedValidateScope = [...declaredAllowList(validateScopeBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedValidateScope;
 }
 
 function declaredAllowList(path: string): string[] {

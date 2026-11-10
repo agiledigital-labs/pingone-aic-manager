@@ -74,7 +74,8 @@
     "src/bindings/rhino/context-oauth2-access-token.cjs",
     "src/bindings/rhino/context-oidc-claims.cjs",
     "src/bindings/rhino/context-social-idp.cjs",
-    "src/bindings/rhino/context-config-provider.cjs"
+    "src/bindings/rhino/context-config-provider.cjs",
+    "src/bindings/rhino/context-oauth2-validate-scope.cjs"
   ],
   "engines": {
     "node": ">=24"

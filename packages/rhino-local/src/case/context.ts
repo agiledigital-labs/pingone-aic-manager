@@ -11,6 +11,8 @@ import type {
   AccessTokenSeed,
   AllowUndeclaredChannel,
   ConfigProviderExpect,
+  ValidateScopeExpect,
+  ValidateScopeSeed,
   ClientSeed,
   Engine,
   ExpectedValue,
@@ -65,9 +67,16 @@ export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = [
   "request",
   "oidc",
   "socialIdp",
+  "validateScope",
 ];
-export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider"];
-export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = ["accessToken", "oidc", "socialIdp", "configProvider"];
+export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider", "validateScope"];
+export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = [
+  "accessToken",
+  "oidc",
+  "socialIdp",
+  "configProvider",
+  "validateScope",
+];
 
 export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   SCRIPTED_DECISION_NODE: {
@@ -133,6 +142,17 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
     ],
     expectKeys: ["outcome", "configProvider", "sharedState", "transientState", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["configProvider", "sharedState", "transientState", "openidmWrites", "openidmReads", "http", "logs"],
+    hasOutcome: false,
+  },
+  OAUTH2_VALIDATE_SCOPE: {
+    id: "OAUTH2_VALIDATE_SCOPE",
+    // Both engines, measured 2026-11-10: OAUTH2_VALIDATE_SCOPE (1.0) and
+    // OAUTH2_VALIDATE_SCOPE_NEXT_GEN (2.0) scripts both run as a client's
+    // validateScopeScript override.
+    engines: ["next-gen", "legacy"],
+    givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "client", "request", "validateScope"],
+    expectKeys: ["outcome", "validateScope", "openidm", "http", "logs", "allowUndeclared"],
+    allowUndeclared: ["validateScope", "openidmWrites", "openidmReads", "http", "logs"],
     hasOutcome: false,
   },
 };
@@ -365,6 +385,30 @@ export function parseConfigProviderExpect(
   if (obj.accepted !== undefined) {
     if (typeof obj.accepted !== "boolean") throw new Error(`rhino-local: ${path}.accepted must be a boolean`);
     out.accepted = obj.accepted;
+  }
+  return out;
+}
+
+export function parseValidateScopeSeed(raw: unknown, path: string): ValidateScopeSeed {
+  const obj = plain(raw, path, ["requested", "allowed", "available", "defaults"]);
+  const out: ValidateScopeSeed = {};
+  for (const key of ["requested", "allowed", "available", "defaults"] as const) {
+    if (obj[key] !== undefined) out[key] = strings(obj[key], `${path}.${key}`);
+  }
+  return out;
+}
+
+export function parseValidateScopeExpect(raw: unknown, path: string): ValidateScopeExpect {
+  const obj = plain(raw, path, ["granted", "invalidScope", "accepted"]);
+  const out: ValidateScopeExpect = {};
+  if (obj.granted !== undefined) out.granted = strings(obj.granted, `${path}.granted`);
+  if (obj.invalidScope !== undefined) out.invalidScope = str(obj.invalidScope, `${path}.invalidScope`);
+  if (obj.accepted !== undefined) {
+    if (typeof obj.accepted !== "boolean") throw new Error(`rhino-local: ${path}.accepted must be a boolean`);
+    out.accepted = obj.accepted;
+  }
+  if (out.granted !== undefined && (out.invalidScope !== undefined || out.accepted === false)) {
+    throw new Error(`rhino-local: ${path}.granted cannot be declared with a refusal`);
   }
   return out;
 }
