@@ -102,9 +102,9 @@ cat >"$consumer/test/smoke.test.ts" <<TS
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineSuite, expectHarnessFault, useLease } from "$name";
-import { validateCase } from "$name/case";
+import { defineCase, validateCase } from "$name/case";
 import { RhinoRunner } from "$name/runner";
-import { mockPreamble, withHarvest, parseHarvest } from "$name/bindings";
+import { mockPreamble, withHarvest, parseHarvest, runCase } from "$name/bindings";
 import { tokenCallbackProvider } from "$name/aic";
 import { readFailures, runShowLog } from "$name/diagnostics";
 import { profilePath } from "$name/profile";
@@ -163,6 +163,21 @@ describe("installed rhino-local", () => {
       // installed package.
       expect(response.outcome, JSON.stringify(response)).toBe("runtime_error");
       expect(response.error?.message).toMatch(/^rhino-local harness fault identity-bag-key-collision: openidm.patch:.*collides with/);
+    } finally { await runner.close(); }
+  });
+
+  // A script context's overlay is a separate packaged asset; it must load
+  // from the installed package, and the case types must accept the context.
+  it("runs an access-token modification case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const run = await runCase(runner, defineCase({
+        name: "token", context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+        script: 'accessToken.setField("owner", String(identity.getName()));',
+        given: { engine: "legacy", accessToken: { clientId: "widget-client" } },
+        expect: { accessToken: { fields: { added: { owner: "widget-client" } } } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
     } finally { await runner.close(); }
   });
 
