@@ -1535,11 +1535,13 @@ Callable, and what they return on a plain `client_credentials` token:
 | `getCustomFields`                                                | `{subname, expires_in}`                     |
 | `toMap`                                                          | `access_token, scope, token_type, expires_in` |
 | `getTokenInfo`                                                   | object                                      |
-| `getNonce`, `getAct`, `getMayAct`, `getPermissions`, `getClaims`, `getAuthLevel`, `getConfirmationKey` | **`null`** |
-| `getField("<unset>")`                                            | **`null`**                                  |
+| `getNonce`, `getClaims`, `getAuthLevel` | **`null`** |
+| `getAct`, `getMayAct`, `getPermissions`, `getConfirmationKey`, `getField("<unset>")` | an **object** that prints `null`, `size()` 0 — not JS `null` (corrected 2026-11-10, stateless token; see below) |
 
 Writers that work: `setField`, `setFields`, `setNonce`, `setRealm`, `setClaims`,
-`setAuthLevel`, `addExtraData`, `addExtraJsonData`, `setClientId`,
+`setAuthLevel`, `addExtraData`, `addExtraJsonData` (argument types not
+recorded; **`(string, string)` is refused** with `Can't find method`, corrected
+2026-11-10), `setClientId`,
 `setResourceOwnerId`, `setTokenName`, `setTokenType`, `setGrantType`,
 `setAuthGrantId`, `setAuditTrackingId`, `setExpiryTime`, `setAuthTime`, and
 every `remove*` (`removeRealm`, `removeNonce`, `removeClaims`,
@@ -1713,7 +1715,7 @@ token. `accessToken.getScope().add(…)` throws `InternalError: null`.
   return `JavaString`s, so strict equality against a literal fails. The token,
   audit and grant ids are `object` too; `getAuthTimeSeconds` and
   `getExpiryTime` are numbers.
-- `getAct()` and `getConfirmationKey()` render as `null` but are objects with
+- `getAct()`, `getMayAct()`, `getPermissions()` and `getConfirmationKey()` render as `null` but are objects with
   `size()` 0, not JS `null`, on a stateless token. `getField` of an unset key
   is the same.
 - `getField` of a value set by `setField` is a JSON value rendered with Java

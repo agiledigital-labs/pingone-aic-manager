@@ -1800,3 +1800,24 @@ sampled: journeys, scripts and ESV secret mappings listed as added or
 modified were byte-identical on both tenants. The report is the service's
 claim against some baseline that is not the live upper env. Measurement and
 the sampled table: `docs/api/23-promotion.md`.
+
+## 2026-11-10 — two rows of the legacy access-token list were wrong
+
+`docs/api/12-script-bindings-matrix.md`'s 2026-08-27 legacy
+access-token-modification sweep said `addExtraJsonData` works and that
+`getAct`, `getMayAct`, `getPermissions`, `getConfirmationKey` and
+`getField("<unset>")` return `null`. The
+rhino-local token-context probes (a stateless `client_credentials` token on a
+throwaway client, results read back from the token's `aicprobe` claim) found:
+
+- `accessToken.addExtraJsonData("<k>", "<json string>")` throws `Can't find
+  method …StatelessAccessToken.addExtraJsonData(string,string).` The earlier
+  row never recorded which argument types it called with, so it may have used
+  another overload; `(string, string)` is the refused shape.
+- `getAct()`, `getMayAct()`, `getPermissions()`, `getConfirmationKey()` and
+  `getField` of an unset key are
+  objects: `typeof` is `object`, `String(v)` is `null` and `v.size()` is `0`.
+  A script testing `=== null` gets `false`.
+
+Both rows are corrected in place; the probe scripts and captures are
+`packages/rhino-local/test/fixtures/oauth2-atm/setters.*` and `surface.*`.
