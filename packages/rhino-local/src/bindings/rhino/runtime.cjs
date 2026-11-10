@@ -482,6 +482,12 @@ function __rhinoLocalDetailValue(value, path) {
       if (arguments.length !== 1 || (typeof key !== "string" && typeof key !== "number")) {
         throw __rhinoLocalDetailUnmeasured(".get(" + __rhinoLocalScriptSignature(arguments) + ")");
       }
+      // Only integral indices within a Java int were measured; how Rhino
+      // converts a fraction, an infinity or a wider number to get(int) was
+      // not. Checked before every value shortcut, the null one included.
+      if (typeof key === "number" && !(isFinite(key) && Math.floor(key) === key && key >= -2147483648 && key <= 2147483647)) {
+        throw __rhinoLocalDetailUnmeasured(".get(" + key + ")");
+      }
       if (value === null) {
         return child(key, null);
       }
@@ -493,9 +499,6 @@ function __rhinoLocalDetailValue(value, path) {
           throw __rhinoLocalDetailUnmeasured(".get(string) on a " + typeof value + " value");
         }
         return child(key, Object.prototype.hasOwnProperty.call(value, key) ? value[key] : null);
-      }
-      if (Math.floor(key) !== key) {
-        throw __rhinoLocalDetailUnmeasured(".get(" + key + ")");
       }
       if (Array.isArray(value)) {
         if (key < 0) {
@@ -547,13 +550,20 @@ function __rhinoLocalDetailValue(value, path) {
 }
 
 // An unmeasured JsonValue method: present, so typeof and `in` answer as on
-// AIC (measured), but calling it, or rendering it as a string, faults.
+// AIC (measured), but calling it, rendering it as a string, or serialising
+// it, faults.
 function __rhinoLocalDetailStub(name) {
   var stub = function () {
     throw __rhinoLocalDetailUnmeasured("." + name + "(" + __rhinoLocalScriptSignature(arguments) + ")");
   };
   __rhinoLocalHide(stub, "toString", function () {
     throw __rhinoLocalDetailUnmeasured("." + name + " as a string");
+  });
+  // JSON.stringify skips a function without calling toString, but it does ask
+  // any object, functions included, for toJSON: so serialising the stub,
+  // bare or nested, faults too instead of writing undefined, {} or [null].
+  __rhinoLocalHide(stub, "toJSON", function () {
+    throw __rhinoLocalDetailUnmeasured("." + name + " under JSON.stringify");
   });
   return stub;
 }
@@ -928,6 +938,10 @@ var __rhinoLocalListKinds = {
     measured: "only size(), get(i) with an index in range, [].concat(v), Array.prototype.concat.call(v, …), JSON.stringify, String(v) and the getClass() refusal were measured",
     outOfRange: false,
     concatReceiver: true,
+    // A size-zero request list was never produced on AIC: an empty header or
+    // parameter arrives as [""], an absent one as null. So copying one (concat,
+    // JSON.stringify) is unmeasured, though a `[]` seed is accepted.
+    emptyMeasured: false,
   },
   openidm: {
     id: "openidm-list-unmeasured",
@@ -935,6 +949,7 @@ var __rhinoLocalListKinds = {
     measured: "only size(), get(i), [].concat(v), JSON.stringify, String(v) and the getClass() refusal were measured",
     outOfRange: true,
     concatReceiver: false,
+    emptyMeasured: true,
   },
 };
 
@@ -983,6 +998,16 @@ function __rhinoLocalListRow(value) {
   return row !== null && typeof row === "object" && row.list === value ? row : null;
 }
 
+// A list's elements as a fresh array, for a measured copy (concat,
+// JSON.stringify). Refused for a size-zero list of a kind whose empty form
+// was never measured.
+function __rhinoLocalListCopy(row, call) {
+  if (row.items.length === 0 && !row.kind.emptyMeasured) {
+    throw __rhinoLocalListUnmeasured(row.kind, call + " of a size-zero list (never produced on AIC: an empty value arrives as [\"\"])");
+  }
+  return row.items.slice();
+}
+
 function __rhinoLocalListUnmeasured(kind, call) {
   return __rhinoLocalFault(kind.id,
     "rhino-local: " + call + " on " + kind.noun + " is unmeasured (AIC hands over a Java list; " + kind.measured + ")");
@@ -1007,9 +1032,9 @@ function __rhinoLocalListUnmeasured(kind, call) {
     var row;
     for (k = 0; k < arguments.length; k += 1) {
       row = __rhinoLocalListRow(arguments[k]);
-      args[k] = row === null ? arguments[k] : original.call([], row.items);
+      args[k] = row === null ? arguments[k] : __rhinoLocalListCopy(row, "[].concat(v)");
     }
-    return original.apply(receiver === null ? this : original.call([], receiver.items), args);
+    return original.apply(receiver === null ? this : __rhinoLocalListCopy(receiver, "Array.prototype.concat.call(v, …)"), args);
   };
   __rhinoLocalHide(Array.prototype, "concat", concat);
 })();
@@ -1037,7 +1062,7 @@ function __rhinoLocalJsonList(value) {
   if (row === null) {
     return value;
   }
-  return row.items.slice();
+  return __rhinoLocalListCopy(row, "JSON.stringify");
 }
 
 (function () {
