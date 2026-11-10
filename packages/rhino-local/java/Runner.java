@@ -396,6 +396,10 @@ public final class Runner {
             ScriptableObject.putProperty(scope, LIBRARIES_NAME, libraries);
           }
           if (preambleData != null) ScriptableObject.putProperty(scope, PREAMBLE_DATA_NAME, preambleData);
+          NativeMethod.Factory nativeMethods = new NativeMethod.Factory();
+          nativeMethods.setParentScope(scope);
+          nativeMethods.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+          ScriptableObject.putProperty(scope, NativeMethod.FACTORY_NAME, nativeMethods);
           if (Timing.active()) {
             PhaseTimer timer = new PhaseTimer();
             timer.setParentScope(scope);
@@ -435,6 +439,7 @@ public final class Runner {
             ScriptableObject.deleteProperty(scope, LIBRARIES_NAME);
             ScriptableObject.deleteProperty(scope, PREAMBLE_DATA_NAME);
             ScriptableObject.deleteProperty(scope, PhaseTimer.NAME);
+            ScriptableObject.deleteProperty(scope, NativeMethod.FACTORY_NAME);
             ScriptableObject.deleteProperty(scope, HarnessFaults.NAME);
             if (bridge != null) ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }

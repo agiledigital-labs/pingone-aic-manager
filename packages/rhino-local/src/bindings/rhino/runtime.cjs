@@ -1043,18 +1043,59 @@ function __rhinoLocalListUnmeasured(kind, call) {
     "rhino-local: " + call + " on " + kind.noun + " is unmeasured (AIC hands over a Java list; " + kind.measured + ")");
 }
 
-// Function.prototype.bind borrowed onto a detail stub (the stub's own bind
-// already refuses): the bound copy would escape every guard on the stub.
+// A replacement for a Function.prototype builtin, with the builtin's own
+// metadata: its name, its length, no own `prototype` and no constructor. On
+// the JVM the runner supplies __rhinoLocalNativeMethodHost
+// (java/NativeMethod.java) for the prelude, because a JavaScript function's
+// `prototype` cannot be removed; elsewhere (node:vm) a method definition
+// already has exactly that shape. `body` declares the builtin's length.
+// Each replacement remembers its builtin, so the toString wrapper below
+// renders it as the builtin.
+var __rhinoLocalNativeMethods = [];
+function __rhinoLocalNativeMethod(name, original, body) {
+  var method;
+  if (typeof __rhinoLocalNativeMethodHost === "function") {
+    method = __rhinoLocalNativeMethodHost(name, body.length, body);
+  } else if (name === "bind") {
+    method = ({ bind(thisArg) { return body.apply(this, arguments); } }).bind;
+  } else if (name === "toString") {
+    method = ({ toString() { return body.apply(this, arguments); } }).toString;
+  } else {
+    throw new Error("rhino-local: no native-shaped method for " + name);
+  }
+  __rhinoLocalNativeMethods.push({ method: method, original: original });
+  return method;
+}
+
+// Function.prototype.bind and toString borrowed onto a detail stub (the
+// stub's own bind and toString already refuse): a bound copy would escape
+// every guard on the stub, and the borrowed toString renders it. Any other
+// receiver goes to the builtin.
 (function () {
   "use strict";
-  var original = Function.prototype.bind;
-  __rhinoLocalHide(Function.prototype, "bind", function bind() {
+  // Not named bind/toString: each body's own name would shadow them.
+  var nativeBind = Function.prototype.bind;
+  var nativeToString = Function.prototype.toString;
+  __rhinoLocalHide(Function.prototype, "bind", __rhinoLocalNativeMethod("bind", nativeBind, function bind(thisArg) {
     var row = __rhinoLocalStubRow(this);
     if (row !== null) {
       throw __rhinoLocalDetailUnmeasured("." + row.name + ".bind(…)");
     }
-    return original.apply(this, arguments);
-  });
+    return nativeBind.apply(this, arguments);
+  }));
+  __rhinoLocalHide(Function.prototype, "toString", __rhinoLocalNativeMethod("toString", nativeToString, function toString() {
+    var row = __rhinoLocalStubRow(this);
+    var i;
+    if (row !== null) {
+      throw __rhinoLocalDetailUnmeasured("." + row.name + " as a string");
+    }
+    for (i = 0; i < __rhinoLocalNativeMethods.length; i += 1) {
+      if (__rhinoLocalNativeMethods[i].method === this) {
+        return nativeToString.call(__rhinoLocalNativeMethods[i].original);
+      }
+    }
+    return nativeToString.apply(this, arguments);
+  }));
 })();
 
 // Array.prototype.concat, as AIC's Rhino treats a Java list argument: copied
