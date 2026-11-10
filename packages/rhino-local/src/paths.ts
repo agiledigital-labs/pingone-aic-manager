@@ -92,6 +92,15 @@ export const configProviderBindingsJsonPath = join(generatedDir, "config-provide
 /** The config provider node context's binding overlay, appended to the prelude for that context only. */
 export const bindingsConfigProviderPath = join(packageRoot, "src", "bindings", "rhino", "context-config-provider.cjs");
 
+/** The validate scope context's captured next-gen descriptor. Repo-only; read by `generate`. */
+export const sourceValidateScopeBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "oauth2-validate-scope-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceValidateScopeBindingsJsonPath}: the context's class allow-list. */
+export const validateScopeBindingsJsonPath = join(generatedDir, "oauth2-validate-scope-next.json");
+
+/** The validate scope context's binding overlay, appended to the prelude for that context only. */
+export const bindingsValidateScopePath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-validate-scope.cjs");
+
 /** The OIDC claims context's binding overlay, appended to the prelude for that context only. */
 export const bindingsOidcClaimsPath = join(packageRoot, "src", "bindings", "rhino", "context-oidc-claims.cjs");
 

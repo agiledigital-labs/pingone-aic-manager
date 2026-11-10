@@ -13,6 +13,7 @@ import {
   bindingsOidcClaimsPath,
   bindingsRuntimePath,
   bindingsSocialIdpPath,
+  bindingsValidateScopePath,
   generatedJsPath,
 } from "../paths.ts";
 import type { ScriptContext } from "../case/types.ts";
@@ -82,6 +83,13 @@ const CONTEXT_RUNTIME: {
     overlays: [bindingsContextCommonPath, bindingsConfigProviderPath],
     seed: "__rhinoLocalSeedConfigProvider",
     harvest: "__rhinoLocalHarvestConfigProvider",
+  },
+  // AM runs the body, then calls validateAccessTokenScope() and grants what
+  // it returns (measured), so the appended harvest makes that call.
+  OAUTH2_VALIDATE_SCOPE: {
+    overlays: [bindingsContextCommonPath, bindingsValidateScopePath],
+    seed: "__rhinoLocalSeedValidateScope",
+    harvest: "__rhinoLocalHarvestValidateScope",
   },
 };
 

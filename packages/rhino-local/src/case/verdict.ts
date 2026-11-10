@@ -17,6 +17,7 @@ import type {
   OidcClaimsEffect,
   SocialIdpEffect,
   ConfigProviderEffect,
+  ValidateScopeEffect,
   AccessTokenState,
   AllowUndeclared,
   AllowUndeclaredChannel,
@@ -144,6 +145,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
       : []),
     ...(kase.context === "CONFIG_PROVIDER_NODE"
       ? judgeConfigProvider(kase.expect, recorded, strictness.configProvider)
+      : []),
+    ...(kase.context === "OAUTH2_VALIDATE_SCOPE"
+      ? judgeValidateScope(kase.expect, recorded, strictness.validateScope)
       : []),
   ];
   return {
@@ -717,6 +721,56 @@ function judgeConfigProvider(
     mismatches.push(
       miss("configProvider", "config", "none", formatValue(effect.config),
         "configProvider.config: undeclared config map; declare expect.configProvider.config or set allowUndeclared.configProvider")
+    );
+  }
+  return mismatches;
+}
+
+/**
+ * The token request a validate scope script decides, fail-closed: granted
+ * scopes must be declared unless `allowUndeclared.validateScope`, and a run
+ * that recorded no result is a mismatch. Scopes compare as a set, as AM
+ * grants one.
+ */
+function judgeValidateScope(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
+  const effect = recorded.validateScope;
+  if (effect === undefined) {
+    return [
+      miss("validateScope", "validateScope", "a recorded result", "<none>",
+        "validateScope: the runner recorded no result for a validate scope case"),
+    ];
+  }
+  const want = expect.validateScope ?? {};
+  const mismatches: Mismatch[] = [];
+  const accepted = effect.refusal === null;
+  const wantAccepted = want.accepted ?? want.invalidScope === undefined;
+  if (accepted !== wantAccepted) {
+    mismatches.push(
+      miss("validateScope", "accepted", String(wantAccepted), String(accepted),
+        accepted
+          ? `validateScope.accepted: expected AM to issue no token, but it granted ${formatValue(effect.granted)}`
+          : `validateScope.accepted: AM answers ${effect.status}: ${effect.refusal ?? ""}`)
+    );
+  }
+  if (want.invalidScope !== undefined && want.invalidScope !== effect.invalidScope) {
+    mismatches.push(
+      miss("validateScope", "invalidScope", JSON.stringify(want.invalidScope), formatValue(effect.invalidScope),
+        "validateScope.invalidScope: differed")
+    );
+  }
+  if (want.granted !== undefined) {
+    const got = effect.granted ?? [];
+    const same = got.length === new Set(want.granted).size && got.every((s) => want.granted!.includes(s));
+    if (!same || effect.granted === null) {
+      mismatches.push(
+        miss("validateScope", "granted", formatValue(want.granted), formatValue(effect.granted),
+          "validateScope.granted: differed (compared as a set)")
+      );
+    }
+  } else if (!allowUndeclared && accepted) {
+    mismatches.push(
+      miss("validateScope", "granted", "none", formatValue(effect.granted),
+        "validateScope.granted: undeclared grant; declare expect.validateScope.granted or set allowUndeclared.validateScope")
     );
   }
   return mismatches;
@@ -1391,6 +1445,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   if (raw.configProvider !== undefined) {
     recorded.configProvider = parseConfigProviderEffect(raw.configProvider);
   }
+  if (raw.validateScope !== undefined) {
+    recorded.validateScope = parseValidateScopeEffect(raw.validateScope);
+  }
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
       throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
@@ -1456,6 +1513,36 @@ function parseSocialIdpEffect(raw: unknown): SocialIdpEffect {
     returned: raw.returned,
     profile: raw.profile === null ? null : parseJsonObject(raw.profile, "effects.socialIdp.profile"),
     refusal: raw.refusal,
+  };
+}
+
+function parseValidateScopeEffect(raw: unknown): ValidateScopeEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.validateScope is not an object");
+  }
+  if (raw.returned !== "scopes" && raw.returned !== "none") {
+    throw new Error(`rhino-local: effects.validateScope.returned must be "scopes" or "none"`);
+  }
+  if (typeof raw.status !== "number" || ![200, 400, 403, 500].includes(raw.status)) {
+    throw new Error("rhino-local: effects.validateScope.status must be 200, 400, 403 or 500");
+  }
+  const strOrNull = (v: unknown, key: string): string | null => {
+    if (v !== null && typeof v !== "string") throw new Error(`rhino-local: effects.validateScope.${key} must be a string or null`);
+    return v;
+  };
+  let granted: string[] | null = null;
+  if (raw.granted !== null) {
+    if (!Array.isArray(raw.granted) || raw.granted.some((s) => typeof s !== "string")) {
+      throw new Error("rhino-local: effects.validateScope.granted must be an array of strings or null");
+    }
+    granted = raw.granted.slice() as string[];
+  }
+  return {
+    returned: raw.returned,
+    status: raw.status,
+    granted,
+    invalidScope: strOrNull(raw.invalidScope, "invalidScope"),
+    refusal: strOrNull(raw.refusal, "refusal"),
   };
 }
 

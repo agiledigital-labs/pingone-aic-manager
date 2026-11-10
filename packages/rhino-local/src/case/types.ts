@@ -43,6 +43,7 @@ export const SCRIPT_CONTEXTS = [
   "OIDC_CLAIMS",
   "SOCIAL_IDP_PROFILE_TRANSFORMATION",
   "CONFIG_PROVIDER_NODE",
+  "OAUTH2_VALIDATE_SCOPE",
 ] as const;
 export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
 export const DEFAULT_SCRIPT_CONTEXT: ScriptContext = "SCRIPTED_DECISION_NODE";
@@ -85,6 +86,7 @@ export const GIVEN_KEYS = [
   "request",
   "oidc",
   "socialIdp",
+  "validateScope",
 ] as const;
 export type GivenKey = (typeof GIVEN_KEYS)[number];
 
@@ -117,6 +119,7 @@ export const EXPECT_KEYS = [
   "oidc",
   "socialIdp",
   "configProvider",
+  "validateScope",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
 
@@ -137,6 +140,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "oidc",
   "socialIdp",
   "configProvider",
+  "validateScope",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -168,6 +172,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   oidc: false,
   socialIdp: false,
   configProvider: false,
+  validateScope: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -209,8 +214,8 @@ export const STATE_CHANNELS = [
   "secureState",
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-/** `accessToken`, `oidc`, `socialIdp` and `configProvider` are judged only for their context, so none is a `Channel` every runner must record. */
-export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider";
+/** `accessToken`, `oidc`, `socialIdp`, `configProvider` and `validateScope` are judged only for their context, so none is a `Channel` every runner must record. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -431,6 +436,27 @@ export interface Given {
   oidc?: OidcClaimsSeed;
   /** `SOCIAL_IDP_PROFILE_TRANSFORMATION`: the provider's raw profile and the selected provider. */
   socialIdp?: SocialIdpSeed;
+  /** `OAUTH2_VALIDATE_SCOPE`: the four scope lists AM hands the validator. */
+  validateScope?: ValidateScopeSeed;
+}
+
+/**
+ * The scope lists an OAuth2 validate scope script receives, as measured on
+ * 2026-11-10 (docs/api/12-script-bindings-matrix.md, "OAuth2 validate
+ * scope"). Next-gen hands over Java lists; legacy a HashSet of the requested
+ * scopes and TreeSets of the others, whose iteration order (hash order) is
+ * not reproduced. `client` and `request` seed next-gen's `clientProperties`
+ * and `requestProperties`; legacy binds neither.
+ */
+export interface ValidateScopeSeed {
+  /** `requestedScopes`: the request's `scope` parameter. AM does not substitute the default scopes when it is absent (measured). Default `[]`. */
+  requested?: string[];
+  /** `allowedScopes`: the client's scopes. Default `[]`. */
+  allowed?: string[];
+  /** Next-gen only: `availableScopes`. Default `allowed`. */
+  available?: string[];
+  /** `defaultScopes`: the client's default scopes. Default `[]`. */
+  defaults?: string[];
 }
 
 /**
@@ -483,6 +509,43 @@ export interface ConfigProviderExpect {
    * boolean, an array or a function). Default `true`.
    */
   accepted?: boolean;
+}
+
+/** What the case asserts about the token request a validate scope script decides. */
+export interface ValidateScopeExpect {
+  /**
+   * The scopes AM grants: exactly the list the function returns, duplicates
+   * dropped, compared as a set. AM does not intersect it with the request
+   * or the client's scopes (measured: a widened or unknown scope is granted).
+   */
+  granted?: string[];
+  /**
+   * The `error_description` of a 400 `invalid_scope` denial: next-gen
+   * `scopeValidatorHelper.throwInvalidScope(msg)`, legacy `throw new
+   * org.forgerock.oauth2.core.exceptions.InvalidScopeException(msg)`.
+   * Declaring it makes `accepted` default to `false`.
+   */
+  invalidScope?: string;
+  /**
+   * `false` when AM issues no token: an empty, null or undefined result
+   * (403 authorization_declined), an invalid-scope denial (400), or a result
+   * AM cannot read (500). Default `true`.
+   */
+  accepted?: boolean;
+}
+
+/** The validate scope context's result. */
+export interface ValidateScopeEffect {
+  /** `"none"` when AM issues no token. */
+  returned: "scopes" | "none";
+  /** The token endpoint's HTTP status: 200, 400, 403 or 500. */
+  status: number;
+  /** The granted scopes, in the order returned; `null` when none were granted. */
+  granted: string[] | null;
+  /** The invalid-scope denial's message; `null` otherwise. */
+  invalidScope: string | null;
+  /** `null` when a token is issued; otherwise the `error_description` AM answers. */
+  refusal: string | null;
 }
 
 /** The config provider node context's result. */
@@ -716,6 +779,8 @@ export interface Expect {
   socialIdp?: SocialIdpExpect;
   /** `CONFIG_PROVIDER_NODE` only. */
   configProvider?: ConfigProviderExpect;
+  /** `OAUTH2_VALIDATE_SCOPE` only. */
+  validateScope?: ValidateScopeExpect;
 }
 
 export interface CaseInit {
@@ -863,7 +928,41 @@ export interface ConfigProviderCaseInit {
   >;
 }
 
-export type AnyCaseInit = CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit | SocialIdpCaseInit | ConfigProviderCaseInit;
+/** An `OAUTH2_VALIDATE_SCOPE` case: AM calls the script's `validateAccessTokenScope()` and grants what it returns. */
+export interface ValidateScopeCaseInit {
+  name: string;
+  script: string;
+  context: "OAUTH2_VALIDATE_SCOPE";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "loggerScriptId"
+    | "cookieName"
+    | "client"
+    | "request"
+    | "validateScope"
+  >;
+  expect: Pick<Expect, "validateScope" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+export type AnyCaseInit =
+  | CaseInit
+  | AccessTokenCaseInit
+  | OidcClaimsCaseInit
+  | SocialIdpCaseInit
+  | ConfigProviderCaseInit
+  | ValidateScopeCaseInit;
 
 export interface Case {
   name: string;
@@ -936,6 +1035,8 @@ export interface RecordedEffects {
   socialIdp?: SocialIdpEffect | undefined;
   /** The config provider node context's result; absent for every other context. */
   configProvider?: ConfigProviderEffect | undefined;
+  /** The validate scope context's result; absent for every other context. */
+  validateScope?: ValidateScopeEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

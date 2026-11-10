@@ -23,6 +23,7 @@ import type {
   OidcClaimsCaseInit,
   SocialIdpCaseInit,
   ConfigProviderCaseInit,
+  ValidateScopeCaseInit,
   Engine,
   Expect,
   ExpectedObject,
@@ -57,6 +58,8 @@ import {
   parseOidcClaimsSeed,
   parseSocialIdpExpect,
   parseConfigProviderExpect,
+  parseValidateScopeExpect,
+  parseValidateScopeSeed,
   parseSocialIdpSeed,
   parseTokenRequestSeed,
 } from "./context.ts";
@@ -83,7 +86,13 @@ function knownBindingNames(): ReadonlySet<string> {
 
 /** Typed entry point for case authors. */
 export function defineCase(
-  input: CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit | SocialIdpCaseInit | ConfigProviderCaseInit
+  input:
+    | CaseInit
+    | AccessTokenCaseInit
+    | OidcClaimsCaseInit
+    | SocialIdpCaseInit
+    | ConfigProviderCaseInit
+    | ValidateScopeCaseInit
 ): Case {
   return validateCase(input);
 }
@@ -315,6 +324,9 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.socialIdp !== undefined) {
     given.socialIdp = parseSocialIdpSeed(raw.socialIdp, `${path}.socialIdp`);
   }
+  if (raw.validateScope !== undefined) {
+    given.validateScope = parseValidateScopeSeed(raw.validateScope, `${path}.validateScope`);
+  }
   return normaliseIdentitySeeds(given);
 }
 
@@ -399,6 +411,9 @@ function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Exp
   }
   if (raw.configProvider !== undefined) {
     expect.configProvider = parseConfigProviderExpect(raw.configProvider, `${path}.configProvider`, parseExpectedValue);
+  }
+  if (raw.validateScope !== undefined) {
+    expect.validateScope = parseValidateScopeExpect(raw.validateScope, `${path}.validateScope`);
   }
   return expect;
 }

@@ -155,7 +155,10 @@ function __rhinoLocalCtxTag(target, tag, label) {
       __rhinoLocalHide(Array.prototype, name, function () {
         if (!Array.isArray(this)) {
           var row = __rhinoLocalListRow(this);
-          if (row !== null && row.kind.genericReceiver === false) {
+          // `genericReceiver` may instead list the method names its context
+          // measured (validate scope: slice); every other name faults.
+          var allowed = row === null ? true : row.kind.genericReceiver;
+          if (row !== null && (allowed === false || (Array.isArray(allowed) && allowed.indexOf(name) === -1))) {
             throw __rhinoLocalListUnmeasured(row.kind, "Array.prototype." + name + ".call(v, …)");
           }
         }
@@ -397,8 +400,10 @@ function __rhinoLocalCtxList(items, label) {
 // (measured for index 0; the rest of the range assumed the same), and only
 // size(), contains(), isEmpty(), toArray() and String(v) were measured, plus
 // add() where the caller says so. Element order is AIC's hash order, not
-// reproduced.
-function __rhinoLocalCtxJavaSet(items, label, addable) {
+// reproduced. `javaClass` names the class in the `[i]` message when it is
+// another set (validate scope's TreeSet, measured 2026-11-10).
+function __rhinoLocalCtxJavaSet(items, label, addable, javaClass) {
+  var setClass = javaClass || "java.util.HashSet";
   var out = __rhinoLocalCtxBare();
   var store = items.slice();
   var i;
@@ -408,7 +413,7 @@ function __rhinoLocalCtxJavaSet(items, label, addable) {
         enumerable: false,
         configurable: true,
         get: function () {
-          throw __rhinoLocalInternalError('Java class "java.util.HashSet" has no public instance field or method named "' +
+          throw __rhinoLocalInternalError('Java class "' + setClass + '" has no public instance field or method named "' +
             index + '".');
         },
         set: function () {
@@ -421,12 +426,12 @@ function __rhinoLocalCtxJavaSet(items, label, addable) {
     "addAll", "clear", "containsAll", "equals", "forEach", "getClass", "hashCode", "iterator",
     "parallelStream", "remove", "removeAll", "removeIf", "retainAll", "spliterator", "stream", "clone",
   ]);
-  __rhinoLocalCtxMethod(out, label, "java.util.HashSet", "isEmpty", 0, function () {
+  __rhinoLocalCtxMethod(out, label, setClass, "isEmpty", 0, function () {
     return store.length === 0;
   });
   // Measured 2026-09-10 on identity.getAttribute(): toArray() resolves, and
   // String(v.toArray()[0]) is how a single-valued attribute is read.
-  __rhinoLocalCtxMethod(out, label, "java.util.HashSet", "toArray", 0, function () {
+  __rhinoLocalCtxMethod(out, label, setClass, "toArray", 0, function () {
     var arr = [];
     var k;
     for (k = 0; k < store.length; k += 1) {
@@ -434,10 +439,10 @@ function __rhinoLocalCtxJavaSet(items, label, addable) {
     }
     return arr;
   });
-  __rhinoLocalCtxMethod(out, label, "java.util.HashSet", "size", 0, function () {
+  __rhinoLocalCtxMethod(out, label, setClass, "size", 0, function () {
     return store.length;
   });
-  __rhinoLocalCtxMethod(out, label, "java.util.HashSet", "contains", 1, function (v) {
+  __rhinoLocalCtxMethod(out, label, setClass, "contains", 1, function (v) {
     return store.indexOf(String(v)) !== -1;
   });
   __rhinoLocalHide(out, "add", function (v) {
@@ -844,11 +849,16 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
 }
 
 // `opts.paramsGetMissing`: requestParams.get() of an absent key is null
-// (measured for OIDC claims); otherwise it faults.
+// (measured for OIDC claims); otherwise it faults. `opts.javaTags`: the value
+// lists' tag is `[object JavaList]` (measured for validate scope).
 function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var listOf = function (values) {
-    return __rhinoLocalCtxList(values.map(__rhinoLocalCtxString));
+    var list = __rhinoLocalCtxList(values.map(__rhinoLocalCtxString));
+    if (opts && opts.javaTags) {
+      __rhinoLocalCtxTag(list, "JavaList", "a Java list");
+    }
+    return list;
   };
   var listMap = function (label, values, aliases, methods) {
     var lists = __rhinoLocalCtxBare();
@@ -889,7 +899,9 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
 }
 
 // `opts.redirectUris`: next-gen redirectUris reads as a list (measured for
-// OIDC claims); otherwise it is unmeasured.
+// OIDC claims); otherwise it is unmeasured. `opts.javaTags`: customProperties
+// is `[object JavaMap]` and redirectUris `[object JavaList]` (measured for
+// validate scope).
 function __rhinoLocalCtxBuildClient(seed, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var custom = __rhinoLocalCtxMap("clientProperties.customProperties", Object.keys(seed.customProperties),
@@ -898,6 +910,9 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
     }, Object.keys(seed.customProperties).length === 0 ? function () {
       return legacy ? "{}" : "{  }";
     } : null);
+  if (opts && opts.javaTags) {
+    __rhinoLocalCtxTag(custom, "JavaMap", "clientProperties.customProperties");
+  }
   var sets = {
     allowedGrantTypes: { values: seed.allowedGrantTypes, javaClass: "java.util.HashSet" },
     allowedScopes: { values: seed.allowedScopes, javaClass: "java.util.TreeSet" },
@@ -917,7 +932,12 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
       if (!opts || !opts.redirectUris) {
         throw __rhinoLocalCtxUnmeasured("clientProperties.redirectUris");
       }
-      return __rhinoLocalCtxList(seed.redirectUris.slice(), "clientProperties.redirectUris");
+      // Built here rather than through __rhinoLocalCtxList, because a read
+      // happens after the seal and a tag added to a watched view would read
+      // as the script's own mutation.
+      var uris = __rhinoLocalListView(seed.redirectUris.slice(), __rhinoLocalCtx.listKind);
+      __rhinoLocalCtxTag(uris, opts.javaTags ? "JavaList" : null, "clientProperties.redirectUris");
+      return __rhinoLocalCtxWatch(uris, "clientProperties.redirectUris");
     }
     if (legacy) {
       return __rhinoLocalCtxJavaSet(sets[k].values, "clientProperties." + k, false);
