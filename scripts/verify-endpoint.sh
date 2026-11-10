@@ -44,6 +44,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 
+# --- Help, before anything touches the tenant or the agent ---
+case "${1:-}" in
+  -h | --help)
+    sed -n '2,/^$/{s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"
+    exit 0
+    ;;
+esac
+
 # --- Tenant base URL ---
 # The project config is the normal source. Read the `base_url` of the active
 # context rather than the first one in the file, so a multi-tenant config does
@@ -119,6 +127,16 @@ fi
 PATH_ARG="$1"
 shift
 
+# Anything but an absolute path is a mistyped flag or a URL. Refuse it before
+# curl sees it: curl's own error names the host it tried, unredacted.
+case "$PATH_ARG" in
+  /*) ;;
+  *)
+    echo "error: path must start with '/' (got '$PATH_ARG'); see --help." >&2
+    exit 2
+    ;;
+esac
+
 # --- Default Accept-API-Version unless caller provided one ---
 have_apiver=0
 for a in "$@"; do
@@ -151,12 +169,26 @@ BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/aic-verify.XXXXXX") || {
 chmod 600 "$BODY_FILE"
 trap 'rm -f "$BODY_FILE"' EXIT
 
+# curl's own diagnostics ("Could not resolve host: …") name the tenant, so
+# they go through the same redaction as the banner unless --raw was asked for.
+redact_stderr() {
+  if [ "$RAW" = 1 ]; then
+    cat
+  else
+    "$HERE/check-sensitive-metadata.sh" --redact
+  fi
+}
+curl_status=0
 curl -sS -o "$BODY_FILE" -w "HTTP %{http_code}\n" \
   --header "Authorization: Bearer $TOKEN" \
   --header "Accept: application/json" \
   "${extra_headers[@]}" \
   "$@" \
-  "$URL" >&2
+  "$URL" 2>&1 | redact_stderr >&2 || curl_status=$?
+# pipefail: a curl failure is the pipeline's status. Keep curl's exit code.
+if [ "$curl_status" != 0 ]; then
+  exit "$curl_status"
+fi
 
 emit() {
   if [ "$RAW" = 1 ]; then
