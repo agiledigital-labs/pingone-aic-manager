@@ -24,6 +24,7 @@ import type {
   SocialIdpCaseInit,
   ConfigProviderCaseInit,
   ValidateScopeCaseInit,
+  MayActCaseInit,
   Engine,
   Expect,
   ExpectedObject,
@@ -60,6 +61,7 @@ import {
   parseConfigProviderExpect,
   parseValidateScopeExpect,
   parseValidateScopeSeed,
+  parseMayActExpect,
   parseSocialIdpSeed,
   parseTokenRequestSeed,
 } from "./context.ts";
@@ -93,6 +95,7 @@ export function defineCase(
     | SocialIdpCaseInit
     | ConfigProviderCaseInit
     | ValidateScopeCaseInit
+    | MayActCaseInit
 ): Case {
   return validateCase(input);
 }
@@ -414,6 +417,9 @@ function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Exp
   }
   if (raw.validateScope !== undefined) {
     expect.validateScope = parseValidateScopeExpect(raw.validateScope, `${path}.validateScope`);
+  }
+  if (raw.mayAct !== undefined) {
+    expect.mayAct = parseMayActExpect(raw.mayAct, `${path}.mayAct`);
   }
   return expect;
 }

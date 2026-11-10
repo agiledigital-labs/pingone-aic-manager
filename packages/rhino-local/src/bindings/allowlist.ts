@@ -6,6 +6,7 @@ import {
   oidcClaimsBindingsJsonPath,
   socialIdpBindingsJsonPath,
   validateScopeBindingsJsonPath,
+  mayActBindingsJsonPath,
 } from "../paths.ts";
 
 let cached: string[] | undefined;
@@ -140,6 +141,22 @@ export function validateScopeClassAllowList(): string[] {
     cachedValidateScope = [...declaredAllowList(validateScopeBindingsJsonPath), ...OBSERVED_BASE];
   }
   return cachedValidateScope;
+}
+
+let cachedMayAct: string[] | undefined;
+
+/**
+ * The next-gen may-act context's allow-list, from its own descriptor
+ * (`docs/api/bindings/oauth2-may-act-next.json`, captured 2026-11-10) plus
+ * the same `OBSERVED_BASE`. It names no `java.util` class: `new
+ * java.util.HashMap()` fails with `[JavaPackage java.util.HashMap] is not a
+ * function`, and `token.getField("scope")` with the TreeSet shutter.
+ */
+export function mayActClassAllowList(): string[] {
+  if (cachedMayAct === undefined) {
+    cachedMayAct = [...declaredAllowList(mayActBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedMayAct;
 }
 
 function declaredAllowList(path: string): string[] {

@@ -14,6 +14,7 @@ import {
   bindingsRuntimePath,
   bindingsSocialIdpPath,
   bindingsValidateScopePath,
+  bindingsMayActPath,
   generatedJsPath,
 } from "../paths.ts";
 import type { ScriptContext } from "../case/types.ts";
@@ -90,6 +91,13 @@ const CONTEXT_RUNTIME: {
     overlays: [bindingsContextCommonPath, bindingsValidateScopePath],
     seed: "__rhinoLocalSeedValidateScope",
     harvest: "__rhinoLocalHarvestValidateScope",
+  },
+  // AM runs the body and, if it did not throw, stamps may_act and act. The
+  // completion value is ignored, so the harvest is appended.
+  OAUTH2_MAY_ACT: {
+    overlays: [bindingsContextCommonPath, bindingsMayActPath],
+    seed: "__rhinoLocalSeedMayAct",
+    harvest: "__rhinoLocalHarvestMayAct",
   },
 };
 

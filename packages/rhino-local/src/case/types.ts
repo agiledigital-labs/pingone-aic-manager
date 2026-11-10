@@ -44,6 +44,7 @@ export const SCRIPT_CONTEXTS = [
   "SOCIAL_IDP_PROFILE_TRANSFORMATION",
   "CONFIG_PROVIDER_NODE",
   "OAUTH2_VALIDATE_SCOPE",
+  "OAUTH2_MAY_ACT",
 ] as const;
 export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
 export const DEFAULT_SCRIPT_CONTEXT: ScriptContext = "SCRIPTED_DECISION_NODE";
@@ -120,6 +121,7 @@ export const EXPECT_KEYS = [
   "socialIdp",
   "configProvider",
   "validateScope",
+  "mayAct",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
 
@@ -141,6 +143,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "socialIdp",
   "configProvider",
   "validateScope",
+  "mayAct",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -173,6 +176,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   socialIdp: false,
   configProvider: false,
   validateScope: false,
+  mayAct: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -214,8 +218,8 @@ export const STATE_CHANNELS = [
   "secureState",
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-/** `accessToken`, `oidc`, `socialIdp`, `configProvider` and `validateScope` are judged only for their context, so none is a `Channel` every runner must record. */
-export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope";
+/** `accessToken`, `oidc`, `socialIdp`, `configProvider`, `validateScope` and `mayAct` are judged only for their context, so none is a `Channel` every runner must record. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -548,6 +552,53 @@ export interface ValidateScopeEffect {
   refusal: string | null;
 }
 
+/**
+ * What the case asserts about the `may_act` and `act` claims AM stamps after
+ * an OAuth2 may-act script. Fail-closed: a claim the case does not declare
+ * is a mismatch unless `allowUndeclared.mayAct` is set. A present key whose
+ * value is `null` means the claim was JSON null; omitting the key means the
+ * claim was absent. Those are different on this context (measured 2026-11-10).
+ */
+export interface MayActExpect {
+  /** The `may_act` claim. Present and `null`: JSON null. Omit: the claim must be absent. */
+  mayAct?: JsonValue;
+  /** The `act` claim, with the same present-null / omitted-absent distinction. */
+  act?: JsonValue;
+  /**
+   * The scopes on the issued token, compared as a set. Defaults to the
+   * request's scopes; a script's `token.setScope` (legacy) replaces them.
+   */
+  scope?: string[];
+  /**
+   * `false` when AM issues no token (the script threw, or the claim could
+   * not be written). Default `true`. Cannot be combined with `mayAct`,
+   * `act` or `scope`.
+   */
+  issued?: boolean;
+  /** The `error_description` of a failed token request. */
+  refusal?: string;
+}
+
+/** The may-act context's result: the claims AM stamped, and the token's scope. */
+export interface MayActEffect {
+  /** The token endpoint's HTTP status: 200 when the script finished, 500 when AM discarded it. */
+  status: number;
+  /** `false` when `may_act` is absent from the token. Distinct from a JSON-null claim. */
+  mayActPresent: boolean;
+  /** The `may_act` claim; `null` when it is JSON null or absent (see `mayActPresent`). */
+  mayAct: JsonValue | null;
+  /** `false` when `act` is absent from the token. */
+  actPresent: boolean;
+  /** The `act` claim; `null` when it is JSON null or absent (see `actPresent`). */
+  act: JsonValue | null;
+  /** The scopes on the issued token; `null` when AM issued none. */
+  scope: string[] | null;
+  /** The scopes the request handed the script, before any `setScope`. */
+  seedScope: string[];
+  /** `null` when a token is issued; otherwise the `error_description` AM answers. */
+  refusal: string | null;
+}
+
 /** The config provider node context's result. */
 export interface ConfigProviderEffect {
   /** `"none"` when AM takes no map, which fails the journey. */
@@ -781,6 +832,8 @@ export interface Expect {
   configProvider?: ConfigProviderExpect;
   /** `OAUTH2_VALIDATE_SCOPE` only. */
   validateScope?: ValidateScopeExpect;
+  /** `OAUTH2_MAY_ACT` only. */
+  mayAct?: MayActExpect;
 }
 
 export interface CaseInit {
@@ -956,13 +1009,47 @@ export interface ValidateScopeCaseInit {
   expect: Pick<Expect, "validateScope" | "openidm" | "http" | "logs" | "allowUndeclared">;
 }
 
+/**
+ * An `OAUTH2_MAY_ACT` case: AM runs the script's body, then stamps `may_act`
+ * and `act` from the token. The script's completion value is ignored.
+ */
+export interface MayActCaseInit {
+  name: string;
+  script: string;
+  context: "OAUTH2_MAY_ACT";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "loggerScriptId"
+    | "cookieName"
+    | "client"
+    | "request"
+    | "accessToken"
+    | "identity"
+    | "scopes"
+  >;
+  expect: Pick<Expect, "mayAct" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
 export type AnyCaseInit =
   | CaseInit
   | AccessTokenCaseInit
   | OidcClaimsCaseInit
   | SocialIdpCaseInit
   | ConfigProviderCaseInit
-  | ValidateScopeCaseInit;
+  | ValidateScopeCaseInit
+  | MayActCaseInit;
 
 export interface Case {
   name: string;
@@ -1037,6 +1124,8 @@ export interface RecordedEffects {
   configProvider?: ConfigProviderEffect | undefined;
   /** The validate scope context's result; absent for every other context. */
   validateScope?: ValidateScopeEffect | undefined;
+  /** The may-act context's result; absent for every other context. */
+  mayAct?: MayActEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

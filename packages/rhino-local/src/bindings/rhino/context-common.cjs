@@ -402,7 +402,9 @@ function __rhinoLocalCtxList(items, label) {
 // add() where the caller says so. Element order is AIC's hash order, not
 // reproduced. `javaClass` names the class in the `[i]` message when it is
 // another set (validate scope's TreeSet, measured 2026-11-10).
-function __rhinoLocalCtxJavaSet(items, label, addable, javaClass) {
+// `tag` is the measured Object.prototype.toString tag, set before the watch.
+// Absent, the tag stays unmeasured and faults.
+function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag) {
   var setClass = javaClass || "java.util.HashSet";
   var out = __rhinoLocalCtxBare();
   var store = items.slice();
@@ -462,7 +464,7 @@ function __rhinoLocalCtxJavaSet(items, label, addable, javaClass) {
     return "[" + store.join(", ") + "]";
   });
   __rhinoLocalCtxToJSON(out, label);
-  __rhinoLocalCtxTag(out, null, label);
+  __rhinoLocalCtxTag(out, tag === undefined ? null : tag, label);
   return __rhinoLocalCtxWatch(out, label);
 }
 
@@ -731,7 +733,10 @@ function __rhinoLocalCtxCopy(value) {
 // in the access-token and OIDC claims contexts (2026-11-10); where a member
 // was measured in only one, the caller's `opts` says so.
 
-function __rhinoLocalCtxBuildIdentity(seed) {
+// `opts.tag`: the measured Object.prototype.toString tag (`"JavaObject"` for
+// may-act, 2026-11-10). Absent, the tag stays unmeasured and faults, as it
+// did before that option existed.
+function __rhinoLocalCtxBuildIdentity(seed, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   // Next-gen: measured 2026-11-10, String(identity) is the wrapper's Java
   // toString (class@hash) while identity.toString() is "Cannot find function
@@ -803,8 +808,8 @@ function __rhinoLocalCtxBuildIdentity(seed) {
       "equals", "wait", "notify", "notifyAll"]);
   }
   __rhinoLocalCtxToJSON(identity, "identity");
-  // Its Java tag is unmeasured on both engines (Sol ctx r2 P2-5).
-  __rhinoLocalCtxTag(identity, null, "identity");
+  // The tag is unmeasured except where the caller measured one (Sol ctx r2 P2-5).
+  __rhinoLocalCtxTag(identity, opts && opts.tag ? opts.tag : null, "identity");
   return __rhinoLocalCtxWatch(identity, "identity");
 }
 
@@ -901,7 +906,9 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
 // `opts.redirectUris`: next-gen redirectUris reads as a list (measured for
 // OIDC claims); otherwise it is unmeasured. `opts.javaTags`: customProperties
 // is `[object JavaMap]` and redirectUris `[object JavaList]` (measured for
-// validate scope).
+// validate scope). `opts.setTag`: the legacy grant/scope/response sets' tag
+// (may-act measured `[object JavaObject]`); the sets are built on read, after
+// the seal, so the tag has to be applied before their own watch.
 function __rhinoLocalCtxBuildClient(seed, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var custom = __rhinoLocalCtxMap("clientProperties.customProperties", Object.keys(seed.customProperties),
@@ -940,7 +947,7 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
       return __rhinoLocalCtxWatch(uris, "clientProperties.redirectUris");
     }
     if (legacy) {
-      return __rhinoLocalCtxJavaSet(sets[k].values, "clientProperties." + k, false);
+      return __rhinoLocalCtxJavaSet(sets[k].values, "clientProperties." + k, false, undefined, opts && opts.setTag);
     }
     // Measured: next-gen hands over the raw Java set, which the context's
     // class shutter refuses.

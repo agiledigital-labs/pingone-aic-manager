@@ -101,6 +101,15 @@ export const validateScopeBindingsJsonPath = join(generatedDir, "oauth2-validate
 /** The validate scope context's binding overlay, appended to the prelude for that context only. */
 export const bindingsValidateScopePath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-validate-scope.cjs");
 
+/** The may-act context's captured next-gen descriptor. Repo-only; read by `generate`. */
+export const sourceMayActBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "oauth2-may-act-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceMayActBindingsJsonPath}: the context's class allow-list. */
+export const mayActBindingsJsonPath = join(generatedDir, "oauth2-may-act-next.json");
+
+/** The may-act context's binding overlay, appended to the prelude for that context only. */
+export const bindingsMayActPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-may-act.cjs");
+
 /** The OIDC claims context's binding overlay, appended to the prelude for that context only. */
 export const bindingsOidcClaimsPath = join(packageRoot, "src", "bindings", "rhino", "context-oidc-claims.cjs");
 

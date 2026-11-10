@@ -13,6 +13,7 @@ import type {
   ConfigProviderExpect,
   ValidateScopeExpect,
   ValidateScopeSeed,
+  MayActExpect,
   ClientSeed,
   Engine,
   ExpectedValue,
@@ -26,7 +27,7 @@ import type {
   ScriptContext,
   TokenRequestSeed,
 } from "./types.ts";
-import { assertDenseArray, defineOwn, isPlainObject, parseJsonObject, unknownKeyError } from "./util.ts";
+import { assertDenseArray, defineOwn, isPlainObject, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
 
 export interface ContextDeclaration {
   id: ScriptContext;
@@ -69,13 +70,14 @@ export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = [
   "socialIdp",
   "validateScope",
 ];
-export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider", "validateScope"];
+export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider", "validateScope", "mayAct"];
 export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = [
   "accessToken",
   "oidc",
   "socialIdp",
   "configProvider",
   "validateScope",
+  "mayAct",
 ];
 
 export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
@@ -153,6 +155,17 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
     givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "client", "request", "validateScope"],
     expectKeys: ["outcome", "validateScope", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["validateScope", "openidmWrites", "openidmReads", "http", "logs"],
+    hasOutcome: false,
+  },
+  OAUTH2_MAY_ACT: {
+    id: "OAUTH2_MAY_ACT",
+    // Both engines, measured 2026-11-10: OAUTH2_MAY_ACT (1.0) and
+    // OAUTH2_MAY_ACT_NEXT_GEN (2.0) scripts both run as a client's
+    // accessTokenMayActScript. The design note called this next-gen only.
+    engines: ["next-gen", "legacy"],
+    givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "client", "request", "accessToken", "identity", "scopes"],
+    expectKeys: ["outcome", "mayAct", "openidm", "http", "logs", "allowUndeclared"],
+    allowUndeclared: ["mayAct", "openidmWrites", "openidmReads", "http", "logs"],
     hasOutcome: false,
   },
 };
@@ -409,6 +422,25 @@ export function parseValidateScopeExpect(raw: unknown, path: string): ValidateSc
   }
   if (out.granted !== undefined && (out.invalidScope !== undefined || out.accepted === false)) {
     throw new Error(`rhino-local: ${path}.granted cannot be declared with a refusal`);
+  }
+  return out;
+}
+
+export function parseMayActExpect(raw: unknown, path: string): MayActExpect {
+  const obj = plain(raw, path, ["mayAct", "act", "scope", "issued", "refusal"]);
+  const out: MayActExpect = {};
+  // A present key, including null, is a JSON-null claim. An omitted key
+  // requires the claim to be absent. `!== undefined` would collapse the two.
+  if ("mayAct" in obj) out.mayAct = parseJsonValue(obj.mayAct, `${path}.mayAct`);
+  if ("act" in obj) out.act = parseJsonValue(obj.act, `${path}.act`);
+  if (obj.scope !== undefined) out.scope = scopeSet(obj.scope, `${path}.scope`);
+  if ("issued" in obj) {
+    if (typeof obj.issued !== "boolean") throw new Error(`rhino-local: ${path}.issued must be a boolean`);
+    out.issued = obj.issued;
+  }
+  if (obj.refusal !== undefined) out.refusal = str(obj.refusal, `${path}.refusal`);
+  if (out.issued === false && ("mayAct" in out || "act" in out || out.scope !== undefined)) {
+    throw new Error(`rhino-local: ${path} cannot declare mayAct, act or scope together with issued: false`);
   }
   return out;
 }
