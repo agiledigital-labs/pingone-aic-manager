@@ -93,6 +93,26 @@
    "script": "config = true;\n"
   }
  },
+ "cachemanager": {
+  "legacy": {
+   "http": 200,
+   "message": "undefined",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: typeof cacheManager } };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "undefined",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: typeof cacheManager } };\n"
+  }
+ },
  "cbuilder": {
   "legacy": {
    "http": 500,

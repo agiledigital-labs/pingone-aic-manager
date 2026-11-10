@@ -6,6 +6,7 @@ import type { EnvProfile } from "../profile/types.ts";
 import { managedInvalidDefault, managedPolicy, managedWriteFaults } from "../profile/write-guard.ts";
 import {
   bindingsAccessTokenPath,
+  bindingsConfigProviderPath,
   bindingsContextCommonPath,
   bindingsCrestFilterPath,
   bindingsIdentityPolicyPath,
@@ -73,6 +74,14 @@ const CONTEXT_RUNTIME: {
     seed: "__rhinoLocalSeedSocialIdp",
     harvest: "__rhinoLocalHarvestSocialIdp",
     completion: true,
+  },
+  // AM reads the `config` global after the script, not its completion value
+  // (measured: a script that only evaluates to a map is refused), so the
+  // harvest is appended like the access-token context's.
+  CONFIG_PROVIDER_NODE: {
+    overlays: [bindingsContextCommonPath, bindingsConfigProviderPath],
+    seed: "__rhinoLocalSeedConfigProvider",
+    harvest: "__rhinoLocalHarvestConfigProvider",
   },
 };
 

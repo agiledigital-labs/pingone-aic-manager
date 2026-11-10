@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
-import { accessTokenBindingsJsonPath, bindingsJsonPath, oidcClaimsBindingsJsonPath, socialIdpBindingsJsonPath } from "../paths.ts";
+import {
+  accessTokenBindingsJsonPath,
+  bindingsJsonPath,
+  configProviderBindingsJsonPath,
+  oidcClaimsBindingsJsonPath,
+  socialIdpBindingsJsonPath,
+} from "../paths.ts";
 
 let cached: string[] | undefined;
 
@@ -99,6 +105,23 @@ export function socialIdpClassAllowList(): string[] {
     cachedSocialIdp = [...declaredAllowList(socialIdpBindingsJsonPath), ...OBSERVED_BASE];
   }
   return cachedSocialIdp;
+}
+
+let cachedConfigProvider: string[] | undefined;
+
+/**
+ * The next-gen config provider node context's allow-list, from its own
+ * descriptor (`docs/api/bindings/config-provider-node-next.json`, captured
+ * 2026-11-10) plus the same `OBSERVED_BASE`. Like the social context's, it
+ * names no `java.util` class: `nodeState.keys()` fails with `Access to Java
+ * class "java.util.HashSet" is prohibited`, and `new java.util.HashMap()` is
+ * `[JavaPackage java.util.HashMap] is not a function` (both measured that day).
+ */
+export function configProviderClassAllowList(): string[] {
+  if (cachedConfigProvider === undefined) {
+    cachedConfigProvider = [...declaredAllowList(configProviderBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedConfigProvider;
 }
 
 function declaredAllowList(path: string): string[] {

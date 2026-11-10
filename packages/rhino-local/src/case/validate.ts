@@ -22,6 +22,7 @@ import type {
   AccessTokenCaseInit,
   OidcClaimsCaseInit,
   SocialIdpCaseInit,
+  ConfigProviderCaseInit,
   Engine,
   Expect,
   ExpectedObject,
@@ -55,6 +56,7 @@ import {
   parseOidcClaimsExpect,
   parseOidcClaimsSeed,
   parseSocialIdpExpect,
+  parseConfigProviderExpect,
   parseSocialIdpSeed,
   parseTokenRequestSeed,
 } from "./context.ts";
@@ -81,7 +83,7 @@ function knownBindingNames(): ReadonlySet<string> {
 
 /** Typed entry point for case authors. */
 export function defineCase(
-  input: CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit | SocialIdpCaseInit
+  input: CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit | SocialIdpCaseInit | ConfigProviderCaseInit
 ): Case {
   return validateCase(input);
 }
@@ -394,6 +396,9 @@ function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Exp
   }
   if (raw.socialIdp !== undefined) {
     expect.socialIdp = parseSocialIdpExpect(raw.socialIdp, `${path}.socialIdp`, parseExpectedValue);
+  }
+  if (raw.configProvider !== undefined) {
+    expect.configProvider = parseConfigProviderExpect(raw.configProvider, `${path}.configProvider`, parseExpectedValue);
   }
   return expect;
 }

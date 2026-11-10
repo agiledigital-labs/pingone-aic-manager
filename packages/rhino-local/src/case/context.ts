@@ -10,6 +10,7 @@ import type {
   AccessTokenExpect,
   AccessTokenSeed,
   AllowUndeclaredChannel,
+  ConfigProviderExpect,
   ClientSeed,
   Engine,
   ExpectedValue,
@@ -65,8 +66,8 @@ export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = [
   "oidc",
   "socialIdp",
 ];
-export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp"];
-export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = ["accessToken", "oidc", "socialIdp"];
+export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider"];
+export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = ["accessToken", "oidc", "socialIdp", "configProvider"];
 
 export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   SCRIPTED_DECISION_NODE: {
@@ -111,6 +112,27 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
     ],
     expectKeys: ["outcome", "socialIdp", "sharedState", "transientState", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["socialIdp", "sharedState", "transientState", "openidmWrites", "openidmReads", "http", "logs"],
+    hasOutcome: false,
+  },
+  CONFIG_PROVIDER_NODE: {
+    id: "CONFIG_PROVIDER_NODE",
+    // Both engines, measured 2026-11-10: the node's script list offers
+    // CONFIG_PROVIDER_NODE (1.0) and CONFIG_PROVIDER_NODE_NEXT_GEN (2.0)
+    // scripts, and a journey runs either.
+    engines: ["next-gen", "legacy"],
+    // nodeState is bound on both engines (sharedState and transientState
+    // are not, even on legacy), so state seeds and diffs belong here.
+    givenKeys: [
+      ...SHARED_GIVEN,
+      "sharedState",
+      "transientState",
+      "requestHeaders",
+      "requestParameters",
+      "cookieName",
+      "loggerScriptId",
+    ],
+    expectKeys: ["outcome", "configProvider", "sharedState", "transientState", "openidm", "http", "logs", "allowUndeclared"],
+    allowUndeclared: ["configProvider", "sharedState", "transientState", "openidmWrites", "openidmReads", "http", "logs"],
     hasOutcome: false,
   },
 };
@@ -325,6 +347,21 @@ export function parseSocialIdpExpect(
   const obj = plain(raw, path, ["profile", "accepted"]);
   const out: SocialIdpExpect = {};
   if ("profile" in obj) out.profile = expectedValue(obj.profile, `${path}.profile`);
+  if (obj.accepted !== undefined) {
+    if (typeof obj.accepted !== "boolean") throw new Error(`rhino-local: ${path}.accepted must be a boolean`);
+    out.accepted = obj.accepted;
+  }
+  return out;
+}
+
+export function parseConfigProviderExpect(
+  raw: unknown,
+  path: string,
+  expectedValue: (raw: unknown, path: string) => ExpectedValue
+): ConfigProviderExpect {
+  const obj = plain(raw, path, ["config", "accepted"]);
+  const out: ConfigProviderExpect = {};
+  if ("config" in obj) out.config = expectedValue(obj.config, `${path}.config`);
   if (obj.accepted !== undefined) {
     if (typeof obj.accepted !== "boolean") throw new Error(`rhino-local: ${path}.accepted must be a boolean`);
     out.accepted = obj.accepted;
