@@ -21,6 +21,7 @@ import type {
   CaseInit,
   AccessTokenCaseInit,
   OidcClaimsCaseInit,
+  SocialIdpCaseInit,
   Engine,
   Expect,
   ExpectedObject,
@@ -53,6 +54,8 @@ import {
   parseIdentitySeed,
   parseOidcClaimsExpect,
   parseOidcClaimsSeed,
+  parseSocialIdpExpect,
+  parseSocialIdpSeed,
   parseTokenRequestSeed,
 } from "./context.ts";
 import { assertDenseArray, defineOwn, isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
@@ -77,7 +80,9 @@ function knownBindingNames(): ReadonlySet<string> {
 }
 
 /** Typed entry point for case authors. */
-export function defineCase(input: CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit): Case {
+export function defineCase(
+  input: CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit | SocialIdpCaseInit
+): Case {
   return validateCase(input);
 }
 
@@ -305,6 +310,9 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.oidc !== undefined) {
     given.oidc = parseOidcClaimsSeed(raw.oidc, `${path}.oidc`);
   }
+  if (raw.socialIdp !== undefined) {
+    given.socialIdp = parseSocialIdpSeed(raw.socialIdp, `${path}.socialIdp`);
+  }
   return normaliseIdentitySeeds(given);
 }
 
@@ -383,6 +391,9 @@ function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Exp
   }
   if (raw.oidc !== undefined) {
     expect.oidc = parseOidcClaimsExpect(raw.oidc, `${path}.oidc`, parseExpectedValue);
+  }
+  if (raw.socialIdp !== undefined) {
+    expect.socialIdp = parseSocialIdpExpect(raw.socialIdp, `${path}.socialIdp`, parseExpectedValue);
   }
   return expect;
 }

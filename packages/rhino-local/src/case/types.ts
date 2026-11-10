@@ -37,7 +37,12 @@ export type Engine = (typeof ENGINES)[number];
  * scripted decision node, which is how every case ran before contexts
  * existed. packages/rhino-local/docs/script-contexts.md.
  */
-export const SCRIPT_CONTEXTS = ["SCRIPTED_DECISION_NODE", "OAUTH2_ACCESS_TOKEN_MODIFICATION", "OIDC_CLAIMS"] as const;
+export const SCRIPT_CONTEXTS = [
+  "SCRIPTED_DECISION_NODE",
+  "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+  "OIDC_CLAIMS",
+  "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+] as const;
 export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
 export const DEFAULT_SCRIPT_CONTEXT: ScriptContext = "SCRIPTED_DECISION_NODE";
 
@@ -78,6 +83,7 @@ export const GIVEN_KEYS = [
   "scopes",
   "request",
   "oidc",
+  "socialIdp",
 ] as const;
 export type GivenKey = (typeof GIVEN_KEYS)[number];
 
@@ -108,6 +114,7 @@ export const EXPECT_KEYS = [
   "allowUndeclared",
   "accessToken",
   "oidc",
+  "socialIdp",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
 
@@ -126,6 +133,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "identityWrites",
   "accessToken",
   "oidc",
+  "socialIdp",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -155,6 +163,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   identityWrites: false,
   accessToken: false,
   oidc: false,
+  socialIdp: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -196,8 +205,8 @@ export const STATE_CHANNELS = [
   "secureState",
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-/** `accessToken` and `oidc` are judged only for their context, so neither is a `Channel` every runner must record. */
-export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc";
+/** `accessToken`, `oidc` and `socialIdp` are judged only for their context, so none is a `Channel` every runner must record. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -416,6 +425,53 @@ export interface Given {
   request?: TokenRequestSeed;
   /** `OIDC_CLAIMS`: the `claims` binding's subject and `claimsLocales`. */
   oidc?: OidcClaimsSeed;
+  /** `SOCIAL_IDP_PROFILE_TRANSFORMATION`: the provider's raw profile and the selected provider. */
+  socialIdp?: SocialIdpSeed;
+}
+
+/**
+ * What AM hands a social IdP profile transformation script beyond the shared
+ * bindings, as measured on 2026-11-10 (docs/api/12-script-bindings-matrix.md,
+ * "Social IdP profile transformation"). The node state comes from
+ * `given.sharedState` / `given.transientState`.
+ */
+export interface SocialIdpSeed {
+  /**
+   * The provider's profile: the `rawProfile` binding (a Java map on
+   * next-gen, a JsonValue on legacy). Only string values were measured;
+   * reading any other value faults. Default `{}`.
+   */
+  rawProfile?: JsonObject;
+  /**
+   * The `selectedIdp` binding, and `nodeState.get("selectedIdp")` unless the
+   * case seeds that key itself. Default `"rhino-local-idp"`.
+   */
+  selectedIdp?: string;
+}
+
+/** What the case asserts about the profile a transformation script returns. */
+export interface SocialIdpExpect {
+  /**
+   * The normalised profile the handler node receives. Numbers are doubles on
+   * AIC (`4` reaches the node as `4.0`), which JSON cannot tell apart, and a
+   * top-level `undefined` property becomes `null`.
+   */
+  profile?: ExpectedValue;
+  /**
+   * `false` when AM fails the journey after the script (measured: the script
+   * evaluated to undefined, null or a string). Default `true`.
+   */
+  accepted?: boolean;
+}
+
+/** The social IdP profile transformation context's result. */
+export interface SocialIdpEffect {
+  /** `"none"` when AM takes no profile, which fails the journey. */
+  returned: "profile" | "none";
+  /** The profile the handler node receives; `null` when none was returned. */
+  profile: JsonObject | null;
+  /** `null` when accepted; otherwise why AM fails the journey. */
+  refusal: string | null;
 }
 
 /**
@@ -625,6 +681,8 @@ export interface Expect {
   accessToken?: AccessTokenExpect;
   /** `OIDC_CLAIMS` only. */
   oidc?: OidcClaimsExpect;
+  /** `SOCIAL_IDP_PROFILE_TRANSFORMATION` only. */
+  socialIdp?: SocialIdpExpect;
 }
 
 export interface CaseInit {
@@ -707,7 +765,40 @@ export interface OidcClaimsCaseInit {
   expect: Pick<Expect, "oidc" | "openidm" | "http" | "logs" | "allowUndeclared">;
 }
 
-export type AnyCaseInit = CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit;
+/** A `SOCIAL_IDP_PROFILE_TRANSFORMATION` case: the script's value is the normalised profile. */
+export interface SocialIdpCaseInit {
+  name: string;
+  script: string;
+  context: "SOCIAL_IDP_PROFILE_TRANSFORMATION";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "sharedState"
+    | "transientState"
+    | "requestHeaders"
+    | "requestParameters"
+    | "cookieName"
+    | "loggerScriptId"
+    | "socialIdp"
+  >;
+  expect: Pick<
+    Expect,
+    "socialIdp" | "sharedState" | "transientState" | "openidm" | "http" | "logs" | "allowUndeclared"
+  >;
+}
+
+export type AnyCaseInit = CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit | SocialIdpCaseInit;
 
 export interface Case {
   name: string;
@@ -776,6 +867,8 @@ export interface RecordedEffects {
   accessToken?: AccessTokenEffect | undefined;
   /** The OIDC claims context's result; absent for every other context. */
   oidc?: OidcClaimsEffect | undefined;
+  /** The social IdP profile transformation context's result; absent for every other context. */
+  socialIdp?: SocialIdpEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

@@ -11,6 +11,7 @@ import {
   bindingsIdentityPolicyPath,
   bindingsOidcClaimsPath,
   bindingsRuntimePath,
+  bindingsSocialIdpPath,
   generatedJsPath,
 } from "../paths.ts";
 import type { ScriptContext } from "../case/types.ts";
@@ -64,6 +65,13 @@ const CONTEXT_RUNTIME: {
     overlays: [bindingsContextCommonPath, bindingsOidcClaimsPath],
     seed: "__rhinoLocalSeedOidcClaims",
     harvest: "__rhinoLocalHarvestOidcClaims",
+    completion: true,
+  },
+  // The transformed profile is the value the script evaluates to.
+  SOCIAL_IDP_PROFILE_TRANSFORMATION: {
+    overlays: [bindingsContextCommonPath, bindingsSocialIdpPath],
+    seed: "__rhinoLocalSeedSocialIdp",
+    harvest: "__rhinoLocalHarvestSocialIdp",
     completion: true,
   },
 };
