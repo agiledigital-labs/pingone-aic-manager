@@ -101,7 +101,7 @@ the decision node.
 | `OAUTH2_ACCESS_TOKEN_MODIFICATION` legacy + next-gen (**implemented**) | `accessToken`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `session` (null)                         | `accessToken` (starting state), `identity`, `client`, `scopes`, `request` | Top-level body; return value ignored; AM issues the mutated token                                                                | `expect.accessToken`: fields added/changed/removed, scope, expiry, and the other setters |
 | `OIDC_CLAIMS` legacy + next-gen (**implemented**) | `claims`, `requestedClaims`, `claimsLocales`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `claimObjects`, `requestedTypedClaims`, `session` (null) | `identity`, `scopes`, `client`, `request`, `oidc` (claims seed, `claimsLocales`) | Completion value: next-gen `{values, compositeScopes}`, legacy a `UserInfoClaims`; read through the runner's completion hook | `expect.oidc`: `userinfo`, `idToken`, `compositeScopes`, `issued` |
 | `SOCIAL_IDP_PROFILE_TRANSFORMATION` legacy + next-gen (**implemented**) | `rawProfile` (next-gen a Java map, legacy a JsonValue), `selectedIdp`, `nodeState`; legacy `sharedState`, `transientState`, `callbacks` | `socialIdp` (`rawProfile`, `selectedIdp`), the node state | Completion value: a plain object, or on legacy `new JsonValue(map)`; undefined, null or a string fails the journey | `expect.socialIdp`: `profile`, `accepted`; the state channels |
-| `CONFIG_PROVIDER_NODE` (next-gen)                                     | `nodeState` (read), `config`                                                                                                  | node state seed                                                           | Top-level body that assigns `config`; AM configures the wrapped node from it                                                     | `expect.config`, plus the state channels it can read                                     |
+| `CONFIG_PROVIDER_NODE` legacy + next-gen (**implemented**) | `nodeState`; next-gen the decision node's bindings less `sharedState`, `transientState` and `outcome`; legacy only `nodeState`, `idRepository`, the request maps, `realm`, `scriptName`, `logger`, `httpClient`, `secrets`, `systemEnv` | the node state, request maps | Top-level body that assigns the `config` global (read after the script, not its completion value); AM configures the wrapped node from it, and fails the journey (HTTP 500) when it is not a map | `expect.configProvider`: `config`, `accepted`; the state channels |
 | `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`                                      | `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes`                                | requested / available / allowed scopes                                    | Named function (`validateAccessTokenScope`, …) AM calls after the body; returns the scope list or throws via `throwInvalidScope` | `expect.scopes` or `expect.invalidScope` (the measured fail-open row matters)            |
 | `OAUTH2_MAY_ACT_NEXT_GEN`                                             | `token` (with `setMayAct`)                                                                                                    | token starting state                                                      | Top-level body; AM stamps `may_act`                                                                                              | `expect.mayAct`                                                                          |
 | `LIBRARY`                                                             | library scope only (`openidm`, `httpClient`, `logger`, …; no context bindings)                                                | arguments to the export                                                   | No body semantics: the case names an export and its arguments; the harness `require()`s the library and calls it                 | `expect.returns`, plus shared channels                                                   |
@@ -127,6 +127,21 @@ legacy context id is also used by `SocialProviderHandlerNodeV2`'s own `script`,
 which binds `normalizedProfile` and returns a JsonValue. That invocation was
 measured (docs/api/12) but is not emulated; a case for it would need its own
 fixture (the normalised profile) and result shape.
+
+## The config provider node context in detail
+
+See the README section "Config provider node scripts" for the author's view.
+The table used to list this context as next-gen only with an `expect.config`
+channel; both engines exist (measured 2026-11-10: the node's script list offers
+`CONFIG_PROVIDER_NODE` and `CONFIG_PROVIDER_NODE_NEXT_GEN` scripts, and a
+journey runs either), and the channel is `expect.configProvider`, named like
+the other context-only channels. AM reads the `config` global after the script,
+so the harvest is appended to the source, as for access-token modification,
+rather than read through the completion hook. Like the social context, it binds
+the node state, so `sharedState` / `transientState` are accepted in `given` and
+judged in `expect` by the decision node's state verdict. AM runs the script
+again on every request that reaches the node; a case is one invocation, and the
+re-run is a gap (`docs/rhino-local-gaps.md`).
 
 ## The OIDC claims context in detail
 

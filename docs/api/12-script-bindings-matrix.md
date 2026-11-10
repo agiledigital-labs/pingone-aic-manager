@@ -1986,6 +1986,83 @@ transformation's result. `normalizedProfile.givenName` is `undefined`, and
 captured `givenName` reached the handler's `objectAttributes`. The emulator
 does not run this invocation.
 
+### Config provider node on both engines: the emulator's probes (verified 2026-11-10)
+
+`CONFIG_PROVIDER_NODE` (legacy, `1.0`) and `CONFIG_PROVIDER_NODE_NEXT_GEN`
+(`2.0`), measured for the rhino-local config provider context. Both exist: the
+`ConfigProviderNode` schema's `script` choice lists scripts of both contexts,
+and a journey runs either. The node's own settings are `nodeType`, `script`
+and `scriptInputs` (default `["*"]`).
+
+**Method.** A throwaway `alpha` journey: a next-gen scripted decision node
+that seeds the node state (`putShared` of a string, the number `42`, a nested
+object and a boolean, `putTransient` of a string), then a `ConfigProviderNode`
+with `nodeType` `MessageNode` and the probe as its script, then a scripted
+decision node that reads the node state back. The journey was driven over
+REST with one request header and one query parameter of the probe's own. The
+probe carries its record out as the MessageNode's message. Thirty-one one-line
+`config` scripts per engine pin what AM does with each kind of value: the
+message and buttons the MessageNode showed, or the HTTP status. The probes
+and their sanitised captures are committed as
+`packages/rhino-local/test/fixtures/config-provider/`;
+`test/bindings/config-provider.e2e.test.ts` runs the same scripts in the
+emulator. Every object was deleted afterwards and its deletion confirmed by
+re-read. No user was created.
+
+The context descriptor (`GET /am/json/realms/root/realms/alpha/contexts/CONFIG_PROVIDER_NODE_NEXT_GEN`)
+is committed as `docs/api/bindings/config-provider-node-next.json`. Its
+bindings are `SCRIPTED_DECISION_NODE`'s less `cacheManager`, with the same
+wrapper classes; its `allowLists` are `PromiseImpl`, `Promises$*` and
+`java.lang.Object`. The legacy id returns 0 bindings.
+
+#### What AM does with `config`
+
+AM reads the script's **`config` global after the script ends**. It is the
+same on both engines except where noted.
+
+| `config` | Outcome |
+| --- | --- |
+| a plain object (`{}` included; `var config = …`, or assigned inside a function) | accepted; the wrapped node is configured from it. `{}` gives the MessageNode's defaults |
+| changed after assignment (`config.message.en = …`) | accepted; the final value is used |
+| legacy: a `java.util.HashMap` | accepted |
+| never assigned, `undefined`, `null`, a string, a number, a boolean, an array, a function | journey fails, HTTP 500 with an empty body; AM logs `Script must set 'config' to a Map.` |
+| not assigned, but the script evaluates to a plain object | journey fails, HTTP 500 |
+| an uncaught `throw` | journey fails, HTTP 500 |
+
+- **Values inside the map.** Unknown keys are accepted. Numbers become
+  doubles: the MessageNode shows `42` as `42.0`. A nested object is shown as
+  `[object Object]`, a boolean as `true`. A `null` or `undefined` property
+  (measured at depths one and two) arrives as `null`. An array of a number
+  and a string is accepted.
+- **Next-gen `new java.util.HashMap()`** is `TypeError: [JavaPackage
+  java.util.HashMap] is not a function`.
+- **The script runs on every request through the node.** Submitting the
+  MessageNode's callbacks runs it again. In that run the previous request's
+  transient values are gone (`null`), next-gen `callbacks.isEmpty()` is
+  `false`, and a next-gen node-state object comes back as `[object JavaMap]`
+  printing doubles.
+
+#### Bindings
+
+| Binding | Legacy | Next-gen |
+| --- | --- | --- |
+| `config` before assignment | `ReferenceError` | `ReferenceError` |
+| `nodeState.get` | a JsonValue (`[object JavaObject]`): String gives `"hello"` (quoted, `=== "hello"` false), `42.0`, `{ "a": 1.0, "b": [ 1.0, 2.0 ], "c": { "d": "e" } }`, `true`; `.a` is `undefined`; `JSON.stringify` gives the rendering as a JSON string; transient values visible; absent key `null` | plain JS values: `=== "hello"` true, the number `42`, a plain object (`.a` is `1`), `true`; transient values visible; absent key `null` |
+| `nodeState.keys()` | a Java set, **live**: lists a key `putShared` added earlier in the script, transient keys, and AM's own (`authLevel`, `maxAuthenticationSessionDuration`, `realm`, `username`) | throws `Access to Java class "java.util.HashSet" is prohibited` |
+| `nodeState.isDefined`, `putShared`, `putTransient` | work; writes reach the next node | same |
+| `sharedState`, `transientState`, `outcome` | `undefined` | `undefined` |
+| `callbacks` | `undefined` | bound; `isEmpty()` is `true` on the first request |
+| `callbacksBuilder` | `undefined` | bound; `textOutputCallback(0, "…")` throws nothing and adds nothing to what the MessageNode shows |
+| `action` | `undefined` | bound; `goTo("false")` throws nothing |
+| `idRepository` | bound; `for...in` lists `addAttribute`, `getAttribute`, `setAttribute`, `getIdentity`, `createUser`, … | bound; `for...in` lists `createUser`, `getIdentity`, `identity`, … |
+| `requestHeaders`, `requestParameters` | bound; `get(name)` a `[object JavaList]` printing `[v1]`; `get(absent)` `null` | same |
+| `requestCookies`, `openidm`, `utils`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `cookieName`, `journey`, `oauthApplication`, `samlApplication`, `locales`, `resumedFromSuspend`, `require` | `undefined` | bound (`requestCookies` empty, `resumedFromSuspend` `false`) |
+| `existingSession` | `ReferenceError` | `ReferenceError` on this flow (no session cookie), although the descriptor lists it |
+| `identity`, `session`, `auditEntryDetail`, `properties`, `cacheManager` | `undefined` | `undefined` |
+| `realm`, `scriptName`, `httpClient`, `secrets`, `systemEnv`, `logger` | bound; `realm` is `/alpha` | same |
+| `logger.getName()` | a Java string, `scripts.CONFIG_PROVIDER_NODE.<script id>.(<script name>)` | a JS string, `scripts.CONFIG_PROVIDER_NODE_NEXT_GEN.<script id>.(<script name>)` |
+| `context` | `Access to Java class "javax.script.SimpleScriptContext" is prohibited` | same |
+
 ### Library `require()` from next-gen access-token modification (verified 2026-07-29)
 
 Question: can an OAuth2 **access token modification** script use AM library

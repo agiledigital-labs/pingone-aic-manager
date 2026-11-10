@@ -1211,6 +1211,81 @@ A social IdP case runs locally only. The types are exported from `./case`:
 `SocialIdpCaseInit`, `SocialIdpSeed`, `SocialIdpExpect` and the recorded
 `SocialIdpEffect`.
 
+### Config provider node scripts
+
+`context: "CONFIG_PROVIDER_NODE"` runs a Configuration Provider node's
+script, on either engine (legacy is AM's `CONFIG_PROVIDER_NODE`, next-gen is
+`CONFIG_PROVIDER_NODE_NEXT_GEN`). The script builds the configuration of the
+node the Configuration Provider wraps. AM reads its **`config` global** after
+the script ends: a plain object on either engine, or on legacy also a
+`java.util.HashMap`. A script that only evaluates to a map is refused.
+
+```ts
+defineCase({
+  name: "greets by name",
+  context: "CONFIG_PROVIDER_NODE",
+  script, // config = { message: { en: "Hello " + nodeState.get("username") } };
+  given: { engine: "next-gen", sharedState: { username: "ada" } },
+  expect: { configProvider: { config: { message: { en: "Hello ada" } } } },
+});
+```
+
+**Fixtures.** The node state comes from `sharedState` / `transientState`, as
+on the decision node. `requestHeaders`, `requestParameters`, `cookieName` and
+`loggerScriptId` are accepted too.
+
+**Assertions.** `expect.configProvider.config` is the map the wrapped node is
+configured from, as a value or a matcher. How the wrapped node reads it is
+that node's business and is not emulated. A map the case does not declare
+fails the verdict unless `allowUndeclared: { configProvider: true }`. Numbers
+reach the node as doubles (`42` arrives as `42.0`), which JSON cannot tell
+apart. An `undefined` property arrives as `null`. If `config` is never
+assigned, or is `undefined`, `null`, a string, a number, a boolean, an array
+or a function, AM fails the journey with HTTP 500 ("Script must set 'config'
+to a Map."). The run records that refusal; declare `accepted: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as it fails
+the journey. Node-state writes (`nodeState.putShared`/`putTransient`) persist
+to later nodes and are judged through `expect.sharedState` /
+`expect.transientState`, fail-closed. `expect.outcome` is refused: the
+wrapped node decides the outcome.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- **Next-gen** binds the decision node's bindings except `sharedState`,
+  `transientState` and `outcome`. `nodeState.keys()` fails with AIC's
+  class-shutter error. `callbacks.isEmpty()` is `true`,
+  `callbacksBuilder.textOutputCallback(type, message)` is accepted and adds
+  nothing to what the wrapped node shows, and `action.goTo(name)` is accepted
+  and routes nothing. Every other member of those three raises a harness
+  fault.
+- **Legacy** binds `nodeState`, `idRepository`, `requestHeaders`,
+  `requestParameters`, `realm`, `scriptName`, `logger`, `httpClient`,
+  `secrets` and `systemEnv`, and nothing else: not `sharedState`,
+  `transientState`, `callbacks`, `callbacksBuilder`, `action`, `openidm`,
+  `utils`, `require` or `cookieName`. `nodeState.get()` answers a JsonValue
+  (`String(v)` is `"hello"`, `42.0`; `v.a` is `undefined`), and
+  `nodeState.keys()` is live: it lists a key put earlier in the same script.
+- **Neither engine** binds `identity`, `session` or `cacheManager`.
+  `existingSession` is a `ReferenceError` on a request without a session
+  cookie, although the next-gen descriptor lists it; with one it was not
+  measured, so `given.existingSession` is refused.
+  `requestHeaders.get(name)` and `requestParameters.get(name)` are Java lists
+  (`[v1]`), and `null` for an absent name.
+
+A value inside `config` of any kind not measured raises the harness fault
+`config-provider-unmeasured/config.<path>`. Every other unmeasured member
+raises `config-provider-unmeasured/<binding>.<member>`.
+
+AM runs the script again on every request that reaches the node, including
+the one that submits the wrapped node's callbacks. One case is one
+invocation; the re-run, in which transient state is gone and next-gen node
+state objects come back as Java maps, is not emulated.
+
+A config provider case runs locally only. The types are exported from
+`./case`: `ConfigProviderCaseInit`, `ConfigProviderExpect` and the recorded
+`ConfigProviderEffect`.
+
 ### Phase timing
 
 To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and

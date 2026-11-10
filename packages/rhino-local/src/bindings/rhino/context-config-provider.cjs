@@ -24,8 +24,8 @@ var __rhinoLocalCfg = {
 };
 
 // Globals the context does not bind (typeof "undefined" on AIC, measured).
-// existingSession is in the next-gen descriptor but is a ReferenceError at
-// runtime (measured). `config` is unbound before the script (measured: a
+// existingSession is in the next-gen descriptor but is a ReferenceError on a
+// request without a session cookie (measured; with one, unmeasured). `config` is unbound before the script (measured: a
 // ReferenceError), whatever a previous case left.
 var __rhinoLocalCfgUnbound = {
   both: [
