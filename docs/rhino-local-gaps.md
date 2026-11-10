@@ -1020,8 +1020,12 @@ result scripts (eighteen engine runs). What it approximates or leaves out:
   the token was not granted is still emitted. The recorded `compositeScopes`
   is what the script returned.
 - **Legacy uses real Java strings.** The legacy `claims` map, the identity's
-  name and the other legacy getters return `java.lang.String`. The token
-  context's legacy views are script objects, not Java strings.
+  name and the other legacy getters return `java.lang.String`. The
+  access-token context's legacy strings are real `java.lang.String`s too
+  (since 2026-11-10: `getName() == getClientId()` of the same text was
+  measured `true`, which two script objects cannot reproduce). The identity's
+  `getName()`/`getUniversalId()` return the same object on every call, as
+  measured; other legacy getters make a new one per call, which is unmeasured.
 - **Next-gen `claims` is a script object.** Its seeded `toString`/`toJSON`
   render the measured `{sub, subname}` text. After the script changes the map,
   either one faults. `put` over an existing key faults as unmeasured. `delete

@@ -111,6 +111,21 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     expect(local).toEqual(hashless);
   }, 60_000);
 
+  it.runIf(engine === "legacy")("java-strings: getters hand over java.lang.String, and a top-level var reads back as a JS string", async () => {
+    const live = capture("java-strings", engine);
+    expect(live.http).toBe(200);
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: "java-strings legacy",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: script("java-strings"),
+      // The capture's client: getName() and getClientId() are both its id.
+      given: { engine, accessToken: { clientId: "zzemuC3-atm", scope: ["zzemuc3-probe"] }, identity: { name: "zzemuC3-atm" } },
+      expect: { allowUndeclared: { accessToken: true, logs: true } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(JSON.parse(effects.accessToken!.final.fields.aicprobe as string)).toEqual(live.probe!);
+  }, 60_000);
+
   it("remove-scopes: the script returns, and AM refuses to issue the token", async () => {
     const live = capture("remove-scopes", engine);
     expect(live.http).toBe(500);

@@ -1031,8 +1031,9 @@ next-gen has no `session` at all (reading it is a `ReferenceError`), and legacy
 has `session` (`null` for a `client_credentials` token) but no `openidm`,
 `secrets`, `utils`, `require`, `cookieName` or the other next-gen extras.
 Decision-node bindings such as `nodeState`, `action` and `callbacksBuilder` are
-not defined. Legacy getters return Java strings, so `getClientId() ===
-"widget-client"` is `false` there and `==` is `true`, as on AIC. Every member
+not defined. Legacy getters return real `java.lang.String`s, so `getClientId() ===
+"widget-client"` is `false` there and `==` is `true`, as on AIC; a top-level
+`var` holding one reads back as a JS string, also as on AIC. Every member
 nobody measured raises a harness fault, `oauth2-token-unmeasured/<binding>.<member>`,
 which fails the run and is tallied. `docs/rhino-local-gaps.md` lists what is
 approximated.

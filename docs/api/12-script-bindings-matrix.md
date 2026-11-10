@@ -1718,6 +1718,17 @@ token. `accessToken.getScope().add(…)` throws `InternalError: null`.
   return `JavaString`s, so strict equality against a literal fails. The token,
   audit and grant ids are `object` too; `getAuthTimeSeconds` and
   `getExpiryTime` are numbers.
+- They are real `java.lang.String`s (measured 2026-11-10, `zzemuC3`
+  client_credentials token): inside a function, `identity.getName() ==
+  accessToken.getClientId()` of the same text is `true` and `===` is `false`;
+  `identity.getName() === identity.getName()` is `true` (AMIdentity returns the
+  same object each call); the tag is `[object JavaObject]`, `length` is a
+  method and `name + ""` is a JS string. **A top-level `var` reads back as a JS
+  string**: after `var n = identity.getName();` at script top level, `typeof n`
+  is `"string"` and `n === "<id>"` is `true`, while the same assignment inside a
+  function, or the value passed as an argument, stays `object`. A probe that
+  stores a getter result in a top-level variable before testing it therefore
+  measures the JS string, not the getter.
 - `getAct()`, `getMayAct()`, `getPermissions()` and `getConfirmationKey()` render as `null` but are objects with
   `size()` 0, not JS `null`, on a stateless token. `getField` of an unset key
   is the same.
