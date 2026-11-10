@@ -42,6 +42,7 @@ export const SCRIPT_CONTEXTS = [
   "OAUTH2_ACCESS_TOKEN_MODIFICATION",
   "OIDC_CLAIMS",
   "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+  "CONFIG_PROVIDER_NODE",
 ] as const;
 export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
 export const DEFAULT_SCRIPT_CONTEXT: ScriptContext = "SCRIPTED_DECISION_NODE";
@@ -115,6 +116,7 @@ export const EXPECT_KEYS = [
   "accessToken",
   "oidc",
   "socialIdp",
+  "configProvider",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
 
@@ -134,6 +136,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "accessToken",
   "oidc",
   "socialIdp",
+  "configProvider",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -164,6 +167,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   accessToken: false,
   oidc: false,
   socialIdp: false,
+  configProvider: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -205,8 +209,8 @@ export const STATE_CHANNELS = [
   "secureState",
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-/** `accessToken`, `oidc` and `socialIdp` are judged only for their context, so none is a `Channel` every runner must record. */
-export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp";
+/** `accessToken`, `oidc`, `socialIdp` and `configProvider` are judged only for their context, so none is a `Channel` every runner must record. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -464,6 +468,33 @@ export interface SocialIdpExpect {
   accepted?: boolean;
 }
 
+/** What the case asserts about the `config` map a config provider node script builds. */
+export interface ConfigProviderExpect {
+  /**
+   * The `config` map the wrapped node is configured from, as JSON. Numbers
+   * are doubles on AIC (`42` reaches the node as `42.0`), which JSON cannot
+   * tell apart, and an `undefined` property becomes `null`. How the wrapped
+   * node reads the map is that node's business and is not emulated.
+   */
+  config?: ExpectedValue;
+  /**
+   * `false` when AM fails the journey after the script (measured: `config`
+   * never assigned, or assigned `undefined`, `null`, a string, a number, a
+   * boolean, an array or a function). Default `true`.
+   */
+  accepted?: boolean;
+}
+
+/** The config provider node context's result. */
+export interface ConfigProviderEffect {
+  /** `"none"` when AM takes no map, which fails the journey. */
+  returned: "config" | "none";
+  /** The map the wrapped node is configured from; `null` when none was set. */
+  config: JsonObject | null;
+  /** `null` when accepted; otherwise why AM fails the journey. */
+  refusal: string | null;
+}
+
 /** The social IdP profile transformation context's result. */
 export interface SocialIdpEffect {
   /** `"none"` when AM takes no profile, which fails the journey. */
@@ -683,6 +714,8 @@ export interface Expect {
   oidc?: OidcClaimsExpect;
   /** `SOCIAL_IDP_PROFILE_TRANSFORMATION` only. */
   socialIdp?: SocialIdpExpect;
+  /** `CONFIG_PROVIDER_NODE` only. */
+  configProvider?: ConfigProviderExpect;
 }
 
 export interface CaseInit {
@@ -798,7 +831,39 @@ export interface SocialIdpCaseInit {
   >;
 }
 
-export type AnyCaseInit = CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit | SocialIdpCaseInit;
+/** A `CONFIG_PROVIDER_NODE` case: the script's `config` global configures the wrapped node. */
+export interface ConfigProviderCaseInit {
+  name: string;
+  script: string;
+  context: "CONFIG_PROVIDER_NODE";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "sharedState"
+    | "transientState"
+    | "requestHeaders"
+    | "requestParameters"
+    | "cookieName"
+    | "loggerScriptId"
+  >;
+  expect: Pick<
+    Expect,
+    "configProvider" | "sharedState" | "transientState" | "openidm" | "http" | "logs" | "allowUndeclared"
+  >;
+}
+
+export type AnyCaseInit = CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit | SocialIdpCaseInit | ConfigProviderCaseInit;
 
 export interface Case {
   name: string;
@@ -869,6 +934,8 @@ export interface RecordedEffects {
   oidc?: OidcClaimsEffect | undefined;
   /** The social IdP profile transformation context's result; absent for every other context. */
   socialIdp?: SocialIdpEffect | undefined;
+  /** The config provider node context's result; absent for every other context. */
+  configProvider?: ConfigProviderEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

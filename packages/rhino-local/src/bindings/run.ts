@@ -4,7 +4,13 @@ import type { JobRequest, JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
 import { casePreamble, harvestJob, type MockPreambleOptions } from "./preamble.ts";
-import { accessTokenClassAllowList, decisionNodeClassAllowList, oidcClaimsClassAllowList, socialIdpClassAllowList } from "./allowlist.ts";
+import {
+  accessTokenClassAllowList,
+  configProviderClassAllowList,
+  decisionNodeClassAllowList,
+  oidcClaimsClassAllowList,
+  socialIdpClassAllowList,
+} from "./allowlist.ts";
 import { checkSeededManaged } from "../profile/seed.ts";
 import type { EnvProfile } from "../profile/types.ts";
 
@@ -94,7 +100,9 @@ export async function runCase(
           ? oidcClaimsClassAllowList()
           : kase.context === "SOCIAL_IDP_PROFILE_TRANSFORMATION"
             ? socialIdpClassAllowList()
-            : decisionNodeClassAllowList();
+            : kase.context === "CONFIG_PROVIDER_NODE"
+              ? configProviderClassAllowList()
+              : decisionNodeClassAllowList();
   }
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {

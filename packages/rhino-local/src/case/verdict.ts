@@ -16,6 +16,7 @@ import type {
   AccessTokenEffect,
   OidcClaimsEffect,
   SocialIdpEffect,
+  ConfigProviderEffect,
   AccessTokenState,
   AllowUndeclared,
   AllowUndeclaredChannel,
@@ -140,6 +141,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
       : []),
     ...(kase.context === "SOCIAL_IDP_PROFILE_TRANSFORMATION"
       ? judgeSocialIdp(kase.expect, recorded, strictness.socialIdp)
+      : []),
+    ...(kase.context === "CONFIG_PROVIDER_NODE"
+      ? judgeConfigProvider(kase.expect, recorded, strictness.configProvider)
       : []),
   ];
   return {
@@ -668,6 +672,51 @@ function judgeSocialIdp(
     mismatches.push(
       miss("socialIdp", "profile", "none", formatValue(effect.profile),
         "socialIdp.profile: undeclared profile; declare expect.socialIdp.profile or set allowUndeclared.socialIdp")
+    );
+  }
+  return mismatches;
+}
+
+/**
+ * The `config` map a config provider node script builds, fail-closed like the
+ * social profile: a map must be declared unless `allowUndeclared.configProvider`,
+ * and a run that recorded no result is a mismatch.
+ */
+function judgeConfigProvider(
+  expect: Expect,
+  recorded: CompleteRecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const effect = recorded.configProvider;
+  if (effect === undefined) {
+    return [
+      miss("configProvider", "configProvider", "a recorded result", "<none>",
+        "configProvider: the runner recorded no result for a config provider node case"),
+    ];
+  }
+  const want = expect.configProvider ?? {};
+  const mismatches: Mismatch[] = [];
+  const accepted = effect.refusal === null;
+  const wantAccepted = want.accepted ?? true;
+  if (accepted !== wantAccepted) {
+    mismatches.push(
+      miss("configProvider", "accepted", String(wantAccepted), String(accepted),
+        accepted
+          ? "configProvider.accepted: expected AM to fail the journey, but the script set a config map"
+          : `configProvider.accepted: ${effect.refusal ?? ""}`)
+    );
+  }
+  if ("config" in want) {
+    const expected = want.config;
+    if (expected !== undefined && !matchesValue(expected, effect.config)) {
+      mismatches.push(
+        miss("configProvider", "config", formatValue(expected), formatValue(effect.config), "configProvider.config: differed")
+      );
+    }
+  } else if (!allowUndeclared && accepted) {
+    mismatches.push(
+      miss("configProvider", "config", "none", formatValue(effect.config),
+        "configProvider.config: undeclared config map; declare expect.configProvider.config or set allowUndeclared.configProvider")
     );
   }
   return mismatches;
@@ -1339,6 +1388,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   if (raw.socialIdp !== undefined) {
     recorded.socialIdp = parseSocialIdpEffect(raw.socialIdp);
   }
+  if (raw.configProvider !== undefined) {
+    recorded.configProvider = parseConfigProviderEffect(raw.configProvider);
+  }
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
       throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
@@ -1403,6 +1455,23 @@ function parseSocialIdpEffect(raw: unknown): SocialIdpEffect {
   return {
     returned: raw.returned,
     profile: raw.profile === null ? null : parseJsonObject(raw.profile, "effects.socialIdp.profile"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseConfigProviderEffect(raw: unknown): ConfigProviderEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.configProvider is not an object");
+  }
+  if (raw.returned !== "config" && raw.returned !== "none") {
+    throw new Error(`rhino-local: effects.configProvider.returned must be "config" or "none"`);
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.configProvider.refusal must be a string or null");
+  }
+  return {
+    returned: raw.returned,
+    config: raw.config === null ? null : parseJsonObject(raw.config, "effects.configProvider.config"),
     refusal: raw.refusal,
   };
 }

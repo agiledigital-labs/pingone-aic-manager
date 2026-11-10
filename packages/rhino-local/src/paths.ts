@@ -83,6 +83,15 @@ export const socialIdpBindingsJsonPath = join(generatedDir, "social-idp-profile-
 /** The social IdP profile transformation context's binding overlay, appended to the prelude for that context only. */
 export const bindingsSocialIdpPath = join(packageRoot, "src", "bindings", "rhino", "context-social-idp.cjs");
 
+/** The config provider node context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceConfigProviderBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "config-provider-node-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceConfigProviderBindingsJsonPath}: the context's class allow-list. */
+export const configProviderBindingsJsonPath = join(generatedDir, "config-provider-node-next.json");
+
+/** The config provider node context's binding overlay, appended to the prelude for that context only. */
+export const bindingsConfigProviderPath = join(packageRoot, "src", "bindings", "rhino", "context-config-provider.cjs");
+
 /** The OIDC claims context's binding overlay, appended to the prelude for that context only. */
 export const bindingsOidcClaimsPath = join(packageRoot, "src", "bindings", "rhino", "context-oidc-claims.cjs");
 
