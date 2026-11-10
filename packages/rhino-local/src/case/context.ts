@@ -18,6 +18,8 @@ import type {
   IdentitySeed,
   OidcClaimsExpect,
   OidcClaimsSeed,
+  SocialIdpExpect,
+  SocialIdpSeed,
   ScriptContext,
   TokenRequestSeed,
 } from "./types.ts";
@@ -54,9 +56,17 @@ const SHARED_GIVEN: readonly GivenKey[] = [
 ];
 
 /** `given` keys only a non-decision context may carry. */
-export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = ["accessToken", "identity", "client", "scopes", "request", "oidc"];
-export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc"];
-export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = ["accessToken", "oidc"];
+export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = [
+  "accessToken",
+  "identity",
+  "client",
+  "scopes",
+  "request",
+  "oidc",
+  "socialIdp",
+];
+export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp"];
+export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = ["accessToken", "oidc", "socialIdp"];
 
 export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   SCRIPTED_DECISION_NODE: {
@@ -82,6 +92,25 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
     // `outcome` only as the `null` a validated case carries (parseExpect).
     expectKeys: ["outcome", "oidc", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["oidc", "openidmWrites", "openidmReads", "http", "logs"],
+    hasOutcome: false,
+  },
+  SOCIAL_IDP_PROFILE_TRANSFORMATION: {
+    id: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    engines: ["next-gen", "legacy"],
+    // The node state is bound (nodeState on both engines, sharedState and
+    // transientState on legacy), so state seeds and diffs belong here.
+    givenKeys: [
+      ...SHARED_GIVEN,
+      "sharedState",
+      "transientState",
+      "requestHeaders",
+      "requestParameters",
+      "cookieName",
+      "loggerScriptId",
+      "socialIdp",
+    ],
+    expectKeys: ["outcome", "socialIdp", "sharedState", "transientState", "openidm", "http", "logs", "allowUndeclared"],
+    allowUndeclared: ["socialIdp", "sharedState", "transientState", "openidmWrites", "openidmReads", "http", "logs"],
     hasOutcome: false,
   },
 };
@@ -276,6 +305,29 @@ export function parseOidcClaimsExpect(
   if (obj.issued !== undefined) {
     if (typeof obj.issued !== "boolean") throw new Error(`rhino-local: ${path}.issued must be a boolean`);
     out.issued = obj.issued;
+  }
+  return out;
+}
+
+export function parseSocialIdpSeed(raw: unknown, path: string): SocialIdpSeed {
+  const obj = plain(raw, path, ["rawProfile", "selectedIdp"]);
+  const out: SocialIdpSeed = {};
+  if (obj.rawProfile !== undefined) out.rawProfile = parseJsonObject(obj.rawProfile, `${path}.rawProfile`);
+  if (obj.selectedIdp !== undefined) out.selectedIdp = str(obj.selectedIdp, `${path}.selectedIdp`);
+  return out;
+}
+
+export function parseSocialIdpExpect(
+  raw: unknown,
+  path: string,
+  expectedValue: (raw: unknown, path: string) => ExpectedValue
+): SocialIdpExpect {
+  const obj = plain(raw, path, ["profile", "accepted"]);
+  const out: SocialIdpExpect = {};
+  if ("profile" in obj) out.profile = expectedValue(obj.profile, `${path}.profile`);
+  if (obj.accepted !== undefined) {
+    if (typeof obj.accepted !== "boolean") throw new Error(`rhino-local: ${path}.accepted must be a boolean`);
+    out.accepted = obj.accepted;
   }
   return out;
 }

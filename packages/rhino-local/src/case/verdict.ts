@@ -15,6 +15,7 @@ import { TOKEN_VALUE_KEYS } from "./context.ts";
 import type {
   AccessTokenEffect,
   OidcClaimsEffect,
+  SocialIdpEffect,
   AccessTokenState,
   AllowUndeclared,
   AllowUndeclaredChannel,
@@ -136,6 +137,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
       : []),
     ...(kase.context === "OIDC_CLAIMS"
       ? judgeOidcClaims(kase.expect, recorded, strictness.oidc)
+      : []),
+    ...(kase.context === "SOCIAL_IDP_PROFILE_TRANSFORMATION"
+      ? judgeSocialIdp(kase.expect, recorded, strictness.socialIdp)
       : []),
   ];
   return {
@@ -620,6 +624,51 @@ function judgeOidcClaims(
           `oidc.${key}: undeclared claims; declare expect.oidc.${key} or set allowUndeclared.oidc`)
       );
     }
+  }
+  return mismatches;
+}
+
+/**
+ * The profile a social IdP transformation returns, fail-closed: a returned
+ * profile must be declared unless `allowUndeclared.socialIdp`. A run that
+ * recorded no result is a mismatch, never a pass.
+ */
+function judgeSocialIdp(
+  expect: Expect,
+  recorded: CompleteRecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const effect = recorded.socialIdp;
+  if (effect === undefined) {
+    return [
+      miss("socialIdp", "socialIdp", "a recorded result", "<none>",
+        "socialIdp: the runner recorded no result for a social IdP profile transformation case"),
+    ];
+  }
+  const want = expect.socialIdp ?? {};
+  const mismatches: Mismatch[] = [];
+  const accepted = effect.refusal === null;
+  const wantAccepted = want.accepted ?? true;
+  if (accepted !== wantAccepted) {
+    mismatches.push(
+      miss("socialIdp", "accepted", String(wantAccepted), String(accepted),
+        accepted
+          ? "socialIdp.accepted: expected AM to fail the journey, but the script returned a profile"
+          : `socialIdp.accepted: ${effect.refusal ?? ""}`)
+    );
+  }
+  if ("profile" in want) {
+    const expected = want.profile;
+    if (expected !== undefined && !matchesValue(expected, effect.profile)) {
+      mismatches.push(
+        miss("socialIdp", "profile", formatValue(expected), formatValue(effect.profile), "socialIdp.profile: differed")
+      );
+    }
+  } else if (!allowUndeclared && accepted) {
+    mismatches.push(
+      miss("socialIdp", "profile", "none", formatValue(effect.profile),
+        "socialIdp.profile: undeclared profile; declare expect.socialIdp.profile or set allowUndeclared.socialIdp")
+    );
   }
   return mismatches;
 }
@@ -1287,6 +1336,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   if (raw.oidc !== undefined) {
     recorded.oidc = parseOidcClaimsEffect(raw.oidc);
   }
+  if (raw.socialIdp !== undefined) {
+    recorded.socialIdp = parseSocialIdpEffect(raw.socialIdp);
+  }
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
       throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
@@ -1334,6 +1386,23 @@ function parseAccessTokenEffect(raw: unknown): AccessTokenEffect {
   return {
     initial: parseAccessTokenState(raw.initial, "effects.accessToken.initial"),
     final: parseAccessTokenState(raw.final, "effects.accessToken.final"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseSocialIdpEffect(raw: unknown): SocialIdpEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.socialIdp is not an object");
+  }
+  if (raw.returned !== "profile" && raw.returned !== "none") {
+    throw new Error(`rhino-local: effects.socialIdp.returned must be "profile" or "none"`);
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.socialIdp.refusal must be a string or null");
+  }
+  return {
+    returned: raw.returned,
+    profile: raw.profile === null ? null : parseJsonObject(raw.profile, "effects.socialIdp.profile"),
     refusal: raw.refusal,
   };
 }

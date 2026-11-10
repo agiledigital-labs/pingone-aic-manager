@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { accessTokenBindingsJsonPath, bindingsJsonPath, oidcClaimsBindingsJsonPath } from "../paths.ts";
+import { accessTokenBindingsJsonPath, bindingsJsonPath, oidcClaimsBindingsJsonPath, socialIdpBindingsJsonPath } from "../paths.ts";
 
 let cached: string[] | undefined;
 
@@ -83,6 +83,22 @@ export function oidcClaimsClassAllowList(): string[] {
     cachedOidcClaims = [...declaredAllowList(oidcClaimsBindingsJsonPath), ...OBSERVED_BASE];
   }
   return cachedOidcClaims;
+}
+
+let cachedSocialIdp: string[] | undefined;
+
+/**
+ * The next-gen social IdP profile transformation context's allow-list, from
+ * its own descriptor (`docs/api/bindings/social-idp-profile-transformation-next.json`,
+ * captured 2026-11-10) plus the same `OBSERVED_BASE`. It names no `java.util`
+ * class: `nodeState.keys()` there fails with `Access to Java class
+ * "java.util.HashSet" is prohibited` (measured the same day).
+ */
+export function socialIdpClassAllowList(): string[] {
+  if (cachedSocialIdp === undefined) {
+    cachedSocialIdp = [...declaredAllowList(socialIdpBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedSocialIdp;
 }
 
 function declaredAllowList(path: string): string[] {
