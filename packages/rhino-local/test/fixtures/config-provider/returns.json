@@ -1,0 +1,352 @@
+{
+ "_note": {
+  "am-log": {
+   "javamap, next-gen": "TypeError: [JavaPackage java.util.HashMap] is not a function, it is object.",
+   "seen during the none/null/undef/string/array/completion runs (log lines deduplicated, so not attributed per case)": "ConfigProviderNode: Failed to configure node: MessageNode / NodeProcessException: Script must set 'config' to a Map.",
+   "throw (both engines)": "ConfigProviderNode: Failed to configure node: MessageNode / ScriptException: Error: zzboom"
+  },
+  "http-500": "every refusal is HTTP 500 with an empty body on POST /authenticate",
+  "journey": "next-gen decision node (seeds node state) -> ConfigProviderNode(nodeType MessageNode, script) -> readout decision node",
+  "measured": "2026-11-10"
+ },
+ "array": {
+  "legacy": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = [1, 2];\n"
+  },
+  "next-gen": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = [1, 2];\n"
+  }
+ },
+ "baseline": {
+  "legacy": {
+   "http": 200,
+   "message": "m1",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: \"m1\" } };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "m1",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: \"m1\" } };\n"
+  }
+ },
+ "bool": {
+  "legacy": {
+   "http": 200,
+   "message": "true",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: true } };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "true",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: true } };\n"
+  }
+ },
+ "completion": {
+  "legacy": {
+   "http": 500,
+   "result": "empty body",
+   "script": "({ message: { en: \"m4\" } });\n"
+  },
+  "next-gen": {
+   "http": 500,
+   "result": "empty body",
+   "script": "({ message: { en: \"m4\" } });\n"
+  }
+ },
+ "empty": {
+  "legacy": {
+   "http": 200,
+   "message": "Default message",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = {};\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "Default message",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = {};\n"
+  }
+ },
+ "extra": {
+  "legacy": {
+   "http": 200,
+   "message": "m8",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: \"m8\" }, zzExtra: 1 };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "m8",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: \"m8\" }, zzExtra: 1 };\n"
+  }
+ },
+ "func": {
+  "legacy": {
+   "http": 200,
+   "message": "m20",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "function f() { config = { message: { en: \"m20\" } }; } f();\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "m20",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "function f() { config = { message: { en: \"m20\" } }; } f();\n"
+  }
+ },
+ "javamap": {
+  "legacy": {
+   "http": 200,
+   "message": "m10",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = new java.util.HashMap(); var mm = new java.util.HashMap(); mm.put(\"en\", \"m10\"); config.put(\"message\", mm);\n"
+  },
+  "next-gen": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = new java.util.HashMap(); var mm = new java.util.HashMap(); mm.put(\"en\", \"m10\"); config.put(\"message\", mm);\n"
+  }
+ },
+ "later": {
+  "legacy": {
+   "http": 200,
+   "message": "second",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: \"first\" } }; config.message.en = \"second\";\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "second",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: \"first\" } }; config.message.en = \"second\";\n"
+  }
+ },
+ "msgstring": {
+  "legacy": {
+   "http": 200,
+   "message": "m15",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: \"m15\" };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "m15",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: \"m15\" };\n"
+  }
+ },
+ "nested": {
+  "legacy": {
+   "http": 200,
+   "message": "m18",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: \"m18\", de: null } };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "m18",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: \"m18\", de: null } };\n"
+  }
+ },
+ "none": {
+  "legacy": {
+   "http": 500,
+   "result": "empty body",
+   "script": "var zz = 1;\n"
+  },
+  "next-gen": {
+   "http": 500,
+   "result": "empty body",
+   "script": "var zz = 1;\n"
+  }
+ },
+ "null": {
+  "legacy": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = null;\n"
+  },
+  "next-gen": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = null;\n"
+  }
+ },
+ "number": {
+  "legacy": {
+   "http": 200,
+   "message": "42.0",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: 42, fr: 1.5 } };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "42.0",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: 42, fr: 1.5 } };\n"
+  }
+ },
+ "obj": {
+  "legacy": {
+   "http": 200,
+   "message": "[object Object]",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: { a: 1 } } };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "[object Object]",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "config = { message: { en: { a: 1 } } };\n"
+  }
+ },
+ "string": {
+  "legacy": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = \"zz\";\n"
+  },
+  "next-gen": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = \"zz\";\n"
+  }
+ },
+ "throw": {
+  "legacy": {
+   "http": 500,
+   "result": "empty body",
+   "script": "throw new Error(\"zzboom\");\n"
+  },
+  "next-gen": {
+   "http": 500,
+   "result": "empty body",
+   "script": "throw new Error(\"zzboom\");\n"
+  }
+ },
+ "undef": {
+  "legacy": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = undefined;\n"
+  },
+  "next-gen": {
+   "http": 500,
+   "result": "empty body",
+   "script": "config = undefined;\n"
+  }
+ },
+ "var": {
+  "legacy": {
+   "http": 200,
+   "message": "m3",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "var config = { message: { en: \"m3\" } };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "m3",
+   "options": [
+    "Yes",
+    "No"
+   ],
+   "script": "var config = { message: { en: \"m3\" } };\n"
+  }
+ },
+ "yes": {
+  "legacy": {
+   "http": 200,
+   "message": "m13",
+   "options": [
+    "Y13",
+    "N13"
+   ],
+   "script": "config = { message: { en: \"m13\" }, messageYes: { en: \"Y13\" }, messageNo: { en: \"N13\" } };\n"
+  },
+  "next-gen": {
+   "http": 200,
+   "message": "m13",
+   "options": [
+    "Y13",
+    "N13"
+   ],
+   "script": "config = { message: { en: \"m13\" }, messageYes: { en: \"Y13\" }, messageNo: { en: \"N13\" } };\n"
+  }
+ }
+}
