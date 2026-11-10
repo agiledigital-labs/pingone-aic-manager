@@ -238,6 +238,23 @@ describe("installed rhino-local", () => {
     } finally { await runner.close(); }
   });
 
+  // The validate scope overlay is a fifth packaged asset; AM grants exactly
+  // the list the function returns, on both engines.
+  it("runs a validate scope case on both engines", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      for (const engine of ["next-gen", "legacy"] as const) {
+        const run = await runCase(runner, defineCase({
+          name: \`validate scope \${engine}\`, context: "OAUTH2_VALIDATE_SCOPE",
+          script: "function validateAccessTokenScope() { return requestedScopes; }",
+          given: { engine, validateScope: { requested: ["read", "write"], allowed: ["read", "write"] } },
+          expect: { validateScope: { granted: ["write", "read"] } },
+        }));
+        expect(run.verdict.summary, run.verdict.summary).toBe("");
+      }
+    } finally { await runner.close(); }
+  });
+
   // Positive control for step 1: were the declarations to resolve to \`any\`,
   // this directive would be unused and tsc would fail.
   it("types the inputs from the suite's schema", () => {
