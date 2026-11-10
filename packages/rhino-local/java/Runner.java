@@ -490,6 +490,27 @@ public final class Runner {
         try { return response(id, "ok", JsValues.of(bridge.harvest(cx)), null); }
         finally { Timing.add("harvest", phase); }
       }
+      // A context whose result is the script's completion value (OIDC claims:
+      // AM reads the value the script evaluates to) names a preamble function
+      // that receives it, so the author source runs unmodified and the value
+      // is exactly what the script left. Its failures are the script's, as
+      // the call happens before the response, and are reported like them.
+      final String completionHarvest = Json.optionalString(job, "completionHarvest");
+      if (completionHarvest != null) {
+        final Object harvest = ScriptableObject.getProperty(scope, completionHarvest);
+        if (!(harvest instanceof org.mozilla.javascript.Function)) {
+          throw new IllegalArgumentException("completionHarvest " + completionHarvest + " is not a function");
+        }
+        phase = Timing.now();
+        try {
+          final Object harvested = ((org.mozilla.javascript.Function) harvest).call(cx, scope, scope, new Object[] { completion });
+          return response(id, "ok", JsValues.of(harvested), null);
+        } catch (RhinoException e) {
+          return errorFromRhino(id, "runtime_error", e);
+        } finally {
+          Timing.add("harvest", phase);
+        }
+      }
       final String resultGlobal = Json.optionalString(job, "resultGlobal");
       final Object result = resultGlobal == null
           ? completion

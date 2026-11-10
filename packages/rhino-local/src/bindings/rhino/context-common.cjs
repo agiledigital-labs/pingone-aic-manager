@@ -24,6 +24,7 @@ var __rhinoLocalCtx = {
   noun: "script",
   listKind: null,
   views: [],
+  realJavaStrings: false,
 };
 
 function __rhinoLocalCtxUnmeasured(member, detail) {
@@ -214,9 +215,19 @@ function __rhinoLocalCtxBare() {
 // A java.lang.String as the legacy engine hands it over: typeof "object",
 // String(v) and `"" + v` give the text, `v == "x"` is true and `v === "x"` is
 // false, and `length` is a method. Java's other String methods are unmeasured.
+//
+// A context whose own bindings hand over real Java strings sets
+// `__rhinoLocalCtx.realJavaStrings` (OIDC claims: `claims` is a real
+// java.util.LinkedHashMap, so its values are real java.lang.String objects,
+// and `claims.sub == identity.getName()` was measured true, which two views,
+// or a view and a real string, cannot reproduce). Every legacy string is then
+// a real java.lang.String, which behaves as it does on AIC's JVM.
 function __rhinoLocalCtxJavaString(text) {
   if (text === null || text === undefined) {
     return null;
+  }
+  if (__rhinoLocalCtx.realJavaStrings) {
+    return new java.lang.String(String(text));
   }
   var value = String(text);
   var out = __rhinoLocalCtxBare();
@@ -389,7 +400,7 @@ var __rhinoLocalCtxMapMethods = [
 // so for...in and dot access see them; an entry whose value was not measured
 // faults on read, and assigning one faults. get(k) answers like dot access,
 // size() is measured, and String(v) only where `render` is given. `methods`
-// overrides members of the faulting list with measured ones
+// overrides members of the faulting list, or `get`, with measured ones
 // ({name: {arity, fn}}).
 function __rhinoLocalCtxMap(label, keys, read, render, aliases, methods) {
   var map = {};
@@ -419,7 +430,7 @@ function __rhinoLocalCtxMap(label, keys, read, render, aliases, methods) {
       define(aliasKeys[i], false, aliases[aliasKeys[i]]);
     }
   }
-  __rhinoLocalHide(map, "get", function (key) {
+  __rhinoLocalHide(map, "get", methods && methods.get ? null : function (key) {
     if (arguments.length !== 1) {
       throw __rhinoLocalCtxUnmeasured(label + ".get(" + __rhinoLocalArgShape(arguments) + ")");
     }
@@ -731,12 +742,14 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
   return list;
 }
 
-function __rhinoLocalCtxBuildRequest(seed, realm) {
+// `opts.paramsGetMissing`: requestParams.get() of an absent key is null
+// (measured for OIDC claims); otherwise it faults.
+function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var listOf = function (values) {
     return __rhinoLocalCtxList(values.map(__rhinoLocalCtxString));
   };
-  var listMap = function (label, values, aliases) {
+  var listMap = function (label, values, aliases, methods) {
     var lists = __rhinoLocalCtxBare();
     Object.keys(values).forEach(function (k) {
       lists[k] = listOf(values[k]);
@@ -745,9 +758,21 @@ function __rhinoLocalCtxBuildRequest(seed, realm) {
       return lists[k];
     }, function () {
       return __rhinoLocalCtxRenderMap(values, legacy);
-    }, aliases);
+    }, aliases, methods);
   };
-  var params = listMap("requestProperties.requestParams", seed.params, null);
+  var params = listMap("requestProperties.requestParams", seed.params, null, opts && opts.paramsGetMissing
+    ? {
+      // Measured for OIDC claims (2026-11-10): get() of an absent parameter
+      // is null, as Java's Map.get is.
+      get: {
+        arity: 1,
+        fn: function (key) {
+          var k = String(key);
+          return Object.prototype.hasOwnProperty.call(seed.params, k) ? params[k] : null;
+        },
+      },
+    }
+    : null);
   var headers = listMap("requestProperties.requestHeaders", seed.headers,
     __rhinoLocalCtxHeaderAliases(Object.keys(seed.headers)));
   var values = {
@@ -787,7 +812,7 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
     if (k === "customProperties") {
       return custom;
     }
-      if (k === "redirectUris") {
+    if (k === "redirectUris") {
       if (!opts || !opts.redirectUris) {
         throw __rhinoLocalCtxUnmeasured("clientProperties.redirectUris");
       }
@@ -807,6 +832,7 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
 function __rhinoLocalCtxBegin(engine) {
   __rhinoLocalCtx.engine = engine || "next-gen";
   __rhinoLocalCtx.views = [];
+  __rhinoLocalCtx.realJavaStrings = false;
 }
 
 function __rhinoLocalCtxUnbind(names) {

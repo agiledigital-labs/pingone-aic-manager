@@ -9,6 +9,7 @@ import {
   bindingsContextCommonPath,
   bindingsCrestFilterPath,
   bindingsIdentityPolicyPath,
+  bindingsOidcClaimsPath,
   bindingsRuntimePath,
   generatedJsPath,
 } from "../paths.ts";
@@ -41,11 +42,29 @@ export interface MockPreambleOptions {
  * Each non-decision context's overlays (in load order, after runtime.cjs),
  * seed call and harvest call. Every context loads context-common.cjs first.
  */
-const CONTEXT_RUNTIME: { readonly [K in ScriptContext]?: { overlays: readonly string[]; seed: string; harvest: string } } = {
+const CONTEXT_RUNTIME: {
+  readonly [K in ScriptContext]?: {
+    overlays: readonly string[];
+    seed: string;
+    harvest: string;
+    /**
+     * The harvest takes the script's completion value (the runner job's
+     * `completionHarvest`) rather than being appended to the source.
+     */
+    completion?: boolean;
+  };
+} = {
   OAUTH2_ACCESS_TOKEN_MODIFICATION: {
     overlays: [bindingsContextCommonPath, bindingsAccessTokenPath],
     seed: "__rhinoLocalSeedAccessToken",
     harvest: "__rhinoLocalHarvestAccessToken",
+  },
+  // The script's result is the value it evaluates to, so nothing is appended.
+  OIDC_CLAIMS: {
+    overlays: [bindingsContextCommonPath, bindingsOidcClaimsPath],
+    seed: "__rhinoLocalSeedOidcClaims",
+    harvest: "__rhinoLocalHarvestOidcClaims",
+    completion: true,
   },
 };
 
@@ -192,6 +211,19 @@ function prelude(context?: ScriptContext): string {
 /** Append a harvest call without shifting author line numbers. */
 export function withHarvest(script: string, context?: ScriptContext): string {
   return `${script}\n;${harvestCall(context)}();\n`;
+}
+
+/**
+ * The runner job fields that run a case's script and harvest it: the source
+ * with the harvest call appended, or, for a context whose result is the
+ * script's completion value, the source untouched and `completionHarvest`.
+ */
+export function harvestJob(script: string, context?: ScriptContext): { source: string; completionHarvest?: string } {
+  const runtime = context === undefined ? undefined : CONTEXT_RUNTIME[context];
+  if (runtime?.completion === true) {
+    return { source: script, completionHarvest: runtime.harvest };
+  }
+  return { source: withHarvest(script, context) };
 }
 
 function serializeSeed(seed: unknown): string {

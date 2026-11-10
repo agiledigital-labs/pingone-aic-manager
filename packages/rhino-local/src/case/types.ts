@@ -37,7 +37,7 @@ export type Engine = (typeof ENGINES)[number];
  * scripted decision node, which is how every case ran before contexts
  * existed. packages/rhino-local/docs/script-contexts.md.
  */
-export const SCRIPT_CONTEXTS = ["SCRIPTED_DECISION_NODE", "OAUTH2_ACCESS_TOKEN_MODIFICATION"] as const;
+export const SCRIPT_CONTEXTS = ["SCRIPTED_DECISION_NODE", "OAUTH2_ACCESS_TOKEN_MODIFICATION", "OIDC_CLAIMS"] as const;
 export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
 export const DEFAULT_SCRIPT_CONTEXT: ScriptContext = "SCRIPTED_DECISION_NODE";
 
@@ -77,6 +77,7 @@ export const GIVEN_KEYS = [
   "client",
   "scopes",
   "request",
+  "oidc",
 ] as const;
 export type GivenKey = (typeof GIVEN_KEYS)[number];
 
@@ -106,6 +107,7 @@ export const EXPECT_KEYS = [
   "identityWrites",
   "allowUndeclared",
   "accessToken",
+  "oidc",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
 
@@ -123,6 +125,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "sessionProperties",
   "identityWrites",
   "accessToken",
+  "oidc",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -151,6 +154,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   sessionProperties: false,
   identityWrites: false,
   accessToken: false,
+  oidc: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -192,8 +196,8 @@ export const STATE_CHANNELS = [
   "secureState",
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-/** `accessToken` is judged only for that context, so it is not a `Channel` every runner must record. */
-export type EvidenceChannel = Channel | "nodeState" | "accessToken";
+/** `accessToken` and `oidc` are judged only for their context, so neither is a `Channel` every runner must record. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -399,14 +403,74 @@ export interface Given {
   bindings?: Record<string, JsonValue>;
   /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: the token as AM hands it to the script. */
   accessToken?: AccessTokenSeed;
-  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: the resource owner's identity. */
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: the resource owner's identity. */
   identity?: IdentitySeed;
-  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: `clientProperties`. */
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: `clientProperties`. */
   client?: ClientSeed;
-  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: the `scopes` binding; defaults to the token's scope. */
+  /**
+   * `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: the `scopes`
+   * binding; defaults to the token's scope, or `["openid"]` for OIDC claims.
+   */
   scopes?: string[];
-  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION`: `requestProperties`. */
+  /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` and `OIDC_CLAIMS`: `requestProperties`. */
   request?: TokenRequestSeed;
+  /** `OIDC_CLAIMS`: the `claims` binding's subject and `claimsLocales`. */
+  oidc?: OidcClaimsSeed;
+}
+
+/**
+ * What AM hands an OIDC claims script beyond the shared bindings. Defaults
+ * are a password-grant token request, as measured on 2026-11-10
+ * (docs/api/12-script-bindings-matrix.md, "OIDC claims").
+ */
+export interface OidcClaimsSeed {
+  /** The `claims` binding's `sub` and AM's id-token subject. Default `given.identity.name`. */
+  sub?: string;
+  /** The `claims` binding's `subname`. Default `sub`. */
+  subname?: string;
+  /** The `claims_locales` request parameter, split. Default `[]`. */
+  claimsLocales?: string[];
+}
+
+/**
+ * What the case asserts about the claims an OIDC claims script returns.
+ * Fail-closed: returned claims the case does not declare are a mismatch
+ * unless `allowUndeclared.oidc` is set.
+ */
+export interface OidcClaimsExpect {
+  /** The userinfo response: the returned `values` verbatim, `null` kept. `{}` when the script returned none. */
+  userinfo?: ExpectedValue;
+  /**
+   * The id token's script-derived claims: the non-null `values`, with `sub`
+   * and `subname` as AM resolves them (see {@link OidcClaimsEffect.idToken}).
+   * AM's own claims (`aud`, `iss`, `exp`, ...) are not included.
+   */
+  idToken?: ExpectedValue;
+  /** The returned `compositeScopes`, `null` when absent. Measured to filter nothing. */
+  compositeScopes?: ExpectedValue;
+  /**
+   * `false` when AM would fail the token request although the script
+   * returned (measured: a legacy script whose value is not a
+   * `UserInfoClaims`). Default `true`.
+   */
+  issued?: boolean;
+}
+
+/** The OIDC claims context's result. */
+export interface OidcClaimsEffect {
+  /** `"none"` when AM takes no script claims (undefined, or an object with no `values`). */
+  returned: "claims" | "none";
+  /** What the userinfo endpoint answers with: the returned values verbatim, `{}` for none. */
+  userinfo: JsonObject;
+  /**
+   * The id token's script-derived claims. `sub` and `subname` come from the
+   * returned values when they hold `sub` (and `subname` only if returned),
+   * otherwise from `given.oidc`; every other non-null value is copied.
+   */
+  idToken: JsonObject;
+  compositeScopes: JsonValue;
+  /** `null` when issued; otherwise AM's `error_description`. */
+  refusal: string | null;
 }
 
 /**
@@ -559,6 +623,8 @@ export interface Expect {
   allowUndeclared?: AllowUndeclared;
   /** `OAUTH2_ACCESS_TOKEN_MODIFICATION` only. */
   accessToken?: AccessTokenExpect;
+  /** `OIDC_CLAIMS` only. */
+  oidc?: OidcClaimsExpect;
 }
 
 export interface CaseInit {
@@ -613,7 +679,35 @@ export interface AccessTokenCaseInit {
   expect: Pick<Expect, "accessToken" | "openidm" | "http" | "logs" | "allowUndeclared">;
 }
 
-export type AnyCaseInit = CaseInit | AccessTokenCaseInit;
+/** An `OIDC_CLAIMS` case: the script's value is the claims AM emits. */
+export interface OidcClaimsCaseInit {
+  name: string;
+  script: string;
+  context: "OIDC_CLAIMS";
+  given?: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "identity"
+    | "client"
+    | "scopes"
+    | "request"
+    | "oidc"
+  >;
+  expect: Pick<Expect, "oidc" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
+export type AnyCaseInit = CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit;
 
 export interface Case {
   name: string;
@@ -680,6 +774,8 @@ export interface RecordedEffects {
   identityWrites?: IdentityWriteEffect[] | undefined;
   /** The token context's result; absent for every other context. */
   accessToken?: AccessTokenEffect | undefined;
+  /** The OIDC claims context's result; absent for every other context. */
+  oidc?: OidcClaimsEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

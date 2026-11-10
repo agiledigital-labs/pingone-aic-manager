@@ -16,6 +16,8 @@ import type {
   ExpectKey,
   GivenKey,
   IdentitySeed,
+  OidcClaimsExpect,
+  OidcClaimsSeed,
   ScriptContext,
   TokenRequestSeed,
 } from "./types.ts";
@@ -52,9 +54,9 @@ const SHARED_GIVEN: readonly GivenKey[] = [
 ];
 
 /** `given` keys only a non-decision context may carry. */
-export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = ["accessToken", "identity", "client", "scopes", "request"];
-export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken"];
-export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = ["accessToken"];
+export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = ["accessToken", "identity", "client", "scopes", "request", "oidc"];
+export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc"];
+export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = ["accessToken", "oidc"];
 
 export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   SCRIPTED_DECISION_NODE: {
@@ -71,6 +73,15 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
     givenKeys: [...SHARED_GIVEN, "accessToken", "identity", "client", "scopes", "request"],
     expectKeys: ["outcome", "accessToken", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["accessToken", "openidmWrites", "openidmReads", "http", "logs"],
+    hasOutcome: false,
+  },
+  OIDC_CLAIMS: {
+    id: "OIDC_CLAIMS",
+    engines: ["next-gen", "legacy"],
+    givenKeys: [...SHARED_GIVEN, "identity", "client", "scopes", "request", "oidc"],
+    // `outcome` only as the `null` a validated case carries (parseExpect).
+    expectKeys: ["outcome", "oidc", "openidm", "http", "logs", "allowUndeclared"],
+    allowUndeclared: ["oidc", "openidmWrites", "openidmReads", "http", "logs"],
     hasOutcome: false,
   },
 };
@@ -232,6 +243,35 @@ export function parseAccessTokenExpect(
   if (obj.scope !== undefined) out.scope = scopeSet(obj.scope, `${path}.scope`);
   for (const key of TOKEN_VALUE_KEYS) {
     if (key in obj) out[key] = parsers.expectedValue(obj[key], `${path}.${key}`);
+  }
+  if (obj.issued !== undefined) {
+    if (typeof obj.issued !== "boolean") throw new Error(`rhino-local: ${path}.issued must be a boolean`);
+    out.issued = obj.issued;
+  }
+  return out;
+}
+
+export function parseOidcClaimsSeed(raw: unknown, path: string): OidcClaimsSeed {
+  const obj = plain(raw, path, ["sub", "subname", "claimsLocales"]);
+  const out: OidcClaimsSeed = {};
+  if (obj.sub !== undefined) out.sub = str(obj.sub, `${path}.sub`);
+  if (obj.subname !== undefined) out.subname = str(obj.subname, `${path}.subname`);
+  if (obj.claimsLocales !== undefined) out.claimsLocales = strings(obj.claimsLocales, `${path}.claimsLocales`);
+  return out;
+}
+
+/** Keys of {@link OidcClaimsExpect} whose value is an `ExpectedValue`. */
+export const OIDC_VALUE_KEYS = ["userinfo", "idToken", "compositeScopes"] as const;
+
+export function parseOidcClaimsExpect(
+  raw: unknown,
+  path: string,
+  expectedValue: (raw: unknown, path: string) => ExpectedValue
+): OidcClaimsExpect {
+  const obj = plain(raw, path, [...OIDC_VALUE_KEYS, "issued"]);
+  const out: OidcClaimsExpect = {};
+  for (const key of OIDC_VALUE_KEYS) {
+    if (key in obj) out[key] = expectedValue(obj[key], `${path}.${key}`);
   }
   if (obj.issued !== undefined) {
     if (typeof obj.issued !== "boolean") throw new Error(`rhino-local: ${path}.issued must be a boolean`);

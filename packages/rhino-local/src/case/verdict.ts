@@ -14,6 +14,7 @@ import {
 import { TOKEN_VALUE_KEYS } from "./context.ts";
 import type {
   AccessTokenEffect,
+  OidcClaimsEffect,
   AccessTokenState,
   AllowUndeclared,
   AllowUndeclaredChannel,
@@ -28,6 +29,7 @@ import type {
   IdentityWriteEffect,
   IdentityWriteExpect,
   JsonObject,
+  JsonValue,
   LogEffect,
   LogExpect,
   LogLevel,
@@ -131,6 +133,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
       : judgeIdentityWrites(kase.expect, recorded, strictness.identityWrites)),
     ...(kase.context === "OAUTH2_ACCESS_TOKEN_MODIFICATION"
       ? judgeAccessToken(kase.expect, recorded, strictness.accessToken)
+      : []),
+    ...(kase.context === "OIDC_CLAIMS"
+      ? judgeOidcClaims(kase.expect, recorded, strictness.oidc)
       : []),
   ];
   return {
@@ -554,6 +559,61 @@ function judgeAccessToken(
       mismatches.push(
         miss("accessToken", key, `unchanged ${formatValue(before)}`, formatValue(after),
           `accessToken.${key}: undeclared change; declare expect.accessToken.${key} or set allowUndeclared.accessToken`)
+      );
+    }
+  }
+  return mismatches;
+}
+
+/**
+ * The claims an OIDC claims script returns, fail-closed: returned values and
+ * composite scopes must be declared unless `allowUndeclared.oidc`. The id
+ * token's script claims are a function of the returned values and the seeded
+ * subject, so once the userinfo values are judged an undeclared id token adds
+ * nothing to check; a declared one is still compared exactly. A run that
+ * recorded no result is a mismatch, never a pass.
+ */
+function judgeOidcClaims(
+  expect: Expect,
+  recorded: CompleteRecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const effect = recorded.oidc;
+  if (effect === undefined) {
+    return [
+      miss("oidc", "oidc", "a recorded result", "<none>",
+        "oidc: the runner recorded no result for an OIDC claims case"),
+    ];
+  }
+  const want = expect.oidc ?? {};
+  const mismatches: Mismatch[] = [];
+  const issued = effect.refusal === null;
+  const wantIssued = want.issued ?? true;
+  if (issued !== wantIssued) {
+    mismatches.push(
+      miss("oidc", "issued", String(wantIssued), String(issued),
+        issued
+          ? "oidc.issued: expected AM to fail the token request, but nothing the script did makes it fail"
+          : `oidc.issued: AM would fail the token request after this script (500 server_error: ${effect.refusal})`)
+    );
+  }
+  const values: { key: "userinfo" | "idToken" | "compositeScopes"; actual: JsonValue; undeclared: boolean }[] = [
+    { key: "userinfo", actual: effect.userinfo, undeclared: Object.keys(effect.userinfo).length > 0 },
+    { key: "idToken", actual: effect.idToken, undeclared: false },
+    { key: "compositeScopes", actual: effect.compositeScopes, undeclared: effect.compositeScopes !== null },
+  ];
+  for (const { key, actual, undeclared } of values) {
+    if (key in want) {
+      const expected = want[key];
+      if (expected !== undefined && !matchesValue(expected, actual)) {
+        mismatches.push(miss("oidc", key, formatValue(expected), formatValue(actual), `oidc.${key}: differed`));
+      }
+      continue;
+    }
+    if (!allowUndeclared && issued && undeclared) {
+      mismatches.push(
+        miss("oidc", key, "none", formatValue(actual),
+          `oidc.${key}: undeclared claims; declare expect.oidc.${key} or set allowUndeclared.oidc`)
       );
     }
   }
@@ -1214,6 +1274,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   if (raw.accessToken !== undefined) {
     recorded.accessToken = parseAccessTokenEffect(raw.accessToken);
   }
+  if (raw.oidc !== undefined) {
+    recorded.oidc = parseOidcClaimsEffect(raw.oidc);
+  }
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
       throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
@@ -1261,6 +1324,25 @@ function parseAccessTokenEffect(raw: unknown): AccessTokenEffect {
   return {
     initial: parseAccessTokenState(raw.initial, "effects.accessToken.initial"),
     final: parseAccessTokenState(raw.final, "effects.accessToken.final"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseOidcClaimsEffect(raw: unknown): OidcClaimsEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.oidc is not an object");
+  }
+  if (raw.returned !== "claims" && raw.returned !== "none") {
+    throw new Error(`rhino-local: effects.oidc.returned must be "claims" or "none"`);
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.oidc.refusal must be a string or null");
+  }
+  return {
+    returned: raw.returned,
+    userinfo: parseJsonObject(raw.userinfo, "effects.oidc.userinfo"),
+    idToken: parseJsonObject(raw.idToken, "effects.oidc.idToken"),
+    compositeScopes: parseJsonValue(raw.compositeScopes, "effects.oidc.compositeScopes"),
     refusal: raw.refusal,
   };
 }

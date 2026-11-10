@@ -20,6 +20,7 @@ import type {
   Case,
   CaseInit,
   AccessTokenCaseInit,
+  OidcClaimsCaseInit,
   Engine,
   Expect,
   ExpectedObject,
@@ -50,6 +51,8 @@ import {
   parseClientSeed,
   parseContext,
   parseIdentitySeed,
+  parseOidcClaimsExpect,
+  parseOidcClaimsSeed,
   parseTokenRequestSeed,
 } from "./context.ts";
 import { assertDenseArray, defineOwn, isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
@@ -74,7 +77,7 @@ function knownBindingNames(): ReadonlySet<string> {
 }
 
 /** Typed entry point for case authors. */
-export function defineCase(input: CaseInit | AccessTokenCaseInit): Case {
+export function defineCase(input: CaseInit | AccessTokenCaseInit | OidcClaimsCaseInit): Case {
   return validateCase(input);
 }
 
@@ -299,6 +302,9 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.request !== undefined) {
     given.request = parseTokenRequestSeed(raw.request, `${path}.request`);
   }
+  if (raw.oidc !== undefined) {
+    given.oidc = parseOidcClaimsSeed(raw.oidc, `${path}.oidc`);
+  }
   return normaliseIdentitySeeds(given);
 }
 
@@ -374,6 +380,9 @@ function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Exp
       stateDiff: parseStateDiff,
       expectedValue: parseExpectedValue,
     });
+  }
+  if (raw.oidc !== undefined) {
+    expect.oidc = parseOidcClaimsExpect(raw.oidc, `${path}.oidc`, parseExpectedValue);
   }
   return expect;
 }

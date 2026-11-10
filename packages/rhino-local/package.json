@@ -71,7 +71,8 @@
     "src/bindings/rhino/identity-policy.cjs",
     "src/bindings/rhino/crest-filter.cjs",
     "src/bindings/rhino/context-common.cjs",
-    "src/bindings/rhino/context-oauth2-access-token.cjs"
+    "src/bindings/rhino/context-oauth2-access-token.cjs",
+    "src/bindings/rhino/context-oidc-claims.cjs"
   ],
   "engines": {
     "node": ">=24"
