@@ -12,6 +12,7 @@ import {
   sourceOidcClaimsBindingsJsonPath,
   sourceSocialIdpBindingsJsonPath,
   sourceValidateScopeBindingsJsonPath,
+  sourceMayActBindingsJsonPath,
 } from "./paths.ts";
 import { classifyBinding, membersOf } from "./schema.ts";
 import type { ContextsDocument, Element } from "./schema.ts";
@@ -24,6 +25,7 @@ export const generatedOidcClaimsBindingsName = "oidc-claims-next.json";
 export const generatedSocialIdpBindingsName = "social-idp-profile-transformation-next.json";
 export const generatedConfigProviderBindingsName = "config-provider-node-next.json";
 export const generatedValidateScopeBindingsName = "oauth2-validate-scope-next.json";
+export const generatedMayActBindingsName = "oauth2-may-act-next.json";
 
 export function generate(
   jsonPath = sourceBindingsJsonPath,
@@ -48,6 +50,8 @@ export function generate(
   copyFileSync(sourceConfigProviderBindingsJsonPath, join(outDir, generatedConfigProviderBindingsName));
   // And the validate scope context's.
   copyFileSync(sourceValidateScopeBindingsJsonPath, join(outDir, generatedValidateScopeBindingsName));
+  // And the may-act context's.
+  copyFileSync(sourceMayActBindingsJsonPath, join(outDir, generatedMayActBindingsName));
   return { js, dts, doc };
 }
 
@@ -87,7 +91,7 @@ function printSummary(doc: ContextsDocument): void {
     overloads += counted.overloads;
   }
   process.stdout.write(
-    `wrote ${generatedJsName}, ${generatedDtsName}, ${generatedBindingsName}, ${generatedAccessTokenBindingsName}, ${generatedOidcClaimsBindingsName}, ${generatedSocialIdpBindingsName}, ${generatedConfigProviderBindingsName} and ${generatedValidateScopeBindingsName}\n` +
+    `wrote ${generatedJsName}, ${generatedDtsName}, ${generatedBindingsName}, ${generatedAccessTokenBindingsName}, ${generatedOidcClaimsBindingsName}, ${generatedSocialIdpBindingsName}, ${generatedConfigProviderBindingsName}, ${generatedValidateScopeBindingsName} and ${generatedMayActBindingsName}\n` +
       `${doc.bindings.length} bindings (${scalar} scalar, ${opaque} opaque); ` +
       `${unique} methods (${overloads} signatures including overloads)\n`
   );

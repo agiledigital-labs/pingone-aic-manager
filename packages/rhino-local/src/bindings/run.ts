@@ -11,6 +11,7 @@ import {
   oidcClaimsClassAllowList,
   socialIdpClassAllowList,
   validateScopeClassAllowList,
+  mayActClassAllowList,
 } from "./allowlist.ts";
 import { checkSeededManaged } from "../profile/seed.ts";
 import type { EnvProfile } from "../profile/types.ts";
@@ -105,7 +106,9 @@ export async function runCase(
               ? configProviderClassAllowList()
               : kase.context === "OAUTH2_VALIDATE_SCOPE"
                 ? validateScopeClassAllowList()
-                : decisionNodeClassAllowList();
+                : kase.context === "OAUTH2_MAY_ACT"
+                  ? mayActClassAllowList()
+                  : decisionNodeClassAllowList();
   }
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {

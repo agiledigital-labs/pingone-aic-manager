@@ -18,6 +18,7 @@ import type {
   SocialIdpEffect,
   ConfigProviderEffect,
   ValidateScopeEffect,
+  MayActEffect,
   AccessTokenState,
   AllowUndeclared,
   AllowUndeclaredChannel,
@@ -148,6 +149,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
       : []),
     ...(kase.context === "OAUTH2_VALIDATE_SCOPE"
       ? judgeValidateScope(kase.expect, recorded, strictness.validateScope)
+      : []),
+    ...(kase.context === "OAUTH2_MAY_ACT"
+      ? judgeMayAct(kase.expect, recorded, strictness.mayAct)
       : []),
   ];
   return {
@@ -775,6 +779,91 @@ function judgeValidateScope(expect: Expect, recorded: CompleteRecordedEffects, a
     );
   }
   return mismatches;
+}
+
+/**
+ * The claims a may-act script stamps, fail-closed. A present `mayAct` or
+ * `act` key, including null, is JSON null; an omitted key requires the claim
+ * to be absent. `issued: false` is the 500 and does not also demand claims.
+ * The token's scope must be declared when it differs from the request's,
+ * unless `allowUndeclared.mayAct`.
+ */
+function judgeMayAct(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
+  const effect = recorded.mayAct;
+  if (effect === undefined) {
+    return [
+      miss("mayAct", "mayAct", "a recorded result", "<none>",
+        "mayAct: the runner recorded no result for a may-act case"),
+    ];
+  }
+  const want = expect.mayAct ?? {};
+  const mismatches: Mismatch[] = [];
+  const issued = effect.status === 200 && effect.refusal === null;
+  const wantIssued = want.issued !== false;
+  if (issued !== wantIssued) {
+    mismatches.push(
+      miss("mayAct", "issued", String(wantIssued), String(issued),
+        issued
+          ? "mayAct.issued: expected the token request to fail, but AM stamped the claims"
+          : `mayAct.issued: AM answers ${effect.status}: ${effect.refusal ?? ""}`)
+    );
+  }
+  if (want.refusal !== undefined && want.refusal !== effect.refusal) {
+    mismatches.push(
+      miss("mayAct", "refusal", JSON.stringify(want.refusal), formatValue(effect.refusal),
+        "mayAct.refusal: differed")
+    );
+  }
+  if (!wantIssued) {
+    return mismatches;
+  }
+  judgeMayActClaim(mismatches, "mayAct", "mayAct" in want, want.mayAct, effect.mayActPresent, effect.mayAct, allowUndeclared);
+  judgeMayActClaim(mismatches, "act", "act" in want, want.act, effect.actPresent, effect.act, allowUndeclared);
+  if (want.scope !== undefined) {
+    if (!sameScopeSet(effect.scope, want.scope)) {
+      mismatches.push(
+        miss("mayAct", "scope", formatValue(want.scope), formatValue(effect.scope),
+          "mayAct.scope: differed (compared as a set)")
+      );
+    }
+  } else if (!allowUndeclared && issued && !sameScopeSet(effect.scope, effect.seedScope)) {
+    mismatches.push(
+      miss("mayAct", "scope", formatValue(effect.seedScope), formatValue(effect.scope),
+        "mayAct.scope: the granted scope differs from the request; declare expect.mayAct.scope or set allowUndeclared.mayAct")
+    );
+  }
+  return mismatches;
+}
+
+function judgeMayActClaim(
+  mismatches: Mismatch[],
+  name: "mayAct" | "act",
+  declared: boolean,
+  expected: JsonValue | undefined,
+  present: boolean,
+  actual: JsonValue | null,
+  allowUndeclared: boolean,
+): void {
+  if (declared) {
+    if (!present || !deepEqual(actual, expected)) {
+      mismatches.push(
+        miss("mayAct", name, formatValue(expected), present ? formatValue(actual) : "<absent>",
+          `mayAct.${name}: differed`)
+      );
+    }
+    return;
+  }
+  if (!allowUndeclared && present) {
+    mismatches.push(
+      miss("mayAct", name, "<absent>", formatValue(actual),
+        `mayAct.${name}: undeclared claim; declare expect.mayAct.${name} or set allowUndeclared.mayAct`)
+    );
+  }
+}
+
+function sameScopeSet(actual: string[] | null, expected: readonly string[]): boolean {
+  if (actual === null || actual.length !== expected.length) return false;
+  return expected.every((item) => actual.includes(item));
 }
 
 // No composite scopes, whether the script passed null or an empty map, adds
@@ -1449,6 +1538,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   if (raw.validateScope !== undefined) {
     recorded.validateScope = parseValidateScopeEffect(raw.validateScope);
   }
+  if (raw.mayAct !== undefined) {
+    recorded.mayAct = parseMayActEffect(raw.mayAct);
+  }
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
       throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
@@ -1513,6 +1605,46 @@ function parseSocialIdpEffect(raw: unknown): SocialIdpEffect {
   return {
     returned: raw.returned,
     profile: raw.profile === null ? null : parseJsonObject(raw.profile, "effects.socialIdp.profile"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseMayActEffect(raw: unknown): MayActEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.mayAct is not an object");
+  }
+  if (raw.status !== 200 && raw.status !== 500) {
+    throw new Error("rhino-local: effects.mayAct.status must be 200 or 500");
+  }
+  const flag = (value: unknown, key: string): boolean => {
+    if (typeof value !== "boolean") {
+      throw new Error(`rhino-local: effects.mayAct.${key} must be a boolean`);
+    }
+    return value;
+  };
+  const claim = (value: unknown, key: string): JsonValue | null => {
+    if (value === null) return null;
+    return parseJsonValue(value, `effects.mayAct.${key}`);
+  };
+  const strings = (value: unknown, key: string, nullable: boolean): string[] | null => {
+    if (value === null && nullable) return null;
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+      throw new Error(`rhino-local: effects.mayAct.${key} must be an array of strings${nullable ? " or null" : ""}`);
+    }
+    return value.slice() as string[];
+  };
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.mayAct.refusal must be a string or null");
+  }
+  const seedScope = strings(raw.seedScope, "seedScope", false);
+  return {
+    status: raw.status,
+    mayActPresent: flag(raw.mayActPresent, "mayActPresent"),
+    mayAct: claim(raw.mayAct, "mayAct"),
+    actPresent: flag(raw.actPresent, "actPresent"),
+    act: claim(raw.act, "act"),
+    scope: strings(raw.scope, "scope", true),
+    seedScope: seedScope ?? [],
     refusal: raw.refusal,
   };
 }
