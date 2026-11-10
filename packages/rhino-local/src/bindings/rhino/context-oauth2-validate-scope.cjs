@@ -73,6 +73,20 @@ __rhinoLocalListKinds.oauth2ValidateScope = {
   genericReceiver: ["slice"],
 };
 
+// A requestProperties value. The probe records String, length, size(), [i]
+// and the JavaList tag. The scope lists' JSON, concat and slice were not
+// measured on this value (Sol ctx r5 P2-6).
+__rhinoLocalListKinds.oauth2ValidateScopeRequest = {
+  id: "oauth2-validate-scope-unmeasured/requestProperties",
+  noun: "a validate-scope request value",
+  measured: "only length, size(), [i], String(v) and the [object JavaList] tag were measured",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: false,
+  genericReceiver: false,
+};
+
 __rhinoLocalCtx.prefix = "oauth2-validate-scope-unmeasured";
 __rhinoLocalCtx.noun = "OAuth2 validate scope";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2ValidateScope;
@@ -196,14 +210,45 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
 
 // --- Next-gen-only bindings -----------------------------------------------------
 
-// An exception AM reads as "deny with invalid_scope". What a script that
-// catches one finds on it was not measured, so its text says so rather than
-// imitate AM's. (A faulting toString is not an option: Rhino converts a
-// thrown value to a string as it unwinds, whether or not anything reads it.)
+// An exception AM reads as "deny with invalid_scope". The harvest matches the
+// thrown object by identity and uses the argument the script passed, which is
+// the measured 400 text. What a script reads on the object was not measured,
+// so message, name and a script's own String(e) fault even inside catch
+// (Sol ctx r5 P2-4).
+//
+// This is a plain object, not an Error. Rhino's JavaScriptException reads
+// `.name` once while it wraps a NativeError, before the script's catch runs,
+// and a getter on Error's `message` slot never runs. Either one turns the
+// measured uncaught 400, and the measured catch-and-return, into a fault.
+// Wrapping a plain object calls toString exactly once for that Java message.
+// That call is Rhino's, so it returns a constant and does not fault. A second
+// toString is the script's String(e), which was not measured.
+function __rhinoLocalVsRead(label, what) {
+  throw __rhinoLocalCtxUnmeasured(label + "." + what,
+    "of the caught invalid-scope exception (what a script reads on it was not measured)");
+}
+
 function __rhinoLocalVsInvalidScope(message, label) {
-  var e = __rhinoLocalJavaException("rhino-local: " + label + " (what a script that catches it reads on AIC " +
-    "was not measured)");
+  var e = {};
+  var stringified = 0;
   __rhinoLocalVs.thrown.push({ error: e, message: message });
+  Object.defineProperty(e, "message", {
+    configurable: true,
+    enumerable: false,
+    get: function () { __rhinoLocalVsRead(label, "message"); },
+  });
+  Object.defineProperty(e, "name", {
+    configurable: true,
+    enumerable: false,
+    get: function () { __rhinoLocalVsRead(label, "name"); },
+  });
+  __rhinoLocalHide(e, "toString", function () {
+    stringified += 1;
+    if (stringified === 1) {
+      return "JavaException";
+    }
+    __rhinoLocalVsRead(label, "toString");
+  });
   return e;
 }
 
@@ -359,7 +404,9 @@ function __rhinoLocalSeedValidateScope(given) {
     defaultScopes = __rhinoLocalVsList(d.defaults, "defaultScopes", false);
     scopeValidatorHelper = __rhinoLocalVsHelper();
     identity = __rhinoLocalVsIdentity();
-    requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, { paramsGetMissing: true, javaTags: true });
+    requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, {
+      paramsGetMissing: true, javaTags: true, listKind: __rhinoLocalListKinds.oauth2ValidateScopeRequest,
+    });
     __rhinoLocalCtxTag(requestProperties, "JavaMap", "requestProperties");
     clientProperties = __rhinoLocalCtxBuildClient(d.client, { redirectUris: true, javaTags: true });
     __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");

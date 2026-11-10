@@ -715,6 +715,24 @@ export interface AccessTokenSeed {
   authGrantId?: string;
 }
 
+/**
+ * The access-token seed `OAUTH2_MAY_ACT` accepts. The context was measured
+ * on `client_credentials` and reads only these members; the rest of
+ * {@link AccessTokenSeed} is refused rather than dropped.
+ */
+export interface MayActAccessTokenSeed {
+  /** Default `"test-client"`. */
+  clientId?: string;
+  /** Only `"client_credentials"` was measured. */
+  grantType?: "client_credentials";
+  /** Default `given.realm`, else `"/alpha"`. */
+  realm?: string;
+  /** Default `[]`, or `given.scopes` when that is set. */
+  scope?: string[];
+  /** Only `expires_in` was read. Default `3600`. */
+  fields?: { expires_in?: number };
+}
+
 /** The identity bound as `identity`. Default: the client's own agent profile. */
 export interface IdentitySeed {
   /** Default the token's `resourceOwnerId`. */
@@ -1035,10 +1053,11 @@ export interface MayActCaseInit {
     | "cookieName"
     | "client"
     | "request"
-    | "accessToken"
     | "identity"
     | "scopes"
-  >;
+  > & {
+    accessToken?: MayActAccessTokenSeed;
+  };
   expect: Pick<Expect, "mayAct" | "openidm" | "http" | "logs" | "allowUndeclared">;
 }
 

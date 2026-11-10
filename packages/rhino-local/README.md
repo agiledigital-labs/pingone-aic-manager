@@ -1299,7 +1299,7 @@ can widen a grant, even with a scope the client does not hold.
 defineCase({
   name: "drops the admin scope",
   context: "OAUTH2_VALIDATE_SCOPE",
-  script, // function validateAccessTokenScope() { return requestedScopes.toArray().filter(...) }
+  script, // function validateAccessTokenScope() { return Array.prototype.slice.call(requestedScopes).filter(function (s) { return s !== "admin"; }); }
   given: { engine: "next-gen", validateScope: { requested: ["read", "admin"], allowed: ["read", "admin"] } },
   expect: { validateScope: { granted: ["read"] } },
 });
@@ -1391,8 +1391,12 @@ defineCase({
 ```
 
 **Fixtures.** There is no `given.mayAct`. `client`, `scopes`, `request`,
-`identity` and `accessToken` (its `scope`, `grantType`, `realm` and
-`fields.expires_in`) seed the same bindings as access-token modification, and
+`identity` and `accessToken` seed the same bindings as access-token
+modification, but a may-act `accessToken` accepts only `clientId`, `grantType`
+(`"client_credentials"` only), `realm`, `scope` and `fields.expires_in`. Any
+other token member, any other field, and `request.params.grant_type` other than
+`["client_credentials"]` are rejected: this context was measured only for that
+grant, and an unread member would otherwise be a fixture the script never sees.
 `loggerScriptId` and `cookieName` are accepted too. The default request is a
 `client_credentials` token request. `scopes` defaults to `accessToken.scope`, or
 `[]`. `expires_in` defaults to `3600`.
