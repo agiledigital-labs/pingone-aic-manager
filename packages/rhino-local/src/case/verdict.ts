@@ -767,7 +767,8 @@ function judgeValidateScope(expect: Expect, recorded: CompleteRecordedEffects, a
           "validateScope.granted: differed (compared as a set)")
       );
     }
-  } else if (!allowUndeclared && accepted) {
+  } else if (!allowUndeclared && accepted && wantAccepted) {
+    // When a refusal was expected, the accepted mismatch already names the grant.
     mismatches.push(
       miss("validateScope", "granted", "none", formatValue(effect.granted),
         "validateScope.granted: undeclared grant; declare expect.validateScope.granted or set allowUndeclared.validateScope")
