@@ -43,6 +43,20 @@ const oracle: Array<[string, string]> = [
   ["borrowed toString on null", thrown("Function.prototype.toString.call(null)")],
 ];
 
+// Rhino-only: Function.prototype.toSource does not exist on node:vm, so these run on the JVM alone.
+const sourceOracle: Array<[string, string]> = [
+  ["toSource's metadata", meta("Function.prototype.toSource")],
+  ["bind's toSource", "Function.prototype.bind.toSource()"],
+  ["bind's borrowed toSource", "Function.prototype.toSource.call(Function.prototype.bind)"],
+  ["toString's toSource", "Function.prototype.toString.toSource()"],
+  ["toString's borrowed toSource", "Function.prototype.toSource.call(Function.prototype.toString)"],
+  ["toSource's own toSource", "Function.prototype.toSource.call(Function.prototype.toSource)"],
+  ["a function's toSource", "(function named(x) { return x; }).toSource()"],
+  ["a function's borrowed toSource", "Function.prototype.toSource.call(function (x) { return x + 1; })"],
+  ["a function's toSource with an indent", "(function named(x) { return x; }).toSource(2)"],
+  ["borrowed toSource on a non-function", thrown("Function.prototype.toSource.call({})")],
+];
+
 const native = (source: string): unknown => vm.runInContext(source, vm.createContext({}));
 
 describe("the bind and toString replacements behave as the builtins", () => {
@@ -63,6 +77,26 @@ describe("the bind and toString replacements behave as the builtins", () => {
     expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
     expect(response.emulation?.faults ?? []).toEqual([]);
     expect(response.value).toBe(bare.value);
+  });
+});
+
+describe("the toSource replacement and the builtins' toSource rendering (JVM)", () => {
+  let runner: RhinoRunner;
+  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+  afterAll(async () => { await runner?.close(); }, 30_000);
+
+  it.each(sourceOracle)("%s", async (_name, source) => {
+    const bare = await runner.eval({ source });
+    expect(bare.outcome, JSON.stringify(bare.error)).toBe("ok");
+    const response = await runner.eval({ preamble: mockPreamble({}), source });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(response.value).toBe(bare.value);
+  });
+
+  it("renders bind as bare Rhino does", async () => {
+    const response = await runner.eval({ preamble: mockPreamble({}), source: "Function.prototype.bind.toSource()" });
+    expect(response.value).toBe("function bind() { [native code for Function.bind, arity=1] }\n");
   });
 });
 
@@ -108,6 +142,45 @@ const renderings = (member: string): Array<[string, string]> => [
 const ASSTRING = "function asString() {/*\njava.lang.String asString()\n*/}\n";
 const rendered = (read: string) =>
   `try { openidm.delete("managed/widget/w1", null); } catch (e) { var d = e.javaException.getDetail(); nodeState.putShared("r", ${read}); }`;
+
+// Rhino's toSource renders a member through its implementation, which is emulator source. Nothing measured
+// says what AIC prints for it, asString included, so every branded member refuses, direct or borrowed.
+const sourceRoutes: Array<[string, string]> = [
+  ["asBoolean direct", "d.asBoolean.toSource()"],
+  ["asBoolean call", "Function.prototype.toSource.call(d.asBoolean)"],
+  ["a missing child's asMap apply", 'Function.prototype.toSource.apply(d.get("missing").asMap, [])'],
+  ["get direct", "d.get.toSource()"],
+  ["a string child's getObject call", 'Function.prototype.toSource.call(d.get("s").getObject)'],
+  ["asString direct", "d.asString.toSource()"],
+  ["asString call", "Function.prototype.toSource.call(d.asString)"],
+];
+const SOURCE_ESCAPE = /__rhinoLocal|function \(\) \{/;
+
+describe("a detail member rendered by toSource (JVM)", () => {
+  let runner: RhinoRunner;
+  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+  afterAll(async () => { await runner?.close(); }, 30_000);
+
+  it.each(sourceRoutes)("%s faults openidm-failure-detail, even when caught", async (_name, read) => {
+    expectHarnessFault("openidm-failure-detail");
+    const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(inScript(read)) });
+    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-failure-detail"]);
+  });
+
+  it.each(sourceRoutes)("%s leaks no emulator source", async (_name, read) => {
+    expectHarnessFault("openidm-failure-detail");
+    const source = `try { openidm.delete("managed/widget/w1", null); } catch (e) { var d = e.javaException.getDetail(); try { nodeState.putShared("r", String(${read})); } catch (x) { nodeState.putShared("r", "refused"); } }`;
+    const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(source) });
+    expect(JSON.stringify(response)).not.toMatch(SOURCE_ESCAPE);
+  });
+
+  it("delegates ordinary receivers to the builtin", async () => {
+    const response = await runner.eval({ preamble: mockPreamble(given), source: "(function named(x) { return x; }).toSource()" });
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    const bare = await runner.eval({ source: "(function named(x) { return x; }).toSource()" });
+    expect(response.value).toBe(bare.value);
+  });
+});
 
 describe("a measured detail member rendered as a string", () => {
   let runner: RhinoRunner;
