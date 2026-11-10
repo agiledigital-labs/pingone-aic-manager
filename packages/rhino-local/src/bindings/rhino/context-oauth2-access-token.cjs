@@ -210,9 +210,22 @@ function __rhinoLocalAtJavaSet(items, label, addable) {
     })(i);
   }
   __rhinoLocalAtFaulting(out, label, [
-    "addAll", "clear", "containsAll", "equals", "forEach", "getClass", "hashCode", "isEmpty", "iterator",
-    "parallelStream", "remove", "removeAll", "removeIf", "retainAll", "spliterator", "stream", "toArray", "clone",
+    "addAll", "clear", "containsAll", "equals", "forEach", "getClass", "hashCode", "iterator",
+    "parallelStream", "remove", "removeAll", "removeIf", "retainAll", "spliterator", "stream", "clone",
   ]);
+  __rhinoLocalAtMethod(out, "java.util.HashSet", "isEmpty", 0, function () {
+    return store.length === 0;
+  });
+  // Measured 2026-09-10 on identity.getAttribute(): toArray() resolves, and
+  // String(v.toArray()[0]) is how a single-valued attribute is read.
+  __rhinoLocalAtMethod(out, "java.util.HashSet", "toArray", 0, function () {
+    var arr = [];
+    var k;
+    for (k = 0; k < store.length; k += 1) {
+      arr.push(__rhinoLocalAtJavaString(store[k]));
+    }
+    return arr;
+  });
   __rhinoLocalAtMethod(out, "java.util.HashSet", "size", 0, function () {
     return store.length;
   });
@@ -644,10 +657,13 @@ function __rhinoLocalAtBuildToken(seed) {
     });
   });
   m("addExtraJsonData", 2, function (name, value) {
-    if (legacy) {
+    // Measured on legacy with two strings only (2026-11-10): no overload takes
+    // them. docs/api/12's 2026-08-27 list calls it working, without argument
+    // types, so any other legacy shape is unmeasured rather than refused.
+    if (legacy && typeof name === "string" && typeof value === "string") {
       throw __rhinoLocalAtNoMethod(cls, "addExtraJsonData", arguments);
     }
-    if (typeof name !== "string" || typeof value !== "string") {
+    if (legacy || typeof name !== "string" || typeof value !== "string") {
       throw __rhinoLocalAtUnmeasured("accessToken.addExtraJsonData(" + __rhinoLocalArgShape(arguments) + ")");
     }
     // Measured: the response body carries the string as given, not parsed.
@@ -702,10 +718,9 @@ function __rhinoLocalAtBuildIdentity(seed) {
     });
     __rhinoLocalAtMethod(identity, cls, "getAttribute", 1, function (name) {
       var key = String(name);
-      if (!Object.prototype.hasOwnProperty.call(attrs, key)) {
-        throw __rhinoLocalAtUnmeasured("identity.getAttribute()", "of an attribute the fixture does not hold");
-      }
-      return __rhinoLocalAtJavaSet(attrs[key], "identity.getAttribute()", false);
+      // Measured 2026-09-10: an attribute the identity lacks is an empty set.
+      var values = Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key] : [];
+      return __rhinoLocalAtJavaSet(values, "identity.getAttribute()", false);
     });
     // Measured: identity.exists() is "Cannot call property exists", Rhino's
     // refusal to call a non-function (a bean property of isExists()).

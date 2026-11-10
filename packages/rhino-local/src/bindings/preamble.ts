@@ -127,6 +127,14 @@ function seedAndOverrides(
     // A decision-node seed never carries a context's fixtures (validation
     // refuses them there; a direct caller's are dropped, not half-applied).
     for (const key of CONTEXT_ONLY_GIVEN) delete seed[key];
+  } else if (options.context === "OAUTH2_ACCESS_TOKEN_MODIFICATION") {
+    // The token's default auth time is "now", resolved here rather than in the
+    // JVM so the seed is data: AIC_SCRIPT_TESTER_JVM=both sends both lanes the
+    // same request, and a clock read in each would make them disagree.
+    const token = (seed.accessToken ?? {}) as Record<string, unknown>;
+    if (token.authTimeSeconds === undefined) {
+      seed.accessToken = { ...token, authTimeSeconds: Math.floor(Date.now() / 1000) };
+    }
   }
   if (options.libraries !== undefined) {
     seed.libraries = options.libraries;

@@ -136,3 +136,26 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     await expect(run("throws")).rejects.toThrow(/zz deliberate/);
   }, 60_000);
 });
+
+describe("legacy identity.getAttribute (docs/api/12, measured 2026-09-10)", () => {
+  let runner: RhinoRunner;
+  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+  afterAll(async () => { await runner?.close(); }, 30_000);
+
+  it("returns a HashSet read through toArray(), and an empty set for an attribute the identity lacks", async () => {
+    const { effects } = await runCase(runner, defineCase({
+      name: "getAttribute shapes",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `var held = identity.getAttribute("thing");
+var missing = identity.getAttribute("zzNoSuchAttr");
+var index; try { held[0]; index = "no throw"; } catch (e) { index = String(e); }
+accessToken.setField("out", [String(held.toArray()[0]), held.size(), String(held), missing.size(), missing.isEmpty(),
+  String(missing), typeof held.length, index].join("|"));`,
+      given: { engine: "legacy", identity: { attributes: { thing: ["Confidential"] } } },
+      expect: { allowUndeclared: { accessToken: true } },
+    }));
+    expect(effects.accessToken!.final.fields.out).toBe(
+      'Confidential|1|[Confidential]|0|true|[]|undefined|InternalError: Java class "java.util.HashSet" has no public instance field or method named "0".'
+    );
+  }, 60_000);
+});
