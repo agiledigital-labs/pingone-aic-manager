@@ -20,6 +20,7 @@ export default tseslint.config(
       "test/fixtures/oauth2-atm/*.script.js",
       "test/fixtures/oidc-claims/*.script.js",
       "test/fixtures/social-idp/*.script.js",
+      "test/fixtures/config-provider/*.script.js",
     ],
   },
   eslint.configs.recommended,
