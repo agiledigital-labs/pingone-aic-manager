@@ -52,7 +52,7 @@ import {
   parseIdentitySeed,
   parseTokenRequestSeed,
 } from "./context.ts";
-import { assertDenseArray, isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
+import { assertDenseArray, defineOwn, isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
 
 const GIVEN_BINDING_SEED_SET: ReadonlySet<string> = new Set(GIVEN_BINDING_SEEDS);
 const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
@@ -648,7 +648,7 @@ function parseExpectedObject(raw: unknown, path: string): ExpectedObject {
   }
   const out: ExpectedObject = {};
   for (const [key, value] of Object.entries(raw)) {
-    out[key] = parseExpectedValue(value, `${path}.${key}`);
+    defineOwn(out, key, parseExpectedValue(value, `${path}.${key}`));
   }
   return out;
 }

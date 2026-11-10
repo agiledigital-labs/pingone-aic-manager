@@ -45,7 +45,7 @@ import type {
   Unverified,
   Verdict,
 } from "./types.ts";
-import { formatValue, isPlainObject, parseIdentityWriteEffect, parseJsonObject, parseJsonValue } from "./util.ts";
+import { defineOwn, formatValue, isPlainObject, parseIdentityWriteEffect, parseJsonObject, parseJsonValue } from "./util.ts";
 import { validateCase } from "./validate.ts";
 
 /**
@@ -518,8 +518,13 @@ function judgeAccessToken(
           : `accessToken.issued: AM would refuse the token request after this script (500 server_error: ${effect.refusal})`)
     );
   }
-  const sameSet = (a: string[], b: string[]): boolean =>
-    a.length === b.length && a.every((item) => b.includes(item));
+  // Both directions: validation refuses a repeated scope in a case, and the
+  // harvested scope is a set, but the comparison must not rely on either.
+  const sameSet = (a: string[], b: string[]): boolean => {
+    const left = new Set(a);
+    const right = new Set(b);
+    return left.size === right.size && [...left].every((item) => right.has(item));
+  };
   if (want.scope !== undefined) {
     if (!sameSet(want.scope, effect.final.scope)) {
       mismatches.push(
@@ -568,14 +573,14 @@ function diffState(
     if (!initialKeys.has(key)) {
       const value = final[key];
       if (value !== undefined) {
-        added[key] = value;
+        defineOwn(added, key, value);
       }
       continue;
     }
     if (!deepEqual(initial[key], final[key])) {
       const value = final[key];
       if (value !== undefined) {
-        changed[key] = value;
+        defineOwn(changed, key, value);
       }
     }
   }

@@ -115,6 +115,43 @@ describe("access-token verdict", () => {
     expect(judge(atmCase(), tokenEffects({ scope: ["p", "q"] })).mismatches.map((m) => m.path)).toEqual(["scope"]);
   });
 
+  it("refuses a repeated scope, so [read, read] cannot pass for [read, write] (Sol ctx r1 P1-1)", () => {
+    expect(() => validateCase(atmCase({ accessToken: { scope: ["read", "read"] } }))).toThrow(/lists "read" twice/);
+    expect(() => validateCase(atmCase({}, { accessToken: { scope: ["read", "read"] } }))).toThrow(/lists "read" twice/);
+    // The comparison itself is two-way, whatever reaches it: a harvested
+    // scope with a repeat still differs from a set that lacks a member.
+    const repeated = tokenEffects({ scope: ["read", "read"] });
+    expect(judge(atmCase({ accessToken: { scope: ["read", "write"] } }), repeated).pass).toBe(false);
+    expect(judge(atmCase({ accessToken: { scope: ["read"] } }), repeated).pass).toBe(true);
+  });
+
+  it("records an undeclared own __proto__ field as a change in both token buckets (Sol ctx r1 P1-2)", () => {
+    const proto = JSON.parse('{"__proto__": {"x": 1}}') as JsonObject;
+    for (const bucket of ["fields", "responseFields"] as const) {
+      const verdict = judge(atmCase(), tokenEffects({ [bucket]: proto }));
+      expect(verdict.pass, bucket).toBe(false);
+      expect(verdict.mismatches.map((m) => m.path)).toContain(`${bucket}.__proto__`);
+      const declared = JSON.parse(`{"accessToken": {"${bucket}": {"added": {"__proto__": {"x": 1}}}}}`) as JsonObject;
+      expect(judge(atmCase(declared), tokenEffects({ [bucket]: proto })).pass, bucket).toBe(true);
+    }
+  });
+
+  it("keeps __proto__ as an own fixture key, and validating twice gives the same case (Sol ctx r1 P2-4)", () => {
+    const given = JSON.parse(`{
+      "identity": { "attributes": { "__proto__": ["g"] } },
+      "request": { "params": { "__proto__": ["p"] }, "headers": { "__proto__": ["h"] } },
+      "client": { "customProperties": { "__proto__": "c" } }
+    }`) as JsonObject;
+    const once = validateCase(atmCase({}, given));
+    const twice = validateCase(once);
+    expect(twice).toEqual(once);
+    expect(Object.hasOwn(twice.given.identity!.attributes!, "__proto__")).toBe(true);
+    expect(Object.hasOwn(twice.given.request!.params!, "__proto__")).toBe(true);
+    expect(Object.hasOwn(twice.given.request!.headers!, "__proto__")).toBe(true);
+    expect(twice.given.client!.customProperties!["__proto__"]).toBe("c");
+    expect(Object.getPrototypeOf(twice.given.identity!.attributes!)).toBe(Object.prototype);
+  });
+
   it("judges value setters with the matcher and flags an undeclared one", () => {
     expect(judge(atmCase({ accessToken: { nonce: "n1" } }), tokenEffects({ nonce: "n1" })).pass).toBe(true);
     expect(judge(atmCase({ accessToken: { nonce: "n1" } }), tokenEffects({ nonce: "n2" })).pass).toBe(false);
