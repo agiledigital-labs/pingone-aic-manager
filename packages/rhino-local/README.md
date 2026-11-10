@@ -588,7 +588,9 @@ hooks a `LeaseLane` calls, which hand your `check()` the complete form with
 the missing channels marked unobserved. What the harness hands *to* your code
 (`RunResult`, `StepResult`, `CheckContext`, `StepContext`, `BeforeRunContext`)
 stays complete, so a test that builds one of those by hand needs the new
-fields. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
+fields. The one deliberate widening is `EvidenceChannel`, which gained
+`"accessToken"` for the access-token context, so an exhaustive `switch` over it
+written against 0.1.2 needs a new arm. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
 0.1.2 export's shape against the current one, and `npm run typecheck` fails on
 any new break.
 
@@ -972,6 +974,78 @@ and hook (E19).
 
 More detail lives in this repository's `docs/rhino-local-harness.md`, which is
 not shipped with the package.
+
+### Access-token modification scripts
+
+A case runs a decision-node script unless it names another script context.
+`context: "OAUTH2_ACCESS_TOKEN_MODIFICATION"` runs an OAuth2 access-token
+modification script instead, on either engine (`given.engine`; the legacy
+engine is AM's `OAUTH2_ACCESS_TOKEN_MODIFICATION`, next-gen is its
+`_NEXT_GEN` twin). A case without `context` behaves exactly as before.
+
+```ts
+import { defineCase } from "@agiledigital/pingone-aic-script-tester/case";
+
+defineCase({
+  name: "stamps the owner claim",
+  context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+  script,
+  given: {
+    engine: "next-gen",
+    accessToken: { clientId: "widget-client", scope: ["read"] },
+    identity: { attributes: { "com.forgerock.openam.oauth2provider.clientType": ["Confidential"] } },
+    client: { allowedScopes: ["read", "write"], customProperties: { owner: "a" } },
+    request: { headers: { "Content-Type": ["application/x-www-form-urlencoded"] } },
+  },
+  expect: { accessToken: { fields: { added: { owner: "a" } } } },
+});
+```
+
+**Fixtures.** Every one is optional. `accessToken` is the token's starting
+state (client, owner, grant type, realm, scope, audience, auth time, expiry,
+custom `fields`, nonce, auth level, claims); by default it is a
+`client_credentials` token for `test-client` in `/alpha`, valid for an hour,
+whose custom fields are AM's `subname` and `expires_in`. `identity` is the
+client's agent identity (name, universal id, `exists`, attributes). `client` is
+what `clientProperties` reports. `scopes` overrides the `scopes` binding, which
+otherwise holds the token's scope. `request` is `requestProperties`: params,
+headers and the request URI.
+
+**Assertions.** `expect.accessToken` judges the token after the script:
+`fields` and `responseFields` (added/changed/removed, as for state buckets),
+`scope` (compared as a set), `expiryTime`, `nonce`, `authLevel`, `claims`,
+`act`, `mayAct` and `permissions` (each a value or a matcher), and `issued`.
+Any change the case does not declare fails the verdict, as every other channel
+does, unless `allowUndeclared: { accessToken: true }`. `issued` defaults to
+`true`. A script can return normally and still leave AM unable to issue the
+token: measured on both engines, `accessToken.removeScopes()` makes the token
+endpoint answer 500 with `Cannot invoke "java.util.Collection.size()" because
+"c" is null`. Such a run reports that refusal; declare `issued: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as AM fails the
+token request. `expect.outcome` and `outcomes` are refused: this script decides
+nothing. `logs`, `http` and `openidm` are judged as usual.
+
+**Bindings.** Only measured members are emulated (2026-08-27 and 2026-11-10,
+`docs/api/12-script-bindings-matrix.md`). The binding set differs by engine:
+next-gen has no `session` at all (reading it is a `ReferenceError`), and legacy
+has `session` (`null` for a `client_credentials` token) but no `openidm`,
+`secrets`, `utils`, `require`, `cookieName` or the other next-gen extras.
+Decision-node bindings such as `nodeState`, `action` and `callbacksBuilder` are
+not defined. Legacy getters return Java strings, so `getClientId() ===
+"widget-client"` is `false` there and `==` is `true`, as on AIC. Every member
+nobody measured raises a harness fault, `oauth2-token-unmeasured/<binding>.<member>`,
+which fails the run and is tallied. `docs/rhino-local-gaps.md` lists what is
+approximated.
+
+A token-context case runs locally only: the AIC lane wraps its subject in a
+journey, which can run only a decision-node script, so it reports the case as
+unsupported rather than run it.
+
+The types are exported from `./case`: `AccessTokenCaseInit` (what
+`defineCase` accepts for this context), `AccessTokenSeed`, `IdentitySeed`,
+`ClientSeed`, `TokenRequestSeed`, `AccessTokenExpect` and the recorded
+`AccessTokenEffect`. Types for the script itself are the `aic` script
+workspace's `oauth2-access-token.d.ts` and `oauth2-access-token-ng.d.ts`.
 
 ### Phase timing
 
