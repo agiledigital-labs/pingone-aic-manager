@@ -99,6 +99,20 @@ outcome = "done";`;
     expect((error as CaseRunError).response.emulation?.faults?.map((f: { id: string }) => f.id)).toContain("engine-api-unmeasured/ContextFactory");
   }, 30_000);
 
+  // Regression for the Wrapper path in EngineGuard.wrap. NOTE: this route also
+  // faults without that override (first use of the wrapper re-wraps its target),
+  // so it does not discriminate the override; no route that does was found.
+  // XMLDecoder can build a NativeJavaObject (already a Scriptable) around a
+  // Context, over a real global scope: Rhino passes that straight through wrap(), not wrapAsJavaObject().
+  it("legacy: an already-wrapped Context (a Wrapper returned by Java) is a tallied fault", async () => {
+    expectHarnessFault("engine-api-unmeasured/Context");
+    const xml = '<java><void id="c" class="org.mozilla.javascript.Context"/><object class="org.mozilla.javascript.NativeJavaObject"><object class="org.mozilla.javascript.ScriptRuntime" method="initSafeStandardObjects"><object idref="c"/><null/><boolean>false</boolean></object><object idref="c"/><class>java.lang.Object</class></object></java>';
+    const script = viaXml("c.decompileFunction(function ordinary(a) { return a; }, 0)").replace(/var xml = '.*';/, `var xml = '${xml}';`);
+    const error = await run(script, "legacy").then(() => undefined, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect((error as CaseRunError).response.emulation?.faults?.map((f: { id: string }) => f.id)).toContain("engine-api-unmeasured/Context");
+  }, 30_000);
+
   it("controls: HashMap, template literal and a caught EcmaError's message record no fault (legacy)", async () => {
     const result = await run(
       `var m = new java.util.HashMap(); m.put("a", 1);

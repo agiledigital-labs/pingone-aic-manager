@@ -3,6 +3,7 @@ import org.mozilla.javascript.ContextFactory;
 import org.mozilla.javascript.EvaluatorException;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.WrapFactory;
+import org.mozilla.javascript.Wrapper;
 
 /**
  * Refuses an engine capability object reaching a script, by whatever route.
@@ -41,21 +42,37 @@ final class EngineGuard extends WrapFactory {
     this.bridge = bridge;
   }
 
-  @Override
-  public Scriptable wrapAsJavaObject(Context cx, Scriptable scope, Object value, Class<?> staticType) {
+  /** Records and throws if {@code value} is an engine capability instance. */
+  private void refuse(Object value) {
     String kind = null;
     if (value instanceof Context) kind = "Context";
     else if (value instanceof ContextFactory) kind = "ContextFactory";
-    if (kind != null) {
-      String id = "engine-api-unmeasured/" + kind;
-      String message =
-          "an instance of " + value.getClass().getName() + " (a Rhino " + kind
-              + ") reached the script. AIC hides the engine package by name; this route to it"
-              + " is not measured, and the emulator's own functions cannot answer for it";
-      if (bridge != null) throw bridge.missing(message, id);
-      faults.record(id, "rhino-local: " + message);
-      throw new EvaluatorException("rhino-local: " + id + ": " + message);
-    }
+    if (kind == null) return;
+    String id = "engine-api-unmeasured/" + kind;
+    String message =
+        "an instance of " + value.getClass().getName() + " (a Rhino " + kind
+            + ") reached the script. AIC hides the engine package by name; this route to it"
+            + " is not measured, and the emulator's own functions cannot answer for it";
+    if (bridge != null) throw bridge.missing(message, id);
+    faults.record(id, "rhino-local: " + message);
+    throw new EvaluatorException("rhino-local: " + id + ": " + message);
+  }
+
+  @Override
+  public Scriptable wrapAsJavaObject(Context cx, Scriptable scope, Object value, Class<?> staticType) {
+    refuse(value);
     return super.wrapAsJavaObject(cx, scope, value, staticType);
+  }
+
+  /**
+   * Rhino passes a Scriptable straight through {@code wrap}, so a Java method
+   * that returns an already-wrapped {@code NativeJavaObject} (any {@link
+   * Wrapper}) around a Context never reaches {@code wrapAsJavaObject}. Look
+   * through the wrapper.
+   */
+  @Override
+  public Object wrap(Context cx, Scriptable scope, Object obj, Class<?> staticType) {
+    if (obj instanceof Wrapper) refuse(((Wrapper) obj).unwrap());
+    return super.wrap(cx, scope, obj, staticType);
   }
 }
