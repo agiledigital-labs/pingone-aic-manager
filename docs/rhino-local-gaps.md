@@ -1026,6 +1026,19 @@ result scripts (eighteen engine runs). What it approximates or leaves out:
   measured `true`, which two script objects cannot reproduce). The identity's
   `getName()`/`getUniversalId()` return the same object on every call, as
   measured; other legacy getters make a new one per call, which is unmeasured.
+- **Legacy Java objects admit only measured members** (Sol ctx r2 P2-6). A
+  legacy string answers `length()`, `toString()`, `==`, String conversion and
+  the `[object JavaObject]` tag. Any other `java.lang.String` or
+  `String.prototype` member (`substring`, `slice`, ...), an index, an
+  assignment, `in` or enumeration is a `<context>-unmeasured/java.lang.String.<member>`
+  fault. The legacy `claims` map answers entry reads, `for...in`, String
+  conversion and `get`/`containsKey`/`remove` (1 argument), `put` (2) and
+  `size` (0). Any other Java member, another argument count or a member
+  assignment faults. Known limit, as for `idm-exception/unmeasured`: a native
+  method borrowed from another object, or the object passed as a Java argument,
+  reaches the unguarded Java object. Where AM's scope stores a map binding bare
+  and wraps it afresh on every read, the emulator stores the guard itself
+  (`ScriptContextScope`); the script reads the same map either way.
 - **Next-gen `claims` is a script object.** Its seeded `toString`/`toJSON`
   render the measured `{sub, subname}` text. After the script changes the map,
   either one faults. `put` over an existing key faults as unmeasured. `delete

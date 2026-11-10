@@ -67,12 +67,17 @@ __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oidcClaims;
 // Legacy: a real java.util.LinkedHashMap of Java strings. With the context
 // factory's Java map access, member reads, for...in, put/get/remove,
 // JSON.stringify and String(v) all behave as measured, because they are the
-// JVM's own.
+// JVM's own. Its other Java members (clear, size, putAll, ...) and member
+// assignment were never measured, so the map is handed over behind
+// java/ContextJavaGuard.java's gate (Sol ctx r2 P2-6).
+// size() is the surface probe's (size=2); the rest are claimsmap/sideeffect's.
+var __rhinoLocalOidcLegacyClaimsMethods = { get: 1, containsKey: 1, put: 2, remove: 1, size: 0 };
+
 function __rhinoLocalOidcLegacyClaims(seed) {
   var map = new java.util.LinkedHashMap();
   map.put("sub", seed.sub);
   map.put("subname", seed.subname);
-  return map;
+  return __rhinoLocalCtxGuardMap(map, __rhinoLocalOidcLegacyClaimsMethods, "claims");
 }
 
 var __rhinoLocalOidcClaimsFaulting = [
@@ -92,7 +97,10 @@ function __rhinoLocalOidcNextGenClaims(seed) {
   var known = ["sub", "subname"];
   var methods = {};
   var hide = function (name, arity, fn) {
-    __rhinoLocalCtxMethod(claims, "claims", "java.util.Map", name, arity, fn);
+    __rhinoLocalCtxMethod(claims, "claims", "java.util.Map", name, arity, function () {
+      sync();
+      return fn.apply(this, arguments);
+    });
     methods[name] = claims[name];
   };
   var define = function (key, value) {
@@ -100,6 +108,25 @@ function __rhinoLocalOidcNextGenClaims(seed) {
   };
   var own = function (key) {
     return Object.prototype.hasOwnProperty.call(claims, key) && Object.getOwnPropertyDescriptor(claims, key).enumerable;
+  };
+  // Keys reach the map two ways, put() and plain assignment, and only put()
+  // can record its key as it happens. So every method first takes in keys
+  // assigned since, and faults a known key that is gone: AIC answers false to
+  // `delete` and keeps the key (Sol ctx r2 P1-1).
+  var sync = function () {
+    var keys = Object.keys(claims);
+    var i;
+    for (i = 0; i < known.length; i += 1) {
+      if (!own(known[i])) {
+        throw __rhinoLocalCtxUnmeasured("claims." + known[i],
+          "(delete on the claims map; AIC answers false and keeps the key, use remove())");
+      }
+    }
+    for (i = 0; i < keys.length; i += 1) {
+      if (known.indexOf(keys[i]) === -1) {
+        known.push(keys[i]);
+      }
+    }
   };
   var seeded = function () {
     var keys = Object.keys(claims);
@@ -133,19 +160,19 @@ function __rhinoLocalOidcNextGenClaims(seed) {
   });
   hide("remove", 1, function (key) {
     var k = String(key);
-    if (!own(k) && known.indexOf(k) !== -1) {
-      throw __rhinoLocalCtxUnmeasured("claims." + k,
-        "(delete on the claims map; AIC answers false and keeps the key, use remove())");
-    }
     if (!own(k)) {
       throw __rhinoLocalCtxUnmeasured("claims.remove()", "of a key the map does not hold");
     }
     var value = claims[k];
+    var at = known.indexOf(k);
     delete claims[k];
-    known.splice(known.indexOf(k), 1);
+    if (at !== -1) {
+      known.splice(at, 1);
+    }
     return value;
   });
   __rhinoLocalHide(claims, "toString", function () {
+    sync();
     if (!seeded()) {
       throw __rhinoLocalCtxUnmeasured("String(claims)", "after it changed");
     }
@@ -153,6 +180,7 @@ function __rhinoLocalOidcNextGenClaims(seed) {
   });
   methods.toString = claims.toString;
   __rhinoLocalHide(claims, "toJSON", function () {
+    sync();
     if (!seeded()) {
       throw __rhinoLocalCtxUnmeasured("JSON.stringify(claims)", "after it changed");
     }
@@ -273,7 +301,7 @@ function __rhinoLocalOidcUserInfoClaims(values, compositeScopes) {
     throw __rhinoLocalCtxUnmeasured("new UserInfoClaims(" + __rhinoLocalArgShape(arguments) + ")",
       "with compositeScopes that are neither null nor a Java map");
   }
-  var made = { values: values, compositeScopes: compositeScopes };
+  var made = { values: __rhinoLocalCtxUnguard(values), compositeScopes: __rhinoLocalCtxUnguard(compositeScopes) };
   __rhinoLocalHide(made, "toString", function () {
     throw __rhinoLocalCtxUnmeasured("String(UserInfoClaims)");
   });
@@ -402,6 +430,7 @@ function __rhinoLocalSeedOidcClaims(given) {
     });
   }
   __rhinoLocalOidc.claims = claims;
+  __rhinoLocalCtxSeal();
 }
 
 // --- Harvest -------------------------------------------------------------------

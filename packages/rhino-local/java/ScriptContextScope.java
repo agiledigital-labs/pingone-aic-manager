@@ -103,7 +103,13 @@ final class ScriptContextScope implements Scriptable {
     if (scope == -1) {
       scope = ScriptContext.ENGINE_SCOPE;
     }
-    if (value instanceof Wrapper) {
+    // A guarded map (ContextJavaGuard, Sol ctx r2 P2-6) is stored as the guard
+    // itself: AM stores the bare map and wraps it afresh on every read, which
+    // here would hand the script an unguarded NativeJavaMap from the global
+    // `claims`. Either way the script reads the same map. A guarded String is
+    // still unwrapped, because a top-level var flattening a Java String to a
+    // JS string is measured.
+    if (value instanceof Wrapper && !(value instanceof ContextJavaGuard.GuardedMap)) {
       value = ((Wrapper) value).unwrap();
     }
     scriptContext.setAttribute(name, value, scope);
