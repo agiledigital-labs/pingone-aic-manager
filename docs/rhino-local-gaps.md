@@ -1247,14 +1247,59 @@ with the token's `scope` or AM's error. What it approximates or leaves out:
 - **The AIC lane** runs only decision-node scripts, so a validate scope case
   runs locally only.
 
+## OAuth2 may-act context (listed 2026-11-10)
+
+`context: "OAUTH2_MAY_ACT"` runs on both engines from the overlay
+`packages/rhino-local/src/bindings/rhino/context-oauth2-may-act.cjs`,
+on the same `context-common.cjs` views, so the view-level gaps above apply
+here too, with the prefix `oauth2-may-act-unmeasured/`. The conformance
+test (`test/bindings/oauth2-may-act.e2e.test.ts`) replays the surface probe
+and the 38 result cases captured from a `client_credentials` token request.
+What it approximates or leaves out:
+
+- **One entry point.** Only the access-token may-act script on a
+  `client_credentials` grant was measured. Authorization-code, refresh and
+  token-exchange requests were not, and `oidcMayActScript` was not.
+- **`for...in` over `token`.** Next-gen lists the Java bean members; legacy
+  throws the class shutter for `org.forgerock.oauth2.core.ResourceOwner`.
+  The emulator does neither. The conformance test drops `tokenMembers`.
+- **`String(s.length)` of a legacy Java string** (`logger.getName()`, the
+  identity name, `requestProperties.realm`) prints a JS function's source
+  here, not Rhino's rendering of the Java method. Same gap as validate scope.
+- **Legacy `session`.** The capture records `typeof` `object` and nothing
+  else. The emulator binds `null`, which has that `typeof`. Whether AIC's
+  value is `null` was not read.
+- **`cookieName`'s value** on next-gen. The capture records `typeof`
+  `string`. The characters were not read.
+- **Legacy scope order and the iterator.** `scopes` is a `java.util.HashSet`,
+  whose iteration order is the JVM's hash order; the emulator keeps the
+  seed's order. `iterator()` answers a Java iterator on AIC whose members
+  were not read; here every member of it faults. Next-gen `iterator()` is
+  the `ArrayList$Itr` shutter on both sides.
+- **`clientProperties` sets.** Reading `allowedGrantTypes`, `allowedScopes`
+  or `allowedResponseTypes` on next-gen is AIC's class-shutter error, so a
+  case cannot see them either way. On legacy those keys are absent from the
+  map the capture read (`redirectUris` included: the key is not there).
+- **Caught-exception objects.** The err-args and err-java probes recorded
+  `typeof`, the tag, `name` and `String`. Other properties of the thrown
+  value were not read.
+- **Unmeasured claim shapes.** A function, a `RegExp`, a getter, a cycle or
+  `Infinity` inside the object faults at the harvest. A `Date` that is a
+  direct property is the measured Jackson 500. A `Date` nested further down
+  was not measured and faults. `size()` of a map or number JsonValue, `get`
+  on a string, number or list JsonValue, and `JSON.stringify` of a non-null
+  JsonValue fault.
+- **The AIC lane** runs only decision-node scripts, so a may-act case runs
+  locally only.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
   here.
 - It does not claim OAuth2 scripts in general run here. Access-token
   modification, OIDC claims and the social IdP profile transformation do,
-  as do the config provider node and validate scope (sections above);
-  may-act and the other OAuth2 contexts are
+  as do the config provider node, validate scope and may-act (sections
+  above); the other OAuth2 contexts are
   a different binding surface and are not emulated.
 - A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,
   and one of those (`identity-enum-attrs`) has no valid live measurement.

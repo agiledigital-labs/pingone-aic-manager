@@ -255,6 +255,25 @@ describe("installed rhino-local", () => {
     } finally { await runner.close(); }
   });
 
+  // The may-act overlay is a sixth packaged asset; AM stamps may_act from
+  // token.setMayAct after the body. Legacy wants a JsonValue, not a plain object.
+  it("runs a may-act case on both engines", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      for (const [engine, script] of [
+        ["next-gen", 'token.setMayAct({ client_id: "actor" });'],
+        ["legacy", 'var m = new java.util.LinkedHashMap(); m.put("client_id", "actor"); token.setMayAct(new org.forgerock.json.JsonValue(m));'],
+      ] as const) {
+        const run = await runCase(runner, defineCase({
+          name: \`may act \${engine}\`, context: "OAUTH2_MAY_ACT", script,
+          given: { engine, client: { clientId: "actor-client" }, scopes: ["read"] },
+          expect: { mayAct: { mayAct: { client_id: "actor" }, scope: ["read"] } },
+        }));
+        expect(run.verdict.summary, run.verdict.summary).toBe("");
+      }
+    } finally { await runner.close(); }
+  });
+
   // Positive control for step 1: were the declarations to resolve to \`any\`,
   // this directive would be unused and tsc would fail.
   it("types the inputs from the suite's schema", () => {

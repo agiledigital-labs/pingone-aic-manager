@@ -1847,3 +1847,39 @@ validate scope on both engines"):
   `realm`, `scriptName` and `systemEnv`, and its invalid-scope denial is
   `throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(msg)`
   (`400`, `msg` verbatim).
+
+
+## 2026-11-10 — legacy may-act accepts a JsonValue, and the claim's nulls differ
+
+Three claims about the may-act context did not survive the rhino-local probes
+(a stateless `client_credentials` client in `alpha`, both engines; method and
+captures in `docs/api/12-script-bindings-matrix.md`, "OAuth2 may act on both
+engines"):
+
+- **A plain object is what fails on legacy, not the context.** `docs/api/22`
+  and `docs/api/04` say the same JS body on `OAUTH2_MAY_ACT` is HTTP 500
+  because Rhino will not coerce an object literal into the map `setMayAct`
+  wants. That call does fail, with `Error running may_act script`.
+  `token.setMayAct(new org.forgerock.json.JsonValue(linkedHashMap))` is
+  accepted, and the issued `may_act` is that map. `new JsonValue(null)`
+  writes JSON null; `new JsonValue("…")` writes that string. Both notes now
+  point here.
+- **JSON null and a missing claim are different, and the engines disagree
+  about `setMayAct(null)`.** Next-gen `token.setMayAct(null)` issues
+  `"may_act": null`. Legacy `token.setMayAct(null)` leaves the claim out of
+  the token. `getMayAct()` is JS `null` in both of the next-gen states, and
+  a null JsonValue (`size()` `0`, not `=== null`) in both of the legacy
+  states. A case that treats "no call" and "called with null" as the same
+  assertion is wrong on one engine.
+- **Legacy `OAUTH2_MAY_ACT` is not bindingless, and the next-gen token is
+  exactly the descriptor's five methods.** `docs/api/13` lists the legacy id
+  among the contexts whose descriptor has 0 bindings, which is true of the
+  descriptor. At runtime it binds `token`, `scopes`, `identity`,
+  `requestProperties`, `clientProperties`, `logger`, `realm`, `scriptName`,
+  `systemEnv` and `session`. The next-gen descriptor's `getField`, `getAct`,
+  `getMayAct`, `setAct` and `setMayAct` are the methods that exist:
+  `typeof token.setField` and `typeof token.toString` are `undefined`.
+  `requestProperties.requestParams` values are JS strings on next-gen
+  (`grant_type[0] === "client_credentials"`), not the `JavaString` the
+  generated types describe.
+

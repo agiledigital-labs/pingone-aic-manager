@@ -1367,6 +1367,90 @@ A validate scope case runs locally only. The types are exported from
 `./case`: `ValidateScopeCaseInit`, `ValidateScopeSeed`, `ValidateScopeExpect`
 and the recorded `ValidateScopeEffect`.
 
+### OAuth2 may act scripts
+
+`context: "OAUTH2_MAY_ACT"` runs an OAuth2 client's may-act script, on either
+engine (legacy is AM's `OAUTH2_MAY_ACT`, next-gen is `OAUTH2_MAY_ACT_NEXT_GEN`).
+AM runs the script's body and then, if it did not throw, stamps `may_act` and
+`act` from what the script stored on `token`. The body's return value is
+ignored. A script that throws is HTTP 500 (`Error running may_act script`) and a
+claim set earlier in that script is discarded.
+
+```ts
+defineCase({
+  name: "names the actor",
+  context: "OAUTH2_MAY_ACT",
+  script, // next-gen: token.setMayAct({ client_id: "actor" })
+  given: {
+    engine: "next-gen",
+    client: { clientId: "subject-client" },
+    scopes: ["read"],
+  },
+  expect: { mayAct: { mayAct: { client_id: "actor" }, scope: ["read"] } },
+});
+```
+
+**Fixtures.** There is no `given.mayAct`. `client`, `scopes`, `request`,
+`identity` and `accessToken` (its `scope`, `grantType`, `realm` and
+`fields.expires_in`) seed the same bindings as access-token modification, and
+`loggerScriptId` and `cookieName` are accepted too. The default request is a
+`client_credentials` token request. `scopes` defaults to `accessToken.scope`, or
+`[]`. `expires_in` defaults to `3600`.
+
+**Assertions.** `expect.mayAct.mayAct` is the `may_act` claim and
+`expect.mayAct.act` is the `act` claim. A key present with the value `null`
+means the claim was JSON null; omitting the key means the claim was absent.
+Those are different on this context: next-gen `token.setMayAct(null)` writes
+JSON null, and legacy `token.setMayAct(null)` clears the claim so it is absent.
+A claim the case does not declare fails the verdict unless
+`allowUndeclared: { mayAct: true }`. `scope` is the issued token's scopes,
+compared as a set; it defaults to the request's scopes, and legacy
+`token.setScope` replaces them. `issued: false` expects no token (HTTP 500) and
+cannot be combined with `mayAct`, `act` or `scope`. `refusal` is the
+`error_description`. A `Date` stored as a direct property of the claim does not
+throw inside the script; AM then fails the write with its Jackson message, which
+`refusal` can name. Any other uncaught throw fails the run with `CaseRunError`.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- **Next-gen** `token` has five methods: `getField`, `getAct`, `getMayAct`,
+  `setAct` and `setMayAct`. `setMayAct` and `setAct` take one plain object,
+  stored by reference, or `null` (JSON null). A string, number, boolean or a
+  second argument is `Can't find method`; a function or an array, where a map is
+  required, is the recorded `InternalError`. `getField("scope")` is the class
+  shutter's refusal of `java.util.TreeSet`. `scopes` is a Java list of JS
+  strings. `identity.exists()` is `true` and `getName()` is the client id on a
+  `client_credentials` grant. `requestProperties` and `clientProperties` are the
+  same maps as access-token modification. The decision-node host bindings
+  (`httpClient`, `openidm`, `require`, …) stay bound. `session` is not bound.
+  `cookieName` is a string; the capture records the type, not the value.
+- **Legacy** `token.setMayAct` and `setAct` take an
+  `org.forgerock.json.JsonValue`, or `null`, which clears the claim. A plain
+  object is `Can't find method` and the token request is HTTP 500. Construct the
+  value with `new org.forgerock.json.JsonValue(map)` over a
+  `java.util.LinkedHashMap` (`new` and one argument are required; `null` and a
+  string are also accepted). `getMayAct()` of an absent claim is a null
+  JsonValue, whose `size()` is `0`, not JS `null`. `String(token)` is a
+  1300-character string with the `eyJ` prefix and two dots. `scopes` is a
+  `java.util.HashSet`. `session` is bound (`typeof` is `object`); the capture
+  does not show whether the value is `null`, and the emulator binds `null`.
+  There is no `cookieName`, `require` or `httpClient`. `requestProperties` and
+  `clientProperties` are bound; `grant_type`'s first element and the request URI
+  are Java strings, so `===` against a literal is `false`.
+- **Neither engine** binds `accessToken`, the node state, callbacks, or the
+  request maps under the names `requestHeaders` and `requestParameters`.
+  `typeof context` throws
+  `Access to Java class "javax.script.SimpleScriptContext" is prohibited`.
+
+An unmeasured member raises `oauth2-may-act-unmeasured/<binding>.<member>`.
+
+One case is one access-token request. Authorization-code, refresh and
+token-exchange entry points were not measured.
+
+A may-act case runs locally only. The types are exported from `./case`:
+`MayActCaseInit`, `MayActExpect` and the recorded `MayActEffect`.
+
 ### Phase timing
 
 To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and
