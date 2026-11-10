@@ -1,0 +1,57 @@
+{
+ "body": {
+  "expires_in": 3599,
+  "scope": "openid profile zzemuc2-probe email",
+  "token_type": "Bearer"
+ },
+ "http": 200,
+ "idToken": {
+  "aud": "zzemuC2-oidc",
+  "azp": "zzemuC2-oidc",
+  "realm": "/alpha",
+  "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+  "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+  "tokenName": "id_token",
+  "tokenType": "JWTToken",
+  "zzArr": [
+   "a",
+   "b"
+  ],
+  "zzBool": true,
+  "zzEmail": "e",
+  "zzEmpty": "",
+  "zzFloat": 1.5,
+  "zzInt": 42.0,
+  "zzObj": {
+   "a": 1.0,
+   "b": "x"
+  },
+  "zzOther": "o",
+  "zzScoped": "p",
+  "zzStr": "s",
+  "zzUnscopedArr": []
+ },
+ "idTokenProbe": null,
+ "userinfo": {
+  "zzArr": [
+   "a",
+   "b"
+  ],
+  "zzBool": true,
+  "zzEmail": "e",
+  "zzEmpty": "",
+  "zzFloat": 1.5,
+  "zzInt": 42.0,
+  "zzNull": null,
+  "zzObj": {
+   "a": 1.0,
+   "b": "x"
+  },
+  "zzOther": "o",
+  "zzScoped": "p",
+  "zzStr": "s",
+  "zzUnscopedArr": []
+ },
+ "userinfoHttp": 200,
+ "userinfoProbe": null
+}

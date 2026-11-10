@@ -1,0 +1,355 @@
+{
+ "invalid-request": {
+  "legacy": {
+   "body": {
+    "error": "server_error",
+    "error_description": "Error running OIDC claims plugin"
+   },
+   "http": 500,
+   "idToken": null,
+   "script": "throw new org.forgerock.oauth2.core.exceptions.InvalidRequestException(\"zz essential\");\n",
+   "userinfo": null
+  }
+ },
+ "java-map": {
+  "legacy": {
+   "body": {
+    "error": "server_error",
+    "error_description": "Cannot cast java.util.LinkedHashMap to org.forgerock.oauth2.core.UserInfoClaims"
+   },
+   "http": 500,
+   "idToken": null,
+   "script": "var m = new java.util.LinkedHashMap(); m.put(\"zzPlain\", \"x\"); m;\n",
+   "userinfo": null
+  }
+ },
+ "next-gen-shape": {
+  "legacy": {
+   "body": {
+    "error": "server_error",
+    "error_description": "Error running OIDC claims plugin"
+   },
+   "http": 500,
+   "idToken": null,
+   "script": "({ values: { zzOnly: \"v\" }, compositeScopes: {} });\n",
+   "userinfo": null
+  }
+ },
+ "no-composite-scopes": {
+  "next-gen": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken",
+    "zzOnly": "v"
+   },
+   "script": "({ values: { zzOnly: \"v\" } });\n",
+   "userinfo": {
+    "zzOnly": "v"
+   }
+  }
+ },
+ "null-composite-scopes": {
+  "legacy": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken",
+    "zzA": "a"
+   },
+   "script": "var m = new java.util.LinkedHashMap(); m.put(\"zzA\", \"a\");\nnew org.forgerock.oauth2.core.UserInfoClaims(m, null);\n",
+   "userinfo": {
+    "zzA": "a"
+   }
+  }
+ },
+ "plain-object": {
+  "next-gen": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken"
+   },
+   "script": "({ zzPlain: \"x\" });\n",
+   "userinfo": {}
+  }
+ },
+ "returns-claims": {
+  "legacy": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken",
+    "zzMut": "m"
+   },
+   "script": "claims.put(\"zzMut\", \"m\"); new org.forgerock.oauth2.core.UserInfoClaims(claims, new java.util.LinkedHashMap());\n",
+   "userinfo": {
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "zzMut": "m"
+   }
+  },
+  "next-gen": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken",
+    "zzMut": "m"
+   },
+   "script": "claims.zzMut = \"m\"; ({ values: claims, compositeScopes: {} });\n",
+   "userinfo": {
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "zzMut": "m"
+   }
+  }
+ },
+ "sub-and-subname": {
+  "legacy": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "zzOverride",
+    "subname": "zzOverride2",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken",
+    "zzA": "a"
+   },
+   "script": "var m = new java.util.LinkedHashMap(); m.put(\"sub\", \"zzOverride\"); m.put(\"subname\", \"zzOverride2\"); m.put(\"zzA\", \"a\");\nnew org.forgerock.oauth2.core.UserInfoClaims(m, new java.util.LinkedHashMap());\n",
+   "userinfo": {
+    "sub": "zzOverride",
+    "subname": "zzOverride2",
+    "zzA": "a"
+   }
+  },
+  "next-gen": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "zzOverride",
+    "subname": "zzOverride2",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken",
+    "zzA": "a"
+   },
+   "script": "({ values: { sub: \"zzOverride\", subname: \"zzOverride2\", zzA: \"a\" }, compositeScopes: {} });\n",
+   "userinfo": {
+    "sub": "zzOverride",
+    "subname": "zzOverride2",
+    "zzA": "a"
+   }
+  }
+ },
+ "sub-only": {
+  "legacy": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "zzOnlySub",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken"
+   },
+   "script": "var m = new java.util.LinkedHashMap(); m.put(\"sub\", \"zzOnlySub\");\nnew org.forgerock.oauth2.core.UserInfoClaims(m, new java.util.LinkedHashMap());\n",
+   "userinfo": {
+    "sub": "zzOnlySub"
+   }
+  },
+  "next-gen": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "zzOnlySub",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken"
+   },
+   "script": "({ values: { sub: \"zzOnlySub\" }, compositeScopes: {} });\n",
+   "userinfo": {
+    "sub": "zzOnlySub"
+   }
+  }
+ },
+ "subname-only": {
+  "legacy": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken"
+   },
+   "script": "var m = new java.util.LinkedHashMap(); m.put(\"subname\", \"zzOnlySubname\");\nnew org.forgerock.oauth2.core.UserInfoClaims(m, new java.util.LinkedHashMap());\n",
+   "userinfo": {
+    "subname": "zzOnlySubname"
+   }
+  },
+  "next-gen": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken"
+   },
+   "script": "({ values: { subname: \"zzOnlySubname\" }, compositeScopes: {} });\n",
+   "userinfo": {
+    "subname": "zzOnlySubname"
+   }
+  }
+ },
+ "throws": {
+  "legacy": {
+   "body": {
+    "error": "server_error",
+    "error_description": "Error running OIDC claims plugin"
+   },
+   "http": 500,
+   "idToken": null,
+   "script": "throw new Error(\"zz deliberate\");\n",
+   "userinfo": null
+  },
+  "next-gen": {
+   "body": {
+    "error": "server_error",
+    "error_description": "Error running OIDC claims plugin"
+   },
+   "http": 500,
+   "idToken": null,
+   "script": "throw new Error(\"zz deliberate\");\n",
+   "userinfo": null
+  }
+ },
+ "undefined": {
+  "legacy": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken"
+   },
+   "script": "var zz = 1;\n",
+   "userinfo": {}
+  },
+  "next-gen": {
+   "body": {
+    "expires_in": 3599,
+    "scope": "openid profile zzemuc2-probe email",
+    "token_type": "Bearer"
+   },
+   "http": 200,
+   "idToken": {
+    "aud": "zzemuC2-oidc",
+    "azp": "zzemuC2-oidc",
+    "realm": "/alpha",
+    "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+    "tokenName": "id_token",
+    "tokenType": "JWTToken"
+   },
+   "script": "var zz = 1;\n",
+   "userinfo": {}
+  }
+ }
+}
