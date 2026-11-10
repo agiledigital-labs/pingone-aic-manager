@@ -52,6 +52,11 @@ public final class HostOps extends BaseFunction {
   private Object dispatch(Context cx, Scriptable scope, Object[] args) throws Exception {
     String op = (String) Context.jsToJava(args[0], String.class);
     switch (op) {
+      // Guarded real Java objects for the legacy script contexts.
+      case "guardString":
+      case "guardMap":
+      case "unguard":
+        return ContextJavaGuard.dispatch(cx, scope, op, args);
       case "base64Encode": {
         // AIC's encode(byte[]) overload refuses a JS array (measured), where
         // most of the crypto methods convert one.

@@ -197,11 +197,12 @@ function __rhinoLocalAtBuildToken(seed) {
       // A copy: add() answers true and the token keeps its scope (measured).
       return __rhinoLocalCtxJavaSet(state().scope, "accessToken.getScope()", true);
     }
-    var list = __rhinoLocalCtxList(state().scope.slice());
+    var list = __rhinoLocalCtxList(state().scope.slice(), "accessToken.getScope()");
     // Measured: the next-gen list is immutable, and add() throws "null".
     __rhinoLocalHide(list, "add", function () {
       throw __rhinoLocalInternalError("null");
     });
+    __rhinoLocalCtxRewatch(list);
     return list;
   });
   m("setScope", 1, function (value) {
@@ -352,6 +353,8 @@ function __rhinoLocalAtBuildToken(seed) {
     "setResourceOwnerId", "setTokenName", "setTokenType",
   ].concat(__rhinoLocalCtxObjectMethods));
   __rhinoLocalCtxToJSON(token, "accessToken");
+  // Its Java tag is unmeasured on both engines (Sol ctx r2 P2-5).
+  __rhinoLocalCtxTag(token, null, "accessToken");
   return __rhinoLocalCtxWatch(token, "accessToken");
 }
 
@@ -458,6 +461,7 @@ function __rhinoLocalSeedAccessToken(given) {
     // Measured: bound, and null.
     session = null;
   }
+  __rhinoLocalCtxSeal();
 }
 
 function __rhinoLocalHarvestAccessToken() {

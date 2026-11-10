@@ -16,6 +16,22 @@
 // not bind: a script that reads one then gets AIC's ReferenceError.
 var __rhinoLocalTop = this;
 
+// java/HostOps.java, defined by the runner for the prelude only. Its
+// guard ops wrap a real Java object so that only measured members answer
+// (java/ContextJavaGuard.java).
+var __rhinoLocalCtxHostOp = typeof __rhinoLocalHostOp !== "undefined" ? __rhinoLocalHostOp : null;
+
+// A real Java object behind a member gate: `admitted` is {name: argument
+// count or [counts]}. Every other Java member faults.
+function __rhinoLocalCtxGuardMap(map, admitted, label) {
+  return __rhinoLocalCtxHostOp("guardMap", map, admitted, label, __rhinoLocalCtxUnmeasured);
+}
+
+// The bare Java object behind a guard, for the harness's own reads.
+function __rhinoLocalCtxUnguard(value) {
+  return __rhinoLocalCtxHostOp === null ? value : __rhinoLocalCtxHostOp("unguard", value);
+}
+
 // Set by the context overlay (prefix, noun, listKind) and its seed (engine).
 // `views` holds the binding objects whose own properties the harvest audits.
 var __rhinoLocalCtx = {
@@ -24,6 +40,7 @@ var __rhinoLocalCtx = {
   noun: "script",
   listKind: null,
   views: [],
+  sealed: true,
   realJavaStrings: false,
 };
 
@@ -170,9 +187,42 @@ function __rhinoLocalCtxSnapshot(target) {
   return snap;
 }
 
+// While a context seed is still installing measured members on a view, its
+// snapshot waits for __rhinoLocalCtxSeal, so those members are part of the
+// baseline rather than additions. A view made after the seed is snapshotted
+// at once.
 function __rhinoLocalCtxWatch(target, label) {
-  __rhinoLocalCtx.views.push({ target: target, label: label, snap: __rhinoLocalCtxSnapshot(target) });
+  var i;
+  for (i = 0; i < __rhinoLocalCtx.views.length; i += 1) {
+    if (__rhinoLocalCtx.views[i].target === target) {
+      __rhinoLocalCtx.views[i].label = label;
+      return target;
+    }
+  }
+  __rhinoLocalCtx.views.push({
+    target: target, label: label, snap: __rhinoLocalCtx.sealed ? __rhinoLocalCtxSnapshot(target) : null,
+  });
   return target;
+}
+
+function __rhinoLocalCtxSeal() {
+  var i;
+  for (i = 0; i < __rhinoLocalCtx.views.length; i += 1) {
+    if (__rhinoLocalCtx.views[i].snap === null) {
+      __rhinoLocalCtx.views[i].snap = __rhinoLocalCtxSnapshot(__rhinoLocalCtx.views[i].target);
+    }
+  }
+  __rhinoLocalCtx.sealed = true;
+}
+
+// A measured mutation (token-context scopes.add()) moves the baseline.
+function __rhinoLocalCtxRewatch(target) {
+  var i;
+  for (i = 0; i < __rhinoLocalCtx.views.length; i += 1) {
+    if (__rhinoLocalCtx.views[i].target === target) {
+      __rhinoLocalCtx.views[i].snap = __rhinoLocalCtxSnapshot(target);
+    }
+  }
 }
 
 function __rhinoLocalCtxAudit() {
@@ -185,6 +235,9 @@ function __rhinoLocalCtxAudit() {
   var seen;
   for (v = 0; v < __rhinoLocalCtx.views.length; v += 1) {
     view = __rhinoLocalCtx.views[v];
+    if (view.snap === null) {
+      throw new Error("rhino-local: the context seed never sealed its views (__rhinoLocalCtxSeal)");
+    }
     names = Object.getOwnPropertyNames(view.target);
     seen = {};
     for (i = 0; i < names.length; i += 1) {
@@ -221,13 +274,15 @@ function __rhinoLocalCtxBare() {
 // java.util.LinkedHashMap, so its values are real java.lang.String objects,
 // and `claims.sub == identity.getName()` was measured true, which two views,
 // or a view and a real string, cannot reproduce). Every legacy string is then
-// a real java.lang.String, which behaves as it does on AIC's JVM.
+// a real java.lang.String, which behaves as it does on AIC's JVM, behind
+// java/ContextJavaGuard.java's gate: only `length` and toString() of its own
+// members answer (Sol ctx r2 P2-6), as on the view.
 function __rhinoLocalCtxJavaString(text) {
   if (text === null || text === undefined) {
     return null;
   }
   if (__rhinoLocalCtx.realJavaStrings) {
-    return new java.lang.String(String(text));
+    return __rhinoLocalCtxHostOp("guardString", String(text), "java.lang.String", __rhinoLocalCtxUnmeasured);
   }
   var value = String(text);
   var out = __rhinoLocalCtxBare();
@@ -314,10 +369,12 @@ function __rhinoLocalCtxString(text) {
 }
 
 // A Java list, through runtime.cjs's list view with the context's own kind.
+// Watched like the other views (Sol ctx r2 P2-3): an index write or a
+// replaced method is found by the harvest audit.
 function __rhinoLocalCtxList(items, label) {
   var list = __rhinoLocalListView(items, __rhinoLocalCtx.listKind);
   __rhinoLocalCtxTag(list, null, label || "a Java list");
-  return list;
+  return __rhinoLocalCtxWatch(list, label || "list");
 }
 
 // A legacy java.util.HashSet: no `length`, `[i]` is AIC's InternalError
@@ -579,9 +636,14 @@ function __rhinoLocalCtxPlainJson(value) {
   return true;
 }
 
-function __rhinoLocalCtxJsonSafe(value, nested) {
+// `path` holds the objects on the active traversal path: meeting one again
+// is a cycle, which faults rather than overflowing the stack into a catchable
+// InternalError (Sol ctx r2 P2-1). The same object twice in an acyclic tree
+// is not on the path the second time, and stays JSON.
+function __rhinoLocalCtxJsonSafe(value, nested, path) {
   var i;
   var keys;
+  var ok;
   if (value === null) {
     return !nested;
   }
@@ -594,13 +656,18 @@ function __rhinoLocalCtxJsonSafe(value, nested) {
   if (typeof value !== "object" || !__rhinoLocalCtxPlainJson(value)) {
     return false;
   }
-  keys = Object.keys(value);
-  for (i = 0; i < keys.length; i += 1) {
-    if (!__rhinoLocalCtxJsonSafe(value[keys[i]], true)) {
-      return false;
-    }
+  path = path || [];
+  if (path.indexOf(value) !== -1) {
+    return false;
   }
-  return true;
+  path.push(value);
+  ok = true;
+  keys = Object.keys(value);
+  for (i = 0; ok && i < keys.length; i += 1) {
+    ok = __rhinoLocalCtxJsonSafe(value[keys[i]], true, path);
+  }
+  path.pop();
+  return ok;
 }
 
 // A JSON object (not array) by the same rule.
@@ -712,6 +779,8 @@ function __rhinoLocalCtxBuildIdentity(seed) {
       "equals", "wait", "notify", "notifyAll"]);
   }
   __rhinoLocalCtxToJSON(identity, "identity");
+  // Its Java tag is unmeasured on both engines (Sol ctx r2 P2-5).
+  __rhinoLocalCtxTag(identity, null, "identity");
   return __rhinoLocalCtxWatch(identity, "identity");
 }
 
@@ -743,6 +812,7 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
     list[store.length - 1] = v;
     __rhinoLocalHide(list, "length", store.length);
     list[__rhinoLocalListKey].items.push(v);
+    __rhinoLocalCtxRewatch(list);
     return true;
   });
   if (opts && opts.toArray) {
@@ -843,6 +913,7 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
 function __rhinoLocalCtxBegin(engine) {
   __rhinoLocalCtx.engine = engine || "next-gen";
   __rhinoLocalCtx.views = [];
+  __rhinoLocalCtx.sealed = false;
   __rhinoLocalCtx.realJavaStrings = false;
 }
 

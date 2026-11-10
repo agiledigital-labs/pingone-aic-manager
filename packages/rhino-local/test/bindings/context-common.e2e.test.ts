@@ -18,10 +18,14 @@ interface Row {
   script: string;
   fault: string;
   given?: Record<string, unknown>;
+  /** Default: the access-token context. */
+  context?: "OIDC_CLAIMS";
 }
 
 const both = ["next-gen", "legacy"] as const;
 const caught = (body: string) => `try { ${body} } catch (e) { accessToken.setField("out", "caught"); }`;
+// An OIDC script that catches the fault and returns nothing AIC would refuse.
+const oidcCaught = (body: string) => `var zzCaught = false; try { ${body} } catch (e) { zzCaught = true; } undefined;`;
 
 const ROWS: Row[] = [
   // P2-1: non-JSON objects handed to a setter.
@@ -74,23 +78,87 @@ const ROWS: Row[] = [
     fault: "oauth2-token-unmeasured/accessToken.getScope(1)" },
   { name: "P2-6 identity.getName(1)", engines: both, script: caught(`identity.getName(1);`),
     fault: "oauth2-token-unmeasured/identity.getName(1)" },
+
+  // Sol ctx r2.
+  // P1-1: an add/remove pair through two insertion routes, then a measured-refused delete.
+  { name: "r2 P1-1 claims.extra = x; remove(extra); delete claims.subname", engines: ["next-gen"], context: "OIDC_CLAIMS",
+    script: `claims.extra = "x"; claims.remove("extra"); delete claims.subname; ({ values: claims });`,
+    fault: "oidc-claims-unmeasured/claims.subname" },
+  // P2-1: a cyclic setter value.
+  { name: "r2 P2-1 setField with a cyclic object", engines: both,
+    script: caught(`var value = {}; value.self = value; accessToken.setField("x", value);`),
+    fault: "oauth2-token-unmeasured/accessToken.setField()" },
+  { name: "r2 P2-1 setField with a cycle below the top", engines: both,
+    script: caught(`var inner = {}; inner.back = { up: inner }; accessToken.setField("x", { a: inner });`),
+    fault: "oauth2-token-unmeasured/accessToken.setField()" },
+  // P2-3: writes to a list view, found by the harvest audit.
+  { name: "r2 P2-3 scopes[0] = changed (OIDC)", engines: ["next-gen"], context: "OIDC_CLAIMS",
+    script: `scopes[0] = "changed"; ({ values: { out: scopes[0] } });`, fault: "oidc-claims-unmeasured/scopes.0",
+    given: { scopes: ["a"] } },
+  { name: "r2 P2-3 replacing scopes.size (OIDC)", engines: ["next-gen"], context: "OIDC_CLAIMS",
+    script: `scopes.size = function () { return 99; }; ({ values: { size: scopes.size() } });`,
+    fault: "oidc-claims-unmeasured/scopes.size", given: { scopes: ["a"] } },
+  { name: "r2 P2-3 scopes[0] = changed (token)", engines: ["next-gen"],
+    script: `scopes[0] = "changed"; accessToken.setField("out", "ran");`, fault: "oauth2-token-unmeasured/scopes.0" },
+  // Legacy scopes is a Java Set view, which refuses the write itself.
+  { name: "r2 P2-3 scopes[0] = changed (token)", engines: ["legacy"],
+    script: `scopes[0] = "changed"; accessToken.setField("out", "ran");`, fault: "oauth2-token-unmeasured/scopes[0]" },
+  { name: "r2 P2-3 writing into a request value list", engines: both,
+    script: `requestProperties.requestParams.extra[0] = "changed"; accessToken.setField("out", "ran");`,
+    fault: "oauth2-token-unmeasured/list.0", given: { request: { params: { extra: ["value"] } } } },
+  // P2-5: tags of identity and accessToken are unmeasured.
+  { name: "r2 P2-5 Object.prototype.toString.call(identity)", engines: both,
+    script: caught(`accessToken.setField("out", Object.prototype.toString.call(identity));`),
+    fault: "oauth2-token-unmeasured/Object.prototype.toString.call(identity)" },
+  { name: "r2 P2-5 Object.prototype.toString.call(accessToken)", engines: both,
+    script: caught(`accessToken.setField("out", Object.prototype.toString.call(accessToken));`),
+    fault: "oauth2-token-unmeasured/Object.prototype.toString.call(accessToken)" },
+  { name: "r2 P2-5 Object.prototype.toString.call(identity) (OIDC)", engines: both, context: "OIDC_CLAIMS",
+    script: oidcCaught(`Object.prototype.toString.call(identity);`),
+    fault: "oidc-claims-unmeasured/Object.prototype.toString.call(identity)" },
+  // P2-6: the native surface of a real Java object.
+  { name: "r2 P2-6 identity.getName().substring (OIDC)", engines: ["legacy"], context: "OIDC_CLAIMS",
+    script: oidcCaught(`identity.getName().substring(0, 1);`),
+    fault: "oidc-claims-unmeasured/java.lang.String.substring" },
+  { name: "r2 P2-6 identity.getName().substring (token)", engines: ["legacy"],
+    script: caught(`accessToken.setField("out", String(identity.getName().substring(0, 1)));`),
+    fault: "oauth2-token-unmeasured/java.lang.String.substring" },
+  { name: "r2 P2-6 a JS String.prototype method on a Java string", engines: ["legacy"],
+    script: caught(`accessToken.setField("out", identity.getName().slice(0, 1));`),
+    fault: "oauth2-token-unmeasured/java.lang.String.slice" },
+  { name: "r2 P2-6 claims.get(sub).substring", engines: ["legacy"], context: "OIDC_CLAIMS",
+    script: oidcCaught(`claims.get("sub").substring(0, 1);`),
+    fault: "oidc-claims-unmeasured/java.lang.String.substring" },
+  { name: "r2 P2-6 claims.clear()", engines: ["legacy"], context: "OIDC_CLAIMS",
+    script: oidcCaught(`claims.clear();`), fault: "oidc-claims-unmeasured/claims.clear" },
+  { name: "r2 P2-6 claims.size(1)", engines: ["legacy"], context: "OIDC_CLAIMS",
+    script: oidcCaught(`claims.size(1);`), fault: "oidc-claims-unmeasured/claims.size(1 argument(s))" },
+  { name: "r2 P2-6 claims.get() with no argument", engines: ["legacy"], context: "OIDC_CLAIMS",
+    script: oidcCaught(`claims.get();`), fault: "oidc-claims-unmeasured/claims.get(0 argument(s))" },
+  { name: "r2 P2-6 assigning a legacy claims member", engines: ["legacy"], context: "OIDC_CLAIMS",
+    script: oidcCaught(`claims.zz = "a";`), fault: "oidc-claims-unmeasured/claims.zz" },
 ];
 
-describe("shared context views fault what no capture measured (Sol ctx r1)", () => {
+describe("shared context views fault what no capture measured (Sol ctx r1, r2)", () => {
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
 
   const cases = ROWS.flatMap((row) => row.engines.map((engine) => ({ ...row, engine })));
-  it.each(cases)("$name ($engine)", async ({ name, engine, script, fault, given }) => {
+  it.each(cases)("$name ($engine)", async ({ name, engine, script, fault, given, context }) => {
     expectHarnessFault(fault);
-    const run = runCase(runner, defineCase({
-      name: `${name} ${engine}`,
-      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
-      script,
-      given: { engine, ...given },
-      expect: { allowUndeclared: { accessToken: true } },
-    }));
+    const run = runCase(runner, context === "OIDC_CLAIMS"
+      ? defineCase({
+        name: `${name} ${engine}`, context, script, given: { engine, ...given },
+        expect: { allowUndeclared: { oidc: true, logs: true } },
+      })
+      : defineCase({
+        name: `${name} ${engine}`,
+        context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+        script,
+        given: { engine, ...given },
+        expect: { allowUndeclared: { accessToken: true } },
+      }));
     const error = await run.then(() => null, (e: unknown) => e);
     expect(error, "the run must fault").toBeInstanceOf(CaseRunError);
     const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
@@ -108,6 +176,37 @@ describe("shared context views fault what no capture measured (Sol ctx r1)", () 
       }));
       expect(effects.accessToken!.final.fields.out, engine).toBe(true);
     }
+  }, 60_000);
+
+  it("r2 controls: a repeated reference is not a cycle, the measured scopes.add() moves the baseline, and legacy Java strings keep their measured surface", async () => {
+    const shared = await runCase(runner, defineCase({
+      name: "repeated reference",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `var leaf = { k: 1 }; accessToken.setField("x", { a: leaf, b: [leaf, leaf] });`,
+      given: { engine: "next-gen" },
+      expect: { allowUndeclared: { accessToken: true } },
+    }));
+    expect(shared.effects.accessToken!.final.fields.x).toEqual({ a: { k: 1 }, b: [{ k: 1 }, { k: 1 }] });
+    const added = await runCase(runner, defineCase({
+      name: "scopes.add",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `scopes.add("zz-added"); accessToken.setField("out", scopes.size());`,
+      given: { engine: "next-gen", scopes: ["a"] },
+      expect: { allowUndeclared: { accessToken: true } },
+    }));
+    expect(added.effects.accessToken!.final.fields.out).toBe(2);
+    const strings = await runCase(runner, defineCase({
+      name: "legacy Java string surface",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `(function () {
+  var n = identity.getName();
+  accessToken.setField("out", [typeof n, n == "u", n === "u", typeof n.length, String(n), n + "!", n.toString() == "u",
+    Object.prototype.toString.call(n), n == identity.getName(), n === identity.getName()].join(","));
+})();`,
+      given: { engine: "legacy", identity: { name: "u" } },
+      expect: { allowUndeclared: { accessToken: true } },
+    }));
+    expect(strings.effects.accessToken!.final.fields.out).toBe("object,true,false,function,u,u!,true,[object JavaObject],true,true");
   }, 60_000);
 
   it("emulates the measured legacy JsonValue tag, [object JavaObject]", async () => {

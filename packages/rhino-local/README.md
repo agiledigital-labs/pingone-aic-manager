@@ -1033,7 +1033,9 @@ has `session` (`null` for a `client_credentials` token) but no `openidm`,
 Decision-node bindings such as `nodeState`, `action` and `callbacksBuilder` are
 not defined. Legacy getters return real `java.lang.String`s, so `getClientId() ===
 "widget-client"` is `false` there and `==` is `true`, as on AIC; a top-level
-`var` holding one reads back as a JS string, also as on AIC. Every member
+`var` holding one reads back as a JS string, also as on AIC. Only their
+measured members answer (`length()`, `toString()`, `==`, String conversion);
+`substring`, `slice` and the rest fault. Every member
 nobody measured raises a harness fault, `oauth2-token-unmeasured/<binding>.<member>`,
 which fails the run and is tallied. `docs/rhino-local-gaps.md` lists what is
 approximated.
@@ -1117,7 +1119,9 @@ next-gen) an object without `values`, is a 200 with no script claims.
   changes nothing unless the script returns it.
 - **Legacy** `claims` is a real `java.util.LinkedHashMap` of real Java strings,
   so `claims.get("sub") == identity.getName()` is true and `===` is false, as
-  on AIC. Legacy also binds `claimObjects`, `requestedTypedClaims`, `session`
+  on AIC. Only the measured map members answer (`get`, `containsKey`, `put`,
+  `remove`, `size()`, entry reads, `for...in`); `clear()` and the rest fault.
+  Legacy also binds `claimObjects`, `requestedTypedClaims`, `session`
   (`null` on a password grant) and a Debug `logger`
   (`message`/`warning`/`error`).
 - **Neither engine** binds `accessToken` or the decision-node bindings.
