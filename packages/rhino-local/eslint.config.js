@@ -19,6 +19,7 @@ export default tseslint.config(
       // and a deliberate `==` against a Java string.
       "test/fixtures/oauth2-atm/*.script.js",
       "test/fixtures/oidc-claims/*.script.js",
+      "test/fixtures/social-idp/*.script.js",
     ],
   },
   eslint.configs.recommended,
