@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { emitDts } from "./emit-dts.ts";
 import { emitJs } from "./emit-js.ts";
 import { loadContext } from "./load.ts";
-import { generatedDir, sourceAccessTokenBindingsJsonPath, sourceBindingsJsonPath } from "./paths.ts";
+import { generatedDir, sourceAccessTokenBindingsJsonPath, sourceBindingsJsonPath, sourceOidcClaimsBindingsJsonPath } from "./paths.ts";
 import { classifyBinding, membersOf } from "./schema.ts";
 import type { ContextsDocument, Element } from "./schema.ts";
 
@@ -12,6 +12,7 @@ export const generatedJsName = "scripted-decision-mocks.cjs";
 export const generatedDtsName = "scripted-decision-mocks.d.ts";
 export const generatedBindingsName = "scripted-decision-next.json";
 export const generatedAccessTokenBindingsName = "oauth2-atm-next.json";
+export const generatedOidcClaimsBindingsName = "oidc-claims-next.json";
 
 export function generate(
   jsonPath = sourceBindingsJsonPath,
@@ -28,6 +29,8 @@ export function generate(
   copyFileSync(jsonPath, join(outDir, generatedBindingsName));
   // The access-token context's class allow-list, read the same way.
   copyFileSync(sourceAccessTokenBindingsJsonPath, join(outDir, generatedAccessTokenBindingsName));
+  // And the OIDC claims context's.
+  copyFileSync(sourceOidcClaimsBindingsJsonPath, join(outDir, generatedOidcClaimsBindingsName));
   return { js, dts, doc };
 }
 
@@ -67,7 +70,7 @@ function printSummary(doc: ContextsDocument): void {
     overloads += counted.overloads;
   }
   process.stdout.write(
-    `wrote ${generatedJsName}, ${generatedDtsName}, ${generatedBindingsName} and ${generatedAccessTokenBindingsName}\n` +
+    `wrote ${generatedJsName}, ${generatedDtsName}, ${generatedBindingsName}, ${generatedAccessTokenBindingsName} and ${generatedOidcClaimsBindingsName}\n` +
       `${doc.bindings.length} bindings (${scalar} scalar, ${opaque} opaque); ` +
       `${unique} methods (${overloads} signatures including overloads)\n`
   );

@@ -589,8 +589,8 @@ the missing channels marked unobserved. What the harness hands *to* your code
 (`RunResult`, `StepResult`, `CheckContext`, `StepContext`, `BeforeRunContext`)
 stays complete, so a test that builds one of those by hand needs the new
 fields. The one deliberate widening is `EvidenceChannel`, which gained
-`"accessToken"` for the access-token context, so an exhaustive `switch` over it
-written against 0.1.2 needs a new arm. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
+`"accessToken"` and `"oidc"` for the access-token and OIDC claims contexts, so an
+exhaustive `switch` over it written against 0.1.2 needs new arms. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
 0.1.2 export's shape against the current one, and `npm run typecheck` fails on
 any new break.
 

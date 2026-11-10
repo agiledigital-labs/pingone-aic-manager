@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { accessTokenBindingsJsonPath, bindingsJsonPath } from "../paths.ts";
+import { accessTokenBindingsJsonPath, bindingsJsonPath, oidcClaimsBindingsJsonPath } from "../paths.ts";
 
 let cached: string[] | undefined;
 
@@ -70,6 +70,19 @@ export function accessTokenClassAllowList(): string[] {
     cachedAccessToken = [...declaredAllowList(accessTokenBindingsJsonPath), ...OBSERVED_BASE];
   }
   return cachedAccessToken;
+}
+
+let cachedOidcClaims: string[] | undefined;
+
+/**
+ * The next-gen OIDC claims context's allow-list, from its own descriptor
+ * (`docs/api/bindings/oidc-claims-next.json`) plus the same `OBSERVED_BASE`.
+ */
+export function oidcClaimsClassAllowList(): string[] {
+  if (cachedOidcClaims === undefined) {
+    cachedOidcClaims = [...declaredAllowList(oidcClaimsBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedOidcClaims;
 }
 
 function declaredAllowList(path: string): string[] {

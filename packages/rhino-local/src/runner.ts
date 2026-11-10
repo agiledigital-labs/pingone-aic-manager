@@ -821,6 +821,7 @@ export class RhinoRunner {
     if (job.resultGlobal !== undefined) {
       payload.resultGlobal = job.resultGlobal;
     }
+    if (job.completionHarvest !== undefined) payload.completionHarvest = job.completionHarvest;
     const transcript: Array<{ call: HostCall; reply: HostReply | undefined }> = [];
     let transcriptFrozen = false;
     const primaryCall = bindEmulationOwner((call: HostCall): Promise<HostReply> => this.#failures.run(

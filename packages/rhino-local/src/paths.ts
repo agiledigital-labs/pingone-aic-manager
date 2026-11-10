@@ -64,10 +64,18 @@ export const sourceAccessTokenBindingsJsonPath = join(repoRoot, "docs", "api", "
 /** `generate`'s verbatim copy of {@link sourceAccessTokenBindingsJsonPath}: the context's class allow-list. */
 export const accessTokenBindingsJsonPath = join(generatedDir, "oauth2-atm-next.json");
 
+/** The OIDC claims context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceOidcClaimsBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "oidc-claims-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceOidcClaimsBindingsJsonPath}: the context's class allow-list. */
+export const oidcClaimsBindingsJsonPath = join(generatedDir, "oidc-claims-next.json");
+
 /** The view helpers every non-decision context overlay builds on, appended before it. */
 export const bindingsContextCommonPath = join(packageRoot, "src", "bindings", "rhino", "context-common.cjs");
 /** The access-token-modification context's binding overlay, appended to the prelude for that context only. */
 export const bindingsAccessTokenPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-access-token.cjs");
+/** The OIDC claims context's binding overlay, appended to the prelude for that context only. */
+export const bindingsOidcClaimsPath = join(packageRoot, "src", "bindings", "rhino", "context-oidc-claims.cjs");
 
 /** `generate`'s verbatim copy of {@link sourceBindingsJsonPath}, shipped with the package. */
 export const bindingsJsonPath = join(generatedDir, "scripted-decision-next.json");

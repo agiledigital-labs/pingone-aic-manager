@@ -3,8 +3,8 @@ import type { Case, CompleteRecordedEffects, Verdict } from "../case/types.ts";
 import type { JobRequest, JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
-import { casePreamble, withHarvest, type MockPreambleOptions } from "./preamble.ts";
-import { accessTokenClassAllowList, decisionNodeClassAllowList } from "./allowlist.ts";
+import { casePreamble, harvestJob, type MockPreambleOptions } from "./preamble.ts";
+import { accessTokenClassAllowList, decisionNodeClassAllowList, oidcClaimsClassAllowList } from "./allowlist.ts";
 import { checkSeededManaged } from "../profile/seed.ts";
 import type { EnvProfile } from "../profile/types.ts";
 
@@ -71,7 +71,7 @@ export async function runCase(
     checkSeededManaged(options.profile, kase.given.managed, kase.name, kase.given.identityCustomAttrs);
   }
   const request: JobRequest = {
-    source: withHarvest(kase.script, kase.context),
+    ...harvestJob(kase.script, kase.context),
     sourceName: options.sourceName ?? kase.name,
     ...casePreamble(kase.given, preambleOptions(options, kase)),
     preambleName: "rhino-local-mocks.cjs",
@@ -90,7 +90,9 @@ export async function runCase(
     request.classAllowList =
       kase.context === "OAUTH2_ACCESS_TOKEN_MODIFICATION"
         ? accessTokenClassAllowList()
-        : decisionNodeClassAllowList();
+        : kase.context === "OIDC_CLAIMS"
+          ? oidcClaimsClassAllowList()
+          : decisionNodeClassAllowList();
   }
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {
