@@ -57,7 +57,8 @@ export declare const CHANNELS: readonly ["outcome", "sharedState", "transientSta
 export type Channel = (typeof CHANNELS)[number] | "sessionProperties" | "identityWrites";
 export declare const STATE_CHANNELS: readonly ["sharedState", "transientState", "secureState"];
 export type StateChannel = (typeof STATE_CHANNELS)[number];
-export type EvidenceChannel = Channel | "nodeState";
+/** compat-accepted: the access-token context reports its own evidence channel. */
+export type EvidenceChannel = Channel | "nodeState" | "accessToken";
 export declare const ENV_INPUT_KEYS: readonly ["esv", "secrets", "managed", "http"];
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
 export interface StateDiff {
