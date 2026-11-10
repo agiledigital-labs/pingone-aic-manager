@@ -1821,3 +1821,29 @@ throwaway client, results read back from the token's `aicprobe` claim) found:
 
 Both rows are corrected in place; the probe scripts and captures are
 `packages/rhino-local/test/fixtures/oauth2-atm/setters.*` and `surface.*`.
+
+## 2026-11-10 — validate scope widens the grant, and legacy binds the scope sets
+
+Two claims about the validate scope context did not survive the rhino-local
+probes (a stateless `client_credentials` client in `alpha`, both engines;
+method and captures in `docs/api/12-script-bindings-matrix.md`, "OAuth2
+validate scope on both engines"):
+
+- **AM grants exactly the list `validateAccessTokenScope()` returns.** It does
+  not intersect it with the request. Returning `zzemuc5-c` beside the two
+  requested scopes granted all three, and returning `zzemuc5-nope`, which the
+  client does not hold, granted that too. `docs/api/12`'s 2026-07-29 note
+  ("did **not** widen the grant … AM appears to intersect") was a
+  `client_credentials` grant as well, so the grant type does not explain the
+  difference; what did is not identified. `docs/api/22-token-exchange.md` says
+  the same of the token-exchange and `password` grants, where it was not
+  re-measured. Both notes now point here. Until one of those grants is
+  re-measured, treat a validate scope script as able to widen any grant, and
+  write it to return only scopes it means to issue.
+- **Legacy `OAUTH2_VALIDATE_SCOPE` is not bindingless.** `docs/api/13` lists it
+  among the contexts whose descriptor has 0 bindings, which is true of the
+  descriptor. At runtime it binds `requestedScopes` (a `java.util.HashSet`),
+  `allowedScopes` and `defaultScopes` (`java.util.TreeSet`s), `logger`,
+  `realm`, `scriptName` and `systemEnv`, and its invalid-scope denial is
+  `throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(msg)`
+  (`400`, `msg` verbatim).
