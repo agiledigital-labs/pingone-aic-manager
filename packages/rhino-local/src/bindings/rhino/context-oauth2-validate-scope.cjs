@@ -212,25 +212,35 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
 
 // An exception AM reads as "deny with invalid_scope". The harvest matches the
 // thrown object by identity and uses the argument the script passed, which is
-// the measured 400 text. What a script reads on the object was not measured,
-// so message, name and a script's own String(e) fault even inside catch
-// (Sol ctx r5 P2-4).
+// the measured 400 text. What a script reads or renders was not measured, so
+// message, name, String(e) and JSON.stringify(e) fault even inside catch, and
+// String() on a legacy exception before it is thrown faults too (Sol ctx r5
+// P2-4, r6 P2-1).
 //
 // This is a plain object, not an Error. Rhino's JavaScriptException reads
 // `.name` once while it wraps a NativeError, before the script's catch runs,
 // and a getter on Error's `message` slot never runs. Either one turns the
 // measured uncaught 400, and the measured catch-and-return, into a fault.
-// Wrapping a plain object calls toString exactly once for that Java message.
-// That call is Rhino's, so it returns a constant and does not fault. A second
-// toString is the script's String(e), which was not measured.
+// Wrapping a plain object calls toString once, from JavaScriptException
+// .getDetails, to fill the Java message. That frame is the engine's, so the
+// call returns a constant and does not fault. Any other toString is the
+// script's. Call order is not the distinction: the legacy constructor returns
+// the object before a throw, and the script can make the first call itself.
 function __rhinoLocalVsRead(label, what) {
   throw __rhinoLocalCtxUnmeasured(label + "." + what,
     "of the caught invalid-scope exception (what a script reads on it was not measured)");
 }
 
+function __rhinoLocalVsRhinoWrap() {
+  if (__rhinoLocalCtxHostOp === null) {
+    return false;
+  }
+  var flag = __rhinoLocalCtxHostOp("exceptionDetails");
+  return flag === true || String(flag) === "true";
+}
+
 function __rhinoLocalVsInvalidScope(message, label) {
   var e = {};
-  var stringified = 0;
   __rhinoLocalVs.thrown.push({ error: e, message: message });
   Object.defineProperty(e, "message", {
     configurable: true,
@@ -243,12 +253,12 @@ function __rhinoLocalVsInvalidScope(message, label) {
     get: function () { __rhinoLocalVsRead(label, "name"); },
   });
   __rhinoLocalHide(e, "toString", function () {
-    stringified += 1;
-    if (stringified === 1) {
+    if (__rhinoLocalVsRhinoWrap()) {
       return "JavaException";
     }
     __rhinoLocalVsRead(label, "toString");
   });
+  __rhinoLocalCtxToJSON(e, label);
   return e;
 }
 
