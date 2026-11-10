@@ -1125,13 +1125,87 @@ during a headless social login, plus eight one-line result scripts per engine
 - **The AIC lane** runs only decision-node scripts, so a social IdP case runs
   locally only.
 
+## Config provider node context (listed 2026-11-10)
+
+`context: "CONFIG_PROVIDER_NODE"` runs on both engines from the overlay
+`packages/rhino-local/src/bindings/rhino/context-config-provider.cjs`, on the
+same `context-common.cjs` views, so the view-level gaps above apply here too,
+with the prefix `config-provider-unmeasured/`. The conformance test
+(`test/bindings/config-provider.e2e.test.ts`) replays the surface probe
+captured from a journey (a decision node seeding the node state, a
+ConfigProviderNode wrapping a MessageNode, a decision node reading back), plus
+thirty-one one-line `config` scripts per engine (sixty-two engine runs), each
+compared with the message and buttons the MessageNode showed or the HTTP 500.
+What it approximates or leaves out:
+
+- **One invocation.** AM runs the script again on every request that reaches
+  the node, including the one that submits the wrapped node's callbacks. In
+  that re-run (measured) transient values from the earlier request are gone,
+  next-gen `callbacks.isEmpty()` is `false`, and a next-gen node-state object
+  comes back as a Java map (`[object JavaMap]`, numbers as doubles). A case is
+  the first invocation only.
+- **The wrapped node is not emulated.** The case asserts the `config` map;
+  what the wrapped node does with it (here, a MessageNode rendering numbers as
+  `42.0` and objects as `[object Object]`) is that node's business.
+- **Values AM was not measured with fault.** Measured inside a plain-object
+  `config`: strings, integral and fractional numbers, booleans, `null` and
+  `undefined` (kept as `null`) at depths one and two, an array of a number and
+  a string, and nested objects. A `null` or `undefined` inside an array, a
+  non-finite number and a non-plain object (a `Date`, a view) fault as
+  `config-provider-unmeasured/config.<path>`. On legacy a `java.util.HashMap`
+  is accepted (measured with a string and a nested HashMap of a string); any
+  other Java value inside it faults. On next-gen `new java.util.HashMap()` is
+  AIC's `TypeError`; the emulator's class shutter refuses it with a different
+  message, but the run fails either way.
+- **Refusals.** Measured on both engines: `config` never assigned,
+  `undefined`, `null`, a string, a number, a boolean, an array, a function and
+  a script that only evaluates to a map, each an HTTP 500 with AM logging
+  "Script must set 'config' to a Map.". A `var config;` that is never assigned
+  is recorded as `undefined`.
+- **Next-gen bindings whose effect belongs to the wrapped node.**
+  `callbacks.isEmpty()` (`true`), `callbacksBuilder.textOutputCallback(type,
+  message)` (accepted, adds nothing to what the wrapped node shows) and
+  `action.goTo(name)` (accepted; whether it can change routing is unmeasured)
+  answer. Every other member of the three faults. The rest of the next-gen
+  surface is the decision node's, measured as present (`typeof`) only, apart
+  from `nodeState` (`get` of a string, number, nested object, boolean,
+  transient value and absent key; `isDefined`; `putShared`/`putTransient`,
+  read back by the next node) and `nodeState.keys()`, which is AIC's
+  class-shutter error.
+- **Legacy node state.** `nodeState.get` answers a JsonValue (measured for a
+  string, a number, a nested object, a boolean and a transient value) of
+  which only String conversion and `JSON.stringify` answer; an absent key is
+  `null`. A key holding `null` faults. `nodeState.keys()` is runtime.cjs's
+  live list, measured: a key the script had just put is listed, and so are
+  transient keys. This is the opposite of the social context, whose
+  `keys()` is a start-of-script snapshot. AM's own keys (`authLevel`,
+  `maxAuthenticationSessionDuration`, `realm`, `username`) appear only if the
+  case seeds them.
+- **`idRepository` and `journey` under `for...in`.** AIC lists their Java
+  members, `java.lang.Object`'s included (legacy `idRepository` also lists
+  `getAttribute`, `setAttribute`, `addAttribute`); the emulator lists only its
+  own JS members. No member of `idRepository` was called in this slice. A
+  Java-binding candidate.
+- **Request maps.** `requestHeaders.get(name)` and
+  `requestParameters.get(name)` are tagged Java lists here (measured
+  `[object JavaList]`, `[v1]`, on both engines). runtime.cjs's decision-node
+  maps answer a JS array on legacy and an untagged view on next-gen; that was
+  not compared for the decision node in this slice.
+- **`existingSession`** was measured only on a request without a session
+  cookie, where it is a `ReferenceError` on both engines (the next-gen
+  descriptor lists it). With a session it may be bound, as on the decision
+  node; `given.existingSession` is refused until that is measured.
+- **The AIC lane** runs only decision-node scripts, so a config provider case
+  runs locally only.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
   here.
 - It does not claim OAuth2 scripts in general run here. Access-token
-  modification, OIDC claims and the social IdP profile transformation do
-  (sections above); may-act, validate scope and the other OAuth2 contexts are
+  modification, OIDC claims and the social IdP profile transformation do,
+  as does the config provider node (sections above); may-act, validate scope
+  and the other OAuth2 contexts are
   a different binding surface and are not emulated.
 - A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,
   and one of those (`identity-enum-attrs`) has no valid live measurement.

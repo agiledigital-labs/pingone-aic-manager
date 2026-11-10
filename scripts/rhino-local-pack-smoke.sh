@@ -219,6 +219,25 @@ describe("installed rhino-local", () => {
     } finally { await runner.close(); }
   });
 
+  // The config provider overlay is a fourth packaged asset; AM reads its
+  // \`config\` global after the script, and its node-state reads are engine-shaped.
+  it("runs a config provider node case on both engines", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      for (const [engine, script] of [
+        ["next-gen", 'config = { message: { en: "Hello " + nodeState.get("who") }, size: 2 };'],
+        ["legacy", 'var w = String(nodeState.get("who")); config = { message: { en: "Hello " + w }, size: 2 };'],
+      ] as const) {
+        const run = await runCase(runner, defineCase({
+          name: \`config provider \${engine}\`, context: "CONFIG_PROVIDER_NODE", script,
+          given: { engine, sharedState: { who: "widget" } },
+          expect: { configProvider: { config: { message: { en: engine === "legacy" ? 'Hello "widget"' : "Hello widget" }, size: 2 } } },
+        }));
+        expect(run.verdict.summary, run.verdict.summary).toBe("");
+      }
+    } finally { await runner.close(); }
+  });
+
   // Positive control for step 1: were the declarations to resolve to \`any\`,
   // this directive would be unused and tsc would fail.
   it("types the inputs from the suite's schema", () => {
