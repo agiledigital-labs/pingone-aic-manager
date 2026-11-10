@@ -73,6 +73,19 @@ describe("an injected failure's getDetail matches the live capture", () => {
     ["an unmeasured member under JSON.stringify", null, "JSON.stringify(e.javaException.getDetail().asBoolean)"],
     ["an unmeasured member nested in an object under JSON.stringify", null, "JSON.stringify({ m: e.javaException.getDetail().asBoolean })"],
     ["an unmeasured member nested in an array under JSON.stringify", null, "JSON.stringify([e.javaException.getDetail().asBoolean])"],
+    // The serialisation boundary: whatever toJSON or replacer hands native a stub, it faults.
+    ["a stub an author's toJSON returns", null, "var d = e.javaException.getDetail(); JSON.stringify({ toJSON: function () { return d.asBoolean; } })"],
+    ["a stub a nested toJSON returns", null, "var d = e.javaException.getDetail(); JSON.stringify({ m: { toJSON: function () { return d.asBoolean; } } })"],
+    ["a stub a toJSON in an array returns", null, "var d = e.javaException.getDetail(); JSON.stringify([{ toJSON: function () { return d.asBoolean; } }])"],
+    ["a stub a replacer returns at the root", null, "var d = e.javaException.getDetail(); JSON.stringify(1, function () { return d.asBoolean; })"],
+    ["a stub a replacer returns for a key", null, 'var d = e.javaException.getDetail(); JSON.stringify({ m: 1 }, function (k, v) { return k === "m" ? d.asBoolean : v; })'],
+    ["a stub a replacer returns for an index", null, 'var d = e.javaException.getDetail(); JSON.stringify([1], function (k, v) { return String(k) === "0" ? d.asBoolean : v; })'],
+    ["a stub under a property list", null, 'JSON.stringify({ m: e.javaException.getDetail().asBoolean }, ["m"])'],
+    // A bound copy would escape every guard, so binding is refused; call and apply invoke the stub.
+    ["binding a stub", null, "var d = e.javaException.getDetail(); JSON.stringify(d.asBoolean.bind(d))"],
+    ["borrowing bind onto a stub", null, "var d = e.javaException.getDetail(); Function.prototype.bind.call(d.asBoolean, d)"],
+    ["calling a stub through call", null, "var d = e.javaException.getDetail(); d.asBoolean.call(d)"],
+    ["calling a stub through a borrowed apply", null, "var d = e.javaException.getDetail(); Function.prototype.apply.call(d.asBoolean, d, [])"],
     ["asString with a string argument", { result: false }, 'e.javaException.getDetail().asString("x")'],
     ["asString on a number", { n: 1 }, 'e.javaException.getDetail().get("n").asString()'],
     ["get(string) on a string value", { s: "v" }, 'e.javaException.getDetail().get("s").get("k")'],
@@ -102,6 +115,20 @@ describe("an injected failure's getDetail matches the live capture", () => {
     const stubbed: Given = { managed: { "managed/widget": [] }, openidmFailures: [{ match: { method: "delete", resource: "managed/widget/w1", ordinal: 1 }, reply }] };
     const response = await runner.eval({ preamble: mockPreamble(stubbed), source: withHarvest(`try { openidm.delete("managed/widget/w1", null); } catch (e) { try { ${read}; } catch (x) {} }`) });
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-failure-detail"]);
+  });
+
+  // Disclosed gap (docs/rhino-local-gaps.md, openidm-failure-detail): native asks toJSON once per value
+  // and a property list leaves no hook on the result, so this stub is skipped as a function. Pinned so a
+  // change of behaviour is seen.
+  it("a stub an author's toJSON returns under a property list is not refused", async () => {
+    const stubbed: Given = { managed: { "managed/widget": [] }, openidmFailures: [{ match: { method: "delete", resource: "managed/widget/w1", ordinal: 1 }, reply: { code: 404, detail: null } }] };
+    const response = await runner.eval({
+      preamble: mockPreamble(stubbed),
+      source: withHarvest('try { openidm.delete("managed/widget/w1", null); } catch (e) { var d = e.javaException.getDetail(); nodeState.putShared("r", JSON.stringify({ m: { toJSON: function () { return d.asBoolean; } } }, ["m"])); }'),
+    });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(parseHarvest(response.value as string).sharedState.final.r).toBe("{}");
   });
 
   // The controls for the JSON refusal above: presence checks on the same stub stay measured answers.

@@ -106,6 +106,16 @@ describe("request value lists under concat, String and JSON.stringify match the 
     ["a parameter list as concat's receiver", "Array.prototype.concat.call(requestParameters.get(\"q\"), [1])"],
     ["[].concat of a header list", "[].concat(requestHeaders.get(\"x-zero\"))"],
     ["JSON.stringify under a property list", "JSON.stringify({ v: requestHeaders.get(\"x-zero\") }, [\"v\"])"],
+    // Its array-like surface faults too, so rendering and every borrowed copy refuse without being named.
+    ["String(v)", "String(requestParameters.get(\"q\"))"],
+    ["v.toString()", "requestParameters.get(\"q\").toString()"],
+    ["string concatenation", "\"\" + requestParameters.get(\"q\")"],
+    ["Array.prototype.slice", "JSON.stringify(Array.prototype.slice.call(requestParameters.get(\"q\")))"],
+    ["Array.from", "JSON.stringify(Array.from(requestParameters.get(\"q\")))"],
+    ["Array.prototype.map", "JSON.stringify(Array.prototype.map.call(requestParameters.get(\"q\"), function (x) { return x; }))"],
+    ["[].concat.apply", "JSON.stringify([].concat.apply([], requestParameters.get(\"q\")))"],
+    ["Array.prototype.push.apply", "var a = []; Array.prototype.push.apply(a, requestParameters.get(\"q\")); JSON.stringify(a)"],
+    ["reading length", "requestHeaders.get(\"x-zero\").length"],
   ])("%s of a size-zero list faults request-list-unmeasured, even when caught", async (_name, read) => {
     expectHarnessFault("request-list-unmeasured");
     const response = await runner.eval({
@@ -118,10 +128,10 @@ describe("request value lists under concat, String and JSON.stringify match the 
   it("size() of a size-zero seed is still answered, and a one-element list still copies", async () => {
     const response = await runner.eval({
       preamble: mockPreamble({ requestParameters: { q: [], e: [""] } } as Given),
-      source: withHarvest('nodeState.putShared("r", requestParameters.get("q").size() + "|" + JSON.stringify([].concat(requestParameters.get("e"))));'),
+      source: withHarvest('var e = requestParameters.get("e"); nodeState.putShared("r", requestParameters.get("q").size() + "|" + JSON.stringify([].concat(e)) + "|" + String(e) + "|" + e.length + "|" + JSON.stringify(Array.prototype.slice.call(e)));'),
     });
     expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
     expect(response.emulation?.faults ?? []).toEqual([]);
-    expect(parseHarvest(response.value as string).sharedState.final.r).toBe('0|[""]');
+    expect(parseHarvest(response.value as string).sharedState.final.r).toBe('0|[""]|[]|1|[""]');
   });
 });

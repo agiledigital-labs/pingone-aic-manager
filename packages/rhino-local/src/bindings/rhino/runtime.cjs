@@ -550,12 +550,42 @@ function __rhinoLocalDetailValue(value, path) {
 }
 
 // An unmeasured JsonValue method: present, so typeof and `in` answer as on
-// AIC (measured), but calling it, rendering it as a string, or serialising
-// it, faults.
+// AIC (measured), but calling it, rendering it as a string, binding it, or
+// serialising it, faults. Serialisation is refused at the JSON.stringify
+// boundary (__rhinoLocalJsonValue), which sees every value native is about to
+// write, whichever toJSON or replacer produced it; the stub's own toJSON
+// covers the property-list path, where native asks it directly.
+var __rhinoLocalStubKey = "__rhinoLocalStub";
+
+// The stub's {stub, name} row, or null. Read as the list row is: an own data
+// property whose row points back at the value, so a copy or inheritor of the
+// key does not count.
+function __rhinoLocalStubRow(value) {
+  if (typeof value !== "function") {
+    return null;
+  }
+  var own;
+  try {
+    own = Object.getOwnPropertyDescriptor(value, __rhinoLocalStubKey);
+  } catch (e) {
+    return null;
+  }
+  var row = own !== undefined && "value" in own ? own.value : null;
+  return row !== null && typeof row === "object" && row.stub === value ? row : null;
+}
+
 function __rhinoLocalDetailStub(name) {
   var stub = function () {
     throw __rhinoLocalDetailUnmeasured("." + name + "(" + __rhinoLocalScriptSignature(arguments) + ")");
   };
+  __rhinoLocalHide(stub, __rhinoLocalStubKey, { stub: stub, name: name });
+  // A bound copy would carry none of the guards; call and apply would invoke
+  // the stub anyway, and refuse here with the same fault for a clearer name.
+  ["bind", "call", "apply"].forEach(function (method) {
+    __rhinoLocalHide(stub, method, function () {
+      throw __rhinoLocalDetailUnmeasured("." + name + "." + method + "(…)");
+    });
+  });
   __rhinoLocalHide(stub, "toString", function () {
     throw __rhinoLocalDetailUnmeasured("." + name + " as a string");
   });
@@ -1013,6 +1043,20 @@ function __rhinoLocalListUnmeasured(kind, call) {
     "rhino-local: " + call + " on " + kind.noun + " is unmeasured (AIC hands over a Java list; " + kind.measured + ")");
 }
 
+// Function.prototype.bind borrowed onto a detail stub (the stub's own bind
+// already refuses): the bound copy would escape every guard on the stub.
+(function () {
+  "use strict";
+  var original = Function.prototype.bind;
+  __rhinoLocalHide(Function.prototype, "bind", function bind() {
+    var row = __rhinoLocalStubRow(this);
+    if (row !== null) {
+      throw __rhinoLocalDetailUnmeasured("." + row.name + ".bind(…)");
+    }
+    return original.apply(this, arguments);
+  });
+})();
+
 // Array.prototype.concat, as AIC's Rhino treats a Java list argument: copied
 // element by element (measured for both kinds). A request list as the
 // receiver is copied the same way (measured 2026-11-10); an openidm list as
@@ -1057,6 +1101,17 @@ function __rhinoLocalListUnmeasured(kind, call) {
 // time, which a getter in it could see. And for the length of such a call a
 // getter that reads `list.toJSON` itself sees a function, where AIC's Java
 // list has no such member.
+// The serialisation boundary: every value native is about to write passes
+// here, after its toJSON and the author's replacer. A detail stub faults; a
+// list becomes an array of its elements.
+function __rhinoLocalJsonValue(value) {
+  var stub = __rhinoLocalStubRow(value);
+  if (stub !== null) {
+    throw __rhinoLocalDetailUnmeasured("." + stub.name + " under JSON.stringify");
+  }
+  return __rhinoLocalJsonList(value);
+}
+
 function __rhinoLocalJsonList(value) {
   var row = __rhinoLocalListRow(value);
   if (row === null) {
@@ -1089,7 +1144,7 @@ function __rhinoLocalJsonList(value) {
     var author = typeof replacer === "function" ? replacer : null;
     return within(false, function () {
       return original.call(JSON, value, function (key, v) {
-        return __rhinoLocalJsonList(author === null ? v : author.call(this, key, v));
+        return __rhinoLocalJsonValue(author === null ? v : author.call(this, key, v));
       }, space);
     });
   });
@@ -1137,7 +1192,28 @@ function __rhinoLocalListView(items, kind) {
   var unmeasured = function (call) {
     return __rhinoLocalListUnmeasured(kind, call);
   };
-  __rhinoLocalHide(list, "length", items.length);
+  // A size-zero list of a kind whose empty form was never measured: its
+  // array-like surface faults, so every borrowed Array.prototype method,
+  // Array.from, apply and string coercion refuse without being named. Only
+  // size() and get(i) (as measured: every index is out of range) still answer.
+  var unmeasuredEmpty = items.length === 0 && !kind.emptyMeasured;
+  var emptyFault = function (what) {
+    return unmeasured(what + " of a size-zero list (never produced on AIC: an empty value arrives as [\"\"])");
+  };
+  if (unmeasuredEmpty) {
+    Object.defineProperty(list, "length", {
+      enumerable: false,
+      configurable: true,
+      get: function () {
+        throw emptyFault("length");
+      },
+    });
+    __rhinoLocalHide(list, "valueOf", function () {
+      throw emptyFault("valueOf() or string coercion");
+    });
+  } else {
+    __rhinoLocalHide(list, "length", items.length);
+  }
   __rhinoLocalHide(list, "size", function () {
     if (arguments.length !== 0) {
       throw unmeasured("size() with " + arguments.length + " argument(s)");
@@ -1145,7 +1221,11 @@ function __rhinoLocalListView(items, kind) {
     return items.length;
   });
   __rhinoLocalHide(list, "get", function (index) {
-    var integer = arguments.length === 1 && typeof index === "number" && index % 1 === 0;
+    // Only integral indices within a Java int were measured; a wider number's
+    // conversion to List.get(int) was not, so it faults before the catchable
+    // out-of-range answer.
+    var integer = arguments.length === 1 && typeof index === "number" && isFinite(index) && index % 1 === 0 &&
+      index >= -2147483648 && index <= 2147483647;
     if (integer && kind.outOfRange && (index < 0 || index >= items.length)) {
       throw __rhinoLocalInternalError("Index " + index + " out of bounds for length " + items.length);
     }
@@ -1170,6 +1250,9 @@ function __rhinoLocalListView(items, kind) {
   __rhinoLocalHide(list, "toString", function () {
     if (arguments.length !== 0) {
       throw unmeasured("toString(" + __rhinoLocalArgShape(arguments) + ")");
+    }
+    if (unmeasuredEmpty) {
+      throw emptyFault("toString() or String(v)");
     }
     if (kind.outOfRange) {
       return __rhinoLocalJavaForm(list, kind);
