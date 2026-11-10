@@ -1286,6 +1286,87 @@ A config provider case runs locally only. The types are exported from
 `./case`: `ConfigProviderCaseInit`, `ConfigProviderExpect` and the recorded
 `ConfigProviderEffect`.
 
+### OAuth2 validate scope scripts
+
+`context: "OAUTH2_VALIDATE_SCOPE"` runs an OAuth2 client's validate scope
+script, on either engine (legacy is AM's `OAUTH2_VALIDATE_SCOPE`, next-gen is
+`OAUTH2_VALIDATE_SCOPE_NEXT_GEN`). AM runs the script's body, then calls its
+global **`validateAccessTokenScope()`** with no arguments and grants **exactly
+the list it returns**: AM does not intersect it with the request, so a script
+can widen a grant, even with a scope the client does not hold.
+
+```ts
+defineCase({
+  name: "drops the admin scope",
+  context: "OAUTH2_VALIDATE_SCOPE",
+  script, // function validateAccessTokenScope() { return requestedScopes.toArray().filter(...) }
+  given: { engine: "next-gen", validateScope: { requested: ["read", "admin"], allowed: ["read", "admin"] } },
+  expect: { validateScope: { granted: ["read"] } },
+});
+```
+
+**Fixtures.** `given.validateScope` seeds `requested`, `allowed`,
+`available` (next-gen only; defaults to `allowed`) and `defaults`, each a list
+of scope strings (default `[]`). `client` and `request` seed next-gen's
+`clientProperties` and `requestProperties`, as for access-token modification;
+the default request is a `client_credentials` token request whose `scope`
+parameter is `requested`. `loggerScriptId` and `cookieName` are accepted too.
+
+**Assertions.** `expect.validateScope.granted` is the granted scopes, compared
+as a set (AM removes duplicates). A grant the case does not declare fails the
+verdict unless `allowUndeclared: { validateScope: true }`. AM issues no token
+when the function returns `[]`, `null` or `undefined` (HTTP 403, "The user has
+declined authorization"), a string or a plain object (HTTP 500), or a list
+holding a number (HTTP 500, a `Double` cast), or when there is no
+`validateAccessTokenScope` function at all (HTTP 500). The run records those
+refusals; declare `accepted: false` to expect one. On next-gen,
+`scopeValidatorHelper.throwInvalidScope(message)` is AM's invalid-scope denial
+(HTTP 400 with `message` as the `error_description`, verbatim); declare it as
+`invalidScope: "<message>"`. On legacy the same denial is
+`throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(message)`,
+which on next-gen is a 500. Any other uncaught throw fails the run with
+`CaseRunError`, as it fails the token request with HTTP 500. A denial the
+script catches itself denies nothing.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- **Next-gen** binds `requestedScopes`, `allowedScopes`, `availableScopes`
+  and `defaultScopes` as Java lists (`[object JavaList]`) of JS strings:
+  `length`, `size()`, `[i]`, `contains()`, `indexOf()`, `isEmpty()`,
+  `forEach()`, `toArray()` (not a JS array), `JSON.stringify`,
+  `[].concat(v)` and `Array.prototype.slice.call(v)` answer, and so does
+  `add()` on `requestedScopes` and `allowedScopes`; `iterator()` is AIC's
+  class-shutter error. It also binds `scopeValidatorHelper`
+  (`throwInvalidScope`, and `inheritAccessTokenScopesOnRefresh()`, which
+  returns `undefined`), `identity` (on a `client_credentials` grant
+  `exists()` is `false` and `getName()` throws), `requestProperties`,
+  `clientProperties`, `logger`, `httpClient`, `secrets`, `systemEnv`,
+  `realm`, `scriptName`, `cookieName`, `openidm`, `utils`, `emailService`,
+  `jwtAssertion`, `jwtValidator`, `policy` and `require`.
+- **Legacy** binds only `requestedScopes` (a `java.util.HashSet`),
+  `allowedScopes` and `defaultScopes` (`java.util.TreeSet`s), `logger`,
+  `realm`, `scriptName` and `systemEnv`. The sets answer `size()`,
+  `contains()`, `isEmpty()`, `toArray()`, `forEach()` (of JS strings),
+  `String(v)`, `JSON.stringify`, and `add()` on the first two; `[i]` is AIC's "no public
+  instance field or method" error. There is no `availableScopes`,
+  `scopeValidatorHelper`, `identity`, `requestProperties` or
+  `clientProperties`.
+- **Neither engine** binds the request maps, node state, callbacks, `session`
+  or `existingSession`.
+
+A returned value of a kind not measured raises the harness fault
+`oauth2-validate-scope-unmeasured/validateAccessTokenScope()`. Every other
+unmeasured member raises `oauth2-validate-scope-unmeasured/<binding>.<member>`.
+
+One case is one access-token request. AM's other entry points
+(`validateRefreshTokenScope`, `validateAuthorizationScope`, …) were not
+measured and are never called.
+
+A validate scope case runs locally only. The types are exported from
+`./case`: `ValidateScopeCaseInit`, `ValidateScopeSeed`, `ValidateScopeExpect`
+and the recorded `ValidateScopeEffect`.
+
 ### Phase timing
 
 To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and

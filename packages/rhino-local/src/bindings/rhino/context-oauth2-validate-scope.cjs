@@ -143,7 +143,8 @@ function __rhinoLocalVsList(items, label, addable) {
 // shutter's refusal (a HashSet's answers a Java iterator whose members were
 // not read), and add() returns true and grows the set.
 function __rhinoLocalVsLegacySet(items, label, javaClass) {
-  var set = __rhinoLocalCtxJavaSet(items, label, true, javaClass);
+  // add() was measured on requestedScopes and allowedScopes only.
+  var set = __rhinoLocalCtxJavaSet(items, label, label !== "defaultScopes", javaClass);
   var toArray = set.toArray;
   var strings = function () {
     var arr = toArray.call(set);

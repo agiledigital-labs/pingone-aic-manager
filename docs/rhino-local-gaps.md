@@ -1198,14 +1198,63 @@ What it approximates or leaves out:
 - **The AIC lane** runs only decision-node scripts, so a config provider case
   runs locally only.
 
+## OAuth2 validate scope context (listed 2026-11-10)
+
+`context: "OAUTH2_VALIDATE_SCOPE"` runs on both engines from the overlay
+`packages/rhino-local/src/bindings/rhino/context-oauth2-validate-scope.cjs`,
+on the same `context-common.cjs` views, so the view-level gaps above apply
+here too, with the prefix `oauth2-validate-scope-unmeasured/`. The
+conformance test (`test/bindings/oauth2-validate-scope.e2e.test.ts`) replays
+the surface probe captured from a `client_credentials` token request, with and
+without a `scope` parameter, plus twenty-nine one-line result scripts compared
+with the token's `scope` or AM's error. What it approximates or leaves out:
+
+- **One entry point.** Only `validateAccessTokenScope` on a
+  `client_credentials` grant was measured. AM's refresh, authorization-code,
+  back-channel and device-code entry points are never called, and
+  `inheritAccessTokenScopesOnRefresh()` returns `undefined` without changing
+  anything a case can see.
+- **`identity` with a resource owner.** On `client_credentials` the next-gen
+  `identity` has a null `AMIdentity`: `exists()` is `false`, `getName()` is
+  AIC's `InternalError`, and every other member faults. A grant with a user
+  (`password`, token exchange) was not measured here.
+- **What a script that catches a denial reads.** `throwInvalidScope(msg)` and
+  legacy `new InvalidScopeException(msg)` raise a Java exception whose message
+  says it was not measured; AM's own exception object was not inspected. A
+  script that catches it and returns a list gets that list (measured on
+  next-gen). `throwInvalidScope()` with no argument, an object or a boolean
+  faults: AIC answers the request with a 500, but whether the call itself
+  throws something the script could catch was not observed.
+- **`for...in` over the Java bindings.** AIC lists the Java members of
+  `scopeValidatorHelper` and of the legacy sets, `java.lang.Object`'s
+  included; the emulator lists only its own JS members.
+- **Legacy set order.** `requestedScopes` is a `java.util.HashSet`, whose
+  iteration order is the JVM's hash order; the emulator keeps the seed's
+  order. `allowedScopes` and `defaultScopes` are `TreeSet`s, sorted on AIC and
+  in the seed order here. A case that depends on the order should sort.
+- **Legacy set iterators.** `requestedScopes.iterator()` answers a Java
+  iterator on AIC whose members were not read; here every member of it
+  faults. A `TreeSet`'s is the class shutter's refusal on both.
+- **`String(s.length)` of a legacy Java string** (`logger.getName()`) prints a
+  JS function's source here, not Rhino's rendering of the Java method.
+- **`clientProperties` sets.** Reading `allowedGrantTypes`, `allowedScopes`
+  or `allowedResponseTypes` is AIC's class-shutter error, so a case cannot see
+  them either way.
+- **Why widening differs from the 2026-07-29 note.** The emulator grants
+  whatever the function returns, as measured. An older
+  `docs/api/12` note on a different client saw no widening; the cause is not
+  identified (`docs/api/99`, 2026-11-10).
+- **The AIC lane** runs only decision-node scripts, so a validate scope case
+  runs locally only.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
   here.
 - It does not claim OAuth2 scripts in general run here. Access-token
   modification, OIDC claims and the social IdP profile transformation do,
-  as does the config provider node (sections above); may-act, validate scope
-  and the other OAuth2 contexts are
+  as do the config provider node and validate scope (sections above);
+  may-act and the other OAuth2 contexts are
   a different binding surface and are not emulated.
 - A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,
   and one of those (`identity-enum-attrs`) has no valid live measurement.

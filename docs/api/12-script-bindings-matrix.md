@@ -2063,6 +2063,86 @@ same on both engines except where noted.
 | `logger.getName()` | a Java string, `scripts.CONFIG_PROVIDER_NODE.<script id>.(<script name>)` | a JS string, `scripts.CONFIG_PROVIDER_NODE_NEXT_GEN.<script id>.(<script name>)` |
 | `context` | `Access to Java class "javax.script.SimpleScriptContext" is prohibited` | same |
 
+### OAuth2 validate scope on both engines: the emulator's probes (verified 2026-11-10)
+
+`OAUTH2_VALIDATE_SCOPE` (legacy, `1.0`) and `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`
+(`2.0`), measured for the rhino-local validate scope context. Both exist: a
+client's `overrideOAuth2ClientConfig.validateScopeScript` (with
+`validateScopePluginType: "SCRIPTED"`) accepts a script of either context, and
+AM runs either.
+
+**Method.** A throwaway `alpha` client with `statelessTokensEnabled`, scopes
+`zzemuc5-a`, `zzemuc5-b` and `zzemuc5-c`, default scope `zzemuc5-c`, and the
+probe as its validate scope script. Each probe was one `client_credentials`
+token request asking for `zzemuc5-a zzemuc5-b` unless noted. The surface probe
+carries its record out as the `throwInvalidScope` message on next-gen and as
+an `InvalidScopeException` message on legacy, so it arrives as the 400's
+`error_description`. Twenty-nine one-line result scripts (thirty-four requests on
+next-gen and thirty-one on legacy, counting the scope variants) pin what AM does with each kind of result:
+the issued token's `scope`, or the error AM answers. The probes and their
+sanitised captures are committed as
+`packages/rhino-local/test/fixtures/oauth2-validate-scope/`;
+`test/bindings/oauth2-validate-scope.e2e.test.ts` runs the same scripts in the
+emulator. Both scripts and the client were deleted afterwards and their
+deletion confirmed by re-read. No user was created.
+
+#### What AM does with the result
+
+AM runs the body, then calls the global `validateAccessTokenScope` with **no
+arguments** (a parameter is `undefined`; `var validateAccessTokenScope =
+function …` works as well as a declaration; declaring
+`validateRefreshTokenScope` and `validateAuthorizationScope` beside it changes
+nothing on this grant). Same on both engines except where noted.
+
+| `validateAccessTokenScope()` returns or does | Token request |
+| --- | --- |
+| a JS array of scope strings | `200`; `scope` is **exactly** that list, duplicates removed |
+| a list wider than the request (`zzemuc5-c` added) | `200`, **widened**: `zzemuc5-a zzemuc5-b zzemuc5-c`; with only `zzemuc5-a` requested, `zzemuc5-a zzemuc5-c` |
+| a scope the client does not hold (`zzemuc5-nope`) | `200`, granted: `zzemuc5-a zzemuc5-nope` |
+| `requestedScopes` itself | `200`, the request |
+| `requestedScopes` after `requestedScopes.add("zzemuc5-c")` | `200`, `zzemuc5-a zzemuc5-b zzemuc5-c` |
+| `[]`, `null`, `undefined` | `403 authorization_declined`, "The user has declined authorization" |
+| the request unchanged when no `scope` parameter was sent | `403`: `requestedScopes` is empty; the client's default scope is not in it |
+| a string (one scope, or two joined by a space), a plain object | `500 server_error`, "Error while running validate scope script" |
+| a list holding a number | `500`, `class java.lang.Double cannot be cast to class java.lang.String …` |
+| no `validateAccessTokenScope` (a top-level body only, or one evaluating to a list) | `500`, "Error while running validate scope script" |
+| `throw new Error(…)`, at the top level or in the function | `500`, `class org.mozilla.javascript.NativeError cannot be cast to class org.mozilla.javascript.NativeJavaObject …` |
+| `throw "…"` | `500`, `class java.lang.String cannot be cast to class org.mozilla.javascript.NativeJavaObject …` |
+| next-gen: `scopeValidatorHelper.throwInvalidScope("zz denied")` | `400 invalid_scope`, `error_description` "zz denied" |
+| next-gen: `throwInvalidScope(7)` / `throwInvalidScope(null)` | `400`, "7" / "The requested scope is invalid, unknown, or malformed." |
+| next-gen: `throwInvalidScope()` | `500`, "Error while running validate scope script" |
+| next-gen: `throwInvalidScope` inside `try`, the `catch` returning a list | `200`, the `catch`'s list |
+| legacy: `throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException("zz java")` | `400 invalid_scope`, "zz java" |
+| next-gen: the same `InvalidScopeException` | `500` (the class is not reachable) |
+| legacy: `scopeValidatorHelper.throwInvalidScope(…)` | `500`: `scopeValidatorHelper` is not bound |
+
+#### Bindings
+
+| Binding | Legacy | Next-gen |
+| --- | --- | --- |
+| `requestedScopes` | `java.util.HashSet` (`[object JavaObject]`); `size()`, `contains()`, `isEmpty()`, `String(v)` `[zzemuc5-a, zzemuc5-b]`; `toArray()` not a JS array, items Java strings (`typeof` `object`); `forEach` hands JS strings; `JSON.stringify` a JSON array; `[0]` is `Java class "java.util.HashSet" has no public instance field or method named "0"`; `add()` returns `true` and grows it; `iterator()` answers a Java iterator whose members were not read | `[object JavaList]` of JS strings; `length`, `size()`, `[i]`, `contains()`, `indexOf()`, `isEmpty()`, `forEach`, `toArray()` (not a JS array), `JSON.stringify`, `[].concat(v)`, `Array.prototype.slice.call(v)`; `add()` returns `true` and grows it (`String(v)` shows the addition); `iterator()` is `Access to Java class "java.util.ArrayList$Itr" is prohibited`; `join` is `Cannot find function join` |
+| `allowedScopes` | `java.util.TreeSet`, otherwise as `requestedScopes`; `iterator()` is `Access to Java class "java.util.TreeMap$KeyIterator" is prohibited` | as `requestedScopes`: the client's scopes |
+| `availableScopes` | `ReferenceError` | as `requestedScopes`, `add()` not called: the client's scopes |
+| `defaultScopes` | `java.util.TreeSet`: the client's default scopes | as `availableScopes` |
+| `scopeValidatorHelper` | `ReferenceError` | `[object JavaObject]`, `String` `…ScopeValidatorScriptHelper@<hash>`; `toString()` is `Cannot find function toString`; `inheritAccessTokenScopesOnRefresh()` returns `undefined` |
+| `identity` | `ReferenceError` | `…ScriptedIdentityScriptWrapper@<hash>`; on `client_credentials` `exists()` is `false`, `getName()` throws `Cannot invoke "com.sun.identity.idm.AMIdentity.getName()" because "this.amIdentity" is null` |
+| `requestProperties` | `ReferenceError` | `[object JavaMap]` of four keys, `realm`, `requestHeaders` (nineteen, case-insensitive `get`, values `[object JavaList]`), `requestParams` (`client_id`, `grant_type`, `scope`; `get("absent")` `null`, a missing key `undefined`) and `requestUri` (a string: the token endpoint) |
+| `clientProperties` | `ReferenceError` | `[object JavaMap]` of six keys: `clientId`, `customProperties` (an empty `[object JavaMap]`), `redirectUris` (an empty `[object JavaList]`); reading `allowedGrantTypes`, `allowedScopes` or `allowedResponseTypes` is `Access to Java class "java.util.HashSet"` / `"java.util.TreeSet"` / `"java.util.LinkedHashSet" is prohibited` |
+| `logger.getName()` | a Java string, `scripts.OAUTH2_VALIDATE_SCOPE.<script id>.(<script name>)` | a JS string, `scripts.OAUTH2_VALIDATE_SCOPE_NEXT_GEN.<script id>.(<script name>)` |
+| `realm`, `scriptName`, `systemEnv` | bound; `realm` is `/alpha` | same |
+| `cookieName`, `httpClient`, `secrets`, `openidm`, `utils`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `require` | `undefined` | bound |
+| `requestHeaders`, `requestParameters`, `nodeState`, `sharedState`, `transientState`, `callbacks`, `action`, `outcome`, `idRepository`, `existingSession`, `session`, `accessToken`, `token`, `claims`, `scopes`, `cacheManager` | `undefined` | `undefined` |
+| `this` in the function | `object` | `object` |
+
+Two rows here overturn earlier text. The 2026-07-29 note in this file that a
+returned extra scope "did **not** widen the grant" does not hold on this
+client: the widening rows above were measured on both engines with the scope
+in and out of the client's list. And
+[13-script-contexts.md](13-script-contexts.md) lists legacy
+`OAUTH2_VALIDATE_SCOPE` among the contexts with 0 bindings; that is the
+context descriptor, and the legacy runtime binds the seven globals above
+(`docs/api/99-quirks-and-open-questions.md`, 2026-11-10).
+
 ### Library `require()` from next-gen access-token modification (verified 2026-07-29)
 
 Question: can an OAuth2 **access token modification** script use AM library
@@ -2203,7 +2283,10 @@ Other observations worth keeping:
   `[aicedit-probe, vsd-from-library]` (the extra one configured on the client
   and present in `availableScopes`), the issued token's `scope` claim was still
   just `["aicedit-probe"]`. AM appears to intersect with what was requested for
-  this grant type.
+  this grant type. **Not reproduced 2026-11-10:** on another
+  `client_credentials` client AM granted exactly the returned list, widened
+  scopes included (see "OAuth2 validate scope on both engines" below and
+  `docs/api/99`, 2026-11-10).
 - `availableScopes` reflects live client config — adding a scope to the client
   showed up in the next call's binding value.
 - evaluate-scope's returned map lands in the **`/oauth2/tokeninfo` response as a

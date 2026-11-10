@@ -148,6 +148,9 @@ still 0 bindings / `1.0` only): `OIDC_CLAIMS`,
 `SOCIAL_IDP_PROFILE_TRANSFORMATION`, `CONFIG_PROVIDER_NODE`,
 `SAML2_IDP_ADAPTER`, `SAML2_SP_ADAPTER`, `SAML2_IDP_ATTRIBUTE_MAPPER`,
 `AUTHENTICATION_TREE_DECISION_NODE` (legacy scripted decision).
+"0 bindings" is the descriptor, not the runtime: legacy `OAUTH2_VALIDATE_SCOPE`
+binds the three scope sets, `logger`, `realm`, `scriptName` and `systemEnv`
+(measured 2026-11-10, `docs/api/99`).
 
 Bad ids (`400`): `DEVICE_PROFILE_MATCH_NODE`, `PINGONE_VERIFY_EVALUATION_NODE`.
 

@@ -102,7 +102,7 @@ the decision node.
 | `OIDC_CLAIMS` legacy + next-gen (**implemented**) | `claims`, `requestedClaims`, `claimsLocales`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `claimObjects`, `requestedTypedClaims`, `session` (null) | `identity`, `scopes`, `client`, `request`, `oidc` (claims seed, `claimsLocales`) | Completion value: next-gen `{values, compositeScopes}`, legacy a `UserInfoClaims`; read through the runner's completion hook | `expect.oidc`: `userinfo`, `idToken`, `compositeScopes`, `issued` |
 | `SOCIAL_IDP_PROFILE_TRANSFORMATION` legacy + next-gen (**implemented**) | `rawProfile` (next-gen a Java map, legacy a JsonValue), `selectedIdp`, `nodeState`; legacy `sharedState`, `transientState`, `callbacks` | `socialIdp` (`rawProfile`, `selectedIdp`), the node state | Completion value: a plain object, or on legacy `new JsonValue(map)`; undefined, null or a string fails the journey | `expect.socialIdp`: `profile`, `accepted`; the state channels |
 | `CONFIG_PROVIDER_NODE` legacy + next-gen (**implemented**) | `nodeState`; next-gen the decision node's bindings less `sharedState`, `transientState` and `outcome`; legacy only `nodeState`, `idRepository`, the request maps, `realm`, `scriptName`, `logger`, `httpClient`, `secrets`, `systemEnv` | the node state, request maps | Top-level body that assigns the `config` global (read after the script, not its completion value); AM configures the wrapped node from it, and fails the journey (HTTP 500) when it is not a map | `expect.configProvider`: `config`, `accepted`; the state channels |
-| `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`                                      | `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes`                                | requested / available / allowed scopes                                    | Named function (`validateAccessTokenScope`, …) AM calls after the body; returns the scope list or throws via `throwInvalidScope` | `expect.scopes` or `expect.invalidScope` (the measured fail-open row matters)            |
+| `OAUTH2_VALIDATE_SCOPE` legacy + next-gen (**implemented**) | next-gen `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes` (Java lists), `identity`, `requestProperties`, `clientProperties`; legacy only `requestedScopes`, `allowedScopes`, `defaultScopes` (Java sets), `logger`, `realm`, `scriptName`, `systemEnv` | `validateScope` (requested / allowed / available / default scopes), `client`, `request` | Named function `validateAccessTokenScope` AM calls after the body; AM grants exactly the list it returns (no intersection); next-gen `throwInvalidScope` / legacy `InvalidScopeException` is the 400 denial | `expect.validateScope`: `granted`, `invalidScope`, `accepted` |
 | `OAUTH2_MAY_ACT_NEXT_GEN`                                             | `token` (with `setMayAct`)                                                                                                    | token starting state                                                      | Top-level body; AM stamps `may_act`                                                                                              | `expect.mayAct`                                                                          |
 | `LIBRARY`                                                             | library scope only (`openidm`, `httpClient`, `logger`, …; no context bindings)                                                | arguments to the export                                                   | No body semantics: the case names an export and its arguments; the harness `require()`s the library and calls it                 | `expect.returns`, plus shared channels                                                   |
 
@@ -142,6 +142,20 @@ the node state, so `sharedState` / `transientState` are accepted in `given` and
 judged in `expect` by the decision node's state verdict. AM runs the script
 again on every request that reaches the node; a case is one invocation, and the
 re-run is a gap (`docs/rhino-local-gaps.md`).
+
+## The OAuth2 validate scope context in detail
+
+See the README section "OAuth2 validate scope scripts" for the author's view.
+The table used to list this context as next-gen only, with an
+`expect.scopes` / `expect.invalidScope` pair; both engines exist (measured
+2026-11-10), and the channel is `expect.validateScope`, named like the other
+context-only channels, holding `granted`, `invalidScope` and `accepted`. AM
+calls the script's `validateAccessTokenScope()` after the body, so the harvest
+is appended to the source and makes that call, rather than reading the
+completion value. The fail-open row the table warned about is real, and wider
+than it said: AM grants exactly the returned list, so narrowing by omission
+issues a token without the dropped scope, and a script can also widen a grant
+(`docs/api/99`, 2026-11-10).
 
 ## The OIDC claims context in detail
 

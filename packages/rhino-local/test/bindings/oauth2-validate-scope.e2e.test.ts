@@ -159,7 +159,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     ["function validateAccessTokenScope() { return [true]; }", "oauth2-validate-scope-unmeasured/validateAccessTokenScope()[0]"],
     ["var validateAccessTokenScope = 1;", "oauth2-validate-scope-unmeasured/validateAccessTokenScope"],
     ["String(defaultScopes.add); defaultScopes.add(\"x\"); function validateAccessTokenScope() { return []; }",
-      engine === "legacy" ? "" : "oauth2-validate-scope-unmeasured/defaultScopes.add()"],
+      "oauth2-validate-scope-unmeasured/defaultScopes.add()"],
   ];
   if (engine === "next-gen") {
     faults.push(
@@ -176,7 +176,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
         "oauth2-validate-scope-unmeasured/requestedScopes.iterator().hasNext()"],
     );
   }
-  it.each(faults.filter(([, id]) => id !== ""))("%s is a named fault", async (source, id) => {
+  it.each(faults)("%s is a named fault", async (source, id) => {
     expectHarnessFault(id);
     const error = await run(id, source).then(() => null, (e: unknown) => e);
     expect(error).toBeInstanceOf(CaseRunError);
