@@ -524,6 +524,31 @@ work at runtime — harmless, because the index loop it steers you to is correct
   the client profile is the same one whose `userpassword` leaks through
   `identity.getAttributes()` in the legacy ATM context.
 
+### The Rhino engine package is not reachable by name (verified 2026-11-10)
+
+Fixtures: `fixtures/engine-package-access.script.js` (next-gen decision node,
+`evaluatorVersion` 2.0) and `fixtures-legacy/legacy-engine-package-access.script.js`
+(legacy, 1.0). Both engines gave identical answers, every step in its own
+`try`/`catch`:
+
+| Expression                                           | Result (both engines)                                                                  |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `typeof Packages.org.mozilla.javascript`             | `object`                                                                               |
+| `typeof Packages.org.mozilla.javascript.Context`     | `object` (a `[JavaPackage …]` placeholder, not a class)                                |
+| `typeof org.mozilla.javascript.Context`              | `object`                                                                               |
+| `new Packages.org.mozilla.javascript.Context()`      | `TypeError: [JavaPackage org.mozilla.javascript.Context] is not a function, it is object.` |
+| `new org.mozilla.javascript.Context()`               | the same `TypeError`                                                                   |
+| `JavaImporter(Packages.org.mozilla.javascript).Context` | `undefined`                                                                         |
+| `java.lang.Class.forName("org.mozilla.javascript.Context")` | `TypeError: Cannot call property forName in object [JavaPackage java.lang.Class]. It is not a function, it is "object".` |
+| `typeof Packages.org.mozilla.javascript.ScriptableObject` | `object`                                                                          |
+
+So AM treats the engine package like any class off the allow-list: a script
+cannot construct a `Context`, hence cannot call `decompileFunction` or
+`initStandardObjects`. The refusal is a catchable `TypeError`. (The engine's
+own use of its classes, such as the `ConsString` a template literal produces,
+is not script-named and is unaffected.) The decompile and fresh-scope steps
+were never reached, because construction fails.
+
 ## `httpClient.send` body serialization (verified 2026-07-30)
 
 `httpClient` does **not** serialize a JS object body with `JSON.stringify`
