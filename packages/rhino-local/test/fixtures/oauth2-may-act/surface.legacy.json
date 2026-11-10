@@ -1,0 +1,593 @@
+{
+ "act": "<absent>",
+ "http": 200,
+ "mayActWithoutProbe": {
+  "client_id": "zzemuC6-x"
+ },
+ "probe": {
+  "cookieNameT": {
+   "ok": {
+    "isArray": false,
+    "len": "9",
+    "size": "n/a",
+    "str": "undefined",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "cp": {
+   "ok": {
+    "isArray": false,
+    "len": "25",
+    "size": "n/a",
+    "str": "object|[object JavaMap]|5",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "cpCustom": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "{}",
+    "t": "object",
+    "tag": "[object JavaMap]"
+   }
+  },
+  "cpGrants": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "1",
+    "str": "[CLIENT_CREDENTIALS]",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "cpId": {
+   "ok": {
+    "isArray": false,
+    "len": "17",
+    "size": "n/a",
+    "str": "object|zzemuC6-ma",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "cpKeys": {
+   "ok": {
+    "isArray": false,
+    "len": "78",
+    "size": "n/a",
+    "str": "allowedGrantTypes,allowedResponseTypes,allowedScopes,clientId,customProperties",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "cpRedirect": {
+   "ok": "undefined"
+  },
+  "fAbsent": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "fAbsentNull": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "n/a",
+    "str": "false",
+    "t": "boolean",
+    "tag": "[object Boolean]"
+   }
+  },
+  "fAct1": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "fClient": {
+   "ok": {
+    "isArray": false,
+    "len": "45",
+    "size": "n/a",
+    "str": "object|[object JavaObject]|\"zzemuC6-ma\"|false",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "fExp": {
+   "ok": {
+    "isArray": false,
+    "len": "11",
+    "size": "n/a",
+    "str": "object|3600",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "fGrant": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "\"client_credentials\"",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "fMayAct": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "fMayAct1": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "fNoArg": {
+   "err": "InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.getField(). (zzemuC6-ma-legacy#58)"
+  },
+  "fNumber": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "fRealm": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "\"/alpha\"",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "fScope": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "1",
+    "str": "[ \"zzemuc6-a\" ]",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "fScope0": {
+   "err": "InternalError: Java class \"org.forgerock.json.JsonValue\" has no public instance field or method named \"0\". (zzemuC6-ma-legacy#51)"
+  },
+  "fSub": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "\"zzemuC6-ma\"",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "getAct0": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "getAct0Null": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "n/a",
+    "str": "false",
+    "t": "boolean",
+    "tag": "[object Boolean]"
+   }
+  },
+  "getAct1": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "getAct1Sub": {
+   "ok": {
+    "isArray": false,
+    "len": "24",
+    "size": "n/a",
+    "str": "undefined|undefined|null",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "getMayAct0": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "getMayAct0Null": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "n/a",
+    "str": "false",
+    "t": "boolean",
+    "tag": "[object Boolean]"
+   }
+  },
+  "getMayAct1": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "0",
+    "str": "null",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "getMayAct1Id": {
+   "ok": {
+    "isArray": false,
+    "len": "19",
+    "size": "n/a",
+    "str": "undefined|undefined",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "getMayAct1Json": {
+   "ok": {
+    "isArray": false,
+    "len": "6",
+    "size": "n/a",
+    "str": "\"null\"",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "idExists": {
+   "err": "TypeError: Cannot call property exists"
+  },
+  "idName": {
+   "ok": {
+    "isArray": false,
+    "len": "function length() {/*\nint length()\n*/}\n",
+    "size": "n/a",
+    "str": "zzemuC6-ma",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "identity": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "n/a",
+    "str": "id=zzemuC6-ma,ou=agentonly,o=alpha,ou=services,ou=am-config",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "loggerName": {
+   "ok": {
+    "isArray": false,
+    "len": "function length() {/*\nint length()\n*/}\n",
+    "size": "n/a",
+    "str": "scripts.OAUTH2_MAY_ACT.52eb4f64-7d62-4683-a6ff-2a03ea2b4998.(zzemuC6-ma-legacy)",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "realm": {
+   "ok": {
+    "isArray": false,
+    "len": "6",
+    "size": "n/a",
+    "str": "/alpha",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "rp": {
+   "ok": {
+    "isArray": false,
+    "len": "25",
+    "size": "n/a",
+    "str": "object|[object JavaMap]|4",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "rpGetMissing": {
+   "ok": "null"
+  },
+  "rpGrant0": {
+   "ok": {
+    "isArray": false,
+    "len": "31",
+    "size": "n/a",
+    "str": "object|client_credentials|false",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "rpGrantGet": {
+   "ok": {
+    "isArray": false,
+    "len": "1",
+    "size": "1",
+    "str": "[client_credentials]",
+    "t": "object",
+    "tag": "[object JavaList]"
+   }
+  },
+  "rpHeaderCt": {
+   "ok": {
+    "isArray": false,
+    "len": "1",
+    "size": "1",
+    "str": "[application/x-www-form-urlencoded]",
+    "t": "object",
+    "tag": "[object JavaList]"
+   }
+  },
+  "rpKeys": {
+   "ok": {
+    "isArray": false,
+    "len": "45",
+    "size": "n/a",
+    "str": "realm,requestHeaders,requestParams,requestUri",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "rpParamKeys": {
+   "ok": {
+    "isArray": false,
+    "len": "20",
+    "size": "n/a",
+    "str": "client_id,grant_type",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "rpRealm": {
+   "ok": {
+    "isArray": false,
+    "len": "function length() {/*\nint length()\n*/}\n",
+    "size": "n/a",
+    "str": "/alpha",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "rpUriT": {
+   "ok": {
+    "isArray": false,
+    "len": "61",
+    "size": "n/a",
+    "str": "object|<host>/am/oauth2/realms/root/realms/alpha/access_token",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "scopes": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "1",
+    "str": "[zzemuc6-a]",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "scopes0": {
+   "err": "InternalError: Java class \"java.util.HashSet\" has no public instance field or method named \"0\". (zzemuC6-ma-legacy#65)"
+  },
+  "scopesContains": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "n/a",
+    "str": "true",
+    "t": "boolean",
+    "tag": "[object Boolean]"
+   }
+  },
+  "scopesForEach": {
+   "ok": {
+    "isArray": false,
+    "len": "16",
+    "size": "n/a",
+    "str": "string:zzemuc6-a",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "scopesIter": {
+   "ok": {
+    "isArray": false,
+    "len": "undefined",
+    "size": "n/a",
+    "str": "java.util.HashMap$KeyIterator@27f5699e",
+    "t": "object",
+    "tag": "[object JavaObject]"
+   }
+  },
+  "scopesJson": {
+   "ok": {
+    "isArray": false,
+    "len": "13",
+    "size": "n/a",
+    "str": "[\"zzemuc6-a\"]",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "scopesToArray": {
+   "ok": {
+    "isArray": false,
+    "len": "21",
+    "size": "n/a",
+    "str": "object|false|1|object",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "scriptName": {
+   "ok": {
+    "isArray": false,
+    "len": "17",
+    "size": "n/a",
+    "str": "zzemuC6-ma-legacy",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "setAct": {
+   "err": "InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setAct(object). (zzemuC6-ma-legacy#95)"
+  },
+  "setMayAct1": {
+   "err": "InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct(object). (zzemuC6-ma-legacy#98)"
+  },
+  "thisT": {
+   "ok": {
+    "isArray": false,
+    "len": "6",
+    "size": "n/a",
+    "str": "object",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "tokenMembers": "throw:InternalError: Access to Java class \"org.forgerock.oauth2.core.ResourceOwner\" is prohibited. (zzemuC6-ma-legacy#40)",
+  "tokenStr": {
+   "ok": {
+    "isArray": false,
+    "len": "10",
+    "size": "n/a",
+    "str": "1300|eyJ|3",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "tokenT": {
+   "ok": {
+    "isArray": false,
+    "len": "26",
+    "size": "n/a",
+    "str": "object|[object JavaObject]",
+    "t": "string",
+    "tag": "[object String]"
+   }
+  },
+  "tokenTypeof": {
+   "addExtraData": "function",
+   "equals": "function",
+   "getAct": "function",
+   "getAuditTrackingId": "function",
+   "getClass": "function",
+   "getClientId": "function",
+   "getConfirmationKey": "function",
+   "getExpiryTime": "function",
+   "getField": "function",
+   "getMayAct": "function",
+   "getPermissions": "function",
+   "getRealm": "function",
+   "getResourceOwnerId": "function",
+   "getScope": "function",
+   "getTokenId": "function",
+   "getTokenName": "function",
+   "getTokenType": "function",
+   "hashCode": "function",
+   "removeField": "undefined",
+   "setAct": "function",
+   "setField": "function",
+   "setMayAct": "function",
+   "setScope": "function",
+   "toString": "function"
+  },
+  "typeof": {
+   "JavaImporter": "function",
+   "Packages": "object",
+   "accessToken": "undefined",
+   "action": "undefined",
+   "cacheManager": "undefined",
+   "callbacks": "undefined",
+   "claims": "undefined",
+   "clientProperties": "object",
+   "context": "throw:InternalError: Access to Java class \"javax.script.SimpleScriptContext\" is prohibited. (zzemuC6-ma-legacy#35(eval)#1)",
+   "cookieName": "undefined",
+   "emailService": "undefined",
+   "existingSession": "undefined",
+   "httpClient": "undefined",
+   "idRepository": "undefined",
+   "identity": "object",
+   "java": "object",
+   "jwtAssertion": "undefined",
+   "jwtValidator": "undefined",
+   "logger": "object",
+   "nodeState": "undefined",
+   "openidm": "undefined",
+   "outcome": "undefined",
+   "policy": "undefined",
+   "properties": "undefined",
+   "realm": "string",
+   "requestHeaders": "undefined",
+   "requestParameters": "undefined",
+   "requestProperties": "object",
+   "requestedScopes": "undefined",
+   "require": "undefined",
+   "scopeValidatorHelper": "undefined",
+   "scopes": "object",
+   "scriptName": "string",
+   "secrets": "undefined",
+   "session": "object",
+   "sharedState": "undefined",
+   "systemEnv": "object",
+   "token": "object",
+   "transientState": "undefined",
+   "utils": "undefined"
+  }
+ }
+}
+
