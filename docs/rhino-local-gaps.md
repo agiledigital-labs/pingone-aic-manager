@@ -1071,14 +1071,68 @@ result scripts (eighteen engine runs). What it approximates or leaves out:
 - **The AIC lane** runs only decision-node scripts, so an OIDC case runs
   locally only.
 
+## Social IdP profile transformation context (listed 2026-11-10)
+
+`context: "SOCIAL_IDP_PROFILE_TRANSFORMATION"` runs on both engines from the
+overlay `packages/rhino-local/src/bindings/rhino/context-social-idp.cjs`, on
+the same `context-common.cjs` views, so the view-level gaps above apply here
+too, with the prefix `social-idp-unmeasured/`. The conformance test
+(`test/bindings/social-idp.e2e.test.ts`) replays the surface probe captured
+during a headless social login, plus eight one-line result scripts per engine
+(seventeen engine runs). What it approximates or leaves out:
+
+- **The transform only.** The legacy context id is shared with
+  `SocialProviderHandlerNodeV2`'s own `script`, which binds
+  `normalizedProfile` (a JsonValue) and returns a JsonValue. That invocation
+  was measured but is not emulated.
+- **Legacy `rawProfile` is a view of a JsonValue.** It answers `get`,
+  `isDefined`, `keys`, `size`, `getObject()` (whose map only prints),
+  `get(k).getObject()` of a string entry, String conversion and
+  `JSON.stringify`. On AIC `for...in` lists about seventy Java member names
+  (`asString`, `expect`, `isNull`, …); the view lists none. A Java-binding
+  candidate.
+- **Next-gen `JSON.stringify(rawProfile)` key order.** AIC lists the keys in
+  the Java map's hash order, while String conversion and `keys()` keep the
+  provider's order. The view keeps the provider's order everywhere. A
+  Java-binding candidate.
+- **Only string profile values were measured.** Reading any other value faults
+  as `social-idp-unmeasured/rawProfile.<key>`. So does a seeded key named like
+  a Java map method.
+- **Legacy node state.** `nodeState.get` answers a JsonValue (measured for a
+  string). A key the state does not hold faults, and of the JsonValue only
+  String conversion and `getObject()` of a string answer. `nodeState.keys()`
+  answers the keys held when the script started. Measured: a key the script
+  had just put was not listed. On next-gen `keys()` is AIC's class-shutter
+  error. The decision node's legacy `nodeState.get` returns plain values; it
+  was not compared in this slice.
+- **Seeded node state.** `selectedIdp` is seeded into the shared state, as the
+  SelectIdPNode leaves it. AM also holds `expectProfileInformation` there.
+  Its value was not read, so it is not seeded.
+- **Results AM was not measured with fault.** Measured: `undefined`, `null`
+  and a string (each a 401), a plain object, and on legacy
+  `new JsonValue(LinkedHashMap)`. A top-level `undefined` or `null` property is
+  kept as `null`. A nested null or undefined, a non-finite number, a function
+  or Java object in a plain result, a top-level number, boolean or array, and
+  a JsonValue over anything but a Java map all fault. Numbers reach the node as
+  doubles, which JSON cannot tell apart.
+- **Shared bindings are the decision node's.** `requestHeaders` and
+  `requestParameters` were measured by key count only. The next-gen
+  `httpClient`, `openidm`, `secrets`, `utils`, `require`, `jwtAssertion`,
+  `jwtValidator`, `policy`, `emailService` and `systemEnv` were measured as
+  present only (`typeof`), and so were legacy `sharedState`,
+  `transientState` and `systemEnv`. Legacy `callbacks` is bound, and every
+  member faults. `logger.getName()` was measured on both engines.
+- **The AIC lane** runs only decision-node scripts, so a social IdP case runs
+  locally only.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
   here.
 - It does not claim OAuth2 scripts in general run here. Access-token
-  modification and OIDC claims do (sections above); may-act, validate scope and
-  the other OAuth2 contexts are a different binding surface and are not
-  emulated.
+  modification, OIDC claims and the social IdP profile transformation do
+  (sections above); may-act, validate scope and the other OAuth2 contexts are
+  a different binding surface and are not emulated.
 - A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,
   and one of those (`identity-enum-attrs`) has no valid live measurement.
 - `require()` is a CommonJS eval of seeded source, not AM's wrap factory. The

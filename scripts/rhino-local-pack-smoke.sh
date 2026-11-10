@@ -200,6 +200,25 @@ describe("installed rhino-local", () => {
     } finally { await runner.close(); }
   });
 
+  // The social IdP overlay is a third packaged asset; its result is also the
+  // script's completion value, and its node-state writes are judged.
+  it("runs a social IdP profile transformation case on both engines", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      for (const [engine, script] of [
+        ["next-gen", 'nodeState.putShared("idp", selectedIdp); ({ id: rawProfile.sub, mail: rawProfile.get("email") });'],
+        ["legacy", 'nodeState.putShared("idp", selectedIdp); ({ id: String(rawProfile.get("sub").getObject()), mail: String(rawProfile.get("email").getObject()) });'],
+      ] as const) {
+        const run = await runCase(runner, defineCase({
+          name: \`social \${engine}\`, context: "SOCIAL_IDP_PROFILE_TRANSFORMATION", script,
+          given: { engine, socialIdp: { selectedIdp: "widget-idp", rawProfile: { sub: "w-1", email: "w@example.com" } } },
+          expect: { socialIdp: { profile: { id: "w-1", mail: "w@example.com" } }, sharedState: { added: { idp: "widget-idp" } } },
+        }));
+        expect(run.verdict.summary, run.verdict.summary).toBe("");
+      }
+    } finally { await runner.close(); }
+  });
+
   // Positive control for step 1: were the declarations to resolve to \`any\`,
   // this directive would be unused and tsc would fail.
   it("types the inputs from the suite's schema", () => {
