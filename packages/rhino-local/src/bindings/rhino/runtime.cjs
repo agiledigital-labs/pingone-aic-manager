@@ -1077,6 +1077,8 @@ function __rhinoLocalNativeMethod(name, original, body) {
     method = ({ bind(thisArg) { return body.apply(this, arguments); } }).bind;
   } else if (name === "toString") {
     method = ({ toString() { return body.apply(this, arguments); } }).toString;
+  } else if (name === "toSource") {
+    method = ({ toSource(indent) { return body.apply(this, arguments); } }).toSource;
   } else {
     throw new Error("rhino-local: no native-shaped method for " + name);
   }
@@ -1116,6 +1118,26 @@ function __rhinoLocalNativeMethod(name, original, body) {
     }
     return nativeToString.apply(this, arguments);
   }));
+  // Rhino's own Function.prototype.toSource (absent on node:vm) renders the
+  // same member through its implementation, which is emulator source. Nothing
+  // measured says what AIC prints, not even for asString (only String(asString)
+  // was captured), so every branded member refuses.
+  var nativeToSource = Function.prototype.toSource;
+  if (typeof nativeToSource === "function") {
+    __rhinoLocalHide(Function.prototype, "toSource", __rhinoLocalNativeMethod("toSource", nativeToSource, function toSource(indent) {
+      var row = __rhinoLocalStubRow(this);
+      var i;
+      if (row !== null) {
+        throw __rhinoLocalDetailUnmeasured("." + row.name + " as source");
+      }
+      for (i = 0; i < __rhinoLocalNativeMethods.length; i += 1) {
+        if (__rhinoLocalNativeMethods[i].method === this) {
+          return nativeToSource.apply(__rhinoLocalNativeMethods[i].original, arguments);
+        }
+      }
+      return nativeToSource.apply(this, arguments);
+    }));
+  }
 })();
 
 // Array.prototype.concat, as AIC's Rhino treats a Java list argument: copied
