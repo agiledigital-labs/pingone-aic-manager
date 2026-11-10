@@ -600,7 +600,11 @@ function judgeOidcClaims(
   const values: { key: "userinfo" | "idToken" | "compositeScopes"; actual: JsonValue; undeclared: boolean }[] = [
     { key: "userinfo", actual: effect.userinfo, undeclared: Object.keys(effect.userinfo).length > 0 },
     { key: "idToken", actual: effect.idToken, undeclared: false },
-    { key: "compositeScopes", actual: effect.compositeScopes, undeclared: effect.compositeScopes !== null },
+    {
+      key: "compositeScopes",
+      actual: effect.compositeScopes,
+      undeclared: !isEmptyComposite(effect.compositeScopes),
+    },
   ];
   for (const { key, actual, undeclared } of values) {
     if (key in want) {
@@ -618,6 +622,12 @@ function judgeOidcClaims(
     }
   }
   return mismatches;
+}
+
+// No composite scopes, whether the script passed null or an empty map, adds
+// nothing a case author needs to declare.
+function isEmptyComposite(value: JsonValue): boolean {
+  return value === null || (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0);
 }
 
 function diffState(

@@ -175,3 +175,44 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
   }, 60_000);
 });
 
+
+describe("one JVM running OIDC claims cases between other contexts' cases", () => {
+  let runner: RhinoRunner;
+  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+  afterAll(async () => { await runner?.close(); }, 30_000);
+
+  // Everything the OIDC seed binds, deletes, rebinds or installs.
+  const surface = "JSON.stringify([typeof openidm, typeof logger.info, typeof logger.message, typeof logger.getName, "
+    + "typeof claims, typeof session, typeof requestedClaims, typeof claimObjects, typeof sharedState, "
+    + "typeof nodeState, typeof org.forgerock.oauth2, String(org.forgerock.oauth2)])";
+  const nodeProbe = async (engine: Engine) => {
+    const { effects } = await runCase(runner, defineCase({
+      name: `isolation ${engine} decision node`,
+      script: engine === "legacy"
+        ? `sharedState.put("out", ${surface}); outcome = "true";`
+        : `nodeState.putShared("out", ${surface}); action.goTo("true");`,
+      given: { engine },
+      expect: { outcome: "true", allowUndeclared: { sharedState: true } },
+    }));
+    return effects.sharedState.final.out;
+  };
+  const oidcCase = (engine: Engine) => runCase(runner, defineCase({
+    name: `isolation ${engine} oidc`,
+    context: "OIDC_CLAIMS",
+    script: engine === "legacy"
+      ? `var m = new java.util.LinkedHashMap(); m.put("a", "b"); new org.forgerock.oauth2.core.UserInfoClaims(m, null);`
+      : `({ values: { a: "b" } });`,
+    given: { engine },
+    expect: { oidc: { userinfo: { a: "b" } } },
+  }));
+
+  it("leaves a decision node on either engine exactly as a fresh runner sees it", async () => {
+    const before = { legacy: await nodeProbe("legacy"), "next-gen": await nodeProbe("next-gen") };
+    await oidcCase("legacy");
+    expect(await nodeProbe("next-gen")).toBe(before["next-gen"]);
+    expect(await nodeProbe("legacy")).toBe(before.legacy);
+    await oidcCase("next-gen");
+    expect(await nodeProbe("legacy")).toBe(before.legacy);
+    expect(await nodeProbe("next-gen")).toBe(before["next-gen"]);
+  }, 60_000);
+});
