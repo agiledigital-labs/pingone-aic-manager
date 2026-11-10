@@ -468,7 +468,10 @@ public final class Runner {
 
       final Object completion;
       phase = Timing.now();
-      final long bracketed = Timing.total("moduleBody") + Timing.total("harvest");
+      // The subject's own-time accounting runs only for a timed job; untimed,
+      // the added work is this one ThreadLocal read.
+      final boolean timed = Timing.active();
+      final long bracketed = timed ? Timing.total("moduleBody") + Timing.total("harvest") : 0L;
       try {
         completion = script.exec(cx, scope);
       } catch (RhinoException e) {
@@ -480,9 +483,11 @@ public final class Runner {
         throw e;
       } finally {
         Timing.add("subjectExec", phase);
-        // Closes any bracket the script left open, so the subtraction sees it.
-        Timing.exit(0);
-        Timing.addLess("subjectOwn", phase, Timing.total("moduleBody") + Timing.total("harvest") - bracketed);
+        if (timed) {
+          // Closes any bracket the script left open, so the subtraction sees it.
+          Timing.exit(0);
+          Timing.addLess("subjectOwn", phase, Timing.total("moduleBody") + Timing.total("harvest") - bracketed);
+        }
       }
       // Harvest outside the author try: its failures are emulation failures, not script errors.
       if (bridge != null) {
