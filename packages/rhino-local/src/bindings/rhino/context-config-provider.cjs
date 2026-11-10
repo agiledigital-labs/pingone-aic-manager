@@ -85,12 +85,15 @@ __rhinoLocalCtx.listKind = __rhinoLocalListKinds.configProvider;
 
 // Measured on both engines: requestHeaders.get(name) and
 // requestParameters.get(name) are `[object JavaList]` whose String(v) is
-// `[v1]` and whose length is the value count; get of an absent name is null.
-// runtime.cjs's decision-node lists differ (a JS array on legacy, an untagged
-// view on next-gen), so get is replaced here; the rest of each map is
-// runtime.cjs's.
-function __rhinoLocalCfgRequestGet(map, values, caseInsensitive, label) {
-  var lists = {};
+// `[v1]` and whose length is the value count; get of an absent name is null;
+// for...in counts the entries. Every path to an entry (get, dot access,
+// for...in) reads one store of those tagged lists (Sol ctx r4 P2-1), so the
+// context's list policy applies whichever way a script reaches a value.
+// forEach, String(map) and the rest of java.util.Map were not measured here
+// and fault. runtime.cjs's decision-node maps are replaced whole.
+function __rhinoLocalCfgRequestMap(values, caseInsensitive, label) {
+  var lists = __rhinoLocalCtxBare();
+  var keys = [];
   Object.keys(values || {}).forEach(function (raw) {
     var key = caseInsensitive ? raw.toLowerCase() : raw;
     var items = typeof values[raw] === "string" ? [values[raw]] : values[raw].slice();
@@ -98,14 +101,32 @@ function __rhinoLocalCfgRequestGet(map, values, caseInsensitive, label) {
     var list = __rhinoLocalCtxList(items.map(__rhinoLocalCtxString), itemLabel);
     __rhinoLocalCtxTag(list, "JavaList", itemLabel);
     __rhinoLocalCtxRewatch(list);
+    if (keys.indexOf(key) === -1) {
+      keys.push(key);
+    }
     lists[key] = list;
   });
-  __rhinoLocalHide(map, "get", function (name) {
-    if (arguments.length !== 1) {
-      throw __rhinoLocalCtxUnmeasured(label + ".get(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    var key = caseInsensitive ? String(name).toLowerCase() : String(name);
-    return Object.prototype.hasOwnProperty.call(lists, key) ? lists[key] : null;
+  return __rhinoLocalCtxMap(label, keys, function (k) {
+    return lists[k];
+  }, null, caseInsensitive ? __rhinoLocalCtxHeaderAliases(keys) : null, {
+    get: {
+      arity: 1,
+      fn: function (name) {
+        var key = caseInsensitive ? String(name).toLowerCase() : String(name);
+        return Object.prototype.hasOwnProperty.call(lists, key) ? lists[key] : null;
+      },
+    },
+  });
+}
+
+// String(v) of the next-gen views below was not measured; it faults rather
+// than letting Rhino's own TypeError read as AIC's answer (Sol ctx r4 P2-4).
+function __rhinoLocalCfgNoRender(out, label) {
+  __rhinoLocalHide(out, "toString", function () {
+    throw __rhinoLocalCtxUnmeasured("String(" + label + ")");
+  });
+  __rhinoLocalHide(out, "valueOf", function () {
+    throw __rhinoLocalCtxUnmeasured("String(" + label + ")");
   });
 }
 
@@ -122,6 +143,7 @@ function __rhinoLocalCfgCallbacks() {
   });
   __rhinoLocalCtxFaulting(out, "callbacks", __rhinoLocalCfgCallbackMethods);
   __rhinoLocalCtxToJSON(out, "callbacks");
+  __rhinoLocalCfgNoRender(out, "callbacks");
   __rhinoLocalCtxTag(out, null, "callbacks");
   return __rhinoLocalCtxWatch(out, "callbacks");
 }
@@ -131,11 +153,17 @@ function __rhinoLocalCfgCallbacks() {
 // unmeasured here.
 function __rhinoLocalCfgCallbacksBuilder() {
   var out = __rhinoLocalCtxBare();
-  __rhinoLocalCtxMethod(out, "callbacksBuilder", "CallbacksBuilder", "textOutputCallback", 2, function () {
+  // Measured with (0, string) only; the descriptor declares a numeric
+  // message type and a string message. Other shapes fault (Sol ctx r4 P2-3).
+  __rhinoLocalCtxMethod(out, "callbacksBuilder", "CallbacksBuilder", "textOutputCallback", 2, function (type, message) {
+    if (typeof type !== "number" || type % 1 !== 0 || typeof message !== "string") {
+      throw __rhinoLocalCtxUnmeasured("callbacksBuilder.textOutputCallback(" + __rhinoLocalArgShape(arguments) + ")");
+    }
     return undefined;
   });
   __rhinoLocalCtxFaulting(out, "callbacksBuilder", __rhinoLocalCfgBuilderMethods);
   __rhinoLocalCtxToJSON(out, "callbacksBuilder");
+  __rhinoLocalCfgNoRender(out, "callbacksBuilder");
   __rhinoLocalCtxTag(out, null, "callbacksBuilder");
   return __rhinoLocalCtxWatch(out, "callbacksBuilder");
 }
@@ -150,8 +178,57 @@ function __rhinoLocalCfgAction() {
   });
   __rhinoLocalCtxFaulting(out, "action", __rhinoLocalCfgActionMethods);
   __rhinoLocalCtxToJSON(out, "action");
+  __rhinoLocalCfgNoRender(out, "action");
   __rhinoLocalCtxTag(out, null, "action");
   return __rhinoLocalCtxWatch(out, "action");
+}
+
+// --- Legacy: nodeState.keys() answers a live Java set ----------------------
+
+// Measured: keys().iterator() walks every key with hasNext()/next(), and
+// String() of each is the key. Membership is live: a key put with putShared
+// earlier in the same script is listed, and so are transient keys, unlike
+// the social context's start-of-script snapshot. That is all that was read,
+// so the set's class, size, contains, array-likeness and rendering fault
+// (Sol ctx r4 P2-2); the view reads the state each time it is walked.
+var __rhinoLocalCfgKeySetMethods = [
+  "size", "isEmpty", "contains", "containsAll", "toArray", "forEach", "stream", "add", "addAll", "remove",
+  "removeAll", "retainAll", "clear", "getClass", "hashCode", "equals",
+  "join", "sort", "slice", "indexOf", "map", "filter", "concat",
+];
+
+function __rhinoLocalCfgLegacyKeys(nodeKeys) {
+  return function () {
+    if (arguments.length !== 0) {
+      throw __rhinoLocalCtxUnmeasured("nodeState.keys(" + __rhinoLocalArgShape(arguments) + ")");
+    }
+    var out = __rhinoLocalCtxBare();
+    __rhinoLocalCtxMethod(out, "nodeState.keys()", "java.util.Set", "iterator", 0, function () {
+      var names = nodeKeys.call(nodeState);
+      var at = 0;
+      var it = __rhinoLocalCtxBare();
+      __rhinoLocalCtxMethod(it, "nodeState.keys().iterator()", "java.util.Iterator", "hasNext", 0, function () {
+        return at < names.length;
+      });
+      __rhinoLocalCtxMethod(it, "nodeState.keys().iterator()", "java.util.Iterator", "next", 0, function () {
+        if (at >= names.length) {
+          throw __rhinoLocalCtxUnmeasured("nodeState.keys().iterator().next()", "past the last key");
+        }
+        at += 1;
+        return __rhinoLocalCtxString(names[at - 1]);
+      });
+      __rhinoLocalCtxFaulting(it, "nodeState.keys().iterator()", ["remove", "forEachRemaining"]);
+      __rhinoLocalCtxToJSON(it, "nodeState.keys().iterator()");
+      __rhinoLocalCfgNoRender(it, "nodeState.keys().iterator()");
+      __rhinoLocalCtxTag(it, null, "nodeState.keys().iterator()");
+      return it;
+    });
+    __rhinoLocalCtxFaulting(out, "nodeState.keys()", __rhinoLocalCfgKeySetMethods);
+    __rhinoLocalCtxToJSON(out, "nodeState.keys()");
+    __rhinoLocalCfgNoRender(out, "nodeState.keys()");
+    __rhinoLocalCtxTag(out, null, "nodeState.keys()");
+    return out;
+  };
 }
 
 // --- Legacy: nodeState.get answers a JsonValue -------------------------------
@@ -199,13 +276,11 @@ function __rhinoLocalSeedConfigProvider(given) {
   __rhinoLocalHide(logger, "getName", function () {
     return legacy ? __rhinoLocalCtxJavaString(loggerName) : loggerName;
   });
-  __rhinoLocalCfgRequestGet(requestHeaders, given.requestHeaders, true, "requestHeaders");
-  __rhinoLocalCfgRequestGet(requestParameters, given.requestParameters, false, "requestParameters");
+  requestHeaders = __rhinoLocalCfgRequestMap(given.requestHeaders, true, "requestHeaders");
+  requestParameters = __rhinoLocalCfgRequestMap(given.requestParameters, false, "requestParameters");
   if (legacy) {
     __rhinoLocalHide(nodeState, "get", __rhinoLocalCfgLegacyGet(nodeState.get));
-    // nodeState.keys() is runtime.cjs's: measured live on this engine (a key
-    // put with putShared earlier in the same script is listed, and so are
-    // transient keys), unlike the social context's start-of-script snapshot.
+    __rhinoLocalHide(nodeState, "keys", __rhinoLocalCfgLegacyKeys(nodeState.keys));
   } else {
     // Measured: the context's class shutter refuses the Java set keys() builds.
     __rhinoLocalHide(nodeState, "keys", function () {

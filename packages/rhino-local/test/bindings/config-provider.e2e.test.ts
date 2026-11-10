@@ -174,6 +174,60 @@ describe.each(["next-gen", "legacy"] as const)("config provider node on %s match
     expect(ids).toContain("config-provider-unmeasured/config");
   }, 60_000);
 
+  // Sol ctx r4: every path to a seeded request value reads one store, and a
+  // conversion, argument shape or set member nobody measured is a named fault.
+  it("dot access and for...in reach the same request lists as get()", async () => {
+    const source = "var p = requestParameters.zzq; var h = requestHeaders[\"X-Zzemu-Probe\"]; var n = 0;"
+      + " for (var k in requestParameters) n += 1;"
+      + " config = { message: JSON.stringify([p === requestParameters.get(\"zzq\"), String(p),"
+      + " Object.prototype.toString.call(p), h === requestHeaders.get(\"x-zzemu-probe\"), String(h), n]) };";
+    const { effects } = await run("request paths", source);
+    expect(JSON.parse(effects.configProvider!.config!.message as string)).toEqual(
+      [true, "[v1]", "[object JavaList]", true, "[h1]", 4],
+    );
+  }, 60_000);
+
+  const faults: [string, string][] = [
+    ["requestParameters.forEach(function () {}); config = {};", "config-provider-unmeasured/requestParameters.forEach()"],
+    ["String(requestHeaders); config = {};", "config-provider-unmeasured/String(requestHeaders)"],
+  ];
+  if (engine === "legacy") {
+    faults.push(
+      ["nodeState.keys().sort(); config = {};", "config-provider-unmeasured/nodeState.keys().sort()"],
+      ["nodeState.keys().size(); config = {};", "config-provider-unmeasured/nodeState.keys().size()"],
+      ["String(nodeState.keys()); config = {};", "config-provider-unmeasured/String(nodeState.keys())"],
+    );
+  } else {
+    faults.push(
+      [`callbacksBuilder.textOutputCallback("INFO", "x"); config = {};`,
+        `config-provider-unmeasured/callbacksBuilder.textOutputCallback(string, string)`],
+      ["String(callbacks); config = {};", "config-provider-unmeasured/String(callbacks)"],
+      ["String(callbacksBuilder); config = {};", "config-provider-unmeasured/String(callbacksBuilder)"],
+      ["String(action); config = {};", "config-provider-unmeasured/String(action)"],
+    );
+  }
+  it.each(faults)("%s is a named fault", async (source, id) => {
+    expectHarnessFault(id);
+    const error = await run(id, source).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+    expect(ids).toContain(id);
+  }, 60_000);
+
+  if (engine === "legacy") {
+    it("nodeState.keys() is live: a key put earlier in the script is walked", async () => {
+      const source = "nodeState.putShared(\"zzLate\", \"v\"); var it = nodeState.keys().iterator(); var a = [];"
+        + " while (it.hasNext()) a.push(String(it.next())); config = { message: String(a.indexOf(\"zzLate\") >= 0) };";
+      const { effects } = await run("live keys", source);
+      expect(effects.configProvider!.config!.message).toBe("true");
+    }, 60_000);
+  } else {
+    it("textOutputCallback with the measured (number, string) shape is accepted", async () => {
+      const { effects } = await run("text output", `callbacksBuilder.textOutputCallback(0, "hello"); config = {};`);
+      expect(effects.configProvider!.refusal).toBeNull();
+    }, 60_000);
+  }
+
   if (engine === "next-gen") {
     it("an unmeasured callbacksBuilder or action member is a named fault", async () => {
       for (const [source, id] of [
