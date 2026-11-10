@@ -105,4 +105,53 @@ describe("AM Java class shutter", () => {
     );
     expect(toArray.ok).toBe(true);
   });
+
+  // Measured 2026-11-10 on AIC, legacy and next-gen (docs/api/12): a script
+  // naming the engine package gets a [JavaPackage ...] placeholder, so `new`
+  // is a catchable TypeError. Without this a script could build a Context,
+  // decompile emulator-installed functions or mint an unguarded scope.
+  const ENGINE_REFUSED = "TypeError: [JavaPackage org.mozilla.javascript.Context] is not a function, it is object.";
+  const engineRoutes: Array<[string, string]> = [
+    ["Packages.org... construct", `new Packages.org.mozilla.javascript.Context()`],
+    ["org... construct", `new org.mozilla.javascript.Context()`],
+    [
+      "decompileFunction route",
+      `new Packages.org.mozilla.javascript.Context().decompileFunction(function () {}, 0)`,
+    ],
+    [
+      "fresh standard scope route",
+      `new Packages.org.mozilla.javascript.Context().initStandardObjects().Function.prototype.toSource()`,
+    ],
+  ];
+  for (const [what, js] of engineRoutes) {
+    it(`author access to the engine package is refused as AM refuses it: ${what}`, async () => {
+      const result = await attempt(js, true);
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe(ENGINE_REFUSED);
+    });
+  }
+
+  it("JavaImporter(Packages.org.mozilla.javascript) yields no Context, as measured", async () => {
+    const result = await attempt(
+      `(function () { var i = JavaImporter(Packages.org.mozilla.javascript); if (typeof i.Context !== "undefined") throw new Error(typeof i.Context); })()`,
+      true
+    );
+    expect(result.ok, result.error).toBe(true);
+  });
+
+  it("typeof the engine package and class is still 'object', as measured", async () => {
+    const result = await attempt(
+      `(function () { if (typeof Packages.org.mozilla.javascript.Context !== "object") throw new Error("typeof"); })()`,
+      true
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("internal engine use still works under the shutter: template literals", async () => {
+    const result = await attempt(
+      "(function () { var who = 'w'; var s = `hi ${who} ${1 + 1}`; if (s !== 'hi w 2') throw new Error(s); })()",
+      true
+    );
+    expect(result.ok, result.error).toBe(true);
+  });
 });

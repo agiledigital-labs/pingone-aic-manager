@@ -923,6 +923,16 @@ language-fidelity cases on the bindings runner. Library top-level `const` also
 passes (`lib-const-consumer`); loop-body `const` inside a library function still
 yields `"0,0,0"` (`lib-const-loop-consumer`), matching live.
 
+## Native error location inside the `toSource` wrapper (2026-11-10)
+
+`Function.prototype.toSource` is wrapped (script source in the preamble) so a
+branded detail member refuses. A native error raised inside it, such as
+`Function.prototype.toSource.call(new java.util.ArrayList())`, keeps its kind
+and message (`InternalError: Cannot find default value for object.`) but ends
+`(<preamble>#NNNN)` where bare Rhino ends in the author's script and line.
+Preserving it would need the wrapper in Java; not done. Pinned by
+`test/bindings/tosource-native-error-location.e2e.test.ts`.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not

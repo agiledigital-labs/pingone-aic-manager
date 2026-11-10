@@ -78,10 +78,36 @@ final class AmClassShutter implements ClassShutter {
    */
   private static final String ENGINE_PACKAGE = "org.mozilla.javascript.";
 
+  /**
+   * Whether this lookup is a script naming a class, rather than the engine
+   * using one of its own.
+   *
+   * <p>Measured 2026-11-10 on AIC, legacy and next-gen alike: {@code
+   * Packages.org.mozilla.javascript.Context} and {@code
+   * org.mozilla.javascript.Context} resolve to a {@code [JavaPackage ...]}
+   * placeholder (so {@code new} is {@code TypeError: [JavaPackage
+   * org.mozilla.javascript.Context] is not a function, it is object.}), exactly
+   * as any class off the allow-list does. A script cannot construct a Context,
+   * so it cannot decompile an emulator-installed function or mint a fresh
+   * unguarded scope. Rhino resolves a script-written name only through {@code
+   * NativeJavaPackage.getPkgProperty} (the importer and {@code JavaImporter}
+   * paths end there too), so that frame tells the two callers apart.
+   */
+  private static final StackWalker WALKER = StackWalker.getInstance();
+
+  private static boolean namedByScript() {
+    return WALKER.walk(
+        frames ->
+            frames.anyMatch(
+                f ->
+                    f.getMethodName().equals("getPkgProperty")
+                        && f.getClassName().equals("org.mozilla.javascript.NativeJavaPackage")));
+  }
+
   @Override
   public boolean visibleToScripts(String fullClassName) {
     if (fullClassName.startsWith(ENGINE_PACKAGE)) {
-      return true;
+      return !namedByScript();
     }
     for (String name : exact) {
       if (name.equals(fullClassName)) {
