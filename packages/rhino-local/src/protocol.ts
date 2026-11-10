@@ -66,6 +66,13 @@ export interface JobRequest {
    * which is the pre-shutter behaviour.
    */
   classAllowList?: string[];
+  /**
+   * Exact class names to hide, with everything else visible: the legacy
+   * evaluator's shutter, which has no allow-list. Hides the engine package by
+   * script-written name too. Not a confinement, so the pool still treats the
+   * job as unshuttered. Ignored when `classAllowList` is present.
+   */
+  classDenyList?: string[];
   /** Evaluated first, so author line numbers on `source` stay intact. */
   preamble?: string;
   preambleName?: string;

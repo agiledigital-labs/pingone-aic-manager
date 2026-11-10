@@ -58,6 +58,8 @@ export class CaseRunError extends Error {
  * as {@link casePreamble}'s parts, so the runner compiles the mocks and each
  * library once per JVM instead of once per case.
  */
+const LEGACY_DENIED_CLASSES = ["java.lang.Class"];
+
 export async function runCase(
   runner: RhinoRunner,
   input: Case,
@@ -87,6 +89,10 @@ export async function runCase(
     options.classShutter !== false && kase.given.engine !== "legacy";
   if (shutterApplies) {
     request.classAllowList = decisionNodeClassAllowList();
+  } else if (options.classShutter !== false) {
+    // Legacy: no allow-list, but the two refusals measured on both engines
+    // (docs/api/12, 2026-11-10) — the engine package and java.lang.Class.
+    request.classDenyList = LEGACY_DENIED_CLASSES;
   }
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {

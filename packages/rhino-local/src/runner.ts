@@ -818,6 +818,9 @@ export class RhinoRunner {
     if (job.classAllowList !== undefined) {
       payload.classAllowList = job.classAllowList;
     }
+    if (job.classDenyList !== undefined) {
+      payload.classDenyList = job.classDenyList;
+    }
     if (job.resultGlobal !== undefined) {
       payload.resultGlobal = job.resultGlobal;
     }
