@@ -116,6 +116,8 @@ describe("request value lists under concat, String and JSON.stringify match the 
     ["[].concat.apply", "JSON.stringify([].concat.apply([], requestParameters.get(\"q\")))"],
     ["Array.prototype.push.apply", "var a = []; Array.prototype.push.apply(a, requestParameters.get(\"q\")); JSON.stringify(a)"],
     ["reading length", "requestHeaders.get(\"x-zero\").length"],
+    // keys/values/entries are lazy: the iterator reads the guarded surface at its first next().
+    ["the first next() of a borrowed keys iterator", "Array.prototype.keys.call(requestParameters.get(\"q\")).next()"],
   ])("%s of a size-zero list faults request-list-unmeasured, even when caught", async (_name, read) => {
     expectHarnessFault("request-list-unmeasured");
     const response = await runner.eval({

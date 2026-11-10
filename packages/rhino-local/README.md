@@ -44,8 +44,13 @@ here and failed on the tenant.
 measured on 2026-11-10. An empty header or parameter is a list of one empty
 string, and a key not sent is `null`, so `[].concat(missing)` is `[null]`.
 A size-zero list was therefore never seen on AIC: a `[]` seed is accepted and
-answers `size()` (0), but its `length`, `String(v)`, `concat`, `JSON.stringify`
-and every array method borrowed onto it fault `request-list-unmeasured`. Beyond those, only `size()` and `get(i)` with an index in range were measured.
+answers `size()` (0), but reading its `length`, rendering it (`String(v)`,
+`toString`, `valueOf`, coercion), `concat` and `JSON.stringify` fault
+`request-list-unmeasured`. An array method borrowed onto it faults when it
+reads that surface: `slice`, `map` or `Array.from` at once, but `keys`,
+`values` and `entries` return an iterator and fault at its first `next()`.
+On the JVM `Array.prototype.toString.call(v)` faults too; under node:vm (the
+binding test helpers) it is `"[object Object]"`, unfaulted. Beyond those, only `size()` and `get(i)` with an index in range were measured.
 Any other call shape (`get()`, `get("0")`, an out-of-range index, `size(1)`)
 and every other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`,
 `iterator`, …) faults `request-list-unmeasured`. One gap: an out-of-range
