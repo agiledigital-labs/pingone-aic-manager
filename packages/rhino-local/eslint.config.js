@@ -21,6 +21,8 @@ export default tseslint.config(
       "test/fixtures/oidc-claims/*.script.js",
       "test/fixtures/social-idp/*.script.js",
       "test/fixtures/config-provider/*.script.js",
+      "test/fixtures/oauth2-validate-scope/*.script.js",
+      "test/fixtures/oauth2-may-act/*.script.js",
     ],
   },
   eslint.configs.recommended,
