@@ -651,11 +651,22 @@ function __rhinoLocalCtxBuildIdentity(seed) {
   var attrs = seed.attributes;
   if (legacy) {
     var cls = "com.sun.identity.idm.AMIdentity";
+    // AMIdentity hands back the same String object on every call: measured
+    // 2026-11-10 (access-token modification), `identity.getName() ===
+    // identity.getName()` is true while getName() === getClientId() of the
+    // same text is false. So each getter makes its string once.
+    var names = {};
+    var once = function (key, text) {
+      if (!Object.prototype.hasOwnProperty.call(names, key)) {
+        names[key] = __rhinoLocalCtxJavaString(text);
+      }
+      return names[key];
+    };
     __rhinoLocalCtxMethod(identity, "identity", cls, "getName", 0, function () {
-      return __rhinoLocalCtxJavaString(seed.name);
+      return once("name", seed.name);
     });
     __rhinoLocalCtxMethod(identity, "identity", cls, "getUniversalId", 0, function () {
-      return __rhinoLocalCtxJavaString(seed.universalId);
+      return once("universalId", seed.universalId);
     });
     __rhinoLocalCtxMethod(identity, "identity", cls, "isExists", 0, function () {
       return seed.exists;

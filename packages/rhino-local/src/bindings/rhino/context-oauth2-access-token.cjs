@@ -431,6 +431,11 @@ function __rhinoLocalSeedAccessToken(given) {
   given = given || {};
   __rhinoLocalCtxBegin(given.engine);
   var engine = __rhinoLocalCtx.engine;
+  // Legacy strings are real java.lang.String objects, as in OIDC claims:
+  // measured 2026-11-10, `identity.getName() == identity.getName()` is true
+  // inside a function, which two string views cannot reproduce
+  // (context-common.cjs, __rhinoLocalCtxJavaString).
+  __rhinoLocalCtx.realJavaStrings = engine === "legacy";
   var unbound = __rhinoLocalAtUnbound.both.concat(engine === "legacy" ? __rhinoLocalAtUnbound.legacy : []);
   var i;
   for (i = 0; i < unbound.length; i += 1) {

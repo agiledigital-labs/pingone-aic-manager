@@ -1,0 +1,30 @@
+{
+  "body": {
+    "expires_in": 3599,
+    "scope": "zzemuc3-probe",
+    "token_type": "Bearer"
+  },
+  "captured": "2026-11-10, sandbox tenant, stateless client_credentials token for client zzemuC3-atm (rhino-local ctx3)",
+  "http": 200,
+  "probe": {
+    "directTypeof": "object",
+    "inFn": {
+      "concatTypeof": "string",
+      "lengthTypeof": "function",
+      "looseLiteral": true,
+      "looseNameClientId": true,
+      "looseNameUniversalId": false,
+      "looseSelf": true,
+      "strictLiteral": false,
+      "strictNameClientId": false,
+      "strictSelf": true,
+      "tag": "[object JavaObject]",
+      "text": "zzemuC3-atm",
+      "typeofClientId": "object",
+      "typeofName": "object"
+    },
+    "topVarStrictLiteral": true,
+    "topVarTypeof": "string",
+    "viaArgTypeof": "object"
+  }
+}
