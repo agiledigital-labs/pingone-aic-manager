@@ -37,10 +37,23 @@ final class AmClassShutter implements ClassShutter {
 
   private final String[] exact;
   private final String[] prefixes;
+  /** Non-null for the deny-only form: everything is visible except these exact names. */
+  private final String[] denied;
 
-  private AmClassShutter(String[] exact, String[] prefixes) {
+  private AmClassShutter(String[] exact, String[] prefixes, String[] denied) {
     this.exact = exact;
     this.prefixes = prefixes;
+    this.denied = denied;
+  }
+
+  /**
+   * The legacy evaluator's shutter: no allow-list (legacy resolves {@code
+   * new java.util.HashMap()}), but the same two measured refusals as next-gen
+   * (docs/api/12, 2026-11-10): the engine package by script-written name, and
+   * the exact class names in {@code denied} (here {@code java.lang.Class}).
+   */
+  static AmClassShutter denying(List<String> denied) {
+    return new AmClassShutter(new String[0], new String[0], denied.toArray(new String[0]));
   }
 
   /** Build from the descriptor's `allowLists` entries. */
@@ -58,7 +71,7 @@ final class AmClassShutter implements ClassShutter {
       }
     }
     return new AmClassShutter(
-        exactNames.toArray(new String[0]), prefixNames.toArray(new String[0]));
+        exactNames.toArray(new String[0]), prefixNames.toArray(new String[0]), null);
   }
 
   /**
@@ -108,6 +121,14 @@ final class AmClassShutter implements ClassShutter {
   public boolean visibleToScripts(String fullClassName) {
     if (fullClassName.startsWith(ENGINE_PACKAGE)) {
       return !namedByScript();
+    }
+    if (denied != null) {
+      for (String name : denied) {
+        if (name.equals(fullClassName)) {
+          return false;
+        }
+      }
+      return true;
     }
     for (String name : exact) {
       if (name.equals(fullClassName)) {

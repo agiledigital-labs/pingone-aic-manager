@@ -101,10 +101,10 @@ public final class Runner {
     // Undefined caches an identity hash at class initialization. Initialize on
     // the reader, before workers race: its diagnostic text must agree across JVMs.
     Class.forName("org.mozilla.javascript.Undefined");
-    // No job Context comes from the global factory, but the class shutter
-    // always admits org.mozilla.javascript, so a shuttered script could reach
-    // it and add a listener that outlives its file. Install and seal one
-    // here: a sealed factory refuses listeners and class-loader changes, and
+    // No job Context comes from the global factory, but the engine package is
+    // visible to the engine and, with no shutter (raw runner, IDM), to scripts
+    // by name, so a script could reach it and add a listener that outlives its
+    // file. Install and seal one here: a sealed factory refuses listeners and class-loader changes, and
     // installing it makes a later initGlobal throw.
     org.mozilla.javascript.ContextFactory global = new org.mozilla.javascript.ContextFactory();
     org.mozilla.javascript.ContextFactory.initGlobal(global);
@@ -332,8 +332,10 @@ public final class Runner {
     }
 
     final List<String> classAllowList;
+    final List<String> classDenyList;
     try {
       classAllowList = Json.optionalStringList(job, "classAllowList");
+      classDenyList = Json.optionalStringList(job, "classDenyList");
     } catch (RuntimeException e) {
       return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
     }
@@ -361,6 +363,11 @@ public final class Runner {
       // pass that context's allowLists.
       if (classAllowList != null) {
         cx.setClassShutter(AmClassShutter.of(classAllowList));
+      } else if (classDenyList != null) {
+        // The deny-only form is not a confinement: it leaves System and Thread
+        // visible, so shuttered() is still false and the pool still discards
+        // this JVM.
+        cx.setClassShutter(AmClassShutter.denying(classDenyList));
       }
       if (cx instanceof AmContextFactory.ObservedContext) {
         ((AmContextFactory.ObservedContext) cx).timeoutMs = timeoutMs;

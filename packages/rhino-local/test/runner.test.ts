@@ -48,8 +48,23 @@ describe("RhinoRunner", () => {
     expect(response.value).toBe(100);
   });
 
-  // The shutter always admits org.mozilla.javascript, so a shuttered script
-  // can reach the global ContextFactory; it must not be able to change it.
+  // A raw job with no shutter names engine classes freely, so the global
+  // factory must be sealed against it. (A shuttered job cannot name it at all:
+  // the next test.)
+  it("the global ContextFactory is sealed against an unshuttered script", async () => {
+    const response = await runner.eval({
+      source: `(function () {
+        var f = Packages.org.mozilla.javascript.ContextFactory.getGlobal();
+        var refused;
+        try { f.addListener(null); refused = "accepted"; } catch (e) { refused = String(e.javaException || e); }
+        return String(f.isSealed()) + "|" + refused;
+      })()`,
+      timeoutMs: 2_000,
+    });
+    expect(response.outcome).toBe("ok");
+    expect(String(response.value)).toMatch(/^true\|.*IllegalStateException/);
+  });
+
   it("a shuttered script cannot name the engine's ContextFactory (it was the sealed-factory probe)", async () => {
     // Author-named access to org.mozilla.javascript.* is refused the way AM
     // refuses it (docs/api/12, 2026-11-10), so the global factory is not
