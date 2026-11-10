@@ -69,6 +69,32 @@ describe("OAUTH2_MAY_ACT case validation", () => {
     }
   });
 
+  it("P2-5 refuses access-token members and grants this context does not implement", () => {
+    expect(() => validateCase(maCase({}, { accessToken: { fields: { custom: "seeded" } } }))).toThrow(/fields\.custom/);
+    expect(() => validateCase(maCase({}, { accessToken: { fields: { expires_in: 60, custom: "seeded" } } }))).toThrow(/custom/);
+    expect(() => validateCase(maCase({}, { accessToken: { resourceOwnerId: "user" } }))).toThrow(/resourceOwnerId/);
+    expect(() => validateCase(maCase({}, { accessToken: { audience: ["a"] } }))).toThrow(/audience/);
+    expect(() => validateCase(maCase({}, { accessToken: { nonce: "n" } }))).toThrow(/nonce/);
+    expect(() => validateCase(maCase({}, { accessToken: { claims: "c" } }))).toThrow(/claims/);
+    expect(() => validateCase(maCase({}, { accessToken: { grantType: "authorization_code" } }))).toThrow(/client_credentials/);
+    expect(() => validateCase(maCase({}, { request: { params: { grant_type: ["authorization_code"] } } }))).toThrow(/grant_type/);
+  });
+
+  it("P2-5 accepts the measured access-token subset", () => {
+    const kase = defineCase({
+      name: "subset",
+      script: "x.js",
+      context: MA,
+      given: {
+        accessToken: { clientId: "client-a", grantType: "client_credentials", realm: "/alpha", scope: ["read"], fields: { expires_in: 60 } },
+      },
+      expect: { mayAct: { issued: false } },
+    });
+    expect(kase.given.accessToken).toEqual({
+      clientId: "client-a", grantType: "client_credentials", realm: "/alpha", scope: ["read"], fields: { expires_in: 60 },
+    });
+  });
+
   it("checks the expectation by shape", () => {
     expect(() => validateCase(maCase({ mayAct: { issued: "no" } }))).toThrow(/issued must be a boolean/);
     expect(() => validateCase(maCase({ mayAct: { scope: ["a", "a"] } }))).toThrow(/lists "a" twice/);

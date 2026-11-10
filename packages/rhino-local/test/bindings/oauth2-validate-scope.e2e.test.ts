@@ -188,4 +188,204 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     const { effects } = await run("mutate", "function validateAccessTokenScope() { requestedScopes.add(\"zzemuc5-c\"); return requestedScopes; }");
     expect([...effects.validateScope!.granted!].sort()).toEqual(["zzemuc5-a", "zzemuc5-b", "zzemuc5-c"]);
   }, 60_000);
+
+  const strict = (
+    name: string,
+    source: string,
+    validateScope: { requested?: string[]; allowed?: string[]; defaults?: string[] },
+    granted: string[],
+  ) => runCase(runner, defineCase({
+    name: `${name} ${engine}`,
+    context: "OAUTH2_VALIDATE_SCOPE",
+    script: source,
+    given: { engine, validateScope },
+    expect: { validateScope: { granted } },
+  }));
+
+  // Sol ctx r5 P2-1. The capture's TreeSet values were already sorted, so
+  // these rows are the ones that tell insertion order from sorted order.
+  if (engine === "legacy") {
+    it("P2-1 TreeSet toArray is sorted, so the first allowed scope is a", async () => {
+      const { effects } = await strict(
+        "p2-1-order",
+        "function validateAccessTokenScope() { return [String(allowedScopes.toArray()[0])]; }",
+        { allowed: ["b", "a"] },
+        ["a"],
+      );
+      expect(effects.validateScope!.granted).toEqual(["a"]);
+    }, 60_000);
+
+    it("P2-1 TreeSet add inserts in order", async () => {
+      const { effects } = await strict(
+        "p2-1-add",
+        "function validateAccessTokenScope() { allowedScopes.add(\"a\"); return [JSON.stringify(allowedScopes)]; }",
+        { allowed: ["b", "c"] },
+        ['["a","b","c"]'],
+      );
+      expect(effects.validateScope!.granted).toEqual(['["a","b","c"]']);
+    }, 60_000);
+
+    it("P2-1 TreeSet seeds are unique", async () => {
+      const { effects } = await strict(
+        "p2-1-dupe",
+        "function validateAccessTokenScope() { return [String(allowedScopes.size())]; }",
+        { allowed: ["a", "a"] },
+        ["1"],
+      );
+      expect(effects.validateScope!.granted).toEqual(["1"]);
+    }, 60_000);
+
+    it("P2-1 defaultScopes is a TreeSet too", async () => {
+      const { effects } = await strict(
+        "p2-1-defaults",
+        "function validateAccessTokenScope() { return [String(defaultScopes.toArray()[0])]; }",
+        { defaults: ["b", "a"] },
+        ["a"],
+      );
+      expect(effects.validateScope!.granted).toEqual(["a"]);
+    }, 60_000);
+
+    it("P2-1 HashSet seeds are unique and stay in first-seen order", async () => {
+      const size = await strict(
+        "p2-1-hash-dupe",
+        "function validateAccessTokenScope() { return [String(requestedScopes.size())]; }",
+        { requested: ["a", "a"] },
+        ["1"],
+      );
+      expect(size.effects.validateScope!.granted).toEqual(["1"]);
+      const order = await strict(
+        "p2-1-hash-order",
+        "function validateAccessTokenScope() { return [String(requestedScopes.toArray()[0])]; }",
+        { requested: ["b", "a"] },
+        ["b"],
+      );
+      expect(order.effects.validateScope!.granted).toEqual(["b"]);
+    }, 60_000);
+  }
+
+  // Sol ctx r5 P2-4. Catching the denial and returning a list is measured.
+  // Reading the exception is not, and must fault even when that read is caught.
+  const caught = engine === "next-gen"
+    ? "scopeValidatorHelper.throwInvalidScope(\"denied\")"
+    : "throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(\"denied\")";
+  const detailId = engine === "next-gen"
+    ? "oauth2-validate-scope-unmeasured/scopeValidatorHelper.throwInvalidScope().message"
+    : "oauth2-validate-scope-unmeasured/InvalidScopeException.message";
+
+  it("P2-4 reading a caught denial's message is a named fault", async () => {
+    expectHarnessFault(detailId);
+    const error = await strict(
+      "p2-4-message",
+      `function validateAccessTokenScope() { try { ${caught}; } catch (e) { return [e.message]; } }`,
+      {},
+      ["read"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+    expect(ids).toContain(detailId);
+  }, 60_000);
+
+  it("P2-4 reading a caught denial's name is a named fault", async () => {
+    const id = detailId.replace(/\.message$/, ".name");
+    expectHarnessFault(id);
+    const error = await strict(
+      "p2-4-name",
+      `function validateAccessTokenScope() { try { ${caught}; } catch (e) { return [e.name]; } }`,
+      {},
+      ["JavaException"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+    expect(ids).toContain(id);
+  }, 60_000);
+
+  it("P2-4 String() of a caught denial is a named fault", async () => {
+    const id = detailId.replace(/\.message$/, ".toString");
+    expectHarnessFault(id);
+    const error = await strict(
+      "p2-4-string",
+      `function validateAccessTokenScope() { try { ${caught}; } catch (e) { return [String(e)]; } }`,
+      {},
+      ["JavaException"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+    expect(ids).toContain(id);
+  }, 60_000);
+
+  it("P2-4 a caught read of the message still faults when the script recovers", async () => {
+    expectHarnessFault(detailId);
+    const error = await strict(
+      "p2-4-recover",
+      `function validateAccessTokenScope() { try { ${caught}; } catch (e) { try { return [e.message]; } catch (e2) { return ["read"]; } } }`,
+      {},
+      ["read"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+    expect(ids).toContain(detailId);
+  }, 60_000);
+
+  // Sol ctx r5 P2-6. Scope-list JSON, concat and slice must not apply to the
+  // request value. String, length, size and [i] stay, because those were measured.
+  // Legacy does not bind requestProperties (the capture is a ReferenceError).
+  if (engine === "next-gen") {
+    it("P2-6 JSON.stringify of a request value faults", async () => {
+      const id = "oauth2-validate-scope-unmeasured/requestProperties";
+      expectHarnessFault(id);
+      const error = await strict(
+        "p2-6-json",
+        "function validateAccessTokenScope() { return [JSON.stringify(requestProperties.requestParams.grant_type)]; }",
+        {},
+        ['["client_credentials"]'],
+      ).then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(CaseRunError);
+      const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+      expect(ids).toContain(id);
+    }, 60_000);
+  }
+
+  if (engine === "next-gen") {
+    it("P2-6 concat and slice of a request value fault", async () => {
+      const id = "oauth2-validate-scope-unmeasured/requestProperties";
+      for (const source of [
+        "function validateAccessTokenScope() { return [String([].concat(requestProperties.requestParams.grant_type).length)]; }",
+        "function validateAccessTokenScope() { return [String(Array.prototype.slice.call(requestProperties.requestParams.grant_type).length)]; }",
+      ]) {
+        expectHarnessFault(id);
+        const error = await strict("p2-6-route", source, {}, ["1"]).then(() => null, (e: unknown) => e);
+        expect(error).toBeInstanceOf(CaseRunError);
+        const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+        expect(ids).toContain(id);
+      }
+    }, 60_000);
+
+    it("P2-6 a request value still answers String, length, size and [i]", async () => {
+      const { effects } = await strict(
+        "p2-6-measured",
+        "function validateAccessTokenScope() { var g = requestProperties.requestParams.grant_type; return [String(g) + \"|\" + g[0] + \"|\" + g.length + \"|\" + g.size()]; }",
+        {},
+        ["[client_credentials]|client_credentials|1|1"],
+      );
+      expect(effects.validateScope!.granted).toEqual(["[client_credentials]|client_credentials|1|1"]);
+    }, 60_000);
+
+    it("P3-1 toArray().filter is a TypeError, and slice().filter grants the kept scope", async () => {
+      const thrown = await strict(
+        "p3-1-filter",
+        "function validateAccessTokenScope() { return requestedScopes.toArray().filter(function (s) { return s !== \"admin\"; }); }",
+        { requested: ["read", "admin"] },
+        ["read"],
+      ).then(() => null, (e: unknown) => e);
+      expect(thrown).toBeInstanceOf(CaseRunError);
+      expect((thrown as Error).message).toMatch(/filter/);
+      const { effects } = await strict(
+        "p3-1-slice",
+        "function validateAccessTokenScope() { return Array.prototype.slice.call(requestedScopes).filter(function (s) { return s !== \"admin\"; }); }",
+        { requested: ["read", "admin"], allowed: ["read", "admin"] },
+        ["read"],
+      );
+      expect(effects.validateScope!.granted).toEqual(["read"]);
+    }, 60_000);
+  }
 });

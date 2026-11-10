@@ -1175,10 +1175,11 @@ What it approximates or leaves out:
 - **Legacy node state.** `nodeState.get` answers a JsonValue (measured for a
   string, a number, a nested object, a boolean and a transient value) of
   which only String conversion and `JSON.stringify` answer; an absent key is
-  `null`. A key holding `null` faults. `nodeState.keys()` is runtime.cjs's
-  live list, measured: a key the script had just put is listed, and so are
-  transient keys. This is the opposite of the social context, whose
-  `keys()` is a start-of-script snapshot. AM's own keys (`authLevel`,
+  `null`. A key holding `null` faults. `nodeState.keys()` is a guarded
+  live set: `iterator()`, `hasNext()` and `next()` answer, `String()` of each
+  key is the key, and membership is live (a key put earlier in the script is
+  listed, and so are transient keys). Every other member faults. This is the
+  opposite of the social context, whose `keys()` is a start-of-script snapshot. AM's own keys (`authLevel`,
   `maxAuthenticationSessionDuration`, `realm`, `username`) appear only if the
   case seeds them.
 - **`idRepository` and `journey` under `for...in`.** AIC lists their Java
@@ -1218,20 +1219,29 @@ with the token's `scope` or AM's error. What it approximates or leaves out:
   `identity` has a null `AMIdentity`: `exists()` is `false`, `getName()` is
   AIC's `InternalError`, and every other member faults. A grant with a user
   (`password`, token exchange) was not measured here.
-- **What a script that catches a denial reads.** `throwInvalidScope(msg)` and
-  legacy `new InvalidScopeException(msg)` raise a Java exception whose message
-  says it was not measured; AM's own exception object was not inspected. A
-  script that catches it and returns a list gets that list (measured on
-  next-gen). `throwInvalidScope()` with no argument, an object or a boolean
+- **What a script that catches a denial reads.** An uncaught
+  `throwInvalidScope(msg)` or legacy `new InvalidScopeException(msg)` is the
+  measured HTTP 400, with `msg` as the `error_description`. The thrown value
+  is a plain object, matched by identity at the harvest. Reading `message` or
+  `name`, or calling `String(e)`, faults even inside `catch`
+  (`...throwInvalidScope().message`, `.name`, `.toString`, and the legacy
+  `InvalidScopeException` forms): none of those was measured. Rhino calls
+  `toString` once while it wraps the throw, and that one call does not fault;
+  the script's own `String(e)` is a later call and does. A script that catches
+  the exception and returns a list without reading it still succeeds
+  (measured). `throwInvalidScope()` with no argument, an object or a boolean
   faults: AIC answers the request with a 500, but whether the call itself
   throws something the script could catch was not observed.
 - **`for...in` over the Java bindings.** AIC lists the Java members of
   `scopeValidatorHelper` and of the legacy sets, `java.lang.Object`'s
   included; the emulator lists only its own JS members.
-- **Legacy set order.** `requestedScopes` is a `java.util.HashSet`, whose
-  iteration order is the JVM's hash order; the emulator keeps the seed's
-  order. `allowedScopes` and `defaultScopes` are `TreeSet`s, sorted on AIC and
-  in the seed order here. A case that depends on the order should sort.
+- **Legacy set order.** `requestedScopes` is a `java.util.HashSet`: duplicate
+  seeds collapse and the remaining order is first-seen, not the JVM's hash
+  order. `allowedScopes` and `defaultScopes` are `TreeSet`s: unique, and
+  ordered by Java's string order on the seed and on `add()`.
+- **Request value lists.** `String`, `length`, `size()` and `[i]` answer.
+  `JSON.stringify`, `[].concat` and `Array.prototype.slice` fault: those were
+  measured on the scope lists, not on `requestProperties`.
 - **Legacy set iterators.** `requestedScopes.iterator()` answers a Java
   iterator on AIC whose members were not read; here every member of it
   faults. A `TreeSet`'s is the class shutter's refusal on both.
@@ -1271,6 +1281,13 @@ What it approximates or leaves out:
   value is `null` was not read.
 - **`cookieName`'s value** on next-gen. The capture records `typeof`
   `string`. The characters were not read.
+- **`scopes.toArray()`.** The capture records `typeof`, `Array.isArray`,
+  `length` and `typeof [i]`. `JSON.stringify`, borrowed Array methods and
+  index writes fault.
+- **Request value lists.** `String`, `length` and `[i]` answer.
+  `JSON.stringify`, `[].concat` and `Array.prototype.slice` fault. JSON was
+  measured on `scopes`, not on the request, and concat and slice were already
+  refused.
 - **Legacy scope order and the iterator.** `scopes` is a `java.util.HashSet`,
   whose iteration order is the JVM's hash order; the emulator keeps the
   seed's order. `iterator()` answers a Java iterator on AIC whose members

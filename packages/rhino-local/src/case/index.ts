@@ -46,6 +46,7 @@ export type {
   ValidateScopeEffect,
   ValidateScopeExpect,
   ValidateScopeSeed,
+  MayActAccessTokenSeed,
   MayActCaseInit,
   MayActEffect,
   MayActExpect,

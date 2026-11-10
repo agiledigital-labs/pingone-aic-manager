@@ -16,6 +16,7 @@ import type {
   MayActExpect,
   ClientSeed,
   Engine,
+  JsonObject,
   ExpectedValue,
   ExpectKey,
   GivenKey,
@@ -239,6 +240,49 @@ const SEED_KEYS = [
   "auditTrackingId",
   "authGrantId",
 ] as const;
+
+const MAY_ACT_TOKEN_KEYS = ["clientId", "grantType", "realm", "scope", "fields"] as const;
+
+/**
+ * The access-token members OAUTH2_MAY_ACT actually reads. Anything else is
+ * refused: the overlay would drop it and a case could go green on a fixture
+ * the script never sees (Sol ctx r5 P2-5). Only `client_credentials` was
+ * measured.
+ */
+export function parseMayActAccessTokenSeed(raw: unknown, path: string): AccessTokenSeed {
+  const obj = plain(raw, path, MAY_ACT_TOKEN_KEYS);
+  const out: AccessTokenSeed = {};
+  if (obj.clientId !== undefined) out.clientId = str(obj.clientId, `${path}.clientId`);
+  if (obj.grantType !== undefined) {
+    if (obj.grantType !== "client_credentials") {
+      throw new Error(
+        `rhino-local: ${path}.grantType must be "client_credentials" until another grant is measured`
+      );
+    }
+    out.grantType = "client_credentials";
+  }
+  if (obj.realm !== undefined) out.realm = str(obj.realm, `${path}.realm`);
+  if (obj.scope !== undefined) out.scope = scopeSet(obj.scope, `${path}.scope`);
+  if (obj.fields !== undefined) {
+    const fields = plain(obj.fields, `${path}.fields`);
+    const parsed: JsonObject = {};
+    for (const key of Object.keys(fields)) {
+      if (key !== "expires_in") {
+        throw new Error(
+          `rhino-local: ${path}.fields.${key} is not measured on a may-act token; only expires_in was read`
+        );
+      }
+    }
+    if (fields.expires_in !== undefined) {
+      if (typeof fields.expires_in !== "number" || !Number.isFinite(fields.expires_in)) {
+        throw new Error(`rhino-local: ${path}.fields.expires_in must be a finite number`);
+      }
+      parsed.expires_in = fields.expires_in;
+    }
+    out.fields = parsed;
+  }
+  return out;
+}
 
 export function parseAccessTokenSeed(raw: unknown, path: string): AccessTokenSeed {
   const obj = plain(raw, path, SEED_KEYS);

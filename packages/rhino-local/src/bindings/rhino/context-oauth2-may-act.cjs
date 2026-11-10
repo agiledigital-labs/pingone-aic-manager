@@ -68,6 +68,35 @@ __rhinoLocalListKinds.oauth2MayAct = {
   genericReceiver: false,
 };
 
+// scopes.toArray(). The capture records typeof, Array.isArray, length and
+// typeof [i] only (next-gen element "string", legacy "object"). JSON,
+// borrowed Array methods and index writes were not measured (Sol ctx r5 P2-2).
+__rhinoLocalListKinds.oauth2MayActArray = {
+  id: "oauth2-may-act-unmeasured/scopes.toArray()",
+  noun: "scopes.toArray()",
+  measured: "only typeof, Array.isArray, length and typeof [i] were measured",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: false,
+  genericReceiver: false,
+};
+
+// A requestProperties value. The probe records String, length, [i] and the
+// JavaList tag. JSON was not measured; the scope list's json:true must not
+// apply here (Sol ctx r5 P2-6). concat and generic receivers were already
+// refused by the scope-list kind.
+__rhinoLocalListKinds.oauth2MayActRequest = {
+  id: "oauth2-may-act-unmeasured/requestProperties",
+  noun: "a may-act request value",
+  measured: "only length, size(), [i], String(v) and the [object JavaList] tag were measured",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: false,
+  genericReceiver: false,
+};
+
 __rhinoLocalCtx.prefix = "oauth2-may-act-unmeasured";
 __rhinoLocalCtx.noun = "OAuth2 may act";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2MayAct;
@@ -464,11 +493,43 @@ function __rhinoLocalMaNoMethod(cls, name, args) {
   return __rhinoLocalInternalError("Can't find method " + cls + "." + name + "(" + __rhinoLocalMaSignature(args) + ").");
 }
 
-function __rhinoLocalMaMethod(target, cls, name, arity, fn) {
+// Same arity gate as __rhinoLocalCtxMethod, but a refused count throws
+// through __rhinoLocalMaNoMethod. A script object is a java.lang.Object, and
+// the shared signature's getClass() is the next-gen class shutter
+// ("Access to Java class \"java.lang.Class\" is prohibited") where the
+// capture says setMayAct(object,object).
+function __rhinoLocalMaMethod(target, cls, name, arity, fn, measuredRefusal) {
   __rhinoLocalHide(target, name, function () {
-    if (arguments.length !== arity) {throw __rhinoLocalMaNoMethod(cls, name, arguments);}
+    var refused = false;
+    var i;
+    if (arguments.length !== arity) {
+      if (measuredRefusal) {
+        for (i = 0; i < measuredRefusal.length; i += 1) {
+          if (measuredRefusal[i] === arguments.length) {
+            refused = true;
+          }
+        }
+      }
+      if (refused) {
+        throw __rhinoLocalMaNoMethod(cls, name, arguments);
+      }
+      throw __rhinoLocalCtxUnmeasured("token." + name + "(" + __rhinoLocalArgShape(arguments) + ")",
+        "with " + arguments.length + " argument(s); only " + arity + " was measured");
+    }
     return fn.apply(this, arguments);
   });
+}
+
+// scopes.toArray(): a list view so JSON, concat and borrowed Array methods
+// fault, and an index write is audited. size/get/toString/getClass come with
+// every list view and were not measured on this value, so they fault too.
+// The tag was not measured. Elements stay JS strings on next-gen and Java
+// strings on legacy, which is what typeof [i] recorded.
+function __rhinoLocalMaToArray(items) {
+  var list = __rhinoLocalListView(items, __rhinoLocalListKinds.oauth2MayActArray);
+  __rhinoLocalCtxFaulting(list, "scopes.toArray()", ["size", "get", "toString", "getClass"]);
+  __rhinoLocalCtxTag(list, null, "scopes.toArray()");
+  return __rhinoLocalCtxWatch(list, "scopes.toArray()");
 }
 
 function __rhinoLocalMaAssign(which, value, cls, name, args) {
@@ -519,11 +580,7 @@ function __rhinoLocalMaNgScopes(items) {
     for (i = 0; i < store.length; i += 1) {fn(store[i]);}
   });
   __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "toArray", 0, function () {
-    var out = {};
-    var i;
-    for (i = 0; i < store.length; i += 1) {out[i] = store[i];}
-    __rhinoLocalHide(out, "length", store.length);
-    return out;
+    return __rhinoLocalMaToArray(store.slice());
   });
   __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "iterator", 0, function () {
     throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
@@ -564,11 +621,10 @@ function __rhinoLocalMaLegacyScopes(items) {
     for (k = 0; k < store.length; k += 1) {fn(store[k]);}
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "toArray", 0, function () {
-    var arr = {};
+    var items = [];
     var k;
-    for (k = 0; k < store.length; k += 1) {arr[k] = __rhinoLocalCtxJavaString(store[k]);}
-    __rhinoLocalHide(arr, "length", store.length);
-    return arr;
+    for (k = 0; k < store.length; k += 1) {items.push(__rhinoLocalCtxJavaString(store[k]));}
+    return __rhinoLocalMaToArray(items);
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "iterator", 0, function () {
     var it = __rhinoLocalCtxBare();
@@ -596,18 +652,22 @@ function __rhinoLocalMaToken() {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var cls = legacy ? __rhinoLocalMaLegClass : __rhinoLocalMaNgClass;
   var view = legacy ? {} : __rhinoLocalCtxBare();
+  // Ordinary overload errors only for the counts the captures record.
+  // getAct and setAct have no captured wrong count, so any other count
+  // faults even when the script catches it (Sol ctx r5 P2-3). setMayAct with
+  // two arguments was captured on next-gen only.
   __rhinoLocalMaMethod(view, cls, "getMayAct", 0, function () {
     return __rhinoLocalMaReadSlot("may");
-  });
+  }, [1]);
   __rhinoLocalMaMethod(view, cls, "getAct", 0, function () {
     return __rhinoLocalMaReadSlot("act");
   });
   __rhinoLocalMaMethod(view, cls, "getField", 1, function (key) {
     return __rhinoLocalMaField(key);
-  });
+  }, [0]);
   __rhinoLocalMaMethod(view, cls, "setMayAct", 1, function (value) {
     __rhinoLocalMaAssign("may", value, cls, "setMayAct", arguments);
-  });
+  }, legacy ? [0] : [0, 2]);
   __rhinoLocalMaMethod(view, cls, "setAct", 1, function (value) {
     __rhinoLocalMaAssign("act", value, cls, "setAct", arguments);
   });
@@ -715,7 +775,9 @@ function __rhinoLocalSeedMayAct(given) {
   token = __rhinoLocalMaToken();
   scopes = legacy ? __rhinoLocalMaLegacyScopes(d.scope) : __rhinoLocalMaNgScopes(d.scope);
   identity = __rhinoLocalCtxBuildIdentity(d.identity, { tag: "JavaObject" });
-  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, { paramsGetMissing: true, javaTags: true });
+  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, {
+    paramsGetMissing: true, javaTags: true, listKind: __rhinoLocalListKinds.oauth2MayActRequest,
+  });
   __rhinoLocalCtxTag(requestProperties, "JavaMap", "requestProperties");
   clientProperties = __rhinoLocalCtxBuildClient(d.client, { redirectUris: true, javaTags: true, setTag: "JavaObject" });
   __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");

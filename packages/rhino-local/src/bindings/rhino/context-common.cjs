@@ -58,9 +58,11 @@ function __rhinoLocalCtxNoMethod(className, name, args) {
 
 // Install a method that answers only at its measured argument count. Any
 // other count is a named fault, because which overloads a Java method has is
-// unknown here. `measuredRefusal` is for the methods whose wrong-count call
-// AIC was seen to refuse with Rhino's ordinary overload error (accessToken
-// setField/getField, 2026-11-10); only those throw it.
+// unknown here. `measuredRefusal` true admits Rhino's ordinary overload error
+// for every wrong count, which is what accessToken setField/getField do
+// (2026-11-10). May-act's token methods do not use this helper: a refused
+// count there has to name a script object as "object", and this helper's
+// signature calls getClass() on one.
 function __rhinoLocalCtxMethod(target, label, className, name, arity, fn, measuredRefusal) {
   __rhinoLocalHide(target, name, function () {
     if (arguments.length !== arity) {
@@ -387,28 +389,47 @@ function __rhinoLocalCtxString(text) {
   return text;
 }
 
-// A Java list, through runtime.cjs's list view with the context's own kind.
-// Watched like the other views (Sol ctx r2 P2-3): an index write or a
-// replaced method is found by the harvest audit.
-function __rhinoLocalCtxList(items, label) {
-  var list = __rhinoLocalListView(items, __rhinoLocalCtx.listKind);
+// A Java list, through runtime.cjs's list view. `kind` omitted uses the
+// context's own kind; a caller passes one when this list was measured
+// separately from the context's scope lists (Sol ctx r5 P2-6). Watched like
+// the other views (Sol ctx r2 P2-3): an index write or a replaced method is
+// found by the harvest audit.
+function __rhinoLocalCtxList(items, label, kind) {
+  var list = __rhinoLocalListView(items, kind || __rhinoLocalCtx.listKind);
   __rhinoLocalCtxTag(list, null, label || "a Java list");
   return __rhinoLocalCtxWatch(list, label || "list");
 }
 
-// A legacy java.util.HashSet: no `length`, `[i]` is AIC's InternalError
+// A legacy java.util set: no `length`, `[i]` is AIC's InternalError
 // (measured for index 0; the rest of the range assumed the same), and only
 // size(), contains(), isEmpty(), toArray() and String(v) were measured, plus
-// add() where the caller says so. Element order is AIC's hash order, not
-// reproduced. `javaClass` names the class in the `[i]` message when it is
-// another set (validate scope's TreeSet, measured 2026-11-10).
+// add() where the caller says so. Duplicate members collapse, as a set does.
+// A HashSet or LinkedHashSet keeps first-seen order: the capture's HashSet
+// happened to iterate in seed order, and JVM hash order is not reproduced.
+// A TreeSet is ordered by Java's string order (UTF-16, the same order as
+// Array.prototype.sort on these strings) on the seed and on add() (Sol ctx
+// r5 P2-1). The capture's TreeSet values were already sorted, so that order
+// is the set's measured type, not a value the probe distinguished.
+// `javaClass` names the class in the `[i]` message when it is another set
+// (validate scope's TreeSet, measured 2026-11-10).
 // `tag` is the measured Object.prototype.toString tag, set before the watch.
 // Absent, the tag stays unmeasured and faults.
 function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag) {
   var setClass = javaClass || "java.util.HashSet";
+  var sorted = setClass === "java.util.TreeSet";
   var out = __rhinoLocalCtxBare();
-  var store = items.slice();
+  var store = [];
   var i;
+  var item;
+  for (i = 0; i < items.length; i += 1) {
+    item = items[i];
+    if (store.indexOf(item) === -1) {
+      store.push(item);
+    }
+  }
+  if (sorted) {
+    store.sort();
+  }
   for (i = 0; i < store.length + 8; i += 1) {
     (function (index) {
       Object.defineProperty(out, String(index), {
@@ -457,7 +478,19 @@ function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag) {
     if (store.indexOf(v) !== -1) {
       return false;
     }
-    store.push(v);
+    if (sorted) {
+      var at = store.length;
+      var j;
+      for (j = 0; j < store.length; j += 1) {
+        if (v < store[j]) {
+          at = j;
+          break;
+        }
+      }
+      store.splice(at, 0, v);
+    } else {
+      store.push(v);
+    }
     return true;
   });
   __rhinoLocalHide(out, "toString", function () {
@@ -856,10 +889,13 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
 // `opts.paramsGetMissing`: requestParams.get() of an absent key is null
 // (measured for OIDC claims); otherwise it faults. `opts.javaTags`: the value
 // lists' tag is `[object JavaList]` (measured for validate scope).
+// `opts.listKind`: the value lists' own kind, when it was not measured as
+// the context's scope lists were (Sol ctx r5 P2-6). Omitted, they use the
+// context kind, which is what access-token and OIDC claims measured.
 function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var listOf = function (values) {
-    var list = __rhinoLocalCtxList(values.map(__rhinoLocalCtxString));
+    var list = __rhinoLocalCtxList(values.map(__rhinoLocalCtxString), undefined, opts && opts.listKind);
     if (opts && opts.javaTags) {
       __rhinoLocalCtxTag(list, "JavaList", "a Java list");
     }

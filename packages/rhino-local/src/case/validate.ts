@@ -45,6 +45,7 @@ import type {
   OpenidmFailureStub,
   OpenidmMethod,
   Pattern,
+  ScriptContext,
   StateDiff,
 } from "./types.ts";
 import {
@@ -52,6 +53,7 @@ import {
   checkContextKeys,
   parseAccessTokenExpect,
   parseAccessTokenSeed,
+  parseMayActAccessTokenSeed,
   parseClientSeed,
   parseContext,
   parseIdentitySeed,
@@ -117,7 +119,7 @@ export function validateCase(input: unknown): Case {
     checkContextKeys(context, "given", Object.keys(input.given), "case.given");
   }
   const given =
-    input.given === undefined ? {} : parseGiven(input.given, "case.given");
+    input.given === undefined ? {} : parseGiven(input.given, "case.given", context);
   if (!declaration.engines.includes(given.engine ?? "next-gen")) {
     throw new Error(`rhino-local: context ${context} has no ${given.engine ?? "next-gen"} engine`);
   }
@@ -183,7 +185,7 @@ function parseOutcomes(
   return raw.slice() as readonly string[];
 }
 
-function parseGiven(raw: unknown, path: string): Given {
+function parseGiven(raw: unknown, path: string, context: ScriptContext): Given {
   if (!isPlainObject(raw)) {
     throw new Error(`rhino-local: ${path} is not an object`);
   }
@@ -303,7 +305,9 @@ function parseGiven(raw: unknown, path: string): Given {
     given.bindings = parseBindings(raw.bindings, `${path}.bindings`);
   }
   if (raw.accessToken !== undefined) {
-    given.accessToken = parseAccessTokenSeed(raw.accessToken, `${path}.accessToken`);
+    given.accessToken = context === "OAUTH2_MAY_ACT"
+      ? parseMayActAccessTokenSeed(raw.accessToken, `${path}.accessToken`)
+      : parseAccessTokenSeed(raw.accessToken, `${path}.accessToken`);
   }
   if (raw.identity !== undefined) {
     given.identity = parseIdentitySeed(raw.identity, `${path}.identity`);
@@ -320,6 +324,14 @@ function parseGiven(raw: unknown, path: string): Given {
   }
   if (raw.request !== undefined) {
     given.request = parseTokenRequestSeed(raw.request, `${path}.request`);
+  }
+  if (context === "OAUTH2_MAY_ACT") {
+    const grant = given.request?.params?.grant_type;
+    if (grant !== undefined && (grant.length !== 1 || grant[0] !== "client_credentials")) {
+      throw new Error(
+        `rhino-local: ${path}.request.params.grant_type must be ["client_credentials"] until another grant is measured`
+      );
+    }
   }
   if (raw.oidc !== undefined) {
     given.oidc = parseOidcClaimsSeed(raw.oidc, `${path}.oidc`);
