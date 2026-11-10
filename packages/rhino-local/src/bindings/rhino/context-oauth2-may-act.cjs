@@ -79,20 +79,20 @@ __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2MayAct;
 function __rhinoLocalMaJwt() {
   var parts = ["eyJ"];
   var i;
-  for (i = 0; i < 430; i += 1) parts.push("a");
+  for (i = 0; i < 430; i += 1) {parts.push("a");}
   parts.push(".");
-  for (i = 0; i < 430; i += 1) parts.push("a");
+  for (i = 0; i < 430; i += 1) {parts.push("a");}
   parts.push(".");
-  for (i = 0; i < 435; i += 1) parts.push("a");
+  for (i = 0; i < 435; i += 1) {parts.push("a");}
   var text = parts.join("");
   return text.substring(0, text.length);
 }
 var __rhinoLocalMaJwtText = __rhinoLocalMaJwt();
 
 function __rhinoLocalMaPlain(value) {
-  if (value === null || typeof value !== "object") return false;
-  if (Object.prototype.toString.call(value) !== "[object Object]") return false;
-  if (typeof Object.getPrototypeOf === "function" && Object.getPrototypeOf(value) !== Object.prototype) return false;
+  if (value === null || typeof value !== "object") {return false;}
+  if (Object.prototype.toString.call(value) !== "[object Object]") {return false;}
+  if (typeof Object.getPrototypeOf === "function" && Object.getPrototypeOf(value) !== Object.prototype) {return false;}
   return true;
 }
 
@@ -121,13 +121,13 @@ function __rhinoLocalMaIsJv(value) {
 }
 
 function __rhinoLocalMaKind(raw) {
-  if (raw === __rhinoLocalMaScopeRaw) return "list";
-  if (raw === null || raw === undefined) return "null";
-  if (typeof raw === "string" || __rhinoLocalMaIsJavaString(raw)) return "string";
-  if (typeof raw === "number" || __rhinoLocalMaIsJavaNumber(raw)) return "number";
-  if (typeof raw === "boolean") return "boolean";
-  if (__rhinoLocalMaIsJavaMap(raw)) return "map";
-  if (__rhinoLocalMaIsJavaList(raw) || Array.isArray(raw)) return "list";
+  if (raw === __rhinoLocalMaScopeRaw) {return "list";}
+  if (raw === null || raw === undefined) {return "null";}
+  if (typeof raw === "string" || __rhinoLocalMaIsJavaString(raw)) {return "string";}
+  if (typeof raw === "number" || __rhinoLocalMaIsJavaNumber(raw)) {return "number";}
+  if (typeof raw === "boolean") {return "boolean";}
+  if (__rhinoLocalMaIsJavaMap(raw)) {return "map";}
+  if (__rhinoLocalMaIsJavaList(raw) || Array.isArray(raw)) {return "list";}
   return "other";
 }
 
@@ -136,8 +136,8 @@ function __rhinoLocalMaText(raw) {
 }
 
 function __rhinoLocalMaListSize(raw) {
-  if (raw === __rhinoLocalMaScopeRaw) return __rhinoLocalMa.scope.length;
-  if (__rhinoLocalMaIsJavaList(raw)) return raw.size();
+  if (raw === __rhinoLocalMaScopeRaw) {return __rhinoLocalMa.scope.length;}
+  if (__rhinoLocalMaIsJavaList(raw)) {return raw.size();}
   return raw.length;
 }
 
@@ -145,15 +145,15 @@ function __rhinoLocalMaEachItem(raw, fn) {
   var i;
   var n;
   if (raw === __rhinoLocalMaScopeRaw) {
-    for (i = 0; i < __rhinoLocalMa.scope.length; i += 1) fn(__rhinoLocalMa.scope[i]);
+    for (i = 0; i < __rhinoLocalMa.scope.length; i += 1) {fn(__rhinoLocalMa.scope[i]);}
     return;
   }
   if (__rhinoLocalMaIsJavaList(raw)) {
     n = raw.size();
-    for (i = 0; i < n; i += 1) fn(raw.get(i));
+    for (i = 0; i < n; i += 1) {fn(raw.get(i));}
     return;
   }
-  for (i = 0; i < raw.length; i += 1) fn(raw[i]);
+  for (i = 0; i < raw.length; i += 1) {fn(raw[i]);}
 }
 
 function __rhinoLocalMaEachEntry(raw, fn) {
@@ -170,14 +170,14 @@ function __rhinoLocalMaEachEntry(raw, fn) {
     return;
   }
   keys = Object.keys(raw);
-  for (i = 0; i < keys.length; i += 1) fn(keys[i], raw[keys[i]]);
+  for (i = 0; i < keys.length; i += 1) {fn(keys[i], raw[keys[i]]);}
 }
 
 function __rhinoLocalMaMapHas(raw, key) {
-  if (typeof raw.containsKey === "function" && raw.containsKey(key) === true) return true;
+  if (typeof raw.containsKey === "function" && raw.containsKey(key) === true) {return true;}
   var found = false;
   __rhinoLocalMaEachEntry(raw, function (k) {
-    if (k === key) found = true;
+    if (k === key) {found = true;}
   });
   return found;
 }
@@ -185,7 +185,7 @@ function __rhinoLocalMaMapHas(raw, key) {
 function __rhinoLocalMaMapGet(raw, key) {
   if (typeof raw.get === "function") {
     var direct = raw.get(key);
-    if (direct !== null && direct !== undefined) return direct;
+    if (direct !== null && direct !== undefined) {return direct;}
   }
   var found = false;
   var value = null;
@@ -204,9 +204,9 @@ function __rhinoLocalMaMapGet(raw, key) {
 function __rhinoLocalMaRender(raw) {
   var kind = __rhinoLocalMaKind(raw);
   var parts;
-  if (kind === "null") return "null";
-  if (kind === "string") return JSON.stringify(__rhinoLocalMaText(raw));
-  if (kind === "boolean") return raw ? "true" : "false";
+  if (kind === "null") {return "null";}
+  if (kind === "string") {return JSON.stringify(__rhinoLocalMaText(raw));}
+  if (kind === "boolean") {return raw ? "true" : "false";}
   if (kind === "number") {
     var n = __rhinoLocalMaIsJavaNumber(raw) ? Number(String(raw)) : raw;
     return String(n);
@@ -240,12 +240,12 @@ function __rhinoLocalMaJsonView(raw) {
   // and a list's length. A map or a number was not measured and faults.
   __rhinoLocalCtxMethod(out, "JsonValue", "org.forgerock.json.JsonValue", "size", 0, function () {
     var kind = __rhinoLocalMaKind(raw);
-    if (kind === "null" || kind === "string") return 0;
-    if (kind === "list") return __rhinoLocalMaListSize(raw);
+    if (kind === "null" || kind === "string") {return 0;}
+    if (kind === "list") {return __rhinoLocalMaListSize(raw);}
     throw __rhinoLocalCtxUnmeasured("JsonValue.size()", "on a " + kind);
   });
   __rhinoLocalCtxMethod(out, "JsonValue", "org.forgerock.json.JsonValue", "isString", 0, function () {
-    if (__rhinoLocalMaKind(raw) === "string") return true;
+    if (__rhinoLocalMaKind(raw) === "string") {return true;}
     throw __rhinoLocalCtxUnmeasured("JsonValue.isString()", "on a " + __rhinoLocalMaKind(raw));
   });
   __rhinoLocalCtxMethod(out, "JsonValue", "org.forgerock.json.JsonValue", "getObject", 0, function () {
@@ -260,7 +260,7 @@ function __rhinoLocalMaJsonView(raw) {
     }
     // A null JsonValue's get(string) is JS null (legacy surface getAct1Sub).
     // get on a string, number or list was not measured.
-    if (__rhinoLocalMaKind(raw) === "null") return null;
+    if (__rhinoLocalMaKind(raw) === "null") {return null;}
     if (__rhinoLocalMaKind(raw) !== "map") {
       throw __rhinoLocalCtxUnmeasured("JsonValue.get()", "on a " + __rhinoLocalMaKind(raw));
     }
@@ -271,7 +271,7 @@ function __rhinoLocalMaJsonView(raw) {
   });
   __rhinoLocalHide(out, "toJSON", function () {
     // Measured only for a null JsonValue: JSON.stringify yields the six-character string `"null"`.
-    if (__rhinoLocalMaKind(raw) === "null") return "null";
+    if (__rhinoLocalMaKind(raw) === "null") {return "null";}
     throw __rhinoLocalCtxUnmeasured("JSON.stringify(JsonValue)");
   });
   for (i = 0; i < 8; i += 1) {
@@ -310,7 +310,7 @@ function __rhinoLocalMaJsonValueClass(value) {
 function __rhinoLocalMaSeen(seen, value) {
   var i;
   for (i = 0; i < seen.length; i += 1) {
-    if (seen[i] === value) throw __rhinoLocalCtxUnmeasured("token.setMayAct()", "a cycle");
+    if (seen[i] === value) {throw __rhinoLocalCtxUnmeasured("token.setMayAct()", "a cycle");}
   }
   seen.push(value);
 }
@@ -327,10 +327,10 @@ function __rhinoLocalMaNormalize(value, seen, path, claim) {
   var kind;
   var out;
   var desc;
-  if (value === undefined || value === null) return null;
-  if (typeof value === "boolean" || typeof value === "string") return value;
+  if (value === undefined || value === null) {return null;}
+  if (typeof value === "boolean" || typeof value === "string") {return value;}
   if (typeof value === "number") {
-    if (value !== value) return "NaN";
+    if (value !== value) {return "NaN";}
     if (value === Infinity || value === -Infinity) {
       throw __rhinoLocalCtxUnmeasured("token.setMayAct()", "a non-finite number at " + claim + "." + path);
     }
@@ -340,10 +340,10 @@ function __rhinoLocalMaNormalize(value, seen, path, claim) {
     throw __rhinoLocalCtxUnmeasured("token.setMayAct()", "a function at " + claim + "." + path);
   }
   // A boolean put into a LinkedHashMap comes back as java.lang.Boolean.
-  if (__rhinoLocalMaIsJavaBoolean(value)) return value.booleanValue();
-  if (Object.prototype.toString.call(value) === "[object Date]") __rhinoLocalMaDate(path, claim);
-  if (__rhinoLocalMaIsJavaNumber(value)) return __rhinoLocalMaNormalize(Number(String(value)), seen, path, claim);
-  if (__rhinoLocalMaIsJavaString(value)) return String(value);
+  if (__rhinoLocalMaIsJavaBoolean(value)) {return value.booleanValue();}
+  if (Object.prototype.toString.call(value) === "[object Date]") {__rhinoLocalMaDate(path, claim);}
+  if (__rhinoLocalMaIsJavaNumber(value)) {return __rhinoLocalMaNormalize(Number(String(value)), seen, path, claim);}
+  if (__rhinoLocalMaIsJavaString(value)) {return String(value);}
   if (Array.isArray(value) || __rhinoLocalMaIsJavaList(value)) {
     out = [];
     __rhinoLocalMaSeen(seen, value);
@@ -383,17 +383,17 @@ function __rhinoLocalMaDateMessage(key) {
 }
 
 function __rhinoLocalMaBox(value) {
-  if (__rhinoLocalCtx.engine === "legacy") return __rhinoLocalMaJsonView(value);
+  if (__rhinoLocalCtx.engine === "legacy") {return __rhinoLocalMaJsonView(value);}
   return value;
 }
 
 function __rhinoLocalMaReadSlot(which) {
   var slot = __rhinoLocalMa.slots[which];
   if (__rhinoLocalCtx.engine === "legacy") {
-    if (slot.state === "absent" || slot.state === "null") return __rhinoLocalMaJsonView(null);
+    if (slot.state === "absent" || slot.state === "null") {return __rhinoLocalMaJsonView(null);}
     return __rhinoLocalMaJsonView(slot.value);
   }
-  if (slot.state === "value") return slot.value;
+  if (slot.state === "value") {return slot.value;}
   return null;
 }
 
@@ -407,7 +407,7 @@ function __rhinoLocalMaField(key) {
     }
     throw __rhinoLocalInternalError("null");
   }
-  if (typeof key === "number") return __rhinoLocalMaBox(null);
+  if (typeof key === "number") {return __rhinoLocalMaBox(null);}
   if (typeof key === "object") {
     if (legacy || __rhinoLocalMaIsJavaString(key)) {
       if (legacy && !__rhinoLocalMaIsJavaString(key)) {
@@ -423,15 +423,15 @@ function __rhinoLocalMaField(key) {
   }
   key = String(key);
   if (key === "scope") {
-    if (!legacy) throw __rhinoLocalShutterError("java.util.TreeSet");
+    if (!legacy) {throw __rhinoLocalShutterError("java.util.TreeSet");}
     return __rhinoLocalMaJsonView(__rhinoLocalMaScopeRaw);
   }
-  if (key === "may_act") return __rhinoLocalMaReadSlot("may");
-  if (key === "act") return __rhinoLocalMaReadSlot("act");
-  if (key === "client_id" || key === "sub") return __rhinoLocalMaBox(__rhinoLocalMa.clientId);
-  if (key === "grant_type") return __rhinoLocalMaBox(__rhinoLocalMa.grant);
-  if (key === "realm") return __rhinoLocalMaBox(__rhinoLocalMa.realm);
-  if (key === "expires_in") return __rhinoLocalMaBox(__rhinoLocalMa.expires);
+  if (key === "may_act") {return __rhinoLocalMaReadSlot("may");}
+  if (key === "act") {return __rhinoLocalMaReadSlot("act");}
+  if (key === "client_id" || key === "sub") {return __rhinoLocalMaBox(__rhinoLocalMa.clientId);}
+  if (key === "grant_type") {return __rhinoLocalMaBox(__rhinoLocalMa.grant);}
+  if (key === "realm") {return __rhinoLocalMaBox(__rhinoLocalMa.realm);}
+  if (key === "expires_in") {return __rhinoLocalMaBox(__rhinoLocalMa.expires);}
   return __rhinoLocalMaBox(null);
 }
 
@@ -444,18 +444,18 @@ function __rhinoLocalMaSignature(args) {
   var i;
   var value;
   for (i = 0; i < args.length; i += 1) {
-    if (i > 0) out += ",";
+    if (i > 0) {out += ",";}
     value = args[i];
-    if (value === null) out += "null";
-    else if (value === undefined) out += "org.mozilla.javascript.Undefined";
-    else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") out += typeof value;
-    else if (typeof value === "function") out += "function";
+    if (value === null) {out += "null";}
+    else if (value === undefined) {out += "org.mozilla.javascript.Undefined";}
+    else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") {out += typeof value;}
+    else if (typeof value === "function") {out += "function";}
     // A script object is also a java.lang.Object, and its toString tag is not
     // a reliable "[object JavaObject]" here (the shared wrapper). A real Java
     // instance answers instanceof. AIC names a HashMap by its class.
     else if (typeof java !== "undefined" && (value instanceof java.util.Map || value instanceof java.util.Collection || value instanceof java.lang.Throwable)) {
       out += "" + value.getClass().getName();
-    } else out += "object";
+    } else {out += "object";}
   }
   return out;
 }
@@ -466,7 +466,7 @@ function __rhinoLocalMaNoMethod(cls, name, args) {
 
 function __rhinoLocalMaMethod(target, cls, name, arity, fn) {
   __rhinoLocalHide(target, name, function () {
-    if (arguments.length !== arity) throw __rhinoLocalMaNoMethod(cls, name, arguments);
+    if (arguments.length !== arity) {throw __rhinoLocalMaNoMethod(cls, name, arguments);}
     return fn.apply(this, arguments);
   });
 }
@@ -516,12 +516,12 @@ function __rhinoLocalMaNgScopes(items) {
       throw __rhinoLocalCtxUnmeasured("scopes.forEach(" + __rhinoLocalArgShape(arguments) + ")");
     }
     var i;
-    for (i = 0; i < store.length; i += 1) fn(store[i]);
+    for (i = 0; i < store.length; i += 1) {fn(store[i]);}
   });
   __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "toArray", 0, function () {
     var out = {};
     var i;
-    for (i = 0; i < store.length; i += 1) out[i] = store[i];
+    for (i = 0; i < store.length; i += 1) {out[i] = store[i];}
     __rhinoLocalHide(out, "length", store.length);
     return out;
   });
@@ -561,12 +561,12 @@ function __rhinoLocalMaLegacyScopes(items) {
       throw __rhinoLocalCtxUnmeasured("scopes.forEach(" + __rhinoLocalArgShape(arguments) + ")");
     }
     var k;
-    for (k = 0; k < store.length; k += 1) fn(store[k]);
+    for (k = 0; k < store.length; k += 1) {fn(store[k]);}
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "toArray", 0, function () {
     var arr = {};
     var k;
-    for (k = 0; k < store.length; k += 1) arr[k] = __rhinoLocalCtxJavaString(store[k]);
+    for (k = 0; k < store.length; k += 1) {arr[k] = __rhinoLocalCtxJavaString(store[k]);}
     __rhinoLocalHide(arr, "length", store.length);
     return arr;
   });
@@ -624,7 +624,7 @@ function __rhinoLocalMaToken() {
       }
       arr = value.toArray();
       items = [];
-      for (i = 0; i < arr.length; i += 1) items.push(String(arr[i]));
+      for (i = 0; i < arr.length; i += 1) {items.push(String(arr[i]));}
       __rhinoLocalMa.scope = items;
     });
     __rhinoLocalCtxFaulting(view, "token", [
@@ -706,7 +706,7 @@ function __rhinoLocalSeedMayAct(given) {
   __rhinoLocalMa.grant = d.grant;
   __rhinoLocalMa.realm = d.realm;
   __rhinoLocalMa.expires = d.expires;
-  if (given.realm === undefined) realm = d.realm;
+  if (given.realm === undefined) {realm = d.realm;}
   var loggerName = "scripts.OAUTH2_MAY_ACT" + (legacy ? "" : "_NEXT_GEN") + "." +
     __rhinoLocal.loggerScriptId + ".(" + scriptName + ")";
   __rhinoLocalHide(logger, "getName", function () {
@@ -736,8 +736,8 @@ function __rhinoLocalSeedMayAct(given) {
 }
 
 function __rhinoLocalMaIssued(slot, claim) {
-  if (slot.state === "absent") return { present: false, value: null };
-  if (slot.state === "null") return { present: true, value: null };
+  if (slot.state === "absent") {return { present: false, value: null };}
+  if (slot.state === "null") {return { present: true, value: null };}
   return { present: true, value: __rhinoLocalMaNormalizeRoot(slot.value, claim) };
 }
 

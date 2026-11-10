@@ -56,7 +56,8 @@ accepted (201) — only a _missing_ one 400s.
 (2026-08-25).** A `PUT` with `"context": "OAUTH2_MAY_ACT"` and
 `"evaluatorVersion": "2.0"` returns **201 echoing `"1.0"`** — no error, no
 warning, and the script then runs under the legacy evaluator with legacy
-semantics (a JS object literal passed to `token.setMayAct` fails there). Pick
+semantics (a JS object literal passed to `token.setMayAct` fails there;
+a `JsonValue` does not — `docs/api/99`, 2026-11-10). Pick
 the `_NEXT_GEN` context id when you want v2. See
 [22-token-exchange.md](22-token-exchange.md).
 

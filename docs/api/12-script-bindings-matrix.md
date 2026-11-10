@@ -1561,8 +1561,9 @@ would have gotten wrong:
   flavours by flipping `statelessTokensEnabled`, so it is the context and not
   the implementation: the error names `StatelessAccessToken` in one run and
   `StatefulAccessToken` in the other. `setMayAct` **is** callable in
-  `OAUTH2_MAY_ACT_NEXT_GEN`, which is the only context that is meant to stamp
-  the claim — and stamping it is not decoration. `may_act` is what makes an
+  `OAUTH2_MAY_ACT_NEXT_GEN` (a plain object) and in legacy `OAUTH2_MAY_ACT`
+  (a `JsonValue`; 2026-11-10, the may-act section below) — and stamping it is
+  not decoration. `may_act` is what makes an
   RFC 8693 token exchange legal at all: without a claim naming the acting
   client, every exchange is refused with `400 invalid_request "Invalid token
   exchange."`, the same message four unrelated causes produce. See
@@ -2142,6 +2143,86 @@ in and out of the client's list. And
 `OAUTH2_VALIDATE_SCOPE` among the contexts with 0 bindings; that is the
 context descriptor, and the legacy runtime binds the seven globals above
 (`docs/api/99-quirks-and-open-questions.md`, 2026-11-10).
+
+### OAuth2 may act on both engines: the emulator's probes (verified 2026-11-10)
+
+`OAUTH2_MAY_ACT` (legacy, `1.0`) and `OAUTH2_MAY_ACT_NEXT_GEN` (`2.0`),
+measured for the rhino-local may-act context. Both exist: a client's
+`overrideOAuth2ClientConfig.accessTokenMayActScript` accepts a script of
+either context, and AM runs either. There is no plugin-type companion; the
+script id is enough (`docs/api/05-oauth2-oidc.md`).
+
+**Method.** A throwaway `alpha` client with `statelessTokensEnabled`, scopes
+`zzemuc6-a` and `zzemuc6-b`, default scope `zzemuc6-a`, and the probe as its
+may-act script. Each probe was one `client_credentials` token request. The
+surface probe carries its record out inside the issued `may_act` claim. 38
+result cases (29 on next-gen, 19 on legacy; some are one engine only) pin
+what AM stamps: the issued token's `may_act` and `act`, its `scope`, or the
+error AM answers. `<absent>` in the captures is a missing claim, which is
+not JSON null. The probes and their sanitised captures are
+`packages/rhino-local/test/fixtures/oauth2-may-act/`;
+`test/bindings/oauth2-may-act.e2e.test.ts` runs the same scripts in the
+emulator. Both scripts and the client were deleted afterwards and their
+deletion confirmed by re-read. No user was created.
+
+#### What AM does with the script
+
+AM runs the body. The top-level value is ignored. If the script returns, AM
+stamps `may_act` and `act` from the token and issues the access token. A
+throw is HTTP 500 and discards a claim set earlier in the same script. The
+generic refusal is `Error running may_act script`.
+
+| The script | Next-gen | Legacy |
+| --- | --- | --- |
+| does not call `setMayAct` | `200`; both claims `<absent>`; `scope` is the request (`zzemuc6-a`) | same |
+| `setMayAct({ client_id })` | `200`; `may_act` is that object, held by reference (a later write to the same object is in the claim) | `500`, the generic refusal: a plain object is not a `java.util.Map` |
+| `setMayAct(null)` | `200`; `may_act` is JSON null | `200`; `may_act` is `<absent>` (cleared, not JSON null) |
+| `setMayAct(new JsonValue(null))` | not this call | `200`; `may_act` is JSON null |
+| `setMayAct(new JsonValue("…"))` | not this call | `200`; `may_act` is that string |
+| `setMayAct(new JsonValue(linkedHashMap))` | not this call | `200`; `may_act` is the map, held by reference |
+| `setMayAct({})` | `200`; `may_act` is `{}` | `500`, as for any plain object |
+| `setMayAct("…")`, `setMayAct(7)`, `setMayAct([…])`, `setMayAct()` | `500`, the generic refusal | a string is the same `500`; the other three were not separate legacy cases |
+| `setMayAct` of a `java.util.HashMap` | `500`: constructing `java.util.HashMap` is the class shutter | `500`: `Can't find method setMayAct(java.util.HashMap)`, uncaught |
+| a `Date` as a direct property of the object | the script returns; the request is then `500`, `Failed to write json: … JsonMappingException: No Context associated with current Thread` through `may_act` → that `Date` | not measured |
+| `NaN` as a property | `200`; that property is the string `"NaN"` | not measured |
+| `undefined` as a property | `200`; that property is JSON null | not measured |
+| `throw`, including after `setMayAct` succeeded | `500`, the generic refusal; the earlier set is discarded | a top-level `throw` is the same |
+| two `setMayAct` calls | `200`, the last object | `200`, the last JsonValue |
+| `setAct({ sub })` | `200`; `act` is that object; `may_act` stays `<absent>` | a plain object throws, so it does not stamp `act`; `setAct(new JsonValue(…))` does |
+| `token.setScope(new java.util.HashSet(…))` | `setScope` is not a function | `200`; the issued `scope` is that set. The `scopes` binding keeps the request's scopes |
+
+A `Date`, a function or a `RegExp` passed *as* the `setMayAct` argument (not
+as a property) faults in the emulator: those shapes were not what the
+captures called. `Infinity` inside an object was not measured and faults.
+
+#### Bindings
+
+| Binding | Legacy | Next-gen |
+| --- | --- | --- |
+| `token` | `org.forgerock.oauth2.token.stateless.StatelessAccessToken`. `String(token)` is 1300 characters, prefix `eyJ`, two dots; `toString` is a function. `getMayAct()` / `getAct()` of an absent claim is a null JsonValue (`String` `null`, `size()` `0`), not JS `null`. `getField` of `client_id`, `sub`, `grant_type`, `expires_in`, `realm` answers; `getField("scope")` is a JsonValue of the live scope. `getField(null)` is `JavaException` `java.lang.NullPointerException`. `for...in` throws the class shutter for `org.forgerock.oauth2.core.ResourceOwner`. `setField` is a function whose call was not measured (it faults here). `removeField` is `undefined`. Other methods (`getClientId`, `addExtraData`, …) are functions whose calls fault | `org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper`. Five methods only: `getField`, `getAct`, `getMayAct`, `setAct`, `setMayAct`. `setField` and `toString` are absent (`Cannot find function`). `String(token)` is `class@<8 hex>`. `getMayAct()` of an absent claim and of JSON null are both JS `null`. `getField("scope")` is `Access to Java class "java.util.TreeSet" is prohibited`. `getField("client_id")` and `getField("sub")` are the client id; `grant_type` is `client_credentials`; `expires_in` is `3600`; `realm` is `/alpha`. `getField(null)` is `InternalError` whose message is `null`. `getField(7)`, `getField({})` and an absent key are JS `null`. `for...in` lists Java bean members; the emulator does not reproduce that list |
+| `scopes` | `java.util.HashSet`. `String` `[zzemuc6-a]` (no spaces). `[0]` is `Java class "java.util.HashSet" has no public instance field or method named "0"`. No `length`. `forEach` hands JS strings. `contains` wants a string. `toArray()` items are Java strings (`typeof` `object`). `iterator()` is a Java object, `String` `java.util.HashMap$KeyIterator@<hash>`. `JSON.stringify` is a JSON array. `setScope` replaces the token's scope, not this set | `[object JavaList]` of JS strings. `length`, `size()`, `[i]`, `contains(string)`, `forEach` of JS strings, `toArray()` (not a JS array), `JSON.stringify`, `String` `[zzemuc6-a]`. `iterator()` is `Access to Java class "java.util.ArrayList$Itr" is prohibited`. `add()` was not measured and faults |
+| `identity` | bound. `exists` is not a function (`Cannot call property exists`). `String(identity)` is the universal id `id=<clientId>,ou=agentonly,o=alpha,ou=services,ou=am-config` | `exists()` is `true`; `getName()` is the client id; the same universal id |
+| `requestProperties` | a Java map. `requestUri` and `grant_type[0]` are Java strings, so `===` against the literal is `false`. The default request's parameters are `client_id` and `grant_type` | a Java map. `requestUri` and `grant_type[0]` are JS strings (`===` the literal). Same default parameters |
+| `clientProperties` | a Java map of five keys: `redirectUris` is not one of them (reading it is `undefined`). `String` of an empty `customProperties` is `{}` | a Java map that includes `redirectUris`. `String` of an empty `customProperties` is `{  }`. Reading `allowedGrantTypes`, `allowedScopes` or `allowedResponseTypes` is the class shutter (`HashSet`, `TreeSet`, `LinkedHashSet`) |
+| `logger.getName()` | a Java string, `scripts.OAUTH2_MAY_ACT.<script id>.(<script name>)` | a JS string, `scripts.OAUTH2_MAY_ACT_NEXT_GEN.<script id>.(<script name>)` |
+| `realm`, `scriptName`, `systemEnv` | bound; `realm` is `/alpha` | same |
+| `session` | `typeof` `object`. The capture does not show `null` against some other object | `undefined` |
+| `cookieName` | `undefined` | `typeof` `string`. The value was not read |
+| `httpClient`, `secrets`, `openidm`, `utils`, `emailService`, `jwtAssertion`, `jwtValidator`, `policy`, `require` | `undefined` | bound (the decision-node host set; their may-act behaviour was not re-measured here) |
+| `accessToken`, `nodeState`, `sharedState`, `callbacks`, `requestHeaders`, `requestParameters`, `existingSession` | `undefined` | `undefined` |
+| `context` | `Access to Java class "javax.script.SimpleScriptContext" is prohibited` | same |
+| `org.forgerock.json.JsonValue` | a constructor the overlay installs. `new` is required, with one argument: `null`, a string, or a `java.util.Map`. `size()` of null and of a string is `0`; of a list, its length. `get(string)` on a null value is JS `null`. `isString()` is `true` for a string. `getObject()` of a string is a Java string. `String` of a null value is `null`. `[0]` is the no-public-field error. `size()` of a map or a number was not measured and faults | not installed. `java.util` is behind the class shutter, so a script cannot construct one |
+
+Two rows here overturn earlier text. `docs/api/22-token-exchange.md` and
+`docs/api/04-scripts.md` say the same JS body on legacy `OAUTH2_MAY_ACT`
+fails. A plain object does, and that is what those notes called. A
+`JsonValue` does not: the legacy rows above issued the claim.
+`docs/api/13-script-contexts.md` lists legacy `OAUTH2_MAY_ACT` among the
+contexts whose descriptor has 0 bindings, which is true of the descriptor.
+At runtime it binds the globals in this table, and its `token` is a
+`StatelessAccessToken`, not the next-gen five-method wrapper. The next-gen
+descriptor's five names are what the runtime binds: `setField` and `toString`
+are absent (`docs/api/99-quirks-and-open-questions.md`, 2026-11-10).
 
 ### Library `require()` from next-gen access-token modification (verified 2026-07-29)
 

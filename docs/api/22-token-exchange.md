@@ -94,6 +94,11 @@ pin the actor to one identity (the sandbox's pre-existing
 `500 … "Error running may_act script"` — legacy Rhino does not coerce a JS
 object literal into the Java map `setMayAct` wants. Either use the `_NEXT_GEN`
 context, or write Groovy with `JsonValue.json(JsonValue.object(...))`.
+A `JsonValue` is the other measured way. `new org.forgerock.json.JsonValue(map)` over a `java.util.LinkedHashMap`
+is accepted and the claim is issued; `setMayAct(null)` clears the claim
+(absent, not JSON null) and `new JsonValue(null)` writes JSON null
+(measured 2026-11-10, `docs/api/12`, "OAuth2 may act on both engines",
+and `docs/api/99`).
 
 ### `evaluatorVersion` is decided by the context, not by the field
 
