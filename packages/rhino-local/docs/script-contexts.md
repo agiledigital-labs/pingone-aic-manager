@@ -65,7 +65,11 @@ file. It declares four things:
 
 1. **Bindings.** Which globals exist, which are refused, and per engine. The
    overlay (`src/bindings/rhino/context-<slug>.cjs`) is appended to the shared
-   prelude; it deletes the decision-node bindings the context does not have (so
+   prelude after `context-common.cjs`, whose `__rhinoLocalCtx*` helpers (Java
+   strings, sets, maps, lists, method arity, the `Object.prototype.toString`
+   tag, the JSON value check and the harvest's mutation audit) every context
+   builds its views from, with its own fault prefix and list kind. Fix a view
+   defect there, once, not in a context overlay. The overlay deletes the decision-node bindings the context does not have (so
    a stray `nodeState.get()` is the same `ReferenceError` AIC throws), and
    installs the context's own. Shared bindings (`logger`, `httpClient`,
    `openidm`, `systemEnv`, `secrets`, `utils`, `require`) are the decision-node

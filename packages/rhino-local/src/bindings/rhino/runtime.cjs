@@ -919,7 +919,13 @@ function __rhinoLocalArgShape(args) {
 //   some in object [].".
 //
 // Not a JS array, so a script that calls an array method fails here as it
-// fails there. Every other call shape and List member faults `kind.id`. The
+// fails there. Every other call shape and List member faults `kind.id`.
+//
+// A script context's kind (context-common.cjs) may say `json: false`,
+// `concatArgument: false` or `genericReceiver: false` where its own captures
+// did not measure that route; the bridges below then fault instead of
+// borrowing these two kinds' measured behaviour. Absent means allowed, so
+// these two kinds behave as they always have. The
 // legacy engine is not measured and keeps the older shapes.
 var __rhinoLocalListKinds = {
   request: {
@@ -1007,6 +1013,9 @@ function __rhinoLocalListUnmeasured(kind, call) {
     var row;
     for (k = 0; k < arguments.length; k += 1) {
       row = __rhinoLocalListRow(arguments[k]);
+      if (row !== null && row.kind.concatArgument === false) {
+        throw __rhinoLocalListUnmeasured(row.kind, "[].concat(v)");
+      }
       args[k] = row === null ? arguments[k] : original.call([], row.items);
     }
     return original.apply(receiver === null ? this : original.call([], receiver.items), args);
@@ -1036,6 +1045,9 @@ function __rhinoLocalJsonList(value) {
   var row = __rhinoLocalListRow(value);
   if (row === null) {
     return value;
+  }
+  if (row.kind.json === false) {
+    throw __rhinoLocalListUnmeasured(row.kind, "JSON.stringify(v)");
   }
   return row.items.slice();
 }

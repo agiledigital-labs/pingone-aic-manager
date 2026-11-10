@@ -64,6 +64,8 @@ export const sourceAccessTokenBindingsJsonPath = join(repoRoot, "docs", "api", "
 /** `generate`'s verbatim copy of {@link sourceAccessTokenBindingsJsonPath}: the context's class allow-list. */
 export const accessTokenBindingsJsonPath = join(generatedDir, "oauth2-atm-next.json");
 
+/** The view helpers every non-decision context overlay builds on, appended before it. */
+export const bindingsContextCommonPath = join(packageRoot, "src", "bindings", "rhino", "context-common.cjs");
 /** The access-token-modification context's binding overlay, appended to the prelude for that context only. */
 export const bindingsAccessTokenPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-access-token.cjs");
 

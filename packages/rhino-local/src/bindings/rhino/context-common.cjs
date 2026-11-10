@@ -1,0 +1,637 @@
+// Shared view helpers for the non-decision script contexts (OAuth2 access
+// token modification, OIDC claims, ...). Appended to the prelude after
+// runtime.cjs and before the context's own overlay, and only when a case names
+// such a context, so a decision-node case's prelude is byte-for-byte what it
+// was. Same Rhino 1.7.14 restrictions as runtime.cjs: no let, no top-level
+// const, no shorthand, no Map/Set/Symbol/Proxy.
+//
+// The rule every helper here keeps: a behaviour is emulated only where a live
+// capture measured it. Everything else is a named, tallied harness fault,
+// `<prefix>/<binding>.<member>`, where the context's overlay sets `prefix`
+// (for example `oauth2-token-unmeasured`). A catchable ordinary error that AIC
+// was never seen to throw would let a script's try/catch turn a guess into a
+// pass, so the helpers never invent one.
+
+// The top-level scope, so a context seed can remove a global the context does
+// not bind: a script that reads one then gets AIC's ReferenceError.
+var __rhinoLocalTop = this;
+
+// Set by the context overlay (prefix, noun, listKind) and its seed (engine).
+// `views` holds the binding objects whose own properties the harvest audits.
+var __rhinoLocalCtx = {
+  engine: "next-gen",
+  prefix: "context-unmeasured",
+  noun: "script",
+  listKind: null,
+  views: [],
+};
+
+function __rhinoLocalCtxUnmeasured(member, detail) {
+  return __rhinoLocalFault(__rhinoLocalCtx.prefix + "/" + member,
+    "rhino-local: " + member + (detail ? " " + detail : "") +
+      " in the " + __rhinoLocalCtx.noun + " context (" + __rhinoLocalCtx.engine +
+      ") is unmeasured; docs/api/12-script-bindings-matrix.md lists what was measured");
+}
+
+function __rhinoLocalCtxNoMethod(className, name, args) {
+  return __rhinoLocalInternalError("Can't find method " + className + "." + name + "(" +
+    __rhinoLocalScriptSignature(args) + ").");
+}
+
+// Install a method that answers only at its measured argument count. Any
+// other count is a named fault, because which overloads a Java method has is
+// unknown here. `measuredRefusal` is for the methods whose wrong-count call
+// AIC was seen to refuse with Rhino's ordinary overload error (accessToken
+// setField/getField, 2026-11-10); only those throw it.
+function __rhinoLocalCtxMethod(target, label, className, name, arity, fn, measuredRefusal) {
+  __rhinoLocalHide(target, name, function () {
+    if (arguments.length !== arity) {
+      if (measuredRefusal) {
+        throw __rhinoLocalCtxNoMethod(className, name, arguments);
+      }
+      throw __rhinoLocalCtxUnmeasured(label + "." + name + "(" + __rhinoLocalArgShape(arguments) + ")",
+        "with " + arguments.length + " argument(s); only " + arity + " was measured");
+    }
+    return fn.apply(this, arguments);
+  });
+}
+
+function __rhinoLocalCtxFaulting(target, label, names) {
+  var i;
+  for (i = 0; i < names.length; i += 1) {
+    (function (name) {
+      __rhinoLocalHide(target, name, function () {
+        throw __rhinoLocalCtxUnmeasured(label + "." + name + "()");
+      });
+    })(names[i]);
+  }
+}
+
+var __rhinoLocalCtxObjectMethods = ["toString", "getClass", "hashCode", "equals", "wait", "notify", "notifyAll"];
+
+function __rhinoLocalCtxToJSON(target, label) {
+  __rhinoLocalHide(target, "toJSON", function () {
+    throw __rhinoLocalCtxUnmeasured("JSON.stringify(" + label + ")");
+  });
+}
+
+// --- Object.prototype.toString tags -----------------------------------------
+//
+// A Java object's tag on AIC is `[object JavaObject]` (measured for a legacy
+// JsonValue, 2026-11-10). A view carries its tag as a hidden own data property:
+// a string where the tag was measured, `{ label }` where it was not, which
+// faults. Objects without the key reach the native toString untouched.
+var __rhinoLocalTagKey = "__rhinoLocalTag";
+
+function __rhinoLocalCtxTag(target, tag, label) {
+  __rhinoLocalHide(target, __rhinoLocalTagKey, tag === null ? { label: label } : tag);
+}
+
+(function () {
+  "use strict";
+  var original = Object.prototype.toString;
+  __rhinoLocalHide(Object.prototype, "toString", function toString() {
+    if (this !== null && this !== undefined && typeof this === "object") {
+      var own;
+      try {
+        own = Object.getOwnPropertyDescriptor(this, __rhinoLocalTagKey);
+      } catch (e) {
+        own = undefined;
+      }
+      if (own !== undefined && "value" in own) {
+        if (typeof own.value === "string") {
+          return "[object " + own.value + "]";
+        }
+        if (own.value !== null && typeof own.value === "object" && typeof own.value.label === "string") {
+          throw __rhinoLocalCtxUnmeasured("Object.prototype.toString.call(" + own.value.label + ")",
+            "(the Java object's tag)");
+        }
+      }
+    }
+    return original.call(this);
+  });
+})();
+
+// --- Generic Array.prototype receivers ----------------------------------------
+//
+// `Array.prototype.map.call(list, fn)` works on any array-like, so a list view
+// would answer it as a JS array would, where AIC hands over a Java list whose
+// behaviour as such a receiver is unmeasured. Each Array.prototype method is
+// wrapped thinly: a real array takes the native path first and unchanged, any
+// other receiver too, unless it is a list view whose kind says
+// `genericReceiver: false`, which faults. concat keeps runtime.cjs's wrapper.
+(function () {
+  "use strict";
+  var names = Object.getOwnPropertyNames(Array.prototype);
+  var i;
+  for (i = 0; i < names.length; i += 1) {
+    (function (name) {
+      if (name === "constructor" || name === "concat" || name === "length") {
+        return;
+      }
+      var own = Object.getOwnPropertyDescriptor(Array.prototype, name);
+      if (own === undefined || typeof own.value !== "function") {
+        return;
+      }
+      var original = own.value;
+      __rhinoLocalHide(Array.prototype, name, function () {
+        if (!Array.isArray(this)) {
+          var row = __rhinoLocalListRow(this);
+          if (row !== null && row.kind.genericReceiver === false) {
+            throw __rhinoLocalListUnmeasured(row.kind, "Array.prototype." + name + ".call(v, …)");
+          }
+        }
+        return original.apply(this, arguments);
+      });
+    })(names[i]);
+  }
+})();
+
+// --- Mutation audit ----------------------------------------------------------
+//
+// Rhino 1.7.14 has no Proxy, so adding a key to a view, deleting one, or
+// replacing a hidden method cannot be intercepted as it happens. Each binding
+// view is snapshotted when built, and the harvest compares: any difference is
+// a recorded fault naming the view and the key. Writes to a known entry fault
+// at once (its accessor has a faulting setter).
+function __rhinoLocalCtxSnapshot(target) {
+  var names = Object.getOwnPropertyNames(target);
+  var snap = {};
+  var i;
+  var own;
+  for (i = 0; i < names.length; i += 1) {
+    own = Object.getOwnPropertyDescriptor(target, names[i]);
+    Object.defineProperty(snap, names[i], {
+      value: "value" in own ? { value: own.value } : { get: own.get, set: own.set },
+      enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return snap;
+}
+
+function __rhinoLocalCtxWatch(target, label) {
+  __rhinoLocalCtx.views.push({ target: target, label: label, snap: __rhinoLocalCtxSnapshot(target) });
+  return target;
+}
+
+function __rhinoLocalCtxAudit() {
+  var v;
+  var i;
+  var names;
+  var view;
+  var own;
+  var was;
+  var seen;
+  for (v = 0; v < __rhinoLocalCtx.views.length; v += 1) {
+    view = __rhinoLocalCtx.views[v];
+    names = Object.getOwnPropertyNames(view.target);
+    seen = {};
+    for (i = 0; i < names.length; i += 1) {
+      Object.defineProperty(seen, names[i], { value: true, enumerable: true, configurable: true });
+      own = Object.getOwnPropertyDescriptor(view.target, names[i]);
+      was = Object.prototype.hasOwnProperty.call(view.snap, names[i]) ? view.snap[names[i]] : null;
+      if (was === null) {
+        __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(adding a key to the Java object)");
+      } else if ("value" in own ? !("value" in was) || own.value !== was.value : own.get !== was.get || own.set !== was.set) {
+        __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(assigning or redefining a member of the Java object)");
+      }
+    }
+    names = Object.keys(view.snap);
+    for (i = 0; i < names.length; i += 1) {
+      if (!Object.prototype.hasOwnProperty.call(seen, names[i])) {
+        __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(deleting a member of the Java object)");
+      }
+    }
+  }
+}
+
+// --- Value views -------------------------------------------------------------
+
+function __rhinoLocalCtxBare() {
+  return typeof Object.create === "function" ? Object.create(null) : {};
+}
+
+// A java.lang.String as the legacy engine hands it over: typeof "object",
+// String(v) and `"" + v` give the text, `v == "x"` is true and `v === "x"` is
+// false, and `length` is a method. Java's other String methods are unmeasured.
+function __rhinoLocalCtxJavaString(text) {
+  if (text === null || text === undefined) {
+    return null;
+  }
+  var value = String(text);
+  var out = __rhinoLocalCtxBare();
+  __rhinoLocalHide(out, "toString", function () {
+    return value;
+  });
+  __rhinoLocalHide(out, "valueOf", function () {
+    return value;
+  });
+  __rhinoLocalHide(out, "length", function () {
+    return value.length;
+  });
+  __rhinoLocalCtxFaulting(out, "java.lang.String", [
+    "charAt", "codePointAt", "compareTo", "compareToIgnoreCase", "concat", "contains", "contentEquals", "endsWith",
+    "equals", "equalsIgnoreCase", "getBytes", "getClass", "hashCode", "indexOf", "intern", "isBlank", "isEmpty",
+    "lastIndexOf", "lines", "matches", "repeat", "replace", "replaceAll", "replaceFirst", "split", "startsWith",
+    "strip", "substring", "toCharArray", "toLowerCase", "toUpperCase", "trim", "slice", "match", "search",
+  ]);
+  __rhinoLocalCtxToJSON(out, "a Java string");
+  __rhinoLocalCtxTag(out, null, "a Java string");
+  return out;
+}
+
+// A legacy java.lang.Integer: typeof "object", String(v) gives the digits.
+function __rhinoLocalCtxJavaNumber(n) {
+  var out = __rhinoLocalCtxBare();
+  __rhinoLocalHide(out, "toString", function () {
+    return String(n);
+  });
+  __rhinoLocalHide(out, "valueOf", function () {
+    return n;
+  });
+  __rhinoLocalCtxFaulting(out, "java.lang.Integer", [
+    "intValue", "longValue", "doubleValue", "equals", "compareTo", "hashCode", "getClass",
+  ]);
+  __rhinoLocalCtxToJSON(out, "a Java number");
+  __rhinoLocalCtxTag(out, null, "a Java number");
+  return out;
+}
+
+function __rhinoLocalCtxIsEmpty(value) {
+  if (Array.isArray(value)) {
+    return value.length === 0;
+  }
+  return Object.keys(value).length === 0;
+}
+
+// The JsonValue a legacy getField / getAct hands back: typeof "object",
+// member reads such as `v.a` are undefined, String(v) is the JSON-ish
+// rendering (`"hello"`, `42.0`, `{ "a": 1.0 }`), and the
+// Object.prototype.toString tag is `[object JavaObject]` (all measured
+// 2026-11-10). size() was measured only on a null value (0).
+function __rhinoLocalCtxJsonValue(value) {
+  var out = __rhinoLocalCtxBare();
+  __rhinoLocalHide(out, "toString", function () {
+    if (value !== null && typeof value === "object" && __rhinoLocalCtxIsEmpty(value)) {
+      throw __rhinoLocalCtxUnmeasured("String(JsonValue)", "of an empty object or array");
+    }
+    return __rhinoLocalJavaMapString(value);
+  });
+  __rhinoLocalHide(out, "size", function () {
+    if (value === null && arguments.length === 0) {
+      return 0;
+    }
+    throw __rhinoLocalCtxUnmeasured("JsonValue.size()", "on a non-null value");
+  });
+  __rhinoLocalCtxFaulting(out, "JsonValue", [
+    "get", "getObject", "isNull", "isString", "asString", "isMap", "asMap", "isList", "asList", "isNumber",
+    "asNumber", "asInteger", "asLong", "asDouble", "isBoolean", "asBoolean", "put", "add", "remove", "keys",
+    "expect", "required", "defaultTo", "getPointer", "copy", "clone", "isDefined", "contains", "iterator",
+    "getClass", "hashCode", "equals",
+  ]);
+  __rhinoLocalCtxToJSON(out, "a JsonValue");
+  __rhinoLocalCtxTag(out, "JavaObject", "a JsonValue");
+  return out;
+}
+
+// The engine's string: a JS string on next-gen, a Java string on legacy.
+function __rhinoLocalCtxString(text) {
+  if (__rhinoLocalCtx.engine === "legacy") {
+    return __rhinoLocalCtxJavaString(text);
+  }
+  return text;
+}
+
+// A Java list, through runtime.cjs's list view with the context's own kind.
+function __rhinoLocalCtxList(items, label) {
+  var list = __rhinoLocalListView(items, __rhinoLocalCtx.listKind);
+  __rhinoLocalCtxTag(list, null, label || "a Java list");
+  return list;
+}
+
+// A legacy java.util.HashSet: no `length`, `[i]` is AIC's InternalError
+// (measured for index 0; the rest of the range assumed the same), and only
+// size(), contains(), isEmpty(), toArray() and String(v) were measured, plus
+// add() where the caller says so. Element order is AIC's hash order, not
+// reproduced.
+function __rhinoLocalCtxJavaSet(items, label, addable) {
+  var out = __rhinoLocalCtxBare();
+  var store = items.slice();
+  var i;
+  for (i = 0; i < store.length + 8; i += 1) {
+    (function (index) {
+      Object.defineProperty(out, String(index), {
+        enumerable: false,
+        configurable: true,
+        get: function () {
+          throw __rhinoLocalInternalError('Java class "java.util.HashSet" has no public instance field or method named "' +
+            index + '".');
+        },
+        set: function () {
+          throw __rhinoLocalCtxUnmeasured(label + "[" + index + "]", "assignment");
+        },
+      });
+    })(i);
+  }
+  __rhinoLocalCtxFaulting(out, label, [
+    "addAll", "clear", "containsAll", "equals", "forEach", "getClass", "hashCode", "iterator",
+    "parallelStream", "remove", "removeAll", "removeIf", "retainAll", "spliterator", "stream", "clone",
+  ]);
+  __rhinoLocalCtxMethod(out, label, "java.util.HashSet", "isEmpty", 0, function () {
+    return store.length === 0;
+  });
+  // Measured 2026-09-10 on identity.getAttribute(): toArray() resolves, and
+  // String(v.toArray()[0]) is how a single-valued attribute is read.
+  __rhinoLocalCtxMethod(out, label, "java.util.HashSet", "toArray", 0, function () {
+    var arr = [];
+    var k;
+    for (k = 0; k < store.length; k += 1) {
+      arr.push(__rhinoLocalCtxJavaString(store[k]));
+    }
+    return arr;
+  });
+  __rhinoLocalCtxMethod(out, label, "java.util.HashSet", "size", 0, function () {
+    return store.length;
+  });
+  __rhinoLocalCtxMethod(out, label, "java.util.HashSet", "contains", 1, function (v) {
+    return store.indexOf(String(v)) !== -1;
+  });
+  __rhinoLocalHide(out, "add", function (v) {
+    if (!addable) {
+      throw __rhinoLocalCtxUnmeasured(label + ".add()");
+    }
+    if (arguments.length !== 1 || typeof v !== "string") {
+      throw __rhinoLocalCtxUnmeasured(label + ".add(" + __rhinoLocalArgShape(arguments) + ")");
+    }
+    if (store.indexOf(v) !== -1) {
+      return false;
+    }
+    store.push(v);
+    return true;
+  });
+  __rhinoLocalHide(out, "toString", function () {
+    return "[" + store.join(", ") + "]";
+  });
+  __rhinoLocalCtxToJSON(out, label);
+  __rhinoLocalCtxTag(out, null, label);
+  return __rhinoLocalCtxWatch(out, label);
+}
+
+// Member names every map view defines itself. A seeded key of one of these
+// names cannot be an entry too, so it is refused rather than shadowed.
+var __rhinoLocalCtxMapMethods = [
+  "get", "size", "toString", "toJSON", "containsKey", "containsValue", "entrySet", "keySet", "values", "isEmpty",
+  "put", "putAll", "remove", "clear", "forEach", "getOrDefault", "getClass", "hashCode", "equals",
+  __rhinoLocalTagKey,
+];
+
+// A Java map as the context hands it over. Entries are enumerable accessors,
+// so for...in and dot access see them; an entry whose value was not measured
+// faults on read, and assigning one faults. get(k) answers like dot access,
+// size() is measured, and String(v) only where `render` is given. `methods`
+// overrides members of the faulting list with measured ones
+// ({name: {arity, fn}}).
+function __rhinoLocalCtxMap(label, keys, read, render, aliases, methods) {
+  var map = {};
+  var i;
+  var define = function (key, enumerable, target) {
+    if (__rhinoLocalCtxMapMethods.indexOf(key) !== -1) {
+      throw __rhinoLocalCtxUnmeasured(label + "." + key,
+        "as a seeded key (it shares its name with a Java Map method; the fixture cannot be represented)");
+    }
+    Object.defineProperty(map, key, {
+      enumerable: enumerable,
+      configurable: true,
+      get: function () {
+        return read(target);
+      },
+      set: function () {
+        throw __rhinoLocalCtxUnmeasured(label + "." + key, "assignment");
+      },
+    });
+  };
+  for (i = 0; i < keys.length; i += 1) {
+    define(keys[i], true, keys[i]);
+  }
+  var aliasKeys = aliases ? Object.keys(aliases) : [];
+  for (i = 0; i < aliasKeys.length; i += 1) {
+    if (keys.indexOf(aliasKeys[i]) === -1) {
+      define(aliasKeys[i], false, aliases[aliasKeys[i]]);
+    }
+  }
+  __rhinoLocalHide(map, "get", function (key) {
+    if (arguments.length !== 1) {
+      throw __rhinoLocalCtxUnmeasured(label + ".get(" + __rhinoLocalArgShape(arguments) + ")");
+    }
+    var k = String(key);
+    if (keys.indexOf(k) !== -1) {
+      return read(k);
+    }
+    if (aliases && Object.prototype.hasOwnProperty.call(aliases, k)) {
+      return read(aliases[k]);
+    }
+    throw __rhinoLocalCtxUnmeasured(label + ".get()", "of a key the map does not hold");
+  });
+  __rhinoLocalCtxMethod(map, label, "java.util.Map", "size", 0, function () {
+    return keys.length;
+  });
+  __rhinoLocalHide(map, "toString", function () {
+    if (render === null) {
+      throw __rhinoLocalCtxUnmeasured("String(" + label + ")");
+    }
+    return render();
+  });
+  __rhinoLocalCtxFaulting(map, label, [
+    "containsKey", "containsValue", "entrySet", "keySet", "values", "isEmpty", "put", "putAll", "remove", "clear",
+    "forEach", "getOrDefault", "getClass", "hashCode", "equals",
+  ].filter(function (name) {
+    return !methods || !Object.prototype.hasOwnProperty.call(methods, name);
+  }));
+  if (methods) {
+    Object.keys(methods).forEach(function (name) {
+      __rhinoLocalCtxMethod(map, label, "java.util.Map", name, methods[name].arity, methods[name].fn);
+    });
+  }
+  __rhinoLocalCtxToJSON(map, label);
+  __rhinoLocalCtxTag(map, null, label);
+  return __rhinoLocalCtxWatch(map, label);
+}
+
+// Header lookups are case-insensitive on AIC (measured: `["content-type"]` and
+// `["Content-Type"]` both answer). A JS object cannot be, so each header is
+// reachable by its seeded spelling, all lower case, and Title-Case.
+function __rhinoLocalCtxHeaderAliases(names) {
+  var aliases = {};
+  var i;
+  for (i = 0; i < names.length; i += 1) {
+    Object.defineProperty(aliases, names[i].toLowerCase(), {
+      value: names[i], enumerable: true, configurable: true, writable: true,
+    });
+    Object.defineProperty(aliases, names[i].toLowerCase().replace(/(^|-)([a-z])/g, function (m, dash, c) {
+      return dash + c.toUpperCase();
+    }), { value: names[i], enumerable: true, configurable: true, writable: true });
+  }
+  return aliases;
+}
+
+function __rhinoLocalCtxRenderMap(values, legacy) {
+  var keys = Object.keys(values);
+  var parts = [];
+  var i;
+  for (i = 0; i < keys.length; i += 1) {
+    parts.push(legacy
+      ? keys[i] + "=" + __rhinoLocalCtxRenderLegacy(values[keys[i]])
+      : JSON.stringify(keys[i]) + ": " + __rhinoLocalCtxRenderNext(values[keys[i]]));
+  }
+  return legacy ? "{" + parts.join(", ") + "}" : "{ " + parts.join(", ") + " }";
+}
+
+// Seeded values only: AIC holds them as Java strings, lists and Integers.
+function __rhinoLocalCtxRenderNext(value) {
+  if (Array.isArray(value)) {
+    var parts = [];
+    var i;
+    for (i = 0; i < value.length; i += 1) {
+      parts.push(__rhinoLocalCtxRenderNext(value[i]));
+    }
+    return "[ " + parts.join(", ") + " ]";
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && value % 1 === 0) {
+    return String(value);
+  }
+  throw __rhinoLocalCtxUnmeasured("String(map)", "holding a " + typeof value);
+}
+
+function __rhinoLocalCtxRenderLegacy(value) {
+  if (Array.isArray(value)) {
+    return "[" + value.map(__rhinoLocalCtxRenderLegacy).join(", ") + "]";
+  }
+  if (typeof value === "string" || (typeof value === "number" && value % 1 === 0)) {
+    return String(value);
+  }
+  throw __rhinoLocalCtxUnmeasured("String(map)", "holding a " + typeof value);
+}
+
+// --- Script values handed to a setter ----------------------------------------
+//
+// True only for the shapes JSON describes exactly: a string, finite number,
+// boolean, a dense ordinary array, or an object whose prototype is
+// Object.prototype (or null) and whose own properties are all enumerable data
+// properties, recursively. A Date, RegExp, getter, view or Java object is
+// none of these, and runtime.cjs's __rhinoLocalIsPlainObject (any non-array
+// object) is too loose to tell. `nested` refuses null inside a value, which
+// no capture measured.
+function __rhinoLocalCtxPlainJson(value) {
+  var proto;
+  var names;
+  var i;
+  var own;
+  try {
+    proto = Object.getPrototypeOf(value);
+    names = Object.getOwnPropertyNames(value);
+  } catch (e) {
+    return false;
+  }
+  if (__rhinoLocalListRow(value) !== null) {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    if (proto !== Array.prototype) {
+      return false;
+    }
+    for (i = 0; i < names.length; i += 1) {
+      if (names[i] === "length") {
+        continue;
+      }
+      if (String(Number(names[i]) >>> 0) !== names[i] || Number(names[i]) >= value.length) {
+        return false;
+      }
+      own = Object.getOwnPropertyDescriptor(value, names[i]);
+      if (!("value" in own) || !own.enumerable) {
+        return false;
+      }
+    }
+    return names.length === value.length + 1;
+  }
+  if (proto !== Object.prototype && proto !== null) {
+    return false;
+  }
+  for (i = 0; i < names.length; i += 1) {
+    own = Object.getOwnPropertyDescriptor(value, names[i]);
+    if (!("value" in own) || !own.enumerable) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function __rhinoLocalCtxJsonSafe(value, nested) {
+  var i;
+  var keys;
+  if (value === null) {
+    return !nested;
+  }
+  if (typeof value === "string" || typeof value === "boolean") {
+    return true;
+  }
+  if (typeof value === "number") {
+    return isFinite(value);
+  }
+  if (typeof value !== "object" || !__rhinoLocalCtxPlainJson(value)) {
+    return false;
+  }
+  keys = Object.keys(value);
+  for (i = 0; i < keys.length; i += 1) {
+    if (!__rhinoLocalCtxJsonSafe(value[keys[i]], true)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// A JSON object (not array) by the same rule.
+function __rhinoLocalCtxIsJsonObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && __rhinoLocalCtxPlainJson(value);
+}
+
+// Copy a JSON-safe value into a fresh tree built with own data properties, so
+// a `__proto__` key stays a key.
+function __rhinoLocalCtxCopy(value) {
+  var out;
+  var keys;
+  var i;
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    out = [];
+    for (i = 0; i < value.length; i += 1) {
+      out.push(__rhinoLocalCtxCopy(value[i]));
+    }
+    return out;
+  }
+  out = {};
+  keys = Object.keys(value);
+  for (i = 0; i < keys.length; i += 1) {
+    Object.defineProperty(out, keys[i], {
+      value: __rhinoLocalCtxCopy(value[keys[i]]), enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return out;
+}
+
+// Reset per run, from a context seed.
+function __rhinoLocalCtxBegin(engine) {
+  __rhinoLocalCtx.engine = engine || "next-gen";
+  __rhinoLocalCtx.views = [];
+}
+
+function __rhinoLocalCtxUnbind(names) {
+  var i;
+  for (i = 0; i < names.length; i += 1) {
+    delete __rhinoLocalTop[names[i]];
+  }
+}

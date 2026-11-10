@@ -6,6 +6,7 @@ import type { EnvProfile } from "../profile/types.ts";
 import { managedInvalidDefault, managedPolicy, managedWriteFaults } from "../profile/write-guard.ts";
 import {
   bindingsAccessTokenPath,
+  bindingsContextCommonPath,
   bindingsCrestFilterPath,
   bindingsIdentityPolicyPath,
   bindingsRuntimePath,
@@ -36,10 +37,13 @@ export interface MockPreambleOptions {
   context?: ScriptContext;
 }
 
-/** Each non-decision context's overlay, seed call and harvest call. */
-const CONTEXT_RUNTIME: { readonly [K in ScriptContext]?: { overlay: string; seed: string; harvest: string } } = {
+/**
+ * Each non-decision context's overlays (in load order, after runtime.cjs),
+ * seed call and harvest call. Every context loads context-common.cjs first.
+ */
+const CONTEXT_RUNTIME: { readonly [K in ScriptContext]?: { overlays: readonly string[]; seed: string; harvest: string } } = {
   OAUTH2_ACCESS_TOKEN_MODIFICATION: {
-    overlay: bindingsAccessTokenPath,
+    overlays: [bindingsContextCommonPath, bindingsAccessTokenPath],
     seed: "__rhinoLocalSeedAccessToken",
     harvest: "__rhinoLocalHarvestAccessToken",
   },
@@ -168,16 +172,16 @@ const preludeMemo = new Map<string, { stamp: string; text: string }>();
  * is unchanged by contexts existing, so its runner cache key is too.
  */
 function prelude(context?: ScriptContext): string {
-  const overlay = context === undefined ? undefined : CONTEXT_RUNTIME[context]?.overlay;
+  const overlays = context === undefined ? undefined : CONTEXT_RUNTIME[context]?.overlays;
   const files = [generatedJsPath, bindingsIdentityPolicyPath, bindingsCrestFilterPath, bindingsRuntimePath];
-  if (overlay !== undefined) files.push(overlay);
+  if (overlays !== undefined) files.push(...overlays);
   const stamp = files
     .map((file) => {
       const stat = statSync(file);
       return `${stat.size}:${stat.mtimeMs}`;
     })
     .join("|");
-  const key = overlay ?? "";
+  const key = overlays?.join("|") ?? "";
   const memo = preludeMemo.get(key);
   if (memo?.stamp === stamp) return memo.text;
   const text = files.map((file) => `${readFileSync(file, "utf8")}\n`).join("");
