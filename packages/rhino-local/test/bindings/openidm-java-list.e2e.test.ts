@@ -103,6 +103,8 @@ describe("openidm lists match the live capture", () => {
 
   it.each([
     ["one past the end", 2], ["further past the end", 5], ["negative", -1],
+    // The boundary controls for the beyond-int refusal below: a Java int is still the measured answer.
+    ["at the Java int maximum", 2147483647], ["at the Java int minimum", -2147483648],
   ])("get(i) %s throws the measured InternalError, which a script may catch", async (_name, i) => {
     expect(await value(
       'var r = openidm.query("managed/alpha_user", { _queryFilter: "true" }, ["_id"]).result; ' +
@@ -206,6 +208,11 @@ describe("openidm lists match the live capture", () => {
   it.each([
     ["forEach(fn)", "v.forEach(function () {})"],
     ["get(0.5)", "v.get(0.5)"],
+    // Converting a number wider than a Java int to List.get(int) is unmeasured.
+    ["get(2147483648)", "v.get(2147483648)"],
+    ["get(-2147483649)", "v.get(-2147483649)"],
+    ["get(1e30)", "v.get(1e30)"],
+    ["get(1e30) on an empty result", 'openidm.query("managed/alpha_user", { _queryFilter: "false" }, ["_id"]).result.get(1e30)'],
     ["get(0, 1)", "v.get(0, 1)"],
     ['get("0")', 'v.get("0")'],
     ["get()", "v.get()"],
