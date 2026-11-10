@@ -74,15 +74,18 @@ __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2MayAct;
 
 // String(token) on legacy is a JWT of this length (measured: 1300, prefix
 // eyJ, two dots). The bytes are not a token; the probe records only the shape.
+// Built with join: Rhino's `+=` yields a ConsString, and String(token) then
+// throws "Cannot find default value" because that return is not a primitive.
 function __rhinoLocalMaJwt() {
-  var s = "eyJ";
+  var parts = ["eyJ"];
   var i;
-  for (i = 0; i < 430; i += 1) s += "a";
-  s += ".";
-  for (i = 0; i < 430; i += 1) s += "a";
-  s += ".";
-  for (i = 0; i < 435; i += 1) s += "a";
-  return s;
+  for (i = 0; i < 430; i += 1) parts.push("a");
+  parts.push(".");
+  for (i = 0; i < 430; i += 1) parts.push("a");
+  parts.push(".");
+  for (i = 0; i < 435; i += 1) parts.push("a");
+  var text = parts.join("");
+  return text.substring(0, text.length);
 }
 var __rhinoLocalMaJwtText = __rhinoLocalMaJwt();
 
@@ -107,6 +110,10 @@ function __rhinoLocalMaIsJavaNumber(value) {
 
 function __rhinoLocalMaIsJavaString(value) {
   return typeof java !== "undefined" && value !== null && typeof value === "object" && value instanceof java.lang.String;
+}
+
+function __rhinoLocalMaIsJavaBoolean(value) {
+  return typeof java !== "undefined" && value !== null && typeof value === "object" && value instanceof java.lang.Boolean;
 }
 
 function __rhinoLocalMaIsJv(value) {
@@ -229,17 +236,14 @@ function __rhinoLocalMaJsonView(raw) {
   __rhinoLocalHide(out, "toString", function () {
     return __rhinoLocalMaRender(raw);
   });
-  // A string JsonValue's size is not a function (the surface probe records
-  // "n/a", 2026-11-10). Null returns 0 and a list its length; a map or a
-  // number was not measured and faults.
-  if (__rhinoLocalMaKind(raw) !== "string") {
-    __rhinoLocalCtxMethod(out, "JsonValue", "org.forgerock.json.JsonValue", "size", 0, function () {
-      var kind = __rhinoLocalMaKind(raw);
-      if (kind === "null") return 0;
-      if (kind === "list") return __rhinoLocalMaListSize(raw);
-      throw __rhinoLocalCtxUnmeasured("JsonValue.size()", "on a " + kind);
-    });
-  }
+  // size() is 0 for null and for a string (surface fGrant/fRealm/fSub, 2026-11-10),
+  // and a list's length. A map or a number was not measured and faults.
+  __rhinoLocalCtxMethod(out, "JsonValue", "org.forgerock.json.JsonValue", "size", 0, function () {
+    var kind = __rhinoLocalMaKind(raw);
+    if (kind === "null" || kind === "string") return 0;
+    if (kind === "list") return __rhinoLocalMaListSize(raw);
+    throw __rhinoLocalCtxUnmeasured("JsonValue.size()", "on a " + kind);
+  });
   __rhinoLocalCtxMethod(out, "JsonValue", "org.forgerock.json.JsonValue", "isString", 0, function () {
     if (__rhinoLocalMaKind(raw) === "string") return true;
     throw __rhinoLocalCtxUnmeasured("JsonValue.isString()", "on a " + __rhinoLocalMaKind(raw));
@@ -335,6 +339,8 @@ function __rhinoLocalMaNormalize(value, seen, path, claim) {
   if (typeof value === "function") {
     throw __rhinoLocalCtxUnmeasured("token.setMayAct()", "a function at " + claim + "." + path);
   }
+  // A boolean put into a LinkedHashMap comes back as java.lang.Boolean.
+  if (__rhinoLocalMaIsJavaBoolean(value)) return value.booleanValue();
   if (Object.prototype.toString.call(value) === "[object Date]") __rhinoLocalMaDate(path, claim);
   if (__rhinoLocalMaIsJavaNumber(value)) return __rhinoLocalMaNormalize(Number(String(value)), seen, path, claim);
   if (__rhinoLocalMaIsJavaString(value)) return String(value);
@@ -429,6 +435,42 @@ function __rhinoLocalMaField(key) {
   return __rhinoLocalMaBox(null);
 }
 
+// Rhino's overload message. A script object is also a java.lang.Object, and
+// AIC names that "object"; only a real Java instance ([object JavaObject])
+// contributes its class. Calling getClass() on a script object yields
+// java.lang.Class, which the next-gen shutter refuses.
+function __rhinoLocalMaSignature(args) {
+  var out = "";
+  var i;
+  var value;
+  for (i = 0; i < args.length; i += 1) {
+    if (i > 0) out += ",";
+    value = args[i];
+    if (value === null) out += "null";
+    else if (value === undefined) out += "org.mozilla.javascript.Undefined";
+    else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") out += typeof value;
+    else if (typeof value === "function") out += "function";
+    // A script object is also a java.lang.Object, and its toString tag is not
+    // a reliable "[object JavaObject]" here (the shared wrapper). A real Java
+    // instance answers instanceof. AIC names a HashMap by its class.
+    else if (typeof java !== "undefined" && (value instanceof java.util.Map || value instanceof java.util.Collection || value instanceof java.lang.Throwable)) {
+      out += "" + value.getClass().getName();
+    } else out += "object";
+  }
+  return out;
+}
+
+function __rhinoLocalMaNoMethod(cls, name, args) {
+  return __rhinoLocalInternalError("Can't find method " + cls + "." + name + "(" + __rhinoLocalMaSignature(args) + ").");
+}
+
+function __rhinoLocalMaMethod(target, cls, name, arity, fn) {
+  __rhinoLocalHide(target, name, function () {
+    if (arguments.length !== arity) throw __rhinoLocalMaNoMethod(cls, name, arguments);
+    return fn.apply(this, arguments);
+  });
+}
+
 function __rhinoLocalMaAssign(which, value, cls, name, args) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   if (value === null) {
@@ -456,7 +498,7 @@ function __rhinoLocalMaAssign(which, value, cls, name, args) {
       Object.prototype.toString.call(value) === "[object RegExp]") {
     throw __rhinoLocalCtxUnmeasured("token." + name + "(" + __rhinoLocalArgShape(args) + ")");
   }
-  throw __rhinoLocalCtxNoMethod(cls, name, args);
+  throw __rhinoLocalMaNoMethod(cls, name, args);
 }
 
 function __rhinoLocalMaNgScopes(items) {
@@ -554,21 +596,21 @@ function __rhinoLocalMaToken() {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var cls = legacy ? __rhinoLocalMaLegClass : __rhinoLocalMaNgClass;
   var view = legacy ? {} : __rhinoLocalCtxBare();
-  __rhinoLocalCtxMethod(view, "token", cls, "getMayAct", 0, function () {
+  __rhinoLocalMaMethod(view, cls, "getMayAct", 0, function () {
     return __rhinoLocalMaReadSlot("may");
-  }, true);
-  __rhinoLocalCtxMethod(view, "token", cls, "getAct", 0, function () {
+  });
+  __rhinoLocalMaMethod(view, cls, "getAct", 0, function () {
     return __rhinoLocalMaReadSlot("act");
-  }, true);
-  __rhinoLocalCtxMethod(view, "token", cls, "getField", 1, function (key) {
+  });
+  __rhinoLocalMaMethod(view, cls, "getField", 1, function (key) {
     return __rhinoLocalMaField(key);
-  }, true);
-  __rhinoLocalCtxMethod(view, "token", cls, "setMayAct", 1, function (value) {
+  });
+  __rhinoLocalMaMethod(view, cls, "setMayAct", 1, function (value) {
     __rhinoLocalMaAssign("may", value, cls, "setMayAct", arguments);
-  }, true);
-  __rhinoLocalCtxMethod(view, "token", cls, "setAct", 1, function (value) {
+  });
+  __rhinoLocalMaMethod(view, cls, "setAct", 1, function (value) {
     __rhinoLocalMaAssign("act", value, cls, "setAct", arguments);
-  }, true);
+  });
   if (legacy) {
     __rhinoLocalHide(view, "toString", function () {
       return __rhinoLocalMaJwtText;
@@ -680,6 +722,10 @@ function __rhinoLocalSeedMayAct(given) {
   if (legacy) {
     session = null;
     org.forgerock.json.JsonValue = __rhinoLocalMaJsonValueClass;
+    // Legacy runs with no class shutter (java.util is visible), so the real
+    // SimpleScriptContext binding would answer typeof "object". AIC refuses
+    // the read. ScriptContextScope throws when this flag is set.
+    __rhinoLocalThrowContext = true;
   }
   // `context` is the engine scope's SimpleScriptContext (AmScopes). The scope
   // is not a ScriptableObject, so a getter cannot be installed on it, and
