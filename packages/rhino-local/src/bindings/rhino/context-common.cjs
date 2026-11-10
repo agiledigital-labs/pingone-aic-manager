@@ -225,37 +225,53 @@ function __rhinoLocalCtxRewatch(target) {
   }
 }
 
-function __rhinoLocalCtxAudit() {
-  var v;
+// Compare one view with its snapshot; every difference is a recorded fault.
+function __rhinoLocalCtxAuditView(view) {
   var i;
   var names;
-  var view;
   var own;
   var was;
   var seen;
+  if (view.snap === null) {
+    throw new Error("rhino-local: the context seed never sealed its views (__rhinoLocalCtxSeal)");
+  }
+  names = Object.getOwnPropertyNames(view.target);
+  seen = {};
+  for (i = 0; i < names.length; i += 1) {
+    Object.defineProperty(seen, names[i], { value: true, enumerable: true, configurable: true });
+    own = Object.getOwnPropertyDescriptor(view.target, names[i]);
+    was = Object.prototype.hasOwnProperty.call(view.snap, names[i]) ? view.snap[names[i]] : null;
+    if (was === null) {
+      __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(adding a key to the Java object)");
+    } else if ("value" in own ? !("value" in was) || own.value !== was.value : own.get !== was.get || own.set !== was.set) {
+      __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(assigning or redefining a member of the Java object)");
+    }
+  }
+  names = Object.keys(view.snap);
+  for (i = 0; i < names.length; i += 1) {
+    if (!Object.prototype.hasOwnProperty.call(seen, names[i])) {
+      __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(deleting a member of the Java object)");
+    }
+  }
+}
+
+// Before a measured mutation moves a view's baseline (__rhinoLocalCtxRewatch),
+// audit what changed since the last snapshot, so an earlier unmeasured write
+// (`scopes[0] = "x"`) is recorded rather than adopted into the new baseline
+// (Sol ctx r3 P2-1).
+function __rhinoLocalCtxCheck(target) {
+  var i;
+  for (i = 0; i < __rhinoLocalCtx.views.length; i += 1) {
+    if (__rhinoLocalCtx.views[i].target === target && __rhinoLocalCtx.views[i].snap !== null) {
+      __rhinoLocalCtxAuditView(__rhinoLocalCtx.views[i]);
+    }
+  }
+}
+
+function __rhinoLocalCtxAudit() {
+  var v;
   for (v = 0; v < __rhinoLocalCtx.views.length; v += 1) {
-    view = __rhinoLocalCtx.views[v];
-    if (view.snap === null) {
-      throw new Error("rhino-local: the context seed never sealed its views (__rhinoLocalCtxSeal)");
-    }
-    names = Object.getOwnPropertyNames(view.target);
-    seen = {};
-    for (i = 0; i < names.length; i += 1) {
-      Object.defineProperty(seen, names[i], { value: true, enumerable: true, configurable: true });
-      own = Object.getOwnPropertyDescriptor(view.target, names[i]);
-      was = Object.prototype.hasOwnProperty.call(view.snap, names[i]) ? view.snap[names[i]] : null;
-      if (was === null) {
-        __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(adding a key to the Java object)");
-      } else if ("value" in own ? !("value" in was) || own.value !== was.value : own.get !== was.get || own.set !== was.set) {
-        __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(assigning or redefining a member of the Java object)");
-      }
-    }
-    names = Object.keys(view.snap);
-    for (i = 0; i < names.length; i += 1) {
-      if (!Object.prototype.hasOwnProperty.call(seen, names[i])) {
-        __rhinoLocalCtxUnmeasured(view.label + "." + names[i], "(deleting a member of the Java object)");
-      }
-    }
+    __rhinoLocalCtxAuditView(__rhinoLocalCtx.views[v]);
   }
 }
 
@@ -463,7 +479,10 @@ function __rhinoLocalCtxMap(label, keys, read, render, aliases, methods) {
   var map = {};
   var i;
   var define = function (key, enumerable, target) {
-    if (__rhinoLocalCtxMapMethods.indexOf(key) !== -1) {
+    // The caller's own measured methods are reserved too, so a seeded `keys`
+    // cannot hide behind a context's keys() (Sol ctx r3 P2-3).
+    if (__rhinoLocalCtxMapMethods.indexOf(key) !== -1 ||
+      (methods && Object.prototype.hasOwnProperty.call(methods, key))) {
       throw __rhinoLocalCtxUnmeasured(label + "." + key,
         "as a seeded key (it shares its name with a Java Map method; the fixture cannot be represented)");
     }
@@ -808,6 +827,7 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
     if (arguments.length !== 1 || typeof v !== "string") {
       throw __rhinoLocalCtxUnmeasured("scopes.add(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalCtxCheck(list);
     store.push(v);
     list[store.length - 1] = v;
     __rhinoLocalHide(list, "length", store.length);

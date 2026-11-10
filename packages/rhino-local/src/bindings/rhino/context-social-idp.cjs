@@ -61,6 +61,20 @@ __rhinoLocalCtx.listKind = __rhinoLocalListKinds.socialIdp;
 
 // --- rawProfile ----------------------------------------------------------------
 
+// String(rawProfile): every value goes through the same guard as a direct
+// read, so rendering cannot admit a value type nobody measured (Sol ctx r3
+// P2-2).
+function __rhinoLocalSocialRender(profile, keys) {
+  var i;
+  if (keys.length === 0) {
+    throw __rhinoLocalCtxUnmeasured("String(rawProfile)", "of an empty profile");
+  }
+  for (i = 0; i < keys.length; i += 1) {
+    __rhinoLocalSocialEntry(profile, keys[i], keys[i]);
+  }
+  return __rhinoLocalJavaMapString(profile);
+}
+
 // A profile entry read through a member the measurement reached. Only string
 // values were measured (the provider's userinfo held nothing else).
 function __rhinoLocalSocialEntry(profile, key, member) {
@@ -80,10 +94,7 @@ function __rhinoLocalSocialNextGenProfile(profile) {
   var map = __rhinoLocalCtxMap("rawProfile", keys, function (key) {
     return __rhinoLocalSocialEntry(profile, key, key);
   }, function () {
-    if (keys.length === 0) {
-      throw __rhinoLocalCtxUnmeasured("String(rawProfile)", "of an empty profile");
-    }
-    return __rhinoLocalJavaMapString(profile);
+    return __rhinoLocalSocialRender(profile, keys);
   }, null, {
     get: {
       arity: 1,
@@ -148,10 +159,7 @@ function __rhinoLocalSocialLegacyProfile(profile) {
   var keys = Object.keys(profile);
   var out = __rhinoLocalSocialJsonValue(profile, "rawProfile");
   __rhinoLocalHide(out, "toString", function () {
-    if (keys.length === 0) {
-      throw __rhinoLocalCtxUnmeasured("String(rawProfile)", "of an empty profile");
-    }
-    return __rhinoLocalJavaMapString(profile);
+    return __rhinoLocalSocialRender(profile, keys);
   });
   __rhinoLocalCtxMethod(out, "rawProfile", "org.forgerock.json.JsonValue", "get", 1, function (key) {
     var k = String(key);
