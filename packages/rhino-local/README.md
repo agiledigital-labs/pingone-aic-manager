@@ -43,7 +43,8 @@ here and failed on the tenant.
 `Array.prototype.concat.call(v, …)` and `JSON.stringify` by every route were
 measured on 2026-11-10. An empty header or parameter is a list of one empty
 string, and a key not sent is `null`, so `[].concat(missing)` is `[null]`.
-Beyond those, only `size()` and `get(i)` with an index in range were measured.
+A size-zero list was therefore never seen on AIC: a `[]` seed is accepted, but
+`concat` or `JSON.stringify` of it faults `request-list-unmeasured`. Beyond those, only `size()` and `get(i)` with an index in range were measured.
 Any other call shape (`get()`, `get("0")`, an out-of-range index, `size(1)`)
 and every other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`,
 `iterator`, …) faults `request-list-unmeasured`. One gap: an out-of-range
@@ -772,8 +773,10 @@ java.lang.String but got <class>`. A policy failure's detail is its
 `openidm` carries `null`, so `getDetail().get("x").asString()` is `null`
 there. `typeof detail.<member>` is `"function"` and `"<member>" in detail` is
 `true` for every `JsonValue` method, as measured, so feature detection works;
-calling a member the probes did not exercise (or rendering it as a string) is
-the fault `openidm-failure-detail`, as is calling `getDetail()` on a stub
+calling a member the probes did not exercise (or rendering it as a string, or
+serialising it with `JSON.stringify`) is the fault `openidm-failure-detail`, as
+is a `get` index that is not an integer within a Java `int` (on any value,
+a null one included), as is calling `getDetail()` on a stub
 without `detail`. These
 stubs are AIC-ineligible. An AIC-enabled file lease refuses such a case unless
 its `aic.unsupported` is `"skip"`, which keeps the local verdict and reports

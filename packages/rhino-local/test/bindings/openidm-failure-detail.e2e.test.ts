@@ -69,11 +69,20 @@ describe("an injected failure's getDetail matches the live capture", () => {
     // Presence is measured (typeof, in: openidm-detail-asstring.e2e); calling or rendering is not.
     ["calling an unmeasured member", null, "e.javaException.getDetail().asMap()"],
     ["an unmeasured member as a string", null, "String(e.javaException.getDetail().asMap)"],
+    // JSON.stringify skips a function without calling toString, so these need their own refusal.
+    ["an unmeasured member under JSON.stringify", null, "JSON.stringify(e.javaException.getDetail().asBoolean)"],
+    ["an unmeasured member nested in an object under JSON.stringify", null, "JSON.stringify({ m: e.javaException.getDetail().asBoolean })"],
+    ["an unmeasured member nested in an array under JSON.stringify", null, "JSON.stringify([e.javaException.getDetail().asBoolean])"],
     ["asString with a string argument", { result: false }, 'e.javaException.getDetail().asString("x")'],
     ["asString on a number", { n: 1 }, 'e.javaException.getDetail().get("n").asString()'],
     ["get(string) on a string value", { s: "v" }, 'e.javaException.getDetail().get("s").get("k")'],
     ["get(number) on a boolean value", { result: false }, 'e.javaException.getDetail().get("result").get(0)'],
     ["get with a non-integral index", { a: [1] }, 'e.javaException.getDetail().get("a").get(0.5)'],
+    // Index shape is judged before the null-value answer, and only a Java int was measured.
+    ["get with a non-integral index on a null child", { a: ["alpha"], result: false }, 'e.javaException.getDetail().get("absent").get(0.5).asString()'],
+    ["get with an infinite index", { a: ["alpha"], result: false }, 'e.javaException.getDetail().get("a").get(Infinity).asString()'],
+    ["get with an index beyond a Java int", { a: ["alpha"], result: false }, 'e.javaException.getDetail().get("a").get(2147483648).asString()'],
+    ["get with NaN on a null detail", null, "e.javaException.getDetail().get(NaN)"],
     ["a pointer segment needing an escape", { "a/b": true }, 'e.javaException.getDetail().get("a/b").asString()'],
     ["an empty object's string form", {}, "String(e.javaException.getDetail())"],
     ["getDetail with an argument", { result: false }, "String(e.javaException.getDetail(1))"],
@@ -93,6 +102,18 @@ describe("an injected failure's getDetail matches the live capture", () => {
     const stubbed: Given = { managed: { "managed/widget": [] }, openidmFailures: [{ match: { method: "delete", resource: "managed/widget/w1", ordinal: 1 }, reply }] };
     const response = await runner.eval({ preamble: mockPreamble(stubbed), source: withHarvest(`try { openidm.delete("managed/widget/w1", null); } catch (e) { try { ${read}; } catch (x) {} }`) });
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-failure-detail"]);
+  });
+
+  // The controls for the JSON refusal above: presence checks on the same stub stay measured answers.
+  it("typeof and in on an unmeasured member still answer without a fault", async () => {
+    const stubbed: Given = { managed: { "managed/widget": [] }, openidmFailures: [{ match: { method: "delete", resource: "managed/widget/w1", ordinal: 1 }, reply: { code: 404, detail: null } }] };
+    const response = await runner.eval({
+      preamble: mockPreamble(stubbed),
+      source: withHarvest('try { openidm.delete("managed/widget/w1", null); } catch (e) { var d = e.javaException.getDetail(); nodeState.putShared("r", typeof d.asBoolean + "|" + ("asBoolean" in d) + "|" + d.get("x").get(2147483647).asString()); }'),
+    });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(parseHarvest(response.value as string).sharedState.final.r).toBe("function|true|null");
   });
 });
 

@@ -95,4 +95,33 @@ describe("request value lists under concat, String and JSON.stringify match the 
     });
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-list-unmeasured"]);
   });
+
+  // A size-zero request list was never produced live (an empty value arrives as [""]), so a `[]` seed
+  // is accepted but copying it is refused rather than answered with an assumed [].
+  it.each([
+    ["JSON.stringify of a parameter list", "JSON.stringify(requestParameters.get(\"q\"))"],
+    ["JSON.stringify nested", "JSON.stringify({ v: requestParameters.get(\"q\") })"],
+    ["[].concat of a parameter list", "[].concat(requestParameters.get(\"q\"))"],
+    ["JSON.stringify of [].concat", "JSON.stringify([].concat(requestParameters.get(\"q\")))"],
+    ["a parameter list as concat's receiver", "Array.prototype.concat.call(requestParameters.get(\"q\"), [1])"],
+    ["[].concat of a header list", "[].concat(requestHeaders.get(\"x-zero\"))"],
+    ["JSON.stringify under a property list", "JSON.stringify({ v: requestHeaders.get(\"x-zero\") }, [\"v\"])"],
+  ])("%s of a size-zero list faults request-list-unmeasured, even when caught", async (_name, read) => {
+    expectHarnessFault("request-list-unmeasured");
+    const response = await runner.eval({
+      preamble: mockPreamble({ requestParameters: { q: [] }, requestHeaders: { "X-Zero": [] } } as Given),
+      source: withHarvest(`try { ${read}; } catch (e) {}`),
+    });
+    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-unmeasured"]);
+  });
+
+  it("size() of a size-zero seed is still answered, and a one-element list still copies", async () => {
+    const response = await runner.eval({
+      preamble: mockPreamble({ requestParameters: { q: [], e: [""] } } as Given),
+      source: withHarvest('nodeState.putShared("r", requestParameters.get("q").size() + "|" + JSON.stringify([].concat(requestParameters.get("e"))));'),
+    });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(parseHarvest(response.value as string).sharedState.final.r).toBe('0|[""]');
+  });
 });
