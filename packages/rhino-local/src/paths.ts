@@ -58,6 +58,15 @@ export const sourceBindingsJsonPath = join(
 
 export const generatedDir = join(packageRoot, "generated");
 
+/** The access-token-modification context's captured descriptor. Repo-only; read by `generate`. */
+export const sourceAccessTokenBindingsJsonPath = join(repoRoot, "docs", "api", "bindings", "oauth2-atm-next.json");
+
+/** `generate`'s verbatim copy of {@link sourceAccessTokenBindingsJsonPath}: the context's class allow-list. */
+export const accessTokenBindingsJsonPath = join(generatedDir, "oauth2-atm-next.json");
+
+/** The access-token-modification context's binding overlay, appended to the prelude for that context only. */
+export const bindingsAccessTokenPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-access-token.cjs");
+
 /** `generate`'s verbatim copy of {@link sourceBindingsJsonPath}, shipped with the package. */
 export const bindingsJsonPath = join(generatedDir, "scripted-decision-next.json");
 

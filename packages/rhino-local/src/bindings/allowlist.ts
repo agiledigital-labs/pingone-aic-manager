@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { bindingsJsonPath } from "../paths.ts";
+import { accessTokenBindingsJsonPath, bindingsJsonPath } from "../paths.ts";
 
 let cached: string[] | undefined;
 
@@ -52,17 +52,34 @@ export const OBSERVED_BASE: readonly string[] = [
  */
 export function decisionNodeClassAllowList(): string[] {
   if (cached === undefined) {
-    const parsed: unknown = JSON.parse(readFileSync(bindingsJsonPath, "utf8"));
-    const lists =
-      typeof parsed === "object" && parsed !== null
-        ? (parsed as { allowLists?: unknown }).allowLists
-        : undefined;
-    if (!Array.isArray(lists) || lists.some((item) => typeof item !== "string")) {
-      throw new Error(
-        `rhino-local: ${bindingsJsonPath} has no allowLists array of strings`
-      );
-    }
-    cached = [...(lists as string[]), ...OBSERVED_BASE];
+    cached = [...declaredAllowList(bindingsJsonPath), ...OBSERVED_BASE];
   }
   return cached;
+}
+
+let cachedAccessToken: string[] | undefined;
+
+/**
+ * The next-gen access-token-modification context's allow-list, from its own
+ * descriptor (`docs/api/bindings/oauth2-atm-next.json`) plus the same
+ * `OBSERVED_BASE`. Far narrower than the decision node's: it names no
+ * `java.util` class at all, so `new java.util.HashSet()` is refused there.
+ */
+export function accessTokenClassAllowList(): string[] {
+  if (cachedAccessToken === undefined) {
+    cachedAccessToken = [...declaredAllowList(accessTokenBindingsJsonPath), ...OBSERVED_BASE];
+  }
+  return cachedAccessToken;
+}
+
+function declaredAllowList(path: string): string[] {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const lists =
+    typeof parsed === "object" && parsed !== null
+      ? (parsed as { allowLists?: unknown }).allowLists
+      : undefined;
+  if (!Array.isArray(lists) || lists.some((item) => typeof item !== "string")) {
+    throw new Error(`rhino-local: ${path} has no allowLists array of strings`);
+  }
+  return lists as string[];
 }

@@ -6,12 +6,15 @@ import { describe, expect, it } from "vitest";
 import {
   generate,
   generatedBindingsName,
+  generatedAccessTokenBindingsName,
   generatedDtsName,
   generatedJsName,
 } from "../src/generate.ts";
 import { loadContext } from "../src/load.ts";
 import {
+  accessTokenBindingsJsonPath,
   bindingsJsonPath,
+  sourceAccessTokenBindingsJsonPath,
   sourceBindingsJsonPath,
   generatedDtsPath,
   generatedJsPath,
@@ -104,6 +107,12 @@ describe("completeness against the contexts JSON", () => {
       );
       expect(readFileSync(bindingsJsonPath, "utf8")).toBe(
         readFileSync(sourceBindingsJsonPath, "utf8")
+      );
+      expect(readFileSync(join(dir, generatedAccessTokenBindingsName), "utf8")).toBe(
+        readFileSync(sourceAccessTokenBindingsJsonPath, "utf8")
+      );
+      expect(readFileSync(accessTokenBindingsJsonPath, "utf8")).toBe(
+        readFileSync(sourceAccessTokenBindingsJsonPath, "utf8")
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

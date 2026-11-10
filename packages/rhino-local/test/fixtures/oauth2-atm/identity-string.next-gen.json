@@ -1,0 +1,14 @@
+{
+  "body": {
+    "expires_in": 3599,
+    "scope": "zzemuc-probe",
+    "token_type": "Bearer"
+  },
+  "captured": "2026-11-10, sandbox tenant, stateless client_credentials token (rhino-local ctx1)",
+  "http": 200,
+  "probe": {
+    "ga": "TypeError: Cannot find function getAttribute in object org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper@51cbc4aa.",
+    "str": "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper@51cbc4aa",
+    "ts": "throw:TypeError: Cannot find function toString in object org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper@51cbc4aa."
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "body": {
+    "expires_in": 3599,
+    "scope": "zzemuc-probe",
+    "token_type": "Bearer",
+    "zz_extra": "ev"
+  },
+  "captured": "2026-11-10, sandbox tenant, stateless client_credentials token (rhino-local ctx1)",
+  "claims": {
+    "aud": "zzemuC-atm",
+    "auth_level": 3,
+    "claims": "{\"userinfo\":{\"zz\":null}}",
+    "client_id": "zzemuC-atm",
+    "cts": "OAUTH2_STATELESS_GRANT",
+    "expires_in": 3600,
+    "grant_type": "client_credentials",
+    "nonce": "zz-nonce",
+    "realm": "/alpha",
+    "scope": [
+      "zzemuc-probe"
+    ],
+    "sub": "zzemuC-atm",
+    "subname": "zzemuC-atm",
+    "tokenName": "access_token",
+    "token_type": "Bearer",
+    "zz_arr": [
+      "a",
+      2.0,
+      false
+    ],
+    "zz_bool": true,
+    "zz_frac": 1.5,
+    "zz_fs1": "one",
+    "zz_fs2": 2.0,
+    "zz_int": 42.0,
+    "zz_obj": {
+      "a": 1.0,
+      "arr": [
+        1.0,
+        "two"
+      ],
+      "nested": {
+        "deeper": true
+      },
+      "s": "x"
+    },
+    "zz_over": "second",
+    "zz_str": "hello"
+  },
+  "expMinusIat": 3600,
+  "http": 200,
+  "probe": {
+    "authLevel": "undefined",
+    "authLevel_get": "object:3",
+    "claims": "undefined",
+    "claims_get": "object:{\"userinfo\":{\"zz\":null}}",
+    "custom_after": "string:expires_in,subname,zz_arr,zz_bool,zz_frac,zz_fs1,zz_fs2,zz_int,zz_obj,zz_over,zz_str",
+    "extra": "undefined",
+    "extraJson": "throw:InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.addExtraJsonData(string,string).",
+    "extra_get": "object:null",
+    "f_arr": "undefined",
+    "f_bool": "undefined",
+    "f_frac": "undefined",
+    "f_int": "undefined",
+    "f_null": "undefined",
+    "f_obj": "undefined",
+    "f_over": "undefined",
+    "f_str": "undefined",
+    "f_unset": "undefined",
+    "fs": "undefined",
+    "g_arr": "string:[object JavaObject] object [ \"a\", 2.0, false ]",
+    "g_int": "string:[object JavaObject] object 42.0",
+    "g_null": "string:null",
+    "g_obj": "string:[object JavaObject] object { \"a\": 1.0, \"s\": \"x\", \"nested\": { \"deeper\": true }, \"arr\": [ 1.0, \"two\" ] }",
+    "g_objA": "string:undefined:undefined",
+    "g_str": "string:[object JavaObject] object \"hello\"",
+    "getField_none": "throw:InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.getField().",
+    "nonce": "undefined",
+    "nonce_get": "object:zz-nonce",
+    "setAct": "throw:InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setAct(object).",
+    "setField_one": "throw:InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setField(string).",
+    "setMayAct": "throw:InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct(object).",
+    "setPermissions": "throw:InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setPermissions(object)."
+  }
+}

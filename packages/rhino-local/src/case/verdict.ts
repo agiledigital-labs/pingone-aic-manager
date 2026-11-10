@@ -11,7 +11,10 @@ import {
   OPENIDM_WRITE_METHODS,
   STATE_CHANNELS,
 } from "./types.ts";
+import { TOKEN_VALUE_KEYS } from "./context.ts";
 import type {
+  AccessTokenEffect,
+  AccessTokenState,
   AllowUndeclared,
   AllowUndeclaredChannel,
   CallbackEffect,
@@ -126,6 +129,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
     ...(unobserved.has("identityWrites")
       ? []
       : judgeIdentityWrites(kase.expect, recorded, strictness.identityWrites)),
+    ...(kase.context === "OAUTH2_ACCESS_TOKEN_MODIFICATION"
+      ? judgeAccessToken(kase.expect, recorded, strictness.accessToken)
+      : []),
   ];
   return {
     pass: mismatches.length === 0,
@@ -470,6 +476,85 @@ function judgeOutcome(kase: Case, effects: CompleteRecordedEffects): Mismatch[] 
   return [miss("outcome", "outcome", wanted, actual, message)];
 }
 
+/**
+ * The token the access-token context leaves behind, fail-closed like the state
+ * channels: every difference from the starting token must be declared, unless
+ * `allowUndeclared.accessToken`. A run that recorded no token is a mismatch,
+ * never a pass.
+ */
+function judgeAccessToken(
+  expect: Expect,
+  recorded: CompleteRecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const effect = recorded.accessToken;
+  if (effect === undefined) {
+    return [
+      miss("accessToken", "accessToken", "a recorded token", "<none>",
+        "accessToken: the runner recorded no token for an access-token modification case"),
+    ];
+  }
+  const want = expect.accessToken ?? {};
+  const mismatches: Mismatch[] = [];
+  const prefixed = (prefix: string, items: Mismatch[]): Mismatch[] =>
+    items.map((item) => ({
+      ...item,
+      path: `${prefix}.${item.path}`,
+      message: item.message.replace(/^accessToken: /, `accessToken.${prefix}: `),
+    }));
+  mismatches.push(
+    ...prefixed("fields", judgeState("accessToken", want.fields,
+      { initial: effect.initial.fields, final: effect.final.fields }, allowUndeclared)),
+    ...prefixed("responseFields", judgeState("accessToken", want.responseFields,
+      { initial: effect.initial.responseFields, final: effect.final.responseFields }, allowUndeclared))
+  );
+  const issued = effect.refusal === null;
+  const wantIssued = want.issued ?? true;
+  if (issued !== wantIssued) {
+    mismatches.push(
+      miss("accessToken", "issued", String(wantIssued), String(issued),
+        issued
+          ? "accessToken.issued: expected AM to refuse the token, but nothing the script did makes it refuse"
+          : `accessToken.issued: AM would refuse the token request after this script (500 server_error: ${effect.refusal})`)
+    );
+  }
+  const sameSet = (a: string[], b: string[]): boolean =>
+    a.length === b.length && a.every((item) => b.includes(item));
+  if (want.scope !== undefined) {
+    if (!sameSet(want.scope, effect.final.scope)) {
+      mismatches.push(
+        miss("accessToken", "scope", formatValue(want.scope), formatValue(effect.final.scope),
+          "accessToken.scope: the final scope differed (compared as a set)")
+      );
+    }
+  } else if (!allowUndeclared && issued && !sameSet(effect.initial.scope, effect.final.scope)) {
+    mismatches.push(
+      miss("accessToken", "scope", "unchanged", formatValue(effect.final.scope),
+        "accessToken.scope: undeclared change; declare expect.accessToken.scope or set allowUndeclared.accessToken")
+    );
+  }
+  for (const key of TOKEN_VALUE_KEYS) {
+    const before = effect.initial[key];
+    const after = effect.final[key];
+    if (key in want) {
+      const expected = want[key];
+      if (expected !== undefined && !matchesValue(expected, after)) {
+        mismatches.push(
+          miss("accessToken", key, formatValue(expected), formatValue(after), `accessToken.${key}: differed`)
+        );
+      }
+      continue;
+    }
+    if (!allowUndeclared && !deepEqual(before, after)) {
+      mismatches.push(
+        miss("accessToken", key, `unchanged ${formatValue(before)}`, formatValue(after),
+          `accessToken.${key}: undeclared change; declare expect.accessToken.${key} or set allowUndeclared.accessToken`)
+      );
+    }
+  }
+  return mismatches;
+}
+
 function diffState(
   initial: JsonObject,
   final: JsonObject
@@ -504,7 +589,7 @@ function diffState(
 }
 
 function judgeState(
-  channel: "sharedState" | "transientState" | "secureState" | "sessionProperties",
+  channel: "sharedState" | "transientState" | "secureState" | "sessionProperties" | "accessToken",
   expected: StateDiff | undefined,
   bucket: StateBucket,
   allowUndeclared: boolean,
@@ -1121,6 +1206,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
       ? []
       : parseArray(raw.identityWrites, "effects.identityWrites", parseIdentityWriteEffect),
   };
+  if (raw.accessToken !== undefined) {
+    recorded.accessToken = parseAccessTokenEffect(raw.accessToken);
+  }
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
       throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
@@ -1156,6 +1244,47 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
     };
   }
   return recorded;
+}
+
+function parseAccessTokenEffect(raw: unknown): AccessTokenEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.accessToken is not an object");
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.accessToken.refusal must be a string or null");
+  }
+  return {
+    initial: parseAccessTokenState(raw.initial, "effects.accessToken.initial"),
+    final: parseAccessTokenState(raw.final, "effects.accessToken.final"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseAccessTokenState(raw: unknown, path: string): AccessTokenState {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  if (!Array.isArray(raw.scope) || raw.scope.some((item) => typeof item !== "string")) {
+    throw new Error(`rhino-local: ${path}.scope must be an array of strings`);
+  }
+  const scope = (raw.scope as string[]).slice();
+  if (typeof raw.expiryTime !== "number") {
+    throw new Error(`rhino-local: ${path}.expiryTime must be a number`);
+  }
+  const value = (key: string): AccessTokenState["nonce"] =>
+    raw[key] === undefined ? null : parseJsonValue(raw[key], `${path}.${key}`);
+  return {
+    fields: parseJsonObject(raw.fields, `${path}.fields`),
+    responseFields: parseJsonObject(raw.responseFields, `${path}.responseFields`),
+    scope,
+    expiryTime: raw.expiryTime,
+    nonce: value("nonce"),
+    authLevel: value("authLevel"),
+    claims: value("claims"),
+    act: value("act"),
+    mayAct: value("mayAct"),
+    permissions: value("permissions"),
+  };
 }
 
 function parseManagedStore(raw: unknown): Record<string, JsonObject[]> {
