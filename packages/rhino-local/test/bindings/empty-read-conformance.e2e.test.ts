@@ -372,6 +372,41 @@ async function settle(runner: RhinoRunner, name: string, context: ScriptContext,
   return { error: outcome.error, report: JSON.parse(text) as Record<string, string>, faults: outcome.faults };
 }
 
+function isPlainSeed(value: JsonValue | undefined): value is Record<string, JsonValue> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergeSeedInto(target: Record<string, JsonValue>, source: Record<string, JsonValue>): Record<string, JsonValue> {
+  for (const [key, value] of Object.entries(source)) {
+    const current = target[key];
+    if (isPlainSeed(value)) {
+      target[key] = mergeSeedInto(isPlainSeed(current) ? { ...current } : {}, value);
+    } else {
+      target[key] = value;
+    }
+  }
+  return target;
+}
+
+/**
+ * Every row's seed at once (Sol ctx r15 P3-1). Plain objects merge
+ * recursively, so two rows seeding different keys of `client` or `request`
+ * both keep theirs; a shallow `Object.assign` kept only the last row's object.
+ */
+function mergeSeeds(seeds: Record<string, JsonValue>[]): Record<string, JsonValue> {
+  return seeds.reduce<Record<string, JsonValue>>((merged, seed) => mergeSeedInto(merged, seed), {});
+}
+
+/** `seed` holds every leaf of `part`. */
+function seedHolds(seed: Record<string, JsonValue>, part: Record<string, JsonValue>): boolean {
+  return Object.entries(part).every(([key, value]) => {
+    const held = seed[key];
+    return isPlainSeed(value)
+      ? isPlainSeed(held) && seedHolds(held, value)
+      : JSON.stringify(held) === JSON.stringify(value);
+  });
+}
+
 /** A capture citation is "<path> <key>", several joined by "; ". */
 function citedPaths(citation: string): string[] {
   return citation.split("; ").map((part) => part.split(" ")[0]!);
@@ -431,7 +466,8 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
     // reaches each binding. Every id built has a row, and every row is built.
     it.each(pairs)("registers exactly the catalog's collections ($context $engine)", async ({ context, engine }) => {
       const rows = catalog.filter((row) => row.context === context && row.engine === engine);
-      const emptySeed = Object.assign({}, ...rows.map((row) => row.given)) as Record<string, JsonValue>;
+      const emptySeed = mergeSeeds(rows.map((row) => row.given));
+      for (const row of rows) expect(seedHolds(emptySeed, row.given), `${row.id} seeded`).toBe(true);
       const touch = rows.map((row) => `try { ${row.expr}; } catch (e) {}`).join("\n");
       const recorded = "report.registered = __rhinoLocal.collections.join(\",\");";
       const unread = await settle(runner, `registration default ${context} ${engine}`, context, engine,
@@ -539,7 +575,7 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
       // Every collection the catalog seeds for this context, all empty, none read.
       const given = row.context === undefined
         ? {}
-        : Object.assign({}, ...catalog.filter((r) => r.context === row.context && r.engine === row.engine).map((r) => r.given)) as Record<string, JsonValue>;
+        : mergeSeeds(catalog.filter((r) => r.context === row.context && r.engine === row.engine).map((r) => r.given));
       const run = await runCase(runner, validateCase({
         name: `empty-read unread ${row.name} ${row.engine ?? "next-gen"}`,
         ...(row.context === undefined ? {} : { context: row.context }),
