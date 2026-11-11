@@ -76,7 +76,8 @@ __rhinoLocalListKinds.oauth2MayAct = {
 };
 
 // clientProperties.redirectUris. surface.next-gen.json cpRedirect: the list
-// is empty, String "[]" and length 0. JSON was not measured.
+// is empty, String "[]" and length 0. JSON was not measured. That grant sits
+// on the list BuildClient builds, not on this kind (Sol ctx r11 P2-1).
 __rhinoLocalListKinds.oauth2MayActRedirect = {
   id: "oauth2-may-act-unmeasured/clientProperties.redirectUris",
   noun: "a may-act redirect-URI list",
@@ -86,7 +87,7 @@ __rhinoLocalListKinds.oauth2MayActRedirect = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
-  emptyRoutes: { surface: true },
+  emptyRoutes: {},
 };
 
 // scopes.toArray(). The capture records typeof, Array.isArray, length and
@@ -782,7 +783,14 @@ function __rhinoLocalSeedMayAct(given) {
   });
   __rhinoLocalCtxTag(requestProperties, "JavaMap", "requestProperties");
   clientProperties = __rhinoLocalCtxBuildClient(d.client, {
-    redirectUris: true, javaTags: true, setTag: "JavaObject", redirectKind: __rhinoLocalListKinds.oauth2MayActRedirect,
+    redirectUris: true,
+    javaTags: true,
+    setTag: "JavaObject",
+    redirectKind: __rhinoLocalListKinds.oauth2MayActRedirect,
+    redirectEmpty: {
+      surface: true,
+      capture: "test/fixtures/oauth2-may-act/surface.next-gen.json cpRedirect",
+    },
   });
   __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");
   if (legacy) {

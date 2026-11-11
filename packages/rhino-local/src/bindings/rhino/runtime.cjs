@@ -745,15 +745,21 @@ var __rhinoLocalArityBasis = (function () {
 // arguments. After null and the primitive types, a Scriptable is Undefined,
 // else a Wrapper named by unwrap().getClass().getName() in Java, else a
 // Function ("function"), else "object". The Wrapper and Function checks run
-// in Java (HostOps "scriptSignatureName"), against those interfaces: a regexp
-// is typeof "object" here and implements org.mozilla.javascript.Function
-// (NativeRegExpCallable), so it is "function". That Java call does not consult
-// the class shutter. Script-visible getClass() reflects java.lang.Class, which
-// the legacy deny refuses, so the overload message itself would become
+// in Java (HostOps "scriptSignatureName"), against those interfaces, and on
+// the JVM that answer is taken before the script-only function shortcut
+// (Sol ctx r11 P2-2). A constructor such as java.lang.String is typeof
+// "function" and a Wrapper whose unwrap is java.lang.Class, so the name is
+// java.lang.Class. A method reference is a Function and not a Wrapper, so it
+// stays "function". A regexp is typeof "object" and implements
+// org.mozilla.javascript.Function (NativeRegExpCallable), so it is
+// "function". That Java call does not consult the class shutter.
+// Script-visible getClass() reflects java.lang.Class, which the legacy deny
+// refuses, so the overload message itself would become
 // "Access to Java class \"java.lang.Class\" is prohibited." A plain script
 // object is "object". Without the host (node:vm) the interface check cannot
-// run, and a regexp stays "object". The host function is captured here,
-// before the runner deletes the __rhinoLocalHostOp global.
+// run: a function stays "function" and a regexp stays "object". The host
+// function is captured here, before the runner deletes the __rhinoLocalHostOp
+// global.
 var __rhinoLocalScriptSignature = (function (host) {
   return function __rhinoLocalScriptSignature(args) {
     // Primitive concatenation only: a refusal is built before its fault is
@@ -777,11 +783,20 @@ var __rhinoLocalScriptSignature = (function (host) {
         out += "org.mozilla.javascript.Undefined";
       } else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") {
         out += typeof value;
+      } else if (host !== null) {
+        // Wrapper before Function, both in Java. A constructor is typeof
+        // "function" and a Wrapper; asking here is what names it
+        // java.lang.Class. Null means the value is not a Java instance.
+        javaName = host("scriptSignatureName", value);
+        if (javaName !== null && javaName !== undefined) {
+          out += "" + javaName;
+        } else if (typeof value === "function") {
+          out += "function";
+        } else {
+          out += "object";
+        }
       } else if (typeof value === "function") {
         out += "function";
-      } else if (host !== null) {
-        javaName = host("scriptSignatureName", value);
-        out += javaName === null || javaName === undefined ? "object" : "" + javaName;
       } else {
         out += "object";
       }
@@ -994,12 +1009,16 @@ function __rhinoLocalArgShape(args) {
 // `concatArgument: false` or `genericReceiver: false` where its own captures
 // did not measure that route; the bridges below then fault instead of
 // borrowing these two kinds' measured behaviour. Absent means allowed, so
-// these two kinds behave as they always have. A context kind whose captures
-// show a size-zero list sets `emptyRoutes` for the routes that capture
-// measured (`surface` is toString and string coercion, and it implies
-// `length`; `length` alone does not imply string coercion; `json` and
-// `concat` are the copy). Absent `emptyRoutes`, `emptyMeasured` covers every
-// route, which is how the request list (false) and openidm (true) stay.
+// these two kinds behave as they always have. A context kind defaults to no
+// empty permission (`emptyRoutes: {}`). A binding whose own capture measured
+// a size-zero list opts in with a grant on that one list (the third argument
+// of __rhinoLocalListView): the routes the capture showed, and the fixture
+// file. `surface` is toString and string coercion and it implies `length`;
+// `length` alone does not imply string coercion; `json` and `concat` are the
+// copy. The grant, when present, replaces the kind's empty policy, so a
+// binding nobody listed refuses every empty route. Absent a grant,
+// `emptyRoutes` decides, and absent `emptyRoutes`, `emptyMeasured` covers
+// every route, which is how the request list (false) and openidm (true) stay.
 // The legacy engine is not measured and keeps the older shapes.
 var __rhinoLocalListKinds = {
   request: {
@@ -1068,6 +1087,10 @@ function __rhinoLocalListRow(value) {
   return row !== null && typeof row === "object" && row.list === value ? row : null;
 }
 
+// A grant on the list, when present, is the only empty permission: the kind's
+// emptyRoutes are ignored. It names the routes one capture measured
+// (`surface` implies `length`) and the fixture file. A grant with no capture,
+// or with no route, is a prelude error. Absent a grant, the kind decides.
 // `emptyMeasured: true` with no `emptyRoutes` allows every empty route.
 // `emptyRoutes`, when present, lists only the routes a capture showed on a
 // size-zero list of that kind; a missing route stays refused. `surface`
@@ -1076,6 +1099,34 @@ function __rhinoLocalListRow(value) {
 // still uses the "not measured" sentence, rather than the decision-node
 // request list's. The request list and openidm do not set emptyRoutes and
 // keep the boolean.
+function __rhinoLocalEmptyGrant(grant) {
+  if (grant === null || grant === undefined) {
+    return null;
+  }
+  var capture = grant.capture;
+  if (typeof capture !== "string" || capture.length === 0) {
+    throw new Error("rhino-local: an empty-list permission needs the capture that measured it");
+  }
+  var surface = grant.surface === true;
+  var length = grant.length === true;
+  var json = grant.json === true;
+  var concat = grant.concat === true;
+  if (!surface && !length && !json && !concat) {
+    throw new Error("rhino-local: an empty-list permission names no route (" + capture + ")");
+  }
+  return { surface: surface, length: length, json: json, concat: concat, capture: capture };
+}
+
+function __rhinoLocalEmptyAllows(kind, grant, route) {
+  if (grant !== null) {
+    if (route === "length") {
+      return grant.length === true || grant.surface === true;
+    }
+    return grant[route] === true;
+  }
+  return __rhinoLocalEmptyRoute(kind, route);
+}
+
 function __rhinoLocalEmptyRoute(kind, route) {
   var routes = kind.emptyRoutes;
   if (routes) {
@@ -1087,8 +1138,8 @@ function __rhinoLocalEmptyRoute(kind, route) {
   return kind.emptyMeasured === true;
 }
 
-function __rhinoLocalEmptyFault(kind, what) {
-  var why = kind.emptyRoutes
+function __rhinoLocalEmptyFault(kind, grant, what) {
+  var why = (grant !== null || kind.emptyRoutes)
     ? "this route on a size-zero list was not measured"
     : "never produced on AIC: an empty value arrives as [\"\"]";
   return __rhinoLocalListUnmeasured(kind, what + " of a size-zero list (" + why + ")");
@@ -1099,8 +1150,8 @@ function __rhinoLocalEmptyFault(kind, what) {
 // of this route was never measured.
 function __rhinoLocalListCopy(row, call) {
   var route = call === "JSON.stringify" ? "json" : "concat";
-  if (row.items.length === 0 && !__rhinoLocalEmptyRoute(row.kind, route)) {
-    throw __rhinoLocalEmptyFault(row.kind, call);
+  if (row.items.length === 0 && !__rhinoLocalEmptyAllows(row.kind, row.grant, route)) {
+    throw __rhinoLocalEmptyFault(row.kind, row.grant, call);
   }
   return row.items.slice();
 }
@@ -1322,7 +1373,8 @@ function __rhinoLocalJavaForm(value, kind) {
     "AIC has none: copy the list with [].concat(v) first)");
 }
 
-function __rhinoLocalListView(items, kind) {
+function __rhinoLocalListView(items, kind, grant) {
+  grant = __rhinoLocalEmptyGrant(grant);
   var list = {};
   var i;
   for (i = 0; i < items.length; i += 1) {
@@ -1335,29 +1387,37 @@ function __rhinoLocalListView(items, kind) {
   // length, toString and string coercion fault, so every borrowed
   // Array.prototype method, Array.from, apply and coercion refuse without
   // being named. Only size() and get(i) (as measured: every index is out of
-  // range) still answer. `emptyMeasured`, or `emptyRoutes.surface`, answers
-  // length and "[]". `emptyRoutes.length` answers length alone: a capture
-  // that read only the length of an empty toArray() result does not answer
-  // String(v).
-  var unmeasuredLength = items.length === 0 && !__rhinoLocalEmptyRoute(kind, "length");
-  var unmeasuredString = items.length === 0 && !__rhinoLocalEmptyRoute(kind, "surface");
+  // range) still answer. The check reads the current size, so a list that
+  // grows past zero answers the non-empty surface its kind measured. A grant,
+  // or else `emptyRoutes` / `emptyMeasured`, decides which empty routes
+  // answer. `surface` answers length and "[]". `length` alone answers length:
+  // a capture that read only the length of an empty toArray() result does not
+  // answer String(v).
+  var surfaceAllowed = __rhinoLocalEmptyAllows(kind, grant, "surface");
+  var lengthAllowed = __rhinoLocalEmptyAllows(kind, grant, "length");
   var emptyFault = function (what) {
-    return __rhinoLocalEmptyFault(kind, what);
+    return __rhinoLocalEmptyFault(kind, grant, what);
   };
-  if (unmeasuredLength) {
+  if (!lengthAllowed) {
     Object.defineProperty(list, "length", {
       enumerable: false,
       configurable: true,
       get: function () {
-        throw emptyFault("length");
+        if (items.length === 0) {
+          throw emptyFault("length");
+        }
+        return items.length;
       },
     });
   } else {
     __rhinoLocalHide(list, "length", items.length);
   }
-  if (unmeasuredString) {
+  if (!surfaceAllowed) {
     __rhinoLocalHide(list, "valueOf", function () {
-      throw emptyFault("valueOf() or string coercion");
+      if (items.length === 0) {
+        throw emptyFault("valueOf() or string coercion");
+      }
+      return list;
     });
   }
   __rhinoLocalHide(list, "size", function () {
@@ -1397,7 +1457,7 @@ function __rhinoLocalListView(items, kind) {
     if (arguments.length !== 0) {
       throw unmeasured("toString(" + __rhinoLocalArgShape(arguments) + ")");
     }
-    if (unmeasuredString) {
+    if (items.length === 0 && !surfaceAllowed) {
       throw emptyFault("toString() or String(v)");
     }
     if (kind.outOfRange) {
@@ -1416,7 +1476,7 @@ function __rhinoLocalListView(items, kind) {
     }
     throw __rhinoLocalShutterError("java.lang.Class");
   });
-  __rhinoLocalHide(list, __rhinoLocalListKey, { list: list, items: items.slice(), kind: kind });
+  __rhinoLocalHide(list, __rhinoLocalListKey, { list: list, items: items.slice(), kind: kind, grant: grant });
   Object.defineProperty(list, "toJSON", {
     get: __rhinoLocalListToJSONGet, set: __rhinoLocalListToJSONSet, enumerable: false, configurable: true,
   });

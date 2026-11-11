@@ -71,12 +71,14 @@ __rhinoLocalListKinds.oauth2ValidateScope = {
   concatArgument: true,
   json: true,
   genericReceiver: ["slice"],
-  // noscope.next-gen.json requestedScopes, before add(): String "[]", length 0,
-  // JSON.stringify "[]", slice and toArray().length of the list itself.
-  // [].concat(v) ran after add(), on a one-element list, so a size-zero concat
-  // stays unmeasured. Empty redirectUris and toArray() are their own kinds
-  // (Sol ctx r10 P2-1): this emptyRoutes must not authorize them.
-  emptyRoutes: { surface: true, json: true },
+  // Empty permission is per binding (Sol ctx r11 P2-1). requestedScopes opts
+  // in at the call (surface and json). noscope.next-gen.json fn.requested,
+  // before add(): String "[]", length 0, JSON.stringify "[]". [].concat(v)
+  // ran after add(), on a one-element list, so a size-zero concat stays
+  // unmeasured and is not in that grant. allowedScopes, availableScopes and
+  // defaultScopes have no empty capture. Redirect and toArray() carry their
+  // own grants, not this kind's.
+  emptyRoutes: {},
 };
 
 // A requestProperties value. The probe records String, length, size(), [i]
@@ -94,8 +96,9 @@ __rhinoLocalListKinds.oauth2ValidateScopeRequest = {
 };
 
 // clientProperties.redirectUris. noscope cpRedirect measures the empty
-// surface (length 0, size 0, String "[]", tag JavaList), not JSON. The scope
-// list's empty JSON must not authorize this list (Sol ctx r10 P2-1).
+// surface (length 0, size 0, String "[]", tag JavaList), not JSON. That
+// grant sits on the list BuildClient builds, not on this kind, so a later
+// binding does not inherit it (Sol ctx r11 P2-1).
 __rhinoLocalListKinds.oauth2ValidateScopeRedirect = {
   id: "oauth2-validate-scope-unmeasured/clientProperties.redirectUris",
   noun: "a validate-scope redirect-URI list",
@@ -105,13 +108,14 @@ __rhinoLocalListKinds.oauth2ValidateScopeRedirect = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
-  emptyRoutes: { surface: true },
+  emptyRoutes: {},
 };
 
 // A toArray() result. noscope reads typeof, Array.isArray, length and
-// typeof [i] (`object|false|0|undefined` when the set is empty). It does not
-// read String(v) or JSON.stringify of that result. JSON of the scope list
-// itself must not authorize this one (Sol ctx r10 P2-1).
+// typeof [i] (`object|false|0|undefined` when requestedScopes is empty). It
+// does not read String(v) or JSON.stringify of that result. Empty length is
+// granted only on requestedScopes.toArray(); this kind grants nothing, so
+// another binding's size-zero toArray() faults (Sol ctx r11 P2-1).
 __rhinoLocalListKinds.oauth2ValidateScopeArray = {
   id: "oauth2-validate-scope-unmeasured/list.toArray()",
   noun: "a validate-scope toArray() result",
@@ -121,7 +125,7 @@ __rhinoLocalListKinds.oauth2ValidateScopeArray = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
-  emptyRoutes: { length: true },
+  emptyRoutes: {},
 };
 
 __rhinoLocalCtx.prefix = "oauth2-validate-scope-unmeasured";
@@ -134,7 +138,14 @@ function __rhinoLocalVsList(items, label, addable) {
   // The view's size(), get() and String() read this same array, so an add()
   // is seen by every path (measured: String() after add() shows the addition).
   var store = items.slice();
-  var list = __rhinoLocalCtxList(store, label);
+  // noscope.next-gen.json fn.requested is the only empty scope list: surface
+  // and JSON. The other three lists were captured non-empty.
+  var empty = label === "requestedScopes" ? {
+    surface: true,
+    json: true,
+    capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json fn.requested",
+  } : null;
+  var list = __rhinoLocalCtxList(store, label, null, empty);
   __rhinoLocalCtxTag(list, "JavaList", label);
   var str = function (v) {
     if (typeof v !== "string") {
@@ -163,7 +174,13 @@ function __rhinoLocalVsList(items, label, addable) {
     return undefined;
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "toArray", 0, function () {
-    return __rhinoLocalCtxList(store.slice(), label + ".toArray()", __rhinoLocalListKinds.oauth2ValidateScopeArray);
+    // Empty length was read on requestedScopes.toArray() only.
+    var arrayEmpty = label === "requestedScopes" ? {
+      length: true,
+      capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json fn.requested.toArray",
+    } : null;
+    return __rhinoLocalCtxList(store.slice(), label + ".toArray()",
+      __rhinoLocalListKinds.oauth2ValidateScopeArray, arrayEmpty);
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "iterator", 0, function () {
     throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
@@ -224,7 +241,13 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
   // Measured here: toArray() is not a JS array (Array.isArray false), with
   // `length` and items of typeof "object" (Java strings).
   __rhinoLocalCtxMethod(set, label, javaClass, "toArray", 0, function () {
-    return __rhinoLocalCtxList(toArray.call(set), label + ".toArray()", __rhinoLocalListKinds.oauth2ValidateScopeArray);
+    // Empty length was read on requestedScopes.toArray() only.
+    var arrayEmpty = label === "requestedScopes" ? {
+      length: true,
+      capture: "test/fixtures/oauth2-validate-scope/noscope.legacy.json fn.requested.toArray",
+    } : null;
+    return __rhinoLocalCtxList(toArray.call(set), label + ".toArray()",
+      __rhinoLocalListKinds.oauth2ValidateScopeArray, arrayEmpty);
   });
   __rhinoLocalCtxMethod(set, label, javaClass, "iterator", 0, function () {
     if (javaClass === "java.util.TreeSet") {
@@ -456,7 +479,13 @@ function __rhinoLocalSeedValidateScope(given) {
     });
     __rhinoLocalCtxTag(requestProperties, "JavaMap", "requestProperties");
     clientProperties = __rhinoLocalCtxBuildClient(d.client, {
-      redirectUris: true, javaTags: true, redirectKind: __rhinoLocalListKinds.oauth2ValidateScopeRedirect,
+      redirectUris: true,
+      javaTags: true,
+      redirectKind: __rhinoLocalListKinds.oauth2ValidateScopeRedirect,
+      redirectEmpty: {
+        surface: true,
+        capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json cpRedirect",
+      },
     });
     __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");
   }

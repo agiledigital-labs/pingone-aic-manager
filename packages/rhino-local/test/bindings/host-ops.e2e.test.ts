@@ -127,4 +127,37 @@ describe("a regexp is function in a decision-node overload signature", () => {
     expect(result.verdict.pass, result.verdict.summary).toBe(true);
     expect(result.effects.sharedState.final.hit).toBe(true);
   }, 60_000);
+
+  // Sol ctx r11 P2-2. The same helper names a decision-node overload.
+  // A constructor is java.lang.Class; a method reference stays function.
+  const nodeSignature = async (name: string, value: string, needle: string) => {
+    const result = await runCase(runner, defineCase({
+      name,
+      script: [
+        "var hit = false;",
+        `try { nodeState.get(${value}, 1); } catch (e) {`,
+        `  hit = String(e).indexOf(${JSON.stringify(needle)}) >= 0;`,
+        "}",
+        "nodeState.putShared(\"hit\", hit);",
+        "action.goTo(\"true\");",
+      ].join("\n"),
+      outcomes: ["true"],
+      given: { engine: "next-gen" },
+      expect: { outcome: "true", sharedState: { added: { hit: true } } },
+    }));
+    expect(result.verdict.pass, result.verdict.summary).toBe(true);
+    expect(result.effects.sharedState.final.hit).toBe(true);
+  };
+
+  it("r11 P2-2 nodeState.get(java.lang.String, 1) names get(java.lang.Class,number)", async () => {
+    await nodeSignature("r11 string ctor", "java.lang.String", "get(java.lang.Class,number)");
+  }, 60_000);
+
+  it("r11 P2-2 nodeState.get(java.util.HashSet, 1) names get(java.lang.Class,number)", async () => {
+    await nodeSignature("r11 hashset ctor", "java.util.HashSet", "get(java.lang.Class,number)");
+  }, 60_000);
+
+  it("r11 P2-2 nodeState.get of a Java method reference stays get(function,number)", async () => {
+    await nodeSignature("r11 method ref", "(new java.lang.String(\"s\")).isEmpty", "get(function,number)");
+  }, 60_000);
 });

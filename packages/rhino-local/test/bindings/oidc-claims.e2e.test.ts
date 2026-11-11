@@ -210,6 +210,60 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
   }, 60_000);
 
+  // Sol ctx r11 P2-1. Empty claimsLocales, redirect and a missing attribute
+  // do not measure scopes. The other three empty surfaces stay.
+  it.runIf(engine === "next-gen")("r11 P2-1 an empty scopes list's surface is a named fault", async () => {
+    const id = "oidc-claims-unmeasured/list";
+    expectHarnessFault(id);
+    const error = await runCase(runner, defineCase({
+      name: `r11 empty scopes ${engine}`,
+      context: "OIDC_CLAIMS",
+      script: claimsReturn("String(scopes) + \"|\" + scopes.length"),
+      given: { engine, scopes: [] },
+      expect: { oidc: { userinfo: { probe: "[]|0" } } },
+    })).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toContain(id);
+    expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r11 an empty missing-attribute list still answers length and String", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `r11 missing attribute ${engine}`,
+      context: "OIDC_CLAIMS",
+      script: claimsReturn("(function () { var v = identity.getAttributeValues(\"zzNoSuchAttr\"); return v.length + \"|\" + String(v); })()"),
+      given: { engine },
+      expect: { oidc: { userinfo: { probe: "0|[]" } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r11 an empty redirect-URI list still answers length and String", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `r11 redirect ${engine}`,
+      context: "OIDC_CLAIMS",
+      script: claimsReturn("clientProperties.redirectUris.length + \"|\" + String(clientProperties.redirectUris)"),
+      given: { engine },
+      expect: { oidc: { userinfo: { probe: "0|[]" } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
+  }, 60_000);
+
+  it.runIf(engine === "legacy")("r11 an empty requestedTypedClaims list still answers length and String", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `r11 requested typed ${engine}`,
+      context: "OIDC_CLAIMS",
+      script: claimsReturn("requestedTypedClaims.length + \"|\" + String(requestedTypedClaims)"),
+      given: { engine },
+      expect: { oidc: { userinfo: { probe: "0|[]" } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
+  }, 60_000);
+
   // Legacy was measured with one plain object, the next-gen result shape;
   // any other object is a guess, so it faults rather than answer the same 500.
   it.runIf(engine === "legacy")("a plain object other than the measured shape is a named fault", async () => {

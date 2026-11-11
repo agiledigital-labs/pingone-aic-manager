@@ -514,4 +514,49 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     );
     expect(effects.validateScope!.granted).toEqual(["0"]);
   }, 60_000);
+
+  // Sol ctx r11 P2-1. Empty requestedScopes JSON does not measure
+  // allowedScopes, availableScopes or defaultScopes. Defaults are empty.
+  for (const binding of ["allowedScopes", "availableScopes", "defaultScopes"]) {
+    it.runIf(engine === "next-gen")(`r11 P2-1 JSON of an empty ${binding} list is a named fault`, async () => {
+      const id = "oauth2-validate-scope-unmeasured/list";
+      expectHarnessFault(id);
+      const error = await strict(
+        `r11-${binding}-json`,
+        `function validateAccessTokenScope() { return [JSON.stringify(${binding})]; }`,
+        {},
+        ["[]"],
+      ).then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(CaseRunError);
+      expect(faultIds(error)).toContain(id);
+      const text = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.message).join("\n");
+      expect(text).toContain("this route on a size-zero list was not measured");
+    }, 60_000);
+  }
+
+  it.runIf(engine === "next-gen")("r11 P2-1 String of an empty allowedScopes list is a named fault", async () => {
+    const id = "oauth2-validate-scope-unmeasured/list";
+    expectHarnessFault(id);
+    const error = await strict(
+      "r11-allowed-surface",
+      "function validateAccessTokenScope() { return [String(allowedScopes) + \"|\" + allowedScopes.length]; }",
+      {},
+      ["[]|0"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect(faultIds(error)).toContain(id);
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r11 P2-1 length of an empty allowedScopes.toArray() is a named fault", async () => {
+    const id = "oauth2-validate-scope-unmeasured/list.toArray()";
+    expectHarnessFault(id);
+    const error = await strict(
+      "r11-allowed-toarray",
+      "function validateAccessTokenScope() { return [String(allowedScopes.toArray().length)]; }",
+      {},
+      ["0"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect(faultIds(error)).toContain(id);
+  }, 60_000);
 });
