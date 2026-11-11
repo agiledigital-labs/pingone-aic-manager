@@ -52,6 +52,10 @@ __rhinoLocalListKinds.oauth2Token = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
+  // surface.next-gen.json idAttrValuesMissing: an empty attribute-values list,
+  // length 0 and String "[]". json and concat were not measured at any length,
+  // so emptyMeasured only unlocks that surface.
+  emptyMeasured: true,
 };
 
 __rhinoLocalCtx.prefix = "oauth2-token-unmeasured";

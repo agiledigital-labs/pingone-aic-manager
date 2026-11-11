@@ -61,8 +61,7 @@ function __rhinoLocalCtxNoMethod(className, name, args) {
 // unknown here. `measuredRefusal` true admits Rhino's ordinary overload error
 // for every wrong count, which is what accessToken setField/getField do
 // (2026-11-10). May-act's token methods do not use this helper: a refused
-// count there has to name a script object as "object", and this helper's
-// signature calls getClass() on one.
+// count there is admitted only for the counts the captures record.
 function __rhinoLocalCtxMethod(target, label, className, name, arity, fn, measuredRefusal) {
   __rhinoLocalHide(target, name, function () {
     if (arguments.length !== arity) {

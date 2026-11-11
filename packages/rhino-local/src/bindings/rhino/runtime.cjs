@@ -741,42 +741,49 @@ var __rhinoLocalArityBasis = (function () {
   return basis;
 })();
 
-// Captured at load, before a script could shadow the global `java`.
-var __rhinoLocalJavaObject = typeof java !== "undefined" ? java.lang.Object : undefined;
-
 // Rhino's NativeJavaMethod.scriptSignature: how a refused call names its
-// arguments.
-function __rhinoLocalScriptSignature(args) {
-  // Primitive concatenation only: a refusal is built before its fault is
-  // recorded, so nothing here may call a builtin a script can replace
-  // (Array.prototype.push/join, String).
-  var out = "";
-  var i;
-  var value;
-  for (i = 0; i < args.length; i += 1) {
-    value = args[i];
-    if (i > 0) {
-      out += ",";
+// arguments. A Wrapper is named by unwrap().getClass().getName() in Java
+// (HostOps "scriptSignatureName"): that is where Rhino builds the name, and
+// it does not consult the class shutter. Script-visible getClass() reflects
+// java.lang.Class, which the legacy deny refuses, so the overload message
+// itself would become "Access to Java class \"java.lang.Class\" is prohibited."
+// A plain script object is "object". The host function is captured here,
+// before the runner deletes the __rhinoLocalHostOp global.
+var __rhinoLocalScriptSignature = (function (host) {
+  return function __rhinoLocalScriptSignature(args) {
+    // Primitive concatenation only: a refusal is built before its fault is
+    // recorded, so nothing here may call a builtin a script can replace
+    // (Array.prototype.push/join, String).
+    var out = "";
+    var i;
+    var value;
+    var javaName;
+    for (i = 0; i < args.length; i += 1) {
+      value = args[i];
+      if (i > 0) {
+        out += ",";
+      }
+      if (value === null) {
+        out += "null";
+      } else if (value === undefined) {
+        // Rhino 1.7.14's Undefined.instance is not a Scriptable, so it is named
+        // by its Java class: AIC's `mergeShared(org.mozilla.javascript.Undefined).`
+        // (E19 live probe, 2026-11-06).
+        out += "org.mozilla.javascript.Undefined";
+      } else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") {
+        out += typeof value;
+      } else if (typeof value === "function") {
+        out += "function";
+      } else if (host !== null) {
+        javaName = host("scriptSignatureName", value);
+        out += javaName === null || javaName === undefined ? "object" : "" + javaName;
+      } else {
+        out += "object";
+      }
     }
-    if (value === null) {
-      out += "null";
-    } else if (value === undefined) {
-      // Rhino 1.7.14's Undefined.instance is not a Scriptable, so it is named
-      // by its Java class: AIC's `mergeShared(org.mozilla.javascript.Undefined).`
-      // (E19 live probe, 2026-11-06).
-      out += "org.mozilla.javascript.Undefined";
-    } else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") {
-      out += typeof value;
-    } else if (typeof value === "function") {
-      out += "function";
-    } else if (__rhinoLocalJavaObject !== undefined && value instanceof __rhinoLocalJavaObject) {
-      out += "" + value.getClass().getName();
-    } else {
-      out += "object";
-    }
-  }
-  return out;
-}
+    return out;
+  };
+})(typeof __rhinoLocalHostOp === "function" ? __rhinoLocalHostOp : null);
 
 function __rhinoLocalInternalError(message) {
   if (typeof InternalError === "function") {
@@ -982,8 +989,12 @@ function __rhinoLocalArgShape(args) {
 // `concatArgument: false` or `genericReceiver: false` where its own captures
 // did not measure that route; the bridges below then fault instead of
 // borrowing these two kinds' measured behaviour. Absent means allowed, so
-// these two kinds behave as they always have. The
-// legacy engine is not measured and keeps the older shapes.
+// these two kinds behave as they always have. A context kind whose captures
+// show a size-zero list sets `emptyRoutes` for the routes that capture
+// measured (`surface` is length, toString and string coercion; `json` and
+// `concat` are the copy). Absent `emptyRoutes`, `emptyMeasured` covers every
+// route, which is how the request list (false) and openidm (true) stay.
+// The legacy engine is not measured and keeps the older shapes.
 var __rhinoLocalListKinds = {
   request: {
     id: "request-list-unmeasured",
@@ -1051,12 +1062,32 @@ function __rhinoLocalListRow(value) {
   return row !== null && typeof row === "object" && row.list === value ? row : null;
 }
 
+// `emptyMeasured: true` with no `emptyRoutes` allows every empty route.
+// `emptyRoutes`, when present, lists only the routes a capture showed on a
+// size-zero list of that kind; a missing route stays refused. The request
+// list and openidm do not set emptyRoutes and keep the boolean.
+function __rhinoLocalEmptyRoute(kind, route) {
+  var routes = kind.emptyRoutes;
+  if (routes) {
+    return routes[route] === true;
+  }
+  return kind.emptyMeasured === true;
+}
+
+function __rhinoLocalEmptyFault(kind, what) {
+  var why = kind.emptyRoutes
+    ? "this route on a size-zero list was not measured"
+    : "never produced on AIC: an empty value arrives as [\"\"]";
+  return __rhinoLocalListUnmeasured(kind, what + " of a size-zero list (" + why + ")");
+}
+
 // A list's elements as a fresh array, for a measured copy (concat,
-// JSON.stringify). Refused for a size-zero list of a kind whose empty form
-// was never measured.
+// JSON.stringify). Refused for a size-zero list of a kind whose empty copy
+// of this route was never measured.
 function __rhinoLocalListCopy(row, call) {
-  if (row.items.length === 0 && !row.kind.emptyMeasured) {
-    throw __rhinoLocalListUnmeasured(row.kind, call + " of a size-zero list (never produced on AIC: an empty value arrives as [\"\"])");
+  var route = call === "JSON.stringify" ? "json" : "concat";
+  if (row.items.length === 0 && !__rhinoLocalEmptyRoute(row.kind, route)) {
+    throw __rhinoLocalEmptyFault(row.kind, call);
   }
   return row.items.slice();
 }
@@ -1287,13 +1318,15 @@ function __rhinoLocalListView(items, kind) {
   var unmeasured = function (call) {
     return __rhinoLocalListUnmeasured(kind, call);
   };
-  // A size-zero list of a kind whose empty form was never measured: its
-  // array-like surface faults, so every borrowed Array.prototype method,
-  // Array.from, apply and string coercion refuse without being named. Only
-  // size() and get(i) (as measured: every index is out of range) still answer.
-  var unmeasuredEmpty = items.length === 0 && !kind.emptyMeasured;
+  // A size-zero list whose empty array-like surface was never measured:
+  // length, toString and string coercion fault, so every borrowed
+  // Array.prototype method, Array.from, apply and coercion refuse without
+  // being named. Only size() and get(i) (as measured: every index is out of
+  // range) still answer. A kind that measured the empty surface
+  // (emptyMeasured, or emptyRoutes.surface) answers length and "[]".
+  var unmeasuredEmpty = items.length === 0 && !__rhinoLocalEmptyRoute(kind, "surface");
   var emptyFault = function (what) {
-    return unmeasured(what + " of a size-zero list (never produced on AIC: an empty value arrives as [\"\"])");
+    return __rhinoLocalEmptyFault(kind, what);
   };
   if (unmeasuredEmpty) {
     Object.defineProperty(list, "length", {

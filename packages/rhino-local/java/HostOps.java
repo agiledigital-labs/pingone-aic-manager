@@ -60,6 +60,19 @@ public final class HostOps extends BaseFunction {
       // Prelude only: the invalid-scope replacement asks whether this toString is Rhino's wrap.
       case "exceptionDetails":
         return Boolean.valueOf(ContextJavaGuard.inExceptionDetails());
+      // NativeJavaMethod.scriptSignature names a Wrapper by unwrap().getClass()
+      // in Java, which does not consult the class shutter. Returning null means
+      // "not a Java instance" (a script object is "object"). Script-visible
+      // getClass() would reflect java.lang.Class and the legacy deny would
+      // refuse the overload message itself.
+      case "scriptSignatureName": {
+        Object value = args.length > 1 ? args[1] : null;
+        if (!(value instanceof Wrapper)) {
+          return null;
+        }
+        Object wrapped = ((Wrapper) value).unwrap();
+        return wrapped == null ? null : wrapped.getClass().getName();
+      }
       case "base64Encode": {
         // AIC's encode(byte[]) overload refuses a JS array (measured), where
         // most of the crypto methods convert one.

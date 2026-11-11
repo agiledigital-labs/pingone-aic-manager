@@ -92,8 +92,11 @@ file. It declares four things:
 
 The class shutter follows the context: next-gen contexts install their own
 `allowLists` from `docs/api/bindings/<context>.json`, plus the same
-`OBSERVED_BASE` boxed types the decision node gets. Legacy installs none, as for
-the decision node.
+`OBSERVED_BASE` boxed types the decision node gets. Legacy installs no
+allow-list, as for the decision node, and denies script-visible
+`java.lang.Class` (docs/api/12, 2026-11-10). An overload message names a Java
+argument from Java (`Wrapper.unwrap().getClass().getName()`), so that deny is
+not consulted while the message is built.
 
 ## The seven contexts
 
