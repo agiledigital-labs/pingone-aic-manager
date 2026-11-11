@@ -23,6 +23,7 @@ export default tseslint.config(
       "test/fixtures/config-provider/*.script.js",
       "test/fixtures/oauth2-validate-scope/*.script.js",
       "test/fixtures/oauth2-may-act/*.script.js",
+      "test/fixtures/library/*.script.js",
     ],
   },
   eslint.configs.recommended,

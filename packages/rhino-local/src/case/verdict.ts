@@ -19,6 +19,7 @@ import type {
   ConfigProviderEffect,
   ValidateScopeEffect,
   MayActEffect,
+  LibraryEffect,
   AccessTokenState,
   AllowUndeclared,
   AllowUndeclaredChannel,
@@ -152,6 +153,9 @@ export function judge(input: unknown, effects: unknown): Verdict {
       : []),
     ...(kase.context === "OAUTH2_MAY_ACT"
       ? judgeMayAct(kase.expect, recorded, strictness.mayAct)
+      : []),
+    ...(kase.context === "LIBRARY"
+      ? judgeLibrary(kase.expect, recorded, strictness.returns)
       : []),
   ];
   return {
@@ -788,6 +792,70 @@ function judgeValidateScope(expect: Expect, recorded: CompleteRecordedEffects, a
  * The token's scope must be declared when it differs from the request's,
  * unless `allowUndeclared.mayAct`.
  */
+/**
+ * The export a library case called, fail-closed. Omitting `expect.returns`
+ * requires a return of `undefined`. A throw, including one while the library
+ * loads, is a mismatch unless declared.
+ */
+function judgeLibrary(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
+  const effect = recorded.returns;
+  if (effect === undefined) {
+    return [
+      miss("returns", "returns", "a recorded result", "<none>",
+        "returns: the runner recorded no result for a library case"),
+    ];
+  }
+  const want = expect.returns;
+  if (want === undefined) {
+    if (allowUndeclared) {
+      return [];
+    }
+    if (effect.status === "returned" && effect.undefined && effect.phase === "export") {
+      return [];
+    }
+    return [
+      miss("returns", "returns", "undefined", libraryResultText(effect),
+        "returns: undeclared result; declare expect.returns or set allowUndeclared.returns"),
+    ];
+  }
+  const mismatches: Mismatch[] = [];
+  if (effect.status !== want.status) {
+    mismatches.push(miss("returns", "status", want.status, effect.status, "returns.status: differed"));
+    return mismatches;
+  }
+  const phase = want.phase ?? "export";
+  if (effect.phase !== phase) {
+    mismatches.push(miss("returns", "phase", phase, effect.phase, "returns.phase: differed"));
+  }
+  if (want.status === "returned") {
+    if (want.undefined === true) {
+      if (!effect.undefined) {
+        mismatches.push(miss("returns", "value", "undefined", formatValue(effect.value), "returns: expected undefined"));
+      }
+    } else if (!deepEqual(effect.value, want.value ?? null)) {
+      mismatches.push(miss("returns", "value", formatValue(want.value), formatValue(effect.value), "returns.value: differed"));
+    }
+    return mismatches;
+  }
+  if (effect.message !== want.message) {
+    mismatches.push(miss("returns", "message", formatValue(want.message), formatValue(effect.message), "returns.message: differed"));
+  }
+  if (effect.name !== (want.name ?? "")) {
+    mismatches.push(miss("returns", "name", formatValue(want.name ?? ""), formatValue(effect.name), "returns.name: differed"));
+  }
+  if (want.type !== undefined && effect.type !== want.type) {
+    mismatches.push(miss("returns", "type", want.type, effect.type, "returns.type: differed"));
+  }
+  return mismatches;
+}
+
+function libraryResultText(effect: LibraryEffect): string {
+  if (effect.status === "thrown") {
+    return `thrown ${effect.phase}: ${effect.message}`;
+  }
+  return effect.undefined ? "undefined" : formatValue(effect.value);
+}
+
 function judgeMayAct(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
   const effect = recorded.mayAct;
   if (effect === undefined) {
@@ -1541,6 +1609,9 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
   if (raw.mayAct !== undefined) {
     recorded.mayAct = parseMayActEffect(raw.mayAct);
   }
+  if (raw.returns !== undefined) {
+    recorded.returns = parseLibraryEffect(raw.returns);
+  }
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
       throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
@@ -1606,6 +1677,33 @@ function parseSocialIdpEffect(raw: unknown): SocialIdpEffect {
     returned: raw.returned,
     profile: raw.profile === null ? null : parseJsonObject(raw.profile, "effects.socialIdp.profile"),
     refusal: raw.refusal,
+  };
+}
+
+function parseLibraryEffect(raw: unknown): LibraryEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.returns is not an object");
+  }
+  if (raw.status !== "returned" && raw.status !== "thrown") {
+    throw new Error("rhino-local: effects.returns.status must be \"returned\" or \"thrown\"");
+  }
+  if (raw.phase !== "export" && raw.phase !== "module") {
+    throw new Error("rhino-local: effects.returns.phase must be \"export\" or \"module\"");
+  }
+  if (typeof raw.undefined !== "boolean") {
+    throw new Error("rhino-local: effects.returns.undefined must be a boolean");
+  }
+  if (typeof raw.type !== "string" || typeof raw.name !== "string" || typeof raw.message !== "string") {
+    throw new Error("rhino-local: effects.returns type, name and message must be strings");
+  }
+  return {
+    status: raw.status,
+    phase: raw.phase,
+    undefined: raw.undefined,
+    value: raw.value === undefined ? null : parseJsonValue(raw.value, "effects.returns.value"),
+    type: raw.type,
+    name: raw.name,
+    message: raw.message,
   };
 }
 

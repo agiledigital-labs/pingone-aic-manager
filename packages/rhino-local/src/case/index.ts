@@ -19,6 +19,7 @@ export {
   STATE_CHANNELS,
   SCRIPT_CONTEXTS,
   DEFAULT_SCRIPT_CONTEXT,
+  LIBRARY_CALLER_CONTEXTS,
 } from "./types.ts";
 export { CONTEXTS } from "./context.ts";
 export type { ContextDeclaration } from "./context.ts";
@@ -50,6 +51,11 @@ export type {
   MayActCaseInit,
   MayActEffect,
   MayActExpect,
+  LibraryCallerContext,
+  LibraryCaseInit,
+  LibraryEffect,
+  LibraryExpect,
+  LibrarySeed,
   ScriptContext,
   TokenRequestSeed,
   AllowUndeclared,

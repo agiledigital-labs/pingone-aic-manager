@@ -110,6 +110,9 @@ export const mayActBindingsJsonPath = join(generatedDir, "oauth2-may-act-next.js
 /** The may-act context's binding overlay, appended to the prelude for that context only. */
 export const bindingsMayActPath = join(packageRoot, "src", "bindings", "rhino", "context-oauth2-may-act.cjs");
 
+/** The library context's binding overlay, appended to the prelude for that context only. */
+export const bindingsLibraryPath = join(packageRoot, "src", "bindings", "rhino", "context-library.cjs");
+
 /** The OIDC claims context's binding overlay, appended to the prelude for that context only. */
 export const bindingsOidcClaimsPath = join(packageRoot, "src", "bindings", "rhino", "context-oidc-claims.cjs");
 

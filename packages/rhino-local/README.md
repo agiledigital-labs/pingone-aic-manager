@@ -1455,6 +1455,73 @@ token-exchange entry points were not measured.
 A may-act case runs locally only. The types are exported from `./case`:
 `MayActCaseInit`, `MayActExpect` and the recorded `MayActEffect`.
 
+### Library scripts
+
+`context: "LIBRARY"` calls an export of a next-gen library script directly.
+There is no legacy engine: a legacy decision node and a legacy
+token-modification script both throw `ReferenceError: "require" is not defined.`
+The case's `script` is the library body. The harness `require()`s it through the
+same loader a decision node uses and calls `given.library.export` with
+`given.library.args` (default `[]`). The call is a method call, so `this` is the
+object `require()` returned.
+
+```ts
+defineCase({
+  name: "echoes its argument",
+  context: "LIBRARY",
+  script, // exports.echo = function (v) { return v; };
+  given: { library: { export: "echo", args: [{ n: 1 }] } },
+  expect: { returns: { status: "returned", value: { n: 1 } } },
+});
+```
+
+**Assertions.** `expect.returns` is fail-closed. Omitting it requires the export
+to return `undefined` and not throw, unless
+`allowUndeclared: { returns: true }`. A returned JSON value is `value`. A
+returned `undefined` is `undefined: true` (JSON `null` is a different result).
+Declare exactly one of those. A throw is `status: "thrown"` with `type`
+(`typeof` of the thrown value), `name` (`""` for a thrown string) and `message`
+(`String(error)`, so `new Error("x")` is `"Error: x"`). `phase` is `"export"`
+(the default) or `"module"` when the library body throws while it loads, before
+the export is called. A status mismatch does not also compare the other fields.
+
+An argument of `undefined` is not a JSON value, so `args` cannot express one. A
+function, a cycle or any other value JSON cannot carry, returned from the
+export, is the harness fault `library-unmeasured/return`.
+
+**Bindings.** Measured 2026-11-11 (`docs/api/12-script-bindings-matrix.md`).
+Inside the library, at module scope and inside the export, the same names are
+bound. Present: `require`, `JavaImporter`, `exports`, `module`, `logger`,
+`httpClient`, `openidm`, `secrets`, `systemEnv`, `utils`, `emailService`,
+`jwtAssertion`, `jwtValidator`, `policy`, `realm`, `scriptName` and
+`cookieName`. The caller's own bindings (`nodeState`, `accessToken`, `scopes`,
+…) are not. `scriptName` and `logger.getName()` are the caller's, including
+inside a nested `require()`. `logger.getName()` is
+`scripts.<caller context>.<script id>.(<script name>)`. `systemEnv.getProperty`
+of a missing key is `null`. `utils.base64.encode` and `openidm.read` of a
+missing id behave as they do for a decision node.
+
+`given.library.callerContext` selects that logger segment. The default is
+`AUTHENTICATION_TREE_DECISION_NODE`. The other measured callers are
+`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`, `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`,
+`OAUTH2_MAY_ACT_NEXT_GEN` and `OAUTH2_EVALUATE_SCOPE_NEXT_GEN`. Naming one
+changes the logger name only. The class shutter stays the decision node's, so
+`new java.util.HashSet()` works here even though those OAuth callers refuse it.
+`realm`, `scriptName`, `loggerScriptId` and `cookieName` seed the same values
+the caller would have had.
+
+`emailService`, `jwtAssertion`, `jwtValidator` and `policy` were present and
+none of their methods was called. Each function member is
+`library-unmeasured/<binding>.<member>`. `logger`, `httpClient`, `openidm`,
+`secrets`, `systemEnv` and `utils` keep the decision-node harness: the probe
+called `logger.getName`, `systemEnv.getProperty`, `utils.base64.encode` and
+`openidm.read`. Shared channels (`logs`, `http`, `openidm`) are judged as
+elsewhere.
+
+A library case runs locally only. The types are exported from `./case`:
+`LibraryCaseInit`, `LibrarySeed`, `LibraryExpect`, `LibraryCallerContext`,
+`LIBRARY_CALLER_CONTEXTS` and the recorded `LibraryEffect`.
+
 ### Phase timing
 
 To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and

@@ -1883,3 +1883,30 @@ engines"):
   (`grant_type[0] === "client_credentials"`), not the `JavaString` the
   generated types describe.
 
+
+## 2026-11-11 — a library's scope is the caller's common bindings, not the caller's context
+
+A `LIBRARY` script required from five next-gen callers (decision node, token
+modification, validate scope, may-act, evaluate scope) sees one set of
+bindings. The caller's context bindings do not leak. Two earlier notes do not
+survive that probe (`docs/api/12-script-bindings-matrix.md`, "Library scope
+when required"):
+
+- **`cacheManager` and `idRepository` are not in library scope.** The
+  2026-07-29 token-mod note assumed `logger`, `secrets`, `utils`,
+  `systemEnv`, `cacheManager` and `idRepository` were available because they
+  had not been probed. The first four are bound. `cacheManager` and
+  `idRepository` are not: `typeof eval(name)` throws. `nodeState` and
+  `accessToken` are unbound too, which that note had only as a typing
+  decision for the decision-node globals.
+- **`emailService`, `jwtAssertion`, `jwtValidator` and `policy` are present,**
+  and none of them is in the 11-name library metadata. No method on them was
+  called.
+- **`new java.util.HashSet()` follows the caller.** A library required from a
+  decision node can construct one. The same library required from each of the
+  four OAuth callers cannot. `docs/api/12`'s "`LIBRARY` reaches `HashSet` and
+  `ArrayList`" row is the decision-node caller. `ArrayList` was not re-probed
+  from an OAuth caller. The class shutter is the caller's, not a property of
+  the library.
+- **A nested `require()` does not get its own `scriptName`.** `scriptName` and
+  `logger.getName()` inside the inner library are the top-level caller's.

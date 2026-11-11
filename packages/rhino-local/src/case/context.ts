@@ -5,7 +5,7 @@
  * names a key its context cannot see fails before it runs.
  * packages/rhino-local/docs/script-contexts.md.
  */
-import { DEFAULT_SCRIPT_CONTEXT, SCRIPT_CONTEXTS } from "./types.ts";
+import { DEFAULT_SCRIPT_CONTEXT, LIBRARY_CALLER_CONTEXTS, SCRIPT_CONTEXTS } from "./types.ts";
 import type {
   AccessTokenExpect,
   AccessTokenSeed,
@@ -14,6 +14,9 @@ import type {
   ValidateScopeExpect,
   ValidateScopeSeed,
   MayActExpect,
+  LibraryExpect,
+  LibrarySeed,
+  LibraryCallerContext,
   ClientSeed,
   Engine,
   JsonObject,
@@ -70,8 +73,9 @@ export const CONTEXT_ONLY_GIVEN: readonly GivenKey[] = [
   "oidc",
   "socialIdp",
   "validateScope",
+  "library",
 ];
-export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider", "validateScope", "mayAct"];
+export const CONTEXT_ONLY_EXPECT: readonly ExpectKey[] = ["accessToken", "oidc", "socialIdp", "configProvider", "validateScope", "mayAct", "returns"];
 export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = [
   "accessToken",
   "oidc",
@@ -79,6 +83,7 @@ export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = [
   "configProvider",
   "validateScope",
   "mayAct",
+  "returns",
 ];
 
 export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
@@ -167,6 +172,17 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
     givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "client", "request", "accessToken", "identity", "scopes"],
     expectKeys: ["outcome", "mayAct", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["mayAct", "openidmWrites", "openidmReads", "http", "logs"],
+    hasOutcome: false,
+  },
+  LIBRARY: {
+    id: "LIBRARY",
+    // Next-gen only, measured 2026-11-11. Legacy decision and legacy token
+    // modification both throw ReferenceError: "require" is not defined.
+    engines: ["next-gen"],
+    givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "library"],
+    // `outcome` only as the `null` a validated case carries (parseExpect).
+    expectKeys: ["outcome", "returns", "openidm", "http", "logs", "allowUndeclared"],
+    allowUndeclared: ["returns", "openidmWrites", "openidmReads", "http", "logs"],
     hasOutcome: false,
   },
 };
@@ -485,6 +501,70 @@ export function parseMayActExpect(raw: unknown, path: string): MayActExpect {
   if (obj.refusal !== undefined) out.refusal = str(obj.refusal, `${path}.refusal`);
   if (out.issued === false && ("mayAct" in out || "act" in out || out.scope !== undefined)) {
     throw new Error(`rhino-local: ${path} cannot declare mayAct, act or scope together with issued: false`);
+  }
+  return out;
+}
+
+export function parseLibrarySeed(raw: unknown, path: string): LibrarySeed {
+  const obj = plain(raw, path, ["export", "args", "callerContext"]);
+  const name = str(obj.export, `${path}.export`);
+  if (name.length === 0) {
+    throw new Error(`rhino-local: ${path}.export must name an export`);
+  }
+  const out: LibrarySeed = { export: name };
+  if (obj.args !== undefined) {
+    if (!Array.isArray(obj.args)) {
+      throw new Error(`rhino-local: ${path}.args must be an array of JSON values`);
+    }
+    assertDenseArray(obj.args, `${path}.args`);
+    out.args = obj.args.map((item, index) => parseJsonValue(item, `${path}.args[${index}]`));
+  }
+  if (obj.callerContext !== undefined) {
+    if (!(LIBRARY_CALLER_CONTEXTS as readonly string[]).includes(String(obj.callerContext))) {
+      throw new Error(
+        `rhino-local: ${path}.callerContext must be one of ${LIBRARY_CALLER_CONTEXTS.join(", ")}`
+      );
+    }
+    out.callerContext = obj.callerContext as LibraryCallerContext;
+  }
+  return out;
+}
+
+export function parseLibraryExpect(raw: unknown, path: string): LibraryExpect {
+  const obj = plain(raw, path, ["status", "phase", "undefined", "value", "type", "name", "message"]);
+  if (obj.status !== "returned" && obj.status !== "thrown") {
+    throw new Error(`rhino-local: ${path}.status must be "returned" or "thrown"`);
+  }
+  const out: LibraryExpect = { status: obj.status };
+  if (obj.phase !== undefined) {
+    if (obj.phase !== "export" && obj.phase !== "module") {
+      throw new Error(`rhino-local: ${path}.phase must be "export" or "module"`);
+    }
+    out.phase = obj.phase;
+  }
+  if (obj.status === "returned") {
+    if (obj.phase === "module") {
+      throw new Error(`rhino-local: ${path}.phase "module" is a throw while the library loads, not a return`);
+    }
+    const flagged = obj.undefined === true;
+    if (obj.undefined !== undefined && obj.undefined !== true) {
+      throw new Error(`rhino-local: ${path}.undefined must be true`);
+    }
+    if (flagged === ("value" in obj)) {
+      throw new Error(`rhino-local: ${path} must declare value or undefined: true, and not both`);
+    }
+    if (flagged) {
+      out.undefined = true;
+    } else {
+      out.value = parseJsonValue(obj.value, `${path}.value`);
+    }
+    return out;
+  }
+  out.message = str(obj.message, `${path}.message`);
+  out.name = str(obj.name, `${path}.name`);
+  out.type = str(obj.type, `${path}.type`);
+  if (out.phase === undefined) {
+    out.phase = "export";
   }
   return out;
 }
