@@ -203,7 +203,8 @@ function __rhinoLocalAtBuildToken(seed) {
     return seed.authTimeSeconds;
   });
   m("getAudience", 0, function () {
-    return __rhinoLocalCtxList(seed.audience.map(__rhinoLocalCtxString));
+    var audienceGrant = __rhinoLocalCollectionGrant(legacy ? "token.legacy.getAudience" : "token.next.getAudience");
+    return __rhinoLocalCtxList(seed.audience.map(__rhinoLocalCtxString), "accessToken.getAudience()", null, audienceGrant);
   });
   m("getExpiryTime", 0, function () {
     return state().expiryTime;
@@ -220,9 +221,11 @@ function __rhinoLocalAtBuildToken(seed) {
     }
     if (legacy) {
       // A copy: add() answers true and the token keeps its scope (measured).
-      return __rhinoLocalCtxJavaSet(state().scope, "accessToken.getScope()", true);
+      var scopeSetGrant = __rhinoLocalCollectionGrant("token.legacy.getScope");
+      return __rhinoLocalCtxJavaSet(state().scope, "accessToken.getScope()", true, undefined, undefined, scopeSetGrant);
     }
-    var list = __rhinoLocalCtxList(state().scope.slice(), "accessToken.getScope()");
+    var scopeListGrant = __rhinoLocalCollectionGrant("token.next.getScope");
+    var list = __rhinoLocalCtxList(state().scope.slice(), "accessToken.getScope()", null, scopeListGrant);
     // Measured: the next-gen list is immutable, and add() throws "null".
     __rhinoLocalHide(list, "add", function () {
       throw __rhinoLocalInternalError("null");
@@ -478,12 +481,7 @@ function __rhinoLocalSeedAccessToken(given) {
     realm = d.token.realm;
   }
   accessToken = __rhinoLocalAtBuildToken(d.token);
-  identity = __rhinoLocalCtxBuildIdentity(d.identity, {
-    emptyAttribute: {
-      surface: true,
-      capture: "test/fixtures/oauth2-atm/surface.next-gen.json idAttrValuesMissing",
-    },
-  });
+  identity = __rhinoLocalCtxBuildIdentity(d.identity);
   scopes = __rhinoLocalCtxBuildScopes(d.scopes, { add: true });
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, {
     listKind: __rhinoLocalListKinds.oauth2TokenRequest,

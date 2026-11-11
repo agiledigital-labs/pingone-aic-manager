@@ -142,16 +142,10 @@ function __rhinoLocalVsList(items, label, addable) {
   // noscope.next-gen.json fn.requested is the only empty scope list. The
   // other three lists were captured non-empty. concat is not granted: the
   // probe ran it after add().
-  var empty = label === "requestedScopes" ? {
-    surface: true,
-    json: true,
-    contains: true,
-    indexOf: true,
-    isEmpty: true,
-    forEach: true,
-    add: true,
-    capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json fn.requested",
-  } : null;
+  var empty = label === "requestedScopes" ? __rhinoLocalCollectionGrant("validate.next.requestedScopes")
+    : label === "allowedScopes" ? __rhinoLocalCollectionGrant("validate.next.allowedScopes")
+    : label === "availableScopes" ? __rhinoLocalCollectionGrant("validate.next.availableScopes")
+    : __rhinoLocalCollectionGrant("validate.next.defaultScopes");
   var list = __rhinoLocalCtxList(store, label, null, empty);
   __rhinoLocalCtxTag(list, "JavaList", label);
   var str = function (v) {
@@ -187,13 +181,13 @@ function __rhinoLocalVsList(items, label, addable) {
     return undefined;
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "toArray", 0, function () {
-    // Empty length was read on requestedScopes.toArray() only.
-    var arrayEmpty = label === "requestedScopes" ? {
-      length: true,
-      capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json fn.requested.toArray",
-    } : null;
+    // Empty length and typeof [0] were read on requestedScopes.toArray() only.
+    var arrayGrant = label === "requestedScopes" ? __rhinoLocalCollectionGrant("validate.next.requestedScopes")
+      : label === "allowedScopes" ? __rhinoLocalCollectionGrant("validate.next.allowedScopes")
+      : label === "availableScopes" ? __rhinoLocalCollectionGrant("validate.next.availableScopes")
+      : __rhinoLocalCollectionGrant("validate.next.defaultScopes");
     return __rhinoLocalCtxList(store.slice(), label + ".toArray()",
-      __rhinoLocalListKinds.oauth2ValidateScopeArray, arrayEmpty);
+      __rhinoLocalListKinds.oauth2ValidateScopeArray, __rhinoLocalToArrayGrant(arrayGrant));
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "iterator", 0, function () {
     throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
@@ -229,24 +223,16 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
   // noscope.legacy.json fn.requested is the only empty set. indexOf there is
   // TypeError: Cannot find function indexOf, so it is not granted and stays
   // uninstalled. allowedScopes and defaultScopes were captured non-empty.
-  var empty = label === "requestedScopes" ? {
-    surface: true,
-    json: true,
-    size: true,
-    contains: true,
-    isEmpty: true,
-    forEach: true,
-    add: true,
-    capture: "test/fixtures/oauth2-validate-scope/noscope.legacy.json fn.requested",
-  } : null;
+  var empty = label === "requestedScopes" ? __rhinoLocalCollectionGrant("validate.legacy.requestedScopes")
+    : label === "allowedScopes" ? __rhinoLocalCollectionGrant("validate.legacy.allowedScopes")
+    : __rhinoLocalCollectionGrant("validate.legacy.defaultScopes");
   var set = __rhinoLocalCtxJavaSet(items, label, label !== "defaultScopes", javaClass, undefined, empty);
-  var toArray = set.toArray;
   var strings = function () {
-    var arr = toArray.call(set);
+    var itemsNow = __rhinoLocalSetItems(set);
     var out = [];
     var i;
-    for (i = 0; i < arr.length; i += 1) {
-      out.push(String(arr[i]));
+    for (i = 0; i < itemsNow.length; i += 1) {
+      out.push(String(itemsNow[i]));
     }
     return out;
   };
@@ -270,13 +256,20 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
   // Measured here: toArray() is not a JS array (Array.isArray false), with
   // `length` and items of typeof "object" (Java strings).
   __rhinoLocalCtxMethod(set, label, javaClass, "toArray", 0, function () {
-    // Empty length was read on requestedScopes.toArray() only.
-    var arrayEmpty = label === "requestedScopes" ? {
-      length: true,
-      capture: "test/fixtures/oauth2-validate-scope/noscope.legacy.json fn.requested.toArray",
-    } : null;
-    return __rhinoLocalCtxList(toArray.call(set), label + ".toArray()",
-      __rhinoLocalListKinds.oauth2ValidateScopeArray, arrayEmpty);
+    // The call returns a view at every size. Reading the base toArray on an
+    // ungranted empty set would fault the call, and the measured length id
+    // is the view's. Elements stay Java strings.
+    var held = __rhinoLocalSetItems(set);
+    var arr = [];
+    var i;
+    var arrayGrant = label === "requestedScopes" ? __rhinoLocalCollectionGrant("validate.legacy.requestedScopes")
+      : label === "allowedScopes" ? __rhinoLocalCollectionGrant("validate.legacy.allowedScopes")
+      : __rhinoLocalCollectionGrant("validate.legacy.defaultScopes");
+    for (i = 0; i < held.length; i += 1) {
+      arr.push(__rhinoLocalCtxJavaString(held[i]));
+    }
+    return __rhinoLocalCtxList(arr, label + ".toArray()",
+      __rhinoLocalListKinds.oauth2ValidateScopeArray, __rhinoLocalToArrayGrant(arrayGrant));
   });
   __rhinoLocalCtxMethod(set, label, javaClass, "iterator", 0, function () {
     __rhinoLocalSetEmpty(set, "iterator", label + ".iterator()");
@@ -512,10 +505,6 @@ function __rhinoLocalSeedValidateScope(given) {
       redirectUris: true,
       javaTags: true,
       redirectKind: __rhinoLocalListKinds.oauth2ValidateScopeRedirect,
-      redirectEmpty: {
-        surface: true,
-        capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json cpRedirect",
-      },
     });
     __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");
   }

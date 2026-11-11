@@ -98,7 +98,10 @@ function __rhinoLocalCfgRequestMap(values, caseInsensitive, label) {
     var key = caseInsensitive ? raw.toLowerCase() : raw;
     var items = typeof values[raw] === "string" ? [values[raw]] : values[raw].slice();
     var itemLabel = label + ".get(" + JSON.stringify(key) + ")";
-    var list = __rhinoLocalCtxList(items.map(__rhinoLocalCtxString), itemLabel);
+    var requestGrant = __rhinoLocalCtx.engine === "legacy"
+      ? __rhinoLocalCollectionGrant("config.legacy.requestParameters")
+      : __rhinoLocalCollectionGrant("config.next.requestParameters");
+    var list = __rhinoLocalCtxList(items.map(__rhinoLocalCtxString), itemLabel, null, requestGrant);
     __rhinoLocalCtxTag(list, "JavaList", itemLabel);
     __rhinoLocalCtxRewatch(list);
     if (keys.indexOf(key) === -1) {

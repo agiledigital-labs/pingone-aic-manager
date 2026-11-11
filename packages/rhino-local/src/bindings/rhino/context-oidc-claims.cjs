@@ -282,7 +282,8 @@ function __rhinoLocalOidcClaimObject(name, value) {
     return __rhinoLocalCtxJavaString(name);
   });
   __rhinoLocalCtxMethod(claim, label, cls, "getValues", 0, function () {
-    return __rhinoLocalCtxList([__rhinoLocalCtxJavaString(value)], label + ".getValues()");
+    var valuesGrant = __rhinoLocalCollectionGrant("oidc.legacy.claimValues");
+    return __rhinoLocalCtxList([__rhinoLocalCtxJavaString(value)], label + ".getValues()", null, valuesGrant);
   });
   __rhinoLocalCtxMethod(claim, label, cls, "isEssential", 0, function () {
     return false;
@@ -301,7 +302,8 @@ function __rhinoLocalOidcClaimObject(name, value) {
 
 function __rhinoLocalOidcClaimObjects(seed) {
   var items = [__rhinoLocalOidcClaimObject("sub", seed.sub), __rhinoLocalOidcClaimObject("subname", seed.subname)];
-  var list = __rhinoLocalCtxList(items, "claimObjects");
+  var claimGrant = __rhinoLocalCollectionGrant("oidc.legacy.claimObjects");
+  var list = __rhinoLocalCtxList(items, "claimObjects", null, claimGrant);
   __rhinoLocalCtxMethod(list, "claimObjects", "java.util.List", "toArray", 0, function () {
     return items.slice();
   });
@@ -435,12 +437,7 @@ function __rhinoLocalSeedOidcClaims(given) {
   if (given.realm === undefined) {
     realm = d.realm;
   }
-  identity = __rhinoLocalCtxBuildIdentity(d.identity, {
-    emptyAttribute: {
-      surface: true,
-      capture: "test/fixtures/oidc-claims/surface.next-gen.json idAttrValuesMissing",
-    },
-  });
+  identity = __rhinoLocalCtxBuildIdentity(d.identity);
   scopes = __rhinoLocalCtxBuildScopes(d.scopes, {
     toArray: true,
     toArrayKind: __rhinoLocalListKinds.oidcClaimsArray,
@@ -450,34 +447,24 @@ function __rhinoLocalSeedOidcClaims(given) {
   });
   clientProperties = __rhinoLocalCtxBuildClient(d.client, {
     redirectUris: true,
-    redirectEmpty: {
-      surface: true,
-      capture: "test/fixtures/oidc-claims/surface.next-gen.json cpRedirect",
-    },
   });
-  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.map(__rhinoLocalCtxString), "claimsLocales", null, {
-    surface: true,
-    capture: "test/fixtures/oidc-claims/surface.next-gen.json claimsLocales; " +
-      "test/fixtures/oidc-claims/surface.legacy.json claimsLocales",
-  });
+  var localesGrant = __rhinoLocalCollectionGrant(legacy ? "oidc.legacy.claimsLocales" : "oidc.next.claimsLocales");
+  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.map(__rhinoLocalCtxString), "claimsLocales", null, localesGrant);
   if (legacy) {
     claims = __rhinoLocalOidcLegacyClaims(d.oidc);
     claimObjects = __rhinoLocalOidcClaimObjects(d.oidc);
     requestedClaims = __rhinoLocalCtxMap("requestedClaims", [], null, function () {
       return "{}";
     }, null, { get: { arity: 1, fn: function () { return null; } } });
-    requestedTypedClaims = __rhinoLocalCtxList([], "requestedTypedClaims", null, {
-      surface: true,
-      capture: "test/fixtures/oidc-claims/surface.legacy.json requestedTypedClaims",
-    });
+    var typedGrant = __rhinoLocalCollectionGrant("oidc.legacy.requestedTypedClaims");
+    requestedTypedClaims = __rhinoLocalCtxList([], "requestedTypedClaims", null, typedGrant);
     // Measured: toArray() of the empty list, then a.length in a loop that does
     // not run (requested.legacy.json typed, the empty join). String and JSON
     // of that array were not read. The call itself does not fault.
     __rhinoLocalCtxMethod(requestedTypedClaims, "requestedTypedClaims", "java.util.List", "toArray", 0, function () {
-      return __rhinoLocalCtxList([], "requestedTypedClaims.toArray()", __rhinoLocalListKinds.oidcClaimsArray, {
-        length: true,
-        capture: "test/fixtures/oidc-claims/requested.legacy.json typed",
-      });
+      var typedAgain = __rhinoLocalCollectionGrant("oidc.legacy.requestedTypedClaims");
+      return __rhinoLocalCtxList([], "requestedTypedClaims.toArray()", __rhinoLocalListKinds.oidcClaimsArray,
+        __rhinoLocalToArrayGrant(typedAgain));
     });
     // Measured: bound, and null on a password grant.
     session = null;

@@ -533,6 +533,8 @@ function __rhinoLocalMaMethod(target, cls, name, arity, fn, measuredRefusal) {
 // The tag was not measured. Elements stay JS strings on next-gen and Java
 // strings on legacy, which is what typeof [i] recorded.
 function __rhinoLocalMaToArray(items) {
+  // collection-kind: scopes.toArray(). size/get/toString/getClass stay the
+  // every-size stubs below, so the call itself does not fault.
   var list = __rhinoLocalListView(items, __rhinoLocalListKinds.oauth2MayActArray);
   __rhinoLocalCtxFaulting(list, "scopes.toArray()", ["size", "get", "toString", "getClass"]);
   __rhinoLocalCtxTag(list, null, "scopes.toArray()");
@@ -571,7 +573,8 @@ function __rhinoLocalMaAssign(which, value, cls, name, args) {
 
 function __rhinoLocalMaNgScopes(items) {
   var store = items.slice();
-  var list = __rhinoLocalListView(store, __rhinoLocalListKinds.oauth2MayAct);
+  var scopeGrant = __rhinoLocalCollectionGrant("mayact.next.scopes");
+  var list = __rhinoLocalListView(store, __rhinoLocalListKinds.oauth2MayAct, scopeGrant);
   __rhinoLocalCtxTag(list, "JavaList", "scopes");
   __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "contains", 1, function (v) {
     if (typeof v !== "string") {
@@ -598,19 +601,14 @@ function __rhinoLocalMaNgScopes(items) {
 }
 
 // The surface set is non-empty. Nothing measured a size-zero may-act set, so
-// a read faults. isEmpty and add stay the always-unmeasured stubs.
-function __rhinoLocalMaEmptySet(store, member) {
-  if (store.length !== 0) {
-    return;
-  }
-  throw __rhinoLocalCtxUnmeasured(member,
-    "of a size-zero set (this operation on a size-zero set was not measured)");
-}
-
+// a read faults through the one empty-read decision. isEmpty and add stay
+// the always-unmeasured stubs. toArray() still returns the guarded view.
 function __rhinoLocalMaLegacyScopes(items) {
   var store = items.slice();
   var out = __rhinoLocalCtxBare();
+  var scopeGrant = __rhinoLocalEmptyGrant(__rhinoLocalCollectionGrant("mayact.legacy.scopes"));
   var i;
+  __rhinoLocalHide(out, __rhinoLocalSetStateKey, { items: store, grant: scopeGrant, label: "scopes" });
   for (i = 0; i < store.length + 8; i += 1) {
     (function (index) {
       Object.defineProperty(out, String(index), {
@@ -623,22 +621,40 @@ function __rhinoLocalMaLegacyScopes(items) {
       });
     })(i);
   }
+  if (store.length === 0) {
+    Object.defineProperty(out, "length", {
+      enumerable: false,
+      configurable: true,
+      get: function () {
+        __rhinoLocalSetEmpty(out, "length", "scopes.length");
+        return store.length;
+      },
+    });
+    Object.defineProperty(out, __rhinoLocalSetIterKey, {
+      enumerable: true,
+      configurable: true,
+      get: function () {
+        __rhinoLocalSetEmpty(out, "iteration", "scopes.iteration");
+        return undefined;
+      },
+    });
+  }
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "size", 0, function () {
-    __rhinoLocalMaEmptySet(store, "scopes.size()");
+    __rhinoLocalSetEmpty(out, "size", "scopes.size()");
     return store.length;
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "contains", 1, function (v) {
     if (typeof v !== "string") {
       throw __rhinoLocalCtxUnmeasured("scopes.contains(" + __rhinoLocalArgShape(arguments) + ")");
     }
-    __rhinoLocalMaEmptySet(store, "scopes.contains()");
+    __rhinoLocalSetEmpty(out, "contains", "scopes.contains()");
     return store.indexOf(v) !== -1;
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "forEach", 1, function (fn) {
     if (typeof fn !== "function") {
       throw __rhinoLocalCtxUnmeasured("scopes.forEach(" + __rhinoLocalArgShape(arguments) + ")");
     }
-    __rhinoLocalMaEmptySet(store, "scopes.forEach()");
+    __rhinoLocalSetEmpty(out, "forEach", "scopes.forEach()");
     var k;
     for (k = 0; k < store.length; k += 1) {fn(store[k]);}
   });
@@ -649,7 +665,7 @@ function __rhinoLocalMaLegacyScopes(items) {
     return __rhinoLocalMaToArray(items);
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "iterator", 0, function () {
-    __rhinoLocalMaEmptySet(store, "scopes.iterator()");
+    __rhinoLocalSetEmpty(out, "iterator", "scopes.iterator()");
     var it = __rhinoLocalCtxBare();
     __rhinoLocalHide(it, "toString", function () {
       return "java.util.HashMap$KeyIterator@00000000";
@@ -659,11 +675,11 @@ function __rhinoLocalMaLegacyScopes(items) {
     return __rhinoLocalCtxWatch(it, "scopes.iterator()");
   });
   __rhinoLocalHide(out, "toString", function () {
-    __rhinoLocalMaEmptySet(store, "String(scopes)");
+    __rhinoLocalSetEmpty(out, "surface", "String(scopes)");
     return "[" + store.join(", ") + "]";
   });
   __rhinoLocalHide(out, "toJSON", function () {
-    __rhinoLocalMaEmptySet(store, "JSON.stringify(scopes)");
+    __rhinoLocalSetEmpty(out, "json", "JSON.stringify(scopes)");
     return store.slice();
   });
   __rhinoLocalCtxFaulting(out, "scopes", [
@@ -809,10 +825,6 @@ function __rhinoLocalSeedMayAct(given) {
     javaTags: true,
     setTag: "JavaObject",
     redirectKind: __rhinoLocalListKinds.oauth2MayActRedirect,
-    redirectEmpty: {
-      surface: true,
-      capture: "test/fixtures/oauth2-may-act/surface.next-gen.json cpRedirect",
-    },
   });
   __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");
   if (legacy) {
