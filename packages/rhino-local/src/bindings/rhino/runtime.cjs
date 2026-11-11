@@ -256,7 +256,10 @@ function __rhinoLocalFixtureFault(id, message) {
 // A Java array as Rhino surfaces it: indexed, with length, not
 // Array.isArray, yet Array.prototype methods resolve — getAttributeValues(n)
 // .toArray().map(String) ran on AIC (live-identity-store-families, 2026-10-01).
-function __rhinoLocalArrayLike(items) {
+// `binding` registers the array under its parent collection's row
+// (__rhinoLocalCollectionRegister).
+function __rhinoLocalArrayLike(items, binding) {
+  __rhinoLocalCollectionRegister(binding);
   var out = typeof Object.create === "function" ? Object.create(Array.prototype) : {};
   var i;
   for (i = 0; i < items.length; i += 1) {
@@ -942,7 +945,15 @@ function __rhinoLocalMergeBucket(bucketName, object) {
   }
 }
 
-function __rhinoLocalJavaList(items) {
+// A legacy java.util.List as a real JS array. `binding` registers it
+// (__rhinoLocalCollectionRegister). An array cannot trap its own length, so
+// in a script context an empty one is a list view of the context's kind,
+// whose catalog row decides every empty read.
+function __rhinoLocalJavaList(items, binding) {
+  var row = __rhinoLocalCollectionRegister(binding);
+  if (row !== null && items.length === 0) {
+    return __rhinoLocalListView([], __rhinoLocalCtx.listKind, binding);
+  }
   var list = [];
   var i;
   for (i = 0; i < items.length; i += 1) {
@@ -961,7 +972,7 @@ function __rhinoLocalJavaList(items) {
     return this.indexOf(value) !== -1;
   });
   __rhinoLocalHide(list, "toArray", function () {
-    return __rhinoLocalArrayLike(this);
+    return __rhinoLocalArrayLike(this, binding);
   });
   return list;
 }
@@ -1107,43 +1118,53 @@ function __rhinoLocalListRow(value) {
 // operation and still uses the "not measured" sentence, rather than the
 // decision-node request list's. The request list and openidm do not set
 // emptyRoutes and keep the boolean. Unknown fields are dropped.
+// The operations a grant can name. Each is a capture citation: the fixture
+// file and the key where that operation was read on a size-zero collection.
+// `lengthAbsent` is not an operation (the property stays absent, which a
+// HashSet capture showed). `forIn` is for...in and for each over the
+// collection's keys; a bracket read does not imply it, because Rhino can
+// enumerate without reading a value. `toArray*` are the child view's reads.
+var __rhinoLocalEmptyOps = [
+  "surface", "length", "json", "concat", "contains", "indexOf", "isEmpty", "forEach", "toArray", "add",
+  "size", "get", "index", "forIn", "iterator", "lengthAbsent", "toArrayLength", "toArraySize",
+  "toArrayJson", "toArrayIndex",
+];
+
+// A context collection whose catalog row grants nothing: every empty read
+// faults with the "not measured" sentence, and the kind's own flags (a
+// decision-node request list's size()) never apply.
+var __rhinoLocalEmptyNone = { captures: {} };
+
+// A grant names, per operation, the capture that measured it on a size-zero
+// collection: `{size: "<fixture> <key>", ...}`. A field that is not an
+// operation, a citation that is not a non-empty string, or a grant that names
+// no operation is a prelude error. The result has a boolean per operation
+// and the citations under `captures`.
 function __rhinoLocalEmptyGrant(grant) {
   if (grant === null || grant === undefined) {
     return null;
   }
-  var capture = grant.capture;
-  if (typeof capture !== "string" || capture.length === 0) {
-    throw new Error("rhino-local: an empty-list permission needs the capture that measured it");
+  var out = { captures: {} };
+  var any = false;
+  var name;
+  for (name in grant) {
+    if (!Object.prototype.hasOwnProperty.call(grant, name)) {
+      continue;
+    }
+    if (__rhinoLocalEmptyOps.indexOf(name) === -1) {
+      throw new Error("rhino-local: an empty-list permission names an unknown operation " + name);
+    }
+    if (typeof grant[name] !== "string" || grant[name].length === 0) {
+      throw new Error("rhino-local: an empty-list permission for " + name + " needs the capture that measured it");
+    }
+    out[name] = true;
+    out.captures[name] = grant[name];
+    if (name !== "lengthAbsent") {
+      any = true;
+    }
   }
-  var out = {
-    capture: capture,
-    surface: grant.surface === true,
-    length: grant.length === true,
-    json: grant.json === true,
-    concat: grant.concat === true,
-    contains: grant.contains === true,
-    indexOf: grant.indexOf === true,
-    isEmpty: grant.isEmpty === true,
-    forEach: grant.forEach === true,
-    toArray: grant.toArray === true,
-    add: grant.add === true,
-    size: grant.size === true,
-    get: grant.get === true,
-    index: grant.index === true,
-    iteration: grant.iteration === true,
-    // Not an operation: the property stays absent, which a HashSet capture
-    // showed. A grant of only this field names nothing and is refused below.
-    lengthAbsent: grant.lengthAbsent === true,
-    toArrayLength: grant.toArrayLength === true,
-    toArraySize: grant.toArraySize === true,
-    toArrayJson: grant.toArrayJson === true,
-    toArrayIndex: grant.toArrayIndex === true,
-  };
-  if (!out.surface && !out.length && !out.json && !out.concat && !out.contains && !out.indexOf &&
-      !out.isEmpty && !out.forEach && !out.toArray && !out.add && !out.size && !out.get &&
-      !out.index && !out.iteration && !out.toArrayLength && !out.toArraySize && !out.toArrayJson &&
-      !out.toArrayIndex) {
-    throw new Error("rhino-local: an empty-list permission names no operation (" + capture + ")");
+  if (!any) {
+    throw new Error("rhino-local: an empty-list permission names no operation");
   }
   return out;
 }
@@ -1153,21 +1174,129 @@ function __rhinoLocalEmptyAllows(kind, grant, route) {
     if (route === "length") {
       return grant.length === true || grant.surface === true;
     }
-    // One measured bracket read is the iteration too: for...in of a list
-    // walks the same indices. A set does not use this implication for
-    // length (see __rhinoLocalSetEmpty); surface there is String only.
-    if (route === "index" || route === "iteration") {
-      return grant.index === true || grant.iteration === true;
-    }
     return grant[route] === true;
   }
   if (kind.allowEmptySize === true && route === "size") {
     return true;
   }
-  if (kind.allowEmptyIndex === true && (route === "index" || route === "iteration" || route === "get")) {
+  if (kind.allowEmptyIndex === true && (route === "index" || route === "forIn" || route === "get")) {
     return true;
   }
   return __rhinoLocalEmptyRoute(kind, route);
+}
+
+// The grant of the view a collection's toArray() returns: each `toArray*`
+// citation becomes the child's own operation. Fields the capture did not
+// show stay off, so size() and JSON of that view still fault.
+function __rhinoLocalToArrayGrant(parent) {
+  var out = {};
+  var any = false;
+  if (parent === null || parent === undefined) {
+    return null;
+  }
+  if (typeof parent.toArrayLength === "string") { out.length = parent.toArrayLength; any = true; }
+  if (typeof parent.toArraySize === "string") { out.size = parent.toArraySize; any = true; }
+  if (typeof parent.toArrayJson === "string") { out.json = parent.toArrayJson; any = true; }
+  if (typeof parent.toArrayIndex === "string") { out.index = parent.toArrayIndex; any = true; }
+  return any ? out : null;
+}
+
+// Registration (Sol ctx r14 P2-2). Every constructor of a script-visible
+// collection names its binding. In a script context (the catalog is loaded
+// only there, and the context overlay sets `__rhinoLocalCtx.catalog`) the
+// binding resolves to the catalog row `<context>.<legacy|next>.<binding>`,
+// and a binding with no row is a tallied fault at construction: a new
+// collection cannot reach a script without a row, and the conformance test
+// runs every row. Each constructed id is recorded in
+// `__rhinoLocal.collections`, which the test reads back. In the decision node
+// there is no catalog and the list kind is the policy. A constructor that
+// names no binding is a prelude error everywhere.
+function __rhinoLocalCollectionRegister(binding) {
+  if (typeof binding !== "string" || binding.length === 0) {
+    throw new Error("rhino-local: a collection constructor must name its catalog binding");
+  }
+  if (typeof __rhinoLocalCollectionCatalog === "undefined") {
+    return null;
+  }
+  var ctx = __rhinoLocalCtx.catalog;
+  if (typeof ctx !== "string") {
+    throw new Error("rhino-local: this script context names no collection catalog key");
+  }
+  var id = ctx + "." + (__rhinoLocal.engine === "legacy" ? "legacy" : "next") + "." + binding;
+  var rows = __rhinoLocalCollectionCatalog;
+  var row = null;
+  var i;
+  for (i = 0; i < rows.length; i += 1) {
+    if (rows[i].id === id) {
+      row = rows[i];
+      break;
+    }
+  }
+  if (row === null || row.binding !== binding) {
+    throw __rhinoLocalFault("rhino-local-collection-unregistered/" + id,
+      "rhino-local: collection " + id + " has no row in collection-catalog.cjs, so its empty reads are undecided");
+  }
+  if (!__rhinoLocal.collections) {
+    __rhinoLocal.collections = [];
+  }
+  if (__rhinoLocal.collections.indexOf(id) === -1) {
+    __rhinoLocal.collections.push(id);
+  }
+  return row;
+}
+
+// The empty-read grant a constructor applies: `undefined` in the decision
+// node (the kind decides), otherwise the row's normalised grant, or its
+// toArray() child's, or __rhinoLocalEmptyNone.
+function __rhinoLocalCollectionEmpty(binding, child) {
+  var row = __rhinoLocalCollectionRegister(binding);
+  var raw;
+  if (row === null) {
+    return undefined;
+  }
+  if (child !== undefined && child !== "toArray") {
+    throw new Error("rhino-local: unknown child collection " + child + " of " + binding);
+  }
+  raw = child === "toArray" ? __rhinoLocalToArrayGrant(row.grant) : row.grant;
+  return raw === null ? __rhinoLocalEmptyNone : __rhinoLocalEmptyGrant(raw);
+}
+
+// java/IndexTrap.java, captured while the prelude can still see the host op:
+// a prototype that hands every index read its object lacks to `read`.
+// Absent (node:vm), collections keep finite non-enumerable index guards.
+var __rhinoLocalIndexTrap = (function (hostOp) {
+  if (typeof hostOp !== "function") {
+    return null;
+  }
+  return function (proto, read) {
+    return hostOp("indexTrap", proto, read);
+  };
+})(typeof __rhinoLocalHostOp === "function" ? __rhinoLocalHostOp : null);
+
+// An object for a collection whose every missing index read goes to `read`
+// (which throws or returns). `proto` is the object's prototype without the
+// trap: Object.prototype for a list view, null for a bare set.
+function __rhinoLocalIndexTrapped(proto, read) {
+  if (__rhinoLocalIndexTrap === null) {
+    return proto === null && typeof Object.create === "function" ? Object.create(null) : {};
+  }
+  return Object.create(__rhinoLocalIndexTrap(proto, read));
+}
+
+// Key enumeration of an empty collection that no capture measured: for...in
+// and for each call `__iterator__` (Rhino 1.7.14, both engines), so the loop
+// faults before it can count a key, and no key is invented. The caller
+// removes it when the collection grows (__rhinoLocalEnumGrew).
+function __rhinoLocalEnumTrap(object, fault) {
+  __rhinoLocalHide(object, "__iterator__", function () {
+    throw fault();
+  });
+}
+
+function __rhinoLocalEnumGrew(object) {
+  if (Object.getOwnPropertyDescriptor(object, "__iterator__") !== undefined) {
+    delete object.__iterator__;
+  }
 }
 
 function __rhinoLocalEmptyRoute(kind, route) {
@@ -1445,11 +1574,26 @@ function __rhinoLocalJavaForm(value, kind) {
     "AIC has none: copy the list with [].concat(v) first)");
 }
 
-// collection-kind: the list-view implementation. A binding names its grant
-// at the call, or the kind (request, openidm) is the policy.
-function __rhinoLocalListView(items, kind, grant) {
-  grant = __rhinoLocalEmptyGrant(grant);
-  var list = {};
+// The list-view implementation. `binding` is the catalog binding
+// (__rhinoLocalCollectionRegister); `child` is "toArray" for the view a
+// binding's toArray() returns, which takes the row's toArray* fields. In the
+// decision node the kind (request, openidm) is the policy.
+function __rhinoLocalListView(items, kind, binding, child) {
+  var grant = __rhinoLocalCollectionEmpty(binding, child);
+  if (grant === undefined) {
+    grant = null;
+  }
+  var indexAllowed = __rhinoLocalEmptyAllows(kind, grant, "index");
+  // An empty list whose [i] no capture measured: every index it lacks goes
+  // to the decision (java/IndexTrap.java), so [8] and [1000] fault as [0]
+  // does. A list that grows answers its own indices.
+  var list = items.length === 0 && !indexAllowed
+    ? __rhinoLocalIndexTrapped(Object.prototype, function (index) {
+      if (items.length === 0) {
+        throw __rhinoLocalEmptyFault(kind, grant, "[" + index + "]");
+      }
+    })
+    : {};
   var i;
   for (i = 0; i < items.length; i += 1) {
     list[i] = items[i];
@@ -1495,16 +1639,21 @@ function __rhinoLocalListView(items, kind, grant) {
       return list;
     });
   }
-  // No Proxy, so an empty list whose [i] was not measured grows enumerable
-  // throwing getters for 0..7 (the same span a legacy set installs). A
-  // key-only for...in can see those keys and not throw; reading the value
-  // does. Indices past 7 stay missing. A granted index, or a kind that
-  // measured [i] on a size-zero list, installs none, so [0] stays undefined.
-  if (items.length === 0 && !__rhinoLocalEmptyAllows(kind, grant, "index")) {
+  // Without the trap (node:vm) an ungranted empty list keeps non-enumerable
+  // throwing getters for 0..7; past 7 reads undefined there. A granted index,
+  // or a kind that measured [i] on a size-zero list, installs neither, so [0]
+  // stays undefined. Key enumeration is its own operation: an empty list
+  // whose for...in no capture measured faults the loop itself.
+  if (items.length === 0 && !__rhinoLocalEmptyAllows(kind, grant, "forIn")) {
+    __rhinoLocalEnumTrap(list, function () {
+      return __rhinoLocalEmptyFault(kind, grant, "for...in");
+    });
+  }
+  if (items.length === 0 && !indexAllowed && __rhinoLocalIndexTrap === null) {
     for (i = 0; i < 8; i += 1) {
       (function (index) {
         Object.defineProperty(list, String(index), {
-          enumerable: true,
+          enumerable: false,
           configurable: true,
           get: function () {
             if (items.length !== 0) {
@@ -1590,16 +1739,18 @@ function __rhinoLocalListView(items, kind, grant) {
   return list;
 }
 
-// collection-kind: a decision-node request list. Its empty size() and [i]
-// are the request kind's flags, not a catalog row.
-function __rhinoLocalRequestList(items) {
-  return __rhinoLocalListView(items, __rhinoLocalListKinds.request);
+// A request map's value list. In the decision node its empty size() and [i]
+// are the request kind's flags; in a script context the catalog row for
+// `binding` (requestHeaders, requestParameters) decides.
+function __rhinoLocalRequestList(items, binding) {
+  return __rhinoLocalListView(items, __rhinoLocalListKinds.request, binding);
 }
 
-// collection-kind: an openidm list. emptyMeasured covers every empty route.
-// The legacy engine has no openidm binding, so every openidm list is next-gen.
+// An openidm list. In the decision node emptyMeasured covers every empty
+// route; a script context that keeps openidm has a catalog row for it. The
+// legacy engine has no openidm binding, so every openidm list is next-gen.
 function __rhinoLocalOpenidmList(items) {
-  return __rhinoLocalListView(items, __rhinoLocalListKinds.openidm);
+  return __rhinoLocalListView(items, __rhinoLocalListKinds.openidm, "openidm");
 }
 
 function __rhinoLocalRequestMap(values, options) {
@@ -1608,6 +1759,7 @@ function __rhinoLocalRequestMap(values, options) {
   var label = (options && options.label) || "request map";
   var legacy = Boolean(options && options.engine === "legacy");
   var makeList = legacy ? __rhinoLocalJavaList : __rhinoLocalRequestList;
+  var binding = label === "requestHeaders" || label === "requestParameters" ? label : "requestMap";
   var map = {};
   var store = {};
   var order = [];
@@ -1623,9 +1775,9 @@ function __rhinoLocalRequestMap(values, options) {
     value = values[raw];
     if (asList) {
       if (typeof value === "string") {
-        store[stored] = makeList([value]);
+        store[stored] = makeList([value], binding);
       } else {
-        store[stored] = makeList(value);
+        store[stored] = makeList(value, binding);
       }
     } else {
       store[stored] = value;
@@ -1854,8 +2006,8 @@ nodeState.remove = function (key) {
   delete __rhinoLocal.secure[k];
 };
 
-nodeState.keys = function () {
-  __rhinoLocalExpectArity("nodeState.keys", arguments, 0);
+// Every key nodeState holds, transient first, as a plain array.
+function __rhinoLocalNodeStateKeyNames() {
   var seen = {};
   var names = [];
   function take(bucket) {
@@ -1873,7 +2025,12 @@ nodeState.keys = function () {
   take(__rhinoLocal.transient);
   take(__rhinoLocal.secure);
   take(__rhinoLocal.shared);
-  var list = __rhinoLocalJavaList(names);
+  return names;
+}
+
+nodeState.keys = function () {
+  __rhinoLocalExpectArity("nodeState.keys", arguments, 0);
+  var list = __rhinoLocalJavaList(__rhinoLocalNodeStateKeyNames(), "nodeState.keys");
   __rhinoLocalHide(list, "iterator", function () {
     var index = 0;
     return {
@@ -2017,6 +2174,7 @@ function __rhinoLocalAsJavaMap(source) {
   // refuses, so next() and reading a toArray() element throw. Nothing else
   // on the view is modelled.
   __rhinoLocalHide(map, "entrySet", function () {
+    __rhinoLocalCollectionRegister("map.entrySet");
     var size = keys().length;
     var view = {};
     function refused() {
@@ -2047,7 +2205,7 @@ function __rhinoLocalAsJavaMap(source) {
   // Measured: a snapshot list; size(), get(i) and toArray() work, iterator()
   // is refused (ArrayList$Itr).
   __rhinoLocalHide(map, "values", function () {
-    var list = __rhinoLocalJavaList(values());
+    var list = __rhinoLocalJavaList(values(), "map.values");
     __rhinoLocalHide(list, "iterator", function () {
       throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
     });
@@ -2781,6 +2939,7 @@ function __rhinoLocalRequireSubmitted() {
 // A Java List as AIC's getters return it: indexable, size/get/isEmpty/contains, and
 // printed "[a, b]" with each element formatted by format().
 function __rhinoLocalCallbackList(items, format) {
+  __rhinoLocalCollectionRegister("callbacks");
   var list = {};
   var i;
   for (i = 0; i < items.length; i += 1) {
@@ -2805,7 +2964,7 @@ function __rhinoLocalCallbackList(items, format) {
     return items.indexOf(value) !== -1;
   });
   __rhinoLocalHide(list, "toArray", function () {
-    return __rhinoLocalArrayLike(items);
+    return __rhinoLocalArrayLike(items, "callbacks");
   });
   __rhinoLocalHide(list, "toString", function () {
     var values = [];
@@ -4738,7 +4897,7 @@ idRepository.getIdentity = function (userName) {
       if (!found) {
         missing("getAttributeValues(String)");
       }
-      var list = __rhinoLocalJavaList(values(attributeName));
+      var list = __rhinoLocalJavaList(values(attributeName), "idRepository.getAttribute");
       __rhinoLocalHide(list, "includes", undefined);
       __rhinoLocalHide(list, "toString", function () {
         return "[" + this.join(", ") + "]";
@@ -5635,6 +5794,8 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.logs = [];
   __rhinoLocal.identityWrites = [];
   __rhinoLocal.faults = [];
+  // Catalog ids of the collections this run constructed (script contexts).
+  __rhinoLocal.collections = [];
   // Local-only: the AIC lane runs against the tenant's real mapping.
   __rhinoLocal.identityAttributes = __rhinoLocalClone(given.identityAttributes || {});
 

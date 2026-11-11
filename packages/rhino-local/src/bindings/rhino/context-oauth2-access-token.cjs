@@ -80,6 +80,7 @@ __rhinoLocalListKinds.oauth2TokenRequest = {
 };
 
 __rhinoLocalCtx.prefix = "oauth2-token-unmeasured";
+__rhinoLocalCtx.catalog = "token";
 __rhinoLocalCtx.noun = "access-token modification";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2Token;
 
@@ -203,8 +204,7 @@ function __rhinoLocalAtBuildToken(seed) {
     return seed.authTimeSeconds;
   });
   m("getAudience", 0, function () {
-    var audienceGrant = __rhinoLocalCollectionGrant(legacy ? "token.legacy.getAudience" : "token.next.getAudience");
-    return __rhinoLocalCtxList(seed.audience.map(__rhinoLocalCtxString), "accessToken.getAudience()", null, audienceGrant);
+    return __rhinoLocalCtxList(seed.audience.map(__rhinoLocalCtxString), "accessToken.getAudience()", null, "getAudience");
   });
   m("getExpiryTime", 0, function () {
     return state().expiryTime;
@@ -221,13 +221,13 @@ function __rhinoLocalAtBuildToken(seed) {
     }
     if (legacy) {
       // A copy: add() answers true and the token keeps its scope (measured).
-      var scopeSetGrant = __rhinoLocalCollectionGrant("token.legacy.getScope");
-      return __rhinoLocalCtxJavaSet(state().scope, "accessToken.getScope()", true, undefined, undefined, scopeSetGrant);
+      return __rhinoLocalCtxJavaSet(state().scope, "accessToken.getScope()", true, undefined, undefined, "getScope");
     }
-    var scopeListGrant = __rhinoLocalCollectionGrant("token.next.getScope");
-    var list = __rhinoLocalCtxList(state().scope.slice(), "accessToken.getScope()", null, scopeListGrant);
-    // Measured: the next-gen list is immutable, and add() throws "null".
+    var list = __rhinoLocalCtxList(state().scope.slice(), "accessToken.getScope()", null, "getScope");
+    // Measured: the next-gen list is immutable, and add() throws "null". That
+    // was captured on a non-empty list, so an empty one faults first.
     __rhinoLocalHide(list, "add", function () {
+      __rhinoLocalEmptyOp(list, "add");
       throw __rhinoLocalInternalError("null");
     });
     __rhinoLocalCtxRewatch(list);

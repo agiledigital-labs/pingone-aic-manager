@@ -58,6 +58,10 @@ public final class HostOps extends BaseFunction {
       case "guardMap":
       case "unguard":
         return ContextJavaGuard.dispatch(cx, scope, op, args);
+      // A prototype that hands every missing index read to a collection's
+      // empty-read decision (java/IndexTrap.java).
+      case "indexTrap":
+        return IndexTrap.create(scope, args);
       // Prelude only: the invalid-scope replacement asks whether this toString is Rhino's wrap.
       case "exceptionDetails":
         return Boolean.valueOf(ContextJavaGuard.inExceptionDetails());

@@ -78,6 +78,7 @@ __rhinoLocalListKinds.configProvider = {
 };
 
 __rhinoLocalCtx.prefix = "config-provider-unmeasured";
+__rhinoLocalCtx.catalog = "config";
 __rhinoLocalCtx.noun = "config provider node";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.configProvider;
 
@@ -98,10 +99,7 @@ function __rhinoLocalCfgRequestMap(values, caseInsensitive, label) {
     var key = caseInsensitive ? raw.toLowerCase() : raw;
     var items = typeof values[raw] === "string" ? [values[raw]] : values[raw].slice();
     var itemLabel = label + ".get(" + JSON.stringify(key) + ")";
-    var requestGrant = __rhinoLocalCtx.engine === "legacy"
-      ? __rhinoLocalCollectionGrant("config.legacy.requestParameters")
-      : __rhinoLocalCollectionGrant("config.next.requestParameters");
-    var list = __rhinoLocalCtxList(items.map(__rhinoLocalCtxString), itemLabel, null, requestGrant);
+    var list = __rhinoLocalCtxList(items.map(__rhinoLocalCtxString), itemLabel, null, label);
     __rhinoLocalCtxTag(list, "JavaList", itemLabel);
     __rhinoLocalCtxRewatch(list);
     if (keys.indexOf(key) === -1) {
@@ -200,15 +198,29 @@ var __rhinoLocalCfgKeySetMethods = [
   "join", "sort", "slice", "indexOf", "map", "filter", "concat",
 ];
 
-function __rhinoLocalCfgLegacyKeys(nodeKeys) {
+// Only iterator() of a non-empty set was measured (surface nsKeys), so an
+// empty one faults through the catalog row, and for...in and [i] fault at
+// every size: AIC answers a Java set's members and fields there, which this
+// view does not reproduce.
+function __rhinoLocalCfgLegacyKeys() {
   return function () {
     if (arguments.length !== 0) {
       throw __rhinoLocalCtxUnmeasured("nodeState.keys(" + __rhinoLocalArgShape(arguments) + ")");
     }
-    var out = __rhinoLocalCtxBare();
+    var grant = __rhinoLocalCollectionEmpty("nodeState.keys");
+    var out = __rhinoLocalIndexTrapped(null, function (index) {
+      throw __rhinoLocalCtxUnmeasured("nodeState.keys()[" + index + "]");
+    });
+    __rhinoLocalEnumTrap(out, function () {
+      return __rhinoLocalCtxUnmeasured("nodeState.keys() for...in");
+    });
     __rhinoLocalCtxMethod(out, "nodeState.keys()", "java.util.Set", "iterator", 0, function () {
-      var names = nodeKeys.call(nodeState);
+      var names = __rhinoLocalNodeStateKeyNames();
       var at = 0;
+      if (names.length === 0 && !(grant !== null && grant.iterator === true)) {
+        throw __rhinoLocalCtxUnmeasured("nodeState.keys().iterator()",
+          "of a size-zero set (this operation on a size-zero set was not measured)");
+      }
       var it = __rhinoLocalCtxBare();
       __rhinoLocalCtxMethod(it, "nodeState.keys().iterator()", "java.util.Iterator", "hasNext", 0, function () {
         return at < names.length;
@@ -283,7 +295,7 @@ function __rhinoLocalSeedConfigProvider(given) {
   requestParameters = __rhinoLocalCfgRequestMap(given.requestParameters, false, "requestParameters");
   if (legacy) {
     __rhinoLocalHide(nodeState, "get", __rhinoLocalCfgLegacyGet(nodeState.get));
-    __rhinoLocalHide(nodeState, "keys", __rhinoLocalCfgLegacyKeys(nodeState.keys));
+    __rhinoLocalHide(nodeState, "keys", __rhinoLocalCfgLegacyKeys());
   } else {
     // Measured: the context's class shutter refuses the Java set keys() builds.
     __rhinoLocalHide(nodeState, "keys", function () {

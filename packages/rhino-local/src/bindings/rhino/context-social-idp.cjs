@@ -56,6 +56,7 @@ __rhinoLocalListKinds.socialIdp = {
 };
 
 __rhinoLocalCtx.prefix = "social-idp-unmeasured";
+__rhinoLocalCtx.catalog = "social";
 __rhinoLocalCtx.noun = "social IdP profile transformation";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.socialIdp;
 
@@ -109,8 +110,7 @@ function __rhinoLocalSocialNextGenProfile(profile) {
     keys: {
       arity: 0,
       fn: function () {
-        var keysGrant = __rhinoLocalCollectionGrant("social.next.rawProfile.keys");
-        var list = __rhinoLocalCtxList(keys.slice(), "rawProfile.keys()", null, keysGrant);
+        var list = __rhinoLocalCtxList(keys.slice(), "rawProfile.keys()", null, "rawProfile.keys");
         // Measured: `[object JavaList]`.
         __rhinoLocalCtxTag(list, "JavaList", "rawProfile.keys()");
         __rhinoLocalCtxRewatch(list);
@@ -175,8 +175,7 @@ function __rhinoLocalSocialLegacyProfile(profile) {
     return keys.length;
   });
   __rhinoLocalCtxMethod(out, "rawProfile", "org.forgerock.json.JsonValue", "keys", 0, function () {
-    var keysGrant = __rhinoLocalCollectionGrant("social.legacy.rawProfile.keys");
-    var set = __rhinoLocalCtxJavaSet(keys, "rawProfile.keys()", false, undefined, undefined, keysGrant);
+    var set = __rhinoLocalCtxJavaSet(keys, "rawProfile.keys()", false, undefined, undefined, "rawProfile.keys");
     // Measured: `[object JavaObject]`.
     __rhinoLocalCtxTag(set, "JavaObject", "rawProfile.keys()");
     __rhinoLocalCtxRewatch(set);

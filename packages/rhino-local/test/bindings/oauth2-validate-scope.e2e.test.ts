@@ -100,7 +100,19 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     const live = capture(name, engine);
     expect(live.http).toBe(400);
     const loggerName = (live.probe.fn.loggerName as { ok: { str: string } }).ok.str;
-    const { effects } = await run(name, SURFACE, [...requested], loggerName);
+    // The capture's legacy for...in of the empty requestedScopes lists Java's
+    // member names, which the set view does not reproduce: that one loop is
+    // a named fault (Sol ctx r14 P2-1), and the rest of the record still
+    // matches. The faulted run's harvest is the record.
+    const forInFault = engine === "legacy" && requested.length === 0;
+    if (forInFault) expectHarnessFault("oauth2-validate-scope-unmeasured/requestedScopes for...in");
+    const effects = await run(name, SURFACE, [...requested], loggerName).then(
+      (r) => r.effects,
+      (e: unknown) => {
+        if (!forInFault || !(e instanceof CaseRunError) || e.faultedEffects === undefined) throw e;
+        return e.faultedEffects;
+      },
+    );
     const vs = effects.validateScope!;
     expect(vs.status).toBe(400);
     const record = JSON.parse(vs.invalidScope!) as { top: JsonObject; fn: JsonObject };

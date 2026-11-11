@@ -1,109 +1,138 @@
-// Every collection binding a script can read, one row per context and engine.
-// The conformance test enumerates this array. A binding is exempt from an
-// empty read only when its grant names the capture that measured that
-// operation. `grant: null` faults every empty read. Building the binding
-// does not consult the grant.
+// Every collection a script context can hand a script, one row per context,
+// engine and binding. Rows are found by registration, not by reading this
+// list: each collection constructor names its binding, and
+// __rhinoLocalCollectionRegister (runtime.cjs) resolves
+// `<context>.<legacy|next>.<binding>` here, where `<context>` is the
+// overlay's `__rhinoLocalCtx.catalog`. A binding with no row is a tallied
+// fault when it is built, and every id built is recorded so the conformance
+// test can check that each row is constructed and each construction has a row.
+//
+// A grant names, per operation, the capture that measured it on a size-zero
+// collection: `size: "<fixture> <key>"`. An operation it does not name
+// faults when the collection is empty. `grant: null` faults every empty
+// read. Building the collection does not consult the grant.
+// Operations: surface (String), length, json, concat, contains, indexOf,
+// isEmpty, forEach, toArray, add, size, get, index ([i] at any index), forIn
+// (for...in and for each), iterator, and the toArray() child's
+// toArrayLength, toArraySize, toArrayJson and toArrayIndex. `lengthAbsent`
+// keeps `.length` missing (a HashSet's shape) and is not an operation.
 //
 // `toArrayCall` is how an empty toArray() call behaves, which is separate
 // from a grant of the array's contents:
 //   "decision" — the call faults unless `toArray` is granted (a legacy set).
-//   "guarded"  — the call returns a view at every size; size, length and JSON
-//                of that view are the child fields (`toArrayLength` and so on).
+//   "guarded"  — the call returns a view at every size; that view's reads
+//                are the child fields (`toArrayLength` and so on).
 //   "stub"     — the call is refused at every size (the list view's own stub).
-// `empty: false` is a collection that this emulator always builds non-empty
-// (legacy claim objects, and each claim's getValues()). It is still a row, so
-// a new binding cannot omit itself, and the empty policy applies if it is
-// ever empty. The conformance run checks its size rather than the empty matrix.
+// `iteratorShutter` names the class shutter's refusal that iterator()
+// answers at every size (measured). `empty: false` is a collection this
+// emulator always builds non-empty; the conformance run checks its size.
+// `kind` is "list", "set" (a legacy java.util set view) or "keyset" (the
+// config provider's legacy nodeState.keys(), which answers only iterator()).
+// next-gen requestedScopes was captured empty (probe.fn.requested). concat
+// ran after add() there, and iterator() is the class shutter at every size.
 var __rhinoLocalGrantVsRequestedNext = {
-  capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json fn.requested; fn.requested.toArray",
-  surface: true,
-  size: true,
-  json: true,
-  contains: true,
-  indexOf: true,
-  isEmpty: true,
-  forEach: true,
-  add: true,
-  index: true,
-  toArrayLength: true,
-  toArrayIndex: true,
+  surface: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.shape",
+  size: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.shape",
+  json: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.json",
+  contains: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.contains",
+  indexOf: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.indexOf",
+  isEmpty: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.isEmpty",
+  forEach: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.forEach",
+  add: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.add",
+  index: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.i0",
+  forIn: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.forIn",
+  toArrayLength: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.toArray",
+  toArrayIndex: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json probe.fn.requested.toArray",
 };
 
+// legacy requestedScopes was captured empty (probe.fn.requested). Its
+// for...in listed Java's member names (getClass, wait, ...; truncated), which
+// this view does not reproduce, so forIn is not granted and the loop faults.
+// indexOf is "Cannot find function", and [0] AIC's InternalError.
 var __rhinoLocalGrantVsRequestedLegacy = {
-  capture: "test/fixtures/oauth2-validate-scope/noscope.legacy.json fn.requested; fn.requested.toArray",
-  surface: true,
-  json: true,
-  size: true,
-  contains: true,
-  isEmpty: true,
-  forEach: true,
-  add: true,
-  lengthAbsent: true,
-  toArrayLength: true,
-  toArrayIndex: true,
+  surface: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.shape",
+  size: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.shape",
+  lengthAbsent: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.shape",
+  json: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.json",
+  contains: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.contains",
+  isEmpty: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.isEmpty",
+  forEach: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.forEach",
+  add: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.add",
+  toArrayLength: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.toArray",
+  toArrayIndex: "test/fixtures/oauth2-validate-scope/noscope.legacy.json probe.fn.requested.toArray",
 };
 
+// describe() on an absent name. It does not call isEmpty(), so isEmpty is not
+// granted (Sol ctx r14 P2-1); a local e2e assertion is not a capture.
 var __rhinoLocalGrantIdentitySet = {
-  capture: "scripts/rhino-script-tester/fixtures-atm/identity-getattribute-shape.script.js describe() on an absent name",
-  surface: true,
-  size: true,
-  isEmpty: true,
-  contains: true,
-  toArray: true,
-  toArrayLength: true,
-  lengthAbsent: true,
+  surface: "scripts/rhino-script-tester/fixtures-atm/identity-getattribute-shape.script.js describe() String shape",
+  size: "scripts/rhino-script-tester/fixtures-atm/identity-getattribute-shape.script.js describe() size",
+  contains: "scripts/rhino-script-tester/fixtures-atm/identity-getattribute-shape.script.js describe() contains",
+  toArray: "scripts/rhino-script-tester/fixtures-atm/identity-getattribute-shape.script.js describe() toArray",
+  toArrayLength: "scripts/rhino-script-tester/fixtures-atm/identity-getattribute-shape.script.js describe() toArrayLen",
+  lengthAbsent: "scripts/rhino-script-tester/fixtures-atm/identity-getattribute-shape.script.js describe() lengthProp",
 };
 
+// surface.*.json is String "[]", size 0 and length 0. requested.*.json
+// userinfo runs the same list empty and reads [0], which is undefined. No
+// capture enumerated it, so for...in faults.
 var __rhinoLocalGrantClaimsLocales = {
-  // surface.*.json is String "[]", size 0 and length 0. requested.*.json
-  // userinfo runs the same list empty and reads [0], which is undefined
-  // (claimsLocales0). A granted index is also the iteration.
-  capture: "test/fixtures/oidc-claims/surface.next-gen.json claimsLocales; test/fixtures/oidc-claims/surface.legacy.json claimsLocales; test/fixtures/oidc-claims/requested.next-gen.json userinfoProbe.claimsLocales0; test/fixtures/oidc-claims/requested.legacy.json userinfoProbe.claimsLocales0",
-  surface: true,
-  size: true,
-  index: true,
+  surface: "test/fixtures/oidc-claims/surface.next-gen.json claimsLocales; test/fixtures/oidc-claims/surface.legacy.json claimsLocales",
+  size: "test/fixtures/oidc-claims/surface.next-gen.json claimsLocales; test/fixtures/oidc-claims/surface.legacy.json claimsLocales",
+  index: "test/fixtures/oidc-claims/requested.next-gen.json userinfoProbe.claimsLocales0; test/fixtures/oidc-claims/requested.legacy.json userinfoProbe.claimsLocales0",
 };
 
 var __rhinoLocalGrantOidcRedirect = {
-  capture: "test/fixtures/oidc-claims/surface.next-gen.json cpRedirect",
-  surface: true,
-  size: true,
+  surface: "test/fixtures/oidc-claims/surface.next-gen.json cpRedirect",
+  size: "test/fixtures/oidc-claims/surface.next-gen.json cpRedirect",
 };
 
 var __rhinoLocalGrantVsRedirect = {
-  capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json cpRedirect",
-  surface: true,
-  size: true,
+  surface: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json cpRedirect",
+  size: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json cpRedirect",
 };
 
 var __rhinoLocalGrantMaRedirect = {
-  capture: "test/fixtures/oauth2-may-act/surface.next-gen.json cpRedirect",
-  surface: true,
-  size: true,
+  surface: "test/fixtures/oauth2-may-act/surface.next-gen.json cpRedirect",
+  size: "test/fixtures/oauth2-may-act/surface.next-gen.json cpRedirect",
 };
 
 var __rhinoLocalGrantAtAttr = {
-  capture: "test/fixtures/oauth2-atm/surface.next-gen.json idAttrValuesMissing",
-  surface: true,
-  size: true,
+  surface: "test/fixtures/oauth2-atm/surface.next-gen.json idAttrValuesMissing",
+  size: "test/fixtures/oauth2-atm/surface.next-gen.json idAttrValuesMissing",
 };
 
 var __rhinoLocalGrantOidcAttr = {
-  capture: "test/fixtures/oidc-claims/surface.next-gen.json idAttrValuesMissing",
-  surface: true,
-  size: true,
+  surface: "test/fixtures/oidc-claims/surface.next-gen.json idAttrValuesMissing",
+  size: "test/fixtures/oidc-claims/surface.next-gen.json idAttrValuesMissing",
 };
 
+// The typed-array loop read length only.
 var __rhinoLocalGrantTypedClaims = {
-  capture: "test/fixtures/oidc-claims/surface.legacy.json requestedTypedClaims; test/fixtures/oidc-claims/requested.legacy.json typed",
-  surface: true,
-  size: true,
-  toArrayLength: true,
+  surface: "test/fixtures/oidc-claims/surface.legacy.json requestedTypedClaims",
+  size: "test/fixtures/oidc-claims/surface.legacy.json requestedTypedClaims",
+  toArrayLength: "test/fixtures/oidc-claims/requested.legacy.json typed",
+};
+
+// openidm in a script context is the decision node's implementation, and its
+// empty query result was captured on the decision node (docs/api/12,
+// 2026-11-08). Granting it here assumes the service answers the same in
+// every context; see the done-note's open question.
+var __rhinoLocalGrantOpenidm = {
+  surface: "scripts/rhino-script-tester/fixtures/openidm-query-result-string.script.js out.empty.string",
+  json: "scripts/rhino-script-tester/fixtures/openidm-query-result-string.script.js out.empty.json",
+  length: "scripts/rhino-script-tester/fixtures/openidm-query-result-type.script.js emptyQuery.length",
+  index: "scripts/rhino-script-tester/fixtures/openidm-query-result-type.script.js emptyQuery.index0Type",
+  size: "scripts/rhino-script-tester/fixtures/openidm-query-result-type.script.js emptyQuery.size",
+  get: "scripts/rhino-script-tester/fixtures/openidm-query-result-type.script.js emptyQuery.get0Type",
+  concat: "scripts/rhino-script-tester/fixtures/openidm-query-result-type.script.js emptyQuery.concatLength",
+  forIn: "scripts/rhino-script-tester/fixtures/openidm-query-result-type.script.js emptyQuery.forInKeys",
 };
 
 var __rhinoLocalCollectionCatalog = [
   {
     id: "validate.next.requestedScopes",
+    binding: "requestedScopes",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "next-gen",
     kind: "list",
@@ -112,9 +141,11 @@ var __rhinoLocalCollectionCatalog = [
     toArrayCall: "guarded",
     grant: __rhinoLocalGrantVsRequestedNext,
     given: { validateScope: { requested: [] } },
+    iteratorShutter: "java.util.ArrayList$Itr",
   },
   {
     id: "validate.next.allowedScopes",
+    binding: "allowedScopes",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "next-gen",
     kind: "list",
@@ -123,9 +154,11 @@ var __rhinoLocalCollectionCatalog = [
     toArrayCall: "guarded",
     grant: null,
     given: { validateScope: { allowed: [] } },
+    iteratorShutter: "java.util.ArrayList$Itr",
   },
   {
     id: "validate.next.availableScopes",
+    binding: "availableScopes",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "next-gen",
     kind: "list",
@@ -134,9 +167,11 @@ var __rhinoLocalCollectionCatalog = [
     toArrayCall: "guarded",
     grant: null,
     given: { validateScope: { available: [] } },
+    iteratorShutter: "java.util.ArrayList$Itr",
   },
   {
     id: "validate.next.defaultScopes",
+    binding: "defaultScopes",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "next-gen",
     kind: "list",
@@ -145,9 +180,11 @@ var __rhinoLocalCollectionCatalog = [
     toArrayCall: "guarded",
     grant: null,
     given: { validateScope: { defaults: [] } },
+    iteratorShutter: "java.util.ArrayList$Itr",
   },
   {
     id: "validate.next.redirectUris",
+    binding: "redirectUris",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "next-gen",
     kind: "list",
@@ -159,6 +196,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "validate.next.requestParams",
+    binding: "requestParams",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "next-gen",
     kind: "list",
@@ -169,7 +207,32 @@ var __rhinoLocalCollectionCatalog = [
     given: { request: { params: { empty: [] } } },
   },
   {
+    id: "validate.next.requestHeaders",
+    binding: "requestHeaders",
+    context: "OAUTH2_VALIDATE_SCOPE",
+    engine: "next-gen",
+    kind: "list",
+    expr: "requestProperties.requestHeaders.empty",
+    faultPrefix: "oauth2-validate-scope-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { request: { headers: { empty: [] } } },
+  },
+  {
+    id: "validate.next.openidm",
+    binding: "openidm",
+    context: "OAUTH2_VALIDATE_SCOPE",
+    engine: "next-gen",
+    kind: "list",
+    expr: "openidm.query(\"managed/alpha_user\", {_queryFilter: \"false\"}, [\"_id\"]).result",
+    faultPrefix: "openidm-list-unmeasured",
+    toArrayCall: "stub",
+    grant: __rhinoLocalGrantOpenidm,
+    given: { managed: { "managed/alpha_user": [] } },
+  },
+  {
     id: "validate.legacy.requestedScopes",
+    binding: "requestedScopes",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "legacy",
     kind: "set",
@@ -181,6 +244,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "validate.legacy.allowedScopes",
+    binding: "allowedScopes",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "legacy",
     kind: "set",
@@ -192,6 +256,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "validate.legacy.defaultScopes",
+    binding: "defaultScopes",
     context: "OAUTH2_VALIDATE_SCOPE",
     engine: "legacy",
     kind: "set",
@@ -203,6 +268,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.next.scopes",
+    binding: "scopes",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "next-gen",
     kind: "list",
@@ -214,6 +280,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.next.getScope",
+    binding: "getScope",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "next-gen",
     kind: "list",
@@ -225,6 +292,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.next.getAudience",
+    binding: "getAudience",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "next-gen",
     kind: "list",
@@ -236,6 +304,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.next.getAttributeValues",
+    binding: "getAttributeValues",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "next-gen",
     kind: "list",
@@ -247,6 +316,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.next.requestParams",
+    binding: "requestParams",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "next-gen",
     kind: "list",
@@ -257,7 +327,32 @@ var __rhinoLocalCollectionCatalog = [
     given: { request: { params: { empty: [] } } },
   },
   {
+    id: "token.next.requestHeaders",
+    binding: "requestHeaders",
+    context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+    engine: "next-gen",
+    kind: "list",
+    expr: "requestProperties.requestHeaders.empty",
+    faultPrefix: "oauth2-token-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { request: { headers: { empty: [] } } },
+  },
+  {
+    id: "token.next.openidm",
+    binding: "openidm",
+    context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+    engine: "next-gen",
+    kind: "list",
+    expr: "openidm.query(\"managed/alpha_user\", {_queryFilter: \"false\"}, [\"_id\"]).result",
+    faultPrefix: "openidm-list-unmeasured",
+    toArrayCall: "stub",
+    grant: __rhinoLocalGrantOpenidm,
+    given: { managed: { "managed/alpha_user": [] } },
+  },
+  {
     id: "token.legacy.scopes",
+    binding: "scopes",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "legacy",
     kind: "set",
@@ -269,6 +364,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.legacy.getScope",
+    binding: "getScope",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "legacy",
     kind: "set",
@@ -280,6 +376,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.legacy.getAudience",
+    binding: "getAudience",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "legacy",
     kind: "list",
@@ -291,6 +388,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.legacy.getAttribute",
+    binding: "getAttribute",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "legacy",
     kind: "set",
@@ -302,6 +400,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.legacy.allowedGrantTypes",
+    binding: "allowedGrantTypes",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "legacy",
     kind: "set",
@@ -313,6 +412,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.legacy.allowedScopes",
+    binding: "allowedScopes",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "legacy",
     kind: "set",
@@ -324,6 +424,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.legacy.allowedResponseTypes",
+    binding: "allowedResponseTypes",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "legacy",
     kind: "set",
@@ -335,6 +436,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "token.legacy.requestParams",
+    binding: "requestParams",
     context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     engine: "legacy",
     kind: "list",
@@ -345,7 +447,20 @@ var __rhinoLocalCollectionCatalog = [
     given: { request: { params: { empty: [] } } },
   },
   {
+    id: "token.legacy.requestHeaders",
+    binding: "requestHeaders",
+    context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+    engine: "legacy",
+    kind: "list",
+    expr: "requestProperties.requestHeaders.empty",
+    faultPrefix: "oauth2-token-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { request: { headers: { empty: [] } } },
+  },
+  {
     id: "oidc.next.scopes",
+    binding: "scopes",
     context: "OIDC_CLAIMS",
     engine: "next-gen",
     kind: "list",
@@ -357,6 +472,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.next.claimsLocales",
+    binding: "claimsLocales",
     context: "OIDC_CLAIMS",
     engine: "next-gen",
     kind: "list",
@@ -368,6 +484,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.next.redirectUris",
+    binding: "redirectUris",
     context: "OIDC_CLAIMS",
     engine: "next-gen",
     kind: "list",
@@ -379,6 +496,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.next.getAttributeValues",
+    binding: "getAttributeValues",
     context: "OIDC_CLAIMS",
     engine: "next-gen",
     kind: "list",
@@ -390,6 +508,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.next.requestParams",
+    binding: "requestParams",
     context: "OIDC_CLAIMS",
     engine: "next-gen",
     kind: "list",
@@ -400,7 +519,32 @@ var __rhinoLocalCollectionCatalog = [
     given: { request: { params: { empty: [] } } },
   },
   {
+    id: "oidc.next.requestHeaders",
+    binding: "requestHeaders",
+    context: "OIDC_CLAIMS",
+    engine: "next-gen",
+    kind: "list",
+    expr: "requestProperties.requestHeaders.empty",
+    faultPrefix: "oidc-claims-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { request: { headers: { empty: [] } } },
+  },
+  {
+    id: "oidc.next.openidm",
+    binding: "openidm",
+    context: "OIDC_CLAIMS",
+    engine: "next-gen",
+    kind: "list",
+    expr: "openidm.query(\"managed/alpha_user\", {_queryFilter: \"false\"}, [\"_id\"]).result",
+    faultPrefix: "openidm-list-unmeasured",
+    toArrayCall: "stub",
+    grant: __rhinoLocalGrantOpenidm,
+    given: { managed: { "managed/alpha_user": [] } },
+  },
+  {
     id: "oidc.legacy.scopes",
+    binding: "scopes",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "set",
@@ -412,6 +556,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.legacy.claimsLocales",
+    binding: "claimsLocales",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "list",
@@ -423,6 +568,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.legacy.requestedTypedClaims",
+    binding: "requestedTypedClaims",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "list",
@@ -434,6 +580,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.legacy.getAttribute",
+    binding: "getAttribute",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "set",
@@ -445,6 +592,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.legacy.allowedGrantTypes",
+    binding: "allowedGrantTypes",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "set",
@@ -456,6 +604,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.legacy.allowedScopes",
+    binding: "allowedScopes",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "set",
@@ -467,6 +616,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.legacy.allowedResponseTypes",
+    binding: "allowedResponseTypes",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "set",
@@ -478,6 +628,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.legacy.requestParams",
+    binding: "requestParams",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "list",
@@ -488,7 +639,20 @@ var __rhinoLocalCollectionCatalog = [
     given: { request: { params: { empty: [] } } },
   },
   {
+    id: "oidc.legacy.requestHeaders",
+    binding: "requestHeaders",
+    context: "OIDC_CLAIMS",
+    engine: "legacy",
+    kind: "list",
+    expr: "requestProperties.requestHeaders.empty",
+    faultPrefix: "oidc-claims-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { request: { headers: { empty: [] } } },
+  },
+  {
     id: "oidc.legacy.claimObjects",
+    binding: "claimObjects",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "list",
@@ -502,6 +666,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "oidc.legacy.claimValues",
+    binding: "claimValues",
     context: "OIDC_CLAIMS",
     engine: "legacy",
     kind: "list",
@@ -515,6 +680,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "mayact.next.scopes",
+    binding: "scopes",
     context: "OAUTH2_MAY_ACT",
     engine: "next-gen",
     kind: "list",
@@ -523,9 +689,11 @@ var __rhinoLocalCollectionCatalog = [
     toArrayCall: "guarded",
     grant: null,
     given: { scopes: [] },
+    iteratorShutter: "java.util.ArrayList$Itr",
   },
   {
     id: "mayact.next.redirectUris",
+    binding: "redirectUris",
     context: "OAUTH2_MAY_ACT",
     engine: "next-gen",
     kind: "list",
@@ -537,6 +705,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "mayact.next.getAttributeValues",
+    binding: "getAttributeValues",
     context: "OAUTH2_MAY_ACT",
     engine: "next-gen",
     kind: "list",
@@ -548,6 +717,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "mayact.next.requestParams",
+    binding: "requestParams",
     context: "OAUTH2_MAY_ACT",
     engine: "next-gen",
     kind: "list",
@@ -558,7 +728,32 @@ var __rhinoLocalCollectionCatalog = [
     given: { request: { params: { empty: [] } } },
   },
   {
+    id: "mayact.next.requestHeaders",
+    binding: "requestHeaders",
+    context: "OAUTH2_MAY_ACT",
+    engine: "next-gen",
+    kind: "list",
+    expr: "requestProperties.requestHeaders.empty",
+    faultPrefix: "oauth2-may-act-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { request: { headers: { empty: [] } } },
+  },
+  {
+    id: "mayact.next.openidm",
+    binding: "openidm",
+    context: "OAUTH2_MAY_ACT",
+    engine: "next-gen",
+    kind: "list",
+    expr: "openidm.query(\"managed/alpha_user\", {_queryFilter: \"false\"}, [\"_id\"]).result",
+    faultPrefix: "openidm-list-unmeasured",
+    toArrayCall: "stub",
+    grant: __rhinoLocalGrantOpenidm,
+    given: { managed: { "managed/alpha_user": [] } },
+  },
+  {
     id: "mayact.legacy.scopes",
+    binding: "scopes",
     context: "OAUTH2_MAY_ACT",
     engine: "legacy",
     kind: "set",
@@ -570,6 +765,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "mayact.legacy.getAttribute",
+    binding: "getAttribute",
     context: "OAUTH2_MAY_ACT",
     engine: "legacy",
     kind: "set",
@@ -581,6 +777,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "mayact.legacy.allowedGrantTypes",
+    binding: "allowedGrantTypes",
     context: "OAUTH2_MAY_ACT",
     engine: "legacy",
     kind: "set",
@@ -592,6 +789,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "mayact.legacy.allowedScopes",
+    binding: "allowedScopes",
     context: "OAUTH2_MAY_ACT",
     engine: "legacy",
     kind: "set",
@@ -603,6 +801,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "mayact.legacy.allowedResponseTypes",
+    binding: "allowedResponseTypes",
     context: "OAUTH2_MAY_ACT",
     engine: "legacy",
     kind: "set",
@@ -614,6 +813,7 @@ var __rhinoLocalCollectionCatalog = [
   },
   {
     id: "mayact.legacy.requestParams",
+    binding: "requestParams",
     context: "OAUTH2_MAY_ACT",
     engine: "legacy",
     kind: "list",
@@ -624,7 +824,20 @@ var __rhinoLocalCollectionCatalog = [
     given: { request: { params: { empty: [] } } },
   },
   {
+    id: "mayact.legacy.requestHeaders",
+    binding: "requestHeaders",
+    context: "OAUTH2_MAY_ACT",
+    engine: "legacy",
+    kind: "list",
+    expr: "requestProperties.requestHeaders.empty",
+    faultPrefix: "oauth2-may-act-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { request: { headers: { empty: [] } } },
+  },
+  {
     id: "social.next.rawProfile.keys",
+    binding: "rawProfile.keys",
     context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
     engine: "next-gen",
     kind: "list",
@@ -635,7 +848,44 @@ var __rhinoLocalCollectionCatalog = [
     given: { socialIdp: { rawProfile: {} } },
   },
   {
+    id: "social.next.requestParameters",
+    binding: "requestParameters",
+    context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    engine: "next-gen",
+    kind: "list",
+    expr: "requestParameters.get(\"empty\")",
+    faultPrefix: "request-list-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { requestParameters: { empty: [] } },
+  },
+  {
+    id: "social.next.requestHeaders",
+    binding: "requestHeaders",
+    context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    engine: "next-gen",
+    kind: "list",
+    expr: "requestHeaders.get(\"empty\")",
+    faultPrefix: "request-list-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { requestHeaders: { empty: [] } },
+  },
+  {
+    id: "social.next.openidm",
+    binding: "openidm",
+    context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    engine: "next-gen",
+    kind: "list",
+    expr: "openidm.query(\"managed/alpha_user\", {_queryFilter: \"false\"}, [\"_id\"]).result",
+    faultPrefix: "openidm-list-unmeasured",
+    toArrayCall: "stub",
+    grant: __rhinoLocalGrantOpenidm,
+    given: { managed: { "managed/alpha_user": [] } },
+  },
+  {
     id: "social.legacy.rawProfile.keys",
+    binding: "rawProfile.keys",
     context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
     engine: "legacy",
     kind: "set",
@@ -646,7 +896,46 @@ var __rhinoLocalCollectionCatalog = [
     given: { socialIdp: { rawProfile: {} } },
   },
   {
+    id: "social.legacy.requestParameters",
+    binding: "requestParameters",
+    context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    engine: "legacy",
+    kind: "list",
+    expr: "requestParameters.get(\"empty\")",
+    faultPrefix: "social-idp-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { requestParameters: { empty: [] } },
+  },
+  {
+    id: "social.legacy.requestHeaders",
+    binding: "requestHeaders",
+    context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    engine: "legacy",
+    kind: "list",
+    expr: "requestHeaders.get(\"empty\")",
+    faultPrefix: "social-idp-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { requestHeaders: { empty: [] } },
+  },
+  {
+    id: "social.legacy.nodeState.keys",
+    binding: "nodeState.keys",
+    context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+    engine: "legacy",
+    kind: "list",
+    expr: "nodeState.keys()",
+    faultPrefix: "social-idp-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: {},
+    empty: false,
+    size: "1",
+  },
+  {
     id: "config.next.requestParameters",
+    binding: "requestParameters",
     context: "CONFIG_PROVIDER_NODE",
     engine: "next-gen",
     kind: "list",
@@ -657,7 +946,32 @@ var __rhinoLocalCollectionCatalog = [
     given: { requestParameters: { empty: [] } },
   },
   {
+    id: "config.next.requestHeaders",
+    binding: "requestHeaders",
+    context: "CONFIG_PROVIDER_NODE",
+    engine: "next-gen",
+    kind: "list",
+    expr: "requestHeaders.get(\"empty\")",
+    faultPrefix: "config-provider-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { requestHeaders: { empty: [] } },
+  },
+  {
+    id: "config.next.openidm",
+    binding: "openidm",
+    context: "CONFIG_PROVIDER_NODE",
+    engine: "next-gen",
+    kind: "list",
+    expr: "openidm.query(\"managed/alpha_user\", {_queryFilter: \"false\"}, [\"_id\"]).result",
+    faultPrefix: "openidm-list-unmeasured",
+    toArrayCall: "stub",
+    grant: __rhinoLocalGrantOpenidm,
+    given: { managed: { "managed/alpha_user": [] } },
+  },
+  {
     id: "config.legacy.requestParameters",
+    binding: "requestParameters",
     context: "CONFIG_PROVIDER_NODE",
     engine: "legacy",
     kind: "list",
@@ -666,5 +980,41 @@ var __rhinoLocalCollectionCatalog = [
     toArrayCall: "stub",
     grant: null,
     given: { requestParameters: { empty: [] } },
+  },
+  {
+    id: "config.legacy.requestHeaders",
+    binding: "requestHeaders",
+    context: "CONFIG_PROVIDER_NODE",
+    engine: "legacy",
+    kind: "list",
+    expr: "requestHeaders.get(\"empty\")",
+    faultPrefix: "config-provider-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: { requestHeaders: { empty: [] } },
+  },
+  {
+    id: "config.legacy.nodeState.keys",
+    binding: "nodeState.keys",
+    context: "CONFIG_PROVIDER_NODE",
+    engine: "legacy",
+    kind: "keyset",
+    expr: "nodeState.keys()",
+    faultPrefix: "config-provider-unmeasured",
+    toArrayCall: "stub",
+    grant: null,
+    given: {},
+  },
+  {
+    id: "library.next.openidm",
+    binding: "openidm",
+    context: "LIBRARY",
+    engine: "next-gen",
+    kind: "list",
+    expr: "openidm.query(\"managed/alpha_user\", {_queryFilter: \"false\"}, [\"_id\"]).result",
+    faultPrefix: "openidm-list-unmeasured",
+    toArrayCall: "stub",
+    grant: __rhinoLocalGrantOpenidm,
+    given: { managed: { "managed/alpha_user": [] } },
   },
 ];

@@ -24,6 +24,9 @@
 // admitted only when it is JSON (nested null included) or top-level
 // undefined. JSON.stringify is not that check.
 
+// The collection catalog's key: openidm's lists are this context's rows.
+__rhinoLocalCtx.catalog = "library";
+
 var __rhinoLocalLibUnbound = [
   "accessToken", "action", "allowedScopes", "auditEntryDetail", "availableScopes",
   "cacheManager", "callbacks", "callbacksBuilder", "claims", "claimsLocales",

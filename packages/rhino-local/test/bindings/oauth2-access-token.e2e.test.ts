@@ -288,13 +288,13 @@ describe("legacy identity.getAttribute (docs/api/12, measured 2026-09-10)", () =
       script: `var held = identity.getAttribute("thing");
 var missing = identity.getAttribute("zzNoSuchAttr");
 var index; try { held[0]; index = "no throw"; } catch (e) { index = String(e); }
-accessToken.setField("out", [String(held.toArray()[0]), held.size(), String(held), missing.size(), missing.isEmpty(),
+accessToken.setField("out", [String(held.toArray()[0]), held.size(), String(held), missing.size(), missing.contains("x"),
   String(missing), typeof held.length, index].join("|"));`,
       given: { engine: "legacy", identity: { attributes: { thing: ["Confidential"] } } },
       expect: { allowUndeclared: { accessToken: true } },
     }));
     expect(effects.accessToken!.final.fields.out).toBe(
-      'Confidential|1|[Confidential]|0|true|[]|undefined|InternalError: Java class "java.util.HashSet" has no public instance field or method named "0".'
+      'Confidential|1|[Confidential]|0|false|[]|undefined|InternalError: Java class "java.util.HashSet" has no public instance field or method named "0".'
     );
   }, 60_000);
 });
