@@ -190,12 +190,13 @@ before the `require()`, which is what AIC does. That deletion is not applied to
 the other contexts.
 
 `scriptName` and `logger.getName()` are the caller's, including inside a nested
-`require()`. `given.library.callerContext` is the context segment of that name.
-It defaults to `AUTHENTICATION_TREE_DECISION_NODE`. The class shutter is the
-decision node's on every caller context: live OAuth callers refuse
-`new java.util.HashSet()`, and this runner does not. Evaluate-scope is a caller
-a library can be required from, not a case context.
-`OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not probed.
+`require()`. `given.library.callerContext` is the context segment of that name
+and selects that caller's class shutter. It defaults to
+`AUTHENTICATION_TREE_DECISION_NODE`, where `new java.util.HashSet()` constructs.
+The four OAuth callers refuse it, as the captures record. The refusal message
+was not captured. Evaluate-scope is a caller a library can be required from, not
+a case context; its allow-list is the same three entries as the other OAuth
+callers. `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not probed.
 `OAUTH2_SCRIPTED_JWT_ISSUER` has no configuration hook. OIDC claims, the social
 IdP profile transformation and the config provider node were not probed as
 library callers.

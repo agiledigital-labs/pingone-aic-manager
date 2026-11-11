@@ -476,10 +476,10 @@ export interface LibrarySeed {
   /** JSON arguments. Default `[]` (the export is called with no arguments). */
   args?: JsonValue[];
   /**
-   * The caller's AM context id, as `logger.getName()` embeds it. Default
-   * `AUTHENTICATION_TREE_DECISION_NODE`, the caller where `java.util.HashSet`
-   * was observed to construct. Naming an OAuth caller changes the logger
-   * name only: the class shutter stays the decision node's.
+   * The caller's AM context id, as `logger.getName()` embeds it, and the
+   * caller's class shutter. Default `AUTHENTICATION_TREE_DECISION_NODE`,
+   * where `java.util.HashSet` constructs. The four OAuth callers refuse it
+   * (the captures record `"err"`; the message was not captured).
    */
   callerContext?: LibraryCallerContext;
   /**

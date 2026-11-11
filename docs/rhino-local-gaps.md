@@ -1320,11 +1320,15 @@ from a decision node and from four next-gen OAuth callers, plus the return,
 throw, module-load throw and `module.exports` replacement those callers
 recorded. What it approximates or leaves out:
 
-- **One shutter.** The direct runner uses the decision-node class allow-list.
-  `new java.util.HashSet()` answers. The same construction was refused when the
-  library was required from token modification, validate scope, may-act and
-  evaluate scope. `ArrayList` was not probed on those callers.
-  `given.library.callerContext` changes `logger.getName()` only.
+- **The caller's shutter, not a measured message.**
+  `given.library.callerContext` installs that caller's class allow-list. The
+  decision node constructs `java.util.HashSet` (`"ok-1"`). Token modification,
+  validate scope, may-act and evaluate scope refuse it (`"err"`). The probe did
+  not record the error text; the runner's refusal is that caller's class
+  shutter, whose wording was not re-measured inside a library. `ArrayList` was
+  not probed on those callers. Evaluate scope is a caller, not a case context.
+  Its descriptor's `allowLists` matches the other three OAuth callers, and the
+  runner uses that shared list.
 - **Callers not probed.** OIDC claims, the social IdP profile transformation and
   the config provider node were not used as library callers.
   `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not reached.
@@ -1335,14 +1339,20 @@ recorded. What it approximates or leaves out:
   `undefined`, so that call is not a case.
 - **Members present but not called.** `emailService`, `jwtAssertion`,
   `jwtValidator` and `policy` were objects. Every function member faults as
-  `library-unmeasured/<binding>.<member>`. `httpClient.send`, the other `logger`
+  `library-unmeasured/<binding>.<member>`. `String` and `JSON.stringify` of
+  those four were not measured and fault the same way
+  (`library-unmeasured/String(<binding>)`,
+  `library-unmeasured/JSON.stringify(<binding>)`). `logger.getName` was called
+  with no arguments; any other count faults
+  `library-unmeasured/logger.getName(…)`. `httpClient.send`, the other `logger`
   methods, `secrets`, and `utils` beyond `base64.encode` keep the decision-node
   harness. The probe did not show those members differing inside a library, and
   it did not call them.
 - **`cookieName`'s characters.** The capture records a 15-character string that
   is not `iPlanetDirectoryPro`. The characters were not kept.
 - **The error `HashSet` raised on an OAuth caller.** The probe recorded `"err"`
-  and not the message.
+  and not the message. The runner's catchable error is the caller's class
+  shutter, not a string copied from the capture.
 - **`bindingOverrides`.** They run after the library unbind, so an override can
   put a caller binding back. A case that does that is no longer the measured
   scope.

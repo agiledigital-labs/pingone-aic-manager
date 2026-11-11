@@ -1486,8 +1486,11 @@ Declare exactly one of those. A throw is `status: "thrown"` with `type`
 the export is called. A status mismatch does not also compare the other fields.
 
 An argument of `undefined` is not a JSON value, so `args` cannot express one. A
-function, a cycle or any other value JSON cannot carry, returned from the
-export, is the harness fault `library-unmeasured/return`.
+returned value is admitted only when it is JSON, nested `null` included, or
+top-level `undefined`. A function, a cycle, a nested `undefined`, a non-finite
+number (including `-0`), a `Date`, an `Error`, a Java object, or anything else
+JSON would drop or rewrite is the harness fault `library-unmeasured/return`.
+`JSON.stringify` succeeding is not that check.
 
 **Bindings.** Measured 2026-11-11 (`docs/api/12-script-bindings-matrix.md`).
 Inside the library, at module scope and inside the export, the same names are
@@ -1501,22 +1504,27 @@ inside a nested `require()`. `logger.getName()` is
 of a missing key is `null`. `utils.base64.encode` and `openidm.read` of a
 missing id behave as they do for a decision node.
 
-`given.library.callerContext` selects that logger segment. The default is
-`AUTHENTICATION_TREE_DECISION_NODE`. The other measured callers are
+`given.library.callerContext` selects that logger segment and that caller's
+class shutter. The default is `AUTHENTICATION_TREE_DECISION_NODE`, where
+`new java.util.HashSet()` constructs (`"ok-1"`). The other measured callers are
 `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`, `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`,
-`OAUTH2_MAY_ACT_NEXT_GEN` and `OAUTH2_EVALUATE_SCOPE_NEXT_GEN`. Naming one
-changes the logger name only. The class shutter stays the decision node's, so
-`new java.util.HashSet()` works here even though those OAuth callers refuse it.
-`realm`, `scriptName`, `loggerScriptId` and `cookieName` seed the same values
-the caller would have had.
+`OAUTH2_MAY_ACT_NEXT_GEN` and `OAUTH2_EVALUATE_SCOPE_NEXT_GEN`. Each of those
+refuses `HashSet` (the captures record `"err"`). The refusal message was not
+captured; the runner uses that caller's allow-list, so the error is the class
+shutter's. `logger.getName()` was measured with no arguments. Any other count is
+`library-unmeasured/logger.getName(…)`. `realm`, `scriptName`, `loggerScriptId`
+and `cookieName` seed the same values the caller would have had.
 
 `emailService`, `jwtAssertion`, `jwtValidator` and `policy` were present and
 none of their methods was called. Each function member is
-`library-unmeasured/<binding>.<member>`. `logger`, `httpClient`, `openidm`,
-`secrets`, `systemEnv` and `utils` keep the decision-node harness: the probe
-called `logger.getName`, `systemEnv.getProperty`, `utils.base64.encode` and
-`openidm.read`. Shared channels (`logs`, `http`, `openidm`) are judged as
-elsewhere.
+`library-unmeasured/<binding>.<member>`. `String(binding)` and
+`JSON.stringify(binding)` were not measured either:
+`library-unmeasured/String(<binding>)` and
+`library-unmeasured/JSON.stringify(<binding>)`. `logger`, `httpClient`,
+`openidm`, `secrets`, `systemEnv` and `utils` keep the decision-node harness:
+the probe called `logger.getName`, `systemEnv.getProperty`,
+`utils.base64.encode` and `openidm.read`. Shared channels (`logs`, `http`,
+`openidm`) are judged as elsewhere.
 
 A library case runs locally only. The types are exported from `./case`:
 `LibraryCaseInit`, `LibrarySeed`, `LibraryExpect`, `LibraryCallerContext`,

@@ -1,5 +1,5 @@
 import { judge, validateCase } from "../case/index.ts";
-import type { Case, CompleteRecordedEffects, Verdict } from "../case/types.ts";
+import type { Case, CompleteRecordedEffects, LibraryCallerContext, Verdict } from "../case/types.ts";
 import type { JobRequest, JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
@@ -96,20 +96,9 @@ export async function runCase(
     options.classShutter !== false && kase.given.engine !== "legacy";
   if (shutterApplies) {
     // Each next-gen context has its own allow-list (docs/api/bindings/).
-    request.classAllowList =
-      kase.context === "OAUTH2_ACCESS_TOKEN_MODIFICATION"
-        ? accessTokenClassAllowList()
-        : kase.context === "OIDC_CLAIMS"
-          ? oidcClaimsClassAllowList()
-          : kase.context === "SOCIAL_IDP_PROFILE_TRANSFORMATION"
-            ? socialIdpClassAllowList()
-            : kase.context === "CONFIG_PROVIDER_NODE"
-              ? configProviderClassAllowList()
-              : kase.context === "OAUTH2_VALIDATE_SCOPE"
-                ? validateScopeClassAllowList()
-                : kase.context === "OAUTH2_MAY_ACT"
-                  ? mayActClassAllowList()
-                  : decisionNodeClassAllowList();
+    // A library runs inside its caller's shutter: the decision-node list
+    // constructs HashSet, and the four OAuth lists refuse it.
+    request.classAllowList = classAllowListFor(kase);
   }
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {
@@ -126,6 +115,58 @@ export async function runCase(
   }
   const effects = parseHarvest(response.value);
   return { effects, verdict: judge(kase, effects), response };
+}
+
+/**
+ * The allow-list for this case. A LIBRARY case uses the list of
+ * `given.library.callerContext` (default the decision node). Evaluate scope
+ * is a caller, not a case context, and its descriptor's `allowLists` is the
+ * same three entries as the other three OAuth callers; the library e2e test
+ * locks those four lists together, so evaluate scope uses the may-act list.
+ */
+function classAllowListFor(kase: Case): string[] {
+  switch (kase.context) {
+    case "LIBRARY":
+      return libraryCallerClassAllowList(kase.given.library?.callerContext);
+    case "OAUTH2_ACCESS_TOKEN_MODIFICATION":
+      return accessTokenClassAllowList();
+    case "OIDC_CLAIMS":
+      return oidcClaimsClassAllowList();
+    case "SOCIAL_IDP_PROFILE_TRANSFORMATION":
+      return socialIdpClassAllowList();
+    case "CONFIG_PROVIDER_NODE":
+      return configProviderClassAllowList();
+    case "OAUTH2_VALIDATE_SCOPE":
+      return validateScopeClassAllowList();
+    case "OAUTH2_MAY_ACT":
+      return mayActClassAllowList();
+    case "SCRIPTED_DECISION_NODE":
+    case undefined:
+      return decisionNodeClassAllowList();
+    default: {
+      const unexpected: never = kase.context;
+      throw new Error(`rhino-local: no class allow-list for ${String(unexpected)}`);
+    }
+  }
+}
+
+function libraryCallerClassAllowList(caller: LibraryCallerContext | undefined): string[] {
+  switch (caller) {
+    case "OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN":
+      return accessTokenClassAllowList();
+    case "OAUTH2_VALIDATE_SCOPE_NEXT_GEN":
+      return validateScopeClassAllowList();
+    case "OAUTH2_MAY_ACT_NEXT_GEN":
+    case "OAUTH2_EVALUATE_SCOPE_NEXT_GEN":
+      return mayActClassAllowList();
+    case "AUTHENTICATION_TREE_DECISION_NODE":
+    case undefined:
+      return decisionNodeClassAllowList();
+    default: {
+      const unexpected: never = caller;
+      throw new Error(`rhino-local: no class allow-list for library caller ${String(unexpected)}`);
+    }
+  }
 }
 
 /**
