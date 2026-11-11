@@ -48,15 +48,35 @@ describe("RhinoRunner", () => {
     expect(response.value).toBe(100);
   });
 
-  // The shutter always admits org.mozilla.javascript, so a shuttered script
-  // can reach the global ContextFactory; it must not be able to change it.
-  it("hands a shuttered script a sealed global ContextFactory", async () => {
+  // A raw job with no shutter names engine classes freely, so the global
+  // factory must be sealed against it. (A shuttered job cannot name it at all:
+  // the next test.)
+  it("the global ContextFactory is sealed against an unshuttered script", async () => {
     const response = await runner.eval({
-      source: "String(Packages.org.mozilla.javascript.ContextFactory.getGlobal().isSealed())",
+      source: `(function () {
+        var f = Packages.org.mozilla.javascript.ContextFactory.getGlobal();
+        var refused;
+        try { f.addListener(null); refused = "accepted"; } catch (e) { refused = String(e.javaException || e); }
+        return String(f.isSealed()) + "|" + refused;
+      })()`,
+      timeoutMs: 2_000,
+    });
+    expect(response.outcome).toBe("ok");
+    expect(String(response.value)).toMatch(/^true\|.*IllegalStateException/);
+  });
+
+  it("a shuttered script cannot name the engine's ContextFactory (it was the sealed-factory probe)", async () => {
+    // Author-named access to org.mozilla.javascript.* is refused the way AM
+    // refuses it (docs/api/12, 2026-11-10), so the global factory is not
+    // reachable to be sealed or otherwise.
+    const response = await runner.eval({
+      source: "(function () { try { Packages.org.mozilla.javascript.ContextFactory.getGlobal(); return 'reached'; } catch (e) { return String(e).replace(/ \\(.*$/, ''); } })()",
       classAllowList: decisionNodeClassAllowList(),
       timeoutMs: 2_000,
     });
-    expect(response.value).toBe("true");
+    expect(response.value).toBe(
+      'TypeError: Cannot call property getGlobal in object [JavaPackage org.mozilla.javascript.ContextFactory]. It is not a function, it is "object".'
+    );
   });
 
   it("compiles and runs a trivial script", async () => {

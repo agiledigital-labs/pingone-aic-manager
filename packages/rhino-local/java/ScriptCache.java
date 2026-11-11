@@ -100,12 +100,12 @@ final class ScriptCache {
       Script hit = COMPILED.get(key);
       if (hit != null) {
         Timing.count("cacheHits");
-        if (kind != null) Timing.count(kind + "CacheHits");
+        if (kind != null && Timing.active()) Timing.count(kind + "CacheHits");
         return hit;
       }
     }
     Timing.count("cacheMisses");
-    if (kind != null) Timing.count(kind + "CacheMisses");
+    if (kind != null && Timing.active()) Timing.count(kind + "CacheMisses");
     Script script = cx.compileString(text.get(), name, line, null);
     if (cacheable(script)) {
       synchronized (COMPILED) {

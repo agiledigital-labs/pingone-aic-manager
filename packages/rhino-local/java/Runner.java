@@ -101,10 +101,10 @@ public final class Runner {
     // Undefined caches an identity hash at class initialization. Initialize on
     // the reader, before workers race: its diagnostic text must agree across JVMs.
     Class.forName("org.mozilla.javascript.Undefined");
-    // No job Context comes from the global factory, but the class shutter
-    // always admits org.mozilla.javascript, so a shuttered script could reach
-    // it and add a listener that outlives its file. Install and seal one
-    // here: a sealed factory refuses listeners and class-loader changes, and
+    // No job Context comes from the global factory, but the engine package is
+    // visible to the engine and, with no shutter (raw runner, IDM), to scripts
+    // by name, so a script could reach it and add a listener that outlives its
+    // file. Install and seal one here: a sealed factory refuses listeners and class-loader changes, and
     // installing it makes a later initGlobal throw.
     org.mozilla.javascript.ContextFactory global = new org.mozilla.javascript.ContextFactory();
     org.mozilla.javascript.ContextFactory.initGlobal(global);
@@ -332,8 +332,10 @@ public final class Runner {
     }
 
     final List<String> classAllowList;
+    final List<String> classDenyList;
     try {
       classAllowList = Json.optionalStringList(job, "classAllowList");
+      classDenyList = Json.optionalStringList(job, "classDenyList");
     } catch (RuntimeException e) {
       return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
     }
@@ -356,11 +358,22 @@ public final class Runner {
     try {
       cx.setLanguageVersion(languageVersion);
       cx.setLocale(Locale.US);
+      // Only under a shutter policy, like the shutter itself: a raw job (and
+      // `classShutter: false`) deliberately sees the engine, and the harness's
+      // own tests read the Context from script.
+      if (classAllowList != null || classDenyList != null) {
+        cx.setWrapFactory(new EngineGuard(faults, bridge));
+      }
       // No list means no shutter, which is the pre-shutter behaviour: every
       // Java name resolves. Callers that mean to reproduce a script context
       // pass that context's allowLists.
       if (classAllowList != null) {
         cx.setClassShutter(AmClassShutter.of(classAllowList));
+      } else if (classDenyList != null) {
+        // The deny-only form is not a confinement: it leaves System and Thread
+        // visible, so shuttered() is still false and the pool still discards
+        // this JVM.
+        cx.setClassShutter(AmClassShutter.denying(classDenyList));
       }
       if (cx instanceof AmContextFactory.ObservedContext) {
         ((AmContextFactory.ObservedContext) cx).timeoutMs = timeoutMs;
@@ -396,6 +409,10 @@ public final class Runner {
             ScriptableObject.putProperty(scope, LIBRARIES_NAME, libraries);
           }
           if (preambleData != null) ScriptableObject.putProperty(scope, PREAMBLE_DATA_NAME, preambleData);
+          NativeMethod.Factory nativeMethods = new NativeMethod.Factory();
+          nativeMethods.setParentScope(scope);
+          nativeMethods.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+          ScriptableObject.putProperty(scope, NativeMethod.FACTORY_NAME, nativeMethods);
           if (Timing.active()) {
             PhaseTimer timer = new PhaseTimer();
             timer.setParentScope(scope);
@@ -435,6 +452,7 @@ public final class Runner {
             ScriptableObject.deleteProperty(scope, LIBRARIES_NAME);
             ScriptableObject.deleteProperty(scope, PREAMBLE_DATA_NAME);
             ScriptableObject.deleteProperty(scope, PhaseTimer.NAME);
+            ScriptableObject.deleteProperty(scope, NativeMethod.FACTORY_NAME);
             ScriptableObject.deleteProperty(scope, HarnessFaults.NAME);
             if (bridge != null) ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }
@@ -468,7 +486,10 @@ public final class Runner {
 
       final Object completion;
       phase = Timing.now();
-      final long bracketed = Timing.total("moduleBody") + Timing.total("harvest");
+      // The subject's own-time accounting runs only for a timed job; untimed,
+      // the added work is this one ThreadLocal read.
+      final boolean timed = Timing.active();
+      final long bracketed = timed ? Timing.total("moduleBody") + Timing.total("harvest") : 0L;
       try {
         completion = script.exec(cx, scope);
       } catch (RhinoException e) {
@@ -480,9 +501,11 @@ public final class Runner {
         throw e;
       } finally {
         Timing.add("subjectExec", phase);
-        // Closes any bracket the script left open, so the subtraction sees it.
-        Timing.exit(0);
-        Timing.addLess("subjectOwn", phase, Timing.total("moduleBody") + Timing.total("harvest") - bracketed);
+        if (timed) {
+          // Closes any bracket the script left open, so the subtraction sees it.
+          Timing.exit(0);
+          Timing.addLess("subjectOwn", phase, Timing.total("moduleBody") + Timing.total("harvest") - bracketed);
+        }
       }
       // Harvest outside the author try: its failures are emulation failures, not script errors.
       if (bridge != null) {
