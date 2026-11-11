@@ -71,6 +71,12 @@ __rhinoLocalListKinds.oauth2ValidateScope = {
   concatArgument: true,
   json: true,
   genericReceiver: ["slice"],
+  // noscope.next-gen.json requestedScopes, before add(): String "[]", length 0,
+  // JSON.stringify "[]", slice and toArray().length. [].concat(v) ran after
+  // add(), on a one-element list, so a size-zero concat stays unmeasured.
+  // The same kind is the empty redirect-URI list (surface) and legacy
+  // toArray() of an empty set (noscope), which the captures read by length.
+  emptyRoutes: { surface: true, json: true },
 };
 
 // A requestProperties value. The probe records String, length, size(), [i]

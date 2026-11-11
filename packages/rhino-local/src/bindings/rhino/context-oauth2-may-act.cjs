@@ -66,6 +66,11 @@ __rhinoLocalListKinds.oauth2MayAct = {
   concatArgument: false,
   json: true,
   genericReceiver: false,
+  // surface.next-gen.json cpRedirect: clientProperties.redirectUris is empty,
+  // String "[]" and length 0. JSON.stringify of that empty list was not
+  // measured (json stays true for a non-empty scopes list). concat was not
+  // measured at any length, so concatArgument stays false.
+  emptyRoutes: { surface: true },
 };
 
 // scopes.toArray(). The capture records typeof, Array.isArray, length and
@@ -464,29 +469,12 @@ function __rhinoLocalMaField(key) {
   return __rhinoLocalMaBox(null);
 }
 
-// Rhino's overload message. A script object is also a java.lang.Object, and
-// AIC names that "object"; only a real Java instance ([object JavaObject])
-// contributes its class. Calling getClass() on a script object yields
-// java.lang.Class, which the next-gen shutter refuses.
+// Rhino's overload message, via the shared signature. A script object is
+// "object". A real Java instance (the captured HashMap) is named by its class
+// from Java, not by script-visible getClass(): that reflects java.lang.Class,
+// which the legacy deny refuses, and the capture says setMayAct(java.util.HashMap).
 function __rhinoLocalMaSignature(args) {
-  var out = "";
-  var i;
-  var value;
-  for (i = 0; i < args.length; i += 1) {
-    if (i > 0) {out += ",";}
-    value = args[i];
-    if (value === null) {out += "null";}
-    else if (value === undefined) {out += "org.mozilla.javascript.Undefined";}
-    else if (typeof value === "boolean" || typeof value === "string" || typeof value === "number") {out += typeof value;}
-    else if (typeof value === "function") {out += "function";}
-    // A script object is also a java.lang.Object, and its toString tag is not
-    // a reliable "[object JavaObject]" here (the shared wrapper). A real Java
-    // instance answers instanceof. AIC names a HashMap by its class.
-    else if (typeof java !== "undefined" && (value instanceof java.util.Map || value instanceof java.util.Collection || value instanceof java.lang.Throwable)) {
-      out += "" + value.getClass().getName();
-    } else {out += "object";}
-  }
-  return out;
+  return __rhinoLocalScriptSignature(args);
 }
 
 function __rhinoLocalMaNoMethod(cls, name, args) {
@@ -494,10 +482,8 @@ function __rhinoLocalMaNoMethod(cls, name, args) {
 }
 
 // Same arity gate as __rhinoLocalCtxMethod, but a refused count throws
-// through __rhinoLocalMaNoMethod. A script object is a java.lang.Object, and
-// the shared signature's getClass() is the next-gen class shutter
-// ("Access to Java class \"java.lang.Class\" is prohibited") where the
-// capture says setMayAct(object,object).
+// through __rhinoLocalMaNoMethod. A script object is named "object"
+// (capture: setMayAct(object,object)); a Java instance is named by its class.
 function __rhinoLocalMaMethod(target, cls, name, arity, fn, measuredRefusal) {
   __rhinoLocalHide(target, name, function () {
     var refused = false;

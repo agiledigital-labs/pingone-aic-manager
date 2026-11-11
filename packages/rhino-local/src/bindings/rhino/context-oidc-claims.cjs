@@ -56,6 +56,10 @@ __rhinoLocalListKinds.oidcClaims = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
+  // claimsLocales, clientProperties.redirectUris and a missing attribute's
+  // values are empty in the surface and requested captures, both engines:
+  // length 0 and String "[]". json and concat were not measured at any length.
+  emptyMeasured: true,
 };
 
 __rhinoLocalCtx.prefix = "oidc-claims-unmeasured";
