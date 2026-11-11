@@ -72,10 +72,10 @@ __rhinoLocalListKinds.oauth2ValidateScope = {
   json: true,
   genericReceiver: ["slice"],
   // noscope.next-gen.json requestedScopes, before add(): String "[]", length 0,
-  // JSON.stringify "[]", slice and toArray().length. [].concat(v) ran after
-  // add(), on a one-element list, so a size-zero concat stays unmeasured.
-  // The same kind is the empty redirect-URI list (surface) and legacy
-  // toArray() of an empty set (noscope), which the captures read by length.
+  // JSON.stringify "[]", slice and toArray().length of the list itself.
+  // [].concat(v) ran after add(), on a one-element list, so a size-zero concat
+  // stays unmeasured. Empty redirectUris and toArray() are their own kinds
+  // (Sol ctx r10 P2-1): this emptyRoutes must not authorize them.
   emptyRoutes: { surface: true, json: true },
 };
 
@@ -91,6 +91,37 @@ __rhinoLocalListKinds.oauth2ValidateScopeRequest = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
+};
+
+// clientProperties.redirectUris. noscope cpRedirect measures the empty
+// surface (length 0, size 0, String "[]", tag JavaList), not JSON. The scope
+// list's empty JSON must not authorize this list (Sol ctx r10 P2-1).
+__rhinoLocalListKinds.oauth2ValidateScopeRedirect = {
+  id: "oauth2-validate-scope-unmeasured/clientProperties.redirectUris",
+  noun: "a validate-scope redirect-URI list",
+  measured: "only length, size(), [i], String(v) and the [object JavaList] tag of an empty list were measured",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: false,
+  genericReceiver: false,
+  emptyRoutes: { surface: true },
+};
+
+// A toArray() result. noscope reads typeof, Array.isArray, length and
+// typeof [i] (`object|false|0|undefined` when the set is empty). It does not
+// read String(v) or JSON.stringify of that result. JSON of the scope list
+// itself must not authorize this one (Sol ctx r10 P2-1).
+__rhinoLocalListKinds.oauth2ValidateScopeArray = {
+  id: "oauth2-validate-scope-unmeasured/list.toArray()",
+  noun: "a validate-scope toArray() result",
+  measured: "only typeof, Array.isArray, length and typeof [i] were measured",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: false,
+  genericReceiver: false,
+  emptyRoutes: { length: true },
 };
 
 __rhinoLocalCtx.prefix = "oauth2-validate-scope-unmeasured";
@@ -132,7 +163,7 @@ function __rhinoLocalVsList(items, label, addable) {
     return undefined;
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "toArray", 0, function () {
-    return __rhinoLocalCtxList(store.slice(), label + ".toArray()");
+    return __rhinoLocalCtxList(store.slice(), label + ".toArray()", __rhinoLocalListKinds.oauth2ValidateScopeArray);
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "iterator", 0, function () {
     throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
@@ -193,7 +224,7 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
   // Measured here: toArray() is not a JS array (Array.isArray false), with
   // `length` and items of typeof "object" (Java strings).
   __rhinoLocalCtxMethod(set, label, javaClass, "toArray", 0, function () {
-    return __rhinoLocalCtxList(toArray.call(set), label + ".toArray()");
+    return __rhinoLocalCtxList(toArray.call(set), label + ".toArray()", __rhinoLocalListKinds.oauth2ValidateScopeArray);
   });
   __rhinoLocalCtxMethod(set, label, javaClass, "iterator", 0, function () {
     if (javaClass === "java.util.TreeSet") {
@@ -424,7 +455,9 @@ function __rhinoLocalSeedValidateScope(given) {
       paramsGetMissing: true, javaTags: true, listKind: __rhinoLocalListKinds.oauth2ValidateScopeRequest,
     });
     __rhinoLocalCtxTag(requestProperties, "JavaMap", "requestProperties");
-    clientProperties = __rhinoLocalCtxBuildClient(d.client, { redirectUris: true, javaTags: true });
+    clientProperties = __rhinoLocalCtxBuildClient(d.client, {
+      redirectUris: true, javaTags: true, redirectKind: __rhinoLocalListKinds.oauth2ValidateScopeRedirect,
+    });
     __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");
   }
   __rhinoLocalCtxSeal();

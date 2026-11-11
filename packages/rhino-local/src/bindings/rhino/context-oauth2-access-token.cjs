@@ -54,8 +54,26 @@ __rhinoLocalListKinds.oauth2Token = {
   genericReceiver: false,
   // surface.next-gen.json idAttrValuesMissing: an empty attribute-values list,
   // length 0 and String "[]". json and concat were not measured at any length,
-  // so emptyMeasured only unlocks that surface.
+  // so emptyMeasured only unlocks that surface. A request value is
+  // oauth2TokenRequest (Sol ctx r10 P2-1): this empty surface does not
+  // measure one.
   emptyMeasured: true,
+};
+
+// A requestProperties value. The surface probe reads String, length, [i] and
+// size() of grant_type, which has one element. No capture shows a size-zero
+// request value. emptyRoutes is present and empty so that route faults as
+// unmeasured, and not with the decision-node request list's "[\"\"]" sentence.
+__rhinoLocalListKinds.oauth2TokenRequest = {
+  id: "oauth2-token-unmeasured/requestProperties",
+  noun: "an access-token request value",
+  measured: "only length, size(), [i] and String(v) of a non-empty value were measured",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: false,
+  genericReceiver: false,
+  emptyRoutes: {},
 };
 
 __rhinoLocalCtx.prefix = "oauth2-token-unmeasured";
@@ -459,7 +477,9 @@ function __rhinoLocalSeedAccessToken(given) {
   accessToken = __rhinoLocalAtBuildToken(d.token);
   identity = __rhinoLocalCtxBuildIdentity(d.identity);
   scopes = __rhinoLocalCtxBuildScopes(d.scopes, { add: true });
-  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm);
+  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, {
+    listKind: __rhinoLocalListKinds.oauth2TokenRequest,
+  });
   clientProperties = __rhinoLocalCtxBuildClient(d.client, null);
   if (engine === "legacy") {
     // Measured: bound, and null.

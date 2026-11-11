@@ -424,4 +424,94 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
       expect(effects.validateScope!.granted).toEqual(["read"]);
     }, 60_000);
   }
+
+  // Sol ctx r10 P2-1. Empty requested-scope JSON does not authorize JSON of
+  // an empty redirect-URI list or of toArray(). The redirect capture measured
+  // the surface. The noscope capture read toArray() by length and type.
+  const faultIds = (error: unknown) =>
+    ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+
+  it.runIf(engine === "next-gen")("r10 P2-1 JSON of an empty redirect-URI list is a named fault", async () => {
+    const id = "oauth2-validate-scope-unmeasured/clientProperties.redirectUris";
+    expectHarnessFault(id);
+    const error = await strict(
+      "r10-redirect-json",
+      "function validateAccessTokenScope() { return [JSON.stringify(clientProperties.redirectUris)]; }",
+      {},
+      ["[]"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect(faultIds(error)).toContain(id);
+  }, 60_000);
+
+  it("r10 P2-1 JSON of an empty toArray() result is a named fault", async () => {
+    const id = "oauth2-validate-scope-unmeasured/list.toArray()";
+    expectHarnessFault(id);
+    const error = await strict(
+      "r10-toarray-json",
+      "function validateAccessTokenScope() { return [JSON.stringify(requestedScopes.toArray())]; }",
+      { requested: [] },
+      ["[]"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect(faultIds(error)).toContain(id);
+  }, 60_000);
+
+  it("r10 P2-1 String of an empty toArray() result is a named fault", async () => {
+    const id = "oauth2-validate-scope-unmeasured/list.toArray()";
+    expectHarnessFault(id);
+    const error = await strict(
+      "r10-toarray-string",
+      "function validateAccessTokenScope() { return [String(requestedScopes.toArray())]; }",
+      { requested: [] },
+      ["[]"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect(faultIds(error)).toContain(id);
+  }, 60_000);
+
+  it("r10 P2-1 empty requested-scope JSON still succeeds", async () => {
+    const { effects } = await strict(
+      "r10-requested-json",
+      "function validateAccessTokenScope() { return [JSON.stringify(requestedScopes)]; }",
+      { requested: [] },
+      ["[]"],
+    );
+    expect(effects.validateScope!.granted).toEqual(["[]"]);
+  }, 60_000);
+
+  // Legacy requestedScopes is a HashSet, not this list, so concat there is a
+  // different route. The empty-list concat refusal is the next-gen list.
+  it.runIf(engine === "next-gen")("r10 P2-1 concat of an empty requested-scope list still faults", async () => {
+    const id = "oauth2-validate-scope-unmeasured/list";
+    expectHarnessFault(id);
+    const error = await strict(
+      "r10-requested-concat",
+      "function validateAccessTokenScope() { return [String([].concat(requestedScopes).length)]; }",
+      { requested: [] },
+      ["0"],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect(faultIds(error)).toContain(id);
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r10 P2-1 an empty redirect-URI list still answers String and length", async () => {
+    const { effects } = await strict(
+      "r10-redirect-surface",
+      "function validateAccessTokenScope() { return [String(clientProperties.redirectUris) + \"|\" + clientProperties.redirectUris.length]; }",
+      {},
+      ["[]|0"],
+    );
+    expect(effects.validateScope!.granted).toEqual(["[]|0"]);
+  }, 60_000);
+
+  it("r10 P2-1 an empty toArray() result still answers length", async () => {
+    const { effects } = await strict(
+      "r10-toarray-length",
+      "function validateAccessTokenScope() { return [String(requestedScopes.toArray().length)]; }",
+      { requested: [] },
+      ["0"],
+    );
+    expect(effects.validateScope!.granted).toEqual(["0"]);
+  }, 60_000);
 });

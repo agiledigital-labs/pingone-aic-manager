@@ -94,3 +94,37 @@ describe("the utils host bridge on the real Rhino engine", () => {
     expect(probe).toEqual({ reached: "function", ecdsa: "object", dsa: "threw", sha224: "threw" });
   });
 });
+
+// Sol ctx r10 P2-2. nodeState.get uses the same signature helper. Next-gen
+// only: legacy has no arity basis, so the extra argument is a harness fault
+// and the message does not carry the signature.
+describe("a regexp is function in a decision-node overload signature", () => {
+  let runner: RhinoRunner;
+
+  beforeAll(async () => {
+    runner = await RhinoRunner.spawn();
+  }, 60_000);
+
+  afterAll(async () => {
+    await runner.close();
+  }, 30_000);
+
+  it("nodeState.get(/x/, 1) names get(function,number)", async () => {
+    const result = await runCase(runner, defineCase({
+      name: "regexp nodeState.get",
+      script: [
+        "var hit = false;",
+        "try { nodeState.get(/x/, 1); } catch (e) {",
+        "  hit = String(e).indexOf(\"get(function,number)\") >= 0;",
+        "}",
+        "nodeState.putShared(\"hit\", hit);",
+        "action.goTo(\"true\");",
+      ].join("\n"),
+      outcomes: ["true"],
+      given: { engine: "next-gen" },
+      expect: { outcome: "true", sharedState: { added: { hit: true } } },
+    }));
+    expect(result.verdict.pass, result.verdict.summary).toBe(true);
+    expect(result.effects.sharedState.final.hit).toBe(true);
+  }, 60_000);
+});

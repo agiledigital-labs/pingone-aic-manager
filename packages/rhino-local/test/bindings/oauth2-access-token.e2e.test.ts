@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CaseRunError, runCase } from "../../src/bindings/run.ts";
 import { defineCase } from "../../src/case/validate.ts";
+import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import type { AccessTokenEffect, Engine, JsonObject, JsonValue } from "../../src/case/types.ts";
 import { packageRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
@@ -139,6 +140,64 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     expect(live.body.error_description).toBe("Error running access token modification plugin");
     await expect(run("throws")).rejects.toThrow(CaseRunError);
     await expect(run("throws")).rejects.toThrow(/zz deliberate/);
+  }, 60_000);
+
+  // Sol ctx r10 P2-1. No capture measured a size-zero request value. An empty
+  // identity attribute is a different list and does not permit this one.
+  it("r10 P2-1 a size-zero request value's length is a named fault", async () => {
+    const id = "oauth2-token-unmeasured/requestProperties";
+    expectHarnessFault(id);
+    const error = await runCase(runner, defineCase({
+      name: `r10 empty request ${engine}`,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `accessToken.setField("probe", requestProperties.requestParams.x.length);`,
+      given: { engine, request: { params: { x: [] } } },
+      expect: { accessToken: { fields: { added: { probe: 0 } } } },
+    })).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toContain(id);
+    const text = faults.map((f) => f.message).join("\n");
+    expect(text).toContain("this route on a size-zero list was not measured");
+    expect(text).not.toContain("never produced on AIC");
+  }, 60_000);
+
+  it("r10 P2-1 a non-empty request value still answers length", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `r10 request length ${engine}`,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `accessToken.setField("probe", requestProperties.requestParams.grant_type.length);`,
+      given: { engine },
+      expect: { accessToken: { fields: { added: { probe: 1 } } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.probe).toBe(1);
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r10 P2-1 an empty identity attribute still answers length and String", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `r10 empty attribute ${engine}`,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `var v = identity.getAttributeValues("zzNoSuchAttr"); accessToken.setField("probe", v.length + "|" + String(v));`,
+      given: { engine },
+      expect: { accessToken: { fields: { added: { probe: "0|[]" } } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.probe).toBe("0|[]");
+  }, 60_000);
+
+  // Sol ctx r10 P2-2. Rhino names a regexp argument "function" (it implements
+  // java Function) even though script typeof is "object".
+  it("r10 P2-2 a regexp argument is function in the overload signature", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `r10 regexp ${engine}`,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `try { accessToken.getField(/x/, 1); } catch (e) { accessToken.setField("diagnostic", String(e).indexOf("getField(function,number)") >= 0); }`,
+      given: { engine },
+      expect: { accessToken: { fields: { added: { diagnostic: true } } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.diagnostic).toBe(true);
   }, 60_000);
 });
 

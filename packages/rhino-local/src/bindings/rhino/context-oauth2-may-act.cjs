@@ -66,10 +66,26 @@ __rhinoLocalListKinds.oauth2MayAct = {
   concatArgument: false,
   json: true,
   genericReceiver: false,
-  // surface.next-gen.json cpRedirect: clientProperties.redirectUris is empty,
-  // String "[]" and length 0. JSON.stringify of that empty list was not
-  // measured (json stays true for a non-empty scopes list). concat was not
-  // measured at any length, so concatArgument stays false.
+  // JSON.stringify of an empty scopes list was not measured (json stays true
+  // for a non-empty list). concat was not measured at any length.
+  // clientProperties.redirectUris is oauth2MayActRedirect (Sol ctx r10 P2-1):
+  // the empty redirect surface does not measure an empty scopes list.
+  // emptyRoutes is present and empty so a size-zero scopes list faults as
+  // unmeasured, and not with the decision-node request list's sentence.
+  emptyRoutes: {},
+};
+
+// clientProperties.redirectUris. surface.next-gen.json cpRedirect: the list
+// is empty, String "[]" and length 0. JSON was not measured.
+__rhinoLocalListKinds.oauth2MayActRedirect = {
+  id: "oauth2-may-act-unmeasured/clientProperties.redirectUris",
+  noun: "a may-act redirect-URI list",
+  measured: "only length, size(), [i] and String(v) of an empty list were measured",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: false,
+  genericReceiver: false,
   emptyRoutes: { surface: true },
 };
 
@@ -765,7 +781,9 @@ function __rhinoLocalSeedMayAct(given) {
     paramsGetMissing: true, javaTags: true, listKind: __rhinoLocalListKinds.oauth2MayActRequest,
   });
   __rhinoLocalCtxTag(requestProperties, "JavaMap", "requestProperties");
-  clientProperties = __rhinoLocalCtxBuildClient(d.client, { redirectUris: true, javaTags: true, setTag: "JavaObject" });
+  clientProperties = __rhinoLocalCtxBuildClient(d.client, {
+    redirectUris: true, javaTags: true, setTag: "JavaObject", redirectKind: __rhinoLocalListKinds.oauth2MayActRedirect,
+  });
   __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");
   if (legacy) {
     session = null;

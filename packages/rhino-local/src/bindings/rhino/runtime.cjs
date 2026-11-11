@@ -742,12 +742,17 @@ var __rhinoLocalArityBasis = (function () {
 })();
 
 // Rhino's NativeJavaMethod.scriptSignature: how a refused call names its
-// arguments. A Wrapper is named by unwrap().getClass().getName() in Java
-// (HostOps "scriptSignatureName"): that is where Rhino builds the name, and
-// it does not consult the class shutter. Script-visible getClass() reflects
-// java.lang.Class, which the legacy deny refuses, so the overload message
-// itself would become "Access to Java class \"java.lang.Class\" is prohibited."
-// A plain script object is "object". The host function is captured here,
+// arguments. After null and the primitive types, a Scriptable is Undefined,
+// else a Wrapper named by unwrap().getClass().getName() in Java, else a
+// Function ("function"), else "object". The Wrapper and Function checks run
+// in Java (HostOps "scriptSignatureName"), against those interfaces: a regexp
+// is typeof "object" here and implements org.mozilla.javascript.Function
+// (NativeRegExpCallable), so it is "function". That Java call does not consult
+// the class shutter. Script-visible getClass() reflects java.lang.Class, which
+// the legacy deny refuses, so the overload message itself would become
+// "Access to Java class \"java.lang.Class\" is prohibited." A plain script
+// object is "object". Without the host (node:vm) the interface check cannot
+// run, and a regexp stays "object". The host function is captured here,
 // before the runner deletes the __rhinoLocalHostOp global.
 var __rhinoLocalScriptSignature = (function (host) {
   return function __rhinoLocalScriptSignature(args) {
@@ -991,7 +996,8 @@ function __rhinoLocalArgShape(args) {
 // borrowing these two kinds' measured behaviour. Absent means allowed, so
 // these two kinds behave as they always have. A context kind whose captures
 // show a size-zero list sets `emptyRoutes` for the routes that capture
-// measured (`surface` is length, toString and string coercion; `json` and
+// measured (`surface` is toString and string coercion, and it implies
+// `length`; `length` alone does not imply string coercion; `json` and
 // `concat` are the copy). Absent `emptyRoutes`, `emptyMeasured` covers every
 // route, which is how the request list (false) and openidm (true) stay.
 // The legacy engine is not measured and keeps the older shapes.
@@ -1064,11 +1070,18 @@ function __rhinoLocalListRow(value) {
 
 // `emptyMeasured: true` with no `emptyRoutes` allows every empty route.
 // `emptyRoutes`, when present, lists only the routes a capture showed on a
-// size-zero list of that kind; a missing route stays refused. The request
-// list and openidm do not set emptyRoutes and keep the boolean.
+// size-zero list of that kind; a missing route stays refused. `surface`
+// (toString and string coercion) also allows `length`. `length` alone does
+// not allow string coercion. An empty object refuses every empty route and
+// still uses the "not measured" sentence, rather than the decision-node
+// request list's. The request list and openidm do not set emptyRoutes and
+// keep the boolean.
 function __rhinoLocalEmptyRoute(kind, route) {
   var routes = kind.emptyRoutes;
   if (routes) {
+    if (route === "length") {
+      return routes.length === true || routes.surface === true;
+    }
     return routes[route] === true;
   }
   return kind.emptyMeasured === true;
@@ -1322,13 +1335,16 @@ function __rhinoLocalListView(items, kind) {
   // length, toString and string coercion fault, so every borrowed
   // Array.prototype method, Array.from, apply and coercion refuse without
   // being named. Only size() and get(i) (as measured: every index is out of
-  // range) still answer. A kind that measured the empty surface
-  // (emptyMeasured, or emptyRoutes.surface) answers length and "[]".
-  var unmeasuredEmpty = items.length === 0 && !__rhinoLocalEmptyRoute(kind, "surface");
+  // range) still answer. `emptyMeasured`, or `emptyRoutes.surface`, answers
+  // length and "[]". `emptyRoutes.length` answers length alone: a capture
+  // that read only the length of an empty toArray() result does not answer
+  // String(v).
+  var unmeasuredLength = items.length === 0 && !__rhinoLocalEmptyRoute(kind, "length");
+  var unmeasuredString = items.length === 0 && !__rhinoLocalEmptyRoute(kind, "surface");
   var emptyFault = function (what) {
     return __rhinoLocalEmptyFault(kind, what);
   };
-  if (unmeasuredEmpty) {
+  if (unmeasuredLength) {
     Object.defineProperty(list, "length", {
       enumerable: false,
       configurable: true,
@@ -1336,11 +1352,13 @@ function __rhinoLocalListView(items, kind) {
         throw emptyFault("length");
       },
     });
+  } else {
+    __rhinoLocalHide(list, "length", items.length);
+  }
+  if (unmeasuredString) {
     __rhinoLocalHide(list, "valueOf", function () {
       throw emptyFault("valueOf() or string coercion");
     });
-  } else {
-    __rhinoLocalHide(list, "length", items.length);
   }
   __rhinoLocalHide(list, "size", function () {
     if (arguments.length !== 0) {
@@ -1379,7 +1397,7 @@ function __rhinoLocalListView(items, kind) {
     if (arguments.length !== 0) {
       throw unmeasured("toString(" + __rhinoLocalArgShape(arguments) + ")");
     }
-    if (unmeasuredEmpty) {
+    if (unmeasuredString) {
       throw emptyFault("toString() or String(v)");
     }
     if (kind.outOfRange) {

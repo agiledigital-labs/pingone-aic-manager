@@ -59,7 +59,25 @@ __rhinoLocalListKinds.oidcClaims = {
   // claimsLocales, clientProperties.redirectUris and a missing attribute's
   // values are empty in the surface and requested captures, both engines:
   // length 0 and String "[]". json and concat were not measured at any length.
+  // A request value is oidcClaimsRequest (Sol ctx r10 P2-1): this empty
+  // surface does not measure one.
   emptyMeasured: true,
+};
+
+// A requestProperties value. The surface probe reads String, length, [i] and
+// size() of grant_type, which has one element. No capture shows a size-zero
+// request value. emptyRoutes is present and empty so that route faults as
+// unmeasured, and not with the decision-node request list's "[\"\"]" sentence.
+__rhinoLocalListKinds.oidcClaimsRequest = {
+  id: "oidc-claims-unmeasured/requestProperties",
+  noun: "an OIDC claims request value",
+  measured: "only length, size(), [i] and String(v) of a non-empty value were measured",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: false,
+  genericReceiver: false,
+  emptyRoutes: {},
 };
 
 __rhinoLocalCtx.prefix = "oidc-claims-unmeasured";
@@ -399,7 +417,9 @@ function __rhinoLocalSeedOidcClaims(given) {
   }
   identity = __rhinoLocalCtxBuildIdentity(d.identity);
   scopes = __rhinoLocalCtxBuildScopes(d.scopes, { toArray: true });
-  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, { paramsGetMissing: true });
+  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, {
+    paramsGetMissing: true, listKind: __rhinoLocalListKinds.oidcClaimsRequest,
+  });
   clientProperties = __rhinoLocalCtxBuildClient(d.client, { redirectUris: true });
   claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.map(__rhinoLocalCtxString), "claimsLocales");
   if (legacy) {
