@@ -95,4 +95,45 @@ describe("request value lists under concat, String and JSON.stringify match the 
     });
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-list-unmeasured"]);
   });
+
+  // A size-zero request list was never produced live (an empty value arrives as [""]), so a `[]` seed
+  // is accepted but copying it is refused rather than answered with an assumed [].
+  it.each([
+    ["JSON.stringify of a parameter list", "JSON.stringify(requestParameters.get(\"q\"))"],
+    ["JSON.stringify nested", "JSON.stringify({ v: requestParameters.get(\"q\") })"],
+    ["[].concat of a parameter list", "[].concat(requestParameters.get(\"q\"))"],
+    ["JSON.stringify of [].concat", "JSON.stringify([].concat(requestParameters.get(\"q\")))"],
+    ["a parameter list as concat's receiver", "Array.prototype.concat.call(requestParameters.get(\"q\"), [1])"],
+    ["[].concat of a header list", "[].concat(requestHeaders.get(\"x-zero\"))"],
+    ["JSON.stringify under a property list", "JSON.stringify({ v: requestHeaders.get(\"x-zero\") }, [\"v\"])"],
+    // Its array-like surface faults too, so rendering and every borrowed copy refuse without being named.
+    ["String(v)", "String(requestParameters.get(\"q\"))"],
+    ["v.toString()", "requestParameters.get(\"q\").toString()"],
+    ["string concatenation", "\"\" + requestParameters.get(\"q\")"],
+    ["Array.prototype.slice", "JSON.stringify(Array.prototype.slice.call(requestParameters.get(\"q\")))"],
+    ["Array.from", "JSON.stringify(Array.from(requestParameters.get(\"q\")))"],
+    ["Array.prototype.map", "JSON.stringify(Array.prototype.map.call(requestParameters.get(\"q\"), function (x) { return x; }))"],
+    ["[].concat.apply", "JSON.stringify([].concat.apply([], requestParameters.get(\"q\")))"],
+    ["Array.prototype.push.apply", "var a = []; Array.prototype.push.apply(a, requestParameters.get(\"q\")); JSON.stringify(a)"],
+    ["reading length", "requestHeaders.get(\"x-zero\").length"],
+    // keys/values/entries are lazy: the iterator reads the guarded surface at its first next().
+    ["the first next() of a borrowed keys iterator", "Array.prototype.keys.call(requestParameters.get(\"q\")).next()"],
+  ])("%s of a size-zero list faults request-list-unmeasured, even when caught", async (_name, read) => {
+    expectHarnessFault("request-list-unmeasured");
+    const response = await runner.eval({
+      preamble: mockPreamble({ requestParameters: { q: [] }, requestHeaders: { "X-Zero": [] } } as Given),
+      source: withHarvest(`try { ${read}; } catch (e) {}`),
+    });
+    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-unmeasured"]);
+  });
+
+  it("size() of a size-zero seed is still answered, and a one-element list still copies", async () => {
+    const response = await runner.eval({
+      preamble: mockPreamble({ requestParameters: { q: [], e: [""] } } as Given),
+      source: withHarvest('var e = requestParameters.get("e"); nodeState.putShared("r", requestParameters.get("q").size() + "|" + JSON.stringify([].concat(e)) + "|" + String(e) + "|" + e.length + "|" + JSON.stringify(Array.prototype.slice.call(e)));'),
+    });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(parseHarvest(response.value as string).sharedState.final.r).toBe('0|[""]|[]|1|[""]');
+  });
 });
