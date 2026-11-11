@@ -7,9 +7,9 @@
  * direct runner claims must agree.
  *
  * The direct runner has no caller of its own. given.library.callerContext
- * only changes logger.getName()'s context segment. The class shutter stays
- * the decision node's, so new java.util.HashSet() answers here even when the
- * live OAuth callers refused it. That difference is asserted, not papered over.
+ * selects the caller's logger name and that caller's class shutter. The
+ * decision-node capture's HashSet cell is "ok-1"; each OAuth capture's is
+ * "err". Those cells are compared as recorded.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,7 +18,7 @@ import { CaseRunError, runCase } from "../../src/bindings/run.ts";
 import { defineCase } from "../../src/case/validate.ts";
 import type { JsonObject, JsonValue, LibraryCallerContext } from "../../src/case/types.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
-import { packageRoot } from "../../src/paths.ts";
+import { packageRoot, repoRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 
 const dir = join(packageRoot, "test", "fixtures", "library");
@@ -82,17 +82,12 @@ const CALLERS: readonly {
   { file: "evaluate-ng.json", callerContext: "OAUTH2_EVALUATE_SCOPE_NEXT_GEN", scriptName: "zzemuC7-es" },
 ];
 
-/**
- * The live OAuth callers refused HashSet. This runner uses the decision-node
- * shutter, so the emulator's answer is the decision-node capture's `ok-1`.
- * Rewrite that cell after checking the capture still says what was measured.
- */
+/** The capture's surface, with the caller's script id filled in. HashSet stays as measured. */
 function expectedSurface(live: Surface): JsonValue {
   const text = JSON.stringify(live).replaceAll("<uuid>", SCRIPT_ID);
   const surface = JSON.parse(text) as Surface;
   for (const snap of [surface.module, surface.fn]) {
     expect(snap.hashSet === "ok-1" || snap.hashSet === "err").toBe(true);
-    snap.hashSet = "ok-1";
   }
   return surface as unknown as JsonValue;
 }
@@ -291,6 +286,189 @@ describe("library context", () => {
     expect(ids).toContain("library-unmeasured/return");
   }, 60_000);
 
+  it("an undefined return does not satisfy an explicit null", async () => {
+    const result = await run(
+      "undefined is not null",
+      "exports.n = function () {};",
+      { export: "n" },
+      { returns: { status: "returned", value: null } },
+    );
+    expect(result.verdict.pass).toBe(false);
+    expect(result.effects.returns?.undefined).toBe(true);
+    expect(result.effects.returns?.value).toBeNull();
+    expect(result.verdict.summary).toContain("undefined");
+    expect(result.verdict.summary).toContain("null");
+
+    const asNull = await run(
+      "literal null",
+      "exports.n = function () { return null; };",
+      { export: "n" },
+      { returns: { status: "returned", value: null } },
+    );
+    expect(asNull.verdict.summary, asNull.verdict.summary).toBe("");
+
+    const rejected = await run(
+      "null rejected as undefined",
+      "exports.n = function () { return null; };",
+      { export: "n" },
+      { returns: { status: "returned", undefined: true } },
+    );
+    expect(rejected.verdict.pass).toBe(false);
+  }, 60_000);
+
+  const LOSSY: readonly { name: string; script: string; value: JsonValue }[] = [
+    {
+      name: "undefined property",
+      script: "exports.n = function () { return { a: undefined, b: 1 }; };",
+      value: { b: 1 },
+    },
+    {
+      name: "undefined array element",
+      script: "exports.n = function () { return [undefined]; };",
+      value: [null],
+    },
+    {
+      name: "nested function",
+      script: "exports.n = function () { return { f: function () { return 1; }, b: 1 }; };",
+      value: { b: 1 },
+    },
+    {
+      name: "NaN",
+      script: "exports.n = function () { return NaN; };",
+      value: null,
+    },
+    {
+      name: "Infinity",
+      script: "exports.n = function () { return Infinity; };",
+      value: null,
+    },
+    {
+      name: "negative zero",
+      script: "exports.n = function () { return -0; };",
+      value: 0,
+    },
+    {
+      name: "Date",
+      script: "exports.n = function () { return new Date(0); };",
+      value: "1970-01-01T00:00:00.000Z",
+    },
+    {
+      name: "Error",
+      script: "exports.n = function () { return new Error(\"returned error\"); };",
+      value: {},
+    },
+    {
+      name: "Java string",
+      script: "exports.n = function () { return new java.lang.String(\"x\"); };",
+      value: "x",
+    },
+    {
+      name: "ArrayList",
+      script: "exports.n = function () { return new java.util.ArrayList(); };",
+      value: [],
+    },
+  ];
+
+  it.each(LOSSY)("$name is not coerced into JSON", async ({ name, script, value }) => {
+    expectHarnessFault("library-unmeasured/return");
+    const error = await run(name, script, { export: "n" }, {
+      returns: { status: "returned", value },
+    }).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((fault) => fault.id);
+    expect(ids).toContain("library-unmeasured/return");
+  }, 60_000);
+
+  const HASH_SET = [
+    "exports.n = function () {",
+    "  try {",
+    "    var s = new java.util.HashSet();",
+    "    s.add(\"a\");",
+    "    return \"ok-\" + String(s.size());",
+    "  } catch (e) {",
+    "    return \"err\";",
+    "  }",
+    "};",
+  ].join("\n");
+
+  it.each([
+    ["AUTHENTICATION_TREE_DECISION_NODE", "ok-1"],
+    ["OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN", "err"],
+    ["OAUTH2_VALIDATE_SCOPE_NEXT_GEN", "err"],
+    ["OAUTH2_MAY_ACT_NEXT_GEN", "err"],
+    ["OAUTH2_EVALUATE_SCOPE_NEXT_GEN", "err"],
+  ] as const)("HashSet on %s is %s", async (callerContext, value) => {
+    const result = await run("hashset", HASH_SET, { export: "n", callerContext }, {
+      returns: { status: "returned", value },
+    });
+    expect(result.verdict.summary, result.verdict.summary).toBe("");
+    expect(result.effects.returns?.value).toBe(value);
+  }, 60_000);
+
+  const TYPEOF_ONLY = ["emailService", "jwtAssertion", "jwtValidator", "policy"] as const;
+
+  it.each(TYPEOF_ONLY)("String(%s) is unmeasured", async (binding) => {
+    expectHarnessFault(`library-unmeasured/String(${binding})`);
+    const error = await run(
+      `String ${binding}`,
+      `exports.n = function () { return String(${binding}); };`,
+      { export: "n" },
+      { returns: { status: "returned", value: "[object Object]" } },
+    ).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((fault) => fault.id);
+    expect(ids).toContain(`library-unmeasured/String(${binding})`);
+  }, 60_000);
+
+  it.each(TYPEOF_ONLY)("JSON.stringify(%s) is unmeasured", async (binding) => {
+    expectHarnessFault(`library-unmeasured/JSON.stringify(${binding})`);
+    const error = await run(
+      `JSON ${binding}`,
+      `exports.n = function () { return JSON.stringify(${binding}); };`,
+      { export: "n" },
+      { returns: { status: "returned", value: "{}" } },
+    ).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((fault) => fault.id);
+    expect(ids).toContain(`library-unmeasured/JSON.stringify(${binding})`);
+  }, 60_000);
+
+  it("logger.getName() with no arguments is the caller name", async () => {
+    const result = await run(
+      "getName",
+      "exports.n = function () { return logger.getName(); };",
+      { export: "n" },
+      {
+        returns: {
+          status: "returned",
+          value: `scripts.AUTHENTICATION_TREE_DECISION_NODE.${SCRIPT_ID}.(zzemuC7-dn)`,
+        },
+      },
+    );
+    expect(result.verdict.summary, result.verdict.summary).toBe("");
+  }, 60_000);
+
+  it.each([1, 2])("logger.getName with %i extra argument(s) is unmeasured", async (count) => {
+    const args = Array.from({ length: count }, () => "\"unused\"").join(", ");
+    const shape = Array.from({ length: count }, () => "string").join(", ");
+    const id = `library-unmeasured/logger.getName(${shape})`;
+    expectHarnessFault(id);
+    const error = await run(
+      `getName ${count}`,
+      `exports.n = function () { return logger.getName(${args}); };`,
+      { export: "n" },
+      {
+        returns: {
+          status: "returned",
+          value: `scripts.AUTHENTICATION_TREE_DECISION_NODE.${SCRIPT_ID}.(zzemuC7-dn)`,
+        },
+      },
+    ).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((fault) => fault.id);
+    expect(ids).toContain(id);
+  }, 60_000);
+
   it("a decision-node case still runs and rejects library fields", async () => {
     expect(() => defineCase({
       name: "library on a decision",
@@ -350,6 +528,29 @@ describe("library context", () => {
       expect: { returns: { status: "returned", value: 1 } },
     }))).rejects.toThrow(/__rhinoLocalSubject is reserved/);
   }, 60_000);
+});
+
+describe("oauth library caller allow-lists", () => {
+  it("the four measured OAuth callers publish one allowLists", () => {
+    const files = [
+      "oauth2-atm-next.json",
+      "oauth2-validate-scope-next.json",
+      "oauth2-may-act-next.json",
+      "oauth2-evaluate-scope-next.json",
+    ];
+    const lists = files.map((file) => {
+      const parsed = JSON.parse(readFileSync(join(repoRoot, "docs", "api", "bindings", file), "utf8")) as {
+        allowLists: string[];
+      };
+      return parsed.allowLists;
+    });
+    const first = lists[0];
+    expect(first).toBeDefined();
+    for (const list of lists) {
+      expect(list).toEqual(first);
+      expect(list).not.toContain("java.util.HashSet");
+    }
+  });
 });
 
 describe("library captures on engines with no require()", () => {

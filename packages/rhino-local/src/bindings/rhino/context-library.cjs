@@ -14,9 +14,15 @@
 // The case's script is the library body. The runner require()s it through
 // the existing loader and calls the named export. Anything this measurement
 // did not reach on emailService, jwtAssertion, jwtValidator or policy is
-// library-unmeasured/<binding>.<member>. The shared objects the probe called
-// (logger.getName, systemEnv.getProperty of a missing key, utils.base64.encode,
-// openidm.read of a missing id) keep the harness implementations.
+// library-unmeasured/<binding>.<member>. String() and JSON.stringify of those
+// four were not measured either (library-unmeasured/String(<binding>) and
+// library-unmeasured/JSON.stringify(<binding>)). logger.getName was called
+// with no arguments; any other count is library-unmeasured/logger.getName(…).
+// The shared objects the probe called (that zero-argument getName,
+// systemEnv.getProperty of a missing key, utils.base64.encode, openidm.read
+// of a missing id) keep the harness implementations. A returned value is
+// admitted only when it is JSON (nested null included) or top-level
+// undefined. JSON.stringify is not that check.
 
 var __rhinoLocalLibUnbound = [
   "accessToken", "action", "allowedScopes", "auditEntryDetail", "availableScopes",
@@ -49,6 +55,13 @@ function __rhinoLocalLibFaultObject(target, label) {
       });
     })(names[i]);
   }
+  // The probe recorded typeof "object" and did not render the object.
+  // String() and JSON.stringify would otherwise publish a synthetic
+  // "[object Object]" and "{}".
+  __rhinoLocalHide(target, "toString", function () {
+    throw __rhinoLocalCtxUnmeasured("String(" + label + ")");
+  });
+  __rhinoLocalCtxToJSON(target, label);
 }
 
 function __rhinoLocalSeedLibrary(given) {
@@ -72,7 +85,9 @@ function __rhinoLocalSeedLibrary(given) {
   };
   var loggerName = "scripts." + __rhinoLocal.libraryCall.callerContext + "." +
     __rhinoLocal.loggerScriptId + ".(" + scriptName + ")";
-  __rhinoLocalHide(logger, "getName", function () {
+  // Only the zero-argument call was measured. The class name is unused: a
+  // wrong count is an unmeasured fault, not a guessed overload error.
+  __rhinoLocalCtxMethod(logger, "logger", "logger", "getName", 0, function () {
     return loggerName;
   });
   __rhinoLocalLibFaultObject(emailService, "emailService");
@@ -86,24 +101,73 @@ function __rhinoLocalLibThrown(error) {
   return { type: typeof error, name: named, message: String(error) };
 }
 
+function __rhinoLocalLibRefuse() {
+  throw __rhinoLocalFault(
+    "library-unmeasured/return",
+    "rhino-local: the library export returned a value JSON cannot carry"
+  );
+}
+
+function __rhinoLocalLibIsJava(value) {
+  try {
+    return value instanceof java.lang.Object;
+  } catch (error) {
+    void error;
+    return false;
+  }
+}
+
+// A copy of a value JSON carries exactly. Nested null stays null. A nested
+// undefined, a function, a non-finite number (including -0), a Date, an
+// Error, a cycle or a Java object is not a captured return: stringify would
+// drop or rewrite it, and that rewrite was not measured.
+function __rhinoLocalLibAdmit(value, path) {
+  var i;
+  var keys;
+  var out;
+  if (value === undefined) {
+    __rhinoLocalLibRefuse();
+  }
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!isFinite(value) || (value === 0 && 1 / value < 0)) {
+      __rhinoLocalLibRefuse();
+    }
+    return value;
+  }
+  if (typeof value !== "object" || __rhinoLocalLibIsJava(value) || path.indexOf(value) !== -1 ||
+      !__rhinoLocalCtxPlainJson(value)) {
+    __rhinoLocalLibRefuse();
+  }
+  path.push(value);
+  if (Array.isArray(value)) {
+    out = [];
+    for (i = 0; i < value.length; i += 1) {
+      out.push(__rhinoLocalLibAdmit(value[i], path));
+    }
+  } else {
+    out = {};
+    keys = Object.keys(value);
+    for (i = 0; i < keys.length; i += 1) {
+      Object.defineProperty(out, keys[i], {
+        value: __rhinoLocalLibAdmit(value[keys[i]], path),
+        enumerable: true,
+        configurable: true,
+        writable: true
+      });
+    }
+  }
+  path.pop();
+  return out;
+}
+
 function __rhinoLocalLibValue(value) {
   if (value === undefined) {
     return { undefined: true, value: null };
   }
-  var encoded;
-  try {
-    encoded = JSON.parse(JSON.stringify(value));
-  } catch (error) {
-    encoded = undefined;
-    void error;
-  }
-  if (encoded === undefined) {
-    throw __rhinoLocalFault(
-      "library-unmeasured/return",
-      "rhino-local: the library export returned a value JSON cannot carry"
-    );
-  }
-  return { undefined: false, value: encoded };
+  return { undefined: false, value: __rhinoLocalLibAdmit(value, []) };
 }
 
 function __rhinoLocalLibFinish(result) {

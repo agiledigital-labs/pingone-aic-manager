@@ -794,8 +794,9 @@ function judgeValidateScope(expect: Expect, recorded: CompleteRecordedEffects, a
  */
 /**
  * The export a library case called, fail-closed. Omitting `expect.returns`
- * requires a return of `undefined`. A throw, including one while the library
- * loads, is a mismatch unless declared.
+ * requires a return of `undefined`. A declared JSON value does not match that
+ * return: `undefined` and `null` are different results. A throw, including one
+ * while the library loads, is a mismatch unless declared.
  */
 function judgeLibrary(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
   const effect = recorded.returns;
@@ -832,6 +833,9 @@ function judgeLibrary(expect: Expect, recorded: CompleteRecordedEffects, allowUn
       if (!effect.undefined) {
         mismatches.push(miss("returns", "value", "undefined", formatValue(effect.value), "returns: expected undefined"));
       }
+    } else if (effect.undefined) {
+      mismatches.push(miss("returns", "value", formatValue(want.value ?? null), "undefined",
+        "returns: a returned undefined is not a JSON value"));
     } else if (!deepEqual(effect.value, want.value ?? null)) {
       mismatches.push(miss("returns", "value", formatValue(want.value), formatValue(effect.value), "returns.value: differed"));
     }
