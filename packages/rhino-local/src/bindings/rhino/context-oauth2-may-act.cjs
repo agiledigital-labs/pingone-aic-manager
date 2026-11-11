@@ -124,6 +124,7 @@ __rhinoLocalListKinds.oauth2MayActRequest = {
 };
 
 __rhinoLocalCtx.prefix = "oauth2-may-act-unmeasured";
+__rhinoLocalCtx.catalog = "mayact";
 __rhinoLocalCtx.noun = "OAuth2 may act";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2MayAct;
 
@@ -533,9 +534,9 @@ function __rhinoLocalMaMethod(target, cls, name, arity, fn, measuredRefusal) {
 // The tag was not measured. Elements stay JS strings on next-gen and Java
 // strings on legacy, which is what typeof [i] recorded.
 function __rhinoLocalMaToArray(items) {
-  // collection-kind: scopes.toArray(). size/get/toString/getClass stay the
-  // every-size stubs below, so the call itself does not fault.
-  var list = __rhinoLocalListView(items, __rhinoLocalListKinds.oauth2MayActArray);
+  // scopes.toArray(), the row's toArray child. size/get/toString/getClass
+  // stay the every-size stubs below, so the call itself does not fault.
+  var list = __rhinoLocalListView(items, __rhinoLocalListKinds.oauth2MayActArray, "scopes", "toArray");
   __rhinoLocalCtxFaulting(list, "scopes.toArray()", ["size", "get", "toString", "getClass"]);
   __rhinoLocalCtxTag(list, null, "scopes.toArray()");
   return __rhinoLocalCtxWatch(list, "scopes.toArray()");
@@ -573,8 +574,7 @@ function __rhinoLocalMaAssign(which, value, cls, name, args) {
 
 function __rhinoLocalMaNgScopes(items) {
   var store = items.slice();
-  var scopeGrant = __rhinoLocalCollectionGrant("mayact.next.scopes");
-  var list = __rhinoLocalListView(store, __rhinoLocalListKinds.oauth2MayAct, scopeGrant);
+  var list = __rhinoLocalListView(store, __rhinoLocalListKinds.oauth2MayAct, "scopes");
   __rhinoLocalCtxTag(list, "JavaList", "scopes");
   __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "contains", 1, function (v) {
     if (typeof v !== "string") {
@@ -605,8 +605,8 @@ function __rhinoLocalMaNgScopes(items) {
 // the always-unmeasured stubs. toArray() still returns the guarded view.
 function __rhinoLocalMaLegacyScopes(items) {
   var store = items.slice();
-  var out = __rhinoLocalCtxBare();
-  var scopeGrant = __rhinoLocalEmptyGrant(__rhinoLocalCollectionGrant("mayact.legacy.scopes"));
+  var scopeGrant = __rhinoLocalCollectionEmpty("scopes");
+  var out = __rhinoLocalSetObject("java.util.HashSet");
   var i;
   __rhinoLocalHide(out, __rhinoLocalSetStateKey, { items: store, grant: scopeGrant, label: "scopes" });
   for (i = 0; i < store.length + 8; i += 1) {
@@ -630,14 +630,12 @@ function __rhinoLocalMaLegacyScopes(items) {
         return store.length;
       },
     });
-    Object.defineProperty(out, __rhinoLocalSetIterKey, {
-      enumerable: true,
-      configurable: true,
-      get: function () {
-        __rhinoLocalSetEmpty(out, "iteration", "scopes.iteration");
-        return undefined;
-      },
-    });
+    if (!(scopeGrant !== null && scopeGrant.forIn === true)) {
+      __rhinoLocalEnumTrap(out, function () {
+        return __rhinoLocalCtxUnmeasured("scopes for...in",
+          "of a size-zero set (this operation on a size-zero set was not measured)");
+      });
+    }
   }
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "size", 0, function () {
     __rhinoLocalSetEmpty(out, "size", "scopes.size()");

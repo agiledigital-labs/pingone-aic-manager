@@ -101,6 +101,7 @@ __rhinoLocalListKinds.oidcClaimsRequest = {
 };
 
 __rhinoLocalCtx.prefix = "oidc-claims-unmeasured";
+__rhinoLocalCtx.catalog = "oidc";
 __rhinoLocalCtx.noun = "OIDC claims";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oidcClaims;
 
@@ -282,8 +283,7 @@ function __rhinoLocalOidcClaimObject(name, value) {
     return __rhinoLocalCtxJavaString(name);
   });
   __rhinoLocalCtxMethod(claim, label, cls, "getValues", 0, function () {
-    var valuesGrant = __rhinoLocalCollectionGrant("oidc.legacy.claimValues");
-    return __rhinoLocalCtxList([__rhinoLocalCtxJavaString(value)], label + ".getValues()", null, valuesGrant);
+    return __rhinoLocalCtxList([__rhinoLocalCtxJavaString(value)], label + ".getValues()", null, "claimValues");
   });
   __rhinoLocalCtxMethod(claim, label, cls, "isEssential", 0, function () {
     return false;
@@ -302,8 +302,7 @@ function __rhinoLocalOidcClaimObject(name, value) {
 
 function __rhinoLocalOidcClaimObjects(seed) {
   var items = [__rhinoLocalOidcClaimObject("sub", seed.sub), __rhinoLocalOidcClaimObject("subname", seed.subname)];
-  var claimGrant = __rhinoLocalCollectionGrant("oidc.legacy.claimObjects");
-  var list = __rhinoLocalCtxList(items, "claimObjects", null, claimGrant);
+  var list = __rhinoLocalCtxList(items, "claimObjects", null, "claimObjects");
   __rhinoLocalCtxMethod(list, "claimObjects", "java.util.List", "toArray", 0, function () {
     return items.slice();
   });
@@ -448,23 +447,20 @@ function __rhinoLocalSeedOidcClaims(given) {
   clientProperties = __rhinoLocalCtxBuildClient(d.client, {
     redirectUris: true,
   });
-  var localesGrant = __rhinoLocalCollectionGrant(legacy ? "oidc.legacy.claimsLocales" : "oidc.next.claimsLocales");
-  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.map(__rhinoLocalCtxString), "claimsLocales", null, localesGrant);
+  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.map(__rhinoLocalCtxString), "claimsLocales", null, "claimsLocales");
   if (legacy) {
     claims = __rhinoLocalOidcLegacyClaims(d.oidc);
     claimObjects = __rhinoLocalOidcClaimObjects(d.oidc);
     requestedClaims = __rhinoLocalCtxMap("requestedClaims", [], null, function () {
       return "{}";
     }, null, { get: { arity: 1, fn: function () { return null; } } });
-    var typedGrant = __rhinoLocalCollectionGrant("oidc.legacy.requestedTypedClaims");
-    requestedTypedClaims = __rhinoLocalCtxList([], "requestedTypedClaims", null, typedGrant);
+    requestedTypedClaims = __rhinoLocalCtxList([], "requestedTypedClaims", null, "requestedTypedClaims");
     // Measured: toArray() of the empty list, then a.length in a loop that does
     // not run (requested.legacy.json typed, the empty join). String and JSON
     // of that array were not read. The call itself does not fault.
     __rhinoLocalCtxMethod(requestedTypedClaims, "requestedTypedClaims", "java.util.List", "toArray", 0, function () {
-      var typedAgain = __rhinoLocalCollectionGrant("oidc.legacy.requestedTypedClaims");
       return __rhinoLocalCtxList([], "requestedTypedClaims.toArray()", __rhinoLocalListKinds.oidcClaimsArray,
-        __rhinoLocalToArrayGrant(typedAgain));
+        "requestedTypedClaims", "toArray");
     });
     // Measured: bound, and null on a password grant.
     session = null;

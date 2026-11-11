@@ -130,6 +130,7 @@ __rhinoLocalListKinds.oauth2ValidateScopeArray = {
 };
 
 __rhinoLocalCtx.prefix = "oauth2-validate-scope-unmeasured";
+__rhinoLocalCtx.catalog = "validate";
 __rhinoLocalCtx.noun = "OAuth2 validate scope";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2ValidateScope;
 
@@ -142,11 +143,7 @@ function __rhinoLocalVsList(items, label, addable) {
   // noscope.next-gen.json fn.requested is the only empty scope list. The
   // other three lists were captured non-empty. concat is not granted: the
   // probe ran it after add().
-  var empty = label === "requestedScopes" ? __rhinoLocalCollectionGrant("validate.next.requestedScopes")
-    : label === "allowedScopes" ? __rhinoLocalCollectionGrant("validate.next.allowedScopes")
-    : label === "availableScopes" ? __rhinoLocalCollectionGrant("validate.next.availableScopes")
-    : __rhinoLocalCollectionGrant("validate.next.defaultScopes");
-  var list = __rhinoLocalCtxList(store, label, null, empty);
+  var list = __rhinoLocalCtxList(store, label, null, label);
   __rhinoLocalCtxTag(list, "JavaList", label);
   var str = function (v) {
     if (typeof v !== "string") {
@@ -182,12 +179,8 @@ function __rhinoLocalVsList(items, label, addable) {
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "toArray", 0, function () {
     // Empty length and typeof [0] were read on requestedScopes.toArray() only.
-    var arrayGrant = label === "requestedScopes" ? __rhinoLocalCollectionGrant("validate.next.requestedScopes")
-      : label === "allowedScopes" ? __rhinoLocalCollectionGrant("validate.next.allowedScopes")
-      : label === "availableScopes" ? __rhinoLocalCollectionGrant("validate.next.availableScopes")
-      : __rhinoLocalCollectionGrant("validate.next.defaultScopes");
     return __rhinoLocalCtxList(store.slice(), label + ".toArray()",
-      __rhinoLocalListKinds.oauth2ValidateScopeArray, __rhinoLocalToArrayGrant(arrayGrant));
+      __rhinoLocalListKinds.oauth2ValidateScopeArray, label, "toArray");
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "iterator", 0, function () {
     throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
@@ -206,6 +199,7 @@ function __rhinoLocalVsList(items, label, addable) {
     list[store.length - 1] = v;
     __rhinoLocalHide(list, "length", store.length);
     list[__rhinoLocalListKey].items.push(v);
+    __rhinoLocalEnumGrew(list);
     __rhinoLocalCtxRewatch(list);
     return true;
   });
@@ -223,10 +217,7 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
   // noscope.legacy.json fn.requested is the only empty set. indexOf there is
   // TypeError: Cannot find function indexOf, so it is not granted and stays
   // uninstalled. allowedScopes and defaultScopes were captured non-empty.
-  var empty = label === "requestedScopes" ? __rhinoLocalCollectionGrant("validate.legacy.requestedScopes")
-    : label === "allowedScopes" ? __rhinoLocalCollectionGrant("validate.legacy.allowedScopes")
-    : __rhinoLocalCollectionGrant("validate.legacy.defaultScopes");
-  var set = __rhinoLocalCtxJavaSet(items, label, label !== "defaultScopes", javaClass, undefined, empty);
+  var set = __rhinoLocalCtxJavaSet(items, label, label !== "defaultScopes", javaClass, undefined, label);
   var strings = function () {
     var itemsNow = __rhinoLocalSetItems(set);
     var out = [];
@@ -262,14 +253,11 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
     var held = __rhinoLocalSetItems(set);
     var arr = [];
     var i;
-    var arrayGrant = label === "requestedScopes" ? __rhinoLocalCollectionGrant("validate.legacy.requestedScopes")
-      : label === "allowedScopes" ? __rhinoLocalCollectionGrant("validate.legacy.allowedScopes")
-      : __rhinoLocalCollectionGrant("validate.legacy.defaultScopes");
     for (i = 0; i < held.length; i += 1) {
       arr.push(__rhinoLocalCtxJavaString(held[i]));
     }
     return __rhinoLocalCtxList(arr, label + ".toArray()",
-      __rhinoLocalListKinds.oauth2ValidateScopeArray, __rhinoLocalToArrayGrant(arrayGrant));
+      __rhinoLocalListKinds.oauth2ValidateScopeArray, label, "toArray");
   });
   __rhinoLocalCtxMethod(set, label, javaClass, "iterator", 0, function () {
     __rhinoLocalSetEmpty(set, "iterator", label + ".iterator()");
