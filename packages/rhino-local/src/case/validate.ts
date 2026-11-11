@@ -25,6 +25,7 @@ import type {
   ConfigProviderCaseInit,
   ValidateScopeCaseInit,
   MayActCaseInit,
+  LibraryCaseInit,
   Engine,
   Expect,
   ExpectedObject,
@@ -64,6 +65,8 @@ import {
   parseValidateScopeExpect,
   parseValidateScopeSeed,
   parseMayActExpect,
+  parseLibraryExpect,
+  parseLibrarySeed,
   parseSocialIdpSeed,
   parseTokenRequestSeed,
 } from "./context.ts";
@@ -98,6 +101,7 @@ export function defineCase(
     | ConfigProviderCaseInit
     | ValidateScopeCaseInit
     | MayActCaseInit
+    | LibraryCaseInit
 ): Case {
   return validateCase(input);
 }
@@ -342,6 +346,12 @@ function parseGiven(raw: unknown, path: string, context: ScriptContext): Given {
   if (raw.validateScope !== undefined) {
     given.validateScope = parseValidateScopeSeed(raw.validateScope, `${path}.validateScope`);
   }
+  if (raw.library !== undefined) {
+    given.library = parseLibrarySeed(raw.library, `${path}.library`);
+  }
+  if (context === "LIBRARY" && given.library === undefined) {
+    throw new Error(`rhino-local: ${path}.library is required in context LIBRARY`);
+  }
   return normaliseIdentitySeeds(given);
 }
 
@@ -432,6 +442,9 @@ function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Exp
   }
   if (raw.mayAct !== undefined) {
     expect.mayAct = parseMayActExpect(raw.mayAct, `${path}.mayAct`);
+  }
+  if (raw.returns !== undefined) {
+    expect.returns = parseLibraryExpect(raw.returns, `${path}.returns`);
   }
   return expect;
 }

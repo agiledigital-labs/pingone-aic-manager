@@ -1311,6 +1311,47 @@ What it approximates or leaves out:
 - **The AIC lane** runs only decision-node scripts, so a may-act case runs
   locally only.
 
+## LIBRARY context (listed 2026-11-11)
+
+`context: "LIBRARY"` runs on next-gen only, from the overlay
+`packages/rhino-local/src/bindings/rhino/context-library.cjs`. The conformance
+test (`test/bindings/library.e2e.test.ts`) replays the surface probe required
+from a decision node and from four next-gen OAuth callers, plus the return,
+throw, module-load throw and `module.exports` replacement those callers
+recorded. What it approximates or leaves out:
+
+- **One shutter.** The direct runner uses the decision-node class allow-list.
+  `new java.util.HashSet()` answers. The same construction was refused when the
+  library was required from token modification, validate scope, may-act and
+  evaluate scope. `ArrayList` was not probed on those callers.
+  `given.library.callerContext` changes `logger.getName()` only.
+- **Callers not probed.** OIDC claims, the social IdP profile transformation and
+  the config provider node were not used as library callers.
+  `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not reached.
+  `OAUTH2_SCRIPTED_JWT_ISSUER` has no configuration hook. Evaluate scope is a
+  caller, not a case context.
+- **`undefined` as an argument.** The live `echo(undefined)` returned
+  `undefined`. `given.library.args` is JSON, which cannot carry a top-level
+  `undefined`, so that call is not a case.
+- **Members present but not called.** `emailService`, `jwtAssertion`,
+  `jwtValidator` and `policy` were objects. Every function member faults as
+  `library-unmeasured/<binding>.<member>`. `httpClient.send`, the other `logger`
+  methods, `secrets`, and `utils` beyond `base64.encode` keep the decision-node
+  harness. The probe did not show those members differing inside a library, and
+  it did not call them.
+- **`cookieName`'s characters.** The capture records a 15-character string that
+  is not `iPlanetDirectoryPro`. The characters were not kept.
+- **The error `HashSet` raised on an OAuth caller.** The probe recorded `"err"`
+  and not the message.
+- **`bindingOverrides`.** They run after the library unbind, so an override can
+  put a caller binding back. A case that does that is no longer the measured
+  scope.
+- **Other contexts still leak.** A decision-node script's `require()` still
+  closes the library over that script's bindings. Only a `LIBRARY` case unbinds
+  them first.
+- **The AIC lane** runs only decision-node scripts, so a library case runs
+  locally only.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
@@ -1318,8 +1359,10 @@ What it approximates or leaves out:
 - It does not claim OAuth2 scripts in general run here. Access-token
   modification, OIDC claims and the social IdP profile transformation do,
   as do the config provider node, validate scope and may-act (sections
-  above); the other OAuth2 contexts are
-  a different binding surface and are not emulated.
+  above). A next-gen library script can be called directly (`LIBRARY`,
+  section above). The other OAuth2 contexts are a different binding surface
+  and are not emulated. Evaluate scope was measured only as a caller of a
+  library.
 - A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,
   and one of those (`identity-enum-attrs`) has no valid live measurement.
 - `require()` is a CommonJS eval of seeded source, not AM's wrap factory. The

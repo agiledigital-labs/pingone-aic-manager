@@ -45,6 +45,7 @@ export const SCRIPT_CONTEXTS = [
   "CONFIG_PROVIDER_NODE",
   "OAUTH2_VALIDATE_SCOPE",
   "OAUTH2_MAY_ACT",
+  "LIBRARY",
 ] as const;
 export type ScriptContext = (typeof SCRIPT_CONTEXTS)[number];
 export const DEFAULT_SCRIPT_CONTEXT: ScriptContext = "SCRIPTED_DECISION_NODE";
@@ -88,6 +89,7 @@ export const GIVEN_KEYS = [
   "oidc",
   "socialIdp",
   "validateScope",
+  "library",
 ] as const;
 export type GivenKey = (typeof GIVEN_KEYS)[number];
 
@@ -122,6 +124,7 @@ export const EXPECT_KEYS = [
   "configProvider",
   "validateScope",
   "mayAct",
+  "returns",
 ] as const;
 export type ExpectKey = (typeof EXPECT_KEYS)[number];
 
@@ -144,6 +147,7 @@ export const ALLOW_UNDECLARED_CHANNELS = [
   "configProvider",
   "validateScope",
   "mayAct",
+  "returns",
 ] as const;
 export type AllowUndeclaredChannel = (typeof ALLOW_UNDECLARED_CHANNELS)[number];
 
@@ -177,6 +181,7 @@ export const DEFAULT_ALLOW_UNDECLARED: {
   configProvider: false,
   validateScope: false,
   mayAct: false,
+  returns: false,
 };
 
 export const OPENIDM_WRITE_METHODS = [
@@ -219,7 +224,7 @@ export const STATE_CHANNELS = [
 ] as const;
 export type StateChannel = (typeof STATE_CHANNELS)[number];
 /** `accessToken`, `oidc`, `socialIdp`, `configProvider`, `validateScope` and `mayAct` are judged only for their context, so none is a `Channel` every runner must record. */
-export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct";
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct" | "returns";
 
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http", "openidmActions", "openidmFailures", "bindingOverrides"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
@@ -442,6 +447,78 @@ export interface Given {
   socialIdp?: SocialIdpSeed;
   /** `OAUTH2_VALIDATE_SCOPE`: the four scope lists AM hands the validator. */
   validateScope?: ValidateScopeSeed;
+  /**
+   * `LIBRARY`: which export to call, and with what JSON arguments.
+   * `callerContext` is the segment of `logger.getName()` (the caller's AM
+   * context id, measured 2026-11-11). Default
+   * `AUTHENTICATION_TREE_DECISION_NODE`.
+   */
+  library?: LibrarySeed;
+}
+
+/**
+ * Callers a library was required from on 2026-11-11. `logger.getName()`
+ * embeds this id. The direct runner has no caller, so the case names one.
+ */
+export const LIBRARY_CALLER_CONTEXTS = [
+  "AUTHENTICATION_TREE_DECISION_NODE",
+  "OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN",
+  "OAUTH2_VALIDATE_SCOPE_NEXT_GEN",
+  "OAUTH2_MAY_ACT_NEXT_GEN",
+  "OAUTH2_EVALUATE_SCOPE_NEXT_GEN",
+] as const;
+export type LibraryCallerContext = (typeof LIBRARY_CALLER_CONTEXTS)[number];
+
+/** Which export a LIBRARY case calls. */
+export interface LibrarySeed {
+  /** The property of the loaded module to call. */
+  export: string;
+  /** JSON arguments. Default `[]` (the export is called with no arguments). */
+  args?: JsonValue[];
+  /**
+   * The caller's AM context id, as `logger.getName()` embeds it. Default
+   * `AUTHENTICATION_TREE_DECISION_NODE`, the caller where `java.util.HashSet`
+   * was observed to construct. Naming an OAuth caller changes the logger
+   * name only: the class shutter stays the decision node's.
+   */
+  callerContext?: LibraryCallerContext;
+  /**
+   * Set by the runner to the id it `require()`s. An author-supplied id is
+   * rejected; `given.libraries` must not use it either.
+   */
+  id?: string;
+}
+
+/**
+ * What the case asserts about the export's result. Fail-closed: omitting
+ * `expect.returns` requires the export to return `undefined` and not throw.
+ */
+export interface LibraryExpect {
+  status: "returned" | "thrown";
+  /** Default `"export"`. `"module"` is the library body throwing while it loads. */
+  phase?: "export" | "module";
+  /** The export returned `undefined` (not JSON `null`). */
+  undefined?: boolean;
+  /** The JSON value returned. Mutually exclusive with `undefined: true`. */
+  value?: JsonValue;
+  /** `typeof` of a thrown value: `"object"` for an Error, `"string"` for a thrown string. */
+  type?: string;
+  /** Error name; `""` for a thrown string. */
+  name?: string;
+  /** `String(error)`, which for `new Error("x")` is `"Error: x"`. */
+  message?: string;
+}
+
+/** The export's result, as the harvest records it. */
+export interface LibraryEffect {
+  status: "returned" | "thrown";
+  phase: "export" | "module";
+  undefined: boolean;
+  /** `null` when the export returned `undefined` or threw. */
+  value: JsonValue | null;
+  type: string;
+  name: string;
+  message: string;
 }
 
 /**
@@ -852,6 +929,8 @@ export interface Expect {
   validateScope?: ValidateScopeExpect;
   /** `OAUTH2_MAY_ACT` only. */
   mayAct?: MayActExpect;
+  /** `LIBRARY` only. */
+  returns?: LibraryExpect;
 }
 
 export interface CaseInit {
@@ -1061,6 +1140,38 @@ export interface MayActCaseInit {
   expect: Pick<Expect, "mayAct" | "openidm" | "http" | "logs" | "allowUndeclared">;
 }
 
+/**
+ * A `LIBRARY` case: the script is the library body. The harness `require()`s
+ * it and calls `given.library.export` with `given.library.args`. Next-gen
+ * only; legacy has no `require()`.
+ */
+export interface LibraryCaseInit {
+  name: string;
+  script: string;
+  context: "LIBRARY";
+  /** `library.export` is required: a library case names the export it calls. */
+  given: Pick<
+    Given,
+    | "engine"
+    | "realm"
+    | "scriptName"
+    | "esv"
+    | "esvUndeclared"
+    | "secrets"
+    | "libraries"
+    | "managed"
+    | "http"
+    | "openidmActions"
+    | "openidmFailures"
+    | "bindingOverrides"
+    | "loggerScriptId"
+    | "cookieName"
+  > & {
+    library: LibrarySeed;
+  };
+  expect: Pick<Expect, "returns" | "openidm" | "http" | "logs" | "allowUndeclared">;
+}
+
 export type AnyCaseInit =
   | CaseInit
   | AccessTokenCaseInit
@@ -1068,7 +1179,8 @@ export type AnyCaseInit =
   | SocialIdpCaseInit
   | ConfigProviderCaseInit
   | ValidateScopeCaseInit
-  | MayActCaseInit;
+  | MayActCaseInit
+  | LibraryCaseInit;
 
 export interface Case {
   name: string;
@@ -1145,6 +1257,8 @@ export interface RecordedEffects {
   validateScope?: ValidateScopeEffect | undefined;
   /** The may-act context's result; absent for every other context. */
   mayAct?: MayActEffect | undefined;
+  /** The library context's result; absent for every other context. */
+  returns?: LibraryEffect | undefined;
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
   /**

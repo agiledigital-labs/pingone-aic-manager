@@ -58,7 +58,7 @@ export type Channel = (typeof CHANNELS)[number] | "sessionProperties" | "identit
 export declare const STATE_CHANNELS: readonly ["sharedState", "transientState", "secureState"];
 export type StateChannel = (typeof STATE_CHANNELS)[number];
 /** compat-accepted: the access-token, OIDC claims, social IdP, config provider, validate scope and may-act contexts report their own evidence channels. */
-export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct";
+export type EvidenceChannel = Channel | "nodeState" | "accessToken" | "oidc" | "socialIdp" | "configProvider" | "validateScope" | "mayAct" | "returns";
 export declare const ENV_INPUT_KEYS: readonly ["esv", "secrets", "managed", "http"];
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
 export interface StateDiff {

@@ -274,6 +274,23 @@ describe("installed rhino-local", () => {
     } finally { await runner.close(); }
   });
 
+  // The library overlay is a seventh packaged asset. The case script is the
+  // library body; the harness require()s it and calls the named export.
+  // Next-gen only: legacy has no require().
+  it("runs a library case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const run = await runCase(runner, defineCase({
+        name: "library export",
+        context: "LIBRARY",
+        script: "exports.n = function () { return 1; };",
+        given: { library: { export: "n" } },
+        expect: { returns: { status: "returned", value: 1 } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
+    } finally { await runner.close(); }
+  });
+
   // Positive control for step 1: were the declarations to resolve to \`any\`,
   // this directive would be unused and tsc would fail.
   it("types the inputs from the suite's schema", () => {

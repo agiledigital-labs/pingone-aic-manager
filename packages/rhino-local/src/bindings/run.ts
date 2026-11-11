@@ -72,6 +72,7 @@ export async function runCase(
   options: RunCaseOptions = {}
 ): Promise<CaseRun> {
   const kase = validateCase(input);
+  const executed = libraryExecution(kase);
   if (options.profile !== undefined) {
     // Fail before the JVM sees the case: a fixture that names a property the
     // environment does not define is a test bug, and saying so here names the
@@ -79,9 +80,9 @@ export async function runCase(
     checkSeededManaged(options.profile, kase.given.managed, kase.name, kase.given.identityCustomAttrs);
   }
   const request: JobRequest = {
-    ...harvestJob(kase.script, kase.context),
+    ...harvestJob(executed.script, kase.context),
     sourceName: options.sourceName ?? kase.name,
-    ...casePreamble(kase.given, preambleOptions(options, kase)),
+    ...casePreamble(executed.given, preambleOptions(options, kase)),
     preambleName: "rhino-local-mocks.cjs",
   };
   if (options.timeoutMs !== undefined) {
@@ -125,6 +126,36 @@ export async function runCase(
   }
   const effects = parseHarvest(response.value);
   return { effects, verdict: judge(kase, effects), response };
+}
+
+/**
+ * The id the harvest require()s. Not a script name an author can collide
+ * with: given.libraries is checked for it.
+ */
+const LIBRARY_SUBJECT_ID = "__rhinoLocalSubject";
+
+/**
+ * A LIBRARY case's script is the library body. The runner executes an empty
+ * caller whose harvest require()s that body through the existing loader, so
+ * the library closes over library scope rather than over a decision node.
+ */
+function libraryExecution(kase: Case): { script: string; given: Case["given"] } {
+  if (kase.context !== "LIBRARY" || kase.given.library === undefined) {
+    return { script: kase.script, given: kase.given };
+  }
+  if (Object.prototype.hasOwnProperty.call(kase.given.libraries ?? {}, LIBRARY_SUBJECT_ID)) {
+    throw new Error(
+      `rhino-local: given.libraries.${LIBRARY_SUBJECT_ID} is reserved for the case script`
+    );
+  }
+  return {
+    script: "",
+    given: {
+      ...kase.given,
+      library: { ...kase.given.library, id: LIBRARY_SUBJECT_ID },
+      libraries: { ...(kase.given.libraries ?? {}), [LIBRARY_SUBJECT_ID]: kase.script },
+    },
+  };
 }
 
 function preambleOptions(options: RunCaseOptions, kase: Case): MockPreambleOptions {

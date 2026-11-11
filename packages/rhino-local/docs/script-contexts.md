@@ -1,9 +1,10 @@
 # Script contexts
 
-Status: design note, 2026-11-10. Implemented: the selector and, each on both
+Status: design note, 2026-11-11. Implemented: the selector and, each on both
 engines, `OAUTH2_ACCESS_TOKEN_MODIFICATION`, `OIDC_CLAIMS`,
 `SOCIAL_IDP_PROFILE_TRANSFORMATION`, `CONFIG_PROVIDER_NODE`,
-`OAUTH2_VALIDATE_SCOPE` and `OAUTH2_MAY_ACT`. `LIBRARY` is still a sketch.
+`OAUTH2_VALIDATE_SCOPE` and `OAUTH2_MAY_ACT`. `LIBRARY` is implemented on
+next-gen only: legacy has no `require()`.
 
 ## The problem
 
@@ -104,7 +105,7 @@ the decision node.
 | `CONFIG_PROVIDER_NODE` legacy + next-gen (**implemented**) | `nodeState`; next-gen the decision node's bindings less `sharedState`, `transientState` and `outcome`; legacy only `nodeState`, `idRepository`, the request maps, `realm`, `scriptName`, `logger`, `httpClient`, `secrets`, `systemEnv` | the node state, request maps | Top-level body that assigns the `config` global (read after the script, not its completion value); AM configures the wrapped node from it, and fails the journey (HTTP 500) when it is not a map | `expect.configProvider`: `config`, `accepted`; the state channels |
 | `OAUTH2_VALIDATE_SCOPE` legacy + next-gen (**implemented**) | next-gen `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes` (Java lists), `identity`, `requestProperties`, `clientProperties`; legacy only `requestedScopes`, `allowedScopes`, `defaultScopes` (Java sets), `logger`, `realm`, `scriptName`, `systemEnv` | `validateScope` (requested / allowed / available / default scopes), `client`, `request` | Named function `validateAccessTokenScope` AM calls after the body; AM grants exactly the list it returns (no intersection); next-gen `throwInvalidScope` / legacy `InvalidScopeException` is the 400 denial | `expect.validateScope`: `granted`, `invalidScope`, `accepted` |
 | `OAUTH2_MAY_ACT` legacy + next-gen (**implemented**)                    | next-gen `token` (five methods: `getField`, `getAct`, `getMayAct`, `setAct`, `setMayAct`), `scopes` (a Java list), `identity`, `requestProperties`, `clientProperties`; legacy `token` (a `StatelessAccessToken`; `setMayAct` takes a JsonValue), `scopes` (a Java set), `logger`, `realm`, `scriptName`, `systemEnv`, `session` (`typeof` `object`) | `client`, `scopes`, `request`, `identity`, `accessToken`                                | Top-level body; AM stamps `may_act` and `act` after the script; a thrown script is HTTP 500 and discards prior sets                                                                                         | `expect.mayAct`: `mayAct`, `act`, `scope`, `issued`, `refusal`                           |
-| `LIBRARY`                                                             | library scope only (`openidm`, `httpClient`, `logger`, …; no context bindings)                                                | arguments to the export                                                   | No body semantics: the case names an export and its arguments; the harness `require()`s the library and calls it                 | `expect.returns`, plus shared channels                                                   |
+| `LIBRARY` next-gen only (**implemented**) | library scope (`require`, `logger`, `openidm`, `httpClient`, `secrets`, `systemEnv`, `utils`, …); the caller's bindings are absent; `scriptName` and `logger.getName()` are the caller's | `library` (`export`, `args`, `callerContext`); `realm`, `scriptName`, `loggerScriptId`, `cookieName` | The case script is the library body. An empty caller `require()`s it and calls the named export as a method. A throw, including one while the body loads, is the result | `expect.returns` (`returned` / `thrown`, fail-closed), plus shared channels |
 
 Shared bindings per context come from the binding descriptors in
 `docs/api/bindings/` for presence and from live probes for behaviour; a
@@ -168,6 +169,36 @@ stamps both claims after the body, so the harvest is appended to the source
 rather than read through the completion hook. Legacy `setMayAct` takes a
 `JsonValue`: a plain object is the HTTP 500 `docs/api/22` recorded, and a
 `JsonValue` is issued (`docs/api/99`, 2026-11-10).
+
+## The LIBRARY context in detail
+
+See the README section "Library scripts" for the author's view. The sketch row
+said the harness `require()`s the library and calls an export, with
+`expect.returns` and no caller bindings. That holds. Two parts of it do not: the
+runner is not a new kind of program, and the library does not have a scope of
+its own apart from its caller.
+
+The case script is stored under `given.libraries` and the runner executes an
+empty script. The context's harvest, appended like the other non-completion
+contexts, `require()`s that body through the existing loader and calls the
+export with `Function.prototype.apply`, so `this` is the object `require()`
+returned. A top-level `return` is legal because the loader wraps the body in a
+function. A top-level throw is `expect.returns` with `phase: "module"`. The
+decision-node loader still closes a library over the caller's scope when some
+other context `require()`s one; this context deletes the caller's bindings
+before the `require()`, which is what AIC does. That deletion is not applied to
+the other contexts.
+
+`scriptName` and `logger.getName()` are the caller's, including inside a nested
+`require()`. `given.library.callerContext` is the context segment of that name.
+It defaults to `AUTHENTICATION_TREE_DECISION_NODE`. The class shutter is the
+decision node's on every caller context: live OAuth callers refuse
+`new java.util.HashSet()`, and this runner does not. Evaluate-scope is a caller
+a library can be required from, not a case context.
+`OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not probed.
+`OAUTH2_SCRIPTED_JWT_ISSUER` has no configuration hook. OIDC claims, the social
+IdP profile transformation and the config provider node were not probed as
+library callers.
 
 ## The OIDC claims context in detail
 

@@ -15,6 +15,7 @@ import {
   bindingsSocialIdpPath,
   bindingsValidateScopePath,
   bindingsMayActPath,
+  bindingsLibraryPath,
   generatedJsPath,
 } from "../paths.ts";
 import type { ScriptContext } from "../case/types.ts";
@@ -98,6 +99,14 @@ const CONTEXT_RUNTIME: {
     overlays: [bindingsContextCommonPath, bindingsMayActPath],
     seed: "__rhinoLocalSeedMayAct",
     harvest: "__rhinoLocalHarvestMayAct",
+  },
+  // The case script is the library body, injected as a require() target.
+  // The source the runner executes is empty; this harvest loads it and calls
+  // the named export.
+  LIBRARY: {
+    overlays: [bindingsContextCommonPath, bindingsLibraryPath],
+    seed: "__rhinoLocalSeedLibrary",
+    harvest: "__rhinoLocalHarvestLibrary",
   },
 };
 

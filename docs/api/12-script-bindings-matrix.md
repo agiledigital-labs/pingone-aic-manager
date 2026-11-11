@@ -346,6 +346,13 @@ partial guide:
   refused `java.util.HashSet`, `LinkedHashSet` and `TreeSet` on reading
   `clientProperties.allowed*` ("OIDC claims on both engines" below).
 
+> **Corrected 2026-11-11.** The `LIBRARY` `HashSet` / `ArrayList` row above was a
+> library required from a next-gen decision node. Required from a next-gen OAuth
+> caller (token modification, validate scope, may-act, evaluate scope),
+> `new java.util.HashSet()` is refused. `ArrayList` was not re-probed on those
+> callers. The shutter is the caller's. See
+> [Library scope when required](#library-scope-when-required-verified-2026-11-11).
+
 Read the per-context list as "classes this context's metadata bothered to
 declare", not as the sandbox boundary. This is the same metadata-is-not-behaviour
 trap already recorded for context usability and invocation contracts in
@@ -2274,6 +2281,15 @@ Consequences:
   `secrets`, `utils`, `systemEnv`, `cacheManager`, `idRepository`) are
   **assumed** available, not probed; so are nested `require` from inside a
   library and whether caller and library share builtins (`Array.prototype`).
+  **Corrected 2026-11-11**
+  ([Library scope when required](#library-scope-when-required-verified-2026-11-11)).
+  `logger`, `secrets`, `utils` and `systemEnv` are bound. `cacheManager` and
+  `idRepository` are not. A nested `require()` sees the top-level caller's
+  `scriptName` and `logger.getName()`, not the inner library's name.
+  `nodeState` from a decision node and `accessToken` from token modification
+  are both unbound inside the library, which is a probe now, not only a
+  typing decision. Caller and library sharing `Array.prototype` is still
+  unprobed.
 - To use a library from an existing token-mod script you must first migrate that
   script to the `…_NEXT_GEN` context (`evaluatorVersion 2.0`) — the two contexts
   are separate ids, so this is a rewrite of the script's bindings, not a flag
@@ -2308,6 +2324,60 @@ afterwards.
 So `require()` is confirmed on every next-gen context that can currently be
 reached: scripted decision, library-to-library, token mod, validate scope,
 evaluate scope, may-act.
+
+### Library scope when required (verified 2026-11-11)
+
+Question: when a next-gen script `require()`s a library, which bindings does
+the library see, and do they depend on the caller? One `LIBRARY` body was
+required from a next-gen decision node and from next-gen token modification,
+validate scope, may-act and evaluate scope. Legacy decision and legacy token
+modification have no `require()` (`ReferenceError: "require" is not defined.`).
+The probe recorded `typeof eval(name)`, so an unbound name is `throw` (a
+`typeof` of an unbound name would have been `"undefined"`, which is what the
+2026-07-29 token-mod note recorded for `accessToken`). Module scope and the
+body of the export saw the same names on every next-gen caller.
+
+Present on every next-gen caller: `require` and `JavaImporter` (functions);
+`exports`, `module`, `logger`, `httpClient`, `openidm`, `secrets`, `systemEnv`,
+`utils`, `emailService`, `jwtAssertion`, `jwtValidator` and `policy` (objects);
+`realm` (`/alpha`), `scriptName` (the **caller's** script name) and `cookieName`
+(a string; the capture keeps the length, 15, and that it is not
+`iPlanetDirectoryPro`). `logger.getName()` is
+`scripts.<caller context id>.<script id>.(<caller script name>)` at module
+scope, inside the export, and inside a nested `require()`. `systemEnv.getProperty`
+of a key that is not declared is `null`. `utils.base64.encode("zz")` is `eno=`.
+`openidm.read` of a missing managed id is `null`. `this` inside an export called
+as a method is the object `require()` returned. Replacing `module.exports` is
+what `require()` returns. `echo(undefined)` returns `undefined`; `echo(null)`
+returns `null`. `throw new Error("…")` is an object named `Error` whose
+`String` is `Error: …`. A thrown string has `typeof` `string`, an empty name,
+and `String` equal to the string. A throw at the top of the library body
+rejects the `require()` with that error.
+
+Unbound on every next-gen caller: `accessToken`, `action`, `allowedScopes`,
+`auditEntryDetail`, `availableScopes`, `cacheManager`, `callbacks`,
+`callbacksBuilder`, `claims`, `clientProperties`, `config`, `console`,
+`context`, `defaultScopes`, `existingSession`, `idRepository`, `identity`,
+`journey`, `locales`, `nodeState`, `oauthApplication`, `outcome`, `process`,
+`properties`, `rawProfile`, `requestCookies`, `requestHeaders`,
+`requestParameters`, `requestProperties`, `requestedScopes`,
+`resumedFromSuspend`, `samlApplication`, `scopeValidatorHelper`, `scopes`,
+`selectedIdp`, `session`, `sharedState`, `token`, `transientState`. A local
+`var` in the caller is also absent. `context`'s `throw` may be the class
+shutter rather than a missing `var`; either way the library cannot use it.
+
+The only differences across those five callers are `scriptName`, the logger
+name, and `new java.util.HashSet()`. The decision-node caller constructs a
+`HashSet` (`size()` 1 after one `add`). Each OAuth caller refuses it. The
+message was not captured. `ArrayList` was not probed. The 11-name library
+metadata does not list `emailService`, `jwtAssertion`, `jwtValidator` or
+`policy`, which are present. It does not list `cacheManager` or `idRepository`
+as absent, which they are.
+
+OIDC claims, the social IdP profile transformation and the config provider node
+were not used as callers. `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not
+reached. `OAUTH2_SCRIPTED_JWT_ISSUER` still has no configuration hook.
+
 
 **Next-gen scripted decision sends callbacks by accumulation, not by an
 `action.send` (2026-08-25).** There is no `send` on the `action` binding at all;
