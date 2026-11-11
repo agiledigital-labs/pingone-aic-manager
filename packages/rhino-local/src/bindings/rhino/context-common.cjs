@@ -390,11 +390,13 @@ function __rhinoLocalCtxString(text) {
 
 // A Java list, through runtime.cjs's list view. `kind` omitted uses the
 // context's own kind; a caller passes one when this list was measured
-// separately from the context's scope lists (Sol ctx r5 P2-6). Watched like
-// the other views (Sol ctx r2 P2-3): an index write or a replaced method is
+// separately from the context's scope lists (Sol ctx r5 P2-6). `grant`
+// omitted leaves the kind's empty policy; a caller passes one only for the
+// binding a capture measured empty (Sol ctx r11 P2-1). Watched like the
+// other views (Sol ctx r2 P2-3): an index write or a replaced method is
 // found by the harvest audit.
-function __rhinoLocalCtxList(items, label, kind) {
-  var list = __rhinoLocalListView(items, kind || __rhinoLocalCtx.listKind);
+function __rhinoLocalCtxList(items, label, kind, grant) {
+  var list = __rhinoLocalListView(items, kind || __rhinoLocalCtx.listKind, grant);
   __rhinoLocalCtxTag(list, null, label || "a Java list");
   return __rhinoLocalCtxWatch(list, label || "list");
 }
@@ -767,7 +769,9 @@ function __rhinoLocalCtxCopy(value) {
 
 // `opts.tag`: the measured Object.prototype.toString tag (`"JavaObject"` for
 // may-act, 2026-11-10). Absent, the tag stays unmeasured and faults, as it
-// did before that option existed.
+// did before that option existed. `opts.emptyAttribute`: the empty-list
+// grant for next-gen getAttributeValues, citing the capture. Omitted, an
+// empty attribute list faults (Sol ctx r11 P2-1).
 function __rhinoLocalCtxBuildIdentity(seed, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   // Next-gen: measured 2026-11-10, String(identity) is the wrapper's Java
@@ -830,8 +834,11 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
     });
     __rhinoLocalCtxMethod(identity, "identity", ngCls, "getAttributeValues", 1, function (name) {
       var key = String(name);
-      // Measured: an attribute the identity lacks reads as an empty list.
-      return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : []);
+      // Measured where the caller says so: an attribute the identity lacks
+      // reads as an empty list. That empty surface is this binding's grant,
+      // not the context kind's (Sol ctx r11 P2-1).
+      return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : [],
+        undefined, undefined, opts && opts.emptyAttribute);
     });
     __rhinoLocalHide(identity, "valueOf", function () {
       return ngCls + "@rhino-local";
@@ -942,8 +949,10 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
 
 // `opts.redirectUris`: next-gen redirectUris reads as a list (measured for
 // OIDC claims); otherwise it is unmeasured. `opts.redirectKind`: that list's
-// own kind, when its empty surface was not the context list's (Sol ctx r10
+// own kind, when it was measured apart from the context list (Sol ctx r10
 // P2-1). Omitted, the context kind, which is what OIDC claims measured.
+// `opts.redirectEmpty`: the empty-list grant for that list, citing the
+// capture. Omitted, an empty redirect list faults (Sol ctx r11 P2-1).
 // `opts.javaTags`: customProperties is `[object JavaMap]` and redirectUris
 // `[object JavaList]` (measured for validate scope). `opts.setTag`: the legacy
 // grant/scope/response sets' tag
@@ -983,7 +992,7 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
       // happens after the seal and a tag added to a watched view would read
       // as the script's own mutation.
       var redirectKind = opts && opts.redirectKind ? opts.redirectKind : __rhinoLocalCtx.listKind;
-      var uris = __rhinoLocalListView(seed.redirectUris.slice(), redirectKind);
+      var uris = __rhinoLocalListView(seed.redirectUris.slice(), redirectKind, opts && opts.redirectEmpty);
       __rhinoLocalCtxTag(uris, opts.javaTags ? "JavaList" : null, "clientProperties.redirectUris");
       return __rhinoLocalCtxWatch(uris, "clientProperties.redirectUris");
     }

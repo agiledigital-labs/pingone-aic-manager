@@ -52,12 +52,15 @@ __rhinoLocalListKinds.oauth2Token = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
-  // surface.next-gen.json idAttrValuesMissing: an empty attribute-values list,
-  // length 0 and String "[]". json and concat were not measured at any length,
-  // so emptyMeasured only unlocks that surface. A request value is
-  // oauth2TokenRequest (Sol ctx r10 P2-1): this empty surface does not
-  // measure one.
-  emptyMeasured: true,
+  // No binding of this kind is granted an empty list by the kind (Sol ctx
+  // r11 P2-1). The only measured empty surface is
+  // identity.getAttributeValues of a missing attribute
+  // (test/fixtures/oauth2-atm/surface.next-gen.json idAttrValuesMissing:
+  // length 0 and String "[]"), and that grant sits on the attribute list.
+  // getAudience, getScope and scopes were captured non-empty. json and
+  // concat were not measured at any length. A request value is
+  // oauth2TokenRequest.
+  emptyRoutes: {},
 };
 
 // A requestProperties value. The surface probe reads String, length, [i] and
@@ -475,7 +478,12 @@ function __rhinoLocalSeedAccessToken(given) {
     realm = d.token.realm;
   }
   accessToken = __rhinoLocalAtBuildToken(d.token);
-  identity = __rhinoLocalCtxBuildIdentity(d.identity);
+  identity = __rhinoLocalCtxBuildIdentity(d.identity, {
+    emptyAttribute: {
+      surface: true,
+      capture: "test/fixtures/oauth2-atm/surface.next-gen.json idAttrValuesMissing",
+    },
+  });
   scopes = __rhinoLocalCtxBuildScopes(d.scopes, { add: true });
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, {
     listKind: __rhinoLocalListKinds.oauth2TokenRequest,

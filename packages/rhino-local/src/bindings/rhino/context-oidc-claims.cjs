@@ -56,12 +56,12 @@ __rhinoLocalListKinds.oidcClaims = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
-  // claimsLocales, clientProperties.redirectUris and a missing attribute's
-  // values are empty in the surface and requested captures, both engines:
-  // length 0 and String "[]". json and concat were not measured at any length.
-  // A request value is oidcClaimsRequest (Sol ctx r10 P2-1): this empty
-  // surface does not measure one.
-  emptyMeasured: true,
+  // No binding of this kind is granted an empty list by the kind (Sol ctx
+  // r11 P2-1). claimsLocales, redirectUris, a missing attribute and legacy
+  // requestedTypedClaims each opt in on their own list. scopes was captured
+  // non-empty (size 4). json and concat were not measured at any length.
+  // A request value is oidcClaimsRequest.
+  emptyRoutes: {},
 };
 
 // A requestProperties value. The surface probe reads String, length, [i] and
@@ -415,20 +415,38 @@ function __rhinoLocalSeedOidcClaims(given) {
   if (given.realm === undefined) {
     realm = d.realm;
   }
-  identity = __rhinoLocalCtxBuildIdentity(d.identity);
+  identity = __rhinoLocalCtxBuildIdentity(d.identity, {
+    emptyAttribute: {
+      surface: true,
+      capture: "test/fixtures/oidc-claims/surface.next-gen.json idAttrValuesMissing",
+    },
+  });
   scopes = __rhinoLocalCtxBuildScopes(d.scopes, { toArray: true });
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, {
     paramsGetMissing: true, listKind: __rhinoLocalListKinds.oidcClaimsRequest,
   });
-  clientProperties = __rhinoLocalCtxBuildClient(d.client, { redirectUris: true });
-  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.map(__rhinoLocalCtxString), "claimsLocales");
+  clientProperties = __rhinoLocalCtxBuildClient(d.client, {
+    redirectUris: true,
+    redirectEmpty: {
+      surface: true,
+      capture: "test/fixtures/oidc-claims/surface.next-gen.json cpRedirect",
+    },
+  });
+  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.map(__rhinoLocalCtxString), "claimsLocales", null, {
+    surface: true,
+    capture: "test/fixtures/oidc-claims/surface.next-gen.json claimsLocales; " +
+      "test/fixtures/oidc-claims/surface.legacy.json claimsLocales",
+  });
   if (legacy) {
     claims = __rhinoLocalOidcLegacyClaims(d.oidc);
     claimObjects = __rhinoLocalOidcClaimObjects(d.oidc);
     requestedClaims = __rhinoLocalCtxMap("requestedClaims", [], null, function () {
       return "{}";
     }, null, { get: { arity: 1, fn: function () { return null; } } });
-    requestedTypedClaims = __rhinoLocalCtxList([], "requestedTypedClaims");
+    requestedTypedClaims = __rhinoLocalCtxList([], "requestedTypedClaims", null, {
+      surface: true,
+      capture: "test/fixtures/oidc-claims/surface.legacy.json requestedTypedClaims",
+    });
     // Measured: toArray() of the (empty) list answers an empty array.
     __rhinoLocalCtxMethod(requestedTypedClaims, "requestedTypedClaims", "java.util.List", "toArray", 0, function () {
       return [];

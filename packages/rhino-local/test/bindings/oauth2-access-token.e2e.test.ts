@@ -199,6 +199,81 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     expect(verdict.pass, verdict.summary).toBe(true);
     expect(effects.accessToken!.final.fields.diagnostic).toBe(true);
   }, 60_000);
+
+  // Sol ctx r11 P2-1. The empty identity-attribute surface does not measure
+  // getAudience, getScope or scopes. Each of these is one of the eight
+  // reproductions (getAudience on both engines, the other two next-gen).
+  const emptyListFault = async (name: string, source: string, extra: Record<string, unknown>) => {
+    const id = "oauth2-token-unmeasured/list";
+    expectHarnessFault(id);
+    const error = await runCase(runner, defineCase({
+      name: `r11 ${name} ${engine}`,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: source,
+      given: { engine, ...extra },
+      expect: { accessToken: { fields: { added: { probe: "[]|0" } } } },
+    })).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toContain(id);
+    const text = faults.map((f) => f.message).join("\n");
+    expect(text).toContain("this route on a size-zero list was not measured");
+    expect(text).not.toContain("never produced on AIC");
+  };
+
+  it("r11 P2-1 an empty audience list's surface is a named fault", async () => {
+    await emptyListFault(
+      "empty audience",
+      `accessToken.setField("probe", String(accessToken.getAudience()) + "|" + accessToken.getAudience().length);`,
+      { accessToken: { audience: [] } },
+    );
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r11 P2-1 an empty getScope() list's surface is a named fault", async () => {
+    await emptyListFault(
+      "empty getScope",
+      `accessToken.setField("probe", String(accessToken.getScope()) + "|" + accessToken.getScope().length);`,
+      { accessToken: { scope: [] } },
+    );
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r11 P2-1 an empty scopes list's surface is a named fault", async () => {
+    await emptyListFault(
+      "empty scopes",
+      `accessToken.setField("probe", String(scopes) + "|" + scopes.length);`,
+      { scopes: [] },
+    );
+  }, 60_000);
+
+  // Sol ctx r11 P2-2. A Java constructor is a Wrapper; Rhino names
+  // java.lang.Class. A method reference stays function.
+  const overloadName = async (name: string, value: string, needle: string) => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `r11 ${name} ${engine}`,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `try { accessToken.getField(${value}, 1); } catch (e) { accessToken.setField("diagnostic", String(e).indexOf(${JSON.stringify(needle)}) >= 0); }`,
+      given: { engine },
+      expect: { accessToken: { fields: { added: { diagnostic: true } } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.diagnostic).toBe(true);
+  };
+
+  it("r11 P2-2 java.lang.String constructor is java.lang.Class in the overload signature", async () => {
+    await overloadName("string ctor", "java.lang.String", "getField(java.lang.Class,number)");
+  }, 60_000);
+
+  // Next-gen access-token's allow-list names no java.util class, so resolving
+  // java.util.HashSet is the shutter's refusal and never reaches getField's
+  // signature. Legacy has no allow-list. The next-gen name is the decision-node
+  // test in host-ops.e2e.test.ts.
+  it.runIf(engine === "legacy")("r11 P2-2 java.util.HashSet constructor is java.lang.Class in the overload signature", async () => {
+    await overloadName("hashset ctor", "java.util.HashSet", "getField(java.lang.Class,number)");
+  }, 60_000);
+
+  it("r11 P2-2 a Java method reference stays function in the overload signature", async () => {
+    await overloadName("method ref", "(new java.lang.String(\"s\")).isEmpty", "getField(function,number)");
+  }, 60_000);
 });
 
 describe("legacy identity.getAttribute (docs/api/12, measured 2026-09-10)", () => {
