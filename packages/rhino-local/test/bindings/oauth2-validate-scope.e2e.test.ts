@@ -559,4 +559,93 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     expect(error).toBeInstanceOf(CaseRunError);
     expect(faultIds(error)).toContain(id);
   }, 60_000);
+
+  // Sol ctx r12 P2-1. contains, indexOf, isEmpty, forEach and a legacy set's
+  // toJSON are reads of the empty collection, not the four list routes.
+  // noscope measures them on requestedScopes. Legacy indexOf is
+  // "Cannot find function indexOf", so those four controls are next-gen.
+  const r12Method = (binding: string, op: string) => {
+    if (op === "forEach") {
+      return "function validateAccessTokenScope() { var n = 0; " + binding +
+        ".forEach(function () { n += 1; }); return [String(n)]; }";
+    }
+    const call = op === "isEmpty" ? "isEmpty()" : op + "(\"read\")";
+    return "function validateAccessTokenScope() { return [String(" + binding + "." + call + ")]; }";
+  };
+  const r12Methods = [
+    ["contains", "false"],
+    ["indexOf", "-1"],
+    ["isEmpty", "true"],
+    ["forEach", "0"],
+  ] as const;
+
+  for (const binding of ["allowedScopes", "defaultScopes"]) {
+    it.runIf(engine === "legacy")(`r12 P2-1 JSON of an empty ${binding} set is a named fault`, async () => {
+      const id = `oauth2-validate-scope-unmeasured/JSON.stringify(${binding})`;
+      expectHarnessFault(id);
+      const error = await strict(
+        `r12-${binding}-json`,
+        `function validateAccessTokenScope() { return [JSON.stringify(${binding})]; }`,
+        {},
+        ["[]"],
+      ).then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(CaseRunError);
+      const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+      expect(faults.map((f) => f.id)).toContain(id);
+      expect(faults.map((f) => f.message).join("\n")).toContain("size-zero");
+    }, 60_000);
+  }
+
+  it("r12 P2-1 empty requestedScopes JSON still succeeds", async () => {
+    const { effects, verdict } = await strict(
+      "r12-requested-json",
+      "function validateAccessTokenScope() { return [JSON.stringify(requestedScopes)]; }",
+      { requested: [] },
+      ["[]"],
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.validateScope!.granted).toEqual(["[]"]);
+  }, 60_000);
+
+  for (const [op, value] of r12Methods) {
+    it.runIf(engine === "next-gen")(`r12 P2-1 ${op} of an empty allowedScopes list is a named fault`, async () => {
+      const id = "oauth2-validate-scope-unmeasured/list";
+      expectHarnessFault(id);
+      const error = await strict(
+        `r12-allowed-${op}`,
+        r12Method("allowedScopes", op),
+        {},
+        [value],
+      ).then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(CaseRunError);
+      const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+      expect(faults.map((f) => f.id)).toContain(id);
+      expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
+    }, 60_000);
+  }
+
+  for (const [op, value] of r12Methods) {
+    it.runIf(engine === "next-gen")(`r12 P2-1 ${op} of an empty requestedScopes list still succeeds`, async () => {
+      const { effects, verdict } = await strict(
+        `r12-requested-${op}`,
+        r12Method("requestedScopes", op),
+        { requested: [] },
+        [value],
+      );
+      expect(verdict.pass, verdict.summary).toBe(true);
+      expect(effects.validateScope!.granted).toEqual([value]);
+    }, 60_000);
+  }
+
+  it.runIf(engine === "next-gen")("r12 P2-1 an empty requestedScopes list still grows through add()", async () => {
+    const { effects, verdict } = await strict(
+      "r12-requested-add",
+      "function validateAccessTokenScope() { requestedScopes.add(\"read\"); " +
+        "return [String(requestedScopes) + \"|\" + requestedScopes.length + \"|\" + JSON.stringify(requestedScopes)]; }",
+      { requested: [] },
+      ["[read]|1|[\"read\"]"],
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.validateScope!.granted).toEqual(["[read]|1|[\"read\"]"]);
+  }, 60_000);
 });

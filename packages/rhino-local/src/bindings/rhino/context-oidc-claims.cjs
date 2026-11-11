@@ -59,8 +59,28 @@ __rhinoLocalListKinds.oidcClaims = {
   // No binding of this kind is granted an empty list by the kind (Sol ctx
   // r11 P2-1). claimsLocales, redirectUris, a missing attribute and legacy
   // requestedTypedClaims each opt in on their own list. scopes was captured
-  // non-empty (size 4). json and concat were not measured at any length.
-  // A request value is oidcClaimsRequest.
+  // non-empty (size 4), so an empty contains() faults. json and concat were
+  // not measured at any length. A request value is oidcClaimsRequest. An
+  // empty scopes.toArray() is oidcClaimsArray, not this kind.
+  emptyRoutes: {},
+};
+
+// scopes.toArray() of a size-zero scopes list, and requestedTypedClaims.toArray()
+// of the empty legacy list. The OIDC surface reads scopes.toArray().length on
+// four scopes, which stays a plain array. Nothing measured an empty
+// scopes.toArray(). requested.legacy.json `typed` reads the length of the
+// empty requestedTypedClaims.toArray() and does not read String or JSON, so
+// that one list opts in with length only. json is true so an ungranted empty
+// JSON.stringify uses the empty-route sentence (Sol ctx r12 P2-1).
+__rhinoLocalListKinds.oidcClaimsArray = {
+  id: "oidc-claims-unmeasured/list.toArray()",
+  noun: "an OIDC toArray() result",
+  measured: "an empty scopes.toArray() result was not measured (the surface capture read length of four scopes)",
+  outOfRange: false,
+  concatReceiver: false,
+  concatArgument: false,
+  json: true,
+  genericReceiver: false,
   emptyRoutes: {},
 };
 
@@ -421,7 +441,10 @@ function __rhinoLocalSeedOidcClaims(given) {
       capture: "test/fixtures/oidc-claims/surface.next-gen.json idAttrValuesMissing",
     },
   });
-  scopes = __rhinoLocalCtxBuildScopes(d.scopes, { toArray: true });
+  scopes = __rhinoLocalCtxBuildScopes(d.scopes, {
+    toArray: true,
+    toArrayKind: __rhinoLocalListKinds.oidcClaimsArray,
+  });
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, {
     paramsGetMissing: true, listKind: __rhinoLocalListKinds.oidcClaimsRequest,
   });
@@ -447,9 +470,14 @@ function __rhinoLocalSeedOidcClaims(given) {
       surface: true,
       capture: "test/fixtures/oidc-claims/surface.legacy.json requestedTypedClaims",
     });
-    // Measured: toArray() of the (empty) list answers an empty array.
+    // Measured: toArray() of the empty list, then a.length in a loop that does
+    // not run (requested.legacy.json typed, the empty join). String and JSON
+    // of that array were not read. The call itself does not fault.
     __rhinoLocalCtxMethod(requestedTypedClaims, "requestedTypedClaims", "java.util.List", "toArray", 0, function () {
-      return [];
+      return __rhinoLocalCtxList([], "requestedTypedClaims.toArray()", __rhinoLocalListKinds.oidcClaimsArray, {
+        length: true,
+        capture: "test/fixtures/oidc-claims/requested.legacy.json typed",
+      });
     });
     // Measured: bound, and null on a password grant.
     session = null;

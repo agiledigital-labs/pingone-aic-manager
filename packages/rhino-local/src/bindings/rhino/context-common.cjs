@@ -415,9 +415,38 @@ function __rhinoLocalCtxList(items, label, kind, grant) {
 // (validate scope's TreeSet, measured 2026-11-10).
 // `tag` is the measured Object.prototype.toString tag, set before the watch.
 // Absent, the tag stays unmeasured and faults.
-function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag) {
+// A sixth argument turns on the empty-read policy (Sol ctx r12 P2-1). Omit
+// it and an empty set keeps answering, which is what identity.getAttribute,
+// getScope, client property sets and the legacy token and OIDC scopes do.
+// `null` is the policy with nothing granted. An object is a grant: the
+// capture, and the operations it measured on a size-zero set. The check runs
+// when the script reads the set, not when the set is built.
+var __rhinoLocalSetStateKey = "__rhinoLocalSetState";
+
+function __rhinoLocalSetEmpty(set, op, member) {
+  var own;
+  var state;
+  try {
+    own = Object.getOwnPropertyDescriptor(set, __rhinoLocalSetStateKey);
+  } catch (e) {
+    return;
+  }
+  state = own !== undefined && "value" in own ? own.value : null;
+  if (state === null || state.policy !== true || state.items.length !== 0) {
+    return;
+  }
+  if (state.grant !== null && __rhinoLocalEmptyAllows({ emptyRoutes: {} }, state.grant, op)) {
+    return;
+  }
+  throw __rhinoLocalCtxUnmeasured(member,
+    "of a size-zero set (this operation on a size-zero set was not measured)");
+}
+
+function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag, empty) {
   var setClass = javaClass || "java.util.HashSet";
   var sorted = setClass === "java.util.TreeSet";
+  var policy = arguments.length >= 6;
+  var grant = policy ? __rhinoLocalEmptyGrant(empty) : null;
   var out = __rhinoLocalCtxBare();
   var store = [];
   var i;
@@ -450,7 +479,9 @@ function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag) {
     "addAll", "clear", "containsAll", "equals", "forEach", "getClass", "hashCode", "iterator",
     "parallelStream", "remove", "removeAll", "removeIf", "retainAll", "spliterator", "stream", "clone",
   ]);
+  __rhinoLocalHide(out, __rhinoLocalSetStateKey, { items: store, policy: policy, grant: grant });
   __rhinoLocalCtxMethod(out, label, setClass, "isEmpty", 0, function () {
+    __rhinoLocalSetEmpty(out, "isEmpty", label + ".isEmpty()");
     return store.length === 0;
   });
   // Measured 2026-09-10 on identity.getAttribute(): toArray() resolves, and
@@ -464,9 +495,11 @@ function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag) {
     return arr;
   });
   __rhinoLocalCtxMethod(out, label, setClass, "size", 0, function () {
+    __rhinoLocalSetEmpty(out, "size", label + ".size()");
     return store.length;
   });
   __rhinoLocalCtxMethod(out, label, setClass, "contains", 1, function (v) {
+    __rhinoLocalSetEmpty(out, "contains", label + ".contains()");
     return store.indexOf(String(v)) !== -1;
   });
   __rhinoLocalHide(out, "add", function (v) {
@@ -476,6 +509,7 @@ function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag) {
     if (arguments.length !== 1 || typeof v !== "string") {
       throw __rhinoLocalCtxUnmeasured(label + ".add(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalSetEmpty(out, "add", label + ".add()");
     if (store.indexOf(v) !== -1) {
       return false;
     }
@@ -495,6 +529,7 @@ function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag) {
     return true;
   });
   __rhinoLocalHide(out, "toString", function () {
+    __rhinoLocalSetEmpty(out, "surface", "String(" + label + ")");
     return "[" + store.join(", ") + "]";
   });
   __rhinoLocalCtxToJSON(out, label);
@@ -853,8 +888,10 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
 }
 
 // `opts.add`: next-gen add() works on this list (measured for the token
-// context). `opts.toArray`: next-gen toArray() answers a JS array (measured
-// for OIDC claims).
+// context). `opts.toArray`: next-gen toArray() answers a JS array when the
+// list is non-empty (OIDC surface scopesToArray is 4). A size-zero result is
+// a list view of `opts.toArrayKind`, so a later read faults unless that kind
+// carries a grant (Sol ctx r12 P2-1). The call itself does not fault.
 function __rhinoLocalCtxBuildScopes(items, opts) {
   if (__rhinoLocalCtx.engine === "legacy") {
     return __rhinoLocalCtxJavaSet(items, "scopes", false);
@@ -862,11 +899,13 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
   var store = items.slice();
   var list = __rhinoLocalCtxList(store, "scopes");
   // Measured on next-gen: contains() answers, and add() works on this list
-  // (it is not the token's scope; setScope copies it).
+  // (it is not the token's scope; setScope copies it). Both were captured on
+  // a non-empty list. An empty read faults unless the list's grant names it.
   __rhinoLocalHide(list, "contains", function (v) {
     if (arguments.length !== 1) {
       throw __rhinoLocalCtxUnmeasured("scopes.contains(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalEmptyOp(list, "contains");
     return store.indexOf(String(v)) !== -1;
   });
   __rhinoLocalHide(list, "add", function (v) {
@@ -876,6 +915,7 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
     if (arguments.length !== 1 || typeof v !== "string") {
       throw __rhinoLocalCtxUnmeasured("scopes.add(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalEmptyOp(list, "add");
     __rhinoLocalCtxCheck(list);
     store.push(v);
     list[store.length - 1] = v;
@@ -886,6 +926,9 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
   });
   if (opts && opts.toArray) {
     __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "toArray", 0, function () {
+      if (store.length === 0) {
+        return __rhinoLocalCtxList([], "scopes.toArray()", opts.toArrayKind);
+      }
       return store.slice();
     });
   }

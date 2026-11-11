@@ -91,8 +91,11 @@ __rhinoLocalListKinds.oauth2MayActRedirect = {
 };
 
 // scopes.toArray(). The capture records typeof, Array.isArray, length and
-// typeof [i] only (next-gen element "string", legacy "object"). JSON,
-// borrowed Array methods and index writes were not measured (Sol ctx r5 P2-2).
+// typeof [i] only (next-gen element "string", legacy "object"), on a
+// one-element list. JSON, borrowed Array methods and index writes were not
+// measured (Sol ctx r5 P2-2). emptyRoutes is present and empty so a size-zero
+// result faults as unmeasured, and not with the decision-node request list's
+// sentence (Sol ctx r12 P2-1). The surface list is not empty.
 __rhinoLocalListKinds.oauth2MayActArray = {
   id: "oauth2-may-act-unmeasured/scopes.toArray()",
   noun: "scopes.toArray()",
@@ -102,6 +105,7 @@ __rhinoLocalListKinds.oauth2MayActArray = {
   concatArgument: false,
   json: false,
   genericReceiver: false,
+  emptyRoutes: {},
 };
 
 // A requestProperties value. The probe records String, length, [i] and the
@@ -573,12 +577,14 @@ function __rhinoLocalMaNgScopes(items) {
     if (typeof v !== "string") {
       throw __rhinoLocalCtxUnmeasured("scopes.contains(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalEmptyOp(list, "contains");
     return store.indexOf(v) !== -1;
   });
   __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "forEach", 1, function (fn) {
     if (typeof fn !== "function") {
       throw __rhinoLocalCtxUnmeasured("scopes.forEach(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalEmptyOp(list, "forEach");
     var i;
     for (i = 0; i < store.length; i += 1) {fn(store[i]);}
   });
@@ -589,6 +595,16 @@ function __rhinoLocalMaNgScopes(items) {
     throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
   });
   return __rhinoLocalCtxWatch(list, "scopes");
+}
+
+// The surface set is non-empty. Nothing measured a size-zero may-act set, so
+// a read faults. isEmpty and add stay the always-unmeasured stubs.
+function __rhinoLocalMaEmptySet(store, member) {
+  if (store.length !== 0) {
+    return;
+  }
+  throw __rhinoLocalCtxUnmeasured(member,
+    "of a size-zero set (this operation on a size-zero set was not measured)");
 }
 
 function __rhinoLocalMaLegacyScopes(items) {
@@ -608,18 +624,21 @@ function __rhinoLocalMaLegacyScopes(items) {
     })(i);
   }
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "size", 0, function () {
+    __rhinoLocalMaEmptySet(store, "scopes.size()");
     return store.length;
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "contains", 1, function (v) {
     if (typeof v !== "string") {
       throw __rhinoLocalCtxUnmeasured("scopes.contains(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalMaEmptySet(store, "scopes.contains()");
     return store.indexOf(v) !== -1;
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "forEach", 1, function (fn) {
     if (typeof fn !== "function") {
       throw __rhinoLocalCtxUnmeasured("scopes.forEach(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalMaEmptySet(store, "scopes.forEach()");
     var k;
     for (k = 0; k < store.length; k += 1) {fn(store[k]);}
   });
@@ -630,6 +649,7 @@ function __rhinoLocalMaLegacyScopes(items) {
     return __rhinoLocalMaToArray(items);
   });
   __rhinoLocalCtxMethod(out, "scopes", "java.util.HashSet", "iterator", 0, function () {
+    __rhinoLocalMaEmptySet(store, "scopes.iterator()");
     var it = __rhinoLocalCtxBare();
     __rhinoLocalHide(it, "toString", function () {
       return "java.util.HashMap$KeyIterator@00000000";
@@ -639,9 +659,11 @@ function __rhinoLocalMaLegacyScopes(items) {
     return __rhinoLocalCtxWatch(it, "scopes.iterator()");
   });
   __rhinoLocalHide(out, "toString", function () {
+    __rhinoLocalMaEmptySet(store, "String(scopes)");
     return "[" + store.join(", ") + "]";
   });
   __rhinoLocalHide(out, "toJSON", function () {
+    __rhinoLocalMaEmptySet(store, "JSON.stringify(scopes)");
     return store.slice();
   });
   __rhinoLocalCtxFaulting(out, "scopes", [

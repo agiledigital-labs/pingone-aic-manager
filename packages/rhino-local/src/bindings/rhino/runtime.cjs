@@ -1012,13 +1012,16 @@ function __rhinoLocalArgShape(args) {
 // these two kinds behave as they always have. A context kind defaults to no
 // empty permission (`emptyRoutes: {}`). A binding whose own capture measured
 // a size-zero list opts in with a grant on that one list (the third argument
-// of __rhinoLocalListView): the routes the capture showed, and the fixture
+// of __rhinoLocalListView): the operations the capture showed, and the fixture
 // file. `surface` is toString and string coercion and it implies `length`;
 // `length` alone does not imply string coercion; `json` and `concat` are the
-// copy. The grant, when present, replaces the kind's empty policy, so a
-// binding nobody listed refuses every empty route. Absent a grant,
-// `emptyRoutes` decides, and absent `emptyRoutes`, `emptyMeasured` covers
-// every route, which is how the request list (false) and openidm (true) stay.
+// copy. `contains`, `indexOf`, `isEmpty`, `forEach`, `toArray`, `add` and
+// `size` are the same grant, checked when that method runs on a size-zero
+// collection (__rhinoLocalEmptyOp). The grant, when present, replaces the
+// kind's empty policy, so a binding nobody listed refuses every empty
+// operation. Absent a grant, `emptyRoutes` decides, and absent `emptyRoutes`,
+// `emptyMeasured` covers every route, which is how the request list (false)
+// and openidm (true) stay. Building the list does not fault.
 // The legacy engine is not measured and keeps the older shapes.
 var __rhinoLocalListKinds = {
   request: {
@@ -1088,17 +1091,18 @@ function __rhinoLocalListRow(value) {
 }
 
 // A grant on the list, when present, is the only empty permission: the kind's
-// emptyRoutes are ignored. It names the routes one capture measured
+// emptyRoutes are ignored. It names the operations one capture measured
 // (`surface` implies `length`) and the fixture file. A grant with no capture,
-// or with no route, is a prelude error. Absent a grant, the kind decides.
+// or with no operation, is a prelude error. Absent a grant, the kind decides.
 // `emptyMeasured: true` with no `emptyRoutes` allows every empty route.
 // `emptyRoutes`, when present, lists only the routes a capture showed on a
 // size-zero list of that kind; a missing route stays refused. `surface`
 // (toString and string coercion) also allows `length`. `length` alone does
-// not allow string coercion. An empty object refuses every empty route and
-// still uses the "not measured" sentence, rather than the decision-node
-// request list's. The request list and openidm do not set emptyRoutes and
-// keep the boolean.
+// not allow string coercion, and neither implies contains, indexOf, isEmpty,
+// forEach, toArray, add or size. An empty object refuses every empty
+// operation and still uses the "not measured" sentence, rather than the
+// decision-node request list's. The request list and openidm do not set
+// emptyRoutes and keep the boolean. Unknown fields are dropped.
 function __rhinoLocalEmptyGrant(grant) {
   if (grant === null || grant === undefined) {
     return null;
@@ -1107,14 +1111,25 @@ function __rhinoLocalEmptyGrant(grant) {
   if (typeof capture !== "string" || capture.length === 0) {
     throw new Error("rhino-local: an empty-list permission needs the capture that measured it");
   }
-  var surface = grant.surface === true;
-  var length = grant.length === true;
-  var json = grant.json === true;
-  var concat = grant.concat === true;
-  if (!surface && !length && !json && !concat) {
-    throw new Error("rhino-local: an empty-list permission names no route (" + capture + ")");
+  var out = {
+    capture: capture,
+    surface: grant.surface === true,
+    length: grant.length === true,
+    json: grant.json === true,
+    concat: grant.concat === true,
+    contains: grant.contains === true,
+    indexOf: grant.indexOf === true,
+    isEmpty: grant.isEmpty === true,
+    forEach: grant.forEach === true,
+    toArray: grant.toArray === true,
+    add: grant.add === true,
+    size: grant.size === true,
+  };
+  if (!out.surface && !out.length && !out.json && !out.concat && !out.contains && !out.indexOf &&
+      !out.isEmpty && !out.forEach && !out.toArray && !out.add && !out.size) {
+    throw new Error("rhino-local: an empty-list permission names no operation (" + capture + ")");
   }
-  return { surface: surface, length: length, json: json, concat: concat, capture: capture };
+  return out;
 }
 
 function __rhinoLocalEmptyAllows(kind, grant, route) {
@@ -1143,6 +1158,26 @@ function __rhinoLocalEmptyFault(kind, grant, what) {
     ? "this route on a size-zero list was not measured"
     : "never produced on AIC: an empty value arrives as [\"\"]";
   return __rhinoLocalListUnmeasured(kind, what + " of a size-zero list (" + why + ")");
+}
+
+// A method a context installs on a list view (contains, indexOf, isEmpty,
+// forEach, add) calls this before it answers. The view's own stub already
+// faults that name at every size; the replacement is the read, and it faults
+// only while the list is empty and the grant does not name the operation.
+// size() and get(i) do not call this: a size-zero request list still answers
+// them. [i] on an empty next-gen list stays a missing property. The check
+// reads the current size, so a list that grows past zero answers the
+// non-empty surface. The toArray() call itself does not fault; a read of the
+// array it returned does, when that array is a list view.
+function __rhinoLocalEmptyOp(list, op) {
+  var row = __rhinoLocalListRow(list);
+  if (row === null || row.items.length !== 0) {
+    return;
+  }
+  if (__rhinoLocalEmptyAllows(row.kind, row.grant, op)) {
+    return;
+  }
+  throw __rhinoLocalEmptyFault(row.kind, row.grant, op + "()");
 }
 
 // A list's elements as a fresh array, for a measured copy (concat,
@@ -1387,12 +1422,14 @@ function __rhinoLocalListView(items, kind, grant) {
   // length, toString and string coercion fault, so every borrowed
   // Array.prototype method, Array.from, apply and coercion refuse without
   // being named. Only size() and get(i) (as measured: every index is out of
-  // range) still answer. The check reads the current size, so a list that
-  // grows past zero answers the non-empty surface its kind measured. A grant,
-  // or else `emptyRoutes` / `emptyMeasured`, decides which empty routes
-  // answer. `surface` answers length and "[]". `length` alone answers length:
-  // a capture that read only the length of an empty toArray() result does not
-  // answer String(v).
+  // range) still answer on the view itself. A method installed later
+  // (contains, indexOf, isEmpty, forEach, add) calls __rhinoLocalEmptyOp, so
+  // those reads fault too unless the grant names them. The check reads the
+  // current size, so a list that grows past zero answers the non-empty
+  // surface its kind measured. A grant, or else `emptyRoutes` /
+  // `emptyMeasured`, decides which empty routes answer. `surface` answers
+  // length and "[]". `length` alone answers length: a capture that read only
+  // the length of an empty toArray() result does not answer String(v).
   var surfaceAllowed = __rhinoLocalEmptyAllows(kind, grant, "surface");
   var lengthAllowed = __rhinoLocalEmptyAllows(kind, grant, "length");
   var emptyFault = function (what) {
