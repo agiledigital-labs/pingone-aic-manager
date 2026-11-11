@@ -264,6 +264,38 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
   }, 60_000);
 
+  // Sol ctx r12 P2-1. scopes was captured at size 4. An empty toArray() is a
+  // plain array today, and contains() answers, so both skip the empty grant.
+  const oidcFault = async (name: string, probe: string, id: string, userinfo: { probe: string | boolean }) => {
+    expectHarnessFault(id);
+    const error = await runCase(runner, defineCase({
+      name: `${name} ${engine}`,
+      context: "OIDC_CLAIMS",
+      script: claimsReturn(probe),
+      given: { engine, scopes: [] },
+      expect: { oidc: { userinfo } },
+    })).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toContain(id);
+    expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
+  };
+
+  it.runIf(engine === "next-gen")("r12 P2-1 length of an empty scopes.toArray() is a named fault", async () => {
+    await oidcFault("r12 toArray length", "String(scopes.toArray().length)",
+      "oidc-claims-unmeasured/list.toArray()", { probe: "0" });
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r12 P2-1 JSON of an empty scopes.toArray() is a named fault", async () => {
+    await oidcFault("r12 toArray json", "JSON.stringify(scopes.toArray())",
+      "oidc-claims-unmeasured/list.toArray()", { probe: "[]" });
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r12 P2-1 contains of an empty scopes list is a named fault", async () => {
+    await oidcFault("r12 scopes contains", "scopes.contains(\"read\")",
+      "oidc-claims-unmeasured/list", { probe: false });
+  }, 60_000);
+
   // Legacy was measured with one plain object, the next-gen result shape;
   // any other object is a guess, so it faults rather than answer the same 500.
   it.runIf(engine === "legacy")("a plain object other than the measured shape is a named fault", async () => {

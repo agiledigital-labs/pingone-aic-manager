@@ -71,13 +71,14 @@ __rhinoLocalListKinds.oauth2ValidateScope = {
   concatArgument: true,
   json: true,
   genericReceiver: ["slice"],
-  // Empty permission is per binding (Sol ctx r11 P2-1). requestedScopes opts
-  // in at the call (surface and json). noscope.next-gen.json fn.requested,
-  // before add(): String "[]", length 0, JSON.stringify "[]". [].concat(v)
-  // ran after add(), on a one-element list, so a size-zero concat stays
-  // unmeasured and is not in that grant. allowedScopes, availableScopes and
-  // defaultScopes have no empty capture. Redirect and toArray() carry their
-  // own grants, not this kind's.
+  // Empty permission is per binding (Sol ctx r11 P2-1, r12 P2-1).
+  // requestedScopes opts in at the call. noscope.next-gen.json fn.requested,
+  // before add(): String "[]", length 0, JSON.stringify "[]", contains false,
+  // indexOf -1, isEmpty true, forEach "", add true. [].concat(v) ran after
+  // add(), on a one-element list, so a size-zero concat stays unmeasured and
+  // is not in that grant. allowedScopes, availableScopes and defaultScopes
+  // have no empty capture. Redirect and toArray() carry their own grants,
+  // not this kind's. size() and [i] stay the list view's, not this grant.
   emptyRoutes: {},
 };
 
@@ -138,11 +139,17 @@ function __rhinoLocalVsList(items, label, addable) {
   // The view's size(), get() and String() read this same array, so an add()
   // is seen by every path (measured: String() after add() shows the addition).
   var store = items.slice();
-  // noscope.next-gen.json fn.requested is the only empty scope list: surface
-  // and JSON. The other three lists were captured non-empty.
+  // noscope.next-gen.json fn.requested is the only empty scope list. The
+  // other three lists were captured non-empty. concat is not granted: the
+  // probe ran it after add().
   var empty = label === "requestedScopes" ? {
     surface: true,
     json: true,
+    contains: true,
+    indexOf: true,
+    isEmpty: true,
+    forEach: true,
+    add: true,
     capture: "test/fixtures/oauth2-validate-scope/noscope.next-gen.json fn.requested",
   } : null;
   var list = __rhinoLocalCtxList(store, label, null, empty);
@@ -154,18 +161,24 @@ function __rhinoLocalVsList(items, label, addable) {
     return v;
   };
   __rhinoLocalCtxMethod(list, label, "java.util.List", "contains", 1, function (v) {
-    return store.indexOf(str(v)) !== -1;
+    var s = str(v);
+    __rhinoLocalEmptyOp(list, "contains");
+    return store.indexOf(s) !== -1;
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "indexOf", 1, function (v) {
-    return store.indexOf(str(v));
+    var s = str(v);
+    __rhinoLocalEmptyOp(list, "indexOf");
+    return store.indexOf(s);
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "isEmpty", 0, function () {
+    __rhinoLocalEmptyOp(list, "isEmpty");
     return store.length === 0;
   });
   __rhinoLocalCtxMethod(list, label, "java.util.List", "forEach", 1, function (fn) {
     if (typeof fn !== "function") {
       throw __rhinoLocalCtxUnmeasured(label + ".forEach(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalEmptyOp(list, "forEach");
     var copy = store.slice();
     var i;
     for (i = 0; i < copy.length; i += 1) {
@@ -192,6 +205,7 @@ function __rhinoLocalVsList(items, label, addable) {
     if (typeof v !== "string") {
       throw __rhinoLocalCtxUnmeasured(label + ".add(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalEmptyOp(list, "add");
     // Measured: true, and the list grows by one even for a value it holds.
     __rhinoLocalCtxCheck(list);
     store.push(v);
@@ -212,7 +226,20 @@ function __rhinoLocalVsList(items, label, addable) {
 // not read), and add() returns true and grows the set.
 function __rhinoLocalVsLegacySet(items, label, javaClass) {
   // add() was measured on requestedScopes and allowedScopes only.
-  var set = __rhinoLocalCtxJavaSet(items, label, label !== "defaultScopes", javaClass);
+  // noscope.legacy.json fn.requested is the only empty set. indexOf there is
+  // TypeError: Cannot find function indexOf, so it is not granted and stays
+  // uninstalled. allowedScopes and defaultScopes were captured non-empty.
+  var empty = label === "requestedScopes" ? {
+    surface: true,
+    json: true,
+    size: true,
+    contains: true,
+    isEmpty: true,
+    forEach: true,
+    add: true,
+    capture: "test/fixtures/oauth2-validate-scope/noscope.legacy.json fn.requested",
+  } : null;
+  var set = __rhinoLocalCtxJavaSet(items, label, label !== "defaultScopes", javaClass, undefined, empty);
   var toArray = set.toArray;
   var strings = function () {
     var arr = toArray.call(set);
@@ -228,6 +255,7 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
     if (typeof fn !== "function") {
       throw __rhinoLocalCtxUnmeasured(label + ".forEach(" + __rhinoLocalArgShape(arguments) + ")");
     }
+    __rhinoLocalSetEmpty(set, "forEach", label + ".forEach()");
     var copy = strings();
     var i;
     for (i = 0; i < copy.length; i += 1) {
@@ -236,6 +264,7 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
     return undefined;
   });
   __rhinoLocalHide(set, "toJSON", function () {
+    __rhinoLocalSetEmpty(set, "json", "JSON.stringify(" + label + ")");
     return strings();
   });
   // Measured here: toArray() is not a JS array (Array.isArray false), with
@@ -250,6 +279,7 @@ function __rhinoLocalVsLegacySet(items, label, javaClass) {
       __rhinoLocalListKinds.oauth2ValidateScopeArray, arrayEmpty);
   });
   __rhinoLocalCtxMethod(set, label, javaClass, "iterator", 0, function () {
+    __rhinoLocalSetEmpty(set, "iterator", label + ".iterator()");
     if (javaClass === "java.util.TreeSet") {
       throw __rhinoLocalShutterError("java.util.TreeMap$KeyIterator");
     }

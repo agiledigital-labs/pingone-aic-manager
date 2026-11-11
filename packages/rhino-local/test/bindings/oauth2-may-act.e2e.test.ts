@@ -285,4 +285,38 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
     }));
     expect(effects.mayAct!.mayAct).toEqual({ j: "[]|0" });
   }, 60_000);
+
+  // Sol ctx r12 P2-1. Empty scopes.forEach answers 0, and the legacy set's
+  // toJSON returns its members at size zero. Neither was measured empty.
+  it.runIf(engine === "next-gen")("r12 P2-1 forEach of an empty scopes list is a named fault", async () => {
+    const id = "oauth2-may-act-unmeasured/scopes";
+    expectHarnessFault(id);
+    const error = await runCase(runner, defineCase({
+      name: `r12 empty forEach ${engine}`,
+      context: "OAUTH2_MAY_ACT",
+      script: "var n = 0; scopes.forEach(function () { n += 1; }); token.setMayAct({ probe: n });",
+      given: { engine, scopes: [] },
+      expect: { mayAct: { mayAct: { probe: 0 } } },
+    })).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toContain(id);
+    expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
+  }, 60_000);
+
+  it.runIf(engine === "legacy")("r12 P2-1 JSON of an empty scopes set is a named fault", async () => {
+    const id = "oauth2-may-act-unmeasured/JSON.stringify(scopes)";
+    expectHarnessFault(id);
+    const error = await runCase(runner, defineCase({
+      name: `r12 empty scopes json ${engine}`,
+      context: "OAUTH2_MAY_ACT",
+      script: stamp("m.put(\"j\", JSON.stringify(scopes));"),
+      given: { engine, scopes: [] },
+      expect: { mayAct: { mayAct: { j: "[]" } } },
+    })).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toContain(id);
+    expect(faults.map((f) => f.message).join("\n")).toContain("size-zero");
+  }, 60_000);
 });
