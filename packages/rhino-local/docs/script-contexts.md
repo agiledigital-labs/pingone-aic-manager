@@ -67,7 +67,7 @@ file. It declares four things:
 
 1. **Bindings.** Which globals exist, which are refused, and per engine. The
    overlay (`src/bindings/rhino/context-<slug>.cjs`) is appended to the shared
-   prelude after `context-common.cjs`, whose `__rhinoLocalCtx*` helpers (Java
+   prelude after `collection-catalog.cjs` and `context-common.cjs`, whose `__rhinoLocalCtx*` helpers (Java
    strings, sets, maps, lists, method arity, the `Object.prototype.toString`
    tag, the JSON value check and the harvest's mutation audit) every context
    builds its views from, with its own fault prefix and list kind. Fix a view

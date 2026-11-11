@@ -1015,13 +1015,13 @@ function __rhinoLocalArgShape(args) {
 // of __rhinoLocalListView): the operations the capture showed, and the fixture
 // file. `surface` is toString and string coercion and it implies `length`;
 // `length` alone does not imply string coercion; `json` and `concat` are the
-// copy. `contains`, `indexOf`, `isEmpty`, `forEach`, `toArray`, `add` and
-// `size` are the same grant, checked when that method runs on a size-zero
-// collection (__rhinoLocalEmptyOp). The grant, when present, replaces the
-// kind's empty policy, so a binding nobody listed refuses every empty
-// operation. Absent a grant, `emptyRoutes` decides, and absent `emptyRoutes`,
-// `emptyMeasured` covers every route, which is how the request list (false)
-// and openidm (true) stay. Building the list does not fault.
+// copy. `contains`, `indexOf`, `isEmpty`, `forEach`, `toArray`, `add`,
+// `size`, `get`, `index` and iteration are the same grant, checked when
+// that read runs on a size-zero collection. The grant, when present,
+// replaces the kind's empty policy. Absent a grant, `allowEmptySize` and
+// `allowEmptyIndex` name the routes a kind measured on a size-zero list
+// (the request list's size() and [i]/get), then `emptyRoutes`, then
+// `emptyMeasured`. Building the list does not fault.
 // The legacy engine is not measured and keeps the older shapes.
 var __rhinoLocalListKinds = {
   request: {
@@ -1033,7 +1033,11 @@ var __rhinoLocalListKinds = {
     // A size-zero request list was never produced on AIC: an empty header or
     // parameter arrives as [""], an absent one as null. So copying one (concat,
     // JSON.stringify) is unmeasured, though a `[]` seed is accepted.
+    // size() and [i]/get(i) still answer: every index is out of range, and
+    // that answer is the kind's, inside the one empty-read decision.
     emptyMeasured: false,
+    allowEmptySize: true,
+    allowEmptyIndex: true,
   },
   openidm: {
     id: "openidm-list-unmeasured",
@@ -1124,9 +1128,21 @@ function __rhinoLocalEmptyGrant(grant) {
     toArray: grant.toArray === true,
     add: grant.add === true,
     size: grant.size === true,
+    get: grant.get === true,
+    index: grant.index === true,
+    iteration: grant.iteration === true,
+    // Not an operation: the property stays absent, which a HashSet capture
+    // showed. A grant of only this field names nothing and is refused below.
+    lengthAbsent: grant.lengthAbsent === true,
+    toArrayLength: grant.toArrayLength === true,
+    toArraySize: grant.toArraySize === true,
+    toArrayJson: grant.toArrayJson === true,
+    toArrayIndex: grant.toArrayIndex === true,
   };
   if (!out.surface && !out.length && !out.json && !out.concat && !out.contains && !out.indexOf &&
-      !out.isEmpty && !out.forEach && !out.toArray && !out.add && !out.size) {
+      !out.isEmpty && !out.forEach && !out.toArray && !out.add && !out.size && !out.get &&
+      !out.index && !out.iteration && !out.toArrayLength && !out.toArraySize && !out.toArrayJson &&
+      !out.toArrayIndex) {
     throw new Error("rhino-local: an empty-list permission names no operation (" + capture + ")");
   }
   return out;
@@ -1137,7 +1153,19 @@ function __rhinoLocalEmptyAllows(kind, grant, route) {
     if (route === "length") {
       return grant.length === true || grant.surface === true;
     }
+    // One measured bracket read is the iteration too: for...in of a list
+    // walks the same indices. A set does not use this implication for
+    // length (see __rhinoLocalSetEmpty); surface there is String only.
+    if (route === "index" || route === "iteration") {
+      return grant.index === true || grant.iteration === true;
+    }
     return grant[route] === true;
+  }
+  if (kind.allowEmptySize === true && route === "size") {
+    return true;
+  }
+  if (kind.allowEmptyIndex === true && (route === "index" || route === "iteration" || route === "get")) {
+    return true;
   }
   return __rhinoLocalEmptyRoute(kind, route);
 }
@@ -1164,11 +1192,14 @@ function __rhinoLocalEmptyFault(kind, grant, what) {
 // forEach, add) calls this before it answers. The view's own stub already
 // faults that name at every size; the replacement is the read, and it faults
 // only while the list is empty and the grant does not name the operation.
-// size() and get(i) do not call this: a size-zero request list still answers
-// them. [i] on an empty next-gen list stays a missing property. The check
-// reads the current size, so a list that grows past zero answers the
-// non-empty surface. The toArray() call itself does not fault; a read of the
-// array it returned does, when that array is a list view.
+// size() and get(i) call the same decision. A size-zero request list still
+// answers them because its kind sets allowEmptySize and allowEmptyIndex.
+// [i] on an empty list whose grant does not name index is a throwing
+// accessor, so a read cannot miss the empty list. The check reads the
+// current size, so a list that grows past zero answers the non-empty
+// surface. The toArray() call itself does not fault unless the binding's
+// own method says so; a read of the array it returned does, when that
+// array is a list view.
 function __rhinoLocalEmptyOp(list, op) {
   var row = __rhinoLocalListRow(list);
   if (row === null || row.items.length !== 0) {
@@ -1298,6 +1329,12 @@ function __rhinoLocalNativeMethod(name, original, body) {
       if (row !== null && row.kind.concatArgument === false) {
         throw __rhinoLocalListUnmeasured(row.kind, "[].concat(v)");
       }
+      // A legacy set is not a list. An empty one still consults the one
+      // decision; a populated one stays a single element. The helper lives
+      // in context-common, which a decision-node prelude does not load.
+      if (row === null && typeof __rhinoLocalEmptySetArg === "function") {
+        __rhinoLocalEmptySetArg(arguments[k]);
+      }
       args[k] = row === null ? arguments[k] : __rhinoLocalListCopy(row, "[].concat(v)");
     }
     return original.apply(receiver === null ? this : __rhinoLocalListCopy(receiver, "Array.prototype.concat.call(v, …)"), args);
@@ -1408,6 +1445,8 @@ function __rhinoLocalJavaForm(value, kind) {
     "AIC has none: copy the list with [].concat(v) first)");
 }
 
+// collection-kind: the list-view implementation. A binding names its grant
+// at the call, or the kind (request, openidm) is the policy.
 function __rhinoLocalListView(items, kind, grant) {
   grant = __rhinoLocalEmptyGrant(grant);
   var list = {};
@@ -1421,15 +1460,14 @@ function __rhinoLocalListView(items, kind, grant) {
   // A size-zero list whose empty array-like surface was never measured:
   // length, toString and string coercion fault, so every borrowed
   // Array.prototype method, Array.from, apply and coercion refuse without
-  // being named. Only size() and get(i) (as measured: every index is out of
-  // range) still answer on the view itself. A method installed later
-  // (contains, indexOf, isEmpty, forEach, add) calls __rhinoLocalEmptyOp, so
-  // those reads fault too unless the grant names them. The check reads the
-  // current size, so a list that grows past zero answers the non-empty
-  // surface its kind measured. A grant, or else `emptyRoutes` /
-  // `emptyMeasured`, decides which empty routes answer. `surface` answers
-  // length and "[]". `length` alone answers length: a capture that read only
-  // the length of an empty toArray() result does not answer String(v).
+  // being named. size() and get(i) consult the same decision: a request
+  // list still answers them, and every other empty list faults unless its
+  // grant names the route. [i] is a throwing accessor while the list is
+  // empty and index is not granted, so the read cannot miss it. A method
+  // installed later (contains, indexOf, isEmpty, forEach, add) calls
+  // __rhinoLocalEmptyOp. The check reads the current size, so a list that
+  // grows past zero answers the non-empty surface its kind measured.
+  // `surface` answers length and "[]". `length` alone answers length.
   var surfaceAllowed = __rhinoLocalEmptyAllows(kind, grant, "surface");
   var lengthAllowed = __rhinoLocalEmptyAllows(kind, grant, "length");
   var emptyFault = function (what) {
@@ -1457,9 +1495,38 @@ function __rhinoLocalListView(items, kind, grant) {
       return list;
     });
   }
+  // No Proxy, so an empty list whose [i] was not measured grows enumerable
+  // throwing getters for 0..7 (the same span a legacy set installs). A
+  // key-only for...in can see those keys and not throw; reading the value
+  // does. Indices past 7 stay missing. A granted index, or a kind that
+  // measured [i] on a size-zero list, installs none, so [0] stays undefined.
+  if (items.length === 0 && !__rhinoLocalEmptyAllows(kind, grant, "index")) {
+    for (i = 0; i < 8; i += 1) {
+      (function (index) {
+        Object.defineProperty(list, String(index), {
+          enumerable: true,
+          configurable: true,
+          get: function () {
+            if (items.length !== 0) {
+              return items[index];
+            }
+            throw emptyFault("[" + index + "]");
+          },
+          set: function (value) {
+            Object.defineProperty(list, String(index), {
+              value: value, writable: true, enumerable: true, configurable: true,
+            });
+          },
+        });
+      })(i);
+    }
+  }
   __rhinoLocalHide(list, "size", function () {
     if (arguments.length !== 0) {
       throw unmeasured("size() with " + arguments.length + " argument(s)");
+    }
+    if (items.length === 0 && !__rhinoLocalEmptyAllows(kind, grant, "size")) {
+      throw emptyFault("size()");
     }
     return items.length;
   });
@@ -1469,6 +1536,9 @@ function __rhinoLocalListView(items, kind, grant) {
     // out-of-range answer.
     var integer = arguments.length === 1 && typeof index === "number" && isFinite(index) && index % 1 === 0 &&
       index >= -2147483648 && index <= 2147483647;
+    if (integer && items.length === 0 && !__rhinoLocalEmptyAllows(kind, grant, "get")) {
+      throw emptyFault("get(" + index + ")");
+    }
     if (integer && kind.outOfRange && (index < 0 || index >= items.length)) {
       throw __rhinoLocalInternalError("Index " + index + " out of bounds for length " + items.length);
     }
@@ -1520,10 +1590,13 @@ function __rhinoLocalListView(items, kind, grant) {
   return list;
 }
 
+// collection-kind: a decision-node request list. Its empty size() and [i]
+// are the request kind's flags, not a catalog row.
 function __rhinoLocalRequestList(items) {
   return __rhinoLocalListView(items, __rhinoLocalListKinds.request);
 }
 
+// collection-kind: an openidm list. emptyMeasured covers every empty route.
 // The legacy engine has no openidm binding, so every openidm list is next-gen.
 function __rhinoLocalOpenidmList(items) {
   return __rhinoLocalListView(items, __rhinoLocalListKinds.openidm);

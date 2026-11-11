@@ -395,6 +395,8 @@ function __rhinoLocalCtxString(text) {
 // binding a capture measured empty (Sol ctx r11 P2-1). Watched like the
 // other views (Sol ctx r2 P2-3): an index write or a replaced method is
 // found by the harvest audit.
+// collection-kind: every context list is this constructor. The call site
+// names the catalog grant, immediately above the call.
 function __rhinoLocalCtxList(items, label, kind, grant) {
   var list = __rhinoLocalListView(items, kind || __rhinoLocalCtx.listKind, grant);
   __rhinoLocalCtxTag(list, null, label || "a Java list");
@@ -415,13 +417,79 @@ function __rhinoLocalCtxList(items, label, kind, grant) {
 // (validate scope's TreeSet, measured 2026-11-10).
 // `tag` is the measured Object.prototype.toString tag, set before the watch.
 // Absent, the tag stays unmeasured and faults.
-// A sixth argument turns on the empty-read policy (Sol ctx r12 P2-1). Omit
-// it and an empty set keeps answering, which is what identity.getAttribute,
-// getScope, client property sets and the legacy token and OIDC scopes do.
-// `null` is the policy with nothing granted. An object is a grant: the
-// capture, and the operations it measured on a size-zero set. The check runs
-// when the script reads the set, not when the set is built.
+// Every set consults the one empty-read decision. There is no opt-out: a
+// caller that passes no grant faults every empty read. An object is a grant
+// from the collection catalog, the capture and the operations it measured.
+// The check runs when the script reads the set, not when the set is built.
+// `lengthAbsent` keeps `.length` missing (a HashSet's shape). `surface` is
+// String only and does not imply `.length` on a set.
 var __rhinoLocalSetStateKey = "__rhinoLocalSetState";
+// One enumerable trap so for...in of an ungranted empty set reads a value
+// and hits the decision. Rhino 1.7.14 has no Proxy, so a key-only for...in
+// can count this one key and not throw. The key is not a Java member.
+var __rhinoLocalSetIterKey = "\uE000";
+
+function __rhinoLocalCollectionGrant(id) {
+  var rows = __rhinoLocalCollectionCatalog;
+  var i;
+  if (!rows) {
+    throw new Error("rhino-local: collection catalog is not loaded");
+  }
+  for (i = 0; i < rows.length; i += 1) {
+    if (rows[i].id === id) {
+      return rows[i].grant;
+    }
+  }
+  throw new Error("rhino-local: unknown collection binding " + id);
+}
+
+// The list a granted empty toArray() returns. Fields the capture did not
+// show stay off, so size() and JSON of that list still fault.
+function __rhinoLocalToArrayGrant(parent) {
+  var out;
+  var any;
+  if (parent === null || parent === undefined) {
+    return null;
+  }
+  out = { capture: parent.capture };
+  any = false;
+  if (parent.toArrayLength === true) { out.length = true; any = true; }
+  if (parent.toArraySize === true) { out.size = true; any = true; }
+  if (parent.toArrayJson === true) { out.json = true; any = true; }
+  if (parent.toArrayIndex === true) { out.index = true; any = true; }
+  return any ? out : null;
+}
+
+function __rhinoLocalSetItems(set) {
+  var own;
+  var state;
+  try {
+    own = Object.getOwnPropertyDescriptor(set, __rhinoLocalSetStateKey);
+  } catch (e) {
+    return [];
+  }
+  state = own !== undefined && "value" in own ? own.value : null;
+  return state === null ? [] : state.items;
+}
+
+// Called from Array.prototype.concat for a value that is not a list view.
+function __rhinoLocalEmptySetArg(value) {
+  var own;
+  var state;
+  if (value === null || typeof value !== "object") {
+    return;
+  }
+  try {
+    own = Object.getOwnPropertyDescriptor(value, __rhinoLocalSetStateKey);
+  } catch (e) {
+    return;
+  }
+  state = own !== undefined && "value" in own ? own.value : null;
+  if (state === null || state.items.length !== 0) {
+    return;
+  }
+  __rhinoLocalSetEmpty(value, "concat", "[].concat(" + state.label + ")");
+}
 
 function __rhinoLocalSetEmpty(set, op, member) {
   var own;
@@ -432,21 +500,27 @@ function __rhinoLocalSetEmpty(set, op, member) {
     return;
   }
   state = own !== undefined && "value" in own ? own.value : null;
-  if (state === null || state.policy !== true || state.items.length !== 0) {
+  if (state === null || state.items.length !== 0) {
     return;
   }
-  if (state.grant !== null && __rhinoLocalEmptyAllows({ emptyRoutes: {} }, state.grant, op)) {
+  // surface does not imply .length on a set. A list's EmptyAllows does.
+  if (op === "length") {
+    if (state.grant !== null && state.grant.length === true) {
+      return;
+    }
+  } else if (state.grant !== null && __rhinoLocalEmptyAllows({ emptyRoutes: {} }, state.grant, op)) {
     return;
   }
   throw __rhinoLocalCtxUnmeasured(member,
     "of a size-zero set (this operation on a size-zero set was not measured)");
 }
 
+// collection-kind: every legacy set is this constructor. The call site
+// names the catalog grant, immediately above the call.
 function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag, empty) {
   var setClass = javaClass || "java.util.HashSet";
   var sorted = setClass === "java.util.TreeSet";
-  var policy = arguments.length >= 6;
-  var grant = policy ? __rhinoLocalEmptyGrant(empty) : null;
+  var grant = __rhinoLocalEmptyGrant(empty);
   var out = __rhinoLocalCtxBare();
   var store = [];
   var i;
@@ -479,16 +553,44 @@ function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag, empty) {
     "addAll", "clear", "containsAll", "equals", "forEach", "getClass", "hashCode", "iterator",
     "parallelStream", "remove", "removeAll", "removeIf", "retainAll", "spliterator", "stream", "clone",
   ]);
-  __rhinoLocalHide(out, __rhinoLocalSetStateKey, { items: store, policy: policy, grant: grant });
+  __rhinoLocalHide(out, __rhinoLocalSetStateKey, { items: store, grant: grant, label: label });
+  if (store.length === 0 && !(grant !== null && grant.lengthAbsent === true)) {
+    Object.defineProperty(out, "length", {
+      enumerable: false,
+      configurable: true,
+      get: function () {
+        __rhinoLocalSetEmpty(out, "length", label + ".length");
+        return store.length;
+      },
+    });
+  }
+  if (store.length === 0 && !(grant !== null && (grant.index === true || grant.iteration === true))) {
+    Object.defineProperty(out, __rhinoLocalSetIterKey, {
+      enumerable: true,
+      configurable: true,
+      get: function () {
+        __rhinoLocalSetEmpty(out, "iteration", label + ".iteration");
+        return undefined;
+      },
+    });
+  }
   __rhinoLocalCtxMethod(out, label, setClass, "isEmpty", 0, function () {
     __rhinoLocalSetEmpty(out, "isEmpty", label + ".isEmpty()");
     return store.length === 0;
   });
   // Measured 2026-09-10 on identity.getAttribute(): toArray() resolves, and
   // String(v.toArray()[0]) is how a single-valued attribute is read.
+  // An empty call faults unless toArray is granted, then returns a list
+  // whose own reads are only what that grant's child fields name.
   __rhinoLocalCtxMethod(out, label, setClass, "toArray", 0, function () {
     var arr = [];
     var k;
+    if (store.length === 0) {
+      __rhinoLocalSetEmpty(out, "toArray", label + ".toArray()");
+      // collection-kind: the list a granted empty set's toArray() returns.
+      return __rhinoLocalCtxList([], label + ".toArray()", __rhinoLocalCtx.listKind,
+        __rhinoLocalToArrayGrant(grant));
+    }
     for (k = 0; k < store.length; k += 1) {
       arr.push(__rhinoLocalCtxJavaString(store[k]));
     }
@@ -510,6 +612,11 @@ function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag, empty) {
       throw __rhinoLocalCtxUnmeasured(label + ".add(" + __rhinoLocalArgShape(arguments) + ")");
     }
     __rhinoLocalSetEmpty(out, "add", label + ".add()");
+    if (Object.getOwnPropertyDescriptor(out, __rhinoLocalSetIterKey) !== undefined) {
+      __rhinoLocalCtxCheck(out);
+      delete out[__rhinoLocalSetIterKey];
+      __rhinoLocalCtxRewatch(out);
+    }
     if (store.indexOf(v) !== -1) {
       return false;
     }
@@ -804,9 +911,8 @@ function __rhinoLocalCtxCopy(value) {
 
 // `opts.tag`: the measured Object.prototype.toString tag (`"JavaObject"` for
 // may-act, 2026-11-10). Absent, the tag stays unmeasured and faults, as it
-// did before that option existed. `opts.emptyAttribute`: the empty-list
-// grant for next-gen getAttributeValues, citing the capture. Omitted, an
-// empty attribute list faults (Sol ctx r11 P2-1).
+// did before that option existed. The empty getAttribute and
+// getAttributeValues grants come from the collection catalog.
 function __rhinoLocalCtxBuildIdentity(seed, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   // Next-gen: measured 2026-11-10, String(identity) is the wrapper's Java
@@ -841,8 +947,15 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
     __rhinoLocalCtxMethod(identity, "identity", cls, "getAttribute", 1, function (name) {
       var key = String(name);
       // Measured 2026-09-10: an attribute the identity lacks is an empty set.
+      // The empty reads the capture showed are the catalog grant, shared by
+      // every context that builds this binding.
       var values = Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key] : [];
-      return __rhinoLocalCtxJavaSet(values, "identity.getAttribute()", false);
+      var attributeGrant = __rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+        ? __rhinoLocalCollectionGrant("oidc.legacy.getAttribute")
+        : __rhinoLocalCtx.prefix === "oauth2-may-act-unmeasured"
+        ? __rhinoLocalCollectionGrant("mayact.legacy.getAttribute")
+        : __rhinoLocalCollectionGrant("token.legacy.getAttribute");
+      return __rhinoLocalCtxJavaSet(values, "identity.getAttribute()", false, undefined, undefined, attributeGrant);
     });
     // Measured: identity.exists() is "Cannot call property exists", Rhino's
     // refusal to call a non-function (a bean property of isExists()).
@@ -869,11 +982,15 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
     });
     __rhinoLocalCtxMethod(identity, "identity", ngCls, "getAttributeValues", 1, function (name) {
       var key = String(name);
-      // Measured where the caller says so: an attribute the identity lacks
-      // reads as an empty list. That empty surface is this binding's grant,
-      // not the context kind's (Sol ctx r11 P2-1).
+      // An attribute the identity lacks reads as an empty list. The catalog
+      // grant is that binding's empty surface, not the context kind's.
+      var valuesGrant = __rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+        ? __rhinoLocalCollectionGrant("oidc.next.getAttributeValues")
+        : __rhinoLocalCtx.prefix === "oauth2-may-act-unmeasured"
+        ? __rhinoLocalCollectionGrant("mayact.next.getAttributeValues")
+        : __rhinoLocalCollectionGrant("token.next.getAttributeValues");
       return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : [],
-        undefined, undefined, opts && opts.emptyAttribute);
+        undefined, undefined, valuesGrant);
     });
     __rhinoLocalHide(identity, "valueOf", function () {
       return ngCls + "@rhino-local";
@@ -894,10 +1011,16 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
 // carries a grant (Sol ctx r12 P2-1). The call itself does not fault.
 function __rhinoLocalCtxBuildScopes(items, opts) {
   if (__rhinoLocalCtx.engine === "legacy") {
-    return __rhinoLocalCtxJavaSet(items, "scopes", false);
+    var legacyGrant = __rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+      ? __rhinoLocalCollectionGrant("oidc.legacy.scopes")
+      : __rhinoLocalCollectionGrant("token.legacy.scopes");
+    return __rhinoLocalCtxJavaSet(items, "scopes", false, undefined, undefined, legacyGrant);
   }
+  var scopeGrant = __rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+    ? __rhinoLocalCollectionGrant("oidc.next.scopes")
+    : __rhinoLocalCollectionGrant("token.next.scopes");
   var store = items.slice();
-  var list = __rhinoLocalCtxList(store, "scopes");
+  var list = __rhinoLocalCtxList(store, "scopes", null, scopeGrant);
   // Measured on next-gen: contains() answers, and add() works on this list
   // (it is not the token's scope; setScope copies it). Both were captured on
   // a non-empty list. An empty read faults unless the list's grant names it.
@@ -927,7 +1050,8 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
   if (opts && opts.toArray) {
     __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "toArray", 0, function () {
       if (store.length === 0) {
-        return __rhinoLocalCtxList([], "scopes.toArray()", opts.toArrayKind);
+        // collection-kind: empty scopes.toArray(). The call itself does not fault.
+        return __rhinoLocalCtxList([], "scopes.toArray()", opts.toArrayKind, __rhinoLocalToArrayGrant(scopeGrant));
       }
       return store.slice();
     });
@@ -946,7 +1070,22 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
 function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var listOf = function (values) {
-    var list = __rhinoLocalCtxList(values.map(__rhinoLocalCtxString), undefined, opts && opts.listKind);
+    // Headers share this row's grant: one empty request-parameter binding
+    // per context and engine, and the same refusal on a header value.
+    var requestGrant = __rhinoLocalCtx.prefix === "oauth2-validate-scope-unmeasured"
+      ? __rhinoLocalCollectionGrant("validate.next.requestParams")
+      : __rhinoLocalCtx.prefix === "oauth2-token-unmeasured"
+        ? (__rhinoLocalCtx.engine === "legacy"
+          ? __rhinoLocalCollectionGrant("token.legacy.requestParams")
+          : __rhinoLocalCollectionGrant("token.next.requestParams"))
+      : __rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+        ? (__rhinoLocalCtx.engine === "legacy"
+          ? __rhinoLocalCollectionGrant("oidc.legacy.requestParams")
+          : __rhinoLocalCollectionGrant("oidc.next.requestParams"))
+        : (__rhinoLocalCtx.engine === "legacy"
+          ? __rhinoLocalCollectionGrant("mayact.legacy.requestParams")
+          : __rhinoLocalCollectionGrant("mayact.next.requestParams"));
+    var list = __rhinoLocalCtxList(values.map(__rhinoLocalCtxString), undefined, opts && opts.listKind, requestGrant);
     if (opts && opts.javaTags) {
       __rhinoLocalCtxTag(list, "JavaList", "a Java list");
     }
@@ -994,8 +1133,8 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
 // OIDC claims); otherwise it is unmeasured. `opts.redirectKind`: that list's
 // own kind, when it was measured apart from the context list (Sol ctx r10
 // P2-1). Omitted, the context kind, which is what OIDC claims measured.
-// `opts.redirectEmpty`: the empty-list grant for that list, citing the
-// capture. Omitted, an empty redirect list faults (Sol ctx r11 P2-1).
+// The empty redirect grant is the catalog row for this context. Omitted
+// from the catalog, an empty redirect list faults (Sol ctx r11 P2-1).
 // `opts.javaTags`: customProperties is `[object JavaMap]` and redirectUris
 // `[object JavaList]` (measured for validate scope). `opts.setTag`: the legacy
 // grant/scope/response sets' tag
@@ -1035,12 +1174,34 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
       // happens after the seal and a tag added to a watched view would read
       // as the script's own mutation.
       var redirectKind = opts && opts.redirectKind ? opts.redirectKind : __rhinoLocalCtx.listKind;
-      var uris = __rhinoLocalListView(seed.redirectUris.slice(), redirectKind, opts && opts.redirectEmpty);
+      var redirectGrant = __rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+        ? __rhinoLocalCollectionGrant("oidc.next.redirectUris")
+        : __rhinoLocalCtx.prefix === "oauth2-validate-scope-unmeasured"
+        ? __rhinoLocalCollectionGrant("validate.next.redirectUris")
+        : __rhinoLocalCollectionGrant("mayact.next.redirectUris");
+      var uris = __rhinoLocalListView(seed.redirectUris.slice(), redirectKind, redirectGrant);
       __rhinoLocalCtxTag(uris, opts.javaTags ? "JavaList" : null, "clientProperties.redirectUris");
       return __rhinoLocalCtxWatch(uris, "clientProperties.redirectUris");
     }
     if (legacy) {
-      return __rhinoLocalCtxJavaSet(sets[k].values, "clientProperties." + k, false, undefined, opts && opts.setTag);
+      var setGrant = k === "allowedGrantTypes"
+        ? (__rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+          ? __rhinoLocalCollectionGrant("oidc.legacy.allowedGrantTypes")
+          : __rhinoLocalCtx.prefix === "oauth2-may-act-unmeasured"
+          ? __rhinoLocalCollectionGrant("mayact.legacy.allowedGrantTypes")
+          : __rhinoLocalCollectionGrant("token.legacy.allowedGrantTypes"))
+        : k === "allowedScopes"
+        ? (__rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+          ? __rhinoLocalCollectionGrant("oidc.legacy.allowedScopes")
+          : __rhinoLocalCtx.prefix === "oauth2-may-act-unmeasured"
+          ? __rhinoLocalCollectionGrant("mayact.legacy.allowedScopes")
+          : __rhinoLocalCollectionGrant("token.legacy.allowedScopes"))
+        : (__rhinoLocalCtx.prefix === "oidc-claims-unmeasured"
+          ? __rhinoLocalCollectionGrant("oidc.legacy.allowedResponseTypes")
+          : __rhinoLocalCtx.prefix === "oauth2-may-act-unmeasured"
+          ? __rhinoLocalCollectionGrant("mayact.legacy.allowedResponseTypes")
+          : __rhinoLocalCollectionGrant("token.legacy.allowedResponseTypes"));
+      return __rhinoLocalCtxJavaSet(sets[k].values, "clientProperties." + k, false, undefined, opts && opts.setTag, setGrant);
     }
     // Measured: next-gen hands over the raw Java set, which the context's
     // class shutter refuses.
