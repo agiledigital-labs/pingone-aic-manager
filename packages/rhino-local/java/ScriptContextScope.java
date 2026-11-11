@@ -3,7 +3,6 @@ import java.util.List;
 import javax.script.Bindings;
 import javax.script.ScriptContext;
 import org.mozilla.javascript.Context;
-import org.mozilla.javascript.JavaScriptException;
 import org.mozilla.javascript.NativeObject;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.Wrapper;
@@ -51,31 +50,10 @@ final class ScriptContextScope implements Scriptable {
     return false;
   }
 
-  /**
-   * Set by the may-act seed on the legacy engine, which runs without a class shutter so that
-   * {@code java.util} stays visible. Reading {@code context} still has to throw the shutter's
-   * refusal of {@code javax.script.SimpleScriptContext}: that is what {@code typeof context} does
-   * on AIC, and a getter cannot be installed on this scope (it is not a {@code ScriptableObject}).
-   */
-  private static final String THROW_CONTEXT = "__rhinoLocalThrowContext";
-
-  private void refuseContext() {
-    Context cx = Context.getCurrentContext();
-    Scriptable error =
-        cx.newObject(
-            this,
-            "InternalError",
-            new Object[] {"Access to Java class \"javax.script.SimpleScriptContext\" is prohibited."});
-    throw new JavaScriptException(error, null, 0);
-  }
-
   @Override
   public Object get(String name, Scriptable start) {
     int scope = scriptContext.getAttributesScope(name);
     if (scope != -1) {
-      if ("context".equals(name) && scriptContext.getAttributesScope(THROW_CONTEXT) != -1) {
-        refuseContext();
-      }
       Object value = scriptContext.getAttribute(name, scope);
       return Context.javaToJS(value, this);
     }
@@ -125,13 +103,7 @@ final class ScriptContextScope implements Scriptable {
     if (scope == -1) {
       scope = ScriptContext.ENGINE_SCOPE;
     }
-    // A guarded map (ContextJavaGuard, Sol ctx r2 P2-6) is stored as the guard
-    // itself: AM stores the bare map and wraps it afresh on every read, which
-    // here would hand the script an unguarded NativeJavaMap from the global
-    // `claims`. Either way the script reads the same map. A guarded String is
-    // still unwrapped, because a top-level var flattening a Java String to a
-    // JS string is measured.
-    if (value instanceof Wrapper && !(value instanceof ContextJavaGuard.GuardedMap)) {
+    if (value instanceof Wrapper) {
       value = ((Wrapper) value).unwrap();
     }
     scriptContext.setAttribute(name, value, scope);

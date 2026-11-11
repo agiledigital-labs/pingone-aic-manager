@@ -18,7 +18,6 @@ import type {
   LibrarySeed,
   LibraryCallerContext,
   ClientSeed,
-  Engine,
   JsonObject,
   ExpectedValue,
   ExpectKey,
@@ -35,8 +34,6 @@ import { assertDenseArray, defineOwn, isPlainObject, parseJsonObject, parseJsonV
 
 export interface ContextDeclaration {
   id: ScriptContext;
-  /** Engines AM has the context on. */
-  engines: readonly Engine[];
   /** `given` keys the context accepts. */
   givenKeys: readonly GivenKey[];
   /** `expect` keys the context accepts. */
@@ -89,7 +86,6 @@ export const CONTEXT_ONLY_ALLOW: readonly AllowUndeclaredChannel[] = [
 export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   SCRIPTED_DECISION_NODE: {
     id: "SCRIPTED_DECISION_NODE",
-    engines: ["next-gen", "legacy"],
     givenKeys: [],
     expectKeys: [],
     allowUndeclared: [],
@@ -97,7 +93,6 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   },
   OAUTH2_ACCESS_TOKEN_MODIFICATION: {
     id: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
-    engines: ["next-gen", "legacy"],
     givenKeys: [...SHARED_GIVEN, "accessToken", "identity", "client", "scopes", "request"],
     expectKeys: ["outcome", "accessToken", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["accessToken", "openidmWrites", "openidmReads", "http", "logs"],
@@ -105,7 +100,6 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   },
   OIDC_CLAIMS: {
     id: "OIDC_CLAIMS",
-    engines: ["next-gen", "legacy"],
     givenKeys: [...SHARED_GIVEN, "identity", "client", "scopes", "request", "oidc"],
     // `outcome` only as the `null` a validated case carries (parseExpect).
     expectKeys: ["outcome", "oidc", "openidm", "http", "logs", "allowUndeclared"],
@@ -114,9 +108,8 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   },
   SOCIAL_IDP_PROFILE_TRANSFORMATION: {
     id: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
-    engines: ["next-gen", "legacy"],
-    // The node state is bound (nodeState on both engines, sharedState and
-    // transientState on legacy), so state seeds and diffs belong here.
+    // The node state is bound as nodeState, so state seeds and diffs belong
+    // here.
     givenKeys: [
       ...SHARED_GIVEN,
       "sharedState",
@@ -133,12 +126,8 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   },
   CONFIG_PROVIDER_NODE: {
     id: "CONFIG_PROVIDER_NODE",
-    // Both engines, measured 2026-11-10: the node's script list offers
-    // CONFIG_PROVIDER_NODE (1.0) and CONFIG_PROVIDER_NODE_NEXT_GEN (2.0)
-    // scripts, and a journey runs either.
-    engines: ["next-gen", "legacy"],
-    // nodeState is bound on both engines (sharedState and transientState
-    // are not, even on legacy), so state seeds and diffs belong here.
+    // nodeState is bound (sharedState and transientState are not), so state
+    // seeds and diffs belong here.
     givenKeys: [
       ...SHARED_GIVEN,
       "sharedState",
@@ -154,10 +143,6 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   },
   OAUTH2_VALIDATE_SCOPE: {
     id: "OAUTH2_VALIDATE_SCOPE",
-    // Both engines, measured 2026-11-10: OAUTH2_VALIDATE_SCOPE (1.0) and
-    // OAUTH2_VALIDATE_SCOPE_NEXT_GEN (2.0) scripts both run as a client's
-    // validateScopeScript override.
-    engines: ["next-gen", "legacy"],
     givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "client", "request", "validateScope"],
     expectKeys: ["outcome", "validateScope", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["validateScope", "openidmWrites", "openidmReads", "http", "logs"],
@@ -165,10 +150,6 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   },
   OAUTH2_MAY_ACT: {
     id: "OAUTH2_MAY_ACT",
-    // Both engines, measured 2026-11-10: OAUTH2_MAY_ACT (1.0) and
-    // OAUTH2_MAY_ACT_NEXT_GEN (2.0) scripts both run as a client's
-    // accessTokenMayActScript. The design note called this next-gen only.
-    engines: ["next-gen", "legacy"],
     givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "client", "request", "accessToken", "identity", "scopes"],
     expectKeys: ["outcome", "mayAct", "openidm", "http", "logs", "allowUndeclared"],
     allowUndeclared: ["mayAct", "openidmWrites", "openidmReads", "http", "logs"],
@@ -176,9 +157,6 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   },
   LIBRARY: {
     id: "LIBRARY",
-    // Next-gen only, measured 2026-11-11. Legacy decision and legacy token
-    // modification both throw ReferenceError: "require" is not defined.
-    engines: ["next-gen"],
     givenKeys: [...SHARED_GIVEN, "loggerScriptId", "cookieName", "library"],
     // `outcome` only as the `null` a validated case carries (parseExpect).
     expectKeys: ["outcome", "returns", "openidm", "http", "logs", "allowUndeclared"],
@@ -194,7 +172,7 @@ export function parseContext(raw: unknown, path: string): ScriptContext {
   if (typeof raw !== "string" || !(SCRIPT_CONTEXTS as readonly string[]).includes(raw)) {
     const hint =
       typeof raw === "string" && raw.endsWith("_NEXT_GEN")
-        ? `; drop the _NEXT_GEN suffix and set given.engine ("next-gen" is the default)`
+        ? `; drop the _NEXT_GEN suffix (next-gen is the only engine)`
         : "";
     throw new Error(
       `rhino-local: ${path} must be one of ${SCRIPT_CONTEXTS.map((c) => JSON.stringify(c)).join(", ")}${hint}`

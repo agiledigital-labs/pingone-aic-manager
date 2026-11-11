@@ -115,6 +115,11 @@ export function validateCase(input: unknown): Case {
     throw new Error("rhino-local: case is not an object");
   }
   rejectUnknownKeys("case", input, CASE_KEYS);
+  // First, so a legacy case is refused for the removal and not for whichever
+  // legacy-shaped key happens to be checked next.
+  if (isPlainObject(input.given) && input.given.engine === "legacy") {
+    throw new Error(`rhino-local: case.given.engine "legacy": ${LEGACY_ENGINE_REMOVED}`);
+  }
   const name = parseNonEmptyString(input.name, "case.name");
   const script = parseNonEmptyString(input.script, "case.script");
   const context = parseContext(input.context, "case.context");
@@ -124,9 +129,6 @@ export function validateCase(input: unknown): Case {
   }
   const given =
     input.given === undefined ? {} : parseGiven(input.given, "case.given", context);
-  if (!declaration.engines.includes(given.engine ?? "next-gen")) {
-    throw new Error(`rhino-local: context ${context} has no ${given.engine ?? "next-gen"} engine`);
-  }
   if (!("expect" in input)) {
     throw new Error("rhino-local: case.expect is required");
   }
@@ -302,9 +304,6 @@ function parseGiven(raw: unknown, path: string, context: ScriptContext): Given {
   if (raw.engine !== undefined) {
     given.engine = parseEngine(raw.engine, `${path}.engine`);
   }
-  if (given.engine === "legacy" && given.libraries !== undefined) {
-    throw new Error(`rhino-local: ${path}.libraries requires the next-gen engine; legacy has no require()`);
-  }
   if (raw.bindings !== undefined) {
     given.bindings = parseBindings(raw.bindings, `${path}.bindings`);
   }
@@ -370,7 +369,7 @@ function parseExpect(raw: unknown, path: string, hasOutcome = true): Expect {
   }
   if (!("outcome" in raw)) {
     throw new Error(
-      `rhino-local: ${path}.outcome is required (engine-neutral; use "true" whether the script returns via action.goTo or a legacy outcome variable)`
+      `rhino-local: ${path}.outcome is required (use "true" when the script returns via action.goTo)`
     );
   }
   if (raw.outcome !== null && typeof raw.outcome !== "string") {
@@ -860,7 +859,14 @@ function parseIdentityAttributes(raw: unknown, path: string): Record<string, Ide
   return out;
 }
 
+/** Why a case that names the legacy engine fails. One wording, so every surface says the same. */
+export const LEGACY_ENGINE_REMOVED =
+  'the legacy (V1) script engine is no longer emulated; rhino-local runs next-gen scripts only. Upgrade the script to a next-gen script (context id with the _NEXT_GEN suffix) and drop given.engine, or leave it as "next-gen"';
+
 function parseEngine(raw: unknown, path: string): Engine {
+  if (raw === "legacy") {
+    throw new Error(`rhino-local: ${path} "legacy": ${LEGACY_ENGINE_REMOVED}`);
+  }
   if (typeof raw !== "string" || !ENGINE_SET.has(raw)) {
     throw new Error(
       `rhino-local: ${path} must be ${ENGINES.map((engine) => JSON.stringify(engine)).join(" or ")}`

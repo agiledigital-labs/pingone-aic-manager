@@ -1,12 +1,12 @@
-// Overlay for AM's OAUTH2_ACCESS_TOKEN_MODIFICATION context (legacy and
-// next-gen), appended to the shared prelude for a case whose `context` names
+// Overlay for AM's OAUTH2_ACCESS_TOKEN_MODIFICATION context (next-gen),
+// appended to the shared prelude for a case whose `context` names
 // it, after context-common.cjs, whose shared view helpers (__rhinoLocalCtx*)
 // it configures with its fault prefix and list kind. Same Rhino 1.7.14
 // restrictions as runtime.cjs: no let, no top-level const, no shorthand, no
 // Map/Set/Symbol.
 //
 // Every behaviour here was measured live on 2026-11-10 against a sandbox
-// tenant with a stateless client_credentials token, on both engines
+// tenant with a stateless client_credentials token
 // (docs/api/12-script-bindings-matrix.md, "Access-token modification").
 // Anything the measurement did not reach is a named harness fault
 // (`oauth2-token-unmeasured/<binding>.<member>`), never a guess; see
@@ -20,21 +20,13 @@ var __rhinoLocalAt = {
 };
 
 // Globals the context does not bind (typeof "undefined" on AIC, measured).
-var __rhinoLocalAtUnbound = {
-  both: [
-    "nodeState", "action", "callbacksBuilder", "callbacks", "sharedState", "transientState", "requestHeaders",
-    "requestParameters", "requestCookies", "existingSession", "cacheManager", "journey", "samlApplication",
-    "oauthApplication", "locales", "resumedFromSuspend", "outcome", "idRepository", "session",
-  ],
-  legacy: [
-    "cookieName", "secrets", "openidm", "utils", "emailService", "jwtAssertion", "jwtValidator", "policy", "require",
-  ],
-};
+var __rhinoLocalAtUnbound = [
+  "nodeState", "action", "callbacksBuilder", "callbacks", "sharedState", "transientState", "requestHeaders",
+  "requestParameters", "requestCookies", "existingSession", "cacheManager", "journey", "samlApplication",
+  "oauthApplication", "locales", "resumedFromSuspend", "outcome", "idRepository", "session",
+];
 
-var __rhinoLocalAtClass = {
-  "next-gen": "org.forgerock.oauth2.core.scripting.AccessTokenScriptWrapper",
-  legacy: "org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken",
-};
+var __rhinoLocalAtClass = "org.forgerock.oauth2.core.scripting.AccessTokenScriptWrapper";
 
 // Claims AM writes itself. Overwriting one with setField is unmeasured.
 var __rhinoLocalAtReserved = [
@@ -109,26 +101,6 @@ function __rhinoLocalAtSetField(name, value, method) {
 function __rhinoLocalAtScopeFromArgument(value) {
   var out = [];
   var i;
-  var it;
-  var item;
-  if (__rhinoLocalCtx.engine === "legacy") {
-    if (Array.isArray(value)) {
-      throw __rhinoLocalInternalError("Cannot convert org.mozilla.javascript.NativeArray@" +
-        "rhino-local to java.util.Set");
-    }
-    if (typeof java !== "undefined" && value instanceof java.util.Set) {
-      it = value.iterator();
-      while (it.hasNext()) {
-        item = it.next();
-        if (!(item instanceof java.lang.String)) {
-          throw __rhinoLocalCtxUnmeasured("accessToken.setScope()", "with a set holding a non-string");
-        }
-        out.push(String(item));
-      }
-      return out;
-    }
-    throw __rhinoLocalCtxUnmeasured("accessToken.setScope(" + __rhinoLocalArgShape([value]) + ")");
-  }
   var row = __rhinoLocalListRow(value);
   var items = row !== null ? row.items : Array.isArray(value) ? value : null;
   if (items === null) {
@@ -161,8 +133,7 @@ function __rhinoLocalAtTokenState(seed) {
 }
 
 function __rhinoLocalAtBuildToken(seed) {
-  var legacy = __rhinoLocalCtx.engine === "legacy";
-  var cls = __rhinoLocalAtClass[__rhinoLocalCtx.engine];
+  var cls = __rhinoLocalAtClass;
   var token = {};
   var state = function () {
     return __rhinoLocalAt.state;
@@ -174,37 +145,37 @@ function __rhinoLocalAtBuildToken(seed) {
   };
   // Getters a script cannot change.
   m("getRealm", 0, function () {
-    return __rhinoLocalCtxString(seed.realm);
+    return seed.realm;
   });
   m("getClientId", 0, function () {
-    return __rhinoLocalCtxString(seed.clientId);
+    return seed.clientId;
   });
   m("getResourceOwnerId", 0, function () {
-    return __rhinoLocalCtxString(seed.resourceOwnerId);
+    return seed.resourceOwnerId;
   });
   m("getGrantType", 0, function () {
-    return __rhinoLocalCtxString(seed.grantType);
+    return seed.grantType;
   });
   m("getTokenType", 0, function () {
-    return __rhinoLocalCtxString(seed.tokenType);
+    return seed.tokenType;
   });
   m("getTokenName", 0, function () {
-    return __rhinoLocalCtxString(seed.tokenName);
+    return seed.tokenName;
   });
   m("getTokenId", 0, function () {
-    return __rhinoLocalCtxString(seed.tokenId);
+    return seed.tokenId;
   });
   m("getAuditTrackingId", 0, function () {
-    return __rhinoLocalCtxString(seed.auditTrackingId);
+    return seed.auditTrackingId;
   });
   m("getAuthGrantId", 0, function () {
-    return __rhinoLocalCtxString(seed.authGrantId);
+    return seed.authGrantId;
   });
   m("getAuthTimeSeconds", 0, function () {
     return seed.authTimeSeconds;
   });
   m("getAudience", 0, function () {
-    return __rhinoLocalCtxList(seed.audience.map(__rhinoLocalCtxString), "accessToken.getAudience()", null, "getAudience");
+    return __rhinoLocalCtxList(seed.audience.slice(), "accessToken.getAudience()", null, "getAudience");
   });
   m("getExpiryTime", 0, function () {
     return state().expiryTime;
@@ -218,10 +189,6 @@ function __rhinoLocalAtBuildToken(seed) {
   m("getScope", 0, function () {
     if (__rhinoLocalAt.scopeRemoved) {
       throw __rhinoLocalCtxUnmeasured("accessToken.getScope()", "after removeScopes()");
-    }
-    if (legacy) {
-      // A copy: add() answers true and the token keeps its scope (measured).
-      return __rhinoLocalCtxJavaSet(state().scope, "accessToken.getScope()", true, undefined, undefined, "getScope");
     }
     var list = __rhinoLocalCtxList(state().scope.slice(), "accessToken.getScope()", null, "getScope");
     // Measured: the next-gen list is immutable, and add() throws "null". That
@@ -239,7 +206,7 @@ function __rhinoLocalAtBuildToken(seed) {
     return undefined;
   });
   m("removeScopes", 0, function () {
-    // Measured on both engines: the script returns, and AM then fails the
+    // Measured: the script returns, and AM then fails the
     // token request with a 500 server_error.
     __rhinoLocalAt.scopeRemoved = true;
     __rhinoLocalAt.refusal = 'Cannot invoke "java.util.Collection.size()" because "c" is null';
@@ -279,7 +246,7 @@ function __rhinoLocalAtBuildToken(seed) {
       throw __rhinoLocalCtxUnmeasured("accessToken.getField(" + __rhinoLocalArgShape(arguments) + ")");
     }
     var value = Object.prototype.hasOwnProperty.call(state().fields, name) ? __rhinoLocalClone(state().fields[name]) : null;
-    return legacy ? __rhinoLocalCtxJsonValue(value) : value;
+    return value;
   });
   m("getCustomFields", 0, function () {
     var fields = state().fields;
@@ -287,7 +254,7 @@ function __rhinoLocalAtBuildToken(seed) {
     return __rhinoLocalCtxMap("accessToken.getCustomFields()", Object.keys(fields), function () {
       throw __rhinoLocalCtxUnmeasured("accessToken.getCustomFields()", "entry values");
     }, untouched ? function () {
-      return __rhinoLocalCtxRenderMap(fields, legacy);
+      return __rhinoLocalCtxRenderMap(fields);
     } : null);
   });
   m("setNonce", 1, function (value) {
@@ -298,7 +265,7 @@ function __rhinoLocalAtBuildToken(seed) {
     return undefined;
   });
   m("getNonce", 0, function () {
-    return state().nonce === null ? null : __rhinoLocalCtxString(state().nonce);
+    return state().nonce === null ? null : state().nonce;
   });
   m("setClaims", 1, function (value) {
     if (typeof value !== "string") {
@@ -308,7 +275,7 @@ function __rhinoLocalAtBuildToken(seed) {
     return undefined;
   });
   m("getClaims", 0, function () {
-    return state().claims === null ? null : __rhinoLocalCtxString(state().claims);
+    return state().claims === null ? null : state().claims;
   });
   m("setAuthLevel", 1, function (value) {
     if (typeof value !== "number" || value % 1 !== 0) {
@@ -322,7 +289,7 @@ function __rhinoLocalAtBuildToken(seed) {
     if (level === null) {
       return null;
     }
-    return legacy ? __rhinoLocalCtxJavaNumber(level) : level;
+    return level;
   });
   m("addExtraData", 2, function (name, value) {
     if (typeof name !== "string" || typeof value !== "string") {
@@ -334,9 +301,6 @@ function __rhinoLocalAtBuildToken(seed) {
   ["setAct", "setMayAct", "setPermissions"].forEach(function (name) {
     var key = name === "setAct" ? "act" : name === "setMayAct" ? "mayAct" : "permissions";
     m(name, 1, function (value) {
-      if (legacy) {
-        throw __rhinoLocalCtxNoMethod(cls, name, arguments);
-      }
       if (!__rhinoLocalCtxIsJsonObject(value) || !__rhinoLocalCtxJsonSafe(value, false)) {
         throw __rhinoLocalCtxUnmeasured("accessToken." + name + "(" + __rhinoLocalArgShape(arguments) + ")");
       }
@@ -345,13 +309,7 @@ function __rhinoLocalAtBuildToken(seed) {
     });
   });
   m("addExtraJsonData", 2, function (name, value) {
-    // Measured on legacy with two strings only (2026-11-10): no overload takes
-    // them. docs/api/12's 2026-08-27 list calls it working, without argument
-    // types, so any other legacy shape is unmeasured rather than refused.
-    if (legacy && typeof name === "string" && typeof value === "string") {
-      throw __rhinoLocalCtxNoMethod(cls, "addExtraJsonData", arguments);
-    }
-    if (legacy || typeof name !== "string" || typeof value !== "string") {
+    if (typeof name !== "string" || typeof value !== "string") {
       throw __rhinoLocalCtxUnmeasured("accessToken.addExtraJsonData(" + __rhinoLocalArgShape(arguments) + ")");
     }
     // Measured: the response body carries the string as given, not parsed.
@@ -364,13 +322,10 @@ function __rhinoLocalAtBuildToken(seed) {
       if (key !== null && state()[key] !== null) {
         throw __rhinoLocalCtxUnmeasured("accessToken." + name + "()", "after it was set");
       }
-      return legacy ? __rhinoLocalCtxJsonValue(null) : null;
+      return null;
     });
   });
   m("getResourceOwner", 0, function () {
-    if (legacy) {
-      throw __rhinoLocalShutterError("org.forgerock.oauth2.core.ResourceOwner");
-    }
     throw __rhinoLocalCtxUnmeasured("accessToken.getResourceOwner()", "(a ResourceOwnerScriptWrapper on AIC)");
   });
   __rhinoLocalCtxFaulting(token, "accessToken", [
@@ -381,7 +336,7 @@ function __rhinoLocalAtBuildToken(seed) {
     "setResourceOwnerId", "setTokenName", "setTokenType",
   ].concat(__rhinoLocalCtxObjectMethods));
   __rhinoLocalCtxToJSON(token, "accessToken");
-  // Its Java tag is unmeasured on both engines (Sol ctx r2 P2-5).
+  // Its Java tag is unmeasured (Sol ctx r2 P2-5).
   __rhinoLocalCtxTag(token, null, "accessToken");
   return __rhinoLocalCtxWatch(token, "accessToken");
 }
@@ -460,17 +415,10 @@ function __rhinoLocalAtDefaults(given) {
 // Runs after __rhinoLocalSeed, on the same seed object.
 function __rhinoLocalSeedAccessToken(given) {
   given = given || {};
-  __rhinoLocalCtxBegin(given.engine);
-  var engine = __rhinoLocalCtx.engine;
-  // Legacy strings are real java.lang.String objects, as in OIDC claims:
-  // measured 2026-11-10, `identity.getName() == identity.getName()` is true
-  // inside a function, which two string views cannot reproduce
-  // (context-common.cjs, __rhinoLocalCtxJavaString).
-  __rhinoLocalCtx.realJavaStrings = engine === "legacy";
-  var unbound = __rhinoLocalAtUnbound.both.concat(engine === "legacy" ? __rhinoLocalAtUnbound.legacy : []);
+  __rhinoLocalCtxBegin();
   var i;
-  for (i = 0; i < unbound.length; i += 1) {
-    delete __rhinoLocalTop[unbound[i]];
+  for (i = 0; i < __rhinoLocalAtUnbound.length; i += 1) {
+    delete __rhinoLocalTop[__rhinoLocalAtUnbound[i]];
   }
   var d = __rhinoLocalAtDefaults(given);
   __rhinoLocalAt.refusal = null;
@@ -487,10 +435,6 @@ function __rhinoLocalSeedAccessToken(given) {
     listKind: __rhinoLocalListKinds.oauth2TokenRequest,
   });
   clientProperties = __rhinoLocalCtxBuildClient(d.client, null);
-  if (engine === "legacy") {
-    // Measured: bound, and null.
-    session = null;
-  }
   __rhinoLocalCtxSeal();
 }
 

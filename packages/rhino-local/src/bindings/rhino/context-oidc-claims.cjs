@@ -1,4 +1,4 @@
-// Overlay for AM's OIDC_CLAIMS context (legacy and next-gen), appended to the
+// Overlay for AM's OIDC_CLAIMS context (next-gen), appended to the
 // shared prelude for a case whose `context` names it, after
 // context-common.cjs, whose shared view helpers (__rhinoLocalCtx*) it
 // configures with its fault prefix and list kind. Same Rhino 1.7.14
@@ -6,8 +6,8 @@
 // Map/Set/Symbol.
 //
 // Every behaviour here was measured live on 2026-11-10 against a sandbox
-// tenant, through a password-grant token request and the userinfo endpoint,
-// on both engines (docs/api/12-script-bindings-matrix.md, "OIDC claims").
+// tenant, through a password-grant token request and the userinfo endpoint
+// (docs/api/12-script-bindings-matrix.md, "OIDC claims").
 // Anything the measurement did not reach is a named harness fault
 // (`oidc-claims-unmeasured/<binding>.<member>`), never a guess; see
 // docs/rhino-local-gaps.md.
@@ -18,9 +18,6 @@
 
 var __rhinoLocalOidc = {
   seed: null,
-  // Every UserInfoClaims the legacy script constructed, so the harvest can
-  // tell one from a lookalike object.
-  built: [],
   claims: null,
   claimsStore: null,
   claimsKnown: null,
@@ -28,17 +25,12 @@ var __rhinoLocalOidc = {
 };
 
 // Globals the context does not bind (typeof "undefined" on AIC, measured).
-var __rhinoLocalOidcUnbound = {
-  both: [
-    "nodeState", "action", "callbacksBuilder", "callbacks", "sharedState", "transientState", "requestHeaders",
-    "requestParameters", "requestCookies", "existingSession", "cacheManager", "journey", "samlApplication",
-    "oauthApplication", "locales", "resumedFromSuspend", "outcome", "idRepository", "accessToken",
-  ],
-  legacy: [
-    "cookieName", "secrets", "openidm", "utils", "emailService", "jwtAssertion", "jwtValidator", "policy", "require",
-  ],
-  "next-gen": ["session", "claimObjects", "requestedTypedClaims"],
-};
+var __rhinoLocalOidcUnbound = [
+  "nodeState", "action", "callbacksBuilder", "callbacks", "sharedState", "transientState", "requestHeaders",
+  "requestParameters", "requestCookies", "existingSession", "cacheManager", "journey", "samlApplication",
+  "oauthApplication", "locales", "resumedFromSuspend", "outcome", "idRepository", "accessToken",
+  "session", "claimObjects", "requestedTypedClaims",
+];
 
 // Claims AM writes into the id token itself. Returning one as a value is
 // unmeasured: which of the two wins was not observed.
@@ -57,20 +49,17 @@ __rhinoLocalListKinds.oidcClaims = {
   json: false,
   genericReceiver: false,
   // No binding of this kind is granted an empty list by the kind (Sol ctx
-  // r11 P2-1). claimsLocales, redirectUris, a missing attribute and legacy
-  // requestedTypedClaims each opt in on their own list. scopes was captured
+  // r11 P2-1). claimsLocales, redirectUris and a missing attribute
+  // each opt in on their own list. scopes was captured
   // non-empty (size 4), so an empty contains() faults. json and concat were
   // not measured at any length. A request value is oidcClaimsRequest. An
   // empty scopes.toArray() is oidcClaimsArray, not this kind.
   emptyRoutes: {},
 };
 
-// scopes.toArray() of a size-zero scopes list, and requestedTypedClaims.toArray()
-// of the empty legacy list. The OIDC surface reads scopes.toArray().length on
-// four scopes, which stays a plain array. Nothing measured an empty
-// scopes.toArray(). requested.legacy.json `typed` reads the length of the
-// empty requestedTypedClaims.toArray() and does not read String or JSON, so
-// that one list opts in with length only. json is true so an ungranted empty
+// scopes.toArray() of a size-zero scopes list. The OIDC surface reads
+// scopes.toArray().length on four scopes, which stays a plain array. Nothing
+// measured an empty scopes.toArray(). json is true so an ungranted empty
 // JSON.stringify uses the empty-route sentence (Sol ctx r12 P2-1).
 __rhinoLocalListKinds.oidcClaimsArray = {
   id: "oidc-claims-unmeasured/list.toArray()",
@@ -106,22 +95,6 @@ __rhinoLocalCtx.noun = "OIDC claims";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.oidcClaims;
 
 // --- The `claims` binding ------------------------------------------------------
-
-// Legacy: a real java.util.LinkedHashMap of Java strings. With the context
-// factory's Java map access, member reads, for...in, put/get/remove,
-// JSON.stringify and String(v) all behave as measured, because they are the
-// JVM's own. Its other Java members (clear, size, putAll, ...) and member
-// assignment were never measured, so the map is handed over behind
-// java/ContextJavaGuard.java's gate (Sol ctx r2 P2-6).
-// size() is the surface probe's (size=2); the rest are claimsmap/sideeffect's.
-var __rhinoLocalOidcLegacyClaimsMethods = { get: 1, containsKey: 1, put: 2, remove: 1, size: 0 };
-
-function __rhinoLocalOidcLegacyClaims(seed) {
-  var map = new java.util.LinkedHashMap();
-  map.put("sub", seed.sub);
-  map.put("subname", seed.subname);
-  return __rhinoLocalCtxGuardMap(map, __rhinoLocalOidcLegacyClaimsMethods, "claims");
-}
 
 var __rhinoLocalOidcClaimsFaulting = [
   "containsValue", "entrySet", "keySet", "values", "isEmpty", "putAll", "clear", "forEach", "getOrDefault",
@@ -268,101 +241,6 @@ function __rhinoLocalOidcAuditClaims() {
   }
 }
 
-// --- Legacy-only bindings ----------------------------------------------------------
-
-// A Claim in the legacy claimObjects list: measured getName(), getValues(),
-// isEssential(), getLocale(), getNameWithLocale() and String(v).
-function __rhinoLocalOidcClaimObject(name, value) {
-  var claim = {};
-  var cls = "org.forgerock.openidconnect.Claim";
-  var label = "claimObjects[" + name + "]";
-  __rhinoLocalCtxMethod(claim, label, cls, "getName", 0, function () {
-    return __rhinoLocalCtxJavaString(name);
-  });
-  __rhinoLocalCtxMethod(claim, label, cls, "getNameWithLocale", 0, function () {
-    return __rhinoLocalCtxJavaString(name);
-  });
-  __rhinoLocalCtxMethod(claim, label, cls, "getValues", 0, function () {
-    return __rhinoLocalCtxList([__rhinoLocalCtxJavaString(value)], label + ".getValues()", null, "claimValues");
-  });
-  __rhinoLocalCtxMethod(claim, label, cls, "isEssential", 0, function () {
-    return false;
-  });
-  __rhinoLocalCtxMethod(claim, label, cls, "getLocale", 0, function () {
-    return null;
-  });
-  __rhinoLocalHide(claim, "toString", function () {
-    return name + " -> {values: [" + value + "], essential: false}";
-  });
-  __rhinoLocalCtxFaulting(claim, label, ["getClass", "hashCode", "equals", "wait", "notify", "notifyAll"]);
-  __rhinoLocalCtxToJSON(claim, label);
-  __rhinoLocalCtxTag(claim, null, label);
-  return __rhinoLocalCtxWatch(claim, label);
-}
-
-function __rhinoLocalOidcClaimObjects(seed) {
-  var items = [__rhinoLocalOidcClaimObject("sub", seed.sub), __rhinoLocalOidcClaimObject("subname", seed.subname)];
-  var list = __rhinoLocalCtxList(items, "claimObjects", null, "claimObjects");
-  __rhinoLocalCtxMethod(list, "claimObjects", "java.util.List", "toArray", 0, function () {
-    return items.slice();
-  });
-  return __rhinoLocalCtxWatch(list, "claimObjects");
-}
-
-// The legacy logger is AM's Debug, not slf4j (measured): message, warning,
-// error, the *Enabled checks and getName exist; info/warn/debug/trace and
-// isDebugEnabled do not, so calling one is Rhino's own "Cannot find function".
-function __rhinoLocalOidcLegacyLogger() {
-  var log = {};
-  var level = function (name, recorded) {
-    __rhinoLocalCtxMethod(log, "logger", "com.sun.identity.shared.debug.Debug", name, 1, function (message) {
-      __rhinoLocal.logs.push({ level: recorded, message: String(message) });
-      return undefined;
-    });
-  };
-  level("message", "debug");
-  level("warning", "warn");
-  level("error", "error");
-  __rhinoLocalCtxMethod(log, "logger", "com.sun.identity.shared.debug.Debug", "warningEnabled", 0, function () {
-    return true;
-  });
-  __rhinoLocalCtxFaulting(log, "logger", ["messageEnabled", "errorEnabled", "getName"]);
-  return log;
-}
-
-// `new org.forgerock.oauth2.core.UserInfoClaims(values, compositeScopes)`: the
-// legacy result type. Read at harvest, as AM reads it after the script.
-function __rhinoLocalOidcUserInfoClaims(values, compositeScopes) {
-  if (arguments.length !== 2) {
-    throw __rhinoLocalCtxUnmeasured("new UserInfoClaims(" + __rhinoLocalArgShape(arguments) + ")");
-  }
-  if (!(values instanceof java.util.Map)) {
-    throw __rhinoLocalCtxUnmeasured("new UserInfoClaims(" + __rhinoLocalArgShape(arguments) + ")",
-      "with values that are not a Java map");
-  }
-  if (compositeScopes !== null && !(compositeScopes instanceof java.util.Map)) {
-    throw __rhinoLocalCtxUnmeasured("new UserInfoClaims(" + __rhinoLocalArgShape(arguments) + ")",
-      "with compositeScopes that are neither null nor a Java map");
-  }
-  var made = { values: __rhinoLocalCtxUnguard(values), compositeScopes: __rhinoLocalCtxUnguard(compositeScopes) };
-  __rhinoLocalHide(made, "toString", function () {
-    throw __rhinoLocalCtxUnmeasured("String(UserInfoClaims)");
-  });
-  __rhinoLocalCtxFaulting(made, "UserInfoClaims", ["getValues", "getCompositeScopes", "getClass", "hashCode", "equals"]);
-  __rhinoLocalCtxTag(made, null, "UserInfoClaims");
-  __rhinoLocalOidc.built.push(made);
-  return made;
-}
-
-// Measured: thrown from the script, the token request fails with 500
-// "Error running OIDC claims plugin", like any other throw.
-function __rhinoLocalOidcInvalidRequest(message) {
-  if (arguments.length !== 1 || typeof message !== "string") {
-    throw __rhinoLocalCtxUnmeasured("new InvalidRequestException(" + __rhinoLocalArgShape(arguments) + ")");
-  }
-  return __rhinoLocalJavaException("org.forgerock.oauth2.core.exceptions.InvalidRequestException: " + message);
-}
-
 // --- Seed ----------------------------------------------------------------------
 
 function __rhinoLocalOidcDefaults(given) {
@@ -421,16 +299,10 @@ function __rhinoLocalOidcDefaults(given) {
 // Runs after __rhinoLocalSeed, on the same seed object.
 function __rhinoLocalSeedOidcClaims(given) {
   given = given || {};
-  __rhinoLocalCtxBegin(given.engine);
-  var engine = __rhinoLocalCtx.engine;
-  var legacy = engine === "legacy";
-  // Legacy strings are real java.lang.String objects here, as the claims
-  // map's own values must be (context-common.cjs, __rhinoLocalCtxJavaString).
-  __rhinoLocalCtx.realJavaStrings = legacy;
-  __rhinoLocalCtxUnbind(__rhinoLocalOidcUnbound.both.concat(__rhinoLocalOidcUnbound[engine]));
+  __rhinoLocalCtxBegin();
+  __rhinoLocalCtxUnbind(__rhinoLocalOidcUnbound);
   var d = __rhinoLocalOidcDefaults(given);
   __rhinoLocalOidc.seed = d;
-  __rhinoLocalOidc.built = [];
   __rhinoLocalOidc.claimsKnown = null;
   __rhinoLocalOidc.claimsMethods = null;
   if (given.realm === undefined) {
@@ -447,160 +319,21 @@ function __rhinoLocalSeedOidcClaims(given) {
   clientProperties = __rhinoLocalCtxBuildClient(d.client, {
     redirectUris: true,
   });
-  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.map(__rhinoLocalCtxString), "claimsLocales", null, "claimsLocales");
-  if (legacy) {
-    claims = __rhinoLocalOidcLegacyClaims(d.oidc);
-    claimObjects = __rhinoLocalOidcClaimObjects(d.oidc);
-    requestedClaims = __rhinoLocalCtxMap("requestedClaims", [], null, function () {
-      return "{}";
-    }, null, { get: { arity: 1, fn: function () { return null; } } });
-    requestedTypedClaims = __rhinoLocalCtxList([], "requestedTypedClaims", null, "requestedTypedClaims");
-    // Measured: toArray() of the empty list, then a.length in a loop that does
-    // not run (requested.legacy.json typed, the empty join). String and JSON
-    // of that array were not read. The call itself does not fault.
-    __rhinoLocalCtxMethod(requestedTypedClaims, "requestedTypedClaims", "java.util.List", "toArray", 0, function () {
-      return __rhinoLocalCtxList([], "requestedTypedClaims.toArray()", __rhinoLocalListKinds.oidcClaimsArray,
-        "requestedTypedClaims", "toArray");
-    });
-    // Measured: bound, and null on a password grant.
-    session = null;
-    logger = __rhinoLocalOidcLegacyLogger();
-    org.forgerock.oauth2 = {
-      core: {
-        UserInfoClaims: __rhinoLocalOidcUserInfoClaims,
-        exceptions: { InvalidRequestException: __rhinoLocalOidcInvalidRequest },
-      },
-    };
-  } else {
-    claims = __rhinoLocalOidcNextGenClaims(d.oidc);
-    requestedClaims = __rhinoLocalCtxMap("requestedClaims", [], null, function () {
-      return "{  }";
-    }, null, { get: { arity: 1, fn: function () { return null; } } });
-    // getName() names the decision-node logger in runtime.cjs; this
-    // context's logger name is unmeasured.
-    __rhinoLocalHide(logger, "getName", function () {
-      throw __rhinoLocalCtxUnmeasured("logger.getName()");
-    });
-  }
+  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.slice(), "claimsLocales", null, "claimsLocales");
+  claims = __rhinoLocalOidcNextGenClaims(d.oidc);
+  requestedClaims = __rhinoLocalCtxMap("requestedClaims", [], null, function () {
+    return "{  }";
+  }, null, { get: { arity: 1, fn: function () { return null; } } });
+  // getName() names the decision-node logger in runtime.cjs; this
+  // context's logger name is unmeasured.
+  __rhinoLocalHide(logger, "getName", function () {
+    throw __rhinoLocalCtxUnmeasured("logger.getName()");
+  });
   __rhinoLocalOidc.claims = claims;
   __rhinoLocalCtxSeal();
 }
 
 // --- Harvest -------------------------------------------------------------------
-
-function __rhinoLocalOidcIsJava(value) {
-  return typeof java !== "undefined" && value !== null && typeof value === "object" &&
-    value instanceof java.lang.Object;
-}
-
-// One value of a legacy Java values map, as AM would serialise it.
-function __rhinoLocalOidcFromJava(value, path, nested) {
-  var out;
-  var it;
-  var entry;
-  if (value === null || value === undefined) {
-    if (nested || value === undefined) {
-      throw __rhinoLocalCtxUnmeasured("UserInfoClaims values" + path, "(a null nested inside a value)");
-    }
-    return null;
-  }
-  if (value instanceof java.lang.String) {
-    return String(value);
-  }
-  if (value instanceof java.lang.Boolean) {
-    return value.booleanValue();
-  }
-  if (value instanceof java.lang.Number) {
-    var n = value.doubleValue();
-    if (!isFinite(n)) {
-      throw __rhinoLocalCtxUnmeasured("UserInfoClaims values" + path, "(a non-finite number)");
-    }
-    return n;
-  }
-  if (value instanceof java.util.List) {
-    out = [];
-    it = value.iterator();
-    while (it.hasNext()) {
-      out.push(__rhinoLocalOidcFromJava(it.next(), path + "[]", true));
-    }
-    return out;
-  }
-  if (value instanceof java.util.Map) {
-    out = {};
-    it = value.entrySet().iterator();
-    while (it.hasNext()) {
-      entry = it.next();
-      if (!(entry.getKey() instanceof java.lang.String)) {
-        throw __rhinoLocalCtxUnmeasured("UserInfoClaims values" + path, "(a map with a non-string key)");
-      }
-      Object.defineProperty(out, String(entry.getKey()), {
-        value: __rhinoLocalOidcFromJava(entry.getValue(), path + "." + entry.getKey(), true),
-        enumerable: true, configurable: true, writable: true,
-      });
-    }
-    return out;
-  }
-  if (__rhinoLocalOidcIsJava(value)) {
-    throw __rhinoLocalCtxUnmeasured("UserInfoClaims values" + path, "(a Java " + value.getClass().getName() + ")");
-  }
-  if (typeof value === "string" || typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    if (!isFinite(value)) {
-      throw __rhinoLocalCtxUnmeasured("UserInfoClaims values" + path, "(a non-finite number)");
-    }
-    return value;
-  }
-  // A JS array or object held in the Java map: measured for plain JSON.
-  if (!__rhinoLocalCtxJsonSafe(value, true)) {
-    throw __rhinoLocalCtxUnmeasured("UserInfoClaims values" + path,
-      "(a value that is not a string, finite number, boolean, Java list or map, or plain JSON)");
-  }
-  return __rhinoLocalCtxCopy(value);
-}
-
-// The values map itself: its own entries may be null (kept in userinfo,
-// dropped from the id token, measured); a null deeper down is unmeasured.
-function __rhinoLocalOidcLegacyValues(map) {
-  var out = {};
-  var it = map.entrySet().iterator();
-  var entry;
-  while (it.hasNext()) {
-    entry = it.next();
-    if (!(entry.getKey() instanceof java.lang.String)) {
-      throw __rhinoLocalCtxUnmeasured("UserInfoClaims values", "(a map with a non-string key)");
-    }
-    Object.defineProperty(out, String(entry.getKey()), {
-      value: __rhinoLocalOidcFromJava(entry.getValue(), "." + entry.getKey(), false),
-      enumerable: true, configurable: true, writable: true,
-    });
-  }
-  return out;
-}
-
-function __rhinoLocalOidcLegacyCompositeScopes(map) {
-  var out;
-  var it;
-  var entry;
-  if (map === null) {
-    return null;
-  }
-  out = {};
-  it = map.entrySet().iterator();
-  while (it.hasNext()) {
-    entry = it.next();
-    var names = __rhinoLocalOidcFromJava(entry.getValue(), "", true);
-    if (!Array.isArray(names) || names.some(function (x) { return typeof x !== "string"; })) {
-      throw __rhinoLocalCtxUnmeasured("UserInfoClaims compositeScopes",
-        "(a scope mapped to anything but a list of claim names)");
-    }
-    Object.defineProperty(out, String(entry.getKey()), {
-      value: names, enumerable: true, configurable: true, writable: true,
-    });
-  }
-  return out;
-}
 
 function __rhinoLocalOidcNextGenValues(values) {
   var out = {};
@@ -647,31 +380,6 @@ function __rhinoLocalOidcNextGenCompositeScopes(value) {
 // refusal}`; a shape no capture covered faults.
 function __rhinoLocalOidcResult(completion) {
   var none = { returned: "none", values: {}, compositeScopes: null, refusal: null };
-  if (__rhinoLocalCtx.engine === "legacy") {
-    if (completion === undefined) {
-      return none;
-    }
-    if (__rhinoLocalOidc.built.indexOf(completion) !== -1) {
-      return {
-        returned: "claims",
-        values: __rhinoLocalOidcLegacyValues(completion.values),
-        compositeScopes: __rhinoLocalOidcLegacyCompositeScopes(completion.compositeScopes),
-        refusal: null,
-      };
-    }
-    if (__rhinoLocalOidcIsJava(completion) && completion instanceof java.util.LinkedHashMap) {
-      none.refusal = "Cannot cast java.util.LinkedHashMap to org.forgerock.oauth2.core.UserInfoClaims";
-      return none;
-    }
-    // Measured with the next-gen shape only, `{values, compositeScopes}`.
-    if (completion !== null && typeof completion === "object" && !__rhinoLocalOidcIsJava(completion) &&
-      __rhinoLocalCtxIsJsonObject(completion) && Object.keys(completion).sort().join() === "compositeScopes,values") {
-      none.refusal = "Error running OIDC claims plugin";
-      return none;
-    }
-    throw __rhinoLocalCtxUnmeasured("result", "(the script evaluated to " + __rhinoLocalArgShape([completion]) +
-      "; only undefined, a UserInfoClaims, a LinkedHashMap and {values, compositeScopes} were measured)");
-  }
   if (completion === undefined) {
     return none;
   }
@@ -698,7 +406,7 @@ function __rhinoLocalOidcResult(completion) {
   };
 }
 
-// The id token's script claims: the subject rule measured on both engines.
+// The id token's script claims: the subject rule (measured).
 function __rhinoLocalOidcIdToken(values) {
   var seed = __rhinoLocalOidc.seed.oidc;
   var out = {};
@@ -734,9 +442,7 @@ function __rhinoLocalOidcIdToken(values) {
 
 function __rhinoLocalHarvestOidcClaims(completion) {
   __rhinoLocalCtxAudit();
-  if (__rhinoLocalCtx.engine !== "legacy") {
-    __rhinoLocalOidcAuditClaims();
-  }
+  __rhinoLocalOidcAuditClaims();
   var result = __rhinoLocalOidcResult(completion);
   var effects = JSON.parse(__rhinoLocalHarvest());
   // The context decides no outcome; a script that assigns `outcome` assigns

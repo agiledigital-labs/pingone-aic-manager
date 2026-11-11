@@ -66,8 +66,6 @@ export class CaseRunError extends Error {
  * as {@link casePreamble}'s parts, so the runner compiles the mocks and each
  * library once per JVM instead of once per case.
  */
-const LEGACY_DENIED_CLASSES = ["java.lang.Class"];
-
 export async function runCase(
   runner: RhinoRunner,
   input: Case,
@@ -90,21 +88,11 @@ export async function runCase(
   if (options.timeoutMs !== undefined) {
     request.timeoutMs = options.timeoutMs;
   }
-  // The legacy evaluator does not enforce the next-gen decision node's
-  // allow-list: `legacy-es2015-globals` records `new java.util.HashMap()`
-  // succeeding on a live legacy run, where next-gen hides it. Installing the
-  // next-gen list there would invent a restriction the tenant does not apply.
-  const shutterApplies =
-    options.classShutter !== false && kase.given.engine !== "legacy";
-  if (shutterApplies) {
+  if (options.classShutter !== false) {
     // Each next-gen context has its own allow-list (docs/api/bindings/).
     // A library runs inside its caller's shutter: the decision-node list
     // constructs HashSet, and the four OAuth lists refuse it.
     request.classAllowList = classAllowListFor(kase);
-  } else if (options.classShutter !== false) {
-    // Legacy: no allow-list, but the two refusals measured on both engines
-    // (docs/api/12, 2026-11-10) — the engine package and java.lang.Class.
-    request.classDenyList = LEGACY_DENIED_CLASSES;
   }
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {

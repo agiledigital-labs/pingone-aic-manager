@@ -18,8 +18,7 @@
  * job. Java-level state is a different matter: a script that can reach
  * `java.lang.System`, `java.util.TimeZone` or `java.lang.Thread` can change
  * the JVM itself. Behind the class shutter (a next-gen decision-node case,
- * the default) none of those classes is visible. Without it (the legacy
- * engine, `classShutter: false`, the IDM engine, or a raw `runner.eval` with
+ * the default) none of those classes is visible. Without it (`classShutter: false`, the IDM engine, or a raw `runner.eval` with
  * no `classAllowList`) they are, so:
  *
  * - a JVM that has run any job without a shutter is never lent to another

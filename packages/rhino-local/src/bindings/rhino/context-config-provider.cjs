@@ -1,4 +1,4 @@
-// Overlay for AM's CONFIG_PROVIDER_NODE context (legacy and next-gen): the
+// Overlay for AM's CONFIG_PROVIDER_NODE context (next-gen): the
 // Configuration Provider node's script, which builds the configuration of the
 // node it wraps at journey runtime. Appended to the shared prelude for a case
 // whose `context` names it, after context-common.cjs. Same Rhino 1.7.14
@@ -7,8 +7,8 @@
 //
 // Every behaviour here was measured live on 2026-11-10 against a sandbox
 // tenant, by running a journey (a decision node seeding the node state, a
-// ConfigProviderNode wrapping a MessageNode, a decision node reading back) on
-// both engines (docs/api/12-script-bindings-matrix.md, "Config provider
+// ConfigProviderNode wrapping a MessageNode, a decision node reading back)
+// (docs/api/12-script-bindings-matrix.md, "Config provider
 // node"). Anything the measurement did not reach is a named harness fault
 // (`config-provider-unmeasured/<binding>.<member>`), never a guess; see
 // docs/rhino-local-gaps.md.
@@ -19,26 +19,14 @@
 // every request that reaches it (callback submission included); one case is
 // one invocation.
 
-var __rhinoLocalCfg = {
-  seed: null,
-};
-
 // Globals the context does not bind (typeof "undefined" on AIC, measured).
 // existingSession is in the next-gen descriptor but is a ReferenceError on a
 // request without a session cookie (measured; with one, unmeasured). `config` is unbound before the script (measured: a
 // ReferenceError), whatever a previous case left.
-var __rhinoLocalCfgUnbound = {
-  both: [
-    "config", "sharedState", "transientState", "outcome", "existingSession", "identity", "session",
-    "auditEntryDetail", "properties", "cacheManager",
-  ],
-  legacy: [
-    "callbacks", "callbacksBuilder", "action", "requestCookies", "openidm", "utils", "emailService", "jwtAssertion",
-    "jwtValidator", "policy", "cookieName", "journey", "oauthApplication", "samlApplication", "locales",
-    "resumedFromSuspend", "require",
-  ],
-  "next-gen": [],
-};
+var __rhinoLocalCfgUnbound = [
+  "config", "sharedState", "transientState", "outcome", "existingSession", "identity", "session",
+  "auditEntryDetail", "properties", "cacheManager",
+];
 
 // Every callbacksBuilder method runtime.cjs knows; only textOutputCallback
 // was measured here.
@@ -82,9 +70,9 @@ __rhinoLocalCtx.catalog = "config";
 __rhinoLocalCtx.noun = "config provider node";
 __rhinoLocalCtx.listKind = __rhinoLocalListKinds.configProvider;
 
-// --- Request maps (both engines) ----------------------------------------------
+// --- Request maps -------------------------------------------------------------
 
-// Measured on both engines: requestHeaders.get(name) and
+// Measured: requestHeaders.get(name) and
 // requestParameters.get(name) are `[object JavaList]` whose String(v) is
 // `[v1]` and whose length is the value count; get of an absent name is null;
 // for...in counts the entries. Every path to an entry (get, dot access,
@@ -99,7 +87,7 @@ function __rhinoLocalCfgRequestMap(values, caseInsensitive, label) {
     var key = caseInsensitive ? raw.toLowerCase() : raw;
     var items = typeof values[raw] === "string" ? [values[raw]] : values[raw].slice();
     var itemLabel = label + ".get(" + JSON.stringify(key) + ")";
-    var list = __rhinoLocalCtxList(items.map(__rhinoLocalCtxString), itemLabel, null, label);
+    var list = __rhinoLocalCtxList(items.slice(), itemLabel, null, label);
     __rhinoLocalCtxTag(list, "JavaList", itemLabel);
     __rhinoLocalCtxRewatch(list);
     if (keys.indexOf(key) === -1) {
@@ -131,7 +119,7 @@ function __rhinoLocalCfgNoRender(out, label) {
   });
 }
 
-// --- Next-gen: the bindings whose behaviour belongs to the wrapped node -------
+// --- The bindings whose behaviour belongs to the wrapped node ------------------
 
 // Measured: on the request that reaches the node, callbacks.isEmpty() is
 // true. On the re-run when the wrapped node's callbacks are submitted it is
@@ -184,127 +172,30 @@ function __rhinoLocalCfgAction() {
   return __rhinoLocalCtxWatch(out, "action");
 }
 
-// --- Legacy: nodeState.keys() answers a live Java set ----------------------
-
-// Measured: keys().iterator() walks every key with hasNext()/next(), and
-// String() of each is the key. Membership is live: a key put with putShared
-// earlier in the same script is listed, and so are transient keys, unlike
-// the social context's start-of-script snapshot. That is all that was read,
-// so the set's class, size, contains, array-likeness and rendering fault
-// (Sol ctx r4 P2-2); the view reads the state each time it is walked.
-var __rhinoLocalCfgKeySetMethods = [
-  "size", "isEmpty", "contains", "containsAll", "toArray", "forEach", "stream", "add", "addAll", "remove",
-  "removeAll", "retainAll", "clear", "getClass", "hashCode", "equals",
-  "join", "sort", "slice", "indexOf", "map", "filter", "concat",
-];
-
-// Only iterator() of a non-empty set was measured (surface nsKeys), so an
-// empty one faults through the catalog row, and for...in and [i] fault at
-// every size: AIC answers a Java set's members and fields there, which this
-// view does not reproduce.
-function __rhinoLocalCfgLegacyKeys() {
-  return function () {
-    if (arguments.length !== 0) {
-      throw __rhinoLocalCtxUnmeasured("nodeState.keys(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    var grant = __rhinoLocalCollectionEmpty("nodeState.keys");
-    var out = __rhinoLocalIndexTrapped(null, function (index) {
-      throw __rhinoLocalCtxUnmeasured("nodeState.keys()[" + index + "]");
-    });
-    __rhinoLocalEnumTrap(out, function () {
-      return __rhinoLocalCtxUnmeasured("nodeState.keys() for...in");
-    });
-    __rhinoLocalCtxMethod(out, "nodeState.keys()", "java.util.Set", "iterator", 0, function () {
-      var names = __rhinoLocalNodeStateKeyNames();
-      var at = 0;
-      if (names.length === 0 && !(grant !== null && grant.iterator === true)) {
-        throw __rhinoLocalCtxUnmeasured("nodeState.keys().iterator()",
-          "of a size-zero set (this operation on a size-zero set was not measured)");
-      }
-      var it = __rhinoLocalCtxBare();
-      __rhinoLocalCtxMethod(it, "nodeState.keys().iterator()", "java.util.Iterator", "hasNext", 0, function () {
-        return at < names.length;
-      });
-      __rhinoLocalCtxMethod(it, "nodeState.keys().iterator()", "java.util.Iterator", "next", 0, function () {
-        if (at >= names.length) {
-          throw __rhinoLocalCtxUnmeasured("nodeState.keys().iterator().next()", "past the last key");
-        }
-        at += 1;
-        return __rhinoLocalCtxString(names[at - 1]);
-      });
-      __rhinoLocalCtxFaulting(it, "nodeState.keys().iterator()", ["remove", "forEachRemaining"]);
-      __rhinoLocalCtxToJSON(it, "nodeState.keys().iterator()");
-      __rhinoLocalCfgNoRender(it, "nodeState.keys().iterator()");
-      __rhinoLocalCtxTag(it, null, "nodeState.keys().iterator()");
-      return it;
-    });
-    __rhinoLocalCtxFaulting(out, "nodeState.keys()", __rhinoLocalCfgKeySetMethods);
-    __rhinoLocalCtxToJSON(out, "nodeState.keys()");
-    __rhinoLocalCfgNoRender(out, "nodeState.keys()");
-    __rhinoLocalCtxTag(out, null, "nodeState.keys()");
-    return out;
-  };
-}
-
-// --- Legacy: nodeState.get answers a JsonValue -------------------------------
-
-// Measured on strings, numbers, a nested object, a boolean and a transient
-// value: `[object JavaObject]`, String(v) the JSON rendering with doubles
-// (`"hello"`, `42.0`, `{ "a": 1.0, ... }`), `.a` undefined and
-// JSON.stringify(v) that rendering as a JSON string. A key the state does
-// not hold answers JS null.
-function __rhinoLocalCfgLegacyGet(nodeGet) {
-  return function (key) {
-    var value = nodeGet.apply(nodeState, arguments);
-    var label = "nodeState.get(" + JSON.stringify(String(key)) + ")";
-    if (value === null) {
-      if (nodeState.isDefined(key)) {
-        throw __rhinoLocalCtxUnmeasured("nodeState.get()", "of a key holding null");
-      }
-      return null;
-    }
-    var out = __rhinoLocalCtxJsonValue(value);
-    __rhinoLocalHide(out, "toJSON", function () {
-      return String(out);
-    });
-    return __rhinoLocalCtxWatch(out, label);
-  };
-}
-
 // --- Seed ----------------------------------------------------------------------
 
 // Runs after __rhinoLocalSeed, on the same seed object.
 function __rhinoLocalSeedConfigProvider(given) {
   given = given || {};
-  __rhinoLocalCtxBegin(given.engine);
-  var engine = __rhinoLocalCtx.engine;
-  var legacy = engine === "legacy";
-  // logger.getName() is a java.lang.String on legacy (measured).
-  __rhinoLocalCtx.realJavaStrings = legacy;
-  __rhinoLocalCtxUnbind(__rhinoLocalCfgUnbound.both.concat(__rhinoLocalCfgUnbound[engine]));
-  __rhinoLocalCfg.seed = { engine: engine };
+  __rhinoLocalCtxBegin();
+  __rhinoLocalCtxUnbind(__rhinoLocalCfgUnbound);
   if (given.realm === undefined) {
     realm = "/alpha";
   }
-  var loggerName = "scripts.CONFIG_PROVIDER_NODE" + (legacy ? "" : "_NEXT_GEN") + "." +
+  var loggerName = "scripts.CONFIG_PROVIDER_NODE_NEXT_GEN." +
     __rhinoLocal.loggerScriptId + ".(" + scriptName + ")";
   __rhinoLocalHide(logger, "getName", function () {
-    return legacy ? __rhinoLocalCtxJavaString(loggerName) : loggerName;
+    return loggerName;
   });
   requestHeaders = __rhinoLocalCfgRequestMap(given.requestHeaders, true, "requestHeaders");
   requestParameters = __rhinoLocalCfgRequestMap(given.requestParameters, false, "requestParameters");
-  if (legacy) {
-    __rhinoLocalHide(nodeState, "get", __rhinoLocalCfgLegacyGet(nodeState.get));
-    __rhinoLocalHide(nodeState, "keys", __rhinoLocalCfgLegacyKeys());
-  } else {
-    // Measured: the context's class shutter refuses the Java set keys() builds.
-    __rhinoLocalHide(nodeState, "keys", function () {
-      throw __rhinoLocalShutterError("java.util.HashSet");
-    });
-    callbacks = __rhinoLocalCfgCallbacks();
-    callbacksBuilder = __rhinoLocalCfgCallbacksBuilder();
-    action = __rhinoLocalCfgAction();
-  }
+  // Measured: the context's class shutter refuses the Java set keys() builds.
+  __rhinoLocalHide(nodeState, "keys", function () {
+    throw __rhinoLocalShutterError("java.util.HashSet");
+  });
+  callbacks = __rhinoLocalCfgCallbacks();
+  callbacksBuilder = __rhinoLocalCfgCallbacksBuilder();
+  action = __rhinoLocalCfgAction();
   __rhinoLocalCtxSeal();
 }
 
@@ -313,37 +204,6 @@ function __rhinoLocalSeedConfigProvider(given) {
 function __rhinoLocalCfgIsJava(value) {
   return typeof java !== "undefined" && value !== null && typeof value === "object" &&
     value instanceof java.lang.Object;
-}
-
-// One value of a legacy java.util.Map assigned to `config`. Measured: a
-// HashMap holding a string and a nested HashMap of a string.
-function __rhinoLocalCfgFromJava(value, path) {
-  var out;
-  var it;
-  var entry;
-  if (value instanceof java.lang.String) {
-    return String(value);
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value instanceof java.util.Map) {
-    out = {};
-    it = value.entrySet().iterator();
-    while (it.hasNext()) {
-      entry = it.next();
-      if (!(entry.getKey() instanceof java.lang.String) && typeof entry.getKey() !== "string") {
-        throw __rhinoLocalCtxUnmeasured("config" + path, "(a Java map with a non-string key)");
-      }
-      Object.defineProperty(out, String(entry.getKey()), {
-        value: __rhinoLocalCfgFromJava(entry.getValue(), path + "." + entry.getKey()),
-        enumerable: true, configurable: true, writable: true,
-      });
-    }
-    return out;
-  }
-  throw __rhinoLocalCtxUnmeasured("config" + path, "(a value in a Java map that is not a string or Java map; " +
-    "only those were measured)");
 }
 
 // One value inside a plain-object `config`. Measured: strings, integral and
@@ -423,20 +283,11 @@ function __rhinoLocalCfgResult(assigned, value) {
   if (Array.isArray(value)) {
     return refused("an array");
   }
-  var config;
-  if (__rhinoLocalCfgIsJava(value)) {
-    if (__rhinoLocalCtx.engine === "legacy" && value instanceof java.util.Map) {
-      config = __rhinoLocalCfgFromJava(value, "");
-    } else {
-      throw __rhinoLocalCtxUnmeasured("config", "(" + __rhinoLocalArgShape([value]) +
-        "; only a java.util.HashMap on the legacy engine was measured)");
-    }
-  } else if (__rhinoLocalCtxIsJsonObject(value)) {
-    config = __rhinoLocalCfgFromJs(value, "", false);
-  } else {
+  if (__rhinoLocalCfgIsJava(value) || !__rhinoLocalCtxIsJsonObject(value)) {
     throw __rhinoLocalCtxUnmeasured("config", "(" + __rhinoLocalArgShape([value]) +
       "; only plain objects were measured as accepted)");
   }
+  var config = __rhinoLocalCfgFromJs(value, "", false);
   return { returned: "config", config: config, refusal: null };
 }
 

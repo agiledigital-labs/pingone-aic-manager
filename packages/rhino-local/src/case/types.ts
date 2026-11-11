@@ -28,7 +28,11 @@ export type Pattern = string | RegExp;
 export const CASE_KEYS = ["name", "script", "outcomes", "given", "expect", "context"] as const;
 export type CaseKey = (typeof CASE_KEYS)[number];
 
-export const ENGINES = ["next-gen", "legacy"] as const;
+/**
+ * The AM script engine. Only next-gen is emulated: the legacy (V1) engine was
+ * removed, and `given.engine: "legacy"` fails validation naming the removal.
+ */
+export const ENGINES = ["next-gen"] as const;
 export type Engine = (typeof ENGINES)[number];
 
 /**
@@ -524,10 +528,8 @@ export interface LibraryEffect {
 /**
  * The scope lists an OAuth2 validate scope script receives, as measured on
  * 2026-11-10 (docs/api/12-script-bindings-matrix.md, "OAuth2 validate
- * scope"). Next-gen hands over Java lists; legacy a HashSet of the requested
- * scopes and TreeSets of the others, whose iteration order (hash order) is
- * not reproduced. `client` and `request` seed next-gen's `clientProperties`
- * and `requestProperties`; legacy binds neither.
+ * scope"). The script is handed Java lists. `client` and `request` seed
+ * `clientProperties` and `requestProperties`.
  */
 export interface ValidateScopeSeed {
   /** `requestedScopes`: the request's `scope` parameter. AM does not substitute the default scopes when it is absent (measured). Default `[]`. */
@@ -548,8 +550,7 @@ export interface ValidateScopeSeed {
  */
 export interface SocialIdpSeed {
   /**
-   * The provider's profile: the `rawProfile` binding (a Java map on
-   * next-gen, a JsonValue on legacy). Only string values were measured;
+   * The provider's profile: the `rawProfile` binding (a Java map). Only string values were measured;
    * reading any other value faults. Default `{}`.
    */
   rawProfile?: JsonObject;
@@ -602,8 +603,7 @@ export interface ValidateScopeExpect {
   granted?: string[];
   /**
    * The `error_description` of a 400 `invalid_scope` denial: next-gen
-   * `scopeValidatorHelper.throwInvalidScope(msg)`, legacy `throw new
-   * org.forgerock.oauth2.core.exceptions.InvalidScopeException(msg)`.
+   * `scopeValidatorHelper.throwInvalidScope(msg)`.
    * Declaring it makes `accepted` default to `false`.
    */
   invalidScope?: string;
@@ -643,7 +643,7 @@ export interface MayActExpect {
   act?: JsonValue;
   /**
    * The scopes on the issued token, compared as a set. Defaults to the
-   * request's scopes; a script's `token.setScope` (legacy) replaces them.
+   * request's scopes.
    */
   scope?: string[];
   /**
@@ -728,8 +728,7 @@ export interface OidcClaimsExpect {
   compositeScopes?: ExpectedValue;
   /**
    * `false` when AM would fail the token request although the script
-   * returned (measured: a legacy script whose value is not a
-   * `UserInfoClaims`). Default `true`.
+   * returned. Default `true`.
    */
   issued?: boolean;
 }
@@ -834,7 +833,7 @@ export interface ClientSeed {
   allowedResponseTypes?: string[];
   /** Default `{}`. */
   customProperties?: Record<string, string>;
-  /** Next-gen only (legacy does not list it). Default `[]`. */
+  /** Default `[]`. */
   redirectUris?: string[];
 }
 
@@ -1142,8 +1141,7 @@ export interface MayActCaseInit {
 
 /**
  * A `LIBRARY` case: the script is the library body. The harness `require()`s
- * it and calls `given.library.export` with `given.library.args`. Next-gen
- * only; legacy has no `require()`.
+ * it and calls `given.library.export` with `given.library.args`.
  */
 export interface LibraryCaseInit {
   name: string;

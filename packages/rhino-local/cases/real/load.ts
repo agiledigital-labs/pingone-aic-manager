@@ -102,7 +102,6 @@ export interface RealEntry {
   kase: Case;
   /** Path of the original fixture, relative to the repo root. */
   origin: string;
-  kind: "next-gen" | "legacy";
   /**
    * Present when the case cannot yet produce a verdict. The suite stays green
    * by skipping the pass assertion and instead asserting this throw still
@@ -188,7 +187,6 @@ export function profileForRun(entry: RealEntry): EnvProfile | undefined {
 
 export function realCase(input: {
   name: string;
-  kind: "nextgen" | "legacy";
   origin: string;
   given?: Given;
   expect: Expect;
@@ -209,17 +207,12 @@ export function realCase(input: {
     script: loadOrigin(input.origin, input.rewrites),
     expect: input.expect,
   };
-  let given: Given | undefined = input.given;
-  if (input.kind === "legacy") {
-    given = { ...(given ?? {}), engine: "legacy" };
-  }
-  if (given !== undefined) {
-    init.given = given;
+  if (input.given !== undefined) {
+    init.given = input.given;
   }
   const entry: RealEntry = {
     kase: defineCase(init),
     origin: input.origin,
-    kind: input.kind === "legacy" ? "legacy" : "next-gen",
   };
   if (input.blocked !== undefined) {
     entry.blocked = input.blocked;

@@ -21,7 +21,7 @@ const profile: EnvProfile = { profileVersion: 3, tenant: "sandbox", pulledAt: "2
 const live: LiveHooks = { probed: "2026-09-29", hooks: { alpha_role: ["postCreate", "onDelete"] } };
 type Input = Parameters<typeof realCase>[0];
 const build = (overrides: Partial<Input>, withProfile = true) => {
-  const input: Input = { name: "live-hooks-probe", kind: "nextgen", origin: writes.origin, expect: writes.kase.expect, liveHooks: live, ...overrides };
+  const input: Input = { name: "live-hooks-probe", origin: writes.origin, expect: writes.kase.expect, liveHooks: live, ...overrides };
   if (withProfile) input.profile = overrides.profile ?? profile;
   return realCase(input);
 };

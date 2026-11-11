@@ -332,10 +332,8 @@ public final class Runner {
     }
 
     final List<String> classAllowList;
-    final List<String> classDenyList;
     try {
       classAllowList = Json.optionalStringList(job, "classAllowList");
-      classDenyList = Json.optionalStringList(job, "classDenyList");
     } catch (RuntimeException e) {
       return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
     }
@@ -361,7 +359,7 @@ public final class Runner {
       // Only under a shutter policy, like the shutter itself: a raw job (and
       // `classShutter: false`) deliberately sees the engine, and the harness's
       // own tests read the Context from script.
-      if (classAllowList != null || classDenyList != null) {
+      if (classAllowList != null) {
         cx.setWrapFactory(new EngineGuard(faults, bridge));
       }
       // No list means no shutter, which is the pre-shutter behaviour: every
@@ -369,11 +367,6 @@ public final class Runner {
       // pass that context's allowLists.
       if (classAllowList != null) {
         cx.setClassShutter(AmClassShutter.of(classAllowList));
-      } else if (classDenyList != null) {
-        // The deny-only form is not a confinement: it leaves System and Thread
-        // visible, so shuttered() is still false and the pool still discards
-        // this JVM.
-        cx.setClassShutter(AmClassShutter.denying(classDenyList));
       }
       if (cx instanceof AmContextFactory.ObservedContext) {
         ((AmContextFactory.ObservedContext) cx).timeoutMs = timeoutMs;

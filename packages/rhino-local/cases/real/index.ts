@@ -104,7 +104,6 @@ interface Extras {
 }
 
 function entry(
-  kind: "nextgen" | "legacy",
   name: string,
   originFile: string,
   expectPayload: Record<string, unknown>,
@@ -112,7 +111,6 @@ function entry(
 ): RealEntry {
   const init: {
     name: string;
-    kind: "nextgen" | "legacy";
     origin: string;
     expect: {
       outcome: string | null;
@@ -129,10 +127,9 @@ function entry(
     liveHooks?: LiveHooks;
   } = {
     name,
-    kind,
     origin: `scripts/rhino-script-tester/${originFile}`,
     expect: {
-      outcome: kind === "legacy" ? "ok" : null,
+      outcome: null,
       callbacks: hiddenValue(expectPayload),
     },
     given: firstVisit(extras.given),
@@ -170,7 +167,7 @@ function ng(
   payload: Record<string, unknown>,
   extras: Extras = {}
 ): RealEntry {
-  return entry("nextgen", name, originFile, { ok: true, feature: name, ...payload }, extras);
+  return entry(name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
 
 function ngFeature(
@@ -180,16 +177,7 @@ function ngFeature(
   payload: Record<string, unknown>,
   extras: Extras = {}
 ): RealEntry {
-  return entry("nextgen", name, originFile, { ok: true, feature, ...payload }, extras);
-}
-
-function legacy(
-  name: string,
-  originFile: string,
-  payload: Record<string, unknown>,
-  extras: Extras = {}
-): RealEntry {
-  return entry("legacy", name, originFile, { ok: true, feature: name, ...payload }, extras);
+  return entry(name, originFile, { ok: true, feature, ...payload }, extras);
 }
 
 const BINDINGS_AVAILABILITY_VALUE = JSON.stringify({
@@ -266,7 +254,7 @@ const STRING_NORMALIZE_RESULTS = [
 ];
 
 /**
- * Next-gen and legacy scripted-decision probes copied from
+ * Next-gen scripted-decision probes copied from
  * `scripts/rhino-script-tester/`. Expects are the live-recorded outcomes from
  * `docs/api/12-script-bindings-matrix.md` and `docs/api/14-am-identity-attributes.md`
  * (and, for language rows, the values the fixture itself computes).
@@ -303,7 +291,6 @@ export const realCases: RealEntry[] = [
   // without a `value` key because JSON.stringify drops `undefined`.
   realCase({
     name: "const-top-level",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/fixtures/const-top-level.script.js",
     expect: {
       outcome: null,
@@ -396,7 +383,6 @@ export const realCases: RealEntry[] = [
 
   realCase({
     name: "rhino-var-control",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/scripts/rhino-var-control.script.js",
     expect: {
       outcome: null,
@@ -1175,63 +1161,6 @@ export const realCases: RealEntry[] = [
       B_manager: 1,
     }),
   }, { given: managerSwapGiven, rewrites: reportAndManager }),
-
-  // Legacy engine. Emit is JavaImporter + Action.send; next-gen-only
-  // bindings are undefined so scripts cannot take the callbacksBuilder
-  // fallback.
-  legacy("legacy-bindings", "fixtures-legacy/legacy-bindings.script.js", {
-    value: JSON.stringify({
-      nodeState: "object",
-      sharedState: "object",
-      transientState: "object",
-      callbacks: "object",
-      callbacksBuilder: "undefined",
-      action: "undefined",
-      idRepository: "object",
-      openidm: "undefined",
-      httpClient: "object",
-      utils: "undefined",
-      requestHeaders: "object",
-      requestParameters: "object",
-      requestCookies: "undefined",
-      existingSession: "undefined",
-      resumedFromSuspend: "boolean",
-      secrets: "object",
-      JavaImporter: "function",
-      logger: "object",
-      realm: "string",
-      systemEnv: "object",
-      scriptName: "string",
-    }),
-  }),
-  legacy(
-    "legacy-es2015-globals",
-    "fixtures-legacy/legacy-es2015-globals.script.js",
-    {
-      value: [
-        { name: "typeof Map", ok: true, value: "undefined" },
-        { name: "typeof Set", ok: true, value: "undefined" },
-        { name: "typeof WeakMap", ok: true, value: "undefined" },
-        { name: "typeof WeakSet", ok: true, value: "undefined" },
-        { name: "typeof Symbol", ok: true, value: "undefined" },
-        { name: "typeof Proxy", ok: true, value: "undefined" },
-        { name: "typeof Reflect", ok: true, value: "undefined" },
-        { name: "typeof Promise", ok: true, value: "undefined" },
-        { name: "typeof JSON", ok: true, value: "object" },
-        {
-          name: "new Map + set/get/size",
-          ok: false,
-          error: 'ReferenceError: "Map" is not defined.',
-        },
-        {
-          name: "new Set + add/has/size",
-          ok: false,
-          error: 'ReferenceError: "Set" is not defined.',
-        },
-        { name: "java.util.HashMap", ok: true, value: "1:1" },
-      ],
-    }
-  ),
 
   // Live payload, verbatim (probe run 2026-09-29).
   ng("binding-utils", "fixtures/binding-utils.script.js", {
@@ -4276,7 +4205,6 @@ export const realCases: RealEntry[] = [
   // Live callbacks, parsed from the probe run's /authenticate body (2026-09-29).
   realCase({
     name: "binding-callbacks-builder",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/fixtures/binding-callbacks-builder.script.js",
     given: firstVisit(),
     expect: {
