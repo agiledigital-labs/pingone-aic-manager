@@ -32,7 +32,6 @@ var __rhinoLocal = {
   openidmCallCounts: {},
   generatedId: 0,
   outcome: null,
-  engine: "next-gen",
   loggerScriptId: "<unseeded-script-id>",
   callbacks: [],
   openidm: [],
@@ -634,8 +633,7 @@ function __rhinoLocalDetailStub(name) {
 // A path missing here has no such basis: its range is the harness's guess, and
 // a call outside it is a harness fault (`arity-unknown/<path>`) -- AIC may
 // accept the call, so a script catching the local throw would pass on a path
-// AIC never takes. The legacy engine has no introspection file, so every path
-// is a guess there.
+// AIC never takes.
 var __rhinoLocalArityBasis = (function () {
   var basis = {};
   var pkg = "org.forgerock.openam.";
@@ -756,7 +754,7 @@ var __rhinoLocalArityBasis = (function () {
 // stays "function". A regexp is typeof "object" and implements
 // org.mozilla.javascript.Function (NativeRegExpCallable), so it is
 // "function". That Java call does not consult the class shutter.
-// Script-visible getClass() reflects java.lang.Class, which the legacy deny
+// Script-visible getClass() reflects java.lang.Class, which the class shutter
 // refuses, so the overload message itself would become
 // "Access to Java class \"java.lang.Class\" is prohibited." A plain script
 // object is "object". Without the host (node:vm) the interface check cannot
@@ -822,7 +820,7 @@ function __rhinoLocalInternalError(message) {
 // count only a varargs reading of a trailing array parameter would accept has
 // no basis either way (see `arrayTail`).
 function __rhinoLocalArityRefusal(path, args, expected) {
-  var basis = __rhinoLocal.engine === "legacy" ? undefined : __rhinoLocalArityBasis[path];
+  var basis = __rhinoLocalArityBasis[path];
   if (basis !== undefined && basis.arrayTail !== undefined && args.length >= basis.arrayTail) {
     return __rhinoLocalFault("arity-unknown/" + path,
       "rhino-local: " + path + " arity=" + args.length + " (AIC's introspection lists " + expected +
@@ -945,7 +943,7 @@ function __rhinoLocalMergeBucket(bucketName, object) {
   }
 }
 
-// A legacy java.util.List as a real JS array. `binding` registers it
+// A java.util.List as a real JS array. `binding` registers it
 // (__rhinoLocalCollectionRegister). An array cannot trap its own length, so
 // in a script context an empty one is a list view of the context's kind,
 // whose catalog row decides every empty read.
@@ -1033,7 +1031,6 @@ function __rhinoLocalArgShape(args) {
 // `allowEmptyIndex` name the routes a kind measured on a size-zero list
 // (the request list's size() and [i]/get), then `emptyRoutes`, then
 // `emptyMeasured`. Building the list does not fault.
-// The legacy engine is not measured and keeps the older shapes.
 var __rhinoLocalListKinds = {
   request: {
     id: "request-list-unmeasured",
@@ -1204,7 +1201,7 @@ function __rhinoLocalToArrayGrant(parent) {
 // Registration (Sol ctx r14 P2-2). Every constructor of a script-visible
 // collection names its binding. In a script context (the catalog is loaded
 // only there, and the context overlay sets `__rhinoLocalCtx.catalog`) the
-// binding resolves to the catalog row `<context>.<legacy|next>.<binding>`,
+// binding resolves to the catalog row `<context>.next.<binding>`,
 // and a binding with no row is a tallied fault at construction: a new
 // collection cannot reach a script without a row, and the conformance test
 // runs every row. Each constructed id is recorded in
@@ -1222,7 +1219,7 @@ function __rhinoLocalCollectionRegister(binding) {
   if (typeof ctx !== "string") {
     throw new Error("rhino-local: this script context names no collection catalog key");
   }
-  var id = ctx + "." + (__rhinoLocal.engine === "legacy" ? "legacy" : "next") + "." + binding;
+  var id = ctx + ".next." + binding;
   var rows = __rhinoLocalCollectionCatalog;
   var row = null;
   var i;
@@ -1284,7 +1281,7 @@ function __rhinoLocalIndexTrapped(proto, read) {
 }
 
 // Key enumeration of an empty collection that no capture measured: for...in
-// and for each call `__iterator__` (Rhino 1.7.14, both engines), so the loop
+// and for each call `__iterator__` (Rhino 1.7.14), so the loop
 // faults before it can count a key, and no key is invented. The caller
 // removes it when the collection grows (__rhinoLocalEnumGrew).
 function __rhinoLocalEnumTrap(object, fault) {
@@ -1457,12 +1454,6 @@ function __rhinoLocalNativeMethod(name, original, body) {
       row = __rhinoLocalListRow(arguments[k]);
       if (row !== null && row.kind.concatArgument === false) {
         throw __rhinoLocalListUnmeasured(row.kind, "[].concat(v)");
-      }
-      // A legacy set is not a list. An empty one still consults the one
-      // decision; a populated one stays a single element. The helper lives
-      // in context-common, which a decision-node prelude does not load.
-      if (row === null && typeof __rhinoLocalEmptySetArg === "function") {
-        __rhinoLocalEmptySetArg(arguments[k]);
       }
       args[k] = row === null ? arguments[k] : __rhinoLocalListCopy(row, "[].concat(v)");
     }
@@ -1747,8 +1738,7 @@ function __rhinoLocalRequestList(items, binding) {
 }
 
 // An openidm list. In the decision node emptyMeasured covers every empty
-// route; a script context that keeps openidm has a catalog row for it. The
-// legacy engine has no openidm binding, so every openidm list is next-gen.
+// route; a script context that keeps openidm has a catalog row for it.
 function __rhinoLocalOpenidmList(items) {
   return __rhinoLocalListView(items, __rhinoLocalListKinds.openidm, "openidm");
 }
@@ -1757,8 +1747,7 @@ function __rhinoLocalRequestMap(values, options) {
   var caseInsensitive = Boolean(options && options.caseInsensitive);
   var asList = !(options && options.asList === false);
   var label = (options && options.label) || "request map";
-  var legacy = Boolean(options && options.engine === "legacy");
-  var makeList = legacy ? __rhinoLocalJavaList : __rhinoLocalRequestList;
+  var makeList = __rhinoLocalRequestList;
   var binding = label === "requestHeaders" || label === "requestParameters" ? label : "requestMap";
   var map = {};
   var store = {};
@@ -1821,10 +1810,6 @@ function __rhinoLocalRequestMap(values, options) {
   // existingSession. Anything else passed is unmeasured.
   __rhinoLocalHide(map, "forEach", function (action) {
     var k;
-    if (legacy) {
-      throw __rhinoLocalFault("request-map-foreach-legacy",
-        "rhino-local: " + label + ".forEach on the legacy engine is unmeasured (measured on next-gen only)");
-    }
     if (arguments.length === 1 && typeof action === "function") {
       for (k = 0; k < order.length; k += 1) {
         action.call(undefined, order[k], store[order[k]]);
@@ -1846,7 +1831,7 @@ function __rhinoLocalRequestMap(values, options) {
  * `existingSession`: a String->String map of AM's own session properties plus
  * anything a prior journey stored with `putSessionProperty`. Present only when
  * the request carries a session cookie. Measured 2026-09-14 against a live
- * tenant on both evaluators (docs/api/12-script-bindings-matrix.md).
+ * tenant (docs/api/12-script-bindings-matrix.md).
  *
  * Deliberately NOT a plain object; each difference is one a plain object would
  * get wrong in the false-pass direction:
@@ -1855,15 +1840,13 @@ function __rhinoLocalRequestMap(values, options) {
  *   - `keySet()` exists and is a trap: the returned java.util.HashMap$KeySet is
  *     refused by AM's class shutter. Iterate with for...in, as the request maps
  *     above already require.
- *   - `String(session)` renders per evaluator: next-gen wraps the map in
- *     MapScriptWrapper, whose toString is JSON-ish; legacy hands over the raw
- *     Java map, so it is AbstractMap.toString. Key ORDER is AM's hash order and
- *     is not reproduced -- seeding order is used instead.
+ *   - `String(session)` wraps the map in MapScriptWrapper, whose toString is
+ *     JSON-ish. Key ORDER is AM's hash order and is not reproduced -- seeding
+ *     order is used instead.
  */
-function __rhinoLocalSessionMap(values, engine) {
+function __rhinoLocalSessionMap(values) {
   var map = typeof Object.create === "function" ? Object.create(null) : {};
   var names = values ? Object.keys(values) : [];
-  var legacy = engine === "legacy";
   var i;
   for (i = 0; i < names.length; i += 1) {
     map[String(names[i])] = String(values[names[i]]);
@@ -1902,17 +1885,11 @@ function __rhinoLocalSessionMap(values, engine) {
     var parts = [];
     var j;
     for (j = 0; j < keys.length; j += 1) {
-      if (legacy) {
-        parts.push(keys[j] + "=" + map[keys[j]]);
-      } else {
-        parts.push(
-          JSON.stringify(keys[j]) + ": " + JSON.stringify(map[keys[j]])
-        );
-      }
+      parts.push(
+        JSON.stringify(keys[j]) + ": " + JSON.stringify(map[keys[j]])
+      );
     }
-    return legacy
-      ? "{" + parts.join(", ") + "}"
-      : "{ " + parts.join(", ") + " }";
+    return "{ " + parts.join(", ") + " }";
   });
   return map;
 }
@@ -1926,26 +1903,6 @@ function __rhinoLocalSessionKeys(map) {
     }
   }
   return out;
-}
-
-function __rhinoLocalStateMap(bucketName) {
-  var map = {};
-  __rhinoLocalHide(map, "get", function (key) {
-    __rhinoLocalExpectArity(bucketName + ".get", arguments, 1);
-    var k = String(key);
-    if (!__rhinoLocalHas(__rhinoLocal[bucketName], k)) {
-      return null;
-    }
-    return __rhinoLocal[bucketName][k];
-  });
-  __rhinoLocalHide(map, "put", function (key, value) {
-    __rhinoLocalExpectArity(bucketName + ".put", arguments, 2);
-    if (value === undefined) {
-      throw __rhinoLocalFault("state-put-undefined", "rhino-local: " + bucketName + ".put: value is undefined");
-    }
-    __rhinoLocal[bucketName][String(key)] = value;
-  });
-  return map;
 }
 
 function __rhinoLocalLookupState(key) {
@@ -2440,7 +2397,7 @@ function __rhinoLocalLogArg(value) {
 }
 
 function __rhinoLocalLog(level, args) {
-  var basis = __rhinoLocal.engine === "legacy" ? undefined : __rhinoLocalArityBasis["logger." + level];
+  var basis = __rhinoLocalArityBasis["logger." + level];
   var varargs = basis !== undefined && basis.varargs !== undefined && args.length >= basis.varargs;
   if (args.length < 1 || (args.length > 3 && !varargs)) {
     throw __rhinoLocalArityRefusal("logger." + level, args, "1..3");
@@ -2465,9 +2422,6 @@ function __rhinoLocalLog(level, args) {
 }
 
 logger.getName = function () {
-  if (__rhinoLocal.engine === "legacy") {
-    return scriptName;
-  }
   return "scripts.AUTHENTICATION_TREE_DECISION_NODE." +
     __rhinoLocal.loggerScriptId + ".(" + scriptName + ")";
 };
@@ -5273,65 +5227,19 @@ if (__rhinoLocalRealOrg) {
 }
 var org = __rhinoLocalOrgOverlay;
 
-function __rhinoLocalHiddenValueCallback(id, value) {
-  this.type = "HiddenValueCallback";
-  this.id = String(id);
-  this.value = value === undefined || value === null ? "" : String(value);
-}
+// Next-gen hides `org.forgerock.openam.auth.node.api.Action` and
+// `com.sun.identity.authentication.callbacks.HiddenValueCallback` from a
+// script, even through an importer that names them (typeof "undefined",
+// measured 2026-10-01, live-java-importer-scope). These two inert sentinels
+// exist only so JavaImporter can recognise and swallow the names; neither is
+// ever attached to an importer.
+var __rhinoLocalActionClass = {};
+var __rhinoLocalHiddenValueCallback = function () {};
 
-function __rhinoLocalActionBuilder() {
-  return {
-    build: function () {
-      if (__rhinoLocal.outcome === null) {
-        __rhinoLocal.outcome = "ok";
-        outcome = "ok";
-      }
-      return action;
-    },
-  };
-}
-
-var __rhinoLocalActionClass = {
-  send: function () {
-    var i;
-    var cb;
-    var fields;
-    var key;
-    for (i = 0; i < arguments.length; i += 1) {
-      cb = arguments[i];
-      if (!cb) {
-        continue;
-      }
-      fields = {};
-      for (key in cb) {
-        if (Object.prototype.hasOwnProperty.call(cb, key) && key !== "type") {
-          fields[key] = cb[key];
-        }
-      }
-      __rhinoLocalCallback(
-        cb.type ? String(cb.type) : "HiddenValueCallback",
-        fields
-      );
-    }
-    if (__rhinoLocal.outcome === null) {
-      __rhinoLocal.outcome = "ok";
-      outcome = "ok";
-    }
-    return __rhinoLocalActionBuilder();
-  },
-  goTo: function (name) {
-    __rhinoLocal.outcome = String(name);
-    outcome = __rhinoLocal.outcome;
-    return __rhinoLocalActionBuilder();
-  },
-};
-
-// The legacy result path's classes, reachable the way a script names them:
-// `org.forgerock.openam.auth.node.api.Action` and
-// `com.sun.identity.authentication.callbacks.HiddenValueCallback`, as the
-// class or its package. Neither class is on the local classpath, so on the
-// JVM those expressions are Rhino package objects and are recognised by name;
-// in the Node path the branches do not exist and are supplied here.
+// The two classes, reachable the way a script names them: as the class or its
+// package. Neither class is on the local classpath, so on the JVM those
+// expressions are Rhino package objects and are recognised by name; in the
+// Node path the branches do not exist and are supplied here.
 var __rhinoLocalActionPackage = { Action: __rhinoLocalActionClass };
 var __rhinoLocalCallbacksPackage = {
   HiddenValueCallback: __rhinoLocalHiddenValueCallback
@@ -5372,8 +5280,6 @@ JavaImporter = function () {
   var real = null;
   var imports = [];
   var jsonValue = false;
-  var actionClass = false;
-  var hiddenValueCallback = false;
   var i;
   // Each modelled class is reachable through its class or its package, and
   // through nothing else: JavaImporter() and JavaImporter(java.util) leave it
@@ -5392,7 +5298,7 @@ JavaImporter = function () {
         "org.forgerock.openam.auth.node.api.Action"
       )
     ) {
-      actionClass = true;
+      // Recognised and dropped: the class stays hidden.
     } else if (
       __rhinoLocalImportNames(
         arguments[i],
@@ -5401,7 +5307,7 @@ JavaImporter = function () {
         "com.sun.identity.authentication.callbacks.HiddenValueCallback"
       )
     ) {
-      hiddenValueCallback = true;
+      // Recognised and dropped, as above.
     } else {
       imports.push(arguments[i]);
     }
@@ -5414,15 +5320,8 @@ JavaImporter = function () {
     Importer.prototype = real;
   }
   var wrapper = new Importer();
-  // Next-gen hides both classes even from an importer that names them
-  // (typeof "undefined", measured 2026-10-01, live-java-importer-scope), so
-  // only the legacy engine, whose result path they are, gets them.
-  if (actionClass && __rhinoLocal.engine === "legacy") {
-    wrapper.Action = __rhinoLocalActionClass;
-  }
-  if (hiddenValueCallback && __rhinoLocal.engine === "legacy") {
-    wrapper.HiddenValueCallback = __rhinoLocalHiddenValueCallback;
-  }
+  // Both classes stay undefined on the importer even when it names them
+  // (measured 2026-10-01, live-java-importer-scope).
   if (jsonValue) {
     wrapper.JsonValue = __rhinoLocalJsonValueClass;
   }
@@ -5682,7 +5581,6 @@ function __rhinoLocalSeed(given) {
   // raised while seeding (seed-binding, seed-cache-manager) is recorded too.
   __rhinoLocalFaultSink.capture();
   given = given || {};
-  __rhinoLocal.engine = given.engine || "next-gen";
   __rhinoLocal.loggerScriptId = given.loggerScriptId || "<unseeded-script-id>";
   __rhinoLocal.bindings = __rhinoLocalClone(given.bindings || {});
   var seeded = Object.keys(__rhinoLocal.bindings);
@@ -5766,14 +5664,10 @@ function __rhinoLocalSeed(given) {
     ? __rhinoLocalClone(given.libraries)
     : {};
   __rhinoLocal.requireCache = {};
-  if (given.engine === "legacy") {
-    require = undefined;
-  } else {
-    require = function (name) {
-      __rhinoLocalExpectArity("require", arguments, 1);
-      return __rhinoLocalLoadLibrary(name);
-    };
-  }
+  require = function (name) {
+    __rhinoLocalExpectArity("require", arguments, 1);
+    return __rhinoLocalLoadLibrary(name);
+  };
   if (given.callbacks === undefined) {
     __rhinoLocal.submittedCallbacks = null;
   } else {
@@ -5803,13 +5697,11 @@ function __rhinoLocalSeed(given) {
     caseInsensitive: true,
     asList: true,
     label: "requestHeaders",
-    engine: given.engine,
   });
   requestParameters = __rhinoLocalRequestMap(given.requestParameters || {}, {
     caseInsensitive: false,
     asList: true,
     label: "requestParameters",
-    engine: given.engine,
   });
 
   // Assigned either way: the runner's scope outlives one case, so leaving a
@@ -5817,7 +5709,7 @@ function __rhinoLocalSeed(given) {
   existingSession =
     given.existingSession === undefined
       ? undefined
-      : __rhinoLocalSessionMap(given.existingSession, given.engine);
+      : __rhinoLocalSessionMap(given.existingSession);
 
   if (given.realm !== undefined) {
     realm = given.realm;
@@ -5849,26 +5741,12 @@ function __rhinoLocalSeed(given) {
     caseInsensitive: false,
     asList: false,
     label: "requestCookies",
-    engine: given.engine,
   });
   if (given.resumedFromSuspend !== undefined) {
     resumedFromSuspend = given.resumedFromSuspend;
   }
   if (given.locales !== undefined) {
     locales = given.locales;
-  }
-
-  if (given.engine === "legacy") {
-    sharedState = __rhinoLocalStateMap("shared");
-    transientState = __rhinoLocalStateMap("transient");
-    // Next-gen-only bindings. Live legacy typeofs them as undefined
-    // (docs/api/12); leaving them installed makes scripts take the
-    // callbacksBuilder fallback and never hit Action.send.
-    callbacksBuilder = undefined;
-    action = undefined;
-    openidm = undefined;
-    utils = undefined;
-    requestCookies = undefined;
   }
 }
 
@@ -5917,7 +5795,7 @@ function __rhinoLocalHarvestNow() {
   // Queued next-gen callbacks suspend the node even after goTo. Preserve the
   // discarded decision as diagnostic evidence without judging it as an effect.
   var discardedOutcome = null;
-  if (__rhinoLocal.engine !== "legacy" && __rhinoLocal.callbacks.length > 0) {
+  if (__rhinoLocal.callbacks.length > 0) {
     discardedOutcome = recordedOutcome;
     recordedOutcome = null;
   }

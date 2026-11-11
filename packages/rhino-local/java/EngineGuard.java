@@ -11,8 +11,7 @@ import org.mozilla.javascript.Wrapper;
  * <p>Measured 2026-11-10 (docs/api/12): AIC hides the engine package from a
  * script that names it, so a script cannot construct a {@code Context}. That
  * is a refusal of a <em>name</em>. A Java API that builds or returns the
- * instance for the script ({@code java.beans.XMLDecoder} on a legacy case is
- * one) gets round it, and AIC's answer to that route is unmeasured. A
+ * instance for the script ({@code java.beans.XMLDecoder} is one) gets round it, and AIC's answer to that route is unmeasured. A
  * {@code Context} (or a {@code ContextFactory}) in script hands over the
  * decompiler and fresh unguarded standard scopes, which render the emulator's
  * own installed functions as emulator source.

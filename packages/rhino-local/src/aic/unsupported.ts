@@ -24,9 +24,6 @@ export function aicUnsupportedReason(
   if (kase.context !== undefined && kase.context !== "SCRIPTED_DECISION_NODE") {
     return `case.context ${kase.context}: the AIC lane wraps the subject in a journey, which runs only decision-node scripts; a case in another script context runs locally only`;
   }
-  if (kase.given.engine === "legacy") {
-    return "legacy engine: AIC wrapper emit is next-gen only (legacy results go through JavaImporter + Action.send, not callbacksBuilder)";
-  }
   if (!isPortable(kase)) {
     const declared = ENV_INPUT_KEYS.filter(
       (key) =>

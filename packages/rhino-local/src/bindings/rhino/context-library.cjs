@@ -8,8 +8,7 @@
 // caller's context bindings do not leak (measured 2026-11-11: nodeState from
 // a decision node and accessToken from token modification are both
 // ReferenceErrors inside the library). scriptName and logger.getName() are
-// the caller's, including inside a nested require(). Legacy engines have no
-// require(); this context is next-gen only.
+// the caller's, including inside a nested require().
 //
 // The case's script is the library body. The runner require()s it through
 // the existing loader and calls the named export. Anything this measurement
@@ -69,7 +68,7 @@ function __rhinoLocalLibFaultObject(target, label) {
 
 function __rhinoLocalSeedLibrary(given) {
   given = given || {};
-  __rhinoLocalCtxBegin(given.engine || "next-gen");
+  __rhinoLocalCtxBegin();
   __rhinoLocalCtx.prefix = "library-unmeasured";
   __rhinoLocalCtx.noun = "library";
   // A missing ESV reads back as null (measured). The decision-node default

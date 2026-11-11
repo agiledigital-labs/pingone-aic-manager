@@ -50,28 +50,47 @@ public final class HostOps extends BaseFunction {
     }
   }
 
+  /**
+   * True while Rhino is filling {@code JavaScriptException.details} from the thrown value.
+   *
+   * <p>The constructor calls {@code getDetails}, which calls the value's {@code toString}. That
+   * call is the engine wrapping a throw, and it must not be tallied: an uncaught denial is the
+   * measured HTTP 400, and a script that catches the denial and ignores it still grants. A
+   * script's own {@code String(e)} is the same JS function with no {@code JavaScriptException}
+   * frame, so call order is not the distinction. {@code <init>} is matched as well as {@code getDetails}: the
+   * constructor is the frame that remains if {@code getDetails} is inlined into it. HotSpot
+   * reconstructs inlined frames, so both names are normally present.
+   */
+  static boolean inExceptionDetails() {
+    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+      if (!"org.mozilla.javascript.JavaScriptException".equals(frame.getClassName())) {
+        continue;
+      }
+      String method = frame.getMethodName();
+      if ("getDetails".equals(method) || "<init>".equals(method)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private Object dispatch(Context cx, Scriptable scope, Object[] args) throws Exception {
     String op = (String) Context.jsToJava(args[0], String.class);
     switch (op) {
-      // Guarded real Java objects for the legacy script contexts.
-      case "guardString":
-      case "guardMap":
-      case "unguard":
-        return ContextJavaGuard.dispatch(cx, scope, op, args);
       // A prototype that hands every missing index read to a collection's
       // empty-read decision (java/IndexTrap.java).
       case "indexTrap":
         return IndexTrap.create(scope, args);
       // Prelude only: the invalid-scope replacement asks whether this toString is Rhino's wrap.
       case "exceptionDetails":
-        return Boolean.valueOf(ContextJavaGuard.inExceptionDetails());
+        return Boolean.valueOf(inExceptionDetails());
       // NativeJavaMethod.scriptSignature (Rhino 1.7.14) names a Wrapper by
       // unwrap().getClass().getName() in Java, which does not consult the class
       // shutter, and otherwise names a Function "function". A regexp is
       // NativeRegExpCallable: typeof "object", not a Wrapper, and it implements
       // Function. Returning null means "not a Java instance" (a script object
       // is "object"). Script-visible getClass() would reflect java.lang.Class
-      // and the legacy deny would refuse the overload message itself.
+      // and the class shutter would refuse the overload message itself.
       case "scriptSignatureName": {
         Object value = args.length > 1 ? args[1] : null;
         if (value instanceof Wrapper) {

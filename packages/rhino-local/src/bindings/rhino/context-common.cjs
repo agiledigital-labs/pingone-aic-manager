@@ -16,42 +16,27 @@
 // not bind: a script that reads one then gets AIC's ReferenceError.
 var __rhinoLocalTop = this;
 
-// java/HostOps.java, defined by the runner for the prelude only. Its
-// guard ops wrap a real Java object so that only measured members answer
-// (java/ContextJavaGuard.java).
+// java/HostOps.java, defined by the runner for the prelude only. Absent under
+// the node vm path.
 var __rhinoLocalCtxHostOp = typeof __rhinoLocalHostOp !== "undefined" ? __rhinoLocalHostOp : null;
 
-// A real Java object behind a member gate: `admitted` is {name: argument
-// count or [counts]}. Every other Java member faults.
-function __rhinoLocalCtxGuardMap(map, admitted, label) {
-  return __rhinoLocalCtxHostOp("guardMap", map, admitted, label, __rhinoLocalCtxUnmeasured);
-}
-
-// The bare Java object behind a guard, for the harness's own reads.
-function __rhinoLocalCtxUnguard(value) {
-  return __rhinoLocalCtxHostOp === null ? value : __rhinoLocalCtxHostOp("unguard", value);
-}
-
-// Set by the context overlay (prefix, noun, listKind) and its seed (engine).
+// Set by the context overlay (prefix, noun, listKind).
 // `views` holds the binding objects whose own properties the harvest audits.
 var __rhinoLocalCtx = {
   // The collection catalog's context key (validate, token, ...), set by the
   // overlay; __rhinoLocalCollectionRegister builds ids from it.
   catalog: null,
-  engine: "next-gen",
   prefix: "context-unmeasured",
   noun: "script",
   listKind: null,
   views: [],
   sealed: true,
-  realJavaStrings: false,
 };
 
 function __rhinoLocalCtxUnmeasured(member, detail) {
   return __rhinoLocalFault(__rhinoLocalCtx.prefix + "/" + member,
     "rhino-local: " + member + (detail ? " " + detail : "") +
-      " in the " + __rhinoLocalCtx.noun + " context (" + __rhinoLocalCtx.engine +
-      ") is unmeasured; docs/api/12-script-bindings-matrix.md lists what was measured");
+      " in the " + __rhinoLocalCtx.noun + " context (next-gen) is unmeasured; docs/api/12-script-bindings-matrix.md lists what was measured");
 }
 
 function __rhinoLocalCtxNoMethod(className, name, args) {
@@ -99,7 +84,7 @@ function __rhinoLocalCtxToJSON(target, label) {
 
 // --- Object.prototype.toString tags -----------------------------------------
 //
-// A Java object's tag on AIC is `[object JavaObject]` (measured for a legacy
+// A Java object's tag on AIC is `[object JavaObject]` (measured for a
 // JsonValue, 2026-11-10). A view carries its tag as a hidden own data property:
 // a string where the tag was measured, `{ label }` where it was not, which
 // faults. Objects without the key reach the native toString untouched.
@@ -288,109 +273,6 @@ function __rhinoLocalCtxBare() {
   return typeof Object.create === "function" ? Object.create(null) : {};
 }
 
-// A java.lang.String as the legacy engine hands it over: typeof "object",
-// String(v) and `"" + v` give the text, `v == "x"` is true and `v === "x"` is
-// false, and `length` is a method. Java's other String methods are unmeasured.
-//
-// A context whose own bindings hand over real Java strings sets
-// `__rhinoLocalCtx.realJavaStrings` (OIDC claims: `claims` is a real
-// java.util.LinkedHashMap, so its values are real java.lang.String objects,
-// and `claims.sub == identity.getName()` was measured true, which two views,
-// or a view and a real string, cannot reproduce). Every legacy string is then
-// a real java.lang.String, which behaves as it does on AIC's JVM, behind
-// java/ContextJavaGuard.java's gate: only `length` and toString() of its own
-// members answer (Sol ctx r2 P2-6), as on the view.
-function __rhinoLocalCtxJavaString(text) {
-  if (text === null || text === undefined) {
-    return null;
-  }
-  if (__rhinoLocalCtx.realJavaStrings) {
-    return __rhinoLocalCtxHostOp("guardString", String(text), "java.lang.String", __rhinoLocalCtxUnmeasured);
-  }
-  var value = String(text);
-  var out = __rhinoLocalCtxBare();
-  __rhinoLocalHide(out, "toString", function () {
-    return value;
-  });
-  __rhinoLocalHide(out, "valueOf", function () {
-    return value;
-  });
-  __rhinoLocalHide(out, "length", function () {
-    return value.length;
-  });
-  __rhinoLocalCtxFaulting(out, "java.lang.String", [
-    "charAt", "codePointAt", "compareTo", "compareToIgnoreCase", "concat", "contains", "contentEquals", "endsWith",
-    "equals", "equalsIgnoreCase", "getBytes", "getClass", "hashCode", "indexOf", "intern", "isBlank", "isEmpty",
-    "lastIndexOf", "lines", "matches", "repeat", "replace", "replaceAll", "replaceFirst", "split", "startsWith",
-    "strip", "substring", "toCharArray", "toLowerCase", "toUpperCase", "trim", "slice", "match", "search",
-  ]);
-  __rhinoLocalCtxToJSON(out, "a Java string");
-  __rhinoLocalCtxTag(out, null, "a Java string");
-  return out;
-}
-
-// A legacy java.lang.Integer: typeof "object", String(v) gives the digits.
-function __rhinoLocalCtxJavaNumber(n) {
-  var out = __rhinoLocalCtxBare();
-  __rhinoLocalHide(out, "toString", function () {
-    return String(n);
-  });
-  __rhinoLocalHide(out, "valueOf", function () {
-    return n;
-  });
-  __rhinoLocalCtxFaulting(out, "java.lang.Integer", [
-    "intValue", "longValue", "doubleValue", "equals", "compareTo", "hashCode", "getClass",
-  ]);
-  __rhinoLocalCtxToJSON(out, "a Java number");
-  __rhinoLocalCtxTag(out, null, "a Java number");
-  return out;
-}
-
-function __rhinoLocalCtxIsEmpty(value) {
-  if (Array.isArray(value)) {
-    return value.length === 0;
-  }
-  return Object.keys(value).length === 0;
-}
-
-// The JsonValue a legacy getField / getAct hands back: typeof "object",
-// member reads such as `v.a` are undefined, String(v) is the JSON-ish
-// rendering (`"hello"`, `42.0`, `{ "a": 1.0 }`), and the
-// Object.prototype.toString tag is `[object JavaObject]` (all measured
-// 2026-11-10). size() was measured only on a null value (0).
-function __rhinoLocalCtxJsonValue(value) {
-  var out = __rhinoLocalCtxBare();
-  __rhinoLocalHide(out, "toString", function () {
-    if (value !== null && typeof value === "object" && __rhinoLocalCtxIsEmpty(value)) {
-      throw __rhinoLocalCtxUnmeasured("String(JsonValue)", "of an empty object or array");
-    }
-    return __rhinoLocalJavaMapString(value);
-  });
-  __rhinoLocalHide(out, "size", function () {
-    if (value === null && arguments.length === 0) {
-      return 0;
-    }
-    throw __rhinoLocalCtxUnmeasured("JsonValue.size()", "on a non-null value");
-  });
-  __rhinoLocalCtxFaulting(out, "JsonValue", [
-    "get", "getObject", "isNull", "isString", "asString", "isMap", "asMap", "isList", "asList", "isNumber",
-    "asNumber", "asInteger", "asLong", "asDouble", "isBoolean", "asBoolean", "put", "add", "remove", "keys",
-    "expect", "required", "defaultTo", "getPointer", "copy", "clone", "isDefined", "contains", "iterator",
-    "getClass", "hashCode", "equals",
-  ]);
-  __rhinoLocalCtxToJSON(out, "a JsonValue");
-  __rhinoLocalCtxTag(out, "JavaObject", "a JsonValue");
-  return out;
-}
-
-// The engine's string: a JS string on next-gen, a Java string on legacy.
-function __rhinoLocalCtxString(text) {
-  if (__rhinoLocalCtx.engine === "legacy") {
-    return __rhinoLocalCtxJavaString(text);
-  }
-  return text;
-}
-
 // A Java list, through runtime.cjs's list view. `kind` omitted uses the
 // context's own kind; a caller passes one when this list was measured
 // separately from the context's scope lists (Sol ctx r5 P2-6). `grant`
@@ -405,223 +287,6 @@ function __rhinoLocalCtxList(items, label, kind, binding, child) {
   var list = __rhinoLocalListView(items, kind || __rhinoLocalCtx.listKind, binding, child);
   __rhinoLocalCtxTag(list, null, label || "a Java list");
   return __rhinoLocalCtxWatch(list, label || "list");
-}
-
-// A legacy java.util set: no `length`, `[i]` is AIC's InternalError
-// (measured for index 0; the rest of the range assumed the same), and only
-// size(), contains(), isEmpty(), toArray() and String(v) were measured, plus
-// add() where the caller says so. Duplicate members collapse, as a set does.
-// A HashSet or LinkedHashSet keeps first-seen order: the capture's HashSet
-// happened to iterate in seed order, and JVM hash order is not reproduced.
-// A TreeSet is ordered by Java's string order (UTF-16, the same order as
-// Array.prototype.sort on these strings) on the seed and on add() (Sol ctx
-// r5 P2-1). The capture's TreeSet values were already sorted, so that order
-// is the set's measured type, not a value the probe distinguished.
-// `javaClass` names the class in the `[i]` message when it is another set
-// (validate scope's TreeSet, measured 2026-11-10).
-// `tag` is the measured Object.prototype.toString tag, set before the watch.
-// Absent, the tag stays unmeasured and faults.
-// Every set consults the one empty-read decision. There is no opt-out: a
-// caller that passes no grant faults every empty read. An object is a grant
-// from the collection catalog, the capture and the operations it measured.
-// The check runs when the script reads the set, not when the set is built.
-// `lengthAbsent` keeps `.length` missing (a HashSet's shape). `surface` is
-// String only and does not imply `.length` on a set.
-var __rhinoLocalSetStateKey = "__rhinoLocalSetState";
-
-function __rhinoLocalSetItems(set) {
-  var own;
-  var state;
-  try {
-    own = Object.getOwnPropertyDescriptor(set, __rhinoLocalSetStateKey);
-  } catch (e) {
-    return [];
-  }
-  state = own !== undefined && "value" in own ? own.value : null;
-  return state === null ? [] : state.items;
-}
-
-// Called from Array.prototype.concat for a value that is not a list view.
-function __rhinoLocalEmptySetArg(value) {
-  var own;
-  var state;
-  if (value === null || typeof value !== "object") {
-    return;
-  }
-  try {
-    own = Object.getOwnPropertyDescriptor(value, __rhinoLocalSetStateKey);
-  } catch (e) {
-    return;
-  }
-  state = own !== undefined && "value" in own ? own.value : null;
-  if (state === null || state.items.length !== 0) {
-    return;
-  }
-  __rhinoLocalSetEmpty(value, "concat", "[].concat(" + state.label + ")");
-}
-
-function __rhinoLocalSetEmpty(set, op, member) {
-  var own;
-  var state;
-  try {
-    own = Object.getOwnPropertyDescriptor(set, __rhinoLocalSetStateKey);
-  } catch (e) {
-    return;
-  }
-  state = own !== undefined && "value" in own ? own.value : null;
-  if (state === null || state.items.length !== 0) {
-    return;
-  }
-  // surface does not imply .length on a set. A list's EmptyAllows does.
-  if (op === "length") {
-    if (state.grant !== null && state.grant.length === true) {
-      return;
-    }
-  } else if (state.grant !== null && __rhinoLocalEmptyAllows({ emptyRoutes: {} }, state.grant, op)) {
-    return;
-  }
-  throw __rhinoLocalCtxUnmeasured(member,
-    "of a size-zero set (this operation on a size-zero set was not measured)");
-}
-
-// An object for a legacy set: `[i]` at any index is AIC's InternalError
-// (measured for index 0 on a HashSet and a TreeSet; the rest of the range
-// assumed the same). With java/IndexTrap.java every index goes through
-// `read`; without it (node:vm) the caller's finite guards are all there is.
-function __rhinoLocalSetObject(setClass) {
-  return __rhinoLocalIndexTrapped(null, function (index) {
-    throw __rhinoLocalInternalError('Java class "' + setClass + '" has no public instance field or method named "' +
-      index + '".');
-  });
-}
-
-// Every legacy set is this constructor. `binding` is the catalog binding
-// (__rhinoLocalCollectionRegister).
-function __rhinoLocalCtxJavaSet(items, label, addable, javaClass, tag, binding) {
-  var setClass = javaClass || "java.util.HashSet";
-  var sorted = setClass === "java.util.TreeSet";
-  var grant = __rhinoLocalCollectionEmpty(binding);
-  var out = __rhinoLocalSetObject(setClass);
-  var store = [];
-  var i;
-  var item;
-  for (i = 0; i < items.length; i += 1) {
-    item = items[i];
-    if (store.indexOf(item) === -1) {
-      store.push(item);
-    }
-  }
-  if (sorted) {
-    store.sort();
-  }
-  for (i = 0; i < store.length + 8; i += 1) {
-    (function (index) {
-      Object.defineProperty(out, String(index), {
-        enumerable: false,
-        configurable: true,
-        get: function () {
-          throw __rhinoLocalInternalError('Java class "' + setClass + '" has no public instance field or method named "' +
-            index + '".');
-        },
-        set: function () {
-          throw __rhinoLocalCtxUnmeasured(label + "[" + index + "]", "assignment");
-        },
-      });
-    })(i);
-  }
-  __rhinoLocalCtxFaulting(out, label, [
-    "addAll", "clear", "containsAll", "equals", "forEach", "getClass", "hashCode", "iterator",
-    "parallelStream", "remove", "removeAll", "removeIf", "retainAll", "spliterator", "stream", "clone",
-  ]);
-  __rhinoLocalHide(out, __rhinoLocalSetStateKey, { items: store, grant: grant, label: label });
-  if (store.length === 0 && !(grant !== null && grant.lengthAbsent === true)) {
-    Object.defineProperty(out, "length", {
-      enumerable: false,
-      configurable: true,
-      get: function () {
-        __rhinoLocalSetEmpty(out, "length", label + ".length");
-        return store.length;
-      },
-    });
-  }
-  // for...in of an empty set: legacy requestedScopes measured Java's own
-  // member names (noscope.legacy.json fn.requested.forIn), which this view
-  // does not reproduce, so no row grants it and the loop faults.
-  if (store.length === 0 && !(grant !== null && grant.forIn === true)) {
-    __rhinoLocalEnumTrap(out, function () {
-      return __rhinoLocalCtxUnmeasured(label + " for...in",
-        "of a size-zero set (this operation on a size-zero set was not measured)");
-    });
-  }
-  __rhinoLocalCtxMethod(out, label, setClass, "isEmpty", 0, function () {
-    __rhinoLocalSetEmpty(out, "isEmpty", label + ".isEmpty()");
-    return store.length === 0;
-  });
-  // Measured 2026-09-10 on identity.getAttribute(): toArray() resolves, and
-  // String(v.toArray()[0]) is how a single-valued attribute is read.
-  // An empty call faults unless toArray is granted, then returns a list
-  // whose own reads are only what that grant's child fields name.
-  __rhinoLocalCtxMethod(out, label, setClass, "toArray", 0, function () {
-    var arr = [];
-    var k;
-    if (store.length === 0) {
-      __rhinoLocalSetEmpty(out, "toArray", label + ".toArray()");
-      // The list a granted empty set's toArray() returns.
-      return __rhinoLocalCtxList([], label + ".toArray()", __rhinoLocalCtx.listKind, binding, "toArray");
-    }
-    // A non-empty set's toArray() is a plain array, registered as the row's.
-    __rhinoLocalCollectionRegister(binding);
-    for (k = 0; k < store.length; k += 1) {
-      arr.push(__rhinoLocalCtxJavaString(store[k]));
-    }
-    return arr;
-  });
-  __rhinoLocalCtxMethod(out, label, setClass, "size", 0, function () {
-    __rhinoLocalSetEmpty(out, "size", label + ".size()");
-    return store.length;
-  });
-  __rhinoLocalCtxMethod(out, label, setClass, "contains", 1, function (v) {
-    __rhinoLocalSetEmpty(out, "contains", label + ".contains()");
-    return store.indexOf(String(v)) !== -1;
-  });
-  __rhinoLocalHide(out, "add", function (v) {
-    if (!addable) {
-      throw __rhinoLocalCtxUnmeasured(label + ".add()");
-    }
-    if (arguments.length !== 1 || typeof v !== "string") {
-      throw __rhinoLocalCtxUnmeasured(label + ".add(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    __rhinoLocalSetEmpty(out, "add", label + ".add()");
-    if (Object.getOwnPropertyDescriptor(out, "__iterator__") !== undefined) {
-      __rhinoLocalCtxCheck(out);
-      __rhinoLocalEnumGrew(out);
-      __rhinoLocalCtxRewatch(out);
-    }
-    if (store.indexOf(v) !== -1) {
-      return false;
-    }
-    if (sorted) {
-      var at = store.length;
-      var j;
-      for (j = 0; j < store.length; j += 1) {
-        if (v < store[j]) {
-          at = j;
-          break;
-        }
-      }
-      store.splice(at, 0, v);
-    } else {
-      store.push(v);
-    }
-    return true;
-  });
-  __rhinoLocalHide(out, "toString", function () {
-    __rhinoLocalSetEmpty(out, "surface", "String(" + label + ")");
-    return "[" + store.join(", ") + "]";
-  });
-  __rhinoLocalCtxToJSON(out, label);
-  __rhinoLocalCtxTag(out, tag === undefined ? null : tag, label);
-  return __rhinoLocalCtxWatch(out, label);
 }
 
 // Member names every map view defines itself. A seeded key of one of these
@@ -724,25 +389,23 @@ function __rhinoLocalCtxHeaderAliases(names) {
   return aliases;
 }
 
-function __rhinoLocalCtxRenderMap(values, legacy) {
+function __rhinoLocalCtxRenderMap(values) {
   var keys = Object.keys(values);
   var parts = [];
   var i;
   for (i = 0; i < keys.length; i += 1) {
-    parts.push(legacy
-      ? keys[i] + "=" + __rhinoLocalCtxRenderLegacy(values[keys[i]])
-      : JSON.stringify(keys[i]) + ": " + __rhinoLocalCtxRenderNext(values[keys[i]]));
+    parts.push(JSON.stringify(keys[i]) + ": " + __rhinoLocalCtxRenderValue(values[keys[i]]));
   }
-  return legacy ? "{" + parts.join(", ") + "}" : "{ " + parts.join(", ") + " }";
+  return "{ " + parts.join(", ") + " }";
 }
 
 // Seeded values only: AIC holds them as Java strings, lists and Integers.
-function __rhinoLocalCtxRenderNext(value) {
+function __rhinoLocalCtxRenderValue(value) {
   if (Array.isArray(value)) {
     var parts = [];
     var i;
     for (i = 0; i < value.length; i += 1) {
-      parts.push(__rhinoLocalCtxRenderNext(value[i]));
+      parts.push(__rhinoLocalCtxRenderValue(value[i]));
     }
     return "[ " + parts.join(", ") + " ]";
   }
@@ -750,16 +413,6 @@ function __rhinoLocalCtxRenderNext(value) {
     return JSON.stringify(value);
   }
   if (typeof value === "number" && value % 1 === 0) {
-    return String(value);
-  }
-  throw __rhinoLocalCtxUnmeasured("String(map)", "holding a " + typeof value);
-}
-
-function __rhinoLocalCtxRenderLegacy(value) {
-  if (Array.isArray(value)) {
-    return "[" + value.map(__rhinoLocalCtxRenderLegacy).join(", ") + "]";
-  }
-  if (typeof value === "string" || (typeof value === "number" && value % 1 === 0)) {
     return String(value);
   }
   throw __rhinoLocalCtxUnmeasured("String(map)", "holding a " + typeof value);
@@ -894,80 +547,35 @@ function __rhinoLocalCtxCopy(value) {
 // did before that option existed. The empty getAttribute and
 // getAttributeValues grants come from the collection catalog.
 function __rhinoLocalCtxBuildIdentity(seed, opts) {
-  var legacy = __rhinoLocalCtx.engine === "legacy";
-  // Next-gen: measured 2026-11-10, String(identity) is the wrapper's Java
-  // toString (class@hash) while identity.toString() is "Cannot find function
+  // Measured 2026-11-10: String(identity) is the wrapper's Java toString
+  // (class@hash) while identity.toString() is "Cannot find function
   // toString", so the view has no toString at all and converts through
   // valueOf. A null prototype is what lets Rhino's own missing-member error
   // read as it does on AIC.
-  var identity = __rhinoLocalCtx.engine === "legacy" ? {} : Object.create(null);
+  var identity = Object.create(null);
   var attrs = seed.attributes;
-  if (legacy) {
-    var cls = "com.sun.identity.idm.AMIdentity";
-    // AMIdentity hands back the same String object on every call: measured
-    // 2026-11-10 (access-token modification), `identity.getName() ===
-    // identity.getName()` is true while getName() === getClientId() of the
-    // same text is false. So each getter makes its string once.
-    var names = {};
-    var once = function (key, text) {
-      if (!Object.prototype.hasOwnProperty.call(names, key)) {
-        names[key] = __rhinoLocalCtxJavaString(text);
-      }
-      return names[key];
-    };
-    __rhinoLocalCtxMethod(identity, "identity", cls, "getName", 0, function () {
-      return once("name", seed.name);
-    });
-    __rhinoLocalCtxMethod(identity, "identity", cls, "getUniversalId", 0, function () {
-      return once("universalId", seed.universalId);
-    });
-    __rhinoLocalCtxMethod(identity, "identity", cls, "isExists", 0, function () {
-      return seed.exists;
-    });
-    __rhinoLocalCtxMethod(identity, "identity", cls, "getAttribute", 1, function (name) {
-      var key = String(name);
-      // Measured 2026-09-10: an attribute the identity lacks is an empty set.
-      // The empty reads the capture showed are the catalog grant, shared by
-      // every context that builds this binding.
-      var values = Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key] : [];
-      return __rhinoLocalCtxJavaSet(values, "identity.getAttribute()", false, undefined, undefined, "getAttribute");
-    });
-    // Measured: identity.exists() is "Cannot call property exists", Rhino's
-    // refusal to call a non-function (a bean property of isExists()).
-    __rhinoLocalHide(identity, "exists", seed.exists);
-    __rhinoLocalHide(identity, "toString", function () {
-      return seed.universalId;
-    });
-    // Never emulate getAttributes(): it returns the whole profile, password
-    // included, in clear (.ai/core.md §8).
-    __rhinoLocalCtxFaulting(identity, "identity", [
-      "getAttributes", "setAttributes", "removeAttributes", "getRealm", "getType", "isActive", "store",
-      "getMemberships", "isMember", "getAssignedServices", "getClass", "hashCode", "equals",
-    ]);
-  } else {
-    var ngCls = "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper";
-    __rhinoLocalCtxMethod(identity, "identity", ngCls, "getName", 0, function () {
-      return seed.name;
-    });
-    __rhinoLocalCtxMethod(identity, "identity", ngCls, "getUniversalId", 0, function () {
-      return seed.universalId;
-    });
-    __rhinoLocalCtxMethod(identity, "identity", ngCls, "exists", 0, function () {
-      return seed.exists;
-    });
-    __rhinoLocalCtxMethod(identity, "identity", ngCls, "getAttributeValues", 1, function (name) {
-      var key = String(name);
-      // An attribute the identity lacks reads as an empty list. The catalog
-      // grant is that binding's empty surface, not the context kind's.
-      return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : [],
-        undefined, undefined, "getAttributeValues");
-    });
-    __rhinoLocalHide(identity, "valueOf", function () {
-      return ngCls + "@rhino-local";
-    });
-    __rhinoLocalCtxFaulting(identity, "identity", ["setAttribute", "addAttribute", "store", "getClass", "hashCode",
-      "equals", "wait", "notify", "notifyAll"]);
-  }
+  var ngCls = "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper";
+  __rhinoLocalCtxMethod(identity, "identity", ngCls, "getName", 0, function () {
+    return seed.name;
+  });
+  __rhinoLocalCtxMethod(identity, "identity", ngCls, "getUniversalId", 0, function () {
+    return seed.universalId;
+  });
+  __rhinoLocalCtxMethod(identity, "identity", ngCls, "exists", 0, function () {
+    return seed.exists;
+  });
+  __rhinoLocalCtxMethod(identity, "identity", ngCls, "getAttributeValues", 1, function (name) {
+    var key = String(name);
+    // An attribute the identity lacks reads as an empty list. The catalog
+    // grant is that binding's empty surface, not the context kind's.
+    return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : [],
+      undefined, undefined, "getAttributeValues");
+  });
+  __rhinoLocalHide(identity, "valueOf", function () {
+    return ngCls + "@rhino-local";
+  });
+  __rhinoLocalCtxFaulting(identity, "identity", ["setAttribute", "addAttribute", "store", "getClass", "hashCode",
+    "equals", "wait", "notify", "notifyAll"]);
   __rhinoLocalCtxToJSON(identity, "identity");
   // The tag is unmeasured except where the caller measured one (Sol ctx r2 P2-5).
   __rhinoLocalCtxTag(identity, opts && opts.tag ? opts.tag : null, "identity");
@@ -980,9 +588,6 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
 // a list view of `opts.toArrayKind`, so a later read faults unless that kind
 // carries a grant (Sol ctx r12 P2-1). The call itself does not fault.
 function __rhinoLocalCtxBuildScopes(items, opts) {
-  if (__rhinoLocalCtx.engine === "legacy") {
-    return __rhinoLocalCtxJavaSet(items, "scopes", false, undefined, undefined, "scopes");
-  }
   var store = items.slice();
   var list = __rhinoLocalCtxList(store, "scopes", null, "scopes");
   // Measured on next-gen: contains() answers, and add() works on this list
@@ -1034,10 +639,9 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
 // kind that refuses a size-zero value: an empty identity attribute or
 // claimsLocales list does not measure a request value.
 function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
-  var legacy = __rhinoLocalCtx.engine === "legacy";
   // Parameter and header values are separate catalog rows.
   var listOf = function (values, binding) {
-    var list = __rhinoLocalCtxList(values.map(__rhinoLocalCtxString), undefined, opts && opts.listKind, binding);
+    var list = __rhinoLocalCtxList(values.slice(), undefined, opts && opts.listKind, binding);
     if (opts && opts.javaTags) {
       __rhinoLocalCtxTag(list, "JavaList", "a Java list");
     }
@@ -1051,7 +655,7 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
     return __rhinoLocalCtxMap(label, Object.keys(values), function (k) {
       return lists[k];
     }, function () {
-      return __rhinoLocalCtxRenderMap(values, legacy);
+      return __rhinoLocalCtxRenderMap(values);
     }, aliases, methods);
   };
   var params = listMap("requestProperties.requestParams", seed.params, null, opts && opts.paramsGetMissing
@@ -1070,10 +674,10 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
   var headers = listMap("requestProperties.requestHeaders", seed.headers,
     __rhinoLocalCtxHeaderAliases(Object.keys(seed.headers)));
   var values = {
-    realm: __rhinoLocalCtxString(realm),
+    realm: realm,
     requestHeaders: headers,
     requestParams: params,
-    requestUri: __rhinoLocalCtxString(seed.uri),
+    requestUri: seed.uri,
   };
   return __rhinoLocalCtxMap("requestProperties", ["realm", "requestHeaders", "requestParams", "requestUri"],
     function (k) {
@@ -1088,32 +692,26 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
 // The empty redirect grant is the catalog row for this context. Omitted
 // from the catalog, an empty redirect list faults (Sol ctx r11 P2-1).
 // `opts.javaTags`: customProperties is `[object JavaMap]` and redirectUris
-// `[object JavaList]` (measured for validate scope). `opts.setTag`: the legacy
-// grant/scope/response sets' tag
-// (may-act measured `[object JavaObject]`); the sets are built on read, after
-// the seal, so the tag has to be applied before their own watch.
+// `[object JavaList]` (measured for validate scope).
 function __rhinoLocalCtxBuildClient(seed, opts) {
-  var legacy = __rhinoLocalCtx.engine === "legacy";
   var custom = __rhinoLocalCtxMap("clientProperties.customProperties", Object.keys(seed.customProperties),
     function () {
       throw __rhinoLocalCtxUnmeasured("clientProperties.customProperties", "entry values");
     }, Object.keys(seed.customProperties).length === 0 ? function () {
-      return legacy ? "{}" : "{  }";
+      return "{  }";
     } : null);
   if (opts && opts.javaTags) {
     __rhinoLocalCtxTag(custom, "JavaMap", "clientProperties.customProperties");
   }
-  var sets = {
-    allowedGrantTypes: { values: seed.allowedGrantTypes, javaClass: "java.util.HashSet" },
-    allowedScopes: { values: seed.allowedScopes, javaClass: "java.util.TreeSet" },
-    allowedResponseTypes: { values: seed.allowedResponseTypes, javaClass: "java.util.LinkedHashSet" },
+  var setClasses = {
+    allowedGrantTypes: "java.util.HashSet",
+    allowedScopes: "java.util.TreeSet",
+    allowedResponseTypes: "java.util.LinkedHashSet",
   };
-  var keys = legacy
-    ? ["allowedGrantTypes", "clientId", "customProperties", "allowedScopes", "allowedResponseTypes"]
-    : ["allowedGrantTypes", "clientId", "customProperties", "redirectUris", "allowedScopes", "allowedResponseTypes"];
+  var keys = ["allowedGrantTypes", "clientId", "customProperties", "redirectUris", "allowedScopes", "allowedResponseTypes"];
   return __rhinoLocalCtxMap("clientProperties", keys, function (k) {
     if (k === "clientId") {
-      return __rhinoLocalCtxString(seed.clientId);
+      return seed.clientId;
     }
     if (k === "customProperties") {
       return custom;
@@ -1130,22 +728,17 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
       __rhinoLocalCtxTag(uris, opts.javaTags ? "JavaList" : null, "clientProperties.redirectUris");
       return __rhinoLocalCtxWatch(uris, "clientProperties.redirectUris");
     }
-    if (legacy) {
-      return __rhinoLocalCtxJavaSet(sets[k].values, "clientProperties." + k, false, undefined, opts && opts.setTag, k);
-    }
-    // Measured: next-gen hands over the raw Java set, which the context's
-    // class shutter refuses.
-    throw __rhinoLocalShutterError(sets[k].javaClass);
+    // Measured: the raw Java set is handed over, which the context's class
+    // shutter refuses.
+    throw __rhinoLocalShutterError(setClasses[k]);
   }, null);
 }
 
 
 // Reset per run, from a context seed.
-function __rhinoLocalCtxBegin(engine) {
-  __rhinoLocalCtx.engine = engine || "next-gen";
+function __rhinoLocalCtxBegin() {
   __rhinoLocalCtx.views = [];
   __rhinoLocalCtx.sealed = false;
-  __rhinoLocalCtx.realJavaStrings = false;
 }
 
 function __rhinoLocalCtxUnbind(names) {
