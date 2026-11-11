@@ -889,8 +889,10 @@ function __rhinoLocalCtxBuildScopes(items, opts) {
 // (measured for OIDC claims); otherwise it faults. `opts.javaTags`: the value
 // lists' tag is `[object JavaList]` (measured for validate scope).
 // `opts.listKind`: the value lists' own kind, when it was not measured as
-// the context's scope lists were (Sol ctx r5 P2-6). Omitted, they use the
-// context kind, which is what access-token and OIDC claims measured.
+// the context's scope lists were (Sol ctx r5 P2-6, Sol ctx r10 P2-1).
+// Omitted, they use the context kind. Access-token and OIDC pass a request
+// kind that refuses a size-zero value: an empty identity attribute or
+// claimsLocales list does not measure a request value.
 function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
   var legacy = __rhinoLocalCtx.engine === "legacy";
   var listOf = function (values) {
@@ -939,9 +941,12 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
 }
 
 // `opts.redirectUris`: next-gen redirectUris reads as a list (measured for
-// OIDC claims); otherwise it is unmeasured. `opts.javaTags`: customProperties
-// is `[object JavaMap]` and redirectUris `[object JavaList]` (measured for
-// validate scope). `opts.setTag`: the legacy grant/scope/response sets' tag
+// OIDC claims); otherwise it is unmeasured. `opts.redirectKind`: that list's
+// own kind, when its empty surface was not the context list's (Sol ctx r10
+// P2-1). Omitted, the context kind, which is what OIDC claims measured.
+// `opts.javaTags`: customProperties is `[object JavaMap]` and redirectUris
+// `[object JavaList]` (measured for validate scope). `opts.setTag`: the legacy
+// grant/scope/response sets' tag
 // (may-act measured `[object JavaObject]`); the sets are built on read, after
 // the seal, so the tag has to be applied before their own watch.
 function __rhinoLocalCtxBuildClient(seed, opts) {
@@ -977,7 +982,8 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
       // Built here rather than through __rhinoLocalCtxList, because a read
       // happens after the seal and a tag added to a watched view would read
       // as the script's own mutation.
-      var uris = __rhinoLocalListView(seed.redirectUris.slice(), __rhinoLocalCtx.listKind);
+      var redirectKind = opts && opts.redirectKind ? opts.redirectKind : __rhinoLocalCtx.listKind;
+      var uris = __rhinoLocalListView(seed.redirectUris.slice(), redirectKind);
       __rhinoLocalCtxTag(uris, opts.javaTags ? "JavaList" : null, "clientProperties.redirectUris");
       return __rhinoLocalCtxWatch(uris, "clientProperties.redirectUris");
     }

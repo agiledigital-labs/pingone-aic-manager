@@ -268,4 +268,21 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
     }));
     expect(effects.mayAct!.mayAct).toEqual({ s: "[client_credentials]", z: "client_credentials", n: 1 });
   }, 60_000);
+
+  // Sol ctx r10 P2-1. The empty redirect surface moved off the scopes kind.
+  // Empty scopes JSON stays a fault. Empty redirect String and length stay.
+  it.runIf(engine === "next-gen")("r10 P2-1 JSON of an empty scopes list still faults", async () => {
+    await faulted("r10-empty-scopes-json", "JSON.stringify(scopes);", [], "oauth2-may-act-unmeasured/scopes");
+  }, 60_000);
+
+  it.runIf(engine === "next-gen")("r10 P2-1 an empty redirect-URI list still answers String and length", async () => {
+    const { effects } = await runCase(runner, defineCase({
+      name: `r10 redirect surface ${engine}`,
+      context: "OAUTH2_MAY_ACT",
+      script: "token.setMayAct({ j: String(clientProperties.redirectUris) + \"|\" + clientProperties.redirectUris.length });",
+      given: { engine, scopes: ["a"] },
+      expect: { mayAct: { mayAct: { j: "[]|0" } } },
+    }));
+    expect(effects.mayAct!.mayAct).toEqual({ j: "[]|0" });
+  }, 60_000);
 });

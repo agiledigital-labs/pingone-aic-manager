@@ -174,6 +174,42 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(ids).toContain("oidc-claims-unmeasured/claims.subname");
   }, 60_000);
 
+  const claimsReturn = (probe: string) => engine === "legacy"
+    ? `var m = new java.util.LinkedHashMap(); m.put("probe", ${probe}); new org.forgerock.oauth2.core.UserInfoClaims(m, null);`
+    : `({ values: { probe: ${probe} } });`;
+
+  // Sol ctx r10 P2-1. No capture measured a size-zero request value. An empty
+  // claimsLocales list is a different list and does not permit this one.
+  it("r10 P2-1 a size-zero request value's length is a named fault", async () => {
+    const id = "oidc-claims-unmeasured/requestProperties";
+    expectHarnessFault(id);
+    const error = await runCase(runner, defineCase({
+      name: `r10 empty request ${engine}`,
+      context: "OIDC_CLAIMS",
+      // The length is read while building the return. Legacy has no logger.info
+      // (its logger is AM's Debug), so a log would fail before the read.
+      script: claimsReturn("String(requestProperties.requestParams.x.length)"),
+      given: { engine, request: { params: { x: [] } } },
+      expect: { oidc: { userinfo: { probe: "0" } } },
+    })).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toContain(id);
+    expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
+  }, 60_000);
+
+  it("r10 P2-1 an empty claimsLocales list still answers length and String", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `r10 claims locales ${engine}`,
+      context: "OIDC_CLAIMS",
+      script: claimsReturn("claimsLocales.length + \"|\" + String(claimsLocales)"),
+      given: { engine },
+      expect: { oidc: { userinfo: { probe: "0|[]" } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
+  }, 60_000);
+
   // Legacy was measured with one plain object, the next-gen result shape;
   // any other object is a guess, so it faults rather than answer the same 500.
   it.runIf(engine === "legacy")("a plain object other than the measured shape is a named fault", async () => {

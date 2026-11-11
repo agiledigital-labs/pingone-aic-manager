@@ -136,4 +136,15 @@ describe("request value lists under concat, String and JSON.stringify match the 
     expect(response.emulation?.faults ?? []).toEqual([]);
     expect(parseHarvest(response.value as string).sharedState.final.r).toBe('0|[""]|[]|1|[""]');
   });
+
+  it("a size-zero request list's length fault still names the measured empty value", async () => {
+    expectHarnessFault("request-list-unmeasured");
+    const response = await runner.eval({
+      preamble: mockPreamble({ requestParameters: { q: [] } } as Given),
+      source: withHarvest(`try { requestParameters.get("q").length; } catch (e) {}`),
+    });
+    const faults = response.emulation?.faults ?? [];
+    expect(faults.map((f) => f.id)).toEqual(["request-list-unmeasured"]);
+    expect(faults[0]?.message).toContain('never produced on AIC: an empty value arrives as [""]');
+  });
 });
