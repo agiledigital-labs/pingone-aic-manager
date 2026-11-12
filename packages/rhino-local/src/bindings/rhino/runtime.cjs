@@ -1266,6 +1266,10 @@ function __rhinoLocalRequestMap(values, options) {
       "rhino-local: keySet is blocked by AM's class shutter; iterate with for...in"
     );
   });
+  // Measured on requestHeaders and requestParameters: the class shutter's refusal.
+  __rhinoLocalHide(map, "getClass", function () {
+    throw __rhinoLocalShutterError("java.lang.Class");
+  });
   // java.util.Map.forEach(BiConsumer), measured 2026-11-08 on all three request
   // maps (docs/api/12, request-map-foreach probe): the callback gets exactly
   // (key, value) with `this` not the map, forEach returns undefined, and a
@@ -5043,8 +5047,19 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
 // so it is that here too and not a harness fault.
 var __rhinoLocalMeasuredAbsent = {
   logger: ["message", "warning", "errorEnabled", "messageEnabled", "warningEnabled"],
-  existingSession: ["hasOwnProperty"],
-  "idRepository.getIdentity()": ["getAttribute"]
+  existingSession: ["hasOwnProperty"]
+};
+
+// Objects whose whole member set was captured on AIC. A name outside the set
+// is absent there, so calling it is the engine's TypeError; a name inside it
+// that this harness has not written is the fault. An object listed here needs
+// no entry above.
+var __rhinoLocalMeasuredMembers = {
+  "idRepository.getIdentity()": [
+    "addAttribute", "attribute", "attributeValues", "class", "equals", "exists",
+    "getAttributeValues", "getClass", "getName", "getUniversalId", "hashCode", "name",
+    "notify", "notifyAll", "setAttribute", "store", "toString", "universalId", "wait"
+  ]
 };
 
 // A method a script calls on a harness object that this harness never wrote.
@@ -5069,7 +5084,9 @@ function __rhinoLocalGuardService(path, object) {
     return object;
   }
   __rhinoLocalHide(object, "__noSuchMethod__", function (name) {
-    if ((__rhinoLocalMeasuredAbsent[path] || []).indexOf(name) !== -1) {
+    var members = __rhinoLocalMeasuredMembers[path];
+    if (members ? members.indexOf(name) === -1
+        : (__rhinoLocalMeasuredAbsent[path] || []).indexOf(name) !== -1) {
       throw new TypeError("Cannot find function " + name + " in object " + String(object) + ".");
     }
     if (name in object) {
