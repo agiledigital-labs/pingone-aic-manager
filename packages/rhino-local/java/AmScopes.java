@@ -5,8 +5,7 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 
 /**
- * AM 8.1.1 {@code RhinoScriptEngine.makeScriptable} / {@code getScope},
- * measured with {@code javap -p -c}.
+ * The scope a script runs in.
  *
  * <pre>
  *   ScriptContextScope scope = new ScriptContextScope(scriptContext);
@@ -17,13 +16,12 @@ import org.mozilla.javascript.ScriptableObject;
  * </pre>
  *
  * <p>The standard-objects object is the <em>prototype</em>, not the parent
- * (parent stays {@code null}). {@code getScope} additionally installs CommonJS
- * {@code require} when {@code LIBRARY_SCRIPT} is on and {@code libraryBindings}
- * is present; that path is not modelled here (decision-node eval).
+ * (parent stays {@code null}). A CommonJS {@code require} is not installed
+ * here (decision-node eval).
  *
- * <p>AM calls {@code initStandardObjects()} on every eval — it does not share a
- * sealed standard-objects parent. We do the same, so {@code Object.prototype}
- * mutations cannot leak from job N to job N+1.
+ * <p>{@code initStandardObjects()} runs on every eval — no sealed
+ * standard-objects parent is shared — so {@code Object.prototype} mutations
+ * cannot leak from job N to job N+1.
  */
 final class AmScopes {
 

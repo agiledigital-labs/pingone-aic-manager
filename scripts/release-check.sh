@@ -140,7 +140,7 @@ CI_STEPS_REPRODUCED=(
   "TypeScript project type-check"
   "rhino-local typecheck"
   "rhino-local lint"
-  "rhino-local tests (host vs AM image)"
+  "rhino-local tests (host vs reference JVM image)"
   "rhino-local package smoke (installed, no javac)"
 )
 
@@ -150,9 +150,9 @@ CI_STEPS_SETUP=(
   "Cache cargo build"
   "Install Node"
   "Install TypeScript"
-  "Install Java (AM's Temurin)"
+  "Install Java (Temurin)"
   "Install rhino-local dependencies"
-  "Pull the AM image"
+  "Pull the reference JVM image"
   "Record the JVM builds"
   "Read the pinned toolchain"
   "Read the declared MSRV"
@@ -380,10 +380,11 @@ gate "typescript project type-check" \
 
 # --- rhino-local harness -----------------------------------------------------
 #
-# CI runs every harness test on the host JVM and the AM image's JVM and fails on
-# a difference, so this does too: a release checked only on the host lane has
-# not checked the thing CI checks. It needs a Java 25 (shell.nix provides one)
-# and docker with the AM image; the harness says which is missing.
+# CI runs every harness test on the host JVM and the reference JVM image's JVM
+# and fails on a difference, so this does too: a release checked only on the
+# host lane has not checked the thing CI checks. It needs a Java 25 (shell.nix
+# provides one) and docker with the reference image; the harness says which is
+# missing.
 
 gate "rhino-local typecheck + lint" \
   "the rhino-local harness does not type-check or lint clean" \
@@ -392,8 +393,8 @@ gate "rhino-local typecheck + lint" \
            npm -w packages/rhino-local run lint &&
            npm -w packages/rhino-local run lint:am'
 
-gate "rhino-local tests (host vs AM image)" \
-  "the rhino-local harness failed, or the host and AM image JVMs disagreed" \
+gate "rhino-local tests (host vs reference JVM image)" \
+  "the rhino-local harness failed, or the host and reference JVM image JVMs disagreed" \
   bash -c 'AIC_SCRIPT_TESTER_JVM=both npm -w packages/rhino-local test'
 
 gate "rhino-local package smoke (installed, no javac)" \

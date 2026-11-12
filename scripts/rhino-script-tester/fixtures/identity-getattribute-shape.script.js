@@ -102,9 +102,8 @@ function describe(get, safeToEcho) {
 try {
   var id = idRepository.getIdentity(PROBE_USER);
   var out = {
-    // Does the next-gen ScriptedIdentity expose getAttribute at all? The 8.1.1
-    // class file has it public alongside getAttributeValues; docs/api/14 only
-    // ever recorded getAttributeValues, which is not the same claim.
+    // Does the next-gen ScriptedIdentity expose getAttribute at all? docs/api/14
+    // only ever recorded getAttributeValues, which is not the same claim.
     getAttribute_customAttrs:
       describe(function () { return id.getAttribute("fr-idm-custom-attrs"); }, true),
     getAttributeValues_customAttrs:

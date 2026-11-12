@@ -2,9 +2,9 @@
  * Where the runner's JVM comes from.
  *
  * - `host` — a Java 25 on this machine. The default: an 8GB laptop should not
- *   need the ~850MB AM image to run a unit test.
- * - `container` — the JVM inside the AM image. The reference `host` is
- *   compared against; CI runs it, developers need not.
+ *   need a container image to run a unit test.
+ * - `container` — the JVM inside the reference JVM image. The reference
+ *   `host` is compared against; CI runs it, developers need not.
  * - `both` — every job on both, failing on any difference. This is how the
  *   whole suite doubles as the host-vs-image conformance test.
  */
@@ -12,10 +12,8 @@ export type JvmLane = "host" | "container" | "both";
 export declare const JVM_LANE_ENV = "AIC_SCRIPT_TESTER_JVM";
 export declare function laneFromEnv(env?: NodeJS.ProcessEnv): JvmLane;
 /**
- * The Rhino AM 8.1.1 ships. MEASURED 2026-09-28: the jar in
- * `WEB-INF/lib` of the AM image is byte-identical to this Maven Central
- * artefact (same SHA-1 as the `.sha1` Central publishes), so there is no Ping
- * code to extract and nothing about Rhino that needs the image.
+ * The Rhino this harness pins: Rhino 1.7.14.1 from Maven Central, checked
+ * against the SHA-256 below.
  */
 export declare const RHINO_JAR: {
     readonly fileName: "rhino-1.7.14.1.jar";
@@ -24,13 +22,14 @@ export declare const RHINO_JAR: {
     readonly bytes: 1389188;
 };
 /**
- * The AM image the `container` lane runs, pinned by digest so the reference
- * cannot move under a re-pushed tag; override to calibrate another image.
+ * The reference JVM image the `container` lane runs (the official Temurin
+ * 25.0.4+7 JRE), pinned by digest so the reference cannot move under a
+ * re-pushed tag; override to calibrate another image.
  */
-export declare const DEFAULT_AM_IMAGE: string;
+export declare const DEFAULT_REFERENCE_IMAGE: string;
 /**
- * The JVM AM runs, as the AM image reports it (MEASURED 2026-09-28):
- * Temurin-25.0.4+7, `/etc/localtime` → `Etc/UTC`, `LANG=en_US.UTF-8`. The
+ * The target JVM environment: Temurin-25.0.4+7, `/etc/localtime` → `Etc/UTC`,
+ * `LANG=en_US.UTF-8`. The
  * runner reports what it actually got at startup, and {@link checkEnvironment}
  * refuses a JVM that differs in anything a script could observe.
  */
@@ -42,14 +41,14 @@ export declare const EXPECTED_ENVIRONMENT: {
     readonly rhino: "Rhino 1.7.14.1";
 };
 /**
- * Flags for the host lane only. The properties pin what the AM image's JVM
+ * Flags for the host lane only. The properties pin what the reference JVM
  * gets from its OS (UTC, en_US.UTF-8), which a host would otherwise take from
  * its own settings. The heap cap, serial collector and C1-only JIT are what
  * keep a runner small on an 8GB box.
  *
  * The container lane gets **none** of these: it is the reference, so it runs
  * the image's JVM on the image's defaults, as the old launcher did. That makes
- * `both` compare the constrained host against an unconstrained AM JVM, so a
+ * `both` compare the constrained host against an unconstrained JVM, so a
  * script that only works with more heap or a faster JIT shows up as a
  * divergence rather than agreeing with itself.
  */
@@ -65,7 +64,7 @@ export interface RunnerEnvironment {
 }
 export declare function parseEnvironment(readyLine: string): RunnerEnvironment;
 /**
- * Every field a script can observe must match AM's. The Java patch level and
+ * Every field a script can observe must match the target's. The Java patch level and
  * vendor are not checked here: they are what the `both` lane measures, and a
  * developer's Temurin 25.0.4.1 is not wrong merely for not being 25.0.4.
  */

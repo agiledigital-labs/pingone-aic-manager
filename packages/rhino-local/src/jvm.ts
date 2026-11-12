@@ -21,9 +21,10 @@ const execFileAsync = promisify(execFile);
  * Where the runner's JVM comes from.
  *
  * - `host` — a Java 25 on this machine. The default: an 8GB laptop should not
- *   need the ~850MB AM image to run a unit test.
- * - `container` — the JVM inside the AM image. The reference `host` is
- *   compared against; CI runs it, developers need not.
+ *   need a container image to run a unit test.
+ * - `container` — the JVM inside the reference JVM image
+ *   ({@link DEFAULT_REFERENCE_IMAGE}). The reference `host` is compared
+ *   against; CI runs it, developers need not.
  * - `both` — every job on both, failing on any difference. This is how the
  *   whole suite doubles as the host-vs-image conformance test.
  */
@@ -45,10 +46,8 @@ export function laneFromEnv(env: NodeJS.ProcessEnv = process.env): JvmLane {
 }
 
 /**
- * The Rhino AM 8.1.1 ships. MEASURED 2026-09-28: the jar in
- * `WEB-INF/lib` of the AM image is byte-identical to this Maven Central
- * artefact (same SHA-1 as the `.sha1` Central publishes), so there is no Ping
- * code to extract and nothing about Rhino that needs the image.
+ * The Rhino this harness pins: Rhino 1.7.14.1 from Maven Central, checked
+ * against the SHA-256 below.
  */
 export const RHINO_JAR = {
   fileName: "rhino-1.7.14.1.jar",
@@ -58,16 +57,17 @@ export const RHINO_JAR = {
 } as const;
 
 /**
- * The AM image the `container` lane runs, pinned by digest so the reference
- * cannot move under a re-pushed tag; override to calibrate another image.
+ * The reference JVM image the `container` lane runs (the official Temurin
+ * 25.0.4+7 JRE), pinned by digest so the reference cannot move under a
+ * re-pushed tag; override to calibrate another image.
  */
-export const DEFAULT_AM_IMAGE =
-  "us-docker.pkg.dev/forgeops-public/images/am:2026.3.1-2053" +
-  "@sha256:358d7e1e13b27619b742a759fd5a85d4fcc57cc75811027b9f3c0019a0bd9be3";
+export const DEFAULT_REFERENCE_IMAGE =
+  "eclipse-temurin:25.0.4_7-jre" +
+  "@sha256:bb036ed6cfdc57e3da7c22634d15f1b840d2caf76183861c80e81ca4b5104abb";
 
 /**
- * The JVM AM runs, as the AM image reports it (MEASURED 2026-09-28):
- * Temurin-25.0.4+7, `/etc/localtime` → `Etc/UTC`, `LANG=en_US.UTF-8`. The
+ * The target JVM environment: Temurin-25.0.4+7, `/etc/localtime` → `Etc/UTC`,
+ * `LANG=en_US.UTF-8`. The
  * runner reports what it actually got at startup, and {@link checkEnvironment}
  * refuses a JVM that differs in anything a script could observe.
  */
@@ -80,14 +80,14 @@ export const EXPECTED_ENVIRONMENT = {
 } as const;
 
 /**
- * Flags for the host lane only. The properties pin what the AM image's JVM
+ * Flags for the host lane only. The properties pin what the reference JVM
  * gets from its OS (UTC, en_US.UTF-8), which a host would otherwise take from
  * its own settings. The heap cap, serial collector and C1-only JIT are what
  * keep a runner small on an 8GB box.
  *
  * The container lane gets **none** of these: it is the reference, so it runs
  * the image's JVM on the image's defaults, as the old launcher did. That makes
- * `both` compare the constrained host against an unconstrained AM JVM, so a
+ * `both` compare the constrained host against an unconstrained JVM, so a
  * script that only works with more heap or a faster JIT shows up as a
  * divergence rather than agreeing with itself.
  */
@@ -150,8 +150,8 @@ export function parseEnvironment(readyLine: string): RunnerEnvironment {
 }
 
 /**
- * Every field a script can observe must match AM's. The Java patch level and
- * vendor are not checked here: they are what the `both` lane measures, and a
+ * Every field a script can observe must match the target's. The Java patch
+ * level and vendor are not checked here: they are what the `both` lane measures, and a
  * developer's Temurin 25.0.4.1 is not wrong merely for not being 25.0.4.
  */
 export function checkEnvironment(env: RunnerEnvironment, lane: "host" | "container"): void {
@@ -159,7 +159,7 @@ export function checkEnvironment(env: RunnerEnvironment, lane: "host" | "contain
   for (const key of Object.keys(EXPECTED_ENVIRONMENT) as Array<keyof typeof EXPECTED_ENVIRONMENT>) {
     if (env[key] !== EXPECTED_ENVIRONMENT[key]) {
       problems.push(
-        `${key} is ${JSON.stringify(env[key])}, AM's is ${JSON.stringify(EXPECTED_ENVIRONMENT[key])}`
+        `${key} is ${JSON.stringify(env[key])}, expected ${JSON.stringify(EXPECTED_ENVIRONMENT[key])}`
       );
     }
   }
@@ -307,7 +307,7 @@ export async function ensureRhinoJar(
     }
     if (actual !== RHINO_JAR.sha256) {
       throw new Error(
-        `rhino-local: ${RHINO_JAR_ENV}=${override} is not the Rhino AM ships ` +
+        `rhino-local: ${RHINO_JAR_ENV}=${override} is not the Rhino this harness pins ` +
           `(sha256 ${actual}; expected ${RHINO_JAR.sha256}, ${RHINO_JAR.fileName} from ${RHINO_JAR.url})`
       );
     }
@@ -326,7 +326,7 @@ export async function ensureRhinoJar(
   const actual = sha256(bytes);
   if (actual !== RHINO_JAR.sha256 || bytes.length !== RHINO_JAR.bytes) {
     throw new Error(
-      `rhino-local: ${RHINO_JAR.url} is not the Rhino AM ships ` +
+      `rhino-local: ${RHINO_JAR.url} is not the Rhino this harness pins ` +
         `(sha256 ${actual}, ${bytes.length} bytes; expected ${RHINO_JAR.sha256}, ${RHINO_JAR.bytes})`
     );
   }
@@ -508,7 +508,7 @@ export function containerLaunch(
   env: NodeJS.ProcessEnv = process.env
 ): Launch {
   const containerName = `rhino-local-runner-${randomUUID()}`;
-  const image = env.AIC_SCRIPT_TESTER_IMAGE || DEFAULT_AM_IMAGE;
+  const image = env.AIC_SCRIPT_TESTER_IMAGE || DEFAULT_REFERENCE_IMAGE;
   const user =
     typeof process.getuid === "function"
       ? [`--user`, `${process.getuid()}:${process.getgid?.() ?? 0}`]
