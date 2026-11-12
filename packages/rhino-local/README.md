@@ -30,9 +30,10 @@ What it does not cover:
   touched nothing the harness lacks.
 - Plain data: a record `openidm.read` returns or a parsed body is the script's
   own object, where a missing method is a `TypeError` on AIC too.
-- Lists. A Java list refuses an unknown member itself, as on AIC. The lists
-  that are still JS arrays here (`nodeState.keys()`, a map's `values()`) answer
-  array methods AIC's do not have.
+- Java lists and sets, which refuse an unknown member themselves, as on AIC.
+  On a decision node `nodeState.keys()` is a `java.util.HashSet` (walk it with
+  `iterator()`), and a map's `values()` and an identity's
+  `getAttributeValues()` are Java lists.
 - The other script contexts' own views (`accessToken`, `identity`, `session`,
   …), which fault under their `<context>-unmeasured` ids.
 

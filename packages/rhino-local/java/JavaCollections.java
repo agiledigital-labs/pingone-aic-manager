@@ -30,6 +30,23 @@ final class JavaCollections {
     return cx.getWrapFactory().wrapAsJavaObject(cx, ScriptableObject.getTopLevelScope(scope), new SequenceFacade(list), List.class);
   }
 
+  /**
+   * HostOps "javaSet": a script array's elements as a {@code java.util.HashSet}, which a script
+   * holds as a plain Java object. A context whose allow-list lacks the class gets the engine's
+   * own refusal when it asks for one.
+   */
+  static Object set(Context cx, Scriptable scope, Object array) {
+    java.util.Set<Object> set = new java.util.HashSet<Object>();
+    if (array instanceof Scriptable) {
+      Scriptable items = (Scriptable) array;
+      long length = org.mozilla.javascript.ScriptRuntime.toUint32(ScriptableObject.getProperty(items, "length"));
+      for (int i = 0; i < length; i += 1) {
+        set.add(element(ScriptableObject.getProperty(items, i)));
+      }
+    }
+    return cx.getWrapFactory().wrapAsJavaObject(cx, ScriptableObject.getTopLevelScope(scope), set, java.util.HashSet.class);
+  }
+
   /** What a script value is once it is inside a Java list. */
   private static Object element(Object value) {
     if (value == Scriptable.NOT_FOUND || value == Undefined.instance) {
