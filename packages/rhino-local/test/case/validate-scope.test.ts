@@ -44,8 +44,9 @@ describe("OAUTH2_VALIDATE_SCOPE case validation", () => {
     expect(() => validateCase(vsCase({ accessToken: {} }))).toThrow(/expect\.accessToken is not accepted in context/);
   });
 
-  it("accepts the scope lists, client and request on both engines", () => {
-    for (const engine of ["legacy", "next-gen"] as const) {
+  it("accepts the scope lists, client and request", () => {
+    {
+      const engine = "next-gen" as const;
       const kase = defineCase({
         name: "ok",
         script: "x.js",

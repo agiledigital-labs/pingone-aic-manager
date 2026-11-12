@@ -3,20 +3,6 @@
   "measured": "2026-11-10, sandbox alpha, client_credentials, stateless client with scopes zzemuc6-a/b and default scope zzemuc6-a; each script is the whole may-act script on the client's accessTokenMayActScript override",
   "result": "http plus the issued token's may_act and act claims (\"<absent>\" when the claim is missing) or AM's error; err-* scripts carry caught error messages out in may_act, the Java hash in a message levelled to @<hash>"
  },
- "act-jsonvalue": {
-  "legacy": {
-   "act": {
-    "sub": "zzemuC6-actor"
-   },
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": "<absent>",
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): act-jsonvalue\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setAct(jv({ sub: \"zzemuC6-actor\" }));\n"
-  }
- },
  "act-null": {
   "next-gen": {
    "act": null,
@@ -94,29 +80,6 @@
   }
  },
  "err-args": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": {
-    "actObj": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setAct(object).",
-    "array": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct(object).",
-    "client_id": "zzemuC6-err",
-    "getField0": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.getField().",
-    "getFieldNull": "object|[object Error]|JavaException|JavaException: java.lang.NullPointerException: null",
-    "getMayActArg": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.getMayAct(number).",
-    "hashMap": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct(java.util.HashMap).",
-    "jsobject": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct(object).",
-    "noarg": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct().",
-    "number": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct(number).",
-    "string": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct(string).",
-    "undef": "object|[object Error]|InternalError|InternalError: Can't find method org.forgerock.openam.oauth2.token.stateless.StatelessAccessToken.setMayAct(org.mozilla.javascript.Undefined)."
-   },
-   "scope": "zzemuc6-a",
-   "script": "// May-act caught-error probe (legacy): err-args\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\nfunction rec(f) { try { f(); return \"no-throw\"; } catch (e) { return typeof e + \"|\" + Object.prototype.toString.call(e) + \"|\" + (e && e.name) + \"|\" + String(e).replace(/ \\([^()]*#[0-9]+\\)$/, \"\"); } }\nvar r = {};\nr.jsobject = rec(function () { token.setMayAct({ a: 1 }); }); r.string = rec(function () { token.setMayAct(\"zz\"); }); r.number = rec(function () { token.setMayAct(7); }); r.array = rec(function () { token.setMayAct([\"zz\"]); }); r.noarg = rec(function () { token.setMayAct(); }); r.hashMap = rec(function () { token.setMayAct(new java.util.HashMap()); }); r.undef = rec(function () { token.setMayAct(undefined); }); r.actObj = rec(function () { token.setAct({ a: 1 }); }); r.getFieldNull = rec(function () { return String(token.getField(null)); }); r.getMayActArg = rec(function () { token.getMayAct(1); }); r.getField0 = rec(function () { token.getField(); });\nvar out = new java.util.LinkedHashMap(); out.put(\"client_id\", \"zzemuC6-err\"); for (var k in r) out.put(k, r[k]);\ntoken.setMayAct(new org.forgerock.json.JsonValue(out));\n"
-  },
   "next-gen": {
    "act": "<absent>",
    "claimScope": [
@@ -163,21 +126,6 @@
    "script": "// May-act caught-error probe: err-java\nfunction rec(f) { try { f(); return \"no-throw\"; } catch (e) { return typeof e + \"|\" + Object.prototype.toString.call(e) + \"|\" + (e && e.name) + \"|\" + String(e).replace(/ \\([^()]*#[0-9]+\\)$/, \"\"); } }\nvar r = {};\nr.hashMap = rec(function () { var m = new java.util.HashMap(); token.setMayAct(m); }); r.setField = rec(function () { token.setField(\"a\", \"b\"); }); r.toStr = rec(function () { return token.toString(); });\ntoken.setMayAct({ client_id: \"zzemuC6-err\", r: r });\n"
   }
  },
- "getfield": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": {
-    "client_id": "zzemuC6-x",
-    "t": "object|\"zzemuC6-ma\"|zzemuC6-ma|object|true"
-   },
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): getfield\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\nvar f = token.getField(\"client_id\"); token.setMayAct(jv({ client_id: \"zzemuC6-x\", t: typeof f + \"|\" + String(f) + \"|\" + String(f.getObject()) + \"|\" + typeof f.getObject() + \"|\" + f.isString() }));\n"
-  }
- },
  "getfield-after": {
   "next-gen": {
    "act": {
@@ -197,12 +145,6 @@
   }
  },
  "java-map": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error running may_act script",
-   "http": 500,
-   "script": "// May-act result probe (legacy): java-map\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\nvar m = new java.util.HashMap(); m.put(\"client_id\", \"zzemuC6-x\"); token.setMayAct(m);\n"
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error running may_act script",
@@ -210,103 +152,7 @@
    "script": "// May-act result probe: java-map\nvar m = new java.util.HashMap(); m.put(\"client_id\", \"zzemuC6-x\"); token.setMayAct(m);\n"
   }
  },
- "jsobject": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error running may_act script",
-   "http": 500,
-   "script": "// May-act result probe (legacy): jsobject\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct({ client_id: \"zzemuC6-x\" });\n"
-  }
- },
- "jsobject-caught": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": {
-    "client_id": "zzemuC6-caught"
-   },
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): jsobject-caught\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntry { token.setMayAct({ client_id: \"zzemuC6-x\" }); } catch (e) { token.setMayAct(jv({ client_id: \"zzemuC6-caught\" })); }\n"
-  }
- },
- "jsonvalue": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": {
-    "client_id": "zzemuC6-x"
-   },
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): jsonvalue\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct(jv({ client_id: \"zzemuC6-x\" }));\n"
-  }
- },
- "jsonvalue-nested": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": {
-    "client_id": "zzemuC6-x",
-    "jb": true,
-    "jf": 1.5,
-    "js": 1.0,
-    "n": {
-     "a": 1,
-     "b": [
-      1,
-      "a"
-     ]
-    }
-   },
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): jsonvalue-nested\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\nvar n = new java.util.LinkedHashMap(); n.put(\"a\", new java.lang.Integer(1)); var l = new java.util.ArrayList(); l.add(new java.lang.Integer(1)); l.add(\"a\"); n.put(\"b\", l); token.setMayAct(jv({ client_id: \"zzemuC6-x\", n: n, js: 1, jb: true, jf: 1.5 }));\n"
-  }
- },
- "jsonvalue-null": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": null,
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): jsonvalue-null\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct(new org.forgerock.json.JsonValue(null));\n"
-  }
- },
- "jsonvalue-string": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": "zzemuC6-x",
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): jsonvalue-string\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct(new org.forgerock.json.JsonValue(\"zzemuC6-x\"));\n"
-  }
- },
  "mutate-after": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": {
-    "client_id": "zzemuC6-after"
-   },
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): mutate-after\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\nvar m = new java.util.LinkedHashMap(); m.put(\"client_id\", \"zzemuC6-before\"); var v = new org.forgerock.json.JsonValue(m); token.setMayAct(v); m.put(\"client_id\", \"zzemuC6-after\");\n"
-  },
   "next-gen": {
    "act": "<absent>",
    "claimScope": [
@@ -352,16 +198,6 @@
   }
  },
  "none": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": "<absent>",
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): none\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\nvar x = 1;\n"
-  },
   "next-gen": {
    "act": "<absent>",
    "claimScope": [
@@ -389,16 +225,6 @@
   }
  },
  "null": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": "<absent>",
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): null\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct(null);\n"
-  },
   "next-gen": {
    "act": "<absent>",
    "claimScope": [
@@ -465,24 +291,6 @@
   }
  },
  "roundtrip": {
-  "legacy": {
-   "act": {
-    "id": "\"zzemuC6-x\"",
-    "idt": "object",
-    "s": "{ \"client_id\": \"zzemuC6-x\" }",
-    "sub": "zzemuC6-got",
-    "t": "object|[object JavaObject]"
-   },
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": {
-    "client_id": "zzemuC6-x"
-   },
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): roundtrip\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct(jv({ client_id: \"zzemuC6-x\" })); var g = token.getMayAct(); token.setAct(jv({ sub: \"zzemuC6-got\", t: typeof g + \"|\" + Object.prototype.toString.call(g), s: String(g), id: String(g.get(\"client_id\")), idt: typeof g.get(\"client_id\").getObject() }));\n"
-  },
   "next-gen": {
    "act": "<absent>",
    "claimScope": [
@@ -501,31 +309,7 @@
    "script": "// May-act result probe: roundtrip\ntoken.setMayAct({ client_id: \"zzemuC6-x\", n: { a: 1 }, l: [1, \"a\"] }); var m = token.getMayAct(); token.setMayAct({ client_id: \"zzemuC6-got\", tn: typeof m.n + \"|\" + Object.prototype.toString.call(m.n), tl: typeof m.l + \"|\" + Array.isArray(m.l) + \"|\" + Object.prototype.toString.call(m.l), na: typeof m.n.a + \"|\" + m.n.a, j: JSON.stringify(m), same: String(m === token.getMayAct()) });\n"
   }
  },
- "scope-set": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-b"
-   ],
-   "http": 200,
-   "may_act": {
-    "client_id": "zzemuC6-x"
-   },
-   "scope": "zzemuc6-b",
-   "script": "// May-act result probe (legacy): scope-set\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\nvar s = new java.util.HashSet(); s.add(\"zzemuc6-b\"); token.setScope(s); token.setMayAct(jv({ client_id: \"zzemuC6-x\" }));\n"
-  }
- },
  "set-then-null": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": "<absent>",
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): set-then-null\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct(jv({ client_id: \"zzemuC6-a\" })); token.setMayAct(null);\n"
-  },
   "next-gen": {
    "act": "<absent>",
    "claimScope": [
@@ -538,12 +322,6 @@
   }
  },
  "string": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error running may_act script",
-   "http": 500,
-   "script": "// May-act result probe (legacy): string\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct(\"zzemuC6-x\");\n"
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error running may_act script",
@@ -552,12 +330,6 @@
   }
  },
  "throw": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error running may_act script",
-   "http": 500,
-   "script": "// May-act result probe (legacy): throw\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\nthrow new Error(\"zz\");\n"
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error running may_act script",
@@ -588,18 +360,6 @@
   }
  },
  "twice": {
-  "legacy": {
-   "act": "<absent>",
-   "claimScope": [
-    "zzemuc6-a"
-   ],
-   "http": 200,
-   "may_act": {
-    "client_id": "zzemuC6-b"
-   },
-   "scope": "zzemuc6-a",
-   "script": "// May-act result probe (legacy): twice\nfunction jv(o) { var m = new java.util.LinkedHashMap(); for (var k in o) m.put(k, o[k]); return new org.forgerock.json.JsonValue(m); }\ntoken.setMayAct(jv({ client_id: \"zzemuC6-a\" })); token.setMayAct(jv({ client_id: \"zzemuC6-b\" }));\n"
-  },
   "next-gen": {
    "act": "<absent>",
    "claimScope": [
@@ -629,4 +389,3 @@
   }
  }
 }
-

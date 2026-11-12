@@ -1,7 +1,7 @@
 /**
  * The OIDC claims context on the real JVM, compared with live captures. Each
  * probe in test/fixtures/oidc-claims/ ran unchanged on a sandbox tenant
- * (2026-11-10, both engines): a password-grant token request, whose id token
+ * (2026-11-10): a password-grant token request, whose id token
  * carries the script's claims, then a userinfo call with the access token,
  * which runs the script again. `<probe>.<engine>.json` holds what AIC
  * answered: the id token's claims, the userinfo body, and the probe's own
@@ -60,7 +60,7 @@ const headers = (count: number, contentType: boolean) => {
 type Endpoint = "token" | "userinfo";
 const given = (engine: Engine, endpoint: Endpoint, claimsLocales: string[] = []) => ({
   engine,
-  scriptName: engine === "next-gen" ? "zzemuC2-oidc-ng" : "zzemuC2-oidc-legacy",
+  scriptName: "zzemuC2-oidc-ng",
   identity: { name: SUB, attributes: { mail: ["zzemuc2@example.com"], givenName: ["Zed"] } },
   scopes: SCOPES,
   client: {
@@ -92,7 +92,8 @@ const scriptClaims = (token: JsonObject) =>
   Object.fromEntries(Object.entries(token).filter(([key]) => !AM_CLAIMS.has(key) && key !== "aicprobe"));
 const withoutProbe = (body: JsonObject) => Object.fromEntries(Object.entries(body).filter(([key]) => key !== "aicprobe"));
 
-describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the live capture", (engine) => {
+describe("OIDC claims matches the live capture", () => {
+  const engine = "next-gen" as const;
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
@@ -110,10 +111,10 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
   // object cannot do that while remove() works, so the emulator faults it
   // (tested below) and this comparison runs the probe without that one line.
   const probeSource = (probe: string) =>
-    probe === "claimsmap" && engine === "next-gen"
+    probe === "claimsmap"
       ? script(probe).replace(/^out\.deleteSub = .*\n/m, "")
       : script(probe);
-  const dropped = (probe: string) => (probe === "claimsmap" && engine === "next-gen" ? ["deleteSub"] : []);
+  const dropped = (probe: string) => (probe === "claimsmap" ? ["deleteSub"] : []);
 
   it.each(["surface", "requested", "claimsmap"])("%s: the probe's record at both endpoints, and the claims", async (probe) => {
     const live = capture(probe, engine);
@@ -165,7 +166,7 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(effects.oidc!.returned).toBe("none");
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("delete on the claims map is a named fault, not a silent removal", async () => {
+  it("delete on the claims map is a named fault, not a silent removal", async () => {
     expectHarnessFault("oidc-claims-unmeasured/claims.subname");
     const error = await run("delete", `delete claims.subname; ({ values: { a: "b" } });`, "token")
       .then(() => null, (e: unknown) => e);
@@ -174,9 +175,7 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(ids).toContain("oidc-claims-unmeasured/claims.subname");
   }, 60_000);
 
-  const claimsReturn = (probe: string) => engine === "legacy"
-    ? `var m = new java.util.LinkedHashMap(); m.put("probe", ${probe}); new org.forgerock.oauth2.core.UserInfoClaims(m, null);`
-    : `({ values: { probe: ${probe} } });`;
+  const claimsReturn = (probe: string) => `({ values: { probe: ${probe} } });`;
 
   // Sol ctx r10 P2-1. No capture measured a size-zero request value. An empty
   // claimsLocales list is a different list and does not permit this one.
@@ -186,8 +185,7 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     const error = await runCase(runner, defineCase({
       name: `r10 empty request ${engine}`,
       context: "OIDC_CLAIMS",
-      // The length is read while building the return. Legacy has no logger.info
-      // (its logger is AM's Debug), so a log would fail before the read.
+      // The length is read while building the return.
       script: claimsReturn("String(requestProperties.requestParams.x.length)"),
       given: { engine, request: { params: { x: [] } } },
       expect: { oidc: { userinfo: { probe: "0" } } },
@@ -212,7 +210,7 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
 
   // Sol ctx r11 P2-1. Empty claimsLocales, redirect and a missing attribute
   // do not measure scopes. The other three empty surfaces stay.
-  it.runIf(engine === "next-gen")("r11 P2-1 an empty scopes list's surface is a named fault", async () => {
+  it("r11 P2-1 an empty scopes list's surface is a named fault", async () => {
     const id = "oidc-claims-unmeasured/list";
     expectHarnessFault(id);
     const error = await runCase(runner, defineCase({
@@ -228,7 +226,7 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r11 an empty missing-attribute list still answers length and String", async () => {
+  it("r11 an empty missing-attribute list still answers length and String", async () => {
     const { effects, verdict } = await runCase(runner, defineCase({
       name: `r11 missing attribute ${engine}`,
       context: "OIDC_CLAIMS",
@@ -240,7 +238,7 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r11 an empty redirect-URI list still answers length and String", async () => {
+  it("r11 an empty redirect-URI list still answers length and String", async () => {
     const { effects, verdict } = await runCase(runner, defineCase({
       name: `r11 redirect ${engine}`,
       context: "OIDC_CLAIMS",
@@ -252,17 +250,6 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
   }, 60_000);
 
-  it.runIf(engine === "legacy")("r11 an empty requestedTypedClaims list still answers length and String", async () => {
-    const { effects, verdict } = await runCase(runner, defineCase({
-      name: `r11 requested typed ${engine}`,
-      context: "OIDC_CLAIMS",
-      script: claimsReturn("requestedTypedClaims.length + \"|\" + String(requestedTypedClaims)"),
-      given: { engine },
-      expect: { oidc: { userinfo: { probe: "0|[]" } } },
-    }));
-    expect(verdict.pass, verdict.summary).toBe(true);
-    expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
-  }, 60_000);
 
   // Sol ctx r12 P2-1. scopes was captured at size 4. An empty toArray() is a
   // plain array today, and contains() answers, so both skip the empty grant.
@@ -281,30 +268,21 @@ describe.each(["next-gen", "legacy"] as const)("OIDC claims on %s matches the li
     expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
   };
 
-  it.runIf(engine === "next-gen")("r12 P2-1 length of an empty scopes.toArray() is a named fault", async () => {
+  it("r12 P2-1 length of an empty scopes.toArray() is a named fault", async () => {
     await oidcFault("r12 toArray length", "String(scopes.toArray().length)",
       "oidc-claims-unmeasured/list.toArray()", { probe: "0" });
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r12 P2-1 JSON of an empty scopes.toArray() is a named fault", async () => {
+  it("r12 P2-1 JSON of an empty scopes.toArray() is a named fault", async () => {
     await oidcFault("r12 toArray json", "JSON.stringify(scopes.toArray())",
       "oidc-claims-unmeasured/list.toArray()", { probe: "[]" });
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r12 P2-1 contains of an empty scopes list is a named fault", async () => {
+  it("r12 P2-1 contains of an empty scopes list is a named fault", async () => {
     await oidcFault("r12 scopes contains", "scopes.contains(\"read\")",
       "oidc-claims-unmeasured/list", { probe: false });
   }, 60_000);
 
-  // Legacy was measured with one plain object, the next-gen result shape;
-  // any other object is a guess, so it faults rather than answer the same 500.
-  it.runIf(engine === "legacy")("a plain object other than the measured shape is a named fault", async () => {
-    expectHarnessFault("oidc-claims-unmeasured/result");
-    const error = await run("plain", `({ zzPlain: "x" });`, "token").then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
-    expect(ids).toContain("oidc-claims-unmeasured/result");
-  }, 60_000);
 });
 
 describe("one JVM running OIDC claims cases between other contexts' cases", () => {
@@ -316,34 +294,24 @@ describe("one JVM running OIDC claims cases between other contexts' cases", () =
   const surface = "JSON.stringify([typeof openidm, typeof logger.info, typeof logger.message, typeof logger.getName, "
     + "typeof claims, typeof session, typeof requestedClaims, typeof claimObjects, typeof sharedState, "
     + "typeof nodeState, typeof org.forgerock.oauth2, String(org.forgerock.oauth2)])";
-  const nodeProbe = async (engine: Engine) => {
+  const nodeProbe = async () => {
     const { effects } = await runCase(runner, defineCase({
-      name: `isolation ${engine} decision node`,
-      script: engine === "legacy"
-        ? `sharedState.put("out", ${surface}); outcome = "true";`
-        : `nodeState.putShared("out", ${surface}); action.goTo("true");`,
-      given: { engine },
+      name: "isolation decision node",
+      script: `nodeState.putShared("out", ${surface}); action.goTo("true");`,
       expect: { outcome: "true", allowUndeclared: { sharedState: true } },
     }));
     return effects.sharedState.final.out;
   };
-  const oidcCase = (engine: Engine) => runCase(runner, defineCase({
-    name: `isolation ${engine} oidc`,
+  const oidcCase = () => runCase(runner, defineCase({
+    name: "isolation oidc",
     context: "OIDC_CLAIMS",
-    script: engine === "legacy"
-      ? `var m = new java.util.LinkedHashMap(); m.put("a", "b"); new org.forgerock.oauth2.core.UserInfoClaims(m, null);`
-      : `({ values: { a: "b" } });`,
-    given: { engine },
+    script: `({ values: { a: "b" } });`,
     expect: { oidc: { userinfo: { a: "b" } } },
   }));
 
-  it("leaves a decision node on either engine exactly as a fresh runner sees it", async () => {
-    const before = { legacy: await nodeProbe("legacy"), "next-gen": await nodeProbe("next-gen") };
-    await oidcCase("legacy");
-    expect(await nodeProbe("next-gen")).toBe(before["next-gen"]);
-    expect(await nodeProbe("legacy")).toBe(before.legacy);
-    await oidcCase("next-gen");
-    expect(await nodeProbe("legacy")).toBe(before.legacy);
-    expect(await nodeProbe("next-gen")).toBe(before["next-gen"]);
+  it("leaves a decision node exactly as a fresh runner sees it", async () => {
+    const before = await nodeProbe();
+    await oidcCase();
+    expect(await nodeProbe()).toBe(before);
   }, 60_000);
 });

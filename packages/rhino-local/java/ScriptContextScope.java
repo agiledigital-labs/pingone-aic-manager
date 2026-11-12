@@ -9,8 +9,8 @@ import org.mozilla.javascript.Wrapper;
 
 /**
  * Replica of AM 8.1.1 {@code
- * org.forgerock.openam.scripting.factories.ScriptContextScope}, measured with
- * {@code javap -p -c} on {@code openam-scripting-8.1.1.jar}.
+ * org.forgerock.openam.scripting.factories.ScriptContextScope}, as observed to
+ * behave.
  *
  * <p>Implements {@link Scriptable} only — not {@code ScriptableObject} and not
  * {@code ConstProperties}. That is the lever for top-level {@code const}:

@@ -10,11 +10,6 @@
   "measured": "2026-11-10"
  },
  "array": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "config = [1, 2];\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -22,15 +17,6 @@
   }
  },
  "arrnested": {
-  "legacy": {
-   "http": 200,
-   "message": "m21",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: \"m21\" }, zzArr: [1, \"a\"] };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m21",
@@ -42,15 +28,6 @@
   }
  },
  "baseline": {
-  "legacy": {
-   "http": 200,
-   "message": "m1",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: \"m1\" } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m1",
@@ -62,15 +39,6 @@
   }
  },
  "bool": {
-  "legacy": {
-   "http": 200,
-   "message": "true",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: true } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "true",
@@ -82,11 +50,6 @@
   }
  },
  "boolcfg": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "config = true;\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -94,15 +57,6 @@
   }
  },
  "cachemanager": {
-  "legacy": {
-   "http": 200,
-   "message": "undefined",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: typeof cacheManager } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "undefined",
@@ -114,11 +68,6 @@
   }
  },
  "cbuilder": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "callbacksBuilder.textOutputCallback(0, \"cbzz\"); config = { message: { en: \"m23\" } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m23",
@@ -130,11 +79,6 @@
   }
  },
  "completion": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "({ message: { en: \"m4\" } });\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -142,15 +86,6 @@
   }
  },
  "empty": {
-  "legacy": {
-   "http": 200,
-   "message": "Default message",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = {};\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "Default message",
@@ -162,15 +97,6 @@
   }
  },
  "extra": {
-  "legacy": {
-   "http": 200,
-   "message": "m8",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: \"m8\" }, zzExtra: 1 };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m8",
@@ -182,11 +108,6 @@
   }
  },
  "fnresult": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "config = function () { return 1; };\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -194,15 +115,6 @@
   }
  },
  "func": {
-  "legacy": {
-   "http": 200,
-   "message": "m20",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "function f() { config = { message: { en: \"m20\" } }; } f();\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m20",
@@ -214,11 +126,6 @@
   }
  },
  "goto": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "action.goTo(\"false\"); config = { message: { en: \"m24\" } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m24",
@@ -230,15 +137,6 @@
   }
  },
  "hdrmissing": {
-  "legacy": {
-   "http": 200,
-   "message": "null|null",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: String(requestHeaders.get(\"x-zz-missing\")) + \"|\" + String(requestParameters.get(\"zzmissing\")) } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "null|null",
@@ -250,15 +148,6 @@
   }
  },
  "javamap": {
-  "legacy": {
-   "http": 200,
-   "message": "m10",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = new java.util.HashMap(); var mm = new java.util.HashMap(); mm.put(\"en\", \"m10\"); config.put(\"message\", mm);\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -266,15 +155,6 @@
   }
  },
  "keysafterput": {
-  "legacy": {
-   "http": 200,
-   "message": "authLevel,maxAuthenticationSessionDuration,realm,username,zzBool,zzK,zzNum,zzObj,zzStr,zzT",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "nodeState.putShared(\"zzK\", \"v\"); var ks = nodeState.keys(); var a = []; var it = ks.iterator(); while (it.hasNext()) a.push(String(it.next())); config = { message: { en: a.sort().join(\",\") } };\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -282,15 +162,6 @@
   }
  },
  "later": {
-  "legacy": {
-   "http": 200,
-   "message": "second",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: \"first\" } }; config.message.en = \"second\";\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "second",
@@ -302,15 +173,6 @@
   }
  },
  "msgstring": {
-  "legacy": {
-   "http": 200,
-   "message": "m15",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: \"m15\" };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m15",
@@ -322,15 +184,6 @@
   }
  },
  "msgundef": {
-  "legacy": {
-   "http": 200,
-   "message": "null",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: undefined } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "null",
@@ -342,15 +195,6 @@
   }
  },
  "nested": {
-  "legacy": {
-   "http": 200,
-   "message": "m18",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: \"m18\", de: null } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m18",
@@ -362,11 +206,6 @@
   }
  },
  "none": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "var zz = 1;\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -374,11 +213,6 @@
   }
  },
  "null": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "config = null;\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -386,15 +220,6 @@
   }
  },
  "number": {
-  "legacy": {
-   "http": 200,
-   "message": "42.0",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: 42, fr: 1.5 } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "42.0",
@@ -406,11 +231,6 @@
   }
  },
  "numcfg": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "config = 5;\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -418,15 +238,6 @@
   }
  },
  "obj": {
-  "legacy": {
-   "http": 200,
-   "message": "[object Object]",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: { a: 1 } } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "[object Object]",
@@ -438,11 +249,6 @@
   }
  },
  "string": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "config = \"zz\";\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -450,11 +256,6 @@
   }
  },
  "throw": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "throw new Error(\"zzboom\");\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -462,11 +263,6 @@
   }
  },
  "undef": {
-  "legacy": {
-   "http": 500,
-   "result": "empty body",
-   "script": "config = undefined;\n"
-  },
   "next-gen": {
    "http": 500,
    "result": "empty body",
@@ -474,15 +270,6 @@
   }
  },
  "undefprop": {
-  "legacy": {
-   "http": 200,
-   "message": "m22",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "config = { message: { en: \"m22\" }, zzU: undefined };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m22",
@@ -494,15 +281,6 @@
   }
  },
  "var": {
-  "legacy": {
-   "http": 200,
-   "message": "m3",
-   "options": [
-    "Yes",
-    "No"
-   ],
-   "script": "var config = { message: { en: \"m3\" } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m3",
@@ -514,15 +292,6 @@
   }
  },
  "yes": {
-  "legacy": {
-   "http": 200,
-   "message": "m13",
-   "options": [
-    "Y13",
-    "N13"
-   ],
-   "script": "config = { message: { en: \"m13\" }, messageYes: { en: \"Y13\" }, messageNo: { en: \"N13\" } };\n"
-  },
   "next-gen": {
    "http": 200,
    "message": "m13",

@@ -1,7 +1,7 @@
 /**
  * The OAuth2 validate scope context on the real JVM, compared with live
  * captures. surface.script.js ran unchanged as a client's validate scope
- * script on a sandbox tenant (2026-11-10, both engines, client_credentials
+ * script on a sandbox tenant (2026-11-10, client_credentials
  * against a stateless client with scopes zzemuc5-a/b/c and default scope
  * zzemuc5-c). Its record is the invalid-scope denial's message, so
  * `surface.<engine>.json` holds it as `probe`, and `noscope.<engine>.json`
@@ -52,7 +52,7 @@ const headers = () => {
 const given = (engine: Engine, requested: string[], loggerName?: string) => ({
   engine,
   realm: "/alpha",
-  scriptName: engine === "next-gen" ? "zzemuC5-vs-ng" : "zzemuC5-vs-legacy",
+  scriptName: "zzemuC5-vs-ng",
   ...(loggerName === undefined ? {} : { loggerScriptId: /\.([0-9a-f-]{36})\./.exec(loggerName)![1]! }),
   cookieName: "rhino-local-cookie",
   validateScope: { requested, allowed: ["zzemuc5-a", "zzemuc5-b", "zzemuc5-c"], defaults: ["zzemuc5-c"] },
@@ -79,7 +79,8 @@ const level = (value: JsonValue): JsonValue => {
   return value;
 };
 
-describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the live capture", (engine) => {
+describe("validate scope matches the live capture", () => {
+  const engine = "next-gen" as const;
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
@@ -100,19 +101,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     const live = capture(name, engine);
     expect(live.http).toBe(400);
     const loggerName = (live.probe.fn.loggerName as { ok: { str: string } }).ok.str;
-    // The capture's legacy for...in of the empty requestedScopes lists Java's
-    // member names, which the set view does not reproduce: that one loop is
-    // a named fault (Sol ctx r14 P2-1), and the rest of the record still
-    // matches. The faulted run's harvest is the record.
-    const forInFault = engine === "legacy" && requested.length === 0;
-    if (forInFault) expectHarnessFault("oauth2-validate-scope-unmeasured/requestedScopes for...in");
-    const effects = await run(name, SURFACE, [...requested], loggerName).then(
-      (r) => r.effects,
-      (e: unknown) => {
-        if (!forInFault || !(e instanceof CaseRunError) || e.faultedEffects === undefined) throw e;
-        return e.faultedEffects;
-      },
-    );
+    const { effects } = await run(name, SURFACE, [...requested], loggerName);
     const vs = effects.validateScope!;
     expect(vs.status).toBe(400);
     const record = JSON.parse(vs.invalidScope!) as { top: JsonObject; fn: JsonObject };
@@ -121,13 +110,6 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     // emulator's views list only their own JS members (docs/rhino-local-gaps.md).
     for (const r of [record, want]) {
       delete r.fn.helperMembers;
-      if (engine === "legacy") {
-        delete (r.fn.requested as JsonObject).forIn;
-        delete (r.fn.allowedList as JsonObject).forIn;
-        // String(s.length) of a guarded java.lang.String is a JS function's
-        // source, not Rhino's rendering of the Java method (gaps).
-        delete ((r.fn.loggerName as JsonObject).ok as JsonObject).len;
-      }
     }
     expect(level(record as unknown as JsonValue)).toEqual(level(want as unknown as JsonValue));
   }, 60_000);
@@ -173,21 +155,14 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     ["String(defaultScopes.add); defaultScopes.add(\"x\"); function validateAccessTokenScope() { return []; }",
       "oauth2-validate-scope-unmeasured/defaultScopes.add()"],
   ];
-  if (engine === "next-gen") {
-    faults.push(
-      ["scopeValidatorHelper.inheritAccessTokenScopesOnRefresh(true); function validateAccessTokenScope() { return []; }",
-        "oauth2-validate-scope-unmeasured/scopeValidatorHelper.inheritAccessTokenScopesOnRefresh(boolean)"],
-      ["function validateAccessTokenScope() { scopeValidatorHelper.throwInvalidScope({}); }",
-        "oauth2-validate-scope-unmeasured/scopeValidatorHelper.throwInvalidScope(object)"],
-      ["identity.getUniversalId(); function validateAccessTokenScope() { return []; }",
-        "oauth2-validate-scope-unmeasured/identity.getUniversalId()"],
-    );
-  } else {
-    faults.push(
-      ["requestedScopes.iterator().hasNext(); function validateAccessTokenScope() { return []; }",
-        "oauth2-validate-scope-unmeasured/requestedScopes.iterator().hasNext()"],
-    );
-  }
+  faults.push(
+    ["scopeValidatorHelper.inheritAccessTokenScopesOnRefresh(true); function validateAccessTokenScope() { return []; }",
+      "oauth2-validate-scope-unmeasured/scopeValidatorHelper.inheritAccessTokenScopesOnRefresh(boolean)"],
+    ["function validateAccessTokenScope() { scopeValidatorHelper.throwInvalidScope({}); }",
+      "oauth2-validate-scope-unmeasured/scopeValidatorHelper.throwInvalidScope(object)"],
+    ["identity.getUniversalId(); function validateAccessTokenScope() { return []; }",
+      "oauth2-validate-scope-unmeasured/identity.getUniversalId()"],
+  );
   it.each(faults)("%s is a named fault", async (source, id) => {
     expectHarnessFault(id);
     const error = await run(id, source).then(() => null, (e: unknown) => e);
@@ -214,75 +189,10 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     expect: { validateScope: { granted } },
   }));
 
-  // Sol ctx r5 P2-1. The capture's TreeSet values were already sorted, so
-  // these rows are the ones that tell insertion order from sorted order.
-  if (engine === "legacy") {
-    it("P2-1 TreeSet toArray is sorted, so the first allowed scope is a", async () => {
-      const { effects } = await strict(
-        "p2-1-order",
-        "function validateAccessTokenScope() { return [String(allowedScopes.toArray()[0])]; }",
-        { allowed: ["b", "a"] },
-        ["a"],
-      );
-      expect(effects.validateScope!.granted).toEqual(["a"]);
-    }, 60_000);
-
-    it("P2-1 TreeSet add inserts in order", async () => {
-      const { effects } = await strict(
-        "p2-1-add",
-        "function validateAccessTokenScope() { allowedScopes.add(\"a\"); return [JSON.stringify(allowedScopes)]; }",
-        { allowed: ["b", "c"] },
-        ['["a","b","c"]'],
-      );
-      expect(effects.validateScope!.granted).toEqual(['["a","b","c"]']);
-    }, 60_000);
-
-    it("P2-1 TreeSet seeds are unique", async () => {
-      const { effects } = await strict(
-        "p2-1-dupe",
-        "function validateAccessTokenScope() { return [String(allowedScopes.size())]; }",
-        { allowed: ["a", "a"] },
-        ["1"],
-      );
-      expect(effects.validateScope!.granted).toEqual(["1"]);
-    }, 60_000);
-
-    it("P2-1 defaultScopes is a TreeSet too", async () => {
-      const { effects } = await strict(
-        "p2-1-defaults",
-        "function validateAccessTokenScope() { return [String(defaultScopes.toArray()[0])]; }",
-        { defaults: ["b", "a"] },
-        ["a"],
-      );
-      expect(effects.validateScope!.granted).toEqual(["a"]);
-    }, 60_000);
-
-    it("P2-1 HashSet seeds are unique and stay in first-seen order", async () => {
-      const size = await strict(
-        "p2-1-hash-dupe",
-        "function validateAccessTokenScope() { return [String(requestedScopes.size())]; }",
-        { requested: ["a", "a"] },
-        ["1"],
-      );
-      expect(size.effects.validateScope!.granted).toEqual(["1"]);
-      const order = await strict(
-        "p2-1-hash-order",
-        "function validateAccessTokenScope() { return [String(requestedScopes.toArray()[0])]; }",
-        { requested: ["b", "a"] },
-        ["b"],
-      );
-      expect(order.effects.validateScope!.granted).toEqual(["b"]);
-    }, 60_000);
-  }
-
   // Sol ctx r5 P2-4. Catching the denial and returning a list is measured.
   // Reading the exception is not, and must fault even when that read is caught.
-  const caught = engine === "next-gen"
-    ? "scopeValidatorHelper.throwInvalidScope(\"denied\")"
-    : "throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(\"denied\")";
-  const detailId = engine === "next-gen"
-    ? "oauth2-validate-scope-unmeasured/scopeValidatorHelper.throwInvalidScope().message"
-    : "oauth2-validate-scope-unmeasured/InvalidScopeException.message";
+  const caught = "scopeValidatorHelper.throwInvalidScope(\"denied\")";
+  const detailId = "oauth2-validate-scope-unmeasured/scopeValidatorHelper.throwInvalidScope().message";
 
   it("P2-4 reading a caught denial's message is a named fault", async () => {
     expectHarnessFault(detailId);
@@ -339,29 +249,11 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
   }, 60_000);
 
   // Sol ctx r6 P2-1. The round-5 replacement treated the first toString as
-  // Rhino's wrap, so a legacy String() before the throw returned the constant.
-  // JSON.stringify of the caught object was an empty object on both engines.
-  // Neither representation was captured.
-  if (engine === "legacy") {
-    it("r6 P2-1 String() of a legacy exception before it is thrown is a named fault", async () => {
-      const id = "oauth2-validate-scope-unmeasured/InvalidScopeException.toString";
-      expectHarnessFault(id);
-      const error = await strict(
-        "r6-p2-1-string",
-        "function validateAccessTokenScope() { var e = new org.forgerock.oauth2.core.exceptions.InvalidScopeException(\"denied\"); return [String(e)]; }",
-        {},
-        ["JavaException"],
-      ).then(() => null, (e: unknown) => e);
-      expect(error).toBeInstanceOf(CaseRunError);
-      const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
-      expect(ids).toContain(id);
-    }, 60_000);
-  }
-
+  // Rhino's wrap, so a String() before the throw returned the constant.
+  // JSON.stringify of the caught object was an empty object. Neither
+  // representation was captured.
   it("r6 P2-1 JSON.stringify of a caught denial is a named fault", async () => {
-    const id = engine === "next-gen"
-      ? "oauth2-validate-scope-unmeasured/JSON.stringify(scopeValidatorHelper.throwInvalidScope())"
-      : "oauth2-validate-scope-unmeasured/JSON.stringify(InvalidScopeException)";
+    const id = "oauth2-validate-scope-unmeasured/JSON.stringify(scopeValidatorHelper.throwInvalidScope())";
     expectHarnessFault(id);
     const error = await strict(
       "r6-p2-1-json",
@@ -376,66 +268,61 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
 
   // Sol ctx r5 P2-6. Scope-list JSON, concat and slice must not apply to the
   // request value. String, length, size and [i] stay, because those were measured.
-  // Legacy does not bind requestProperties (the capture is a ReferenceError).
-  if (engine === "next-gen") {
-    it("P2-6 JSON.stringify of a request value faults", async () => {
-      const id = "oauth2-validate-scope-unmeasured/requestProperties";
+  it("P2-6 JSON.stringify of a request value faults", async () => {
+    const id = "oauth2-validate-scope-unmeasured/requestProperties";
+    expectHarnessFault(id);
+    const error = await strict(
+      "p2-6-json",
+      "function validateAccessTokenScope() { return [JSON.stringify(requestProperties.requestParams.grant_type)]; }",
+      {},
+      ['["client_credentials"]'],
+    ).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+    expect(ids).toContain(id);
+  }, 60_000);
+
+  it("P2-6 concat and slice of a request value fault", async () => {
+    const id = "oauth2-validate-scope-unmeasured/requestProperties";
+    for (const source of [
+      "function validateAccessTokenScope() { return [String([].concat(requestProperties.requestParams.grant_type).length)]; }",
+      "function validateAccessTokenScope() { return [String(Array.prototype.slice.call(requestProperties.requestParams.grant_type).length)]; }",
+    ]) {
       expectHarnessFault(id);
-      const error = await strict(
-        "p2-6-json",
-        "function validateAccessTokenScope() { return [JSON.stringify(requestProperties.requestParams.grant_type)]; }",
-        {},
-        ['["client_credentials"]'],
-      ).then(() => null, (e: unknown) => e);
+      const error = await strict("p2-6-route", source, {}, ["1"]).then(() => null, (e: unknown) => e);
       expect(error).toBeInstanceOf(CaseRunError);
       const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
       expect(ids).toContain(id);
-    }, 60_000);
-  }
+    }
+  }, 60_000);
 
-  if (engine === "next-gen") {
-    it("P2-6 concat and slice of a request value fault", async () => {
-      const id = "oauth2-validate-scope-unmeasured/requestProperties";
-      for (const source of [
-        "function validateAccessTokenScope() { return [String([].concat(requestProperties.requestParams.grant_type).length)]; }",
-        "function validateAccessTokenScope() { return [String(Array.prototype.slice.call(requestProperties.requestParams.grant_type).length)]; }",
-      ]) {
-        expectHarnessFault(id);
-        const error = await strict("p2-6-route", source, {}, ["1"]).then(() => null, (e: unknown) => e);
-        expect(error).toBeInstanceOf(CaseRunError);
-        const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
-        expect(ids).toContain(id);
-      }
-    }, 60_000);
+  it("P2-6 a request value still answers String, length, size and [i]", async () => {
+    const { effects } = await strict(
+      "p2-6-measured",
+      "function validateAccessTokenScope() { var g = requestProperties.requestParams.grant_type; return [String(g) + \"|\" + g[0] + \"|\" + g.length + \"|\" + g.size()]; }",
+      {},
+      ["[client_credentials]|client_credentials|1|1"],
+    );
+    expect(effects.validateScope!.granted).toEqual(["[client_credentials]|client_credentials|1|1"]);
+  }, 60_000);
 
-    it("P2-6 a request value still answers String, length, size and [i]", async () => {
-      const { effects } = await strict(
-        "p2-6-measured",
-        "function validateAccessTokenScope() { var g = requestProperties.requestParams.grant_type; return [String(g) + \"|\" + g[0] + \"|\" + g.length + \"|\" + g.size()]; }",
-        {},
-        ["[client_credentials]|client_credentials|1|1"],
-      );
-      expect(effects.validateScope!.granted).toEqual(["[client_credentials]|client_credentials|1|1"]);
-    }, 60_000);
-
-    it("P3-1 toArray().filter is a TypeError, and slice().filter grants the kept scope", async () => {
-      const thrown = await strict(
-        "p3-1-filter",
-        "function validateAccessTokenScope() { return requestedScopes.toArray().filter(function (s) { return s !== \"admin\"; }); }",
-        { requested: ["read", "admin"] },
-        ["read"],
-      ).then(() => null, (e: unknown) => e);
-      expect(thrown).toBeInstanceOf(CaseRunError);
-      expect((thrown as Error).message).toMatch(/filter/);
-      const { effects } = await strict(
-        "p3-1-slice",
-        "function validateAccessTokenScope() { return Array.prototype.slice.call(requestedScopes).filter(function (s) { return s !== \"admin\"; }); }",
-        { requested: ["read", "admin"], allowed: ["read", "admin"] },
-        ["read"],
-      );
-      expect(effects.validateScope!.granted).toEqual(["read"]);
-    }, 60_000);
-  }
+  it("P3-1 toArray().filter is a TypeError, and slice().filter grants the kept scope", async () => {
+    const thrown = await strict(
+      "p3-1-filter",
+      "function validateAccessTokenScope() { return requestedScopes.toArray().filter(function (s) { return s !== \"admin\"; }); }",
+      { requested: ["read", "admin"] },
+      ["read"],
+    ).then(() => null, (e: unknown) => e);
+    expect(thrown).toBeInstanceOf(CaseRunError);
+    expect((thrown as Error).message).toMatch(/filter/);
+    const { effects } = await strict(
+      "p3-1-slice",
+      "function validateAccessTokenScope() { return Array.prototype.slice.call(requestedScopes).filter(function (s) { return s !== \"admin\"; }); }",
+      { requested: ["read", "admin"], allowed: ["read", "admin"] },
+      ["read"],
+    );
+    expect(effects.validateScope!.granted).toEqual(["read"]);
+  }, 60_000);
 
   // Sol ctx r10 P2-1. Empty requested-scope JSON does not authorize JSON of
   // an empty redirect-URI list or of toArray(). The redirect capture measured
@@ -443,7 +330,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
   const faultIds = (error: unknown) =>
     ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
 
-  it.runIf(engine === "next-gen")("r10 P2-1 JSON of an empty redirect-URI list is a named fault", async () => {
+  it("r10 P2-1 JSON of an empty redirect-URI list is a named fault", async () => {
     const id = "oauth2-validate-scope-unmeasured/clientProperties.redirectUris";
     expectHarnessFault(id);
     const error = await strict(
@@ -492,9 +379,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     expect(effects.validateScope!.granted).toEqual(["[]"]);
   }, 60_000);
 
-  // Legacy requestedScopes is a HashSet, not this list, so concat there is a
-  // different route. The empty-list concat refusal is the next-gen list.
-  it.runIf(engine === "next-gen")("r10 P2-1 concat of an empty requested-scope list still faults", async () => {
+  it("r10 P2-1 concat of an empty requested-scope list still faults", async () => {
     const id = "oauth2-validate-scope-unmeasured/list";
     expectHarnessFault(id);
     const error = await strict(
@@ -507,7 +392,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     expect(faultIds(error)).toContain(id);
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r10 P2-1 an empty redirect-URI list still answers String and length", async () => {
+  it("r10 P2-1 an empty redirect-URI list still answers String and length", async () => {
     const { effects } = await strict(
       "r10-redirect-surface",
       "function validateAccessTokenScope() { return [String(clientProperties.redirectUris) + \"|\" + clientProperties.redirectUris.length]; }",
@@ -530,7 +415,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
   // Sol ctx r11 P2-1. Empty requestedScopes JSON does not measure
   // allowedScopes, availableScopes or defaultScopes. Defaults are empty.
   for (const binding of ["allowedScopes", "availableScopes", "defaultScopes"]) {
-    it.runIf(engine === "next-gen")(`r11 P2-1 JSON of an empty ${binding} list is a named fault`, async () => {
+    it(`r11 P2-1 JSON of an empty ${binding} list is a named fault`, async () => {
       const id = "oauth2-validate-scope-unmeasured/list";
       expectHarnessFault(id);
       const error = await strict(
@@ -546,7 +431,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     }, 60_000);
   }
 
-  it.runIf(engine === "next-gen")("r11 P2-1 String of an empty allowedScopes list is a named fault", async () => {
+  it("r11 P2-1 String of an empty allowedScopes list is a named fault", async () => {
     const id = "oauth2-validate-scope-unmeasured/list";
     expectHarnessFault(id);
     const error = await strict(
@@ -559,7 +444,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     expect(faultIds(error)).toContain(id);
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r11 P2-1 length of an empty allowedScopes.toArray() is a named fault", async () => {
+  it("r11 P2-1 length of an empty allowedScopes.toArray() is a named fault", async () => {
     const id = "oauth2-validate-scope-unmeasured/list.toArray()";
     expectHarnessFault(id);
     const error = await strict(
@@ -572,10 +457,9 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     expect(faultIds(error)).toContain(id);
   }, 60_000);
 
-  // Sol ctx r12 P2-1. contains, indexOf, isEmpty, forEach and a legacy set's
-  // toJSON are reads of the empty collection, not the four list routes.
-  // noscope measures them on requestedScopes. Legacy indexOf is
-  // "Cannot find function indexOf", so those four controls are next-gen.
+  // Sol ctx r12 P2-1. contains, indexOf, isEmpty and forEach
+  // are reads of the empty collection, not the four list routes. noscope
+  // measures them on requestedScopes.
   const r12Method = (binding: string, op: string) => {
     if (op === "forEach") {
       return "function validateAccessTokenScope() { var n = 0; " + binding +
@@ -591,23 +475,6 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     ["forEach", "0"],
   ] as const;
 
-  for (const binding of ["allowedScopes", "defaultScopes"]) {
-    it.runIf(engine === "legacy")(`r12 P2-1 JSON of an empty ${binding} set is a named fault`, async () => {
-      const id = `oauth2-validate-scope-unmeasured/JSON.stringify(${binding})`;
-      expectHarnessFault(id);
-      const error = await strict(
-        `r12-${binding}-json`,
-        `function validateAccessTokenScope() { return [JSON.stringify(${binding})]; }`,
-        {},
-        ["[]"],
-      ).then(() => null, (e: unknown) => e);
-      expect(error).toBeInstanceOf(CaseRunError);
-      const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-      expect(faults.map((f) => f.id)).toContain(id);
-      expect(faults.map((f) => f.message).join("\n")).toContain("size-zero");
-    }, 60_000);
-  }
-
   it("r12 P2-1 empty requestedScopes JSON still succeeds", async () => {
     const { effects, verdict } = await strict(
       "r12-requested-json",
@@ -620,7 +487,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
   }, 60_000);
 
   for (const [op, value] of r12Methods) {
-    it.runIf(engine === "next-gen")(`r12 P2-1 ${op} of an empty allowedScopes list is a named fault`, async () => {
+    it(`r12 P2-1 ${op} of an empty allowedScopes list is a named fault`, async () => {
       const id = "oauth2-validate-scope-unmeasured/list";
       expectHarnessFault(id);
       const error = await strict(
@@ -637,7 +504,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
   }
 
   for (const [op, value] of r12Methods) {
-    it.runIf(engine === "next-gen")(`r12 P2-1 ${op} of an empty requestedScopes list still succeeds`, async () => {
+    it(`r12 P2-1 ${op} of an empty requestedScopes list still succeeds`, async () => {
       const { effects, verdict } = await strict(
         `r12-requested-${op}`,
         r12Method("requestedScopes", op),
@@ -649,7 +516,7 @@ describe.each(["next-gen", "legacy"] as const)("validate scope on %s matches the
     }, 60_000);
   }
 
-  it.runIf(engine === "next-gen")("r12 P2-1 an empty requestedScopes list still grows through add()", async () => {
+  it("r12 P2-1 an empty requestedScopes list still grows through add()", async () => {
     const { effects, verdict } = await strict(
       "r12-requested-add",
       "function validateAccessTokenScope() { requestedScopes.add(\"read\"); " +

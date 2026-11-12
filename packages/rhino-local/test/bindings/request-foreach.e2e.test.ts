@@ -179,10 +179,4 @@ describe("request map forEach matches the live capture", () => {
     expect(response.outcome).toBe("ok");
     expect(response.value).toBe('"v"');
   });
-
-  it("the legacy engine faults request-map-foreach-legacy", async () => {
-    expectHarnessFault("request-map-foreach-legacy");
-    const response = await runner.eval({ preamble: mockPreamble({ engine: "legacy", requestParameters: { a: ["1"] } }), source: withHarvest("try { requestParameters.forEach(function () {}); } catch (e) {}") });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-map-foreach-legacy"]);
-  });
 });

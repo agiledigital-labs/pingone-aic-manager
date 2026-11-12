@@ -45,10 +45,10 @@ interface Row {
   binding: string;
   context: ScriptContext;
   engine: Engine;
-  kind: "list" | "set" | "keyset";
+  kind: "list";
   expr: string;
   faultPrefix: string;
-  toArrayCall: "decision" | "guarded" | "stub";
+  toArrayCall: "guarded" | "stub";
   grant: Grant | null;
   given: Record<string, JsonValue>;
   iteratorShutter?: string;
@@ -96,35 +96,11 @@ function allows(row: Row, route: string): boolean {
 
 /** The toArray() call answered (it did not fault), so its child's reads are the child grant. */
 function toArrayAnswers(row: Row): boolean {
-  return row.toArrayCall === "guarded" || (row.toArrayCall === "decision" && allows(row, "toArray"));
+  return row.toArrayCall === "guarded";
 }
-
-const SET_INDEX = "no public instance field";
 
 function expectation(row: Row, op: Op): Expectation {
   const grant = row.grant;
-  if (row.kind === "keyset") {
-    // Only iterator() of a non-empty set was measured, so every read of the
-    // empty one faults. Two never reach it: `.length` of an object without
-    // one, and `[].concat(v)` of a non-array, which appends v whole.
-    if (op === "length") return { kind: "value", value: "undefined" };
-    if (op === "concat") return { kind: "value", value: "1" };
-    return { kind: "fault" };
-  }
-  if (row.kind === "set") {
-    // A set has no indexOf or get. When String() is granted, Rhino finishes
-    // the TypeError ("Cannot find function … in object []"), which is the
-    // measured legacy requestedScopes indexOf. When String() faults, that
-    // fault is what the call throws, because the message format calls it.
-    if (op === "indexOf" || op === "get") {
-      return allows(row, "surface")
-        ? { kind: "script", needle: `Cannot find function ${op}` }
-        : { kind: "fault" };
-    }
-    // [i] of a java.util set is AIC's InternalError (measured for [0]; the
-    // rest of the range assumed the same).
-    if (op === "index" || op === "index8" || op === "index1000") return { kind: "script", needle: SET_INDEX };
-  }
   if (op === "length" && grant?.lengthAbsent !== undefined) return { kind: "value", value: "undefined" };
   if (op === "toArray") return toArrayAnswers(row) ? { kind: "value", value: "object" } : { kind: "fault" };
   if (op.startsWith("toArray")) {
@@ -179,11 +155,6 @@ function faultKey(row: Row, op: Op): string | null {
   if (expectation(row, op).kind !== "fault") return null;
   if (op.startsWith("toArray") && op !== "toArray" && expectation(row, "toArray").kind === "fault") return "toArray";
   if (op === "forInValues") return "forInKeys";
-  // The legacy config key set has its own indexOf fault; get is the String() one.
-  if ((op === "get" || (op === "indexOf" && row.kind === "set")) && row.kind !== "list"
-    && expectation(row, "string").kind === "fault") {
-    return "string";
-  }
   return op;
 }
 
@@ -196,24 +167,6 @@ const SOL_R13: { id: string; ops: Op[] }[] = [
   { id: "oidc.next.scopes", ops: ["toArraySize"] },
   { id: "mayact.next.scopes", ops: ["size"] },
   { id: "validate.next.allowedScopes", ops: ["toArraySize"] },
-  { id: "validate.legacy.allowedScopes", ops: ["toArraySize"] },
-  { id: "token.legacy.scopes", ops: ["string"] },
-  { id: "token.legacy.scopes", ops: ["size"] },
-  { id: "token.legacy.scopes", ops: ["isEmpty"] },
-  { id: "token.legacy.scopes", ops: ["toArrayLength"] },
-  { id: "token.legacy.getScope", ops: ["string"] },
-  { id: "token.legacy.getScope", ops: ["size"] },
-  { id: "token.legacy.getScope", ops: ["isEmpty"] },
-  { id: "token.legacy.getScope", ops: ["toArrayLength"] },
-  { id: "oidc.legacy.scopes", ops: ["string"] },
-  { id: "oidc.legacy.scopes", ops: ["size"] },
-  { id: "token.legacy.allowedGrantTypes", ops: ["string", "size"] },
-  { id: "token.legacy.allowedScopes", ops: ["string", "size"] },
-  { id: "token.legacy.allowedResponseTypes", ops: ["string", "size"] },
-  { id: "oidc.legacy.allowedGrantTypes", ops: ["string", "size"] },
-  { id: "oidc.legacy.allowedScopes", ops: ["string", "size"] },
-  { id: "oidc.legacy.allowedResponseTypes", ops: ["string", "size"] },
-  { id: "social.legacy.rawProfile.keys", ops: ["string", "size"] },
   { id: "social.next.rawProfile.keys", ops: ["size"] },
 ];
 
@@ -223,21 +176,16 @@ const SOL_R13: { id: string; ops: Op[] }[] = [
  */
 const SOL_R14: { id: string; ops: Op[] }[] = [
   { id: "token.next.scopes", ops: ["forInKeys"] },
-  { id: "token.legacy.scopes", ops: ["forInKeys"] },
   { id: "social.next.rawProfile.keys", ops: ["forInKeys"] },
-  { id: "social.legacy.rawProfile.keys", ops: ["forInKeys"] },
   { id: "validate.next.allowedScopes", ops: ["forInKeys"] },
   { id: "validate.next.availableScopes", ops: ["forInKeys"] },
   { id: "validate.next.defaultScopes", ops: ["forInKeys"] },
   // The capture lists Java members (getClass, …); the view had invented .
-  { id: "validate.legacy.requestedScopes", ops: ["forInKeys", "forInValues"] },
   { id: "token.next.scopes", ops: ["index8"] },
   { id: "oidc.next.scopes", ops: ["toArrayIndex8"] },
   // Granted without a capture that calls it.
-  { id: "token.legacy.getAttribute", ops: ["isEmpty"] },
   // The request kind's allowEmptySize answered 0 with no capture.
   { id: "social.next.requestParameters", ops: ["size"] },
-  { id: "social.legacy.requestParameters", ops: ["size"] },
 ];
 
 function reads(expr: string): string {
@@ -275,7 +223,7 @@ function reads(expr: string): string {
 }
 
 /** The script that runs `body` (which fills `report`) and hands it back through the context's own output. */
-function wrap(context: ScriptContext, engine: Engine, body: string): string {
+function wrap(context: ScriptContext, body: string): string {
   const packed = `${body}\nvar packed = JSON.stringify(report);`;
   switch (context) {
     case "OAUTH2_VALIDATE_SCOPE":
@@ -283,15 +231,8 @@ function wrap(context: ScriptContext, engine: Engine, body: string): string {
     case "OAUTH2_ACCESS_TOKEN_MODIFICATION":
       return `${packed}\naccessToken.setField("probe", packed);`;
     case "OIDC_CLAIMS":
-      if (engine === "legacy") {
-        return `${packed}\nvar m = new java.util.LinkedHashMap();\nm.put("probe", packed);\nnew org.forgerock.oauth2.core.UserInfoClaims(m, null);`;
-      }
       return `${packed}\n({values:{probe:packed}});`;
     case "OAUTH2_MAY_ACT":
-      // Legacy setMayAct takes a JsonValue. A plain object is the next-gen shape.
-      if (engine === "legacy") {
-        return `${packed}\nvar m = new java.util.LinkedHashMap();\nm.put("probe", packed);\ntoken.setMayAct(new org.forgerock.json.JsonValue(m));`;
-      }
       return `${packed}\ntoken.setMayAct({probe:packed});`;
     case "SOCIAL_IDP_PROFILE_TRANSFORMATION":
       return `${packed}\n({probe:packed});`;
@@ -424,7 +365,7 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
     for (const row of catalog) {
       const key = row.id.split(".")[0]!;
       expect(CONTEXT_KEYS[key], row.id).toBe(row.context);
-      expect(row.id, row.id).toBe(`${key}.${row.engine === "legacy" ? "legacy" : "next"}.${row.binding}`);
+      expect(row.id, row.id).toBe(`${key}.next.${row.binding}`);
       for (const [op, citation] of Object.entries(row.grant ?? {})) {
         expect(GRANT_OPS as readonly string[], `${row.id} ${op}`).toContain(op);
         expect(typeof citation, `${row.id} ${op}`).toBe("string");
@@ -471,10 +412,10 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
       const touch = rows.map((row) => `try { ${row.expr}; } catch (e) {}`).join("\n");
       const recorded = "report.registered = __rhinoLocal.collections.join(\",\");";
       const unread = await settle(runner, `registration default ${context} ${engine}`, context, engine,
-        wrap(context, engine, `var report = {};\n${recorded}`), {});
+        wrap(context, `var report = {};\n${recorded}`), {});
       expect(unread.error, unread.error?.message).toBeNull();
       const reached = await settle(runner, `registration empty ${context} ${engine}`, context, engine,
-        wrap(context, engine, `var report = {};\n${touch}\n${recorded}`), emptySeed);
+        wrap(context, `var report = {};\n${touch}\n${recorded}`), emptySeed);
       expect(reached.error, reached.error?.message).toBeNull();
       const built = new Set([unread.report.registered, reached.report.registered]
         .flatMap((ids) => (ids ? ids.split(",") : [])));
@@ -488,14 +429,14 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
     // script can catch it); one whose binding has no row is a tallied fault.
     it("refuses a collection that names no binding, and faults one whose binding has no row", async () => {
       const noBinding = await settle(runner, "registration no binding", "OAUTH2_ACCESS_TOKEN_MODIFICATION", "next-gen",
-        wrap("OAUTH2_ACCESS_TOKEN_MODIFICATION", "next-gen",
+        wrap("OAUTH2_ACCESS_TOKEN_MODIFICATION",
           'var report = {};\ntry { __rhinoLocalCtxList([], "futureBinding"); report.built = "yes"; } catch (e) { report.built = String(e); }'),
         {});
       expect(noBinding.error, noBinding.error?.message).toBeNull();
       expect(noBinding.report.built).toContain("must name its catalog binding");
       expectOwnedEmulationFailure(/^rhino-local-collection-unregistered\/token\.next\.futureBinding: [\s\S]*$/);
       const noRow = await settle(runner, "registration no row", "OAUTH2_ACCESS_TOKEN_MODIFICATION", "next-gen",
-        wrap("OAUTH2_ACCESS_TOKEN_MODIFICATION", "next-gen",
+        wrap("OAUTH2_ACCESS_TOKEN_MODIFICATION",
           'var report = {};\ntry { __rhinoLocalCtxList([], "futureBinding", null, "futureBinding"); report.built = "yes"; } catch (e) { report.built = String(e); }'),
         {});
       expect(noRow.error).toBeInstanceOf(CaseRunError);
@@ -519,7 +460,7 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
       // A caught harness fault still fails the run. The harvest of that run is
       // faultedEffects: the report of every read, including the ones that threw.
       const settled = await settle(runner, `empty-read ${row.id}`, row.context, row.engine,
-        wrap(row.context, row.engine, reads(row.expr)), row.given);
+        wrap(row.context, reads(row.expr)), row.given);
       const report = settled.report;
       // Every operation first, softly, so a regression names each read it changed.
       for (const op of OPS) {
@@ -551,7 +492,7 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
     it.each(present)("$id is built non-empty and is still in the catalog", async (row) => {
       if (row.size === undefined) throw new Error(`${row.id} is present but names no size`);
       const settled = await settle(runner, `empty-read present ${row.id}`, row.context, row.engine,
-        wrap(row.context, row.engine,
+        wrap(row.context,
           `var report = {};\nreport.size = String(${row.expr}.size());\nreport.registered = __rhinoLocal.collections.join(",");`),
         row.given);
       expect(settled.error, settled.error?.message).toBeNull();
@@ -561,16 +502,15 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
     }, 60_000);
 
     const unread: { name: string; context?: ScriptContext; engine?: Engine; script: string; expect: Record<string, JsonValue> }[] = [
-      { name: "decision", script: 'outcome="done";', expect: { outcome: "done" } },
+      { name: "decision", script: 'action.goTo("done");', expect: { outcome: "done" } },
       { name: "token", context: "OAUTH2_ACCESS_TOKEN_MODIFICATION", script: ";", expect: {} },
       { name: "oidc", context: "OIDC_CLAIMS", engine: "next-gen", script: "({values:{}});", expect: { oidc: { userinfo: {} } } },
-      { name: "oidc", context: "OIDC_CLAIMS", engine: "legacy", script: "new org.forgerock.oauth2.core.UserInfoClaims(new java.util.LinkedHashMap(), null);", expect: { oidc: { userinfo: {} } } },
       { name: "social", context: "SOCIAL_IDP_PROFILE_TRANSFORMATION", script: '({name:"test"});', expect: { socialIdp: { profile: { name: "test" } } } },
       { name: "config", context: "CONFIG_PROVIDER_NODE", script: "config={};", expect: { configProvider: { config: {} } } },
       { name: "validate", context: "OAUTH2_VALIDATE_SCOPE", script: 'function validateAccessTokenScope(){return ["read"];}', expect: { validateScope: { granted: ["read"] } } },
       { name: "may-act", context: "OAUTH2_MAY_ACT", script: ";", expect: {} },
     ];
-    const unreadCases = unread.flatMap((row) => (row.engine === undefined ? (["next-gen", "legacy"] as const) : [row.engine]).map((engine) => ({ ...row, engine })));
+    const unreadCases = unread.flatMap((row) => (row.engine === undefined ? (["next-gen"] as const) : [row.engine]).map((engine) => ({ ...row, engine })));
     it.each(unreadCases)("an unread empty seed stays valid ($name $engine)", async (row) => {
       // Every collection the catalog seeds for this context, all empty, none read.
       const given = row.context === undefined

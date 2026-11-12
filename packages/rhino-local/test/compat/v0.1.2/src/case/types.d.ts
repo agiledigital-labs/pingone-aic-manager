@@ -22,7 +22,8 @@ export interface ExpectedObject {
 export type Pattern = string | RegExp;
 export declare const CASE_KEYS: readonly ["name", "script", "outcomes", "given", "expect"];
 export type CaseKey = (typeof CASE_KEYS)[number];
-export declare const ENGINES: readonly ["next-gen", "legacy"];
+/** compat-accepted: the legacy engine is no longer emulated; `given.engine: "legacy"` still type-checks and fails validation naming the removal (README, legacy-engine removal). */
+export declare const ENGINES: readonly ["next-gen"];
 export type Engine = (typeof ENGINES)[number];
 export declare const GIVEN_KEYS: readonly ["sharedState", "transientState", "secureState", "realm", "scriptName", "cookieName", "resumedFromSuspend", "requestHeaders", "requestParameters", "requestCookies", "locales", "existingSession", "esv", "secrets", "libraries", "callbacks", "managed", "http", "engine", "bindings"];
 export type GivenKey = (typeof GIVEN_KEYS)[number];

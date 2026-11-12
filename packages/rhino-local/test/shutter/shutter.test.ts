@@ -106,7 +106,7 @@ describe("AM Java class shutter", () => {
     expect(toArray.ok).toBe(true);
   });
 
-  // Measured 2026-11-10 on AIC, legacy and next-gen (docs/api/12): a script
+  // Measured 2026-11-10 on AIC (docs/api/12): a script
   // naming the engine package gets a [JavaPackage ...] placeholder, so `new`
   // is a catchable TypeError. Without this a script could build a Context,
   // decompile emulator-installed functions or mint an unguarded scope.

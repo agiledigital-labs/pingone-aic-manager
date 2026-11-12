@@ -43,8 +43,9 @@ describe("CONFIG_PROVIDER_NODE case validation", () => {
     expect(() => validateCase(configCase({ allowUndeclared: { callbacks: true } }))).toThrow(/callbacks/);
   });
 
-  it("accepts the node state and request, which the context binds, on both engines", () => {
-    for (const engine of ["legacy", "next-gen"] as const) {
+  it("accepts the node state and request, which the context binds", () => {
+    {
+      const engine = "next-gen" as const;
       const kase = defineCase({
         name: "ok",
         script: "x.js",

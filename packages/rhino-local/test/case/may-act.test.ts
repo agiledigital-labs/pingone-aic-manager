@@ -48,8 +48,9 @@ describe("OAUTH2_MAY_ACT case validation", () => {
     expect(() => validateCase(maCase({ validateScope: {} }))).toThrow(/expect\.validateScope is not accepted in context/);
   });
 
-  it("accepts the token seeds on both engines, and keeps JSON null distinct from an omitted claim", () => {
-    for (const engine of ["legacy", "next-gen"] as const) {
+  it("accepts the token seeds, and keeps JSON null distinct from an omitted claim", () => {
+    {
+      const engine = "next-gen" as const;
       const kase = defineCase({
         name: "ok",
         script: "x.js",

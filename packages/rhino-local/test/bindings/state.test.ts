@@ -200,32 +200,10 @@ describe("nodeState", () => {
       "rhino-local: nodeState.mergeTransient: what AIC does with a null argument is unmeasured"]]);
   });
 
-  it("does not bind legacy maps on next-gen", () => {
+  it("does not bind the sharedState / transientState globals", () => {
     const sandbox = loadBehaviour();
     expect(sandbox.sharedState).toBeUndefined();
     expect(sandbox.transientState).toBeUndefined();
-  });
-
-  it("binds legacy sharedState / transientState as views of the same buckets", () => {
-    const sandbox = loadBehaviour({
-      engine: "legacy",
-      sharedState: { a: 1 },
-      transientState: { b: 2 },
-    });
-    const shared = sandbox.sharedState as {
-      get: (key: string) => unknown;
-      put: (key: string, value: unknown) => void;
-    };
-    const transient = sandbox.transientState as {
-      get: (key: string) => unknown;
-      put: (key: string, value: unknown) => void;
-    };
-    const nodeState = sandbox.nodeState as { get: (key: string) => unknown };
-    expect(shared.get("a")).toBe(1);
-    expect(shared.get("b")).toBeNull();
-    expect(transient.get("b")).toBe(2);
-    shared.put("c", 3);
-    expect(nodeState.get("c")).toBe(3);
   });
 
   it("seeds secureState as a readable bucket with no writer", () => {

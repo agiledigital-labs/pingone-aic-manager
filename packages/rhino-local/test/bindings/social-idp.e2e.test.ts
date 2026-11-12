@@ -1,8 +1,7 @@
 /**
  * The social IdP profile transformation context on the real JVM, compared
  * with live captures. surface.script.js ran unchanged as a social identity
- * provider's `transform` script on a sandbox tenant (2026-11-10, both
- * engines), during a headless social login: an OAuth2 client in one realm
+ * provider's `transform` script on a sandbox tenant (2026-11-10), during a headless social login: an OAuth2 client in one realm
  * was the provider, a journey in the other ran SelectIdPNode,
  * SocialProviderHandlerNodeV2 and a scripted decision node that read what
  * the handler left. `surface.<engine>.json` holds the probe's own record
@@ -64,7 +63,7 @@ const given = (engine: Engine) => {
   return {
     engine,
     realm: "/alpha",
-    scriptName: engine === "next-gen" ? "zzemuC3-social-ng" : "zzemuC3-social-legacy",
+    scriptName: "zzemuC3-social-ng",
     loggerScriptId: /\.([0-9a-f-]{36})\./.exec(loggerName)![1]!,
     // The handler node's own key; its value was not read.
     sharedState: { expectProfileInformation: true },
@@ -82,7 +81,8 @@ const added = (effects: { sharedState: { final: JsonObject }; transientState: { 
     .filter((k) => k !== "expectProfileInformation" && k !== "selectedIdp")
     .sort();
 
-describe.each(["next-gen", "legacy"] as const)("social IdP profile transformation on %s matches the live capture", (engine) => {
+describe("social IdP profile transformation matches the live capture", () => {
+  const engine = "next-gen" as const;
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
@@ -107,20 +107,12 @@ describe.each(["next-gen", "legacy"] as const)("social IdP profile transformatio
     const want = { ...live.transformProbe };
     // The script context object's error names AM's own script id and line.
     (want.typeof as JsonObject).context = (record.typeof as JsonObject).context!;
-    if (engine === "legacy") {
-      // for...in over a legacy JsonValue lists its Java members; the view
-      // has none (docs/rhino-local-gaps.md).
-      expect(record.rawKeys).toBe("");
-      delete want.rawKeys;
-      delete record.rawKeys;
-    } else {
-      // AIC lists the keys in the Java map's hash order; the view keeps the
-      // profile's order. The same object either way.
-      const json = (shape: JsonValue) => JSON.parse(/^string\|\[object String\]\|(.*)\|len=\d+$/.exec(shape as string)![1]!) as JsonObject;
-      expect(json(record.rawJson!)).toEqual(json(want.rawJson!));
-      delete want.rawJson;
-      delete record.rawJson;
-    }
+    // AIC lists the keys in the Java map's hash order; the view keeps the
+    // profile's order. The same object either way.
+    const json = (shape: JsonValue) => JSON.parse(/^string\|\[object String\]\|(.*)\|len=\d+$/.exec(shape as string)![1]!) as JsonObject;
+    expect(json(record.rawJson!)).toEqual(json(want.rawJson!));
+    delete want.rawJson;
+    delete record.rawJson;
     expect(record).toEqual(want);
     expect(withoutProbe(social.profile!)).toEqual(withoutProbe(amProfile(live.normalizedProfile)));
     expect(added(effects)).toEqual([...live.sharedStateAdded].sort());
@@ -156,9 +148,9 @@ describe.each(["next-gen", "legacy"] as const)("social IdP profile transformatio
   }, 60_000);
 
   it("reading a profile value that is not a string is a named fault", async () => {
-    const id = engine === "legacy" ? "social-idp-unmeasured/rawProfile.get(\"verified\")" : "social-idp-unmeasured/rawProfile.verified";
+    const id = "social-idp-unmeasured/rawProfile.verified";
     expectHarnessFault(id);
-    const source = engine === "legacy" ? `rawProfile.get("verified"); ({});` : `rawProfile.verified; ({});`;
+    const source = `rawProfile.verified; ({});`;
     const error = await runCase(runner, defineCase({
       name: `non-string ${engine}`,
       context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
@@ -181,34 +173,25 @@ describe("one JVM running social IdP cases between other contexts' cases", () =>
   const surface = "JSON.stringify([typeof openidm, typeof httpClient, typeof logger.getName, String(logger.getName()), "
     + "typeof rawProfile, typeof selectedIdp, typeof sharedState, typeof callbacks, typeof nodeState.keys, "
     + "String(nodeState.keys()), typeof org.forgerock.json.JsonValue, typeof org.forgerock.json.JsonValue.json])";
-  const nodeProbe = async (engine: Engine) => {
+  const nodeProbe = async () => {
     const { effects } = await runCase(runner, defineCase({
-      name: `isolation ${engine} decision node`,
-      script: engine === "legacy"
-        ? `sharedState.put("out", ${surface}); outcome = "true";`
-        : `nodeState.putShared("out", ${surface}); action.goTo("true");`,
-      given: { engine, sharedState: { seeded: "x" } },
+      name: "isolation decision node",
+      script: `nodeState.putShared("out", ${surface}); action.goTo("true");`,
+      given: { sharedState: { seeded: "x" } },
       expect: { outcome: "true", allowUndeclared: { sharedState: true } },
     }));
     return effects.sharedState.final.out;
   };
-  const socialCase = (engine: Engine) => runCase(runner, defineCase({
-    name: `isolation ${engine} social`,
+  const socialCase = () => runCase(runner, defineCase({
+    name: "isolation social",
     context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
-    script: engine === "legacy"
-      ? `var m = new java.util.LinkedHashMap(); m.put("a", "b"); new org.forgerock.json.JsonValue(m);`
-      : `({ a: "b" });`,
-    given: { engine },
+    script: `({ a: "b" });`,
     expect: { socialIdp: { profile: { a: "b" } } },
   }));
 
-  it("leaves a decision node on either engine exactly as a fresh runner sees it", async () => {
-    const before = { legacy: await nodeProbe("legacy"), "next-gen": await nodeProbe("next-gen") };
-    await socialCase("legacy");
-    expect(await nodeProbe("next-gen")).toBe(before["next-gen"]);
-    expect(await nodeProbe("legacy")).toBe(before.legacy);
-    await socialCase("next-gen");
-    expect(await nodeProbe("legacy")).toBe(before.legacy);
-    expect(await nodeProbe("next-gen")).toBe(before["next-gen"]);
+  it("leaves a decision node exactly as a fresh runner sees it", async () => {
+    const before = await nodeProbe();
+    await socialCase();
+    expect(await nodeProbe()).toBe(before);
   }, 60_000);
 });

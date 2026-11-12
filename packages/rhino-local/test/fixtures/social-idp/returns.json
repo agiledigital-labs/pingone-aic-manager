@@ -1,11 +1,5 @@
 {
  "empty": {
-  "legacy": {
-   "http": 200,
-   "normalizedProfile": "{  }",
-   "script": "({});\n",
-   "sharedStateAdded": []
-  },
   "next-gen": {
    "http": 200,
    "normalizedProfile": "{  }",
@@ -13,21 +7,7 @@
    "sharedStateAdded": []
   }
  },
- "jsonvalue": {
-  "legacy": {
-   "http": 200,
-   "normalizedProfile": "{ \"givenName\": \"zzJV\" }",
-   "script": "var m = new java.util.LinkedHashMap(); m.put(\"givenName\", \"zzJV\"); new org.forgerock.json.JsonValue(m);\n",
-   "sharedStateAdded": []
-  }
- },
  "null": {
-  "legacy": {
-   "http": 401,
-   "normalizedProfile": null,
-   "script": "null;\n",
-   "sharedStateAdded": null
-  },
   "next-gen": {
    "http": 401,
    "normalizedProfile": null,
@@ -36,12 +16,6 @@
   }
  },
  "object": {
-  "legacy": {
-   "http": 200,
-   "normalizedProfile": "{ \"givenName\": \"zzG\", \"familyName\": \"zzF\", \"email\": \"zz@example.com\", \"id\": \"zz-id\", \"zzNum\": 4.0, \"zzFrac\": 1.5, \"zzBool\": true, \"zzNull\": null, \"zzUndef\": null, \"zzNested\": { \"a\": [ 1.0, \"b\" ] } }",
-   "script": "({ givenName: \"zzG\", familyName: \"zzF\", email: \"zz@example.com\", id: \"zz-id\", zzNum: 4, zzFrac: 1.5, zzBool: true, zzNull: null, zzUndef: undefined, zzNested: { a: [1, \"b\"] } });\n",
-   "sharedStateAdded": []
-  },
   "next-gen": {
    "http": 200,
    "normalizedProfile": "{ \"givenName\": \"zzG\", \"familyName\": \"zzF\", \"email\": \"zz@example.com\", \"id\": \"zz-id\", \"zzNum\": 4.0, \"zzFrac\": 1.5, \"zzBool\": true, \"zzNull\": null, \"zzUndef\": null, \"zzNested\": { \"a\": [ 1.0, \"b\" ] } }",
@@ -50,16 +24,6 @@
   }
  },
  "putshared": {
-  "legacy": {
-   "http": 200,
-   "normalizedProfile": "{ \"id\": \"zz\" }",
-   "script": "nodeState.putShared(\"zzShared\", \"s\"); nodeState.putTransient(\"zzTransient\", \"t\"); sharedState.put(\"zzSS\", \"x\"); ({ id: \"zz\" });\n",
-   "sharedStateAdded": [
-    "zzSS",
-    "zzShared",
-    "zzTransient"
-   ]
-  },
   "next-gen": {
    "http": 200,
    "normalizedProfile": "{ \"id\": \"zz\" }",
@@ -71,12 +35,6 @@
   }
  },
  "string": {
-  "legacy": {
-   "http": 401,
-   "normalizedProfile": null,
-   "script": "\"zz\";\n",
-   "sharedStateAdded": null
-  },
   "next-gen": {
    "http": 401,
    "normalizedProfile": null,
@@ -85,12 +43,6 @@
   }
  },
  "throw": {
-  "legacy": {
-   "http": 401,
-   "normalizedProfile": null,
-   "script": "throw new Error(\"zzBoom\");\n",
-   "sharedStateAdded": null
-  },
   "next-gen": {
    "http": 401,
    "normalizedProfile": null,
@@ -99,12 +51,6 @@
   }
  },
  "undefined": {
-  "legacy": {
-   "http": 401,
-   "normalizedProfile": null,
-   "script": "undefined;\n",
-   "sharedStateAdded": null
-  },
   "next-gen": {
    "http": 401,
    "normalizedProfile": null,
