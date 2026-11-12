@@ -106,12 +106,12 @@ final class AmClassShutter implements ClassShutter {
   }
 
   /**
-   * The classes a list or map is presented through. They are how every list and map binding
-   * reaches a script, in every context, whatever the context's allow-list says about the
-   * collection behind them. A script cannot name them, exactly as it cannot name an engine class.
+   * The class a list is presented through. It is how every list binding reaches a script, in
+   * every context, whatever the context's allow-list says about the collection behind it. A
+   * script cannot name it, exactly as it cannot name an engine class.
    */
   private static boolean presentation(String fullClassName) {
-    return fullClassName.equals("SequenceFacade") || fullClassName.equals("DictionaryFacade");
+    return fullClassName.equals("SequenceFacade");
   }
 
   @Override

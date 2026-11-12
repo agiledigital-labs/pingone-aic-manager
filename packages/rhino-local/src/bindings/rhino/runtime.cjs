@@ -1289,7 +1289,7 @@ function __rhinoLocalRequestMap(values, options) {
       "rhino-local: " + label + ".forEach(" + __rhinoLocalScriptSignature(arguments) +
         "): AIC's answer is measured for one function, no argument, or a number only");
   });
-  return map;
+  return __rhinoLocalGuardService(label, map);
 }
 
 /**
@@ -1356,7 +1356,7 @@ function __rhinoLocalSessionMap(values) {
     }
     return "{ " + parts.join(", ") + " }";
   });
-  return map;
+  return __rhinoLocalGuardService("existingSession", map);
 }
 
 function __rhinoLocalSessionKeys(map) {
@@ -5042,42 +5042,89 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
 // Methods measured absent on AIC: calling one there is the engine's TypeError,
 // so it is that here too and not a harness fault.
 var __rhinoLocalMeasuredAbsent = {
-  logger: ["message", "warning", "errorEnabled", "messageEnabled", "warningEnabled"]
+  logger: ["message", "warning", "errorEnabled", "messageEnabled", "warningEnabled"],
+  existingSession: ["hasOwnProperty"],
+  "idRepository.getIdentity()": ["getAttribute"]
 };
 
-// A method a script calls on a service object that this harness never wrote.
+// A method a script calls on a harness object that this harness never wrote.
 // AIC may well have it, so the call is not answered with the TypeError a
 // missing method gets: it is a named fault, tallied in the run summary, and
 // it fails the run even when the script catches it. The engine calls
 // __noSuchMethod__ for a call to a member that is not a function, so one
 // hidden member covers every name. It is installed on each service object
-// the generated surface names and on the plain objects nested in them
-// (utils.crypto.subtle). A value a method returns is not covered.
+// the generated surface names, on the plain objects nested in them
+// (utils.crypto.subtle), on the request maps, and on every object with
+// methods of its own that a guarded object's method returns (an identity, an
+// HTTP response), under the path of the call that made it. Not covered: a
+// property read without a call (typeof openidm.nope), which the engine gives
+// no hook for; an array; and a context overlay's own views.
 function __rhinoLocalGuardService(path, object) {
-  var keys;
+  var names;
   var own;
   var i;
   if (object === null || typeof object !== "object" ||
       Object.prototype.toString.call(object) !== "[object Object]" ||
       Object.prototype.hasOwnProperty.call(object, "__noSuchMethod__")) {
-    return;
+    return object;
   }
   __rhinoLocalHide(object, "__noSuchMethod__", function (name) {
     if ((__rhinoLocalMeasuredAbsent[path] || []).indexOf(name) !== -1) {
       throw new TypeError("Cannot find function " + name + " in object " + String(object) + ".");
+    }
+    if (name in object) {
+      // A member that is there and is not a function (a map entry named like
+      // a method): the engine's own refusal.
+      throw new TypeError("Cannot call property " + name + " in object " + String(object) +
+        ". It is not a function, it is \"" + typeof object[name] + "\".");
     }
     throw __rhinoLocalFault(
       "not-implemented/" + path + "." + name,
       "rhino-local: not implemented: " + path + "." + name +
         "() is not a member this harness has; if AIC has it, it needs adding");
   });
-  keys = Object.keys(object);
-  for (i = 0; i < keys.length; i += 1) {
-    own = Object.getOwnPropertyDescriptor(object, keys[i]);
-    if (own !== undefined && "value" in own) {
-      __rhinoLocalGuardService(path + "." + keys[i], own.value);
+  names = Object.getOwnPropertyNames(object);
+  for (i = 0; i < names.length; i += 1) {
+    own = Object.getOwnPropertyDescriptor(object, names[i]);
+    if (own === undefined || !("value" in own) || names[i] === "__noSuchMethod__") {
+      continue;
+    }
+    if (typeof own.value === "function") {
+      if (own.writable || own.configurable) {
+        own.value = __rhinoLocalGuardReturns(path + "." + names[i] + "()", own.value);
+        Object.defineProperty(object, names[i], own);
+      }
+    } else if (own.enumerable) {
+      __rhinoLocalGuardService(path + "." + names[i], own.value);
     }
   }
+  return object;
+}
+
+// The method, with whatever harness object it returns guarded too. Only an
+// object carrying methods of its own is one: a record or a parsed body is
+// plain data, where a missing method is the script's own TypeError.
+function __rhinoLocalGuardReturns(path, method) {
+  if (Object.keys(method).length > 0 ||
+      (method.prototype && Object.getOwnPropertyNames(method.prototype).length > 1)) {
+    return method;
+  }
+  return function () {
+    var result = method.apply(this, arguments);
+    var names;
+    var i;
+    if (result === null || typeof result !== "object" ||
+        Object.prototype.toString.call(result) !== "[object Object]") {
+      return result;
+    }
+    names = Object.getOwnPropertyNames(result);
+    for (i = 0; i < names.length; i += 1) {
+      if (typeof Object.getOwnPropertyDescriptor(result, names[i]).value === "function") {
+        return __rhinoLocalGuardService(path, result);
+      }
+    }
+    return result;
+  };
 }
 
 function __rhinoLocalGuardServices() {

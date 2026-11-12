@@ -82,6 +82,9 @@ describe("a scripted decision's lists are Java lists", () => {
     // The number's form is the script engine's; AIC's was not measured.
     ["String of a query result holding numbers", `return String(openidm.query("managed/alpha_thing", { _queryFilter: "true" }).result);`,
       "[{_id=t1, _rev=1, count=3, ratio=1.5, on=true, gone=null}]"],
+    // A number a script adds is held as Java holds it, and prints that way.
+    ["String of a list a script added numbers to", `var v = requestParameters.get("many"); v.add(5); v.add(1.5); return String(v);`,
+      "[alpha, bravo, 5.0, 1.5]"],
     // Measured: get(0) on an empty result.
     ["get(0) of an empty query result", refusal(`${NOTHING}.get(0)`),
       "InternalError: Index 0 out of bounds for length 0"],
@@ -106,12 +109,23 @@ describe("a service object refuses a member the harness does not have", () => {
     ["logger", "logger.frobnicate()", "not-implemented/logger.frobnicate"],
     ["secrets", "secrets.frobnicate()", "not-implemented/secrets.frobnicate"],
     ["systemEnv", "systemEnv.frobnicate()", "not-implemented/systemEnv.frobnicate"],
+    ["requestParameters", "requestParameters.frobnicate()", "not-implemented/requestParameters.frobnicate"],
+    ["requestHeaders", "requestHeaders.frobnicate()", "not-implemented/requestHeaders.frobnicate"],
+    ["requestCookies", "requestCookies.frobnicate()", "not-implemented/requestCookies.frobnicate"],
+    // An object a service hands back is named by the call that made it.
+    ["an identity", 'idRepository.getIdentity("u1").frobnicate()', "not-implemented/idRepository.getIdentity().frobnicate"],
+    ["an HTTP response", 'httpClient.send("https://service.example.com/x").get().frobnicate()', "not-implemented/httpClient.send().get().frobnicate"],
+    ["a pending HTTP response", 'httpClient.send("https://service.example.com/x").frobnicate()', "not-implemented/httpClient.send().frobnicate"],
+    ["a state object read back", 'nodeState.get("objectAttributes").frobnicate()', "not-implemented/nodeState.get().frobnicate"],
+    // goTo returns the action itself.
+    ["the action a goTo returns", 'action.goTo("true").frobnicate()', "not-implemented/action.frobnicate"],
   ])("%s: an unknown method is a named fault that fails the run though the script caught it", async (name, call, id) => {
     expectHarnessFault(id);
     const error = await runCase(runner, defineCase({
       name: `unknown member of ${name}`,
       script: `try { ${call}; } catch (e) {} action.goTo("true");`,
-      expect: { outcome: "true" },
+      given: { ...given, registeredObjectAttributes: { mail: "zzemu@example.com" }, http: [{ match: { url: "https://service.example.com/x" }, reply: { status: 200 } }] },
+      expect: { outcome: "true", allowUndeclared: { sharedState: true, http: true, openidmReads: true } },
     })).then(() => null, (e: unknown) => e);
     expect(error).toBeInstanceOf(CaseRunError);
     const faults = (error as CaseRunError).response.emulation?.faults ?? [];
@@ -140,6 +154,24 @@ describe("a service object refuses a member the harness does not have", () => {
     }));
     expect(verdict.pass, verdict.summary).toBe(true);
     expect(effects.sharedState.final.out).toBe("TypeError: Cannot find function message|TypeError: Cannot find function warningEnabled");
+  }, 60_000);
+
+  // What AIC answers with a TypeError stays one: a record is the script's own
+  // data, an identity has no getAttribute (measured), and a map entry named
+  // like a method hides the method (measured).
+  it("plain data and measured absences on a returned object are still the engine's TypeError", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: "returned data",
+      script: node(`return [` +
+        `(function () { ${refusal('openidm.read("managed/alpha_user/u1").frobnicate()')} })(), ` +
+        `(function () { ${refusal('idRepository.getIdentity("u1").getAttribute("mail")')} })(), ` +
+        `(function () { ${refusal('nodeState.get("objectAttributes").get("x")')} })()].map(function (m) { return m.split(" in object ")[0]; }).join("|");`),
+      given: { ...given, registeredObjectAttributes: { get: "entry" } },
+      expect: { outcome: "true", allowUndeclared: { sharedState: true, openidmReads: true } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.sharedState.final.out).toBe(
+      "TypeError: Cannot find function frobnicate|TypeError: Cannot find function getAttribute|TypeError: Cannot call property get");
   }, 60_000);
 
   it("the guard is not a member a script can see, and a script's own object is untouched", async () => {

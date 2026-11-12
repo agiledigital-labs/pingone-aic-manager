@@ -585,7 +585,8 @@ public final class Runner {
       String lineSource) {
     Map<String, Object> err = new LinkedHashMap<String, Object>();
     err.put("class", t.getClass().getName());
-    err.put("message", t.getMessage());
+    // An exception with no text of its own (a write to a list that takes none) is named by class.
+    err.put("message", t.getMessage() != null ? t.getMessage() : t.getClass().getName());
     err.put("sourceName", sourceName);
     err.put("line", Integer.valueOf(line));
     err.put("column", Integer.valueOf(column));

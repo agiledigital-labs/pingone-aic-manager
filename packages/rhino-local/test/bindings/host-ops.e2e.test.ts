@@ -10,7 +10,7 @@ import { RhinoRunner } from "../../src/runner.ts";
  * local shutter would be more permissive than AIC's.
  *
  * Not a sandbox: Rhino's `__parent__` walks a mock's closure scopes, so
- * `utils.base64.encode.__parent__.__parent__.hostOp` still reaches it (checked
+ * `utils.base64.encode.__parent__.method.__parent__.__parent__.hostOp` still reaches it (checked
  * 2026-09-29). Disabling that would also disable `__proto__`, which scripts use.
  * A script that walks mock internals is outside what the harness models.
  */
@@ -67,7 +67,7 @@ describe("the utils host bridge on the real Rhino engine", () => {
       defineCase({
         name: "host-ops-parent",
         script: [
-          "var op = utils.base64.encode.__parent__.__parent__.hostOp;",
+          "var op = utils.base64.encode.__parent__.method.__parent__.__parent__.hostOp;",
           "function attempt(f) {",
           "  try { return String(typeof f()); } catch (e) { return 'threw'; }",
           "}",

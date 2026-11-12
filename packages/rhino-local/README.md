@@ -14,11 +14,32 @@ that returned `undefined` would turn a missing feature into a passing test. That
 throw is a [harness fault](#harness-faults-refusals-a-script-cannot-catch)
 (`not-mocked/<binding>.<method>`), so catching it does not rescue the case.
 A method the generated surface does not declare at all is refused the same way
-(`not-implemented/<binding>.<method>`), on every service object and on the
-objects nested in one (`utils.crypto.subtle`): AIC may have it, so the call is
-not answered with a `TypeError` a script could catch and carry on from. The
-exceptions are the methods measured absent on AIC (the next-gen `logger` has no
-`message`, `warning` or `*Enabled`), which stay the engine's `TypeError`.
+(`not-implemented/<binding>.<method>`): AIC may have it, so the call is not
+answered with a `TypeError` a script could catch and carry on from. That covers
+every service object, the objects nested in one (`utils.crypto.subtle`), the
+request maps (`requestParameters`, `requestHeaders`, `requestCookies`,
+`existingSession`) and any object with methods that a service call returns,
+named by the call that made it (`idRepository.getIdentity().<method>`,
+`httpClient.send().get().<method>`, `nodeState.get().<method>`).
+
+What it does not cover:
+
+- A property read without a call. `typeof openidm.frobnicate` is `"undefined"`
+  and `openidm.frobnicate.call(openidm)` is a plain `TypeError`; the engine
+  gives no hook for a read, so an empty fault tally does not prove a script
+  touched nothing the harness lacks.
+- Plain data: a record `openidm.read` returns or a parsed body is the script's
+  own object, where a missing method is a `TypeError` on AIC too.
+- Lists. A Java list refuses an unknown member itself, as on AIC. The lists
+  that are still JS arrays here (`nodeState.keys()`, a map's `values()`) answer
+  array methods AIC's do not have.
+- The other script contexts' own views (`accessToken`, `identity`, `session`,
+  …), which fault under their `<context>-unmeasured` ids.
+
+The methods measured absent on AIC stay the engine's `TypeError`: the next-gen
+`logger` has no `message`, `warning` or `*Enabled`, an identity has no
+`getAttribute`, and `existingSession` has no `hasOwnProperty`. So does a map
+entry named like a method (`get`), which hides the method as it does on AIC.
 
 Implemented (still fail-loud for missing fixtures and for every method the
 overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
@@ -76,7 +97,10 @@ does: `isEmpty()`, `contains(x)`, `indexOf(x)`, `toArray()`,
 `forEach(function (x) {…})`. `get(i)` out of range throws
 `InternalError: Index 2 out of bounds for length 2`, a wrong argument shape is
 Rhino's catchable `Can't find method java.util.List.get().`, and `iterator()`
-is refused by the class allow-list, as `getClass()` is. A `[]` seed is an
+is refused by the class allow-list, as `getClass()` is. Those two refusals and
+the `InternalError` come from the allow-list: a case run with
+`classShutter: false` gets a `JavaException` from `get(2)` and a working
+`iterator()`. A `[]` seed is an
 empty list (`size()` 0, `String(v)` `"[]"`); AIC itself hands over `[""]` for
 an empty value. An out-of-range bracket read (`v[5]`) is `undefined`.
 The simplest copy is `[].concat(v)`; the loop

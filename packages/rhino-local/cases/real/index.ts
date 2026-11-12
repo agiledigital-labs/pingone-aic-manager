@@ -558,8 +558,8 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "Same Java-host-object enumeration as enum-callbacks-utils, for utils.base64/base64url/crypto/types (crypto on AIC also has checkBcrypt and randomValues). And AIC reports arity 0 for nameCallback/hiddenValueCallback/confirmationCallback (Java varargs bridges), where the JS mocks declare their parameters.",
-      differs: ["base64", "base64url", "crypto", "types", "arity"],
+        "Same Java-host-object enumeration as enum-callbacks-utils, for utils.base64/base64url/crypto/types (crypto on AIC also has checkBcrypt and randomValues).",
+      differs: ["base64", "base64url", "crypto", "types"],
     },
   }),
 
@@ -591,6 +591,8 @@ export const realCases: RealEntry[] = [
       reason:
         "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object (`TypeError: Cannot find function getClass`). (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
       differs: ["headers", "parameters"],
+      // getClass() on a request map is not written here; on AIC it is the refusal above.
+      faults: ["not-implemented/requestHeaders.getClass", "not-implemented/requestParameters.getClass"],
     },
     given: {
       requestHeaders: {
@@ -3078,7 +3080,7 @@ export const realCases: RealEntry[] = [
       reason:
         "57/80 measured payload keys now match: ESV defaults and conversions, cacheManager, the seeded journey values and flags, null SAML/OAuth bindings, and logger.isTraceEnabled. Remaining gaps are tenant-backed JWT creation/validation and policy results; idRepository.getIdentity on an absent user (both lanes return the wrapper with the same class name and methods, but AIC's Java object also enumerates bean properties and java.lang.Object members such as class, getClass and wait); JavaException wrappers for absent secrets; logger.getName includes the tenant script id; and Java reflection shapes for emailService enumeration and locales.",
       differs: ["logger.getName","secrets.getGenericSecret","secrets.getDecryptionKey","secrets.getEncryptionKey","secrets.getSigningKey","secrets.getVerificationKey","jwtAssertion.generateJwt","jwtValidator.validateJwtClaims","policy.evaluate","policy.evaluateTree","idRepository.getIdentity","emailService/typeof-enumeration","locales","jwtAssertion.generateJwt/empty","jwtAssertion.generateJwt/HS256","jwtAssertion.generateJwt/HS256/string-key","jwtValidator.validateJwtClaims/empty","jwtValidator.validateJwtClaims/HS256","policy.evaluate/claims/oauth2Scopes","policy.evaluateTree/claims/oauth2Scopes","policy.evaluate/ssoToken","policy.evaluate/jwt","policy.evaluate/claims"],
-      faults: ["not-mocked/jwtAssertion.generateJwt", "not-mocked/jwtValidator.validateJwtClaims", "not-mocked/policy.evaluate", "not-mocked/policy.evaluateTree"],
+      faults: ["not-mocked/jwtAssertion.generateJwt", "not-mocked/jwtValidator.validateJwtClaims", "not-mocked/policy.evaluate", "not-mocked/policy.evaluateTree", "not-implemented/idRepository.getIdentity().size"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).

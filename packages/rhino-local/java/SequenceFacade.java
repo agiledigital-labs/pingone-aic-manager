@@ -65,11 +65,16 @@ final class SequenceFacade implements List<Object> {
   @Override
   public String toString() {
     StringBuilder out = new StringBuilder();
-    render(out, list);
+    render(out, list, false);
     return out.toString();
   }
 
-  private static void render(StringBuilder out, Object value) {
+  /**
+   * {@code record} is true inside a record the emulator holds as a script object, where every
+   * number is a script number: a whole one prints as an integer field prints. A number that is
+   * an element of a list itself prints as Java prints it, so one a script added reads {@code 5.0}.
+   */
+  private static void render(StringBuilder out, Object value, boolean record) {
     if (value instanceof SequenceFacade) {
       value = ((SequenceFacade) value).list;
     }
@@ -85,7 +90,7 @@ final class SequenceFacade implements List<Object> {
       for (Object item : (List<?>) value) {
         if (!first) out.append(", ");
         first = false;
-        render(out, item);
+        render(out, item, record);
       }
       out.append(']');
     } else if (value instanceof ScriptableObject && "Object".equals(((ScriptableObject) value).getClassName())) {
@@ -98,7 +103,7 @@ final class SequenceFacade implements List<Object> {
         out.append(id).append('=');
         render(out, id instanceof Integer
             ? ScriptableObject.getProperty(object, ((Integer) id).intValue())
-            : ScriptableObject.getProperty(object, String.valueOf(id)));
+            : ScriptableObject.getProperty(object, String.valueOf(id)), true);
       }
       out.append('}');
     } else if (value instanceof Map && !(value instanceof Scriptable)) {
@@ -108,15 +113,14 @@ final class SequenceFacade implements List<Object> {
         if (!first) out.append(", ");
         first = false;
         out.append(entry.getKey()).append('=');
-        render(out, entry.getValue());
+        render(out, entry.getValue(), record);
       }
       out.append('}');
     } else if (value == null || value == Undefined.instance) {
       out.append("null");
     } else if (value instanceof Number) {
       double d = ((Number) value).doubleValue();
-      // A whole number prints as Java prints an Integer or a Long.
-      if (value instanceof Double && d == Math.rint(d) && !Double.isInfinite(d) && Math.abs(d) < 1e15) {
+      if (record && value instanceof Double && d == Math.rint(d) && !Double.isInfinite(d) && Math.abs(d) < 1e15) {
         out.append((long) d);
       } else {
         out.append(value);

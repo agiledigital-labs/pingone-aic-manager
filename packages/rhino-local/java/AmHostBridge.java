@@ -202,6 +202,7 @@ final class AmHostBridge extends BaseFunction {
       new java.util.HashSet<String>(
           java.util.Arrays.asList(
               "__rhinoLocalMapEntries",
+              "__noSuchMethod__",
               "toJSON",
               "toString",
               "get",
@@ -291,23 +292,22 @@ final class AmHostBridge extends BaseFunction {
     }
 
     /**
-     * docs/api/12: every JS number goes out as a Java double (1 is 1.0, measured for integers up
-     * to 1e6 at any depth); a boxed java.lang.Integer or Long goes out as written. Anything else
-     * is rendered the same way but flagged, since its form on the wire was not measured.
+     * docs/api/12: a number literal goes out as a Java double (1 is 1.0, measured for integers up
+     * to 1e6 at any depth); a boxed java.lang.Integer or Long goes out as written (measured).
+     * Anything else is flagged, since its form on the wire was not measured.
      */
     private String wireNumber(Object value, double number, boolean wrapped) {
       if (wrapped && (value instanceof Integer || value instanceof Long)) return value.toString();
       if (value instanceof Integer || value instanceof Long) {
-        // A boxed Integer reaches a script as a plain number (getClass on it is "Cannot find
-        // function getClass in object 45000") and still goes out as written, so the class the
-        // engine holds decides. A number the engine itself holds as an Integer (results of
-        // length, indexOf, JSON.parse) is the same class; that it goes out the same way follows
-        // from that and was not sent.
+        // Measured: a boxed Integer or Long goes out as written. Here a boxed value reaches the
+        // script as a plain number, so it cannot be told from a number the engine itself holds
+        // as an Integer ('abc'.length, indexOf, JSON.parse). Those go out the same way, and that half was
+        // never sent to a tenant: the note is for them.
         assumed.add(
             "httpClient body text for a number the script engine holds as a Java "
                 + value.getClass().getSimpleName()
-                + " (a boxed value, or a result of length, indexOf, JSON.parse), written as an"
-                + " integer");
+                + ": written as an integer, which is measured for a boxed value and assumed for"
+                + " a result of length, indexOf or JSON.parse");
         return value.toString();
       } else if (!(value instanceof Double)) {
         assumed.add(

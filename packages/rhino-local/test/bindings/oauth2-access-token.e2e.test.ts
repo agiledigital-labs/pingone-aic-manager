@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CaseRunError, runCase } from "../../src/bindings/run.ts";
 import { defineCase } from "../../src/case/validate.ts";
+import { expectEmulationFailure } from "../../src/harness/emulation-guard.ts";
 import type { AccessTokenEffect, Engine, JsonObject, JsonValue } from "../../src/case/types.ts";
 import { packageRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
@@ -205,6 +206,20 @@ describe("access-token modification matches the live capture", () => {
       `accessToken.setField("probe", String(accessToken.getScope()) + "|" + accessToken.getScope().length);`,
       { accessToken: { scope: [] } },
     );
+  }, 60_000);
+
+  // What AIC does with this write was not measured. Here it ends the run, and the error says why.
+  it("an index write to the getScope() list ends the run with an error naming the refusal", async () => {
+    expectEmulationFailure("java.lang.UnsupportedOperationException");
+    const error = await runCase(runner, defineCase({
+      name: `getScope index write ${engine}`,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `try { accessToken.getScope()[0] = "z"; } catch (e) {}`,
+      given: { engine, accessToken: { scope: ["a"] } },
+      expect: {},
+    })).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CaseRunError);
+    expect((error as CaseRunError).message).toContain("java.lang.UnsupportedOperationException");
   }, 60_000);
 
   it("an empty scopes list renders [] and has length 0", async () => {
