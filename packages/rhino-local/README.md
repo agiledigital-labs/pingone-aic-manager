@@ -2521,7 +2521,8 @@ other shape is rendered the same way and labelled assumed with its reason: no
 such header, a string or top-level non-object body, `\r`/`\b`/`\f`, a C1
 control, a lone low surrogate, a
 fraction or an integer past 1e6, or a number the script engine holds as a Java
-Integer (`s.length`, `indexOf`, `JSON.parse` results). A `form` request is
+Integer (written as an integer, which is measured for `s.length`, `indexOf` and
+`size()` results and assumed for a `JSON.parse` result). A `form` request is
 missing, because its body is not the JSON text. `objectAttributes` that a node
 wrote, or that crossed a callback round trip, reaches the next script as a Java
 map (`get`/`put` work); its printed form is measured, the methods are inferred

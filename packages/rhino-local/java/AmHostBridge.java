@@ -301,13 +301,13 @@ final class AmHostBridge extends BaseFunction {
       if (value instanceof Integer || value instanceof Long) {
         // Measured: a boxed Integer or Long goes out as written. Here a boxed value reaches the
         // script as a plain number, so it cannot be told from a number the engine itself holds
-        // as an Integer ('abc'.length, indexOf, JSON.parse). Those go out the same way, and that half was
-        // never sent to a tenant: the note is for them.
+        // as an Integer ('abc'.length, indexOf, a Java size()). Those were measured too and go out
+        // the same way; a JSON.parse result was never sent to a tenant, and the note is for it.
         assumed.add(
             "httpClient body text for a number the script engine holds as a Java "
                 + value.getClass().getSimpleName()
-                + ": written as an integer, which is measured for a boxed value and assumed for"
-                + " a result of length, indexOf or JSON.parse");
+                + ": written as an integer, which is measured for a boxed value and for length,"
+                + " indexOf and size() results, and assumed for a JSON.parse result");
         return value.toString();
       } else if (!(value instanceof Double)) {
         assumed.add(
