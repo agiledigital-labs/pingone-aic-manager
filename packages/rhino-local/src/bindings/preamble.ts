@@ -173,9 +173,9 @@ export function casePreamble(
 function seedCall(context: ScriptContext | undefined, data: string): string {
   const runtime = context === undefined ? undefined : CONTEXT_RUNTIME[context];
   if (runtime === undefined) {
-    return `__rhinoLocalSeed(${data});`;
+    return `__rhinoLocalSeed(${data}); __rhinoLocalGuardServices();`;
   }
-  return `(function (g) { __rhinoLocalSeed(g); ${runtime.seed}(g); })(${data});`;
+  return `(function (g) { __rhinoLocalSeed(g); __rhinoLocalGuardServices(); ${runtime.seed}(g); })(${data});`;
 }
 
 /** The harvest call a context's script ends with. */

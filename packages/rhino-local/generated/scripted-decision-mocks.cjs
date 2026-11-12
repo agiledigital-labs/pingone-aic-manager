@@ -725,3 +725,27 @@ var jwtValidator = {
     __rhinoLocalNotMocked("jwtValidator", "validateJwtClaims", arguments, [{ arity: 1, types: ["object"], label: "validateJwtClaims(jwtData: object)" }]);
   },
 };
+
+function __rhinoLocalServices() {
+  var out = {};
+  if (typeof samlApplication !== "undefined") { out.samlApplication = samlApplication; }
+  if (typeof logger !== "undefined") { out.logger = logger; }
+  if (typeof callbacks !== "undefined") { out.callbacks = callbacks; }
+  if (typeof idRepository !== "undefined") { out.idRepository = idRepository; }
+  if (typeof jwtAssertion !== "undefined") { out.jwtAssertion = jwtAssertion; }
+  if (typeof utils !== "undefined") { out.utils = utils; }
+  if (typeof action !== "undefined") { out.action = action; }
+  if (typeof callbacksBuilder !== "undefined") { out.callbacksBuilder = callbacksBuilder; }
+  if (typeof openidm !== "undefined") { out.openidm = openidm; }
+  if (typeof policy !== "undefined") { out.policy = policy; }
+  if (typeof httpClient !== "undefined") { out.httpClient = httpClient; }
+  if (typeof journey !== "undefined") { out.journey = journey; }
+  if (typeof cacheManager !== "undefined") { out.cacheManager = cacheManager; }
+  if (typeof secrets !== "undefined") { out.secrets = secrets; }
+  if (typeof oauthApplication !== "undefined") { out.oauthApplication = oauthApplication; }
+  if (typeof emailService !== "undefined") { out.emailService = emailService; }
+  if (typeof systemEnv !== "undefined") { out.systemEnv = systemEnv; }
+  if (typeof nodeState !== "undefined") { out.nodeState = nodeState; }
+  if (typeof jwtValidator !== "undefined") { out.jwtValidator = jwtValidator; }
+  return out;
+}

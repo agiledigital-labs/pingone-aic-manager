@@ -5039,6 +5039,56 @@ if (typeof __rhinoLocalHostOp !== "undefined") {
   })(__rhinoLocalHostOp);
 }
 
+// Methods measured absent on AIC: calling one there is the engine's TypeError,
+// so it is that here too and not a harness fault.
+var __rhinoLocalMeasuredAbsent = {
+  logger: ["message", "warning", "errorEnabled", "messageEnabled", "warningEnabled"]
+};
+
+// A method a script calls on a service object that this harness never wrote.
+// AIC may well have it, so the call is not answered with the TypeError a
+// missing method gets: it is a named fault, tallied in the run summary, and
+// it fails the run even when the script catches it. The engine calls
+// __noSuchMethod__ for a call to a member that is not a function, so one
+// hidden member covers every name. It is installed on each service object
+// the generated surface names and on the plain objects nested in them
+// (utils.crypto.subtle). A value a method returns is not covered.
+function __rhinoLocalGuardService(path, object) {
+  var keys;
+  var own;
+  var i;
+  if (object === null || typeof object !== "object" ||
+      Object.prototype.toString.call(object) !== "[object Object]" ||
+      Object.prototype.hasOwnProperty.call(object, "__noSuchMethod__")) {
+    return;
+  }
+  __rhinoLocalHide(object, "__noSuchMethod__", function (name) {
+    if ((__rhinoLocalMeasuredAbsent[path] || []).indexOf(name) !== -1) {
+      throw new TypeError("Cannot find function " + name + " in object " + String(object) + ".");
+    }
+    throw __rhinoLocalFault(
+      "not-implemented/" + path + "." + name,
+      "rhino-local: not implemented: " + path + "." + name +
+        "() is not a member this harness has; if AIC has it, it needs adding");
+  });
+  keys = Object.keys(object);
+  for (i = 0; i < keys.length; i += 1) {
+    own = Object.getOwnPropertyDescriptor(object, keys[i]);
+    if (own !== undefined && "value" in own) {
+      __rhinoLocalGuardService(path + "." + keys[i], own.value);
+    }
+  }
+}
+
+function __rhinoLocalGuardServices() {
+  var services = typeof __rhinoLocalServices === "function" ? __rhinoLocalServices() : {};
+  var names = Object.keys(services);
+  var i;
+  for (i = 0; i < names.length; i += 1) {
+    __rhinoLocalGuardService(names[i], services[names[i]]);
+  }
+}
+
 function __rhinoLocalSeed(given) {
   // Defined by the runner for the preamble only; captured first, so a fault
   // raised while seeding (seed-binding, seed-cache-manager) is recorded too.
