@@ -1,4 +1,4 @@
-// Social provider handler node script probe (legacy SOCIAL_IDP_PROFILE_TRANSFORMATION):
+// Social provider handler node script probe (SOCIAL_IDP_PROFILE_TRANSFORMATION):
 // its own surface, plus the transform's record carried in normalizedProfile.aicprobe.
 var out = {};
 function clean(e) { return String(e).split(" in object ")[0].replace(/ \([^()]*#\d+\)$/, ""); }

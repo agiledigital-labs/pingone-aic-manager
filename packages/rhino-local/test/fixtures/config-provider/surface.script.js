@@ -57,5 +57,5 @@ out.journeyKeys = keys(function () { return journey; });
 out.locales = call(function () { return typeof locales; });
 out.idRepoKeys = keys(function () { return idRepository; });
 var probe = JSON.stringify(out);
-try { nodeState.putShared("aicprobe", probe); } catch (e) { /* legacy may lack putShared */ }
+try { nodeState.putShared("aicprobe", probe); } catch (e) { /* putShared may be absent */ }
 config = { message: { en: probe } };

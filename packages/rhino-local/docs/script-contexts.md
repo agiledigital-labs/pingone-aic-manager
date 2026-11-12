@@ -1,10 +1,10 @@
 # Script contexts
 
-Status: design note, 2026-11-11. Implemented: the selector and, each on both
-engines, `OAUTH2_ACCESS_TOKEN_MODIFICATION`, `OIDC_CLAIMS`,
+Status: design note, 2026-11-11, updated 2026-11-12 when the legacy (V1) engine
+was removed: every context is next-gen only. Implemented: the selector and
+`OAUTH2_ACCESS_TOKEN_MODIFICATION`, `OIDC_CLAIMS`,
 `SOCIAL_IDP_PROFILE_TRANSFORMATION`, `CONFIG_PROVIDER_NODE`,
-`OAUTH2_VALIDATE_SCOPE` and `OAUTH2_MAY_ACT`. `LIBRARY` is implemented on
-next-gen only: legacy has no `require()`.
+`OAUTH2_VALIDATE_SCOPE` and `OAUTH2_MAY_ACT`. `LIBRARY` is implemented too.
 
 ## The problem
 
@@ -34,11 +34,11 @@ defineCase({
   exactly as before: same prelude, same preamble, same harvest, same verdict.
   Naming the default explicitly is allowed and changes nothing.
 - **The value is AM's own context id** without the `_NEXT_GEN` suffix, because
-  the engine is already a separate axis (`given.engine`, default `"next-gen"`).
-  `OAUTH2_ACCESS_TOKEN_MODIFICATION` + `engine: "legacy"` is AM's
-  `OAUTH2_ACCESS_TOKEN_MODIFICATION` (evaluatorVersion 1.0);
-  - `engine: "next-gen"` is `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` (2.0). A
-    context that exists on one engine only refuses the other at validation.
+  the only emulated engine is next-gen (`given.engine`, default and only value `"next-gen"`).
+  `OAUTH2_ACCESS_TOKEN_MODIFICATION` is AM's
+  `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` (evaluatorVersion 2.0). The legacy
+  engine is no longer emulated: `engine: "legacy"` is refused at validation
+  with a message naming the removal.
 - **`given` and `expect` are validated per context.** Each context declares the
   `given` keys and `expect` keys it accepts; any other key is a validation error
   naming the context. A decision-node key such as `sharedState` on a token case
@@ -92,22 +92,18 @@ file. It declares four things:
 
 The class shutter follows the context: next-gen contexts install their own
 `allowLists` from `docs/api/bindings/<context>.json`, plus the same
-`OBSERVED_BASE` boxed types the decision node gets. Legacy installs no
-allow-list, as for the decision node, and denies script-visible
-`java.lang.Class` (docs/api/12, 2026-11-10). An overload message names a Java
-argument from Java (`Wrapper.unwrap().getClass().getName()`), so that deny is
-not consulted while the message is built.
+`OBSERVED_BASE` boxed types the decision node gets. 
 
 ## The seven contexts
 
 | Context (`context` + engine)                                          | Bindings beyond the shared set                                                                                                | Fixtures                                                                  | Invocation, and what AM does with it                                                                                             | Assertions                                                                               |
 | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `OAUTH2_ACCESS_TOKEN_MODIFICATION` legacy + next-gen (**implemented**) | `accessToken`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `session` (null)                         | `accessToken` (starting state), `identity`, `client`, `scopes`, `request` | Top-level body; return value ignored; AM issues the mutated token                                                                | `expect.accessToken`: fields added/changed/removed, scope, expiry, and the other setters |
-| `OIDC_CLAIMS` legacy + next-gen (**implemented**) | `claims`, `requestedClaims`, `claimsLocales`, `identity`, `scopes`, `requestProperties`, `clientProperties`; legacy `claimObjects`, `requestedTypedClaims`, `session` (null) | `identity`, `scopes`, `client`, `request`, `oidc` (claims seed, `claimsLocales`) | Completion value: next-gen `{values, compositeScopes}`, legacy a `UserInfoClaims`; read through the runner's completion hook | `expect.oidc`: `userinfo`, `idToken`, `compositeScopes`, `issued` |
-| `SOCIAL_IDP_PROFILE_TRANSFORMATION` legacy + next-gen (**implemented**) | `rawProfile` (next-gen a Java map, legacy a JsonValue), `selectedIdp`, `nodeState`; legacy `sharedState`, `transientState`, `callbacks` | `socialIdp` (`rawProfile`, `selectedIdp`), the node state | Completion value: a plain object, or on legacy `new JsonValue(map)`; undefined, null or a string fails the journey | `expect.socialIdp`: `profile`, `accepted`; the state channels |
-| `CONFIG_PROVIDER_NODE` legacy + next-gen (**implemented**) | `nodeState`; next-gen the decision node's bindings less `sharedState`, `transientState` and `outcome`; legacy only `nodeState`, `idRepository`, the request maps, `realm`, `scriptName`, `logger`, `httpClient`, `secrets`, `systemEnv` | the node state, request maps | Top-level body that assigns the `config` global (read after the script, not its completion value); AM configures the wrapped node from it, and fails the journey (HTTP 500) when it is not a map | `expect.configProvider`: `config`, `accepted`; the state channels |
-| `OAUTH2_VALIDATE_SCOPE` legacy + next-gen (**implemented**) | next-gen `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes` (Java lists), `identity`, `requestProperties`, `clientProperties`; legacy only `requestedScopes`, `allowedScopes`, `defaultScopes` (Java sets), `logger`, `realm`, `scriptName`, `systemEnv` | `validateScope` (requested / allowed / available / default scopes), `client`, `request` | Named function `validateAccessTokenScope` AM calls after the body; AM grants exactly the list it returns (no intersection); next-gen `throwInvalidScope` / legacy `InvalidScopeException` is the 400 denial | `expect.validateScope`: `granted`, `invalidScope`, `accepted` |
-| `OAUTH2_MAY_ACT` legacy + next-gen (**implemented**)                    | next-gen `token` (five methods: `getField`, `getAct`, `getMayAct`, `setAct`, `setMayAct`), `scopes` (a Java list), `identity`, `requestProperties`, `clientProperties`; legacy `token` (a `StatelessAccessToken`; `setMayAct` takes a JsonValue), `scopes` (a Java set), `logger`, `realm`, `scriptName`, `systemEnv`, `session` (`typeof` `object`) | `client`, `scopes`, `request`, `identity`, `accessToken`                                | Top-level body; AM stamps `may_act` and `act` after the script; a thrown script is HTTP 500 and discards prior sets                                                                                         | `expect.mayAct`: `mayAct`, `act`, `scope`, `issued`, `refusal`                           |
+| `OAUTH2_ACCESS_TOKEN_MODIFICATION` (**implemented**) | `accessToken`, `identity`, `scopes`, `requestProperties`, `clientProperties` | `accessToken` (starting state), `identity`, `client`, `scopes`, `request` | Top-level body; return value ignored; AM issues the mutated token                                                                | `expect.accessToken`: fields added/changed/removed, scope, expiry, and the other setters |
+| `OIDC_CLAIMS` (**implemented**) | `claims`, `requestedClaims`, `claimsLocales`, `identity`, `scopes`, `requestProperties`, `clientProperties` | `identity`, `scopes`, `client`, `request`, `oidc` (claims seed, `claimsLocales`) | Completion value: `{values, compositeScopes}`; read through the runner's completion hook | `expect.oidc`: `userinfo`, `idToken`, `compositeScopes`, `issued` |
+| `SOCIAL_IDP_PROFILE_TRANSFORMATION` (**implemented**) | `rawProfile` (a Java map), `selectedIdp`, `nodeState` | `socialIdp` (`rawProfile`, `selectedIdp`), the node state | Completion value: a plain object; undefined, null or a string fails the journey | `expect.socialIdp`: `profile`, `accepted`; the state channels |
+| `CONFIG_PROVIDER_NODE` (**implemented**) | `nodeState`; the decision node's bindings less `sharedState`, `transientState` and `outcome` | the node state, request maps | Top-level body that assigns the `config` global (read after the script, not its completion value); AM configures the wrapped node from it, and fails the journey (HTTP 500) when it is not a map | `expect.configProvider`: `config`, `accepted`; the state channels |
+| `OAUTH2_VALIDATE_SCOPE` (**implemented**) | `scopeValidatorHelper`, `requestedScopes`, `availableScopes`, `allowedScopes`, `defaultScopes` (Java lists), `identity`, `requestProperties`, `clientProperties` | `validateScope` (requested / allowed / available / default scopes), `client`, `request` | Named function `validateAccessTokenScope` AM calls after the body; AM grants exactly the list it returns (no intersection); `throwInvalidScope` is the 400 denial | `expect.validateScope`: `granted`, `invalidScope`, `accepted` |
+| `OAUTH2_MAY_ACT` (**implemented**)                    | `token` (five methods: `getField`, `getAct`, `getMayAct`, `setAct`, `setMayAct`), `scopes` (a Java list), `identity`, `requestProperties`, `clientProperties` | `client`, `scopes`, `request`, `identity`, `accessToken`                                | Top-level body; AM stamps `may_act` and `act` after the script; a thrown script is HTTP 500 and discards prior sets                                                                                         | `expect.mayAct`: `mayAct`, `act`, `scope`, `issued`, `refusal`                           |
 | `LIBRARY` next-gen only (**implemented**) | library scope (`require`, `logger`, `openidm`, `httpClient`, `secrets`, `systemEnv`, `utils`, …); the caller's bindings are absent; `scriptName` and `logger.getName()` are the caller's | `library` (`export`, `args`, `callerContext`); `realm`, `scriptName`, `loggerScriptId`, `cookieName` | The case script is the library body. An empty caller `require()`s it and calls the named export as a method. A throw, including one while the body loads, is the result | `expect.returns` (`returned` / `thrown`, fail-closed), plus shared channels |
 
 Shared bindings per context come from the binding descriptors in
@@ -127,7 +123,7 @@ author's view. The result is the completion value, read through the same
 `completion: true` hook as OIDC claims. Unlike the token contexts, this one
 binds the node state, so `sharedState` / `transientState` are accepted in
 `given` and judged in `expect` by the decision node's state verdict. The
-legacy context id is also used by `SocialProviderHandlerNodeV2`'s own `script`,
+context id is also used by `SocialProviderHandlerNodeV2`'s own `script`,
 which binds `normalizedProfile` and returns a JsonValue. That invocation was
 measured (docs/api/12) but is not emulated; a case for it would need its own
 fixture (the normalised profile) and result shape.
@@ -169,9 +165,7 @@ surface; both engines exist (measured 2026-11-10), and the channel is
 `expect.mayAct`, holding `mayAct`, `act`, `scope`, `issued` and `refusal`. A key
 present with `null` is a JSON-null claim; an omitted key is an absent claim. AM
 stamps both claims after the body, so the harvest is appended to the source
-rather than read through the completion hook. Legacy `setMayAct` takes a
-`JsonValue`: a plain object is the HTTP 500 `docs/api/22` recorded, and a
-`JsonValue` is issued (`docs/api/99`, 2026-11-10).
+rather than read through the completion hook.
 
 ## The LIBRARY context in detail
 

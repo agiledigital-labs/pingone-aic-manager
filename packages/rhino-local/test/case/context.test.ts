@@ -72,7 +72,7 @@ describe("case.context selector", () => {
     expect(() => validateCase({ name: "n", script: "s", context: "NOPE", expect: { outcome: "true" } }))
       .toThrow(/must be one of/);
     expect(() => validateCase({ name: "n", script: "s", context: `${ATM}_NEXT_GEN`, expect: {} }))
-      .toThrow(/drop the _NEXT_GEN suffix and set given\.engine/);
+      .toThrow(/drop the _NEXT_GEN suffix/);
   });
 
   it("validates the token seeds by shape", () => {

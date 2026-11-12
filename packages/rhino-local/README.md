@@ -16,13 +16,33 @@ throw is a [harness fault](#harness-faults-refusals-a-script-cannot-catch)
 
 Implemented (still fail-loud for missing fixtures and for every method the
 overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
-legacy `sharedState`/`transientState` when `given.engine === "legacy"`,
 request maps, `outcome` / `action.goTo`, `logger`, `openidm`, `httpClient`,
 `callbacksBuilder` (the six authenticate-response types), `systemEnv`,
 `idRepository.getIdentity` (reads, and `store()` as `identityWrites`), next-gen `require()` (CommonJS eval of seeded
-library bodies; a missing id throws naming `given.libraries`), legacy
+library bodies; a missing id throws naming `given.libraries`), and an inert
 `JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
 in `cases/`.
+
+## Breaking change: the legacy (V1) script engine is no longer emulated
+
+The emulator runs next-gen scripts only. Legacy decision nodes and the legacy
+variants of the OAuth2 access-token, OIDC claims, social IdP, config provider,
+validate-scope and may-act contexts get upgraded to next-gen in AM, not
+patched, and the emulator is moving its next-gen bindings onto real Java, so a
+second engine would be a second mechanism to maintain.
+
+- A case with `given.engine: "legacy"` fails `validateCase` / `defineCase` /
+  `runCase` at once, with a message naming the removal. It never falls through
+  to next-gen. Drop `given.engine` (or leave it as `"next-gen"`) after
+  upgrading the script.
+- `ENGINES` is now `["next-gen"]` and `Engine` is `"next-gen"`.
+- The legacy-only bindings are gone: `sharedState`/`transientState` on a
+  decision node, `JsonValue` and `UserInfoClaims` construction, the legacy
+  `Action.send` importer path, and the legacy variants of every context above.
+- The conformance catalog rows named `<context>.legacy.<binding>` are removed;
+  `<context>.next.<binding>` ids are unchanged.
+- The JavaScript context ids (`OAUTH2_ACCESS_TOKEN_MODIFICATION`, ...) are
+  unchanged and mean the next-gen context.
 
 ## Breaking change in 0.4.0-emulator.1: request values are Java lists
 
@@ -65,8 +85,7 @@ var copy = [];
 for (var i = 0; i < values.size(); i++) copy.push(String(values.get(i)));
 ```
 
-`requestCookies` values are still plain strings (measured). The legacy engine
-was not measured and keeps the older array shape.
+`requestCookies` values are still plain strings (measured).
 
 ### `openidm` query results and relationship arrays are Java lists too
 
@@ -221,8 +240,7 @@ wherever the accepted counts have a basis: measured on AIC
 (`existingSession.get`, `utils.crypto.randomUUID`, `nodeState.mergeShared`) or read from AIC's binding
 introspection (`docs/api/bindings/scripted-decision-next.json`). Where the
 harness's range is its own guess, the call is the harness fault
-`arity-unknown/<binding.method>` instead, and so is every argument-count check
-on the legacy engine, which has no introspection. The same fault covers a count
+`arity-unknown/<binding.method>` instead, The same fault covers a count
 that only a reading of the introspection decides: where an overload's last
 parameter is listed as an `array`, it may be Java varargs, which Rhino calls
 with any count from one fewer upwards. So `logger.trace` with four or more
@@ -326,8 +344,7 @@ host per `aic.id`, as for the other leased resources.
 Before blanking or deleting a library it created, the lease checks its current
 source and ownership fields; if they changed, it leaves the library and recovery
 journal in place and reports a cleanup warning. It never blanks or deletes a
-reused library. Legacy scripts
-cannot use libraries, and `given.engine: "legacy"` with `libraries` is rejected.
+reused library.
 
 ### Callback suspension
 
@@ -335,7 +352,7 @@ On a next-gen pass, queued callbacks make AM pause and wait for a reply. They
 win even if the script also called `action.goTo()`: the pass has no outcome.
 Expect `outcome: null` and the emitted callbacks, then use `.step({ reply })`
 to submit a response and run the next pass. A pass with no queued callbacks
-keeps its `goTo` outcome. Legacy `Action.send` behavior is separate.
+keeps its `goTo` outcome.
 
 `action.putSessionProperty` and `removeSessionProperty` produce a judged
 `sessionProperties` state diff. Declare `added`, `changed`, and `removed` keys
@@ -862,7 +879,7 @@ In next-gen decision-node scripts, local `logger.getName()` uses the measured
 With an AIC lease, the ID is its deterministic subject UUID. A local-only
 suite uses `<unseeded-script-id>` as an obvious placeholder; a raw `Case` can
 provide `given.loggerScriptId`. The logger-name form for other script contexts
-has not been measured, and the legacy mock keeps its earlier bare name.
+has not been measured.
 
 ### Match a value's shape
 
@@ -992,9 +1009,8 @@ not shipped with the package.
 
 A case runs a decision-node script unless it names another script context.
 `context: "OAUTH2_ACCESS_TOKEN_MODIFICATION"` runs an OAuth2 access-token
-modification script instead, on either engine (`given.engine`; the legacy
-engine is AM's `OAUTH2_ACCESS_TOKEN_MODIFICATION`, next-gen is its
-`_NEXT_GEN` twin). A case without `context` behaves exactly as before.
+modification script instead (the next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`
+engine). A case without `context` behaves exactly as before.
 
 ```ts
 import { defineCase } from "@agiledigital/pingone-aic-script-tester/case";
@@ -1031,7 +1047,7 @@ headers and the request URI.
 Any change the case does not declare fails the verdict, as every other channel
 does, unless `allowUndeclared: { accessToken: true }`. `issued` defaults to
 `true`. A script can return normally and still leave AM unable to issue the
-token: measured on both engines, `accessToken.removeScopes()` makes the token
+token: measured, `accessToken.removeScopes()` makes the token
 endpoint answer 500 with `Cannot invoke "java.util.Collection.size()" because
 "c" is null`. Such a run reports that refusal; declare `issued: false` to
 expect it. An uncaught throw fails the run with `CaseRunError`, as AM fails the
@@ -1039,16 +1055,9 @@ token request. `expect.outcome` and `outcomes` are refused: this script decides
 nothing. `logs`, `http` and `openidm` are judged as usual.
 
 **Bindings.** Only measured members are emulated (2026-08-27 and 2026-11-10,
-`docs/api/12-script-bindings-matrix.md`). The binding set differs by engine:
-next-gen has no `session` at all (reading it is a `ReferenceError`), and legacy
-has `session` (`null` for a `client_credentials` token) but no `openidm`,
-`secrets`, `utils`, `require`, `cookieName` or the other next-gen extras.
+`docs/api/12-script-bindings-matrix.md`). There is no `session` (reading it is a `ReferenceError`).
 Decision-node bindings such as `nodeState`, `action` and `callbacksBuilder` are
-not defined. Legacy getters return real `java.lang.String`s, so `getClientId() ===
-"widget-client"` is `false` there and `==` is `true`, as on AIC; a top-level
-`var` holding one reads back as a JS string, also as on AIC. Only their
-measured members answer (`length()`, `toString()`, `==`, String conversion);
-`substring`, `slice` and the rest fault. Every member
+not defined. Every member
 nobody measured raises a harness fault, `oauth2-token-unmeasured/<binding>.<member>`,
 which fails the run and is tallied. `docs/rhino-local-gaps.md` lists what is
 approximated.
@@ -1065,16 +1074,11 @@ workspace's `oauth2-access-token.d.ts` and `oauth2-access-token-ng.d.ts`.
 
 ### OIDC claims scripts
 
-`context: "OIDC_CLAIMS"` runs an OIDC claims script, on either engine (legacy
-is AM's `OIDC_CLAIMS`, next-gen is `OIDC_CLAIMS_NEXT_GEN`). The script's
+`context: "OIDC_CLAIMS"` runs an OIDC claims script (next-gen,
+`OIDC_CLAIMS_NEXT_GEN`). The script's
 result is its **completion value**, the value of its last expression, as AM
-reads it:
-
-- **next-gen**: `({ values: { … }, compositeScopes: { … } })`, with
-  `compositeScopes` optional;
-- **legacy**: `new org.forgerock.oauth2.core.UserInfoClaims(values,
-  compositeScopes)`, where `values` is a Java map and `compositeScopes` a Java
-  map or `null`.
+reads it: `({ values: { … }, compositeScopes: { … } })`, with
+`compositeScopes` optional.
 
 ```ts
 defineCase({
@@ -1092,8 +1096,7 @@ defineCase({
 
 **Fixtures.** Every one is optional. `identity` is the user (name, universal
 id, `exists`, attributes); the name defaults to `rhino-local-user`. `scopes`
-defaults to `["openid"]`. `client` is what `clientProperties` reports (legacy
-has no `redirectUris`). `request` is `requestProperties`. By default it is a
+defaults to `["openid"]`. `client` is what `clientProperties` reports. `request` is `requestProperties`. By default it is a
 password-grant token request, with AM's filtering applied: no `password` and
 no `client_secret`. To model the userinfo endpoint, which runs the same script
 a second time, give the userinfo URI with empty params. `oidc` holds the
@@ -1115,29 +1118,19 @@ or composite-scopes map that the case does not declare fails the verdict
 unless `allowUndeclared: { oidc: true }` is set. The id token is never called
 undeclared, because it is derived from the values.
 
-AM fails the token request in two cases the script itself survives. On legacy,
-a completion value that is a Java map rather than a `UserInfoClaims` is 500
-`Cannot cast java.util.LinkedHashMap to …UserInfoClaims`, and the next-gen
-`{values, compositeScopes}` object is 500 `Error running OIDC claims plugin`. The run records that refusal; declare
-`issued: false` to expect it. An uncaught throw fails the run with
-`CaseRunError`. On both engines, a completion value of `undefined`, or (on
-next-gen) an object without `values`, is a 200 with no script claims.
+An uncaught throw fails the run with
+`CaseRunError`. A completion value of `undefined`, or an object without
+`values`, is a 200 with no script claims. A refused token request is recorded;
+declare `issued: false` to expect it.
 `expect.outcome` is refused.
 
 **Bindings.** Only measured members are emulated (2026-11-10,
 `docs/api/12-script-bindings-matrix.md`):
 
-- **Next-gen** `claims` is a JS-friendly map: its keys enumerate, `===`
+- `claims` is a JS-friendly map: its keys enumerate, `===`
   works, and `get`/`put`/`remove`/`containsKey` are available. Changing it
   changes nothing unless the script returns it.
-- **Legacy** `claims` is a real `java.util.LinkedHashMap` of real Java strings,
-  so `claims.get("sub") == identity.getName()` is true and `===` is false, as
-  on AIC. Only the measured map members answer (`get`, `containsKey`, `put`,
-  `remove`, `size()`, entry reads, `for...in`); `clear()` and the rest fault.
-  Legacy also binds `claimObjects`, `requestedTypedClaims`, `session`
-  (`null` on a password grant) and a Debug `logger`
-  (`message`/`warning`/`error`).
-- **Neither engine** binds `accessToken` or the decision-node bindings.
+- `accessToken` and the decision-node bindings are not bound.
 
 Every unmeasured member raises the harness fault
 `oidc-claims-unmeasured/<binding>.<member>`. So does returning a claim AM
@@ -1151,13 +1144,10 @@ An OIDC case runs locally only. The types are exported from `./case`:
 ### Social IdP profile transformation scripts
 
 `context: "SOCIAL_IDP_PROFILE_TRANSFORMATION"` runs a social identity
-provider's `transform` script, on either engine (legacy is AM's
-`SOCIAL_IDP_PROFILE_TRANSFORMATION`, next-gen is
+provider's `transform` script (next-gen,
 `SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN`). The script turns the provider's
 raw profile into the normalised profile that `SocialProviderHandlerNodeV2`
-reads. Its result is its **completion value**: a plain object on either
-engine, or on legacy also `new org.forgerock.json.JsonValue(map)` over a Java
-map.
+reads. Its result is its **completion value**: a plain object.
 
 ```ts
 defineCase({
@@ -1187,38 +1177,26 @@ tell apart. A top-level `undefined` property arrives as `null`. If the script
 evaluates to `undefined`, `null` or a string, AM fails the journey with 401
 Login failure. The run records that refusal; declare `accepted: false` to
 expect it. An uncaught throw fails the run with `CaseRunError`, as it fails
-the journey. Node-state writes (`nodeState.putShared`/`putTransient`, and on
-legacy `sharedState.put`) persist to later nodes and are judged through
+the journey. Node-state writes (`nodeState.putShared`/`putTransient`) persist to later nodes and are judged through
 `expect.sharedState` / `expect.transientState`, fail-closed.
 `expect.outcome` is refused.
 
 **Bindings.** Only measured members are emulated (2026-11-10,
 `docs/api/12-script-bindings-matrix.md`):
 
-- **Next-gen** `rawProfile` is a Java map with map access: `rawProfile.sub`
+- `rawProfile` is a Java map with map access: `rawProfile.sub`
   and `rawProfile.get("sub")` are JS strings, a missing key reads `undefined`
   by dot and `null` by `get`, and `keys()`/`size()` work. `nodeState.keys()`
   fails with AIC's class-shutter error. `httpClient`, `openidm`, `secrets`,
   `utils`, `require` and the other next-gen shared bindings are the decision
   node's. `sharedState`, `transientState` and `callbacks` are not bound.
-- **Legacy** `rawProfile` is a JsonValue: `rawProfile.sub` is `undefined`. Use
-  `rawProfile.get("sub").getObject()`, which is a Java string, or
-  `isDefined()`, `keys()` and `size()`. `nodeState.get()` also answers a
-  JsonValue, and `nodeState.keys()` lists the keys the state held when the
-  script started. Legacy binds `sharedState`, `transientState` and
-  `callbacks`, but not `httpClient`, `openidm`, `secrets`, `utils`, `require`
-  or `cookieName`.
-- **Neither engine** binds `existingSession` (a `ReferenceError`, although the
-  next-gen descriptor lists it), `normalizedProfile`, `action` or `outcome`.
+- `existingSession` (a `ReferenceError`, although the
+  descriptor lists it), `normalizedProfile`, `action` and `outcome` are not bound.
 
 Only string profile values were measured, so reading any other value raises
 the harness fault `social-idp-unmeasured/rawProfile.<key>`. Every other
 unmeasured member raises `social-idp-unmeasured/<binding>.<member>`, as does a
 result of any other kind.
-
-The legacy context id is shared with `SocialProviderHandlerNodeV2`'s own
-`script`, which binds `normalizedProfile`. That second invocation is not
-emulated.
 
 A social IdP case runs locally only. The types are exported from `./case`:
 `SocialIdpCaseInit`, `SocialIdpSeed`, `SocialIdpExpect` and the recorded
@@ -1227,11 +1205,9 @@ A social IdP case runs locally only. The types are exported from `./case`:
 ### Config provider node scripts
 
 `context: "CONFIG_PROVIDER_NODE"` runs a Configuration Provider node's
-script, on either engine (legacy is AM's `CONFIG_PROVIDER_NODE`, next-gen is
-`CONFIG_PROVIDER_NODE_NEXT_GEN`). The script builds the configuration of the
+script (next-gen, `CONFIG_PROVIDER_NODE_NEXT_GEN`). The script builds the configuration of the
 node the Configuration Provider wraps. AM reads its **`config` global** after
-the script ends: a plain object on either engine, or on legacy also a
-`java.util.HashMap`. A script that only evaluates to a map is refused.
+the script ends: a plain object. A script that only evaluates to a map is refused.
 
 ```ts
 defineCase({
@@ -1272,16 +1248,9 @@ wrapped node decides the outcome.
   nothing to what the wrapped node shows, and `action.goTo(name)` is accepted
   and routes nothing. Every other member of those three raises a harness
   fault.
-- **Legacy** binds `nodeState`, `idRepository`, `requestHeaders`,
-  `requestParameters`, `realm`, `scriptName`, `logger`, `httpClient`,
-  `secrets` and `systemEnv`, and nothing else: not `sharedState`,
-  `transientState`, `callbacks`, `callbacksBuilder`, `action`, `openidm`,
-  `utils`, `require` or `cookieName`. `nodeState.get()` answers a JsonValue
-  (`String(v)` is `"hello"`, `42.0`; `v.a` is `undefined`), and
-  `nodeState.keys()` is live: it lists a key put earlier in the same script.
-- **Neither engine** binds `identity`, `session` or `cacheManager`.
+- `identity`, `session` and `cacheManager` are not bound.
   `existingSession` is a `ReferenceError` on a request without a session
-  cookie, although the next-gen descriptor lists it; with one it was not
+  cookie, although the descriptor lists it; with one it was not
   measured, so `given.existingSession` is refused.
   `requestHeaders.get(name)` and `requestParameters.get(name)` are Java lists
   (`[v1]`), and `null` for an absent name.
@@ -1302,8 +1271,7 @@ A config provider case runs locally only. The types are exported from
 ### OAuth2 validate scope scripts
 
 `context: "OAUTH2_VALIDATE_SCOPE"` runs an OAuth2 client's validate scope
-script, on either engine (legacy is AM's `OAUTH2_VALIDATE_SCOPE`, next-gen is
-`OAUTH2_VALIDATE_SCOPE_NEXT_GEN`). AM runs the script's body, then calls its
+script (next-gen, `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`). AM runs the script's body, then calls its
 global **`validateAccessTokenScope()`** with no arguments and grants **exactly
 the list it returns**: AM does not intersect it with the request, so a script
 can widen a grant, even with a scope the client does not hold.
@@ -1332,19 +1300,16 @@ when the function returns `[]`, `null` or `undefined` (HTTP 403, "The user has
 declined authorization"), a string or a plain object (HTTP 500), or a list
 holding a number (HTTP 500, a `Double` cast), or when there is no
 `validateAccessTokenScope` function at all (HTTP 500). The run records those
-refusals; declare `accepted: false` to expect one. On next-gen,
-`scopeValidatorHelper.throwInvalidScope(message)` is AM's invalid-scope denial
+refusals; declare `accepted: false` to expect one. `scopeValidatorHelper.throwInvalidScope(message)` is AM's invalid-scope denial
 (HTTP 400 with `message` as the `error_description`, verbatim); declare it as
-`invalidScope: "<message>"`. On legacy the same denial is
-`throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(message)`,
-which on next-gen is a 500. Any other uncaught throw fails the run with
+`invalidScope: "<message>"`. Any other uncaught throw fails the run with
 `CaseRunError`, as it fails the token request with HTTP 500. A denial the
 script catches itself denies nothing.
 
 **Bindings.** Only measured members are emulated (2026-11-10,
 `docs/api/12-script-bindings-matrix.md`):
 
-- **Next-gen** binds `requestedScopes`, `allowedScopes`, `availableScopes`
+- `requestedScopes`, `allowedScopes`, `availableScopes`
   and `defaultScopes` as Java lists (`[object JavaList]`) of JS strings:
   `length`, `size()`, `[i]`, `contains()`, `indexOf()`, `isEmpty()`,
   `forEach()`, `toArray()` (not a JS array), `JSON.stringify`,
@@ -1357,15 +1322,7 @@ script catches itself denies nothing.
   `clientProperties`, `logger`, `httpClient`, `secrets`, `systemEnv`,
   `realm`, `scriptName`, `cookieName`, `openidm`, `utils`, `emailService`,
   `jwtAssertion`, `jwtValidator`, `policy` and `require`.
-- **Legacy** binds only `requestedScopes` (a `java.util.HashSet`),
-  `allowedScopes` and `defaultScopes` (`java.util.TreeSet`s), `logger`,
-  `realm`, `scriptName` and `systemEnv`. The sets answer `size()`,
-  `contains()`, `isEmpty()`, `toArray()`, `forEach()` (of JS strings),
-  `String(v)`, `JSON.stringify`, and `add()` on the first two; `[i]` is AIC's "no public
-  instance field or method" error. There is no `availableScopes`,
-  `scopeValidatorHelper`, `identity`, `requestProperties` or
-  `clientProperties`.
-- **Neither engine** binds the request maps, node state, callbacks, `session`
+- Not bound: the request maps, node state, callbacks, `session`
   or `existingSession`.
 
 A returned value of a kind not measured raises the harness fault
@@ -1383,7 +1340,7 @@ and the recorded `ValidateScopeEffect`.
 ### OAuth2 may act scripts
 
 `context: "OAUTH2_MAY_ACT"` runs an OAuth2 client's may-act script, on either
-engine (legacy is AM's `OAUTH2_MAY_ACT`, next-gen is `OAUTH2_MAY_ACT_NEXT_GEN`).
+(next-gen, `OAUTH2_MAY_ACT_NEXT_GEN`).
 AM runs the script's body and then, if it did not throw, stamps `may_act` and
 `act` from what the script stored on `token`. The body's return value is
 ignored. A script that throws is HTTP 500 (`Error running may_act script`) and a
@@ -1417,12 +1374,11 @@ grant, and an unread member would otherwise be a fixture the script never sees.
 **Assertions.** `expect.mayAct.mayAct` is the `may_act` claim and
 `expect.mayAct.act` is the `act` claim. A key present with the value `null`
 means the claim was JSON null; omitting the key means the claim was absent.
-Those are different on this context: next-gen `token.setMayAct(null)` writes
-JSON null, and legacy `token.setMayAct(null)` clears the claim so it is absent.
+On this context `token.setMayAct(null)` writes
+JSON null.
 A claim the case does not declare fails the verdict unless
 `allowUndeclared: { mayAct: true }`. `scope` is the issued token's scopes,
-compared as a set; it defaults to the request's scopes, and legacy
-`token.setScope` replaces them. `issued: false` expects no token (HTTP 500) and
+compared as a set; it defaults to the request's scopes. `issued: false` expects no token (HTTP 500) and
 cannot be combined with `mayAct`, `act` or `scope`. `refusal` is the
 `error_description`. A `Date` stored as a direct property of the claim does not
 throw inside the script; AM then fails the write with its Jackson message, which
@@ -1431,7 +1387,7 @@ throw inside the script; AM then fails the write with its Jackson message, which
 **Bindings.** Only measured members are emulated (2026-11-10,
 `docs/api/12-script-bindings-matrix.md`):
 
-- **Next-gen** `token` has five methods: `getField`, `getAct`, `getMayAct`,
+- `token` has five methods: `getField`, `getAct`, `getMayAct`,
   `setAct` and `setMayAct`. `setMayAct` and `setAct` take one plain object,
   stored by reference, or `null` (JSON null). A string, number, boolean or a
   second argument is `Can't find method`; a function or an array, where a map is
@@ -1442,23 +1398,7 @@ throw inside the script; AM then fails the write with its Jackson message, which
   same maps as access-token modification. The decision-node host bindings
   (`httpClient`, `openidm`, `require`, …) stay bound. `session` is not bound.
   `cookieName` is a string; the capture records the type, not the value.
-- **Legacy** `token.setMayAct` and `setAct` take an
-  `org.forgerock.json.JsonValue`, or `null`, which clears the claim. A plain
-  object is `Can't find method` and the token request is HTTP 500. Construct the
-  value with `new org.forgerock.json.JsonValue(map)` over a
-  `java.util.LinkedHashMap` (`new` and one argument are required; `null` and a
-  string are also accepted). `getMayAct()` of an absent claim is a null
-  JsonValue, whose `size()` is `0`, not JS `null`. `String(token)` is a
-  1300-character string with the `eyJ` prefix and two dots. `scopes` is a
-  `java.util.HashSet`. `session` is bound (`typeof` is `object`); the capture
-  does not show whether the value is `null`, and the emulator binds `null`.
-  There is no `cookieName`, `require` or `httpClient`. `requestProperties` and
-  `clientProperties` are bound; `grant_type`'s first element and the request URI
-  are Java strings, so `===` against a literal is `false`.
-- **Neither engine** binds `accessToken`, the node state, callbacks, or the
-  request maps under the names `requestHeaders` and `requestParameters`.
-  `typeof context` throws
-  `Access to Java class "javax.script.SimpleScriptContext" is prohibited`.
+
 
 An unmeasured member raises `oauth2-may-act-unmeasured/<binding>.<member>`.
 
@@ -1471,8 +1411,6 @@ A may-act case runs locally only. The types are exported from `./case`:
 ### Library scripts
 
 `context: "LIBRARY"` calls an export of a next-gen library script directly.
-There is no legacy engine: a legacy decision node and a legacy
-token-modification script both throw `ReferenceError: "require" is not defined.`
 The case's `script` is the library body. The harness `require()`s it through the
 same loader a decision node uses and calls `given.library.export` with
 `given.library.args` (default `[]`). The call is a method call, so `this` is the
@@ -1648,7 +1586,7 @@ What reuse guarantees:
   `java.lang.Thread` can change the JVM itself (a default timezone, a system
   property, a thread it started), and a normal finish does not undo that. The
   next-gen decision-node shutter, which is on by default, hides all of those
-  classes. Any job without it (a `legacy`-engine case, `classShutter: false`,
+  classes. Any job without it (`classShutter: false`,
   an IDM-engine script, or a raw `runner.eval` with no `classAllowList`) marks
   its JVM as not lendable, so the file that ran it gets a JVM to itself and the
   next file starts a new one, as it would with no pool.
@@ -2515,8 +2453,7 @@ IDM. Callbacks use the tenant `{authId, callbacks}` output/input envelopes;
 the node runs again on resume. Shared state survives, transient survives
 callback-free edges and is dropped at a round trip. Inner trees share shared
 state, isolate their transient state and restore outer transient state. Inner
-exceptions, callbacks and nested inner trees remain missing. Legacy scripts,
-unsupported bindings, session-property actions, `noSession`, unsupported tree
+exceptions, callbacks and nested inner trees remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
 flags and unmocked HTTP are fatal missing behavior, even if script catches or
 `finally` tries to hide the failure. So is every `rhino-local:` diagnostic the
 binding runtime raises for behaviour it does not model (an argument count whose
