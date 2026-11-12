@@ -137,8 +137,8 @@ describe("node state keys are a Java set and a map's values a Java list", () => 
       .toBe("0|true|[]|0|[]");
   }, 60_000);
 
-  // A decision node always has AM's own keys, so its set is never empty; an empty one is asked
-  // of the set itself.
+  // On a tenant a decision node always holds the engine's own keys, so an empty key set can't
+  // be reached by seeding; the test empties the set itself.
   it("keys() minus everything is an empty set", async () => {
     expect(await answer("empty keys", `var k = nodeState.keys(); k.clear(); return [k.size(), k.isEmpty(), String(k), k.iterator().hasNext()].join("|");`, {}))
       .toBe("0|true|[]|false");
