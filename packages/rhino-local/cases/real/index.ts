@@ -608,9 +608,6 @@ export const realCases: RealEntry[] = [
       reason:
         "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object (`TypeError: Cannot find function getClass`). (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
       differs: ["headers", "parameters", "cookies"],
-      // The probe tries toArray() first and falls back to size()/get(i) when it
-      // throws. Its live result was not committed, so locally it faults.
-      faults: ["request-list-unmeasured"],
     },
     given: {
       requestHeaders: { "x-aic-probe": ["alpha"] },

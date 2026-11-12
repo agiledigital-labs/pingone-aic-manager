@@ -125,21 +125,19 @@ final class AmClassShutter implements ClassShutter {
       }
     }
     for (String prefix : prefixes) {
-      if (fullClassName.startsWith(prefix) || (prefix.equals(ADAPTERS) && adapter(fullClassName))) {
+      if (fullClassName.startsWith(prefix)) {
         return true;
       }
     }
-    return false;
+    return adapter(fullClassName) && !namedByScript();
   }
 
   /**
-   * The descriptor's name for the class a script function becomes when it is passed where Java
-   * wants an interface ({@code list.forEach(function (x) {...})}). This JVM puts the same classes
-   * in {@code jdk.proxyN}, so a list that admits the descriptor's package admits those.
+   * The class a script function becomes when it is passed where Java wants an interface ({@code
+   * list.forEach(function (x) {...})}). Measured: {@code scopes.forEach(fn)} runs in the OAuth2
+   * contexts, whose allow-lists name no such class, so it is the engine's own and never hidden.
    */
-  private static final String ADAPTERS = "com.sun.proxy.$";
-
   private static boolean adapter(String fullClassName) {
-    return fullClassName.matches("jdk\\.proxy\\d*\\.\\$Proxy\\d+");
+    return fullClassName.matches("(jdk\\.proxy\\d*|com\\.sun\\.proxy)\\.\\$Proxy\\d+");
   }
 }

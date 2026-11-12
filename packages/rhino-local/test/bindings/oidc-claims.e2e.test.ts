@@ -177,23 +177,21 @@ describe("OIDC claims matches the live capture", () => {
 
   const claimsReturn = (probe: string) => `({ values: { probe: ${probe} } });`;
 
-  // Sol ctx r10 P2-1. No capture measured a size-zero request value. An empty
-  // claimsLocales list is a different list and does not permit this one.
-  it("r10 P2-1 a size-zero request value's length is a named fault", async () => {
-    const id = "oidc-claims-unmeasured/requestProperties";
-    expectHarnessFault(id);
-    const error = await runCase(runner, defineCase({
-      name: `r10 empty request ${engine}`,
+  // A list is a real Java list at every size, so an empty one answers as Java does.
+  const answers = async (name: string, probe: string, userinfo: { probe: string | boolean }, given: Record<string, unknown> = { scopes: [] }) => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `${name} ${engine}`,
       context: "OIDC_CLAIMS",
-      // The length is read while building the return.
-      script: claimsReturn("String(requestProperties.requestParams.x.length)"),
-      given: { engine, request: { params: { x: [] } } },
-      expect: { oidc: { userinfo: { probe: "0" } } },
-    })).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-    expect(faults.map((f) => f.id)).toContain(id);
-    expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
+      script: claimsReturn(probe),
+      given: { engine, ...given },
+      expect: { oidc: { userinfo } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.oidc!.userinfo).toEqual(userinfo);
+  };
+
+  it("a size-zero request value has length 0", async () => {
+    await answers("empty request", "String(requestProperties.requestParams.x.length)", { probe: "0" }, { request: { params: { x: [] } } });
   }, 60_000);
 
   it("r10 P2-1 an empty claimsLocales list still answers length and String", async () => {
@@ -208,22 +206,8 @@ describe("OIDC claims matches the live capture", () => {
     expect(effects.oidc!.userinfo).toEqual({ probe: "0|[]" });
   }, 60_000);
 
-  // Sol ctx r11 P2-1. Empty claimsLocales, redirect and a missing attribute
-  // do not measure scopes. The other three empty surfaces stay.
-  it("r11 P2-1 an empty scopes list's surface is a named fault", async () => {
-    const id = "oidc-claims-unmeasured/list";
-    expectHarnessFault(id);
-    const error = await runCase(runner, defineCase({
-      name: `r11 empty scopes ${engine}`,
-      context: "OIDC_CLAIMS",
-      script: claimsReturn("String(scopes) + \"|\" + scopes.length"),
-      given: { engine, scopes: [] },
-      expect: { oidc: { userinfo: { probe: "[]|0" } } },
-    })).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-    expect(faults.map((f) => f.id)).toContain(id);
-    expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
+  it("an empty scopes list renders [] and has length 0", async () => {
+    await answers("empty scopes", "String(scopes) + \"|\" + scopes.length", { probe: "[]|0" });
   }, 60_000);
 
   it("r11 an empty missing-attribute list still answers length and String", async () => {
@@ -251,38 +235,10 @@ describe("OIDC claims matches the live capture", () => {
   }, 60_000);
 
 
-  // Sol ctx r12 P2-1. scopes was captured at size 4. An empty toArray() is a
-  // plain array today, and contains() answers, so both skip the empty grant.
-  const oidcFault = async (name: string, probe: string, id: string, userinfo: { probe: string | boolean }) => {
-    expectHarnessFault(id);
-    const error = await runCase(runner, defineCase({
-      name: `${name} ${engine}`,
-      context: "OIDC_CLAIMS",
-      script: claimsReturn(probe),
-      given: { engine, scopes: [] },
-      expect: { oidc: { userinfo } },
-    })).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-    expect(faults.map((f) => f.id)).toContain(id);
-    expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
-  };
-
-  it("r12 P2-1 length of an empty scopes.toArray() is a named fault", async () => {
-    await oidcFault("r12 toArray length", "String(scopes.toArray().length)",
-      "oidc-claims-unmeasured/list.toArray()", { probe: "0" });
+  it("an empty scopes list: toArray() has length 0, contains() is false", async () => {
+    await answers("empty toArray length", "String(scopes.toArray().length)", { probe: "0" });
+    await answers("empty contains", "scopes.contains(\"read\")", { probe: false });
   }, 60_000);
-
-  it("r12 P2-1 JSON of an empty scopes.toArray() is a named fault", async () => {
-    await oidcFault("r12 toArray json", "JSON.stringify(scopes.toArray())",
-      "oidc-claims-unmeasured/list.toArray()", { probe: "[]" });
-  }, 60_000);
-
-  it("r12 P2-1 contains of an empty scopes list is a named fault", async () => {
-    await oidcFault("r12 scopes contains", "scopes.contains(\"read\")",
-      "oidc-claims-unmeasured/list", { probe: false });
-  }, 60_000);
-
 });
 
 describe("one JVM running OIDC claims cases between other contexts' cases", () => {

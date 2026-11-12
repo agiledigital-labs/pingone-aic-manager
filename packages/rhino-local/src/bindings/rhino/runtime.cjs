@@ -1032,8 +1032,17 @@ function __rhinoLocalJavaForm(value) {
   return String(value);
 }
 
+// The list a test without a JVM gets: an array carrying the Java list's own
+// members, with every Array.prototype method a Java list lacks shadowed away.
 function __rhinoLocalListDouble(items) {
   var list = items.slice();
+  var names = Object.getOwnPropertyNames(Array.prototype);
+  var i;
+  for (i = 0; i < names.length; i += 1) {
+    if (names[i] !== "constructor" && names[i] !== "length" && names[i] !== "forEach" && names[i] !== "indexOf") {
+      __rhinoLocalHide(list, names[i], undefined);
+    }
+  }
   __rhinoLocalHide(list, "size", function () { return this.length; });
   __rhinoLocalHide(list, "get", function (index) {
     if (index < 0 || index >= this.length) {
@@ -1042,10 +1051,10 @@ function __rhinoLocalListDouble(items) {
     return this[index];
   });
   __rhinoLocalHide(list, "isEmpty", function () { return this.length === 0; });
-  __rhinoLocalHide(list, "contains", function (value) { return this.indexOf(value) !== -1; });
-  __rhinoLocalHide(list, "add", function (value) { this.push(value); return true; });
-  __rhinoLocalHide(list, "toArray", function () { return this.slice(); });
-  __rhinoLocalHide(list, "toString", function () { return __rhinoLocalJavaForm(this); });
+  __rhinoLocalHide(list, "contains", function (value) { return Array.prototype.indexOf.call(this, value) !== -1; });
+  __rhinoLocalHide(list, "add", function (value) { Array.prototype.push.call(this, value); return true; });
+  __rhinoLocalHide(list, "toArray", function () { return Array.prototype.slice.call(this); });
+  __rhinoLocalHide(list, "toString", function () { return __rhinoLocalJavaForm(Array.prototype.slice.call(this)); });
   __rhinoLocalHide(list, __rhinoLocalListKey, list);
   return list;
 }
@@ -1079,7 +1088,7 @@ function __rhinoLocalListItems(value) {
     return __rhinoLocalJavaListHost.items(value);
   }
   own = Object.getOwnPropertyDescriptor(value, __rhinoLocalListKey);
-  return own !== undefined && own.value === value ? value.slice() : null;
+  return own !== undefined && own.value === value ? Array.prototype.slice.call(value) : null;
 }
 
 

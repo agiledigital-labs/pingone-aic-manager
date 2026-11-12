@@ -41,13 +41,6 @@ const ROWS: Row[] = [
     script: caught(`accessToken.setField("g", { get x() { return 1; } });`), fault: "oauth2-token-unmeasured/accessToken.setField()" },
   { name: "P2-1 setAct with a Date", script: caught(`accessToken.setAct(new Date(0));`),
     fault: "oauth2-token-unmeasured/accessToken.setAct(object)" },
-  // P2-2: list serialisation and borrowed builtins.
-  { name: "P2-2 JSON.stringify(scopes)", script: caught(`accessToken.setField("out", JSON.stringify(scopes));`),
-    fault: "oauth2-token-unmeasured/list" },
-  { name: "P2-2 [].concat(scopes)", script: caught(`accessToken.setField("out", [].concat(scopes).length);`),
-    fault: "oauth2-token-unmeasured/list" },
-  { name: "P2-2 Array.prototype.map.call(scopes)",
-    script: caught(`Array.prototype.map.call(scopes, function (x) { return x + "!"; });`), fault: "oauth2-token-unmeasured/list" },
   // P2-3: map writes and seeded keys that collide with a method.
   { name: "P2-3 assigning a request param",
     script: caught(`requestProperties.requestParams.extra = ["changed"];`),
@@ -88,18 +81,6 @@ const ROWS: Row[] = [
   { name: "r2 P2-1 setField with a cycle below the top",
     script: caught(`var inner = {}; inner.back = { up: inner }; accessToken.setField("x", { a: inner });`),
     fault: "oauth2-token-unmeasured/accessToken.setField()" },
-  // P2-3: writes to a list view, found by the harvest audit.
-  { name: "r2 P2-3 scopes[0] = changed (OIDC)", context: "OIDC_CLAIMS",
-    script: `scopes[0] = "changed"; ({ values: { out: scopes[0] } });`, fault: "oidc-claims-unmeasured/scopes.0",
-    given: { scopes: ["a"] } },
-  { name: "r2 P2-3 replacing scopes.size (OIDC)", context: "OIDC_CLAIMS",
-    script: `scopes.size = function () { return 99; }; ({ values: { size: scopes.size() } });`,
-    fault: "oidc-claims-unmeasured/scopes.size", given: { scopes: ["a"] } },
-  { name: "r2 P2-3 scopes[0] = changed (token)",
-    script: `scopes[0] = "changed"; accessToken.setField("out", "ran");`, fault: "oauth2-token-unmeasured/scopes.0" },
-  { name: "r2 P2-3 writing into a request value list",
-    script: `requestProperties.requestParams.extra[0] = "changed"; accessToken.setField("out", "ran");`,
-    fault: "oauth2-token-unmeasured/list.0", given: { request: { params: { extra: ["value"] } } } },
   // P2-5: tags of identity and accessToken are unmeasured.
   { name: "r2 P2-5 Object.prototype.toString.call(identity)",
     script: caught(`accessToken.setField("out", Object.prototype.toString.call(identity));`),
@@ -113,13 +94,6 @@ const ROWS: Row[] = [
   // P2-6: the native surface of a real Java object.
 
   // Sol ctx r3.
-  // P2-1: a measured scopes.add() must not adopt an earlier index write into its new baseline.
-  { name: "r3 P2-1 scopes[0] = changed; scopes.add(b)",
-    script: `scopes[0] = "changed"; scopes.add("b"); accessToken.setField("out", [scopes[0], scopes.get(0), scopes.size()].join());`,
-    fault: "oauth2-token-unmeasured/scopes.0", given: { scopes: ["a"] } },
-  { name: "r3 P2-1 add, assign an existing index, add again",
-    script: `scopes.add("b"); scopes[0] = "changed"; scopes.add("c"); accessToken.setField("out", "ran");`,
-    fault: "oauth2-token-unmeasured/scopes.0", given: { scopes: ["a"] } },
   // P2-2: rendering a profile value nobody measured faults like reading it.
   { name: "r3 P2-2 String(rawProfile) with a boolean value", context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
     script: socialCaught(`String(rawProfile);`), fault: "social-idp-unmeasured/rawProfile.verified",
@@ -161,6 +135,46 @@ describe("shared context views fault what no capture measured (Sol ctx r1, r2, r
     expect(error, "the run must fault").toBeInstanceOf(CaseRunError);
     const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
     expect(ids).toContain(fault);
+  }, 60_000);
+
+  // The scopes of a token script and a request value are Java lists, so Java and the engine
+  // answer every call on them, at every size. Each row is something a JS imitation of a list had
+  // to refuse or get wrong.
+  it.each([
+    ["JSON.stringify(scopes)", `return JSON.stringify(scopes);`, ["a", "b"], '["a","b"]'],
+    ["[].concat(scopes) is a JS array of its elements", `var c = [].concat(scopes); return Array.isArray(c) + "|" + c.length + "|" + (c[1] === "b");`, ["a", "b"], "true|2|true"],
+    ["a borrowed Array.prototype.map", `return Array.prototype.map.call(scopes, function (x) { return x + "!"; }).join();`, ["a", "b"], "a!,b!"],
+    ["no Array.prototype member of its own", `return typeof scopes.map + "|" + typeof scopes.join + "|" + Array.isArray(scopes);`, ["a"], "undefined|undefined|false"],
+    ["an index write is a write to the list", `scopes[0] = "changed"; scopes.add("b"); return [scopes[0], scopes.get(0), scopes.size(), String(scopes)].join("|");`, ["a"], "changed|changed|2|[changed, b]"],
+    ["get() past the end is Java's refusal", `try { scopes.get(1); } catch (x) { return x.name + ": " + String(x.message).split(" (")[0]; }`, ["a"], "InternalError: Index 1 out of bounds for length 1"],
+    ["a read past the end by index is undefined", `return String(scopes[1]);`, ["a"], "undefined"],
+    ["the tag", `return Object.prototype.toString.call(scopes);`, ["a"], "[object JavaList]"],
+    ["empty: JSON, String, length, size, isEmpty", `return [JSON.stringify(scopes), String(scopes), scopes.length, scopes.size(), scopes.isEmpty()].join("|");`, [], "[]|[]|0|0|true"],
+    ["empty: concat, a borrowed map, contains, indexOf", `return [[].concat(scopes).length, Array.prototype.map.call(scopes, String).length, scopes.contains("a"), scopes.indexOf("a")].join("|");`, [], "0|0|false|-1"],
+    ["empty: forEach calls nothing, and get(0) is Java's refusal", `var n = 0; scopes.forEach(function () { n += 1; }); try { scopes.get(0); } catch (x) { return n + "|" + x.name + ": " + String(x.message).split(" (")[0]; }`, [], "0|InternalError: Index 0 out of bounds for length 0"],
+  ])("a scopes list answers as a Java list: %s", async (name, read, scopes, want) => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `accessToken.setField("out", String((function () { ${read} })()));`,
+      given: { engine: "next-gen", scopes },
+      expect: { accessToken: { fields: { added: { out: want } } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.out).toBe(want);
+  }, 60_000);
+
+  it("a request value list is a Java list too, empty included", async () => {
+    const want = '["value"]|1|[value]|true|[]|0|[]';
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: "request value list",
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script: `var p = requestProperties.requestParams, v = p.extra, e = p.none; accessToken.setField("out", [JSON.stringify(v), v.length, String(v), v.contains("value"), JSON.stringify(e), e.size(), String(e)].join("|"));`,
+      given: { engine: "next-gen", request: { params: { extra: ["value"], none: [] } } },
+      expect: { accessToken: { fields: { added: { out: want } } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.out).toBe(want);
   }, 60_000);
 
   it("keeps the measured refusals ordinary: setField with one argument is Rhino's overload error", async () => {

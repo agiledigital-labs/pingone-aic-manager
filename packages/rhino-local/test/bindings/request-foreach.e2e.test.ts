@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { decisionNodeClassAllowList } from "../../src/bindings/allowlist.ts";
 import { mockPreamble, withHarvest } from "../../src/bindings/preamble.ts";
 import type { Given } from "../../src/case/types.ts";
 import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
@@ -54,7 +55,8 @@ describe("request map forEach matches the live capture", () => {
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
   const observe = async (given: Given, script = capture) => {
-    const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(script) });
+    // The tenant runs a decision node behind its class allow-list, which is what makes getClass() the refusal the capture holds.
+    const response = await runner.eval({ preamble: mockPreamble(given), source: withHarvest(script), classAllowList: decisionNodeClassAllowList() });
     expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
     return JSON.parse(parseHarvest(response.value as string).sharedState.final.r as string) as Record<string, Record<string, unknown>>;
   };
@@ -110,41 +112,6 @@ describe("request map forEach matches the live capture", () => {
     expectHarnessFault("request-map-foreach-argument");
     const response = await runner.eval({ preamble: mockPreamble({ requestParameters: { a: ["1"] } }), source: withHarvest(`try { ${call}; } catch (e) {}`) });
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-map-foreach-argument"]);
-  });
-
-  it.each([
-    ["get()", "v.get()"],
-    ['get("length")', 'v.get("length")'],
-    ['get("0")', 'v.get("0")'],
-    ["get(0, 1)", "v.get(0, 1)"],
-    ["get(2), out of range", "v.get(2)"],
-    ["get(-1)", "v.get(-1)"],
-    ["get(0.5)", "v.get(0.5)"],
-    ["size(1)", "v.size(1)"],
-    ["toArray()", "JSON.stringify(v.toArray())"],
-    ["isEmpty()", "v.isEmpty()"],
-    ['contains("a")', 'v.contains("a")'],
-    ['indexOf("a")', 'v.indexOf("a")'],
-    ["iterator()", "v.iterator()"],
-    ['set(0, "z")', 'v.set(0, "z")'],
-    ["remove(0)", "v.remove(0)"],
-    ["listIterator()", "v.listIterator()"],
-    ["forEach(fn)", "v.forEach(function () {})"],
-    ["sort()", "v.sort()"],
-    ["get(an object whose toString throws)", 'v.get({ toString: function () { throw new Error("conversion"); } })'],
-    ["get(0, an object whose toString throws)", 'v.get(0, { toString: function () { throw new Error("conversion"); } })'],
-    ["get(2) while String is replaced", 'var S = String; String = function () { throw new Error("s"); }; try { v.get(2); } finally { String = S; }'],
-    ['get("0") while Array.prototype.map is replaced', 'var M = Array.prototype.map; Array.prototype.map = function () { throw new Error("m"); }; try { v.get("0"); } finally { Array.prototype.map = M; }'],
-    ["toString(1)", "v.toString(1)"],
-    ["toString(an object whose toString throws)", 'v.toString({ toString: function () { throw new Error("conversion"); } })'],
-    ["getClass(1)", "v.getClass(1)"],
-  ])("%s on a value list faults request-list-unmeasured, even when caught", async (_name, call) => {
-    expectHarnessFault("request-list-unmeasured");
-    const response = await runner.eval({
-      preamble: mockPreamble({ requestParameters: { q: ["a", "b"] } }),
-      source: withHarvest(`var v = requestParameters.get("q"); try { ${call}; } catch (e) {} finally { 1; }`),
-    });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-unmeasured"]);
   });
 
   it("the measured list calls still answer: size(), get(i) in range, and the README's copy loop", async () => {

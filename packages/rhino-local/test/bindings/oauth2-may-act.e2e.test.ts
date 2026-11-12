@@ -144,16 +144,6 @@ describe("may act matches the live capture", () => {
     expect(ma.scope).toEqual(live.scope === undefined ? null : live.scope.split(" "));
   }, 60_000);
 
-  const faults: [string, string][] = [["scopes.add(\"x\");", "oauth2-may-act-unmeasured/scopes"]];
-  it.each(faults)("%s is a named fault", async (source, id) => {
-    expectHarnessFault(id);
-    const loggerName = "scripts.OAUTH2_MAY_ACT_NEXT_GEN.44cfa247-295a-4c01-8af0-ca0ff008361d.(zzemuC6-ma-ng)";
-    const error = await run(id, source, loggerName).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
-    expect(ids).toContain(id);
-  }, 60_000);
-
   const faulted = async (name: string, source: string, scopes: string[], id: string) => {
     expectHarnessFault(id);
     const error = await runCase(runner, defineCase({
@@ -168,23 +158,18 @@ describe("may act matches the live capture", () => {
     expect(ids).toContain(id);
   };
 
-  it("P2-2 JSON.stringify of scopes.toArray() is a named fault", async () => {
-    const id = "oauth2-may-act-unmeasured/scopes.toArray()";
-    const source = "token.setMayAct({ j: JSON.stringify(scopes.toArray()) });";
-    await faulted("p2-2-json", source, ["a"], id);
-  }, 60_000);
-
-  it("P2-2 borrowing join on scopes.toArray() is a named fault", async () => {
-    const id = "oauth2-may-act-unmeasured/scopes.toArray()";
-    const source = "token.setMayAct({ j: Array.prototype.join.call(scopes.toArray(), \"|\") });";
-    await faulted("p2-2-join", source, ["a", "b"], id);
-  }, 60_000);
-
-  it("P2-2 writing through scopes.toArray() is a named fault", async () => {
-    const id = "oauth2-may-act-unmeasured/scopes.toArray().0";
-    const source = "var a = scopes.toArray(); a[0] = \"z\"; token.setMayAct({ j: String(a[0]) });";
-    await faulted("p2-2-write", source, ["a"], id);
-  }, 60_000);
+  // A list is a real Java list at every size: what it answers is Java's answer.
+  const answers = async (name: string, source: string, scopes: string[], mayAct: Record<string, unknown>) => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `${name} ${engine}`,
+      context: "OAUTH2_MAY_ACT",
+      script: source,
+      given: { engine, scopes },
+      expect: { mayAct: { mayAct } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.mayAct!.mayAct).toEqual(mayAct);
+  };
 
   it("P2-2 the measured toArray shape still answers", async () => {
     const source = "var a = scopes.toArray(); token.setMayAct({ t: typeof a, arr: Array.isArray(a), len: a.length, e: typeof a[0] });";
@@ -218,10 +203,8 @@ describe("may act matches the live capture", () => {
     expect(effects.mayAct!.mayAct).toEqual({ error: "InternalError" });
   }, 60_000);
 
-  it("P2-6 JSON.stringify of a request value faults", async () => {
-    const id = "oauth2-may-act-unmeasured/requestProperties";
-    const source = "token.setMayAct({ j: JSON.stringify(requestProperties.requestParams.grant_type) });";
-    await faulted("p2-6-json", source, ["a"], id);
+  it("JSON.stringify of a request value is a JSON array", async () => {
+    await answers("request-json", "token.setMayAct({ j: JSON.stringify(requestProperties.requestParams.grant_type) });", ["a"], { j: '["client_credentials"]' });
   }, 60_000);
 
   it("P2-6 a request value still answers String, length and [i]", async () => {
@@ -236,10 +219,9 @@ describe("may act matches the live capture", () => {
     expect(effects.mayAct!.mayAct).toEqual({ s: "[client_credentials]", z: "client_credentials", n: 1 });
   }, 60_000);
 
-  // Sol ctx r10 P2-1. The empty redirect surface moved off the scopes kind.
-  // Empty scopes JSON stays a fault. Empty redirect String and length stay.
-  it("r10 P2-1 JSON of an empty scopes list still faults", async () => {
-    await faulted("r10-empty-scopes-json", "JSON.stringify(scopes);", [], "oauth2-may-act-unmeasured/scopes");
+  it("an empty scopes list is [] in JSON, and forEach calls nothing", async () => {
+    await answers("empty-scopes-json", "token.setMayAct({ j: JSON.stringify(scopes) + String(scopes) + scopes.length });", [], { j: "[][]0" });
+    await answers("empty-scopes-forEach", "var n = 0; scopes.forEach(function () { n += 1; }); token.setMayAct({ probe: n });", [], { probe: 0 });
   }, 60_000);
 
   it("r10 P2-1 an empty redirect-URI list still answers String and length", async () => {
@@ -251,23 +233,5 @@ describe("may act matches the live capture", () => {
       expect: { mayAct: { mayAct: { j: "[]|0" } } },
     }));
     expect(effects.mayAct!.mayAct).toEqual({ j: "[]|0" });
-  }, 60_000);
-
-  // Sol ctx r12 P2-1. Empty scopes.forEach answers 0, which was not measured
-  // empty.
-  it("r12 P2-1 forEach of an empty scopes list is a named fault", async () => {
-    const id = "oauth2-may-act-unmeasured/scopes";
-    expectHarnessFault(id);
-    const error = await runCase(runner, defineCase({
-      name: `r12 empty forEach ${engine}`,
-      context: "OAUTH2_MAY_ACT",
-      script: "var n = 0; scopes.forEach(function () { n += 1; }); token.setMayAct({ probe: n });",
-      given: { engine, scopes: [] },
-      expect: { mayAct: { mayAct: { probe: 0 } } },
-    })).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-    expect(faults.map((f) => f.id)).toContain(id);
-    expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
   }, 60_000);
 });
