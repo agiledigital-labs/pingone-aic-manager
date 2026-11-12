@@ -116,6 +116,64 @@ try {
   });
   results.push(echo);
 
+  // Engine-held integers: values whose type comes from the Java side rather
+  // than from a JS literal. Sent in the same body as JS controls (`1+2`, `3`),
+  // once as an object body and once as a JSON.stringify string body.
+  function engineBody() {
+    var o = { jsLiteral: 3, jsComputed: 1 + 2 };
+    function add(name, fn) {
+      try {
+        o[name] = fn();
+      } catch (e) {
+        results.push({ name: "engine int " + name, ok: false, error: String(e) });
+      }
+    }
+    add("strLength", function () { return new java.lang.String("abc").length(); });
+    add("strIndexOf", function () { return new java.lang.String("abc").indexOf("c"); });
+    add("listSize", function () {
+      var l = new java.util.ArrayList();
+      l.add("a"); l.add("b"); l.add("c");
+      return l.size();
+    });
+    add("mapSize", function () { return new java.util.HashMap().size(); });
+    add("nodeStateKeysSize", function () { return nodeState.keys().size(); });
+    add("reqHeadersSize", function () { return requestHeaders.size(); });
+    add("jsStrLength", function () { return "abc".length; });
+    add("jsStrIndexOf", function () { return "abc".indexOf("c"); });
+    return o;
+  }
+  var eb = engineBody();
+  var typeInfo = {};
+  for (var k in eb) {
+    typeInfo[k] = typeof eb[k] + "/" + String(eb[k].getClass ? eb[k].getClass() : "nogetClass");
+  }
+  results.push({ name: "engine int typeof", ok: true, value: JSON.stringify(typeInfo) });
+  var sendEcho = function (label, b) {
+    results.push(
+      probe(label, function () {
+        var response = httpClient
+          .send(ECHO_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: b,
+          })
+          .get();
+        if (!response.ok) {
+          return "HTTP " + response.status + " " + response.statusText;
+        }
+        return JSON.parse(response.text()).data;
+      })
+    );
+  };
+  sendEcho("engine ints, object body", eb);
+  results.push({ name: "engine ints, local JSON.stringify", ok: true, value: JSON.stringify(eb) });
+  sendEcho("engine ints, JSON.stringify body", JSON.stringify(eb));
+
+  // Second question: what nodeState.keys()[0] gives in a scripted decision node.
+  results.push(probe("nodeState.keys()[0]", function () { return nodeState.keys()[0]; }));
+  results.push(probe("typeof nodeState.keys()", function () { return typeof nodeState.keys(); }));
+  results.push(probe("nodeState.keys().iterator().next()", function () { return nodeState.keys().iterator().next(); }));
+
   emit({
     ok: true,
     feature: "httpclient-body-coercion",
