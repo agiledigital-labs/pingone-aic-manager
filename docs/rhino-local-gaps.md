@@ -452,7 +452,7 @@ measurements, so each of them stays a fault until a probe on AIC decides it:
   (`AND`, `Or`, `TRUE`, `PR`, `EQ`), single quotes, `+5`, `05`, `1.`, `.5`,
   the pointers `/a~2`, `text~`, `/` and `!text`, `"a"and`, `\x` escapes, a tab
   inside a pointer, and integers between 2^53 and `Long.MAX_VALUE` (the last
-  on purpose: a JS number cannot hold the long CREST compares). Conversely the
+  on purpose: a JS number cannot hold the long integers a filter compares). Conversely the
   grammar now refuses, as the fault, eleven inputs it used to accept (exponent
   with no `.`, integers past `long`, tab or newline separators, `!` glued to a
   keyword). One probe of uppercase `AND` and of `'x'` on AIC would settle

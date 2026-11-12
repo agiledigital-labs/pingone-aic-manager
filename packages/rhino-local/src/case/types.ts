@@ -670,7 +670,7 @@ export interface MayActEffect {
   act: JsonValue | null;
   /** The scopes on the issued token; `null` when AM issued none. */
   scope: string[] | null;
-  /** The scopes the request handed the script, before any `setScope`. */
+  /** The scopes the request handed the script, before the script changes them. */
   seedScope: string[];
   /** `null` when a token is issued; otherwise the `error_description` AM answers. */
   refusal: string | null;

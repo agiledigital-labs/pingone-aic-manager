@@ -204,9 +204,7 @@ The reusable AIC lease uses its deterministic UUIDv5 subject ID. A one-shot
 run with a known run ID uses `oneShotSubjectId(runId)`; local-only runs use the
 visible `<unseeded-script-id>` placeholder unless a raw `Case` supplies
 `given.loggerScriptId`. The format has only been measured for the next-gen
-decision-node context (live AIC-lane probe, 2026-10-01). The legacy mock
-retains its earlier bare-name behavior; that context's tenant format remains
-unmeasured.
+decision-node context (live AIC-lane probe, 2026-10-01).
 
 The runner needs a host JDK 25: `AIC_SCRIPT_TESTER_JAVA_HOME`, then `JAVA_HOME`, then
 `java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar
@@ -617,7 +615,7 @@ shift author line numbers.
 
 `timeoutMs` is per-job. `0` means no timeout. Omitted uses a 10s harness
 default so a runaway cannot hang the process. The observer threshold of 1000
-and the `Interrupt.` message are reproduced.
+and the timeout error message are reproduced.
 
 `globals` is a JSON object placed in `ENGINE_SCOPE` Bindings before eval. This
 slice does not know what `nodeState` is; a later slice injects the generated
@@ -660,7 +658,7 @@ Easier than the contradiction suggested:
 - The two top-level `const` rows now match AIC. A declarative given/expect case
   format does not need a special-case for them; they fail the same way on the
   tenant and locally, which is what the lint rules exist to catch.
-- Bindings inject into ENGINE_SCOPE, which is where AM puts them. The mock
+- Bindings are visible to the script as globals, as on the tenant. The mock
   surface generated into `generated/scripted-decision-mocks.cjs` can ride
   `preamble` (keeps author line numbers) or `globals` (JSON-shaped values).
 
@@ -953,8 +951,6 @@ It never changes a reused library. Any owned library still referenced by a
 reused external consumer remains journalled and is reported as residue at close.
 The orchestrator's 2026-09-30 live run after `d7de205` confirmed that AM
 accepted the empty-source PUT and the tested lease left no library residue.
-Legacy `require()` is
-unsupported, so a legacy case with libraries fails validation.
 
 `useLease()` accepts an AIC opt-in alongside the local options:
 
@@ -1086,8 +1082,7 @@ chain with one step read, one final read, and one cleanup delete at 45 calls.
 
 - Which tenant setting leaves the language version at 0. The observed JS is 0
   either way; this slice did not look for the cause.
-- LIBRARY scripts (function-like top level, CommonJS `require` via
-  `libraryBindings`). Measured 2026-09-12 to be the single largest fidelity gap
+- LIBRARY scripts (function-like top level, CommonJS `require`). Measured 2026-09-12 to be the single largest fidelity gap
   in the real-script corpus: live AIC reports `typeof require === "function"`
   and the harness reports `"undefined"`, which blocks 8 of the 52 probe scripts.
   No longer out of scope.
