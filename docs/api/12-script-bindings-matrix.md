@@ -563,6 +563,33 @@ Note that `java.lang.Integer` is **not** in the next-gen allow-list declared in
 `Long`, `Float`, `Number`, `Void` but no `Integer`) yet constructs fine — a
 third data point for the allow-list caveat in `docs/api/13-script-contexts.md`.
 
+**An integer the engine holds goes out as an integer (measured on the sandbox
+2026-11-13).** The same fixture sends a second body mixing JS controls with
+integers that come from the Java side, as an object body and again as a
+`JSON.stringify` string body. As echoed by the receiver:
+
+| Source value                                   | Object body | `JSON.stringify` string body |
+| ---------------------------------------------- | ----------- | ---------------------------- |
+| `3` (JS literal)                               | **`3.0`**   | `3`                          |
+| `1 + 2` (JS computed)                          | **`3.0`**   | `3`                          |
+| `new java.lang.String("abc").length()`         | `3`         | `3`                          |
+| `new java.lang.String("abc").indexOf("c")`     | `2`         | `2`                          |
+| `list.size()` on a `java.util.ArrayList`       | `3`         | `3`                          |
+| `nodeState.keys().size()`                      | `3`         | `3`                          |
+| `requestHeaders.size()`                        | `20`        | `20`                         |
+| `"abc".length` (JS string literal)             | `3`         | `3`                          |
+| `"abc".indexOf("c")` (JS string literal)       | `2`         | `2`                          |
+
+So the trap is the JS _number_, not integer-ness: a count or index obtained
+from a method call renders without a fraction, while a literal or an
+arithmetic result renders as a double. `typeof` is `"number"` for every row,
+so nothing in the script distinguishes them. `1 + 2` was a double here too;
+`"abc".length` and `"abc".indexOf` came back as integers although they are
+JS-side expressions. A `JSON.stringify` string body is sent verbatim, so it
+renders every number as `JSON.stringify` does. `new java.util.HashMap()`
+is not constructible (`TypeError: [JavaPackage java.util.HashMap] is not a
+function, it is object.`).
+
 ### 2. `undefined` becomes an explicit `null`
 
 `JSON.stringify` **drops** a key whose value is `undefined`; `httpClient` sends
@@ -1708,6 +1735,12 @@ cookie would measure the completed session (see `09-journeys.md`).
   `containsKey`, `size` and `keySet` are functions on it. `keys()` is
   a Java collection, iterated with `iterator()`, that includes **transient**
   keys.
+  Indexing it fails (measured on the sandbox 2026-11-13, scripted decision
+  node): `nodeState.keys()[0]` throws
+  `InternalError: Java class "java.util.HashSet" has no public instance field or method named "0".`
+  with the script name and line appended. `typeof nodeState.keys()` is
+  `"object"`; `nodeState.keys().iterator().next()` returned a key (`realm`),
+  and `.size()` works.
 
 **Plain versus registered objectAttributes (live AIC-lane probe,
 2026-10-01).** A value supplied by `nodeState.putShared("objectAttributes", {})`
