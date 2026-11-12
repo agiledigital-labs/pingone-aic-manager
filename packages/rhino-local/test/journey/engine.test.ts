@@ -1190,7 +1190,7 @@ const FRACTION =
 const STRING = "httpClient body text for a string body, sent as the string itself";
 const TOP = "httpClient body text for a top-level non-object body";
 const INTEGER =
-  "httpClient body text for a number the script engine holds as a Java Integer: written as an integer, which is measured for a boxed value and assumed for a result of length, indexOf or JSON.parse";
+  "httpClient body text for a number the script engine holds as a Java Integer: written as an integer, which is measured for a boxed value and for length, indexOf and size() results, and assumed for a JSON.parse result";
 it.each([
   ["a fraction", "body:{f:1.5}", '{"f":1.5}', [FRACTION]],
   ["an integer past 1e6", "body:{n:1e7}", '{"n":1.0E7}', [FRACTION]],
@@ -1199,9 +1199,10 @@ it.each([
   // Measured (docs/api/12): a boxed Integer goes out as written. It is a plain number to the
   // script, so the harness cannot tell it from the rows below it and the note rides it too.
   ["a boxed Integer", "body:{j:java.lang.Integer.valueOf(1)}", '{"j":1}', [INTEGER]],
-  // Assumed: none of these three was sent from a tenant.
+  // Measured on the sandbox (docs/api/12): length and indexOf go out as integers.
   ["a string length", "body:{count:'abc'.length}", '{"count":3}', [INTEGER]],
   ["an indexOf result", "body:{at:'abc'.indexOf('c')}", '{"at":2}', [INTEGER]],
+  // Assumed: a JSON.parse result was not sent from a tenant.
   ["a JSON.parse result", "body:JSON.parse('{\"n\":2}')", '{"n":2}', [INTEGER]],
 ])("HTTP body text for %s is labelled assumed", async (_name, body, text, reasons) => {
   const sent = await send(`{method:'POST',${JSON_HEADER},${body}}`);
