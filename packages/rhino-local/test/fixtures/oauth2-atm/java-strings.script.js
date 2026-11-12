@@ -1,4 +1,4 @@
-// Access-token modification, legacy: what a Java-string-returning getter hands
+// Access-token modification: what a Java-string-returning getter hands
 // the script (measured 2026-11-10 on a client_credentials token for the client
 // zzemuC3-atm). Inside a function the value is a java.lang.String: typeof
 // "object", `===` a literal false, `==` a literal true, and `==` between two

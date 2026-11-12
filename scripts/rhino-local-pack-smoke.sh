@@ -174,7 +174,7 @@ describe("installed rhino-local", () => {
       const run = await runCase(runner, defineCase({
         name: "token", context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
         script: 'accessToken.setField("owner", String(identity.getName()));',
-        given: { engine: "legacy", accessToken: { clientId: "widget-client" } },
+        given: { engine: "next-gen", accessToken: { clientId: "widget-client" } },
         expect: { accessToken: { fields: { added: { owner: "widget-client" } } } },
       }));
       expect(run.verdict.summary, run.verdict.summary).toBe("");
@@ -183,12 +183,11 @@ describe("installed rhino-local", () => {
 
   // The OIDC claims overlay is a second packaged asset, and its result is
   // the script's completion value, read through the runner's completion hook.
-  it("runs an OIDC claims case on both engines", async () => {
+  it("runs an OIDC claims case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
       for (const [engine, script] of [
         ["next-gen", '({ values: { owner: String(identity.getName()) } });'],
-        ["legacy", 'var v = new java.util.HashMap(); v.put("owner", identity.getName()); new org.forgerock.oauth2.core.UserInfoClaims(v, null);'],
       ] as const) {
         const run = await runCase(runner, defineCase({
           name: \`claims \${engine}\`, context: "OIDC_CLAIMS", script,
@@ -202,12 +201,11 @@ describe("installed rhino-local", () => {
 
   // The social IdP overlay is a third packaged asset; its result is also the
   // script's completion value, and its node-state writes are judged.
-  it("runs a social IdP profile transformation case on both engines", async () => {
+  it("runs a social IdP profile transformation case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
       for (const [engine, script] of [
         ["next-gen", 'nodeState.putShared("idp", selectedIdp); ({ id: rawProfile.sub, mail: rawProfile.get("email") });'],
-        ["legacy", 'nodeState.putShared("idp", selectedIdp); ({ id: String(rawProfile.get("sub").getObject()), mail: String(rawProfile.get("email").getObject()) });'],
       ] as const) {
         const run = await runCase(runner, defineCase({
           name: \`social \${engine}\`, context: "SOCIAL_IDP_PROFILE_TRANSFORMATION", script,
@@ -220,18 +218,17 @@ describe("installed rhino-local", () => {
   });
 
   // The config provider overlay is a fourth packaged asset; AM reads its
-  // \`config\` global after the script, and its node-state reads are engine-shaped.
-  it("runs a config provider node case on both engines", async () => {
+  // \`config\` global after the script, and its node-state reads are next-gen shaped.
+  it("runs a config provider node case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
       for (const [engine, script] of [
         ["next-gen", 'config = { message: { en: "Hello " + nodeState.get("who") }, size: 2 };'],
-        ["legacy", 'var w = String(nodeState.get("who")); config = { message: { en: "Hello " + w }, size: 2 };'],
       ] as const) {
         const run = await runCase(runner, defineCase({
           name: \`config provider \${engine}\`, context: "CONFIG_PROVIDER_NODE", script,
           given: { engine, sharedState: { who: "widget" } },
-          expect: { configProvider: { config: { message: { en: engine === "legacy" ? 'Hello "widget"' : "Hello widget" }, size: 2 } } },
+          expect: { configProvider: { config: { message: { en: "Hello widget" }, size: 2 } } },
         }));
         expect(run.verdict.summary, run.verdict.summary).toBe("");
       }
@@ -239,11 +236,11 @@ describe("installed rhino-local", () => {
   });
 
   // The validate scope overlay is a fifth packaged asset; AM grants exactly
-  // the list the function returns, on both engines.
-  it("runs a validate scope case on both engines", async () => {
+  // the list the function returns.
+  it("runs a validate scope case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
-      for (const engine of ["next-gen", "legacy"] as const) {
+      for (const engine of ["next-gen"] as const) {
         const run = await runCase(runner, defineCase({
           name: \`validate scope \${engine}\`, context: "OAUTH2_VALIDATE_SCOPE",
           script: "function validateAccessTokenScope() { return requestedScopes; }",
@@ -256,13 +253,12 @@ describe("installed rhino-local", () => {
   });
 
   // The may-act overlay is a sixth packaged asset; AM stamps may_act from
-  // token.setMayAct after the body. Legacy wants a JsonValue, not a plain object.
-  it("runs a may-act case on both engines", async () => {
+  // token.setMayAct after the body.
+  it("runs a may-act case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
       for (const [engine, script] of [
         ["next-gen", 'token.setMayAct({ client_id: "actor" });'],
-        ["legacy", 'var m = new java.util.LinkedHashMap(); m.put("client_id", "actor"); token.setMayAct(new org.forgerock.json.JsonValue(m));'],
       ] as const) {
         const run = await runCase(runner, defineCase({
           name: \`may act \${engine}\`, context: "OAUTH2_MAY_ACT", script,
@@ -276,7 +272,6 @@ describe("installed rhino-local", () => {
 
   // The library overlay is a seventh packaged asset. The case script is the
   // library body; the harness require()s it and calls the named export.
-  // Next-gen only: legacy has no require().
   it("runs a library case", async () => {
     const runner = await RhinoRunner.spawn();
     try {

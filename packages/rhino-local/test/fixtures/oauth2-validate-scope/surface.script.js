@@ -1,6 +1,5 @@
-// Validate-scope surface probe (both engines). The record is the denial
-// message: next-gen through scopeValidatorHelper.throwInvalidScope, legacy
-// (which has no helper) through AM's InvalidScopeException. Shapes and call outcomes only.
+// Validate-scope surface probe (next-gen). The record is the denial
+// message, through scopeValidatorHelper.throwInvalidScope. Shapes and call outcomes only.
 // Never calls identity.getAttributes(); never prints header or parameter
 // values other than grant_type and scope.
 var out = { top: {}, fn: {} };

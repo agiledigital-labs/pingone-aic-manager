@@ -1,7 +1,6 @@
-// May-act surface probe (both engines). The record leaves as the may_act
-// claim's "probe" member: next-gen through token.setMayAct(object), legacy
-// through token.setMayAct(JsonValue). Shapes and call outcomes only. Never
-// renders the token itself (String(token) is the JWT on legacy): only its
+// May-act surface probe (next-gen). The record leaves as the may_act
+// claim's "probe" member through token.setMayAct(object). Shapes and call
+// outcomes only. Never renders the token itself: only its
 // length class, prefix and dot count. Never calls identity.getAttributes().
 var out = {};
 function clean(s) {

@@ -6,7 +6,8 @@ this repo actually has, instead of the three toy cases.
 Cases live under `packages/rhino-local/cases/real/`. Overlay:
 `packages/rhino-local/src/bindings/rhino/runtime.cjs`. Measured 2026-09-12
 against the JVM runner (`VERSION_DEFAULT` + `ScriptContextScope`) after
-`callbacks.isEmpty`, next-gen `require()`, and legacy `Action.send`.
+`callbacks.isEmpty` and next-gen `require()`. The legacy (V1) engine was
+removed on 2026-11-12; this file now describes next-gen only.
 
 ## What runs today
 
@@ -350,7 +351,6 @@ assumption in `docs/api/`:
 | `send-body-error`, `send-body-array-cycle`                                        | an `httpClient.send` body whose AIC behaviour is unmeasured                                                           |
 | `state-put-undefined`                                                             | `nodeState.put*` / `sharedState.put` / `transientState.put` with `undefined`                                         |
 | `request-map-foreach-argument`                                                    | `requestParameters`/`requestHeaders`/`requestCookies`.`forEach` with anything but one function, no argument, or one number. Those three are measured (2026-11-08): the callback gets `(key, value)` and the other two are Rhino's catchable `Can't find method java.util.Map.forEach(<type>).`; key order is seeding order, where AIC's is hash order |
-| `request-map-foreach-legacy`                                                      | `forEach` on a request map under the legacy engine, which was not probed |
 | `request-list-unmeasured`                                                        | A next-gen request value list called any way but `size()`, `get(i)` with an integer index in range, `String(v)` (measured 2026-11-08), `[].concat(v)` with the list anywhere among the arguments or as the receiver, or `JSON.stringify` (measured 2026-11-10), except that a size-zero list (a `[]` seed; AIC hands over `[""]` for an empty value, so size zero was never seen) answers only `size()` (0) and `get(i)`: reading its `length`, `toString`/`valueOf`/string coercion, `concat` and `JSON.stringify` fault, so a borrowed `Array.prototype` method, `Array.from` or `apply` faults when it reads that surface (at once for `slice`/`map`/`Array.from`; at the first `next()` of the iterator `keys`/`values`/`entries` return), and an index or `for…in` read of it cannot be intercepted and finds nothing; `Array.prototype.toString.call(v)` faults on the JVM but is `"[object Object]"` unfaulted under node:vm, the binding test helpers' engine: another argument shape, or another `List` member (every public `java.util.List`, `Collection`, `Iterable` and `Object` method name: `set`, `remove`, `isEmpty`, `contains`, `toArray`, `forEach`, `listIterator`, …). A JavaScript object would answer with ignore-the-extra-argument rules that nothing says a Java list follows. Not covered: an out-of-range bracket read (`v[5]`) returns `undefined` unfaulted, since an index read cannot be intercepted; AIC's answer is unmeasured Nor, for either list kind, a list an author's own `toJSON` returns under an array replacer: it is written as an object of the listed keys, unfaulted (native asks `toJSON` once per value), and while such a call runs a getter that reads `list.toJSON` sees a function, where AIC's Java list has no such member |
 | `openidm-list-unmeasured`                                                        | An `openidm.query` `result` or a projected has-many array (next-gen) called any way but `size()`, `get(i)` with an integer index within a Java `int` (out of range is the measured `InternalError`; a wider, non-finite or fractional number faults first), `[].concat(v)`, `JSON.stringify` or `String(v)` (measured 2026-11-08): another argument shape, another `List` member (`forEach` included), the list as `concat`'s receiver, or `String(v)` reaching a number, whose Java rendering (`Integer` or `Double`) was not measured |
 | `openidm-failure-detail`                                                          | `e.javaException.getDetail()` on an `openidmFailures` failure whose stub gave no `reply.detail`; calling (directly, through `call`/`apply`, or a copy made with `bind`), rendering as a string (its own `toString` or a borrowed `Function.prototype.toString`), or serialising with `JSON.stringify` (by every route native gives a hook for: directly, nested, or as what a `toJSON` or replacer returns), a `JsonValue` member the 2026-11-08 and 2026-11-10 probes did not exercise (anything but `get`, `isNull`, `getObject`, `toString`, `asString`; `typeof` and `in` answer as measured and never fault; not covered: a stub an author's own `toJSON` returns under a property list is skipped unfaulted, the same hole as for lists, because native asks `toJSON` once per value and a property list leaves no hook on the result); rendering a measured member other than `asString` as a string (its own `toString`, a borrowed `Function.prototype.toString`, `String()` or concatenation; only `asString`'s text was measured, and every route gives it); `get(string)` on a string or boolean value, `get(number)` on a boolean, an index that is non-integral, non-finite or outside a Java `int` (checked before the null-value answer); `asString` on a number or with an argument other than one number; an error pointer whose key needs a JSON Pointer escape; the string form of an empty object or array, a non-integral number or a string needing an escape |
@@ -422,9 +422,7 @@ accepted counts have a basis:
 
 Everywhere else the accepted range is the harness's own guess — the request
 maps' `get`/`containsKey`, `existingSession.put`/`containsKey`, the identity
-wrapper's `setAttribute`/`addAttribute`/`store`, `secret.getAsUtf8`, `require`,
-the legacy `sharedState`/`transientState`, and every check on the legacy
-engine, which has no introspection — and a count outside it is the harness
+wrapper's `setAttribute`/`addAttribute`/`store`, `secret.getAsUtf8` and `require` — and a count outside it is the harness
 fault `arity-unknown/<path>`. The basis table (`__rhinoLocalArityBasis` in
 `runtime.cjs`) is pinned against the introspection file by
 `test/bindings/arity-provenance.test.ts`.
@@ -603,21 +601,17 @@ never measured, and AIC does the opposite. Not modelled: anything on an
 `entrySet()` view beyond `size`, `iterator().hasNext/next` and `toArray`;
 `for…in` over a view (AIC enumerates the Java object's members); a key named
 `toString` or `toJSON` (the local map uses those to print and harvest).
-The legacy result classes `Action` and `HiddenValueCallback` are `undefined`
-on next-gen from every importer — `JavaImporter()`, `JavaImporter(java.util)`,
+The result classes `Action` and `HiddenValueCallback` are `undefined`
+from every importer — `JavaImporter()`, `JavaImporter(java.util)`,
 and even one naming `org.forgerock.openam.auth.node.api.Action` or
 `com.sun.identity.authentication.callbacks.HiddenValueCallback` (measured
 2026-10-01, `live-java-importer-scope`); the local lane matches all six.
-Locally the legacy engine exposes each one only to an importer that names its
-class or its package. That legacy scope is **unmeasured**: the AIC wrapper
-emit is next-gen only, so no legacy script reaches the tenant lane.
 
 What the 2026-09-12 ranking called the shutter gap is closed:
 `java-class-shutter`, `for-each-java-collection` and
 `lib-java-collections-consumer` now equal the live payload exactly, as does
 `logger-placeholders` (its `E0-shape` row was the only miss, and it was the
-expectation that was incomplete). The five legacy cases were dropped on
-2026-09-12 (`7bb0195`); legacy scripts are not supported.
+expectation that was incomplete).
 
 ### Unlabelled query matching and send bodies (listed 2026-11-04)
 
@@ -860,7 +854,6 @@ those flows start is not modelled.
 | Source                                                                                | What it is                                                                | Verdict                                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scripts/rhino-script-tester/fixtures/*.script.js`                                    | Next-gen scripted-decision probes, run live through `AIC-Rhino-Let-Probe` | **This is the in-repo corpus.** Recorded outcomes live in `docs/api/12-script-bindings-matrix.md` and `docs/api/14-am-identity-attributes.md`. `tmp/rhino-script-tester/probe-results.json` is gitignored and was not in this checkout. |
-| `scripts/rhino-script-tester/fixtures-legacy/*.script.js`                             | Legacy (`evaluatorVersion` 1.0) scripted-decision probes                  | Same kind, different engine. Converted with `given.engine = "legacy"`.                                                                                                                                                                  |
 | `scripts/rhino-script-tester/scripts/*.script.js`                                     | Earlier `let` / `var` probes, same journey                                | Converted.                                                                                                                                                                                                                              |
 | `scripts/rhino-script-tester/fixtures/*.lib.js`                                       | LIBRARY bodies, not decision-node scripts                                 | Not cases. Consumers `require()` them; suites carry library source by exact require name in `libraries`, which becomes `given.libraries` on each case.                                                                                     |
 | `scripts/rhino-script-tester/fixtures-oauth2/`, `fixtures-atm/`, `fixtures-exchange/` | Validate-scope, access-token-modification, may-act                        | **Wrong script kind.** Different binding JSON, different invocation. Not converted.                                                                                                                                                     |
@@ -882,7 +875,6 @@ actually assert.
 origin fixture under `scripts/rhino-script-tester/`:
 
 - 55 next-gen (53 `fixtures/*.script.js` + 2 `scripts/*.script.js`)
-- 2 legacy
 
 Identity cases originally named a sandbox test user and three managed-object
 UUIDs. Cases rewrite those to reserved placeholders (`alice` / `bob` /
@@ -925,17 +917,15 @@ yields `"0,0,0"` (`lib-const-loop-consumer`), matching live.
 
 ## Access-token modification context (listed 2026-11-10)
 
-`context: "OAUTH2_ACCESS_TOKEN_MODIFICATION"` runs on both engines from the
+`context: "OAUTH2_ACCESS_TOKEN_MODIFICATION"` runs from the
 overlay `packages/rhino-local/src/bindings/rhino/context-oauth2-access-token.cjs`.
 Its conformance test replays six live probes
 (`test/bindings/oauth2-access-token.e2e.test.ts`). What it approximates or
 leaves out:
 
-- **Java values are script objects.** A legacy `JavaString` is a null-prototype
-  object with `toString`, `valueOf` and `length()`; it compares `==` but not
-  `===` with a literal, as on AIC. `Object.prototype.toString` is emulated only
-  where a capture measured the tag: a legacy `JsonValue` (`getField`, `getAct`)
-  reports `[object JavaObject]`. On every other view the call is the named fault
+- **Java values are script objects.** `Object.prototype.toString` is emulated
+  only where a capture measured the tag. On every other view the call is the
+  named fault
   `oauth2-token-unmeasured/Object.prototype.toString.call(<binding>)` (Sol ctx
   r1 P2-5); the conformance test compares the captured tags unchanged.
 - **Mutating a binding is unmeasured, and faults.** Assigning a map entry or a
@@ -960,13 +950,10 @@ leaves out:
   as `undefined` on both sides, but a member that exists on the script object
   only to raise a fault is visible to `typeof` and `in`.
 - **Hash order is not reproduced.** Sets and maps keep the fixture's order.
-  Live legacy `allowedScopes` came back in an order a `HashSet` chose; the
-  fixture has to list it that way to render the same `String()`.
 - **Header aliases are lower and Title case only.** AIC's header map is
   case-insensitive; `requestHeaders["CONTENT-TYPE"]` is not emulated.
-- **JSON numbers.** Legacy `getField` renders numbers as Java doubles (`42.0`)
-  and is emulated; the JWT itself carries `42`, and the recorded effect holds
-  the JS value the script set.
+- **JSON numbers.** The JWT carries `42` for a number the script set, and the
+  recorded effect holds the JS value the script set.
 - **`expires_in`.** The default custom field and the response body say `3599`
   and the JWT claim says `3600`, measured. The effect records the custom field.
 - **Shared bindings are the decision node's.** `logger`, `httpClient`,
@@ -986,8 +973,7 @@ leaves out:
   `docs/api/12-script-bindings-matrix.md` (`toMap`, `getTokenInfo`, `setScope`
   with anything but the measured shapes, the other `remove*`/`set*`,
   next-gen `getResourceOwner`), Object methods on the views, `JSON.stringify` of
-  any view, empty-container `JsonValue` reads, legacy `scopes.add()` (callable
-  on AIC; its effect on the token is unmeasured), set iterators and streams,
+  any view, set iterators and streams,
   next-gen `clientProperties.redirectUris`, overwriting a reserved claim, and
   the `identity` writers. `identity.getAttributes()` is a fault on purpose: it
   returns the client's password (`.ai/core.md` §8).
@@ -996,7 +982,7 @@ leaves out:
 
 ## OIDC claims context (listed 2026-11-10)
 
-`context: "OIDC_CLAIMS"` runs on both engines from the overlay
+`context: "OIDC_CLAIMS"` runs from the overlay
 `packages/rhino-local/src/bindings/rhino/context-oidc-claims.cjs`, on the same
 `context-common.cjs` views as the token context, so the view-level gaps listed
 above apply here too, with the prefix `oidc-claims-unmeasured/`. The
@@ -1019,13 +1005,6 @@ result scripts (eighteen engine runs). What it approximates or leaves out:
 - **Composite scopes filter nothing.** As measured: a claim mapped to a scope
   the token was not granted is still emitted. The recorded `compositeScopes`
   is what the script returned.
-- **Legacy uses real Java strings.** The legacy `claims` map, the identity's
-  name and the other legacy getters return `java.lang.String`. The
-  access-token context's legacy strings are real `java.lang.String`s too
-  (since 2026-11-10: `getName() == getClientId()` of the same text was
-  measured `true`, which two script objects cannot reproduce). The identity's
-  `getName()`/`getUniversalId()` return the same object on every call, as
-  measured; other legacy getters make a new one per call, which is unmeasured.
 - **Known fidelity limits of the JS view representation** (Sol ctx r2 P2-2,
   P2-4; not fixed by decision, 2026-11-10: the harness runs trusted scripts,
   so it targets fidelity, not defence against reflective JS).
@@ -1035,19 +1014,6 @@ result scripts (eighteen engine runs). What it approximates or leaves out:
     (`enumerable`, ...) or a replaced `__proto__` on a view is not detected.
   - A write to a view that the script undoes before it ends (write, read,
     delete) is not detected, because the audit compares final state.
-- **Legacy Java objects admit only measured members** (Sol ctx r2 P2-6). A
-  legacy string answers `length()`, `toString()`, `==`, String conversion and
-  the `[object JavaObject]` tag. Any other `java.lang.String` or
-  `String.prototype` member (`substring`, `slice`, ...), an index, an
-  assignment, `in` or enumeration is a `<context>-unmeasured/java.lang.String.<member>`
-  fault. The legacy `claims` map answers entry reads, `for...in`, String
-  conversion and `get`/`containsKey`/`remove` (1 argument), `put` (2) and
-  `size` (0). Any other Java member, another argument count or a member
-  assignment faults. Known limit, as for `idm-exception/unmeasured`: a native
-  method borrowed from another object, or the object passed as a Java argument,
-  reaches the unguarded Java object. Where AM's scope stores a map binding bare
-  and wraps it afresh on every read, the emulator stores the guard itself
-  (`ScriptContextScope`); the script reads the same map either way.
 - **Next-gen `claims` is a script object.** Its seeded `toString`/`toJSON`
   render the measured `{sub, subname}` text. After the script changes the map,
   either one faults. `put` over an existing key faults as unmeasured. `delete
@@ -1056,41 +1022,31 @@ result scripts (eighteen engine runs). What it approximates or leaves out:
   by the harvest audit. A deleted key the script itself added is not detected.
 - **Numbers.** AM renders a returned `42` as `42.0` in both the userinfo body
   and the id token. JSON cannot tell those apart, and the effect holds `42`.
-- **Results AM was not measured with fault.** On next-gen that is anything but
+- **Results AM was not measured with fault.** That is anything but
   `undefined`, `{values}`, `{values, compositeScopes}` or an object without
-  `values`. On legacy it is anything but `undefined`, a `UserInfoClaims`, a
-  `LinkedHashMap` or a `{values, compositeScopes}` object. Inside the values, a nested null, a
+  `values`. Inside the values, a nested null, a
   non-finite number, a Java object other than a string, number, boolean, list
   or map, and a map with a non-string key all fault.
-- **Shared bindings are the decision node's.** `logger` (next-gen),
-  `httpClient`, `systemEnv`, and on next-gen `openidm`, `secrets`, `utils`,
+- **Shared bindings are the decision node's.** `logger`,
+  `httpClient`, `systemEnv`, `openidm`, `secrets`, `utils`,
   `require`, `jwtAssertion`, `jwtValidator`, `policy` and `emailService` were
-  measured as present only (`typeof`). The legacy Debug `logger`'s
-  `messageEnabled()`, `errorEnabled()` and `getName()`, and next-gen
-  `logger.getName()`, are faults.
+  measured as present only (`typeof`). `logger.getName()` is a fault.
 - **The AIC lane** runs only decision-node scripts, so an OIDC case runs
   locally only.
 
 ## Social IdP profile transformation context (listed 2026-11-10)
 
-`context: "SOCIAL_IDP_PROFILE_TRANSFORMATION"` runs on both engines from the
+`context: "SOCIAL_IDP_PROFILE_TRANSFORMATION"` runs from the
 overlay `packages/rhino-local/src/bindings/rhino/context-social-idp.cjs`, on
 the same `context-common.cjs` views, so the view-level gaps above apply here
 too, with the prefix `social-idp-unmeasured/`. The conformance test
 (`test/bindings/social-idp.e2e.test.ts`) replays the surface probe captured
-during a headless social login, plus eight one-line result scripts per engine
-(seventeen engine runs). What it approximates or leaves out:
+during a headless social login, plus one-line result scripts. What it approximates or leaves out:
 
-- **The transform only.** The legacy context id is shared with
+- **The transform only.** The context id is shared with
   `SocialProviderHandlerNodeV2`'s own `script`, which binds
   `normalizedProfile` (a JsonValue) and returns a JsonValue. That invocation
   was measured but is not emulated.
-- **Legacy `rawProfile` is a view of a JsonValue.** It answers `get`,
-  `isDefined`, `keys`, `size`, `getObject()` (whose map only prints),
-  `get(k).getObject()` of a string entry, String conversion and
-  `JSON.stringify`. On AIC `for...in` lists about seventy Java member names
-  (`asString`, `expect`, `isNull`, …); the view lists none. A Java-binding
-  candidate.
 - **Next-gen `JSON.stringify(rawProfile)` key order.** AIC lists the keys in
   the Java map's hash order, while String conversion and `keys()` keep the
   provider's order. The view keeps the provider's order everywhere. A
@@ -1098,36 +1054,25 @@ during a headless social login, plus eight one-line result scripts per engine
 - **Only string profile values were measured.** Reading any other value faults
   as `social-idp-unmeasured/rawProfile.<key>`. So does a seeded key named like
   a Java map method.
-- **Legacy node state.** `nodeState.get` answers a JsonValue (measured for a
-  string). A key the state does not hold faults, and of the JsonValue only
-  String conversion and `getObject()` of a string answer. `nodeState.keys()`
-  answers the keys held when the script started. Measured: a key the script
-  had just put was not listed. On next-gen `keys()` is AIC's class-shutter
-  error. The decision node's legacy `nodeState.get` returns plain values; it
-  was not compared in this slice.
 - **Seeded node state.** `selectedIdp` is seeded into the shared state, as the
   SelectIdPNode leaves it. AM also holds `expectProfileInformation` there.
   Its value was not read, so it is not seeded.
 - **Results AM was not measured with fault.** Measured: `undefined`, `null`
-  and a string (each a 401), a plain object, and on legacy
-  `new JsonValue(LinkedHashMap)`. A top-level `undefined` or `null` property is
+  and a string (each a 401), a plain object, . A top-level `undefined` or `null` property is
   kept as `null`. A nested null or undefined, a non-finite number, a function
-  or Java object in a plain result, a top-level number, boolean or array, and
-  a JsonValue over anything but a Java map all fault. Numbers reach the node as
+  or Java object in a plain result, a top-level number, boolean or array all fault. Numbers reach the node as
   doubles, which JSON cannot tell apart.
 - **Shared bindings are the decision node's.** `requestHeaders` and
   `requestParameters` were measured by key count only. The next-gen
   `httpClient`, `openidm`, `secrets`, `utils`, `require`, `jwtAssertion`,
   `jwtValidator`, `policy`, `emailService` and `systemEnv` were measured as
-  present only (`typeof`), and so were legacy `sharedState`,
-  `transientState` and `systemEnv`. Legacy `callbacks` is bound, and every
-  member faults. `logger.getName()` was measured on both engines.
+  present only (`typeof`). `logger.getName()` was measured.
 - **The AIC lane** runs only decision-node scripts, so a social IdP case runs
   locally only.
 
 ## Config provider node context (listed 2026-11-10)
 
-`context: "CONFIG_PROVIDER_NODE"` runs on both engines from the overlay
+`context: "CONFIG_PROVIDER_NODE"` runs from the overlay
 `packages/rhino-local/src/bindings/rhino/context-config-provider.cjs`, on the
 same `context-common.cjs` views, so the view-level gaps above apply here too,
 with the prefix `config-provider-unmeasured/`. The conformance test
@@ -1152,12 +1097,11 @@ What it approximates or leaves out:
   `undefined` (kept as `null`) at depths one and two, an array of a number and
   a string, and nested objects. A `null` or `undefined` inside an array, a
   non-finite number and a non-plain object (a `Date`, a view) fault as
-  `config-provider-unmeasured/config.<path>`. On legacy a `java.util.HashMap`
-  is accepted (measured with a string and a nested HashMap of a string); any
-  other Java value inside it faults. On next-gen `new java.util.HashMap()` is
+  `config-provider-unmeasured/config.<path>`.
+  `new java.util.HashMap()` is
   AIC's `TypeError`; the emulator's class shutter refuses it with a different
   message, but the run fails either way.
-- **Refusals.** Measured on both engines: `config` never assigned,
+- **Refusals.** Measured: `config` never assigned,
   `undefined`, `null`, a string, a number, a boolean, an array, a function and
   a script that only evaluates to a map, each an HTTP 500 with AM logging
   "Script must set 'config' to a Map.". A `var config;` that is never assigned
@@ -1172,28 +1116,16 @@ What it approximates or leaves out:
   transient value and absent key; `isDefined`; `putShared`/`putTransient`,
   read back by the next node) and `nodeState.keys()`, which is AIC's
   class-shutter error.
-- **Legacy node state.** `nodeState.get` answers a JsonValue (measured for a
-  string, a number, a nested object, a boolean and a transient value) of
-  which only String conversion and `JSON.stringify` answer; an absent key is
-  `null`. A key holding `null` faults. `nodeState.keys()` is a guarded
-  live set: `iterator()`, `hasNext()` and `next()` answer, `String()` of each
-  key is the key, and membership is live (a key put earlier in the script is
-  listed, and so are transient keys). Every other member faults. This is the
-  opposite of the social context, whose `keys()` is a start-of-script snapshot. AM's own keys (`authLevel`,
-  `maxAuthenticationSessionDuration`, `realm`, `username`) appear only if the
-  case seeds them.
 - **`idRepository` and `journey` under `for...in`.** AIC lists their Java
-  members, `java.lang.Object`'s included (legacy `idRepository` also lists
-  `getAttribute`, `setAttribute`, `addAttribute`); the emulator lists only its
+  members, `java.lang.Object`'s included; the emulator lists only its
   own JS members. No member of `idRepository` was called in this slice. A
   Java-binding candidate.
 - **Request maps.** `requestHeaders.get(name)` and
   `requestParameters.get(name)` are tagged Java lists here (measured
-  `[object JavaList]`, `[v1]`, on both engines). runtime.cjs's decision-node
-  maps answer a JS array on legacy and an untagged view on next-gen; that was
-  not compared for the decision node in this slice.
+  `[object JavaList]`, `[v1]`). runtime.cjs's decision-node maps answer an
+  untagged view; that was not compared for the decision node in this slice.
 - **`existingSession`** was measured only on a request without a session
-  cookie, where it is a `ReferenceError` on both engines (the next-gen
+  cookie, where it is a `ReferenceError` (the
   descriptor lists it). With a session it may be bound, as on the decision
   node; `given.existingSession` is refused until that is measured.
 - **The AIC lane** runs only decision-node scripts, so a config provider case
@@ -1201,7 +1133,7 @@ What it approximates or leaves out:
 
 ## OAuth2 validate scope context (listed 2026-11-10)
 
-`context: "OAUTH2_VALIDATE_SCOPE"` runs on both engines from the overlay
+`context: "OAUTH2_VALIDATE_SCOPE"` runs from the overlay
 `packages/rhino-local/src/bindings/rhino/context-oauth2-validate-scope.cjs`,
 on the same `context-common.cjs` views, so the view-level gaps above apply
 here too, with the prefix `oauth2-validate-scope-unmeasured/`. The
@@ -1220,13 +1152,12 @@ with the token's `scope` or AM's error. What it approximates or leaves out:
   AIC's `InternalError`, and every other member faults. A grant with a user
   (`password`, token exchange) was not measured here.
 - **What a script that catches a denial reads.** An uncaught
-  `throwInvalidScope(msg)` or legacy `new InvalidScopeException(msg)` is the
+  `throwInvalidScope(msg)` is the
   measured HTTP 400, with `msg` as the `error_description`. The thrown value
   is a plain object, matched by identity at the harvest. Reading `message` or
-  `name`, calling `String(e)` (including on a legacy exception that has not
-  been thrown yet), or `JSON.stringify(e)` faults
+  `name`, calling `String(e)` or `JSON.stringify(e)` faults
   (`...throwInvalidScope().message`, `.name`, `.toString`,
-  `JSON.stringify(...)`, and the legacy `InvalidScopeException` forms): none
+  `JSON.stringify(...)`): none
   of those was measured. Rhino calls `toString` from
   `JavaScriptException.getDetails` while it wraps the throw; that frame is
   the engine's and does not fault. A script that catches the exception and
@@ -1235,20 +1166,11 @@ with the token's `scope` or AM's error. What it approximates or leaves out:
   answers the request with a 500, but whether the call itself throws something
   the script could catch was not observed.
 - **`for...in` over the Java bindings.** AIC lists the Java members of
-  `scopeValidatorHelper` and of the legacy sets, `java.lang.Object`'s
+  `scopeValidatorHelper`, `java.lang.Object`'s
   included; the emulator lists only its own JS members.
-- **Legacy set order.** `requestedScopes` is a `java.util.HashSet`: duplicate
-  seeds collapse and the remaining order is first-seen, not the JVM's hash
-  order. `allowedScopes` and `defaultScopes` are `TreeSet`s: unique, and
-  ordered by Java's string order on the seed and on `add()`.
 - **Request value lists.** `String`, `length`, `size()` and `[i]` answer.
   `JSON.stringify`, `[].concat` and `Array.prototype.slice` fault: those were
   measured on the scope lists, not on `requestProperties`.
-- **Legacy set iterators.** `requestedScopes.iterator()` answers a Java
-  iterator on AIC whose members were not read; here every member of it
-  faults. A `TreeSet`'s is the class shutter's refusal on both.
-- **`String(s.length)` of a legacy Java string** (`logger.getName()`) prints a
-  JS function's source here, not Rhino's rendering of the Java method.
 - **`clientProperties` sets.** Reading `allowedGrantTypes`, `allowedScopes`
   or `allowedResponseTypes` is AIC's class-shutter error, so a case cannot see
   them either way.
@@ -1261,7 +1183,7 @@ with the token's `scope` or AM's error. What it approximates or leaves out:
 
 ## OAuth2 may-act context (listed 2026-11-10)
 
-`context: "OAUTH2_MAY_ACT"` runs on both engines from the overlay
+`context: "OAUTH2_MAY_ACT"` runs from the overlay
 `packages/rhino-local/src/bindings/rhino/context-oauth2-may-act.cjs`,
 on the same `context-common.cjs` views, so the view-level gaps above apply
 here too, with the prefix `oauth2-may-act-unmeasured/`. The conformance
@@ -1272,15 +1194,8 @@ What it approximates or leaves out:
 - **One entry point.** Only the access-token may-act script on a
   `client_credentials` grant was measured. Authorization-code, refresh and
   token-exchange requests were not, and `oidcMayActScript` was not.
-- **`for...in` over `token`.** Next-gen lists the Java bean members; legacy
-  throws the class shutter for `org.forgerock.oauth2.core.ResourceOwner`.
-  The emulator does neither. The conformance test drops `tokenMembers`.
-- **`String(s.length)` of a legacy Java string** (`logger.getName()`, the
-  identity name, `requestProperties.realm`) prints a JS function's source
-  here, not Rhino's rendering of the Java method. Same gap as validate scope.
-- **Legacy `session`.** The capture records `typeof` `object` and nothing
-  else. The emulator binds `null`, which has that `typeof`. Whether AIC's
-  value is `null` was not read.
+- **`for...in` over `token`.** AIC lists the Java bean members;
+  the emulator does not. The conformance test drops `tokenMembers`.
 - **`cookieName`'s value** on next-gen. The capture records `typeof`
   `string`. The characters were not read.
 - **`scopes.toArray()`.** The capture records `typeof`, `Array.isArray`,
@@ -1290,15 +1205,9 @@ What it approximates or leaves out:
   `JSON.stringify`, `[].concat` and `Array.prototype.slice` fault. JSON was
   measured on `scopes`, not on the request, and concat and slice were already
   refused.
-- **Legacy scope order and the iterator.** `scopes` is a `java.util.HashSet`,
-  whose iteration order is the JVM's hash order; the emulator keeps the
-  seed's order. `iterator()` answers a Java iterator on AIC whose members
-  were not read; here every member of it faults. Next-gen `iterator()` is
-  the `ArrayList$Itr` shutter on both sides.
 - **`clientProperties` sets.** Reading `allowedGrantTypes`, `allowedScopes`
   or `allowedResponseTypes` on next-gen is AIC's class-shutter error, so a
-  case cannot see them either way. On legacy those keys are absent from the
-  map the capture read (`redirectUris` included: the key is not there).
+  case cannot see them either way.
 - **Caught-exception objects.** The err-args and err-java probes recorded
   `typeof`, the tag, `name` and `String`. Other properties of the thrown
   value were not read.

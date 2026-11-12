@@ -158,7 +158,7 @@ function faultKey(row: Row, op: Op): string | null {
   return op;
 }
 
-/** Sol ctx r13's 26 green cases. Each must be a fault, not a grant. */
+/** Sol ctx r13's green cases (the next-gen ones). Each must be a fault, not a grant. */
 const SOL_R13: { id: string; ops: Op[] }[] = [
   { id: "validate.next.allowedScopes", ops: ["size"] },
   { id: "validate.next.availableScopes", ops: ["size"] },
@@ -376,17 +376,8 @@ describe("empty-read conformance (Sol ctx r13 P2-1, r14 P2-1 and P2-2)", () => {
     }
   });
 
-  it("grants identity getAttribute only what its capture read (Sol ctx r14 P2-1)", () => {
-    const rows = catalog.filter((r) => r.binding === "getAttribute");
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
-      expect(Object.keys(row.grant ?? {}).sort(), row.id)
-        .toEqual(["contains", "lengthAbsent", "size", "surface", "toArray", "toArrayLength"]);
-    }
-  });
-
   it("records Sol's round-13 and round-14 cases as faults", () => {
-    expect(SOL_R13).toHaveLength(26);
+    expect(SOL_R13).toHaveLength(8);
     const byId = new Map(catalog.map((row) => [row.id, row]));
     for (const entry of [...SOL_R13, ...SOL_R14]) {
       const row = byId.get(entry.id);
