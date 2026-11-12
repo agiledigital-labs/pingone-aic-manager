@@ -31,9 +31,8 @@ retry code at all.
 
 ### Evidence so far (unverified on AIC)
 
-This comes from the open-source fork (`OpenIdentityPlatform/OpenIDM`,
-`openidm-core/.../managed/ManagedObjectSet.java`, `patchResource` and `update`).
-AIC runs ForgeRock's closed build, so treat every point as a claim to measure.
+These are hypotheses about `patchResource` and `update`, so treat every point
+as a claim to measure.
 
 1. A `PATCH` with **no revision**:
    - reads the record and applies the operations in memory;
@@ -187,7 +186,7 @@ Things to state explicitly in the result:
    existing style: what was measured, on which storage mode, and what is still
    unmeasured. Follow §2: only live-verified claims, dated.
 2. **`docs/api/99-quirks-and-open-questions.md`**: dated notes where AIC differs
-   from the fork's source.
+   from the hypotheses above.
 3. **`docs/managed-object-aggregates.md`** (new), a best-practice guide:
    - the pattern above, with do/don't lists;
    - where each kind of logic belongs (`onUpdate` vs `postUpdate` vs endpoint);

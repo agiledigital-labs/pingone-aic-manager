@@ -36,8 +36,8 @@ the run log, the surprises, and where the brief was wrong.
   gained the concurrent-`PATCH` section, the array-operations subsection, and
   the relationship-notification subsection. Its Verified-against bullet dates
   those measurements. `docs/api/08-logs.md` gained the hook-writes subsection.
-  `docs/api/99-quirks-and-open-questions.md` records the four OpenIDM-fork
-  claims and the lost create. `docs/managed-object-aggregates.md` is the pattern
+  `docs/api/99-quirks-and-open-questions.md` records the four
+  hypotheses and the lost create. `docs/managed-object-aggregates.md` is the pattern
   guide. `README.md` in this directory is how to re-run.
   `improvement-suggestions-atomic-poc.md` is the `aic` list, checked against
   `src/managed` and `src/logs` before it was written. `setup.mjs` teardown

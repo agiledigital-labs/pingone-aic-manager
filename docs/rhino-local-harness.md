@@ -8,9 +8,8 @@ behaviour, and where exactly does it diverge?
 Bindings (standard objects as the prototype) matches **27 of 27** verified AM
 language rows from
 [`docs/api/12-script-bindings-matrix.md`](api/12-script-bindings-matrix.md).
-That is the language version you get when AM's
-`org.forgerock.am.scripting.disableES6` is true, so the bytecode's `if` that
-would call `setLanguageVersion(200)` is skipped. `VERSION_ES6` (200) is a worse
+That is the language version a decision-node script runs under on AIC.
+`VERSION_ES6` (200) is a worse
 match (17/27): it accepts `let`, `for-of`, object shorthand, destructuring, and
 the ES2015 collection globals, all of which AIC rejects.
 
@@ -20,11 +19,9 @@ closed both; they are no longer a fidelity boundary.
 
 This file does **not** claim a live tenant probe. The AIC column is copied from
 the matrix (runtime-verified 2026-06-03 through 2026-07-30 via
-`scripts/rhino-script-tester/`). Historical local measurements in this document were taken in the AM image against Rhino 1.7.14.1 from
-`us-docker.pkg.dev/forgeops-public/images/am:2026.3.1-2053`
-(`@sha256:358d7e1e13b27619b742a759fd5a85d4fcc57cc75811027b9f3c0019a0bd9be3`).
-That image is AM 8.1.1. AIC self-reports `9.0.0-SNAPSHOT`. Where the image
-bytecode and AIC's observed JS disagree, AIC wins.
+`scripts/rhino-script-tester/`). Local measurements in this document were taken
+against Rhino 1.7.14.1. Where the local Rhino and AIC's observed JS disagree,
+AIC wins.
 
 ## How to run
 
@@ -213,20 +210,21 @@ unmeasured.
 
 The runner needs a host JDK 25: `AIC_SCRIPT_TESTER_JAVA_HOME`, then `JAVA_HOME`, then
 `java`/`javac` on `PATH` (`shell.nix` provides `temurin-bin-25`). The Rhino jar
-comes from Maven Central, verified by SHA-256 — it is byte-identical to the one
-in the AM image — and it and the compiled runner classes are cached under
+comes from Maven Central, verified by SHA-256, and it and the compiled runner
+classes are cached under
 `~/.cache/aic-script-tester` (`AIC_SCRIPT_TESTER_CACHE` overrides). On start the runner
 reports its timezone, locale, charset, Java feature release and Rhino version,
-and the client refuses a JVM whose answers differ from the AM image's.
+and the client refuses a JVM whose answers differ from the expected ones.
 
-`AIC_SCRIPT_TESTER_JVM` picks the lane: `host` (default), `container` (the AM image's
-JVM), or `both`, which runs every job on both and fails on any difference in
-the response. The last two need Docker and the AM image (pinned by digest in
-`DEFAULT_AM_IMAGE`); CI runs `both`. Only the host lane gets flags: it pins
+`AIC_SCRIPT_TESTER_JVM` picks the lane: `host` (default), `container` (the
+reference JVM image's JVM), or `both`, which runs every job on both and fails
+on any difference in the response. The last two need Docker and the reference
+JVM image (the official Temurin JRE, pinned by digest in
+`DEFAULT_REFERENCE_IMAGE`); CI runs `both`. Only the host lane gets flags: it pins
 UTC and en_US.UTF-8 by property and caps the JVM at a 256 MB heap with the
 serial collector and C1 only, to fit an 8 GB box. The container lane runs the
 image's JVM on the image's own defaults, so `both` compares the constrained
-host against an unconstrained AM JVM rather than against a copy of itself.
+host against an unconstrained JVM rather than against a copy of itself.
 
 ```bash
 nix-shell  # or direnv: shell.nix adds Temurin 25 and Node 24
@@ -418,62 +416,35 @@ configure one, rather than with a bare spawn error.
 
 ## Local Context configuration
 
-The runner (`AmContextFactory.java`) reproduces AM 8.1.1's
-`ObservedJavaScriptContext` constructor, measured with `javap -p -c` on
-`org.forgerock.openam.scripting.timeouts.ObservedContextFactory$ObservedJavaScriptContext`:
+The runner (`AmContextFactory.java`) configures its Rhino `Context` as:
 
 ```text
 setOptimizationLevel(-1);
 setInstructionObserverThreshold(1000);
-if (!disableES6) setLanguageVersion(200);   # 200 == Context.VERSION_ES6
+setLanguageVersion(0);                      # Context.VERSION_DEFAULT
+setMaximumInterpreterStackDepth(10000);
+hasFeature(cx, 21) == true
 ```
 
-plus the other measured factory settings that do not depend on language version:
-
-- `setMaximumInterpreterStackDepth(10000)` (property
-  `org.forgerock.openam.scripting.maxinterpreterstackdepth`, default 10000)
-- `hasFeature(cx, 21) == true`
-
-**Feature 21 is `Context.FEATURE_ENABLE_JAVA_MAP_ACCESS`.** Confirmed with
-`javap -p -constants` on `org.mozilla.javascript.Context` from
-`rhino-1.7.14.1.jar`. The default `ContextFactory.hasFeature` returns **false**
-for 21; AM's `ObservedContextFactory` overrides it to true. It is about Java
-`Map` property access from JS, not ES6 syntax. The language corpus does not
-exercise it; it is on so the local Context matches AM's factory.
+**Feature 21 is `Context.FEATURE_ENABLE_JAVA_MAP_ACCESS`.** The default
+`ContextFactory.hasFeature` returns **false** for it. It is about Java `Map`
+property access from JS, not ES6 syntax. The language corpus does not exercise
+it; it is on so Java maps behave as they do on the tenant.
 
 Language version is a CLI argument so the same corpus can run under several. The
 run that produced the tables below used `0`, `180` (`VERSION_1_8`), and `200`.
 `VERSION_1_7` (170) was spot-checked: `let` already works there, so it cannot be
 AIC.
 
-### Image bytecode vs AIC observed JS
+### Language version
 
-The image default is `disableES6=false`, which **would** set `VERSION_ES6`.
-AIC's measured JS is `VERSION_DEFAULT`. A later harness that wants AIC behaviour
-must pin language version **0**, not copy the image's default. We did not read
-AIC's system properties; `disableES6=true` is the economical explanation, not a
-measured tenant setting.
+AIC's measured JS is `VERSION_DEFAULT`, so the harness pins language version
+**0**.
 
-Small bytecode notes the task prompt did not have:
+### Scope object
 
-- `RhinoScriptEngineFactory` is
-  `org.forgerock.openam.scripting.factories.RhinoScriptEngineFactory`.
-- `setWrapFactory(new AMWrapFactory(...))` runs only when
-  `EvaluatorVersion.hasFeature(FILTERED_BINDINGS)` is true, in
-  `getContext(EvaluatorVersion)`, not in the `ObservedJavaScriptContext`
-  constructor.
-- The wrap factory and class shutter are not on the language-corpus path.
-
-### Scope object — measured, not guessed
-
-`RhinoScriptEngine.eval(Reader, ScriptContext)` (javap `-p -c` on
-`org.forgerock.openam.scripting.factories.RhinoScriptEngine`):
-
-1. `getScope(cx, scriptContext)` → `makeScriptable(cx, scriptContext)`
-2. `Context.evaluateReader(scope, reader, filename, 1, null)`
-
-`makeScriptable` does **not** exec against `initStandardObjects()` as a
-top-level scope. It builds:
+A script is not executed against `initStandardObjects()` as a top-level scope.
+The runner builds:
 
 ```text
 ScriptContextScope scope = new ScriptContextScope(scriptContext);
@@ -490,27 +461,22 @@ back `undefined`: Rhino's `putConstProperty` silently drops the initializer when
 the scope is not `ConstProperties`, after `defineConstProperty` has already
 `put` `Undefined` via `Scriptable.put`.
 
-A hypothesis that the standard-objects object was a **shared parent** was wrong
-on both words. It is the **prototype**, and AM **does not share it** —
-`initStandardObjects()` runs on every eval. Isolation of `Object.prototype`
+The standard-objects object is the scope's **prototype**, not a shared parent,
+and it is not shared between jobs — `initStandardObjects()` runs on every eval.
+Isolation of `Object.prototype`
 mutations is therefore free. The long-lived runner does the same, so job N
 cannot observe job N-1's globals _or_ prototype mutations. Sharing a sealed
 standard-objects prototype is an optimisation this slice did not need: per-job
 `initStandardObjects` is inside the ~0.5 ms job cost below.
 
-`getScope` also installs CommonJS `require` when `LIBRARY_SCRIPT` is on and
-`libraryBindings` is present. Decision-node eval does not take that path; the
-runner does not model it.
-
-AM's `ScriptContextScope` class depends on `org.forgerock.util.Reject`. The
-harness replicates the bytecode (`packages/rhino-local/java/ScriptContextScope.java`)
-rather than loading the AM class, so forgerock-util is not on the classpath.
+Decision-node eval does not install a CommonJS `require`; the runner does not
+model one here.
 
 ## Chosen configuration for a later harness
 
 | Knob                           | Value                                        |
 | ------------------------------ | -------------------------------------------- |
-| Rhino jar                      | `rhino-1.7.14.1.jar` from the AM 8.1.1 image |
+| Rhino jar                      | `rhino-1.7.14.1.jar` from Maven Central      |
 | Language version               | **0 (`VERSION_DEFAULT`)**                    |
 | Optimization                   | `-1` (interpreted)                           |
 | Instruction observer threshold | `1000`                                       |
@@ -520,7 +486,7 @@ rather than loading the AM class, so forgerock-util is not on the classpath.
 | Wrap factory / class shutter   | not installed                                |
 
 `VERSION_DEFAULT` plus that scope matches AIC 27/27. Use both. Do not use
-`VERSION_ES6` because it is the image default. Do not exec against
+`VERSION_ES6`, which accepts syntax AIC rejects. Do not exec against
 `initStandardObjects()` as the top-level scope: that is what made top-level
 `const` initialize locally while AIC reads `undefined`.
 
@@ -559,7 +525,7 @@ globals column is a real finding.
 
 Default parameters fail to parse even at `VERSION_ES6`
 (`missing ) after formal parameters`). That row is version-independent in this
-Rhino, not evidence about `disableES6`.
+Rhino.
 
 Object shorthand at `VERSION_1_8` still fails, but with a different message
 (`SyntaxError: invalid object initializer`) than AIC recorded, so it is `!=`
@@ -579,8 +545,8 @@ even though both sides reject the source.
 | `Proxy`          | `typeof` `"undefined"`                                 | MATCH       | MATCH     | MATCH                       |
 | `Reflect`        | `typeof` `"undefined"`                                 | MATCH       | MATCH     | MATCH                       |
 
-`Proxy` and `Reflect` stay `undefined` at `VERSION_ES6`. They are not evidence
-for `disableES6` either.
+`Proxy` and `Reflect` stay `undefined` at `VERSION_ES6`, so they do not
+distinguish language versions.
 
 ### Scores
 
@@ -649,8 +615,8 @@ file and line, not `<eval>`. Optional `preamble` is eval'd first under
 `preambleName` (default `<preamble>`) so loading mock source later does not
 shift author line numbers.
 
-`timeoutMs` is per-job. `0` is AM's `NO_TIMEOUT`. Omitted uses a 10s harness
-default so a runaway cannot hang the process. AM's observer threshold of 1000
+`timeoutMs` is per-job. `0` means no timeout. Omitted uses a 10s harness
+default so a runaway cannot hang the process. The observer threshold of 1000
 and the `Interrupt.` message are reproduced.
 
 `globals` is a JSON object placed in `ENGINE_SCOPE` Bindings before eval. This
@@ -669,7 +635,7 @@ real for script-defined state.
 
 `npm --prefix scripts/rhino-local/ts run measure` (now `npm -w packages/rhino-local run measure`) — three spawn/ready cycles,
 then 200 sequential `1+1` jobs on the first process. Host times include the Node
-client and docker stdio; the JVM is Temurin 25.0.4 inside the AM image.
+client and docker stdio; the JVM is Temurin 25.0.4 inside the reference JVM image.
 
 - Spawn until ready (docker + JVM), n=3: min 431 ms, median 431 ms, mean 431 ms,
   p95 432 ms, max 432 ms
@@ -697,30 +663,19 @@ Easier than the contradiction suggested:
 - Bindings inject into ENGINE_SCOPE, which is where AM puts them. The mock
   surface generated into `generated/scripted-decision-mocks.cjs` can ride
   `preamble` (keeps author line numbers) or `globals` (JSON-shaped values).
-- `AMWrapFactory` **loads** from `openam-scripting-8.1.1.jar` plus the Rhino jar
-  (`Class.forName` succeeds). A later slice can reference the class without
-  pulling the rest of AM onto the compile classpath.
 
 Harder, or at least bounded:
 
-- **Do not trust the image default language version.** AIC's JS is
-  `VERSION_DEFAULT`; the image would enable ES6 unless
-  `org.forgerock.am.scripting.disableES6` is set. Pin 0.
-- `RhinoSandboxClassShutter` does **not** load standalone:
-  `NoClassDefFoundError: com.google.common.cache.CacheLoader`. Constructing
-  `AMWrapFactory` needs
-  `org.forgerock.openam.annotations.service.SupportedElementService` from
-  another jar; the shutter also wants `WildcardSet`, `SystemPropertiesManager`,
-  and friends. This slice did not install either. Java `Map` property access
-  works because feature 21 is on; the wrap factory's filtered bindings and the
-  shutter allowlist are still unmodelled. A later slice that wants AM's real
-  wrap factory or class shutter must extract more jars (and Guava) or
-  approximate.
+- **Pin language version 0.** AIC's JS is `VERSION_DEFAULT`; enabling ES6 would
+  accept syntax AIC rejects.
+- Java `Map` property access works because feature 21 is on; the wrap
+  factory's filtered bindings and the shutter allowlist are still unmodelled by
+  this slice and need approximating.
 - Default parameters, `for (const … in/of …)`, `for (const i = 0; …)`, and
   duplicate `const` in one function fail at every language version including
   ES6. Those lint rules stay, even if someone later turns ES6 on.
-- The runner puts AM's `context` (the JSR-223 `ScriptContext` Java object) on
-  every scope, because `makeScriptable` does. No captured binding is named
+- The runner puts `context` (the JSR-223 `ScriptContext` Java object) on
+  every scope, as the tenant does. No captured binding is named
   `context`; a later mock must not collide with it, or must overwrite it
   deliberately.
 
@@ -1129,10 +1084,8 @@ chain with one step read, one final read, and one cleanup delete at 45 calls.
 
 ## Unsettled
 
-- Whether AIC actually sets `org.forgerock.am.scripting.disableES6=true`, or
-  some other 9.0.0-SNAPSHOT path leaves the language version at 0. The observed
-  JS is 0 either way. Reading the property needs a tenant (or an AIC image),
-  which this slice did not touch.
+- Which tenant setting leaves the language version at 0. The observed JS is 0
+  either way; this slice did not look for the cause.
 - LIBRARY scripts (function-like top level, CommonJS `require` via
   `libraryBindings`). Measured 2026-09-12 to be the single largest fidelity gap
   in the real-script corpus: live AIC reports `typeof require === "function"`
@@ -1153,8 +1106,8 @@ chain with one step read, one final read, and one cleanup delete at 45 calls.
 - Whether `If-None-Match: *` provides an atomic create guard for AM scripts,
   nodes, and trees. Until measured, cross-host simultaneous execution of one
   `aic.id` is unsupported.
-- `AMWrapFactory` behaviour and the class shutter allowlist. Approximating the
-  shutter is still acceptable; using AM's class is not free.
+- Wrap-factory behaviour and the class shutter allowlist. Approximating the
+  shutter is still acceptable.
 - How the generated mock `.cjs` should be loaded: `preamble` vs concatenating
   into `source` vs a third field. `preamble` is there so the next slice does not
   have to pick concatenation (which would break source-line mapping).

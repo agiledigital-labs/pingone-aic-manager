@@ -294,22 +294,23 @@ jobs:
           npm run type-check
 
   # The local Rhino harness (packages/rhino-local). Developers run it on a host
-  # JVM; this job runs every test on the host JVM AND the AM image's JVM
-  # (AIC_SCRIPT_TESTER_JVM=both), and a job the two answer differently fails. That is
-  # the evidence that leaving the container changed nothing a script can see —
-  # a host-only run here would prove nothing about the image.
+  # JVM; this job runs every test on the host JVM AND the reference JVM image's
+  # JVM (AIC_SCRIPT_TESTER_JVM=both), and a job the two answer differently
+  # fails. That is the evidence that leaving the container changed nothing a
+  # script can see — a host-only run here would prove nothing about the image.
   rhino-local:
     name: rhino-local harness
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
-      # The exact build in the AM image (Temurin-25.0.4+7). The harness itself
-      # only insists on Java 25; pinning the patch here is what makes a
-      # divergence mean "host JVM vs image JVM" and not "whatever CI got".
+      # The exact build in the reference JVM image (Temurin-25.0.4+7). The
+      # harness itself only insists on Java 25; pinning the patch here is what
+      # makes a divergence mean "host JVM vs image JVM" and not "whatever CI
+      # got".
       # setup-java matches Adoptium's full version string, so "25.0.4+7" finds
       # nothing, and a bare "25.0.4" would take the 25.0.4+101 rebuild.
-      - name: Install Java (AM's Temurin)
+      - name: Install Java (Temurin)
         uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -327,8 +328,8 @@ jobs:
 
       # Read from jvm.ts so CI pulls the image the harness will run, not a
       # second copy of the tag that can drift from it.
-      - name: Pull the AM image
-        run: docker pull "$(node --input-type=module -e 'import("./packages/rhino-local/src/jvm.ts").then((m) => console.log(m.DEFAULT_AM_IMAGE))')"
+      - name: Pull the reference JVM image
+        run: docker pull "$(node --input-type=module -e 'import("./packages/rhino-local/src/jvm.ts").then((m) => console.log(m.DEFAULT_REFERENCE_IMAGE))')"
 
       # The environment check compares only the Java feature release; this
       # puts both full builds in the log so a patch drift is visible.
@@ -336,7 +337,7 @@ jobs:
         run: |
           java -version
           docker run --rm --entrypoint /opt/java/openjdk/bin/java \
-            "$(node --input-type=module -e 'import("./packages/rhino-local/src/jvm.ts").then((m) => console.log(m.DEFAULT_AM_IMAGE))')" -version
+            "$(node --input-type=module -e 'import("./packages/rhino-local/src/jvm.ts").then((m) => console.log(m.DEFAULT_REFERENCE_IMAGE))')" -version
 
       - name: rhino-local typecheck
         run: npm -w packages/rhino-local run typecheck
@@ -344,7 +345,7 @@ jobs:
       - name: rhino-local lint
         run: npm -w packages/rhino-local run lint && npm -w packages/rhino-local run lint:am
 
-      - name: rhino-local tests (host vs AM image)
+      - name: rhino-local tests (host vs reference JVM image)
         env:
           AIC_SCRIPT_TESTER_JVM: both
         run: npm -w packages/rhino-local test

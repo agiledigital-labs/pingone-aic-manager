@@ -5,7 +5,7 @@ import java.util.Map;
 
 /**
  * Minimal JSON parse/stringify for the runner protocol. No extra jars: the host
- * has no JDK and the AM image classpath for this harness is Rhino only.
+ * has no JDK and the classpath for this harness is Rhino only.
  */
 final class Json {
 

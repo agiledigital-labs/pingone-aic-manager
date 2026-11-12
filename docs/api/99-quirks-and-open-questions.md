@@ -1716,11 +1716,9 @@ a throwaway type; `onDelete`/`postDelete` are unmeasured. Dumping `context`
 leaks the caller's bearer token. Detail: `docs/api/10-managed-objects.md`
 ("Hook bindings").
 
-## 2026-11-05 — revision-less `PATCH` matches the OpenIDM retry; a confirmed managed create can still vanish
+## 2026-11-05 — revision-less `PATCH` retries on conflict; a confirmed managed create can still vanish
 
-AIC does not run the open-source fork. The four claims below are from
-`OpenIdentityPlatform/OpenIDM`, `openidm-core/.../managed/ManagedObjectSet.java`
-(`patchResource` and `update`), and were measured on a sandbox on 2026-11-05
+The four claims below were hypotheses, measured on a sandbox on 2026-11-05
 with throwaway managed objects. Tables: `docs/api/10-managed-objects.md`
 ("Concurrent `PATCH` and hooks") and `pocs/managed-aggregate-cas/RESULTS.md`.
 
@@ -1736,7 +1734,7 @@ with throwaway managed objects. Tables: `docs/api/10-managed-objects.md`
    The second call with the stale revision was `412` and stored nothing.
 3. Relationship fields are stripped before the conditional write and persisted
    afterwards. `postUpdate` runs after that, once per successful write.
-   **Matches, with a storage difference the fork note does not spell out.**
+   **Matches, with a storage difference the hypothesis does not spell out.**
    `onUpdate` during a link add does not see the link that request is adding,
    mapped or generic, so a derivation from the relationship is stale and which
    subset it sees changes run to run. `postUpdate` ran once per committed parent
@@ -1744,13 +1742,13 @@ with throwaway managed objects. Tables: `docs/api/10-managed-objects.md`
    run the parent's hooks. On a mapped pair it does move the parent's `_rev`
    (the link lives on the parent's entry); on a generic pair the `_rev` stays
    put. `notify` / `notifySelf` do not add a second, post-persist parent run for
-   the link add. The strip itself was not observed by reading AIC's bytes; the
+   the link add. The strip itself was not observed; the
    hook timing and the `_rev` split are what was measured.
 4. `update` (`PUT`) passes the request's revision straight through, and with no
    revision is an unconditional last-writer-wins. **The no-revision half
    matches.** Concurrent revision-less `PUT`s all returned `200` and kept one or
    two of twenty updates. `PUT` with a revision was not measured, so "passed
-   straight through" is still only the fork's claim.
+   straight through" is still only a hypothesis.
 
 The same day, during install of those throwaway types, three sequential
 `aic managed object create` calls each confirmed, and the second type was gone
