@@ -1147,14 +1147,15 @@ test must not depend on the order of a serialised response.
 
 `rhino-local` emulates the three tables on the next-gen engine (the legacy engine
 has no `openidm`): `result` and every has-many array a read projects (a bare
-name beside `*` included) are a list with `length`, `[i]`, `size()` and
-`get(i)`, no array methods and no `toJSON` member. `get(i)` with any integer
+name beside `*` included) are a `java.util.List` with `length`, `[i]`, `size()`
+and `get(i)`, no array methods and no `toJSON` member. `get(i)` with any integer
 out of range throws the measured `InternalError`. `[].concat(v)` copies it into
 a JS array, and `JSON.stringify` writes a JSON array, nested lists included.
 `String(v)` renders Java's form of strings, booleans, null, maps and lists, in
-the record's own key order, and faults `openidm-list-unmeasured` on a number.
-The query response's keys come in the measured enumeration order, and `JSON.stringify` writes them in that order too (AIC's serialised order varies). Every other call shape
-and `List` member, `forEach` included, faults `openidm-list-unmeasured`. Other
+the record's own key order; a number is written as the script engine holds it
+(`3`), which was not measured on AIC.
+The query response's keys come in the measured enumeration order, and `JSON.stringify` writes them in that order too (AIC's serialised order varies). The other
+`List` members (`forEach`, `isEmpty`, `contains`, `indexOf`, `toArray`) answer as Java's list does; they were not probed on AIC. Other
 array-valued fields of a record, a has-many array read with `*` alone or with
 no field list, and nested arrays inside a record are still JS arrays; whether
 AIC hands those over as Java lists too is not measured.

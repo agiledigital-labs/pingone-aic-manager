@@ -13,6 +13,12 @@ handwritten overlay in `src/bindings/rhino/runtime.cjs` replaces it. A mock
 that returned `undefined` would turn a missing feature into a passing test. That
 throw is a [harness fault](#harness-faults-refusals-a-script-cannot-catch)
 (`not-mocked/<binding>.<method>`), so catching it does not rescue the case.
+A method the generated surface does not declare at all is refused the same way
+(`not-implemented/<binding>.<method>`), on every service object and on the
+objects nested in one (`utils.crypto.subtle`): AIC may have it, so the call is
+not answered with a `TypeError` a script could catch and carry on from. The
+exceptions are the methods measured absent on AIC (the next-gen `logger` has no
+`message`, `warning` or `*Enabled`), which stay the engine's `TypeError`.
 
 Implemented (still fail-loud for missing fixtures and for every method the
 overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
@@ -64,20 +70,16 @@ here and failed on the tenant.
 `Array.prototype.concat.call(v, …)` and `JSON.stringify` by every route were
 measured on 2026-11-10. An empty header or parameter is a list of one empty
 string, and a key not sent is `null`, so `[].concat(missing)` is `[null]`.
-A size-zero list was therefore never seen on AIC: a `[]` seed is accepted and
-answers `size()` (0), but reading its `length`, rendering it (`String(v)`,
-`toString`, `valueOf`, coercion), `concat` and `JSON.stringify` fault
-`request-list-unmeasured`. An array method borrowed onto it faults when it
-reads that surface: `slice`, `map` or `Array.from` at once, but `keys`,
-`values` and `entries` return an iterator and fault at its first `next()`.
-On the JVM `Array.prototype.toString.call(v)` faults too; under node:vm (the
-binding test helpers) it is `"[object Object]"`, unfaulted. Beyond those, only `size()` and `get(i)` with an index in range were measured.
-Any other call shape (`get()`, `get("0")`, an out-of-range index, `size(1)`)
-and every other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`,
-`iterator`, …) faults `request-list-unmeasured`. One gap: an out-of-range
-bracket read (`v[5]`) returns `undefined` without a fault, because an index
-read cannot be intercepted here; AIC's answer is unmeasured, so use `get(i)`
-with an index below `size()`. The simplest copy is `[].concat(v)`; the loop
+
+The value is a real `java.util.List`, so every other member answers as Java
+does: `isEmpty()`, `contains(x)`, `indexOf(x)`, `toArray()`,
+`forEach(function (x) {…})`. `get(i)` out of range throws
+`InternalError: Index 2 out of bounds for length 2`, a wrong argument shape is
+Rhino's catchable `Can't find method java.util.List.get().`, and `iterator()`
+is refused by the class allow-list, as `getClass()` is. A `[]` seed is an
+empty list (`size()` 0, `String(v)` `"[]"`); AIC itself hands over `[""]` for
+an empty value. An out-of-range bracket read (`v[5]`) is `undefined`.
+The simplest copy is `[].concat(v)`; the loop
 below also works:
 
 ```js
@@ -106,10 +108,11 @@ var ids = [].concat(openidm.query("managed/alpha_user", params, ["_id"]).result)
   .map(function (r) { return r._id; });
 ```
 
-Any other `List` member or call shape (`forEach`, `isEmpty`, `get(0.5)`, an
-index beyond a Java `int`, …) faults `openidm-list-unmeasured`, and so does `String(v)` of a list holding a
-number, whose Java rendering was not measured. A has-many array read with `*`
-alone, or with no field list, is still a JS array.
+It is a real `java.util.List`, so `forEach`, `isEmpty`, `contains`, `indexOf`
+and `toArray` answer as Java does, and an empty result is an empty list.
+`String(v)` of a list holding a number writes the number as the script engine
+does (`3`, not `3.0`); AIC's rendering of that one was not measured. A has-many
+array read with `*` alone, or with no field list, is still a JS array.
 
 ## Using the installed package
 
@@ -203,6 +206,7 @@ rhino-local harness fault script-defect/send-body-js-date: httpClient.send body.
 
 Every fault has a stable id: a kebab-case slug, or a family prefix such as
 `arity-unknown/<binding.method>`, `not-mocked/<binding.method>`,
+`not-implemented/<binding.method>`,
 `fixture/<kind>` or `script-defect/<kind>`.
 Ids are never derived from line numbers or message text, so they survive a
 release. [`docs/rhino-local-gaps.md`](../../docs/rhino-local-gaps.md#harness-faults)

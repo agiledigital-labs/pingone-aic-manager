@@ -12,7 +12,6 @@ import { decisionNodeClassAllowList } from "../../src/bindings/allowlist.ts";
 import { mockPreamble, withHarvest } from "../../src/bindings/preamble.ts";
 import { parseHarvest } from "../../src/bindings/harvest.ts";
 import type { Given } from "../../src/case/types.ts";
-import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { repoRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { loadBehaviour, sandboxFaults } from "./load-behaviour.ts";
