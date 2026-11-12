@@ -93,6 +93,58 @@ describe("a scripted decision's lists are Java lists", () => {
   }, 60_000);
 });
 
+describe("node state keys are a Java set and a map's values a Java list", () => {
+  let runner: RhinoRunner;
+  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
+  afterAll(async () => { await runner?.close(); }, 30_000);
+
+  const answer = async (name: string, body: string, attributes: Record<string, string>) => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name,
+      script: node(body),
+      given: { registeredObjectAttributes: attributes },
+      expect: { outcome: "true", allowUndeclared: { sharedState: true } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    return effects.sharedState.final.out;
+  };
+  const MAP = 'nodeState.get("objectAttributes")';
+
+  it.each([
+    // Measured (docs/api/12): keys() is a Java set, iterated with iterator(), and it lists a
+    // key put earlier in the script. An array standing in for it had map, length and get.
+    ["keys() is not an array", `nodeState.putShared("zz", 1); var k = nodeState.keys(); return [Array.isArray(k), typeof k.map, typeof k.length, typeof k.get, k.contains("zz"), k.contains("nope"), k.isEmpty()].join("|");`,
+      "false|undefined|undefined|undefined|true|false|false"],
+    ["keys() is walked with iterator()", `nodeState.putShared("zz", 1); var it = nodeState.keys().iterator(); var seen = []; while (it.hasNext()) { seen.push(String(it.next())); } return seen.indexOf("zz") !== -1 && seen.length === nodeState.keys().size();`,
+      "true"],
+    ["an array method on keys() is the engine's refusal", `try { nodeState.keys().map(function (x) { return x; }); return "returned"; } catch (e) { return e.name + ": " + String(e.message).split(" in object ")[0]; }`,
+      "TypeError: Cannot find function map"],
+    // Measured: values() is a snapshot list; size(), get(i) and toArray() work and iterator() is refused.
+    ["values() is a Java list", `var v = ${MAP}.values(); return [Object.prototype.toString.call(v), Array.isArray(v), typeof v.map, v.size(), v.get(0), v.toArray().length, v.contains("p")].join("|");`,
+      "[object JavaList]|false|undefined|2|p|2|true"],
+    ["values() is a snapshot", `var m = ${MAP}; var v = m.values(); m.put("later", "l"); return v.size() + "|" + m.values().size();`,
+      "2|3"],
+    ["values().iterator() is refused by class", refusal(`${MAP}.values().iterator()`),
+      'InternalError: Access to Java class "java.util.ArrayList$Itr" is prohibited.'],
+    ["an array method on values() is the engine's refusal", refusal(`${MAP}.values().join()`),
+      "TypeError: Cannot find function join in object [p, q]."],
+  ])("%s", async (name, body, want) => {
+    expect(await answer(name, body, { plain: "p", other: "q" })).toBe(want);
+  }, 60_000);
+
+  it("an empty map's values() is an empty list", async () => {
+    expect(await answer("empty values", `var v = ${MAP}.values(); return [v.size(), v.isEmpty(), String(v), v.toArray().length, JSON.stringify(v)].join("|");`, {}))
+      .toBe("0|true|[]|0|[]");
+  }, 60_000);
+
+  // A decision node always has AM's own keys, so its set is never empty; an empty one is asked
+  // of the set itself.
+  it("keys() minus everything is an empty set", async () => {
+    expect(await answer("empty keys", `var k = nodeState.keys(); k.clear(); return [k.size(), k.isEmpty(), String(k), k.iterator().hasNext()].join("|");`, {}))
+      .toBe("0|true|[]|false");
+  }, 60_000);
+});
+
 describe("a service object refuses a member the harness does not have", () => {
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);

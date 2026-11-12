@@ -939,9 +939,10 @@ function __rhinoLocalMergeBucket(bucketName, object) {
   }
 }
 
-// A java.util.List the decision node's own services hand over (node state
-// keys, a map's values, an identity attribute), as a JS array carrying the
-// list's methods.
+// The stand-in, where there is no JVM, for a Java collection the decision
+// node's own services hand over (node state keys, a map's values, an identity
+// attribute): a JS array carrying the collection's methods. On the JVM each
+// of those is the real java.util collection.
 function __rhinoLocalJavaList(items) {
   var list = [];
   var i;
@@ -1007,6 +1008,7 @@ var __rhinoLocalJavaListHost = (function (hostOp) {
   return {
     list: function (items, immutable) { return hostOp("javaList", items, immutable === true); },
     items: function (value) { return hostOp("javaListItems", value); },
+    set: function (items) { return hostOp("javaSet", items); },
   };
 })(typeof __rhinoLocalHostOp === "function" ? __rhinoLocalHostOp : null);
 
@@ -1454,8 +1456,14 @@ function __rhinoLocalNodeStateKeyNames() {
   return names;
 }
 
+// Measured: a Java set, iterated with iterator(). On the JVM it is a real
+// java.util.HashSet, so every member and the order are Java's own; the array
+// below stands in where there is no JVM.
 nodeState.keys = function () {
   __rhinoLocalExpectArity("nodeState.keys", arguments, 0);
+  if (__rhinoLocalJavaListHost !== null) {
+    return __rhinoLocalJavaListHost.set(__rhinoLocalNodeStateKeyNames());
+  }
   var list = __rhinoLocalJavaList(__rhinoLocalNodeStateKeyNames());
   __rhinoLocalHide(list, "iterator", function () {
     var index = 0;
@@ -1628,8 +1636,12 @@ function __rhinoLocalAsJavaMap(source) {
     return view;
   });
   // Measured: a snapshot list; size(), get(i) and toArray() work, iterator()
-  // is refused (ArrayList$Itr).
+  // is refused (ArrayList$Itr). On the JVM it is a real java.util.ArrayList
+  // and the refusal is the class shutter's.
   __rhinoLocalHide(map, "values", function () {
+    if (__rhinoLocalJavaListHost !== null) {
+      return __rhinoLocalListView(values());
+    }
     var list = __rhinoLocalJavaList(values());
     __rhinoLocalHide(list, "iterator", function () {
       throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
@@ -4317,6 +4329,9 @@ idRepository.getIdentity = function (userName) {
       refresh("getAttributeValues");
       if (!found) {
         missing("getAttributeValues(String)");
+      }
+      if (__rhinoLocalJavaListHost !== null) {
+        return __rhinoLocalListView(values(attributeName));
       }
       var list = __rhinoLocalJavaList(values(attributeName));
       __rhinoLocalHide(list, "includes", undefined);

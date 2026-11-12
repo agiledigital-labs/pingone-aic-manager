@@ -1134,11 +1134,6 @@ export const realCases: RealEntry[] = [
     {
       given: identityGiven,
       rewrites: probeUserIs(ALICE_ID),
-      gap: {
-        reason:
-          "Only the failed includes() call differs. Both lanes' getAttributeValues have length, size, get, [0], toArray and contains, lack includes, and print `[{}]`. On AIC the Java collection has no includes member, so the call throws `Cannot find function includes`; the local list is a JS array with includes shadowed by undefined, so it throws `Cannot call property includes`.",
-        differs: ["value"],
-      },
     }
   ),
   ng("identity-enum-attrs", "fixtures/identity-enum-attrs.script.js", {}, {
