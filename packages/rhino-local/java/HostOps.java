@@ -82,7 +82,8 @@ public final class HostOps extends BaseFunction {
       // list's own contains(), indexOf() and toString() answer as Java does; a script object is
       // stored as it is.
       case "javaList":
-        return JavaCollections.list(cx, scope, args.length > 1 ? args[1] : null);
+        return JavaCollections.list(cx, scope, args.length > 1 ? args[1] : null,
+            args.length > 2 && Context.toBoolean(args[2]));
       // The elements of a list this harness handed out, as a new script array, or null when the
       // value is not such a list. The harness reads a list a script returned or grew this way.
       case "javaListItems":

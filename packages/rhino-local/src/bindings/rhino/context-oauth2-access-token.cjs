@@ -35,46 +35,8 @@ var __rhinoLocalAtReserved = [
   "act", "may_act", "permissions", "cnf",
 ];
 
-__rhinoLocalListKinds.oauth2Token = {
-  id: "oauth2-token-unmeasured/list",
-  noun: "an access-token context list",
-  measured: "only size(), length, [i], String(v) and, where docs/api/12 says so, contains() and add() were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-  // No binding of this kind is granted an empty list by the kind (Sol ctx
-  // r11 P2-1). The only measured empty surface is
-  // identity.getAttributeValues of a missing attribute
-  // (test/fixtures/oauth2-atm/surface.next-gen.json idAttrValuesMissing:
-  // length 0 and String "[]"), and that grant sits on the attribute list.
-  // getAudience, getScope and scopes were captured non-empty. json and
-  // concat were not measured at any length. A request value is
-  // oauth2TokenRequest.
-  emptyRoutes: {},
-};
-
-// A requestProperties value. The surface probe reads String, length, [i] and
-// size() of grant_type, which has one element. No capture shows a size-zero
-// request value. emptyRoutes is present and empty so that route faults as
-// unmeasured, and not with the decision-node request list's "[\"\"]" sentence.
-__rhinoLocalListKinds.oauth2TokenRequest = {
-  id: "oauth2-token-unmeasured/requestProperties",
-  noun: "an access-token request value",
-  measured: "only length, size(), [i] and String(v) of a non-empty value were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-  emptyRoutes: {},
-};
-
 __rhinoLocalCtx.prefix = "oauth2-token-unmeasured";
-__rhinoLocalCtx.catalog = "token";
 __rhinoLocalCtx.noun = "access-token modification";
-__rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2Token;
 
 function __rhinoLocalAtSetField(name, value, method) {
   if (typeof name !== "string") {
@@ -101,8 +63,10 @@ function __rhinoLocalAtSetField(name, value, method) {
 function __rhinoLocalAtScopeFromArgument(value) {
   var out = [];
   var i;
-  var row = __rhinoLocalListRow(value);
-  var items = row !== null ? row.items : Array.isArray(value) ? value : null;
+  var items = __rhinoLocalListItems(value);
+  if (items === null && Array.isArray(value)) {
+    items = value;
+  }
   if (items === null) {
     throw __rhinoLocalCtxUnmeasured("accessToken.setScope(" + __rhinoLocalArgShape([value]) + ")");
   }
@@ -175,7 +139,7 @@ function __rhinoLocalAtBuildToken(seed) {
     return seed.authTimeSeconds;
   });
   m("getAudience", 0, function () {
-    return __rhinoLocalCtxList(seed.audience.slice(), "accessToken.getAudience()", null, "getAudience");
+    return __rhinoLocalCtxList(seed.audience.slice());
   });
   m("getExpiryTime", 0, function () {
     return state().expiryTime;
@@ -190,15 +154,8 @@ function __rhinoLocalAtBuildToken(seed) {
     if (__rhinoLocalAt.scopeRemoved) {
       throw __rhinoLocalCtxUnmeasured("accessToken.getScope()", "after removeScopes()");
     }
-    var list = __rhinoLocalCtxList(state().scope.slice(), "accessToken.getScope()", null, "getScope");
-    // Measured: the next-gen list is immutable, and add() throws "null". That
-    // was captured on a non-empty list, so an empty one faults first.
-    __rhinoLocalHide(list, "add", function () {
-      __rhinoLocalEmptyOp(list, "add");
-      throw __rhinoLocalInternalError("null");
-    });
-    __rhinoLocalCtxRewatch(list);
-    return list;
+    // Measured: the next-gen list is immutable, and add() throws "null".
+    return __rhinoLocalCtxList(state().scope.slice(), true);
   });
   m("setScope", 1, function (value) {
     state().scope = __rhinoLocalAtScopeFromArgument(value);
@@ -430,10 +387,8 @@ function __rhinoLocalSeedAccessToken(given) {
   }
   accessToken = __rhinoLocalAtBuildToken(d.token);
   identity = __rhinoLocalCtxBuildIdentity(d.identity);
-  scopes = __rhinoLocalCtxBuildScopes(d.scopes, { add: true });
-  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, {
-    listKind: __rhinoLocalListKinds.oauth2TokenRequest,
-  });
+  scopes = __rhinoLocalCtxBuildScopes(d.scopes);
+  requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, null);
   clientProperties = __rhinoLocalCtxBuildClient(d.client, null);
   __rhinoLocalCtxSeal();
 }

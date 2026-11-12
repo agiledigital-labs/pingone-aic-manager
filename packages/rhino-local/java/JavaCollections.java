@@ -11,7 +11,7 @@ final class JavaCollections {
   private JavaCollections() {}
 
   /** HostOps "javaList": a script array's elements as a presented {@code java.util.ArrayList}. */
-  static Object list(Context cx, Scriptable scope, Object array) {
+  static Object list(Context cx, Scriptable scope, Object array, boolean immutable) {
     List<Object> list = new ArrayList<Object>();
     if (array instanceof Scriptable) {
       Scriptable items = (Scriptable) array;
@@ -21,6 +21,11 @@ final class JavaCollections {
       }
     } else if (array != null && array != Undefined.instance) {
       throw Context.reportRuntimeError("rhino-local: javaList needs an array");
+    }
+    // An immutable list refuses add() and the other writers as Java does: an
+    // UnsupportedOperationException with no message.
+    if (immutable) {
+      list = java.util.Collections.unmodifiableList(list);
     }
     return cx.getWrapFactory().wrapAsJavaObject(cx, ScriptableObject.getTopLevelScope(scope), list, List.class);
   }

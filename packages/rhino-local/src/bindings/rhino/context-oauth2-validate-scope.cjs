@@ -44,156 +44,21 @@ var __rhinoLocalVsInvalidDefault = "The requested scope is invalid, unknown, or 
 var __rhinoLocalVsDoubleCast = "class java.lang.Double cannot be cast to class java.lang.String (java.lang.Double " +
   "and java.lang.String are in module java.base of loader 'bootstrap')";
 
-// Scope lists. Measured on all four: length, size(), [i] a JS
+// Scope lists are real Java lists (runtime.cjs, __rhinoLocalListView).
+// Measured on all four: `[object JavaList]`, length, size(), [i] a JS
 // string, contains(), indexOf(), isEmpty(), forEach() of JS strings,
-// toArray() a non-array of JS strings, JSON.stringify a JSON array,
-// for...in the indices, [].concat(v) the elements, and
-// Array.prototype.slice.call(v) a real array. join is Rhino's "Cannot find
-// function join", and iterator() the class shutter's refusal.
-__rhinoLocalListKinds.oauth2ValidateScope = {
-  id: "oauth2-validate-scope-unmeasured/list",
-  noun: "a validate scope context list",
-  measured: "only length, size(), [i], String(v), contains(), indexOf(), isEmpty(), forEach(), toArray(), " +
-    "JSON.stringify, for...in, [].concat(v), Array.prototype.slice.call(v) and, on requestedScopes and " +
-    "allowedScopes, add() were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: true,
-  json: true,
-  genericReceiver: ["slice"],
-  // Empty permission is per binding (Sol ctx r11 P2-1, r12 P2-1).
-  // requestedScopes opts in at the call. noscope.next-gen.json fn.requested,
-  // before add(): String "[]", length 0, JSON.stringify "[]", contains false,
-  // indexOf -1, isEmpty true, forEach "", add true. [].concat(v) ran after
-  // add(), on a one-element list, so a size-zero concat stays unmeasured and
-  // is not in that grant. allowedScopes, availableScopes and defaultScopes
-  // have no empty capture. Redirect and toArray() carry their own grants,
-  // not this kind's. size() and [i] stay the list view's, not this grant.
-  emptyRoutes: {},
-};
-
-// A requestProperties value. The probe records String, length, size(), [i]
-// and the JavaList tag. The scope lists' JSON, concat and slice were not
-// measured on this value (Sol ctx r5 P2-6).
-__rhinoLocalListKinds.oauth2ValidateScopeRequest = {
-  id: "oauth2-validate-scope-unmeasured/requestProperties",
-  noun: "a validate-scope request value",
-  measured: "only length, size(), [i], String(v) and the [object JavaList] tag were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-};
-
-// clientProperties.redirectUris. noscope cpRedirect measures the empty
-// surface (length 0, size 0, String "[]", tag JavaList), not JSON. That
-// grant sits on the list BuildClient builds, not on this kind, so a later
-// binding does not inherit it (Sol ctx r11 P2-1).
-__rhinoLocalListKinds.oauth2ValidateScopeRedirect = {
-  id: "oauth2-validate-scope-unmeasured/clientProperties.redirectUris",
-  noun: "a validate-scope redirect-URI list",
-  measured: "only length, size(), [i], String(v) and the [object JavaList] tag of an empty list were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-  emptyRoutes: {},
-};
-
-// A toArray() result. noscope reads typeof, Array.isArray, length and
-// typeof [i] (`object|false|0|undefined` when requestedScopes is empty). It
-// does not read String(v) or JSON.stringify of that result. Empty length is
-// granted only on requestedScopes.toArray(); this kind grants nothing, so
-// another binding's size-zero toArray() faults (Sol ctx r11 P2-1).
-__rhinoLocalListKinds.oauth2ValidateScopeArray = {
-  id: "oauth2-validate-scope-unmeasured/list.toArray()",
-  noun: "a validate-scope toArray() result",
-  measured: "only typeof, Array.isArray, length and typeof [i] were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-  emptyRoutes: {},
-};
+// toArray() a non-array, JSON.stringify a JSON array, for...in the indices,
+// [].concat(v) the elements, Array.prototype.slice.call(v) a real array,
+// add() returning true and growing the list; join is "Cannot find function
+// join", and iterator() the class shutter's refusal.
 
 __rhinoLocalCtx.prefix = "oauth2-validate-scope-unmeasured";
-__rhinoLocalCtx.catalog = "validate";
 __rhinoLocalCtx.noun = "OAuth2 validate scope";
-__rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2ValidateScope;
 
 // --- Scope lists ---------------------------------------------------------------
 
-function __rhinoLocalVsList(items, label, addable) {
-  // The view's size(), get() and String() read this same array, so an add()
-  // is seen by every path (measured: String() after add() shows the addition).
-  var store = items.slice();
-  // noscope.next-gen.json fn.requested is the only empty scope list. The
-  // other three lists were captured non-empty. concat is not granted: the
-  // probe ran it after add().
-  var list = __rhinoLocalCtxList(store, label, null, label);
-  __rhinoLocalCtxTag(list, "JavaList", label);
-  var str = function (v) {
-    if (typeof v !== "string") {
-      throw __rhinoLocalCtxUnmeasured(label + ".contains(" + __rhinoLocalArgShape([v]) + ")");
-    }
-    return v;
-  };
-  __rhinoLocalCtxMethod(list, label, "java.util.List", "contains", 1, function (v) {
-    var s = str(v);
-    __rhinoLocalEmptyOp(list, "contains");
-    return store.indexOf(s) !== -1;
-  });
-  __rhinoLocalCtxMethod(list, label, "java.util.List", "indexOf", 1, function (v) {
-    var s = str(v);
-    __rhinoLocalEmptyOp(list, "indexOf");
-    return store.indexOf(s);
-  });
-  __rhinoLocalCtxMethod(list, label, "java.util.List", "isEmpty", 0, function () {
-    __rhinoLocalEmptyOp(list, "isEmpty");
-    return store.length === 0;
-  });
-  __rhinoLocalCtxMethod(list, label, "java.util.List", "forEach", 1, function (fn) {
-    if (typeof fn !== "function") {
-      throw __rhinoLocalCtxUnmeasured(label + ".forEach(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    __rhinoLocalEmptyOp(list, "forEach");
-    var copy = store.slice();
-    var i;
-    for (i = 0; i < copy.length; i += 1) {
-      fn(copy[i]);
-    }
-    return undefined;
-  });
-  __rhinoLocalCtxMethod(list, label, "java.util.List", "toArray", 0, function () {
-    // Empty length and typeof [0] were read on requestedScopes.toArray() only.
-    return __rhinoLocalCtxList(store.slice(), label + ".toArray()",
-      __rhinoLocalListKinds.oauth2ValidateScopeArray, label, "toArray");
-  });
-  __rhinoLocalCtxMethod(list, label, "java.util.List", "iterator", 0, function () {
-    throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
-  });
-  __rhinoLocalCtxMethod(list, label, "java.util.List", "add", 1, function (v) {
-    if (!addable) {
-      throw __rhinoLocalCtxUnmeasured(label + ".add()");
-    }
-    if (typeof v !== "string") {
-      throw __rhinoLocalCtxUnmeasured(label + ".add(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    __rhinoLocalEmptyOp(list, "add");
-    // Measured: true, and the list grows by one even for a value it holds.
-    __rhinoLocalCtxCheck(list);
-    store.push(v);
-    list[store.length - 1] = v;
-    __rhinoLocalHide(list, "length", store.length);
-    list[__rhinoLocalListKey].items.push(v);
-    __rhinoLocalEnumGrew(list);
-    __rhinoLocalCtxRewatch(list);
-    return true;
-  });
-  return list;
+function __rhinoLocalVsList(items) {
+  return __rhinoLocalListView(items.slice());
 }
 
 // An exception AM reads as "deny with invalid_scope". The harvest matches the
@@ -366,20 +231,19 @@ function __rhinoLocalSeedValidateScope(given) {
   __rhinoLocalHide(logger, "getName", function () {
     return loggerName;
   });
-  requestedScopes = __rhinoLocalVsList(d.requested, "requestedScopes", true);
-  allowedScopes = __rhinoLocalVsList(d.allowed, "allowedScopes", true);
-  availableScopes = __rhinoLocalVsList(d.available, "availableScopes", false);
-  defaultScopes = __rhinoLocalVsList(d.defaults, "defaultScopes", false);
+  requestedScopes = __rhinoLocalVsList(d.requested);
+  allowedScopes = __rhinoLocalVsList(d.allowed);
+  availableScopes = __rhinoLocalVsList(d.available);
+  defaultScopes = __rhinoLocalVsList(d.defaults);
   scopeValidatorHelper = __rhinoLocalVsHelper();
   identity = __rhinoLocalVsIdentity();
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, {
-    paramsGetMissing: true, javaTags: true, listKind: __rhinoLocalListKinds.oauth2ValidateScopeRequest,
+    paramsGetMissing: true, javaTags: true,
   });
   __rhinoLocalCtxTag(requestProperties, "JavaMap", "requestProperties");
   clientProperties = __rhinoLocalCtxBuildClient(d.client, {
     redirectUris: true,
     javaTags: true,
-    redirectKind: __rhinoLocalListKinds.oauth2ValidateScopeRedirect,
   });
   __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");
   __rhinoLocalCtxSeal();
@@ -403,7 +267,6 @@ function __rhinoLocalVsResult(value) {
     return { returned: "none", status: status, granted: null, invalidScope: null, refusal: refusal };
   };
   var items = null;
-  var row;
   var i;
   if (value === null || value === undefined) {
     return none(403, __rhinoLocalVsDeclined);
@@ -411,10 +274,7 @@ function __rhinoLocalVsResult(value) {
   if (typeof value === "string") {
     return none(500, __rhinoLocalVsGeneric);
   }
-  row = __rhinoLocalListRow(value);
-  if (row !== null) {
-    items = row.items.slice();
-  }
+  items = __rhinoLocalListItems(value);
   if (items === null && Array.isArray(value)) {
     items = value.slice();
   }

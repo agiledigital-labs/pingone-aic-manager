@@ -38,81 +38,14 @@ var __rhinoLocalMaUnbound = [
 var __rhinoLocalMaClass = "org.forgerock.openam.oauth2.token.ExchangeableTokenScriptWrapper";
 var __rhinoLocalMaGeneric = "Error running may_act script";
 
-// Scopes. Measured: length, size(), [i] a JS string, contains() of a
+// Scopes is a real Java list (runtime.cjs, __rhinoLocalListView). Measured:
+// `[object JavaList]`, length, size(), [i] a JS string, contains() of a
 // string, forEach() of JS strings, toArray() a non-array of JS strings,
 // JSON.stringify a JSON array, String(v) Java's "[a]", iterator() the class
-// shutter. indexOf, isEmpty, join, slice, concat and for...in were not.
-__rhinoLocalListKinds.oauth2MayAct = {
-  id: "oauth2-may-act-unmeasured/scopes",
-  noun: "a may-act scopes list",
-  measured: "only length, size(), [i], String(v), contains(string), forEach(), toArray(), JSON.stringify and " +
-    "iterator() (the class shutter) were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: true,
-  genericReceiver: false,
-  // JSON.stringify of an empty scopes list was not measured (json stays true
-  // for a non-empty list). concat was not measured at any length.
-  // clientProperties.redirectUris is oauth2MayActRedirect (Sol ctx r10 P2-1):
-  // the empty redirect surface does not measure an empty scopes list.
-  // emptyRoutes is present and empty so a size-zero scopes list faults as
-  // unmeasured, and not with the decision-node request list's sentence.
-  emptyRoutes: {},
-};
-
-// clientProperties.redirectUris. surface.next-gen.json cpRedirect: the list
-// is empty, String "[]" and length 0. JSON was not measured. That grant sits
-// on the list BuildClient builds, not on this kind (Sol ctx r11 P2-1).
-__rhinoLocalListKinds.oauth2MayActRedirect = {
-  id: "oauth2-may-act-unmeasured/clientProperties.redirectUris",
-  noun: "a may-act redirect-URI list",
-  measured: "only length, size(), [i] and String(v) of an empty list were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-  emptyRoutes: {},
-};
-
-// scopes.toArray(). The capture records typeof, Array.isArray, length and
-// typeof [i] only (element "string"), on a
-// one-element list. JSON, borrowed Array methods and index writes were not
-// measured (Sol ctx r5 P2-2). emptyRoutes is present and empty so a size-zero
-// result faults as unmeasured, and not with the decision-node request list's
-// sentence (Sol ctx r12 P2-1). The surface list is not empty.
-__rhinoLocalListKinds.oauth2MayActArray = {
-  id: "oauth2-may-act-unmeasured/scopes.toArray()",
-  noun: "scopes.toArray()",
-  measured: "only typeof, Array.isArray, length and typeof [i] were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-  emptyRoutes: {},
-};
-
-// A requestProperties value. The probe records String, length, [i] and the
-// JavaList tag. JSON was not measured; the scope list's json:true must not
-// apply here (Sol ctx r5 P2-6). concat and generic receivers were already
-// refused by the scope-list kind.
-__rhinoLocalListKinds.oauth2MayActRequest = {
-  id: "oauth2-may-act-unmeasured/requestProperties",
-  noun: "a may-act request value",
-  measured: "only length, size(), [i], String(v) and the [object JavaList] tag were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-};
+// shutter.
 
 __rhinoLocalCtx.prefix = "oauth2-may-act-unmeasured";
-__rhinoLocalCtx.catalog = "mayact";
 __rhinoLocalCtx.noun = "OAuth2 may act";
-__rhinoLocalCtx.listKind = __rhinoLocalListKinds.oauth2MayAct;
 
 function __rhinoLocalMaPlain(value) {
   if (value === null || typeof value !== "object") {return false;}
@@ -320,20 +253,6 @@ function __rhinoLocalMaMethod(target, cls, name, arity, fn, measuredRefusal) {
   });
 }
 
-// scopes.toArray(): a list view so JSON, concat and borrowed Array methods
-// fault, and an index write is audited. size/get/toString/getClass come with
-// every list view and were not measured on this value, so they fault too.
-// The tag was not measured. Elements stay JS strings, which is what typeof [i]
-// recorded.
-function __rhinoLocalMaToArray(items) {
-  // scopes.toArray(), the row's toArray child. size/get/toString/getClass
-  // stay the every-size stubs below, so the call itself does not fault.
-  var list = __rhinoLocalListView(items, __rhinoLocalListKinds.oauth2MayActArray, "scopes", "toArray");
-  __rhinoLocalCtxFaulting(list, "scopes.toArray()", ["size", "get", "toString", "getClass"]);
-  __rhinoLocalCtxTag(list, null, "scopes.toArray()");
-  return __rhinoLocalCtxWatch(list, "scopes.toArray()");
-}
-
 function __rhinoLocalMaAssign(which, value, cls, name, args) {
   if (value === null) {
     __rhinoLocalMa.slots[which] = { state: "null" };
@@ -359,31 +278,7 @@ function __rhinoLocalMaAssign(which, value, cls, name, args) {
 }
 
 function __rhinoLocalMaScopes(items) {
-  var store = items.slice();
-  var list = __rhinoLocalListView(store, __rhinoLocalListKinds.oauth2MayAct, "scopes");
-  __rhinoLocalCtxTag(list, "JavaList", "scopes");
-  __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "contains", 1, function (v) {
-    if (typeof v !== "string") {
-      throw __rhinoLocalCtxUnmeasured("scopes.contains(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    __rhinoLocalEmptyOp(list, "contains");
-    return store.indexOf(v) !== -1;
-  });
-  __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "forEach", 1, function (fn) {
-    if (typeof fn !== "function") {
-      throw __rhinoLocalCtxUnmeasured("scopes.forEach(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    __rhinoLocalEmptyOp(list, "forEach");
-    var i;
-    for (i = 0; i < store.length; i += 1) {fn(store[i]);}
-  });
-  __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "toArray", 0, function () {
-    return __rhinoLocalMaToArray(store.slice());
-  });
-  __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "iterator", 0, function () {
-    throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
-  });
-  return __rhinoLocalCtxWatch(list, "scopes");
+  return __rhinoLocalListView(items.slice());
 }
 
 function __rhinoLocalMaToken() {
@@ -487,13 +382,12 @@ function __rhinoLocalSeedMayAct(given) {
   scopes = __rhinoLocalMaScopes(d.scope);
   identity = __rhinoLocalCtxBuildIdentity(d.identity, { tag: "JavaObject" });
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, {
-    paramsGetMissing: true, javaTags: true, listKind: __rhinoLocalListKinds.oauth2MayActRequest,
+    paramsGetMissing: true, javaTags: true,
   });
   __rhinoLocalCtxTag(requestProperties, "JavaMap", "requestProperties");
   clientProperties = __rhinoLocalCtxBuildClient(d.client, {
     redirectUris: true,
     javaTags: true,
-    redirectKind: __rhinoLocalListKinds.oauth2MayActRedirect,
   });
   __rhinoLocalCtxTag(clientProperties, "JavaMap", "clientProperties");
   // `context` is the engine scope's SimpleScriptContext (AmScopes). The scope
