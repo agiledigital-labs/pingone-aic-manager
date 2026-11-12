@@ -1,3 +1,4 @@
+// compat-accepted: comment reworded (reference-image wording) since 0.1.2; no signature change.
 /**
  * Where the runner's JVM comes from.
  *
@@ -11,6 +12,7 @@
 export type JvmLane = "host" | "container" | "both";
 export declare const JVM_LANE_ENV = "AIC_SCRIPT_TESTER_JVM";
 export declare function laneFromEnv(env?: NodeJS.ProcessEnv): JvmLane;
+// compat-accepted: comment reworded (reference-image wording) since 0.1.2; no signature change.
 /**
  * The Rhino this harness pins: Rhino 1.7.14.1 from Maven Central, checked
  * against the SHA-256 below.
@@ -21,12 +23,14 @@ export declare const RHINO_JAR: {
     readonly sha256: "407d4af6521494061d86b208e99804e0bf5c2fa38449c48f24b2f5a7154b4d8d";
     readonly bytes: 1389188;
 };
+// compat-accepted: DEFAULT_AM_IMAGE is renamed DEFAULT_REFERENCE_IMAGE (not part of the package exports; README, JVM-lane change).
 /**
  * The reference JVM image the `container` lane runs (the official Temurin
  * 25.0.4+7 JRE), pinned by digest so the reference cannot move under a
  * re-pushed tag; override to calibrate another image.
  */
 export declare const DEFAULT_REFERENCE_IMAGE: string;
+// compat-accepted: comment reworded since 0.1.2; no signature change.
 /**
  * The target JVM environment: Temurin-25.0.4+7, `/etc/localtime` → `Etc/UTC`,
  * `LANG=en_US.UTF-8`. The
@@ -40,6 +44,7 @@ export declare const EXPECTED_ENVIRONMENT: {
     readonly charset: "UTF-8";
     readonly rhino: "Rhino 1.7.14.1";
 };
+// compat-accepted: comment reworded (reference-image wording) since 0.1.2; no signature change.
 /**
  * Flags for the host lane only. The properties pin what the reference JVM
  * gets from its OS (UTC, en_US.UTF-8), which a host would otherwise take from
@@ -63,6 +68,7 @@ export interface RunnerEnvironment {
     rhino: string;
 }
 export declare function parseEnvironment(readyLine: string): RunnerEnvironment;
+// compat-accepted: comment reworded (reference-image wording) since 0.1.2; no signature change.
 /**
  * Every field a script can observe must match the target's. The Java patch level and
  * vendor are not checked here: they are what the `both` lane measures, and a
