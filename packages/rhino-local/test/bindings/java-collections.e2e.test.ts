@@ -113,7 +113,6 @@ describe("a service object refuses a member the harness does not have", () => {
     ["requestHeaders", "requestHeaders.frobnicate()", "not-implemented/requestHeaders.frobnicate"],
     ["requestCookies", "requestCookies.frobnicate()", "not-implemented/requestCookies.frobnicate"],
     // An object a service hands back is named by the call that made it.
-    ["an identity", 'idRepository.getIdentity("u1").frobnicate()', "not-implemented/idRepository.getIdentity().frobnicate"],
     ["an HTTP response", 'httpClient.send("https://service.example.com/x").get().frobnicate()', "not-implemented/httpClient.send().get().frobnicate"],
     ["a pending HTTP response", 'httpClient.send("https://service.example.com/x").frobnicate()', "not-implemented/httpClient.send().frobnicate"],
     ["a state object read back", 'nodeState.get("objectAttributes").frobnicate()', "not-implemented/nodeState.get().frobnicate"],
@@ -172,6 +171,43 @@ describe("a service object refuses a member the harness does not have", () => {
     expect(verdict.pass, verdict.summary).toBe(true);
     expect(effects.sharedState.final.out).toBe(
       "TypeError: Cannot find function frobnicate|TypeError: Cannot find function getAttribute|TypeError: Cannot call property get");
+  }, 60_000);
+
+  // The identity's member set was captured whole. A name outside it is absent on AIC; a name
+  // inside it that the harness has not written is the fault.
+  it.each([
+    ["size", false], ["isExists", false], ["frobnicateToo", false],
+    ["hashCode", true], ["getClass", true], ["equals", true],
+  ])("an identity's %s() follows the captured member set", async (member, has) => {
+    const id = `not-implemented/idRepository.getIdentity().${member}`;
+    if (has) expectHarnessFault(id);
+    const run = runCase(runner, defineCase({
+      name: `identity ${member}`,
+      script: node(refusal(`idRepository.getIdentity("u1").${member}()`)),
+      given,
+      expect: { outcome: "true", allowUndeclared: { sharedState: true, openidmReads: true } },
+    }));
+    if (has) {
+      const error = await run.then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(CaseRunError);
+      expect(((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id)).toEqual([id]);
+    } else {
+      const { effects, verdict } = await run;
+      expect(verdict.pass, verdict.summary).toBe(true);
+      expect(String(effects.sharedState.final.out).split(" in object ")[0]).toBe(`TypeError: Cannot find function ${member}`);
+    }
+  }, 60_000);
+
+  it("a request map's getClass() is the class refusal", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: "request map getClass",
+      script: node(`return [(function () { ${refusal("requestHeaders.getClass()")} })(), (function () { ${refusal("requestParameters.getClass()")} })()].join("|");`),
+      given,
+      expect: { outcome: "true", allowUndeclared: { sharedState: true } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    const refused = 'InternalError: Access to Java class "java.lang.Class" is prohibited.';
+    expect(effects.sharedState.final.out).toBe(`${refused}|${refused}`);
   }, 60_000);
 
   it("the guard is not a member a script can see, and a script's own object is untouched", async () => {

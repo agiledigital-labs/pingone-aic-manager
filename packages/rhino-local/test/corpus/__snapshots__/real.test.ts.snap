@@ -626,7 +626,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > java-collecti
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > cookies 1`] = `
 {
-  "className": null,
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "enumerateError": null,
   "keys": [
     "probe",
@@ -750,7 +750,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-heade
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > headers 1`] = `
 {
-  "className": null,
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "enumerateError": null,
   "keys": [
     "x-aic-probe",
@@ -876,7 +876,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-heade
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-headers-dump — differs on headers, parameters, cookies > parameters 1`] = `
 {
-  "className": null,
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "enumerateError": null,
   "keys": [
     "probeq",
@@ -1002,7 +1002,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-heade
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multivalue — differs on headers, parameters > headers 1`] = `
 {
-  "className": "err:Error: rhino-local: not implemented: requestHeaders.getClass() is not a member this harness has; if AIC has it, it needs adding",
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "counts": {
     "x-aic-probe": 2,
     "x-aic-probe-joined": 1,
@@ -1036,7 +1036,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multivalue — differs on headers, parameters > parameters 1`] = `
 {
-  "className": "err:Error: rhino-local: not implemented: requestParameters.getClass() is not a member this harness has; if AIC has it, it needs adding",
+  "className": "err:InternalError: Access to Java class "java.lang.Class" is prohibited.",
   "counts": {
     "probeq": 2,
     "probeqjoined": 1,

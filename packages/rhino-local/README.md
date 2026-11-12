@@ -37,8 +37,11 @@ What it does not cover:
   …), which fault under their `<context>-unmeasured` ids.
 
 The methods measured absent on AIC stay the engine's `TypeError`: the next-gen
-`logger` has no `message`, `warning` or `*Enabled`, an identity has no
-`getAttribute`, and `existingSession` has no `hasOwnProperty`. So does a map
+`logger` has no `message`, `warning` or `*Enabled`, and `existingSession` has no
+`hasOwnProperty`. An identity's whole member set was captured, so any name
+outside it (`getAttribute`, `size`, `isExists`) is a `TypeError` and only a
+member AIC has and the harness lacks (`hashCode`, `equals`, `getClass`) faults.
+A request map's `getClass()` is the measured class refusal. So does a map
 entry named like a method (`get`), which hides the method as it does on AIC.
 
 Implemented (still fail-loud for missing fixtures and for every method the
