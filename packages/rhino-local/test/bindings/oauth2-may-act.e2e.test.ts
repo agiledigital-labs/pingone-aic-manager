@@ -159,7 +159,7 @@ describe("may act matches the live capture", () => {
   };
 
   // A list is a real Java list at every size: what it answers is Java's answer.
-  const answers = async (name: string, source: string, scopes: string[], mayAct: Record<string, unknown>) => {
+  const answers = async (name: string, source: string, scopes: string[], mayAct: Record<string, string | number>) => {
     const { effects, verdict } = await runCase(runner, defineCase({
       name: `${name} ${engine}`,
       context: "OAUTH2_MAY_ACT",

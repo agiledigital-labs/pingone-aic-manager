@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CaseRunError, runCase } from "../../src/bindings/run.ts";
 import { defineCase } from "../../src/case/validate.ts";
-import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import type { AccessTokenEffect, Engine, JsonObject, JsonValue } from "../../src/case/types.ts";
 import { packageRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";

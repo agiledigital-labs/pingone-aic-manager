@@ -1,7 +1,7 @@
 // Overlay for AM's OAUTH2_ACCESS_TOKEN_MODIFICATION context (next-gen),
 // appended to the shared prelude for a case whose `context` names
 // it, after context-common.cjs, whose shared view helpers (__rhinoLocalCtx*)
-// it configures with its fault prefix and list kind. Same Rhino 1.7.14
+// it configures with its fault prefix. Same Rhino 1.7.14
 // restrictions as runtime.cjs: no let, no top-level const, no shorthand, no
 // Map/Set/Symbol.
 //

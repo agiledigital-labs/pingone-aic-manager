@@ -21,6 +21,7 @@ const given = {
       { _id: "u1", _rev: "1", userName: "zzemu-one" },
       { _id: "u2", _rev: "1", userName: "zzemu-two" },
     ],
+    "managed/alpha_thing": [{ _id: "t1", _rev: "1", count: 3, ratio: 1.5, on: true, gone: null }],
   },
 } as Given;
 
@@ -78,6 +79,9 @@ describe("a scripted decision's lists are Java lists", () => {
       "zzemu-one,zzemu-two|false|2|true|1"],
     ["an empty query result", `var r = ${NOTHING}; var n = 0; r.forEach(function () { n += 1; }); return [r.length, r.size(), String(r), JSON.stringify(r), [].concat(r).length, r.isEmpty(), n].join("|");`,
       "0|0|[]|[]|0|true|0"],
+    // The number's form is the script engine's; AIC's was not measured.
+    ["String of a query result holding numbers", `return String(openidm.query("managed/alpha_thing", { _queryFilter: "true" }).result);`,
+      "[{_id=t1, _rev=1, count=3, ratio=1.5, on=true, gone=null}]"],
     // Measured: get(0) on an empty result.
     ["get(0) of an empty query result", refusal(`${NOTHING}.get(0)`),
       "InternalError: Index 0 out of bounds for length 0"],
