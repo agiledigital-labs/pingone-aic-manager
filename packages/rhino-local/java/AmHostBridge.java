@@ -297,10 +297,18 @@ final class AmHostBridge extends BaseFunction {
      */
     private String wireNumber(Object value, double number, boolean wrapped) {
       if (wrapped && (value instanceof Integer || value instanceof Long)) return value.toString();
-      if (!wrapped && value instanceof Integer) {
+      if (value instanceof Integer || value instanceof Long) {
+        // A boxed Integer reaches a script as a plain number (getClass on it is "Cannot find
+        // function getClass in object 45000") and still goes out as written, so the class the
+        // engine holds decides. A number the engine itself holds as an Integer (results of
+        // length, indexOf, JSON.parse) is the same class; that it goes out the same way follows
+        // from that and was not sent.
         assumed.add(
-            "httpClient body text for a number the script engine holds as a Java Integer (results"
-                + " of length, indexOf, JSON.parse), written as a Java double");
+            "httpClient body text for a number the script engine holds as a Java "
+                + value.getClass().getSimpleName()
+                + " (a boxed value, or a result of length, indexOf, JSON.parse), written as an"
+                + " integer");
+        return value.toString();
       } else if (!(value instanceof Double)) {
         assumed.add(
             "httpClient body text for a number held as a Java "

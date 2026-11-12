@@ -125,10 +125,21 @@ final class AmClassShutter implements ClassShutter {
       }
     }
     for (String prefix : prefixes) {
-      if (fullClassName.startsWith(prefix)) {
+      if (fullClassName.startsWith(prefix) || (prefix.equals(ADAPTERS) && adapter(fullClassName))) {
         return true;
       }
     }
     return false;
+  }
+
+  /**
+   * The descriptor's name for the class a script function becomes when it is passed where Java
+   * wants an interface ({@code list.forEach(function (x) {...})}). This JVM puts the same classes
+   * in {@code jdk.proxyN}, so a list that admits the descriptor's package admits those.
+   */
+  private static final String ADAPTERS = "com.sun.proxy.$";
+
+  private static boolean adapter(String fullClassName) {
+    return fullClassName.matches("jdk\\.proxy\\d*\\.\\$Proxy\\d+");
   }
 }
