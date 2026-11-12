@@ -1,7 +1,7 @@
 /**
  * The config provider node context on the real JVM, compared with live
  * captures. surface.script.js ran unchanged as a ConfigProviderNode's script
- * on a sandbox tenant (2026-11-10, both engines), in a journey of a decision
+ * on a sandbox tenant (2026-11-10), in a journey of a decision
  * node seeding the node state, the ConfigProviderNode wrapping a MessageNode,
  * and a decision node reading back. `surface.<engine>.json` holds the probe's
  * record from the request that reached the node (`firstRun`, carried out as
@@ -46,7 +46,7 @@ delete RETURNS._note;
 // What the seed decision node put in the node state before the config
 // provider ran (seed.js in the probe tooling).
 const SHARED = { zzStr: "hello", zzNum: 42, zzObj: { a: 1, b: [1, 2], c: { d: "e" } }, zzBool: true };
-// Keys AM's journey put there itself. The legacy probe lists them; their
+// Keys AM's journey put there itself. The probe lists them; their
 // values were not read, so these are placeholders.
 const AM_OWN = { authLevel: 0, maxAuthenticationSessionDuration: 120, realm: "/alpha", username: "zzemuC4nobody" };
 const TRANSIENT = { zzT: "tval" };
@@ -60,7 +60,7 @@ const given = (engine: Engine) => {
   return {
     engine,
     realm: "/alpha",
-    scriptName: engine === "next-gen" ? "zzemuC4-cfg-ng" : "zzemuC4-cfg-legacy",
+    scriptName: "zzemuC4-cfg-ng",
     loggerScriptId: /\.([0-9a-f-]{36})\./.exec(loggerName)![1]!,
     sharedState: { ...AM_OWN, ...SHARED },
     transientState: TRANSIENT,
@@ -91,7 +91,8 @@ const localised = (v: JsonValue | undefined, fallback: string) => {
   return rendered(v);
 };
 
-describe.each(["next-gen", "legacy"] as const)("config provider node on %s matches the live capture", (engine) => {
+describe("config provider node matches the live capture", () => {
+  const engine = "next-gen" as const;
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
@@ -123,10 +124,8 @@ describe.each(["next-gen", "legacy"] as const)("config provider node on %s match
     // agree, so only Object's are dropped there.
     delete want.idRepoKeys;
     delete record.idRepoKeys;
-    if (engine === "next-gen") {
-      const javaObject = ["class", "equals", "getClass", "hashCode", "notify", "notifyAll", "toString", "wait"];
-      want.journeyKeys = (want.journeyKeys as string).split(",").filter((k) => !javaObject.includes(k)).join(",");
-    }
+    const javaObject = ["class", "equals", "getClass", "hashCode", "notify", "notifyAll", "toString", "wait"];
+    want.journeyKeys = (want.journeyKeys as string).split(",").filter((k) => !javaObject.includes(k)).join(",");
     expect(record).toEqual(want);
     // The readout node saw both puts and the probe's own record.
     expect(effects.sharedState.final.zzCfgPut).toBe(live.readout.cfgPut);
@@ -191,21 +190,13 @@ describe.each(["next-gen", "legacy"] as const)("config provider node on %s match
     ["requestParameters.forEach(function () {}); config = {};", "config-provider-unmeasured/requestParameters.forEach()"],
     ["String(requestHeaders); config = {};", "config-provider-unmeasured/String(requestHeaders)"],
   ];
-  if (engine === "legacy") {
-    faults.push(
-      ["nodeState.keys().sort(); config = {};", "config-provider-unmeasured/nodeState.keys().sort()"],
-      ["nodeState.keys().size(); config = {};", "config-provider-unmeasured/nodeState.keys().size()"],
-      ["String(nodeState.keys()); config = {};", "config-provider-unmeasured/String(nodeState.keys())"],
-    );
-  } else {
-    faults.push(
-      [`callbacksBuilder.textOutputCallback("INFO", "x"); config = {};`,
-        `config-provider-unmeasured/callbacksBuilder.textOutputCallback(string, string)`],
-      ["String(callbacks); config = {};", "config-provider-unmeasured/String(callbacks)"],
-      ["String(callbacksBuilder); config = {};", "config-provider-unmeasured/String(callbacksBuilder)"],
-      ["String(action); config = {};", "config-provider-unmeasured/String(action)"],
-    );
-  }
+  faults.push(
+    [`callbacksBuilder.textOutputCallback("INFO", "x"); config = {};`,
+      `config-provider-unmeasured/callbacksBuilder.textOutputCallback(string, string)`],
+    ["String(callbacks); config = {};", "config-provider-unmeasured/String(callbacks)"],
+    ["String(callbacksBuilder); config = {};", "config-provider-unmeasured/String(callbacksBuilder)"],
+    ["String(action); config = {};", "config-provider-unmeasured/String(action)"],
+  );
   it.each(faults)("%s is a named fault", async (source, id) => {
     expectHarnessFault(id);
     const error = await run(id, source).then(() => null, (e: unknown) => e);
@@ -214,34 +205,23 @@ describe.each(["next-gen", "legacy"] as const)("config provider node on %s match
     expect(ids).toContain(id);
   }, 60_000);
 
-  if (engine === "legacy") {
-    it("nodeState.keys() is live: a key put earlier in the script is walked", async () => {
-      const source = "nodeState.putShared(\"zzLate\", \"v\"); var it = nodeState.keys().iterator(); var a = [];"
-        + " while (it.hasNext()) a.push(String(it.next())); config = { message: String(a.indexOf(\"zzLate\") >= 0) };";
-      const { effects } = await run("live keys", source);
-      expect(effects.configProvider!.config!.message).toBe("true");
-    }, 60_000);
-  } else {
-    it("textOutputCallback with the measured (number, string) shape is accepted", async () => {
-      const { effects } = await run("text output", `callbacksBuilder.textOutputCallback(0, "hello"); config = {};`);
-      expect(effects.configProvider!.refusal).toBeNull();
-    }, 60_000);
-  }
+  it("textOutputCallback with the measured (number, string) shape is accepted", async () => {
+    const { effects } = await run("text output", `callbacksBuilder.textOutputCallback(0, "hello"); config = {};`);
+    expect(effects.configProvider!.refusal).toBeNull();
+  }, 60_000);
 
-  if (engine === "next-gen") {
-    it("an unmeasured callbacksBuilder or action member is a named fault", async () => {
-      for (const [source, id] of [
-        [`callbacksBuilder.nameCallback("n"); config = {};`, "config-provider-unmeasured/callbacksBuilder.nameCallback()"],
-        [`action.withHeader("h"); config = {};`, "config-provider-unmeasured/action.withHeader()"],
-      ] as const) {
-        expectHarnessFault(id);
-        const error = await run(id, source).then(() => null, (e: unknown) => e);
-        expect(error).toBeInstanceOf(CaseRunError);
-        const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
-        expect(ids).toContain(id);
-      }
-    }, 60_000);
-  }
+  it("an unmeasured callbacksBuilder or action member is a named fault", async () => {
+    for (const [source, id] of [
+      [`callbacksBuilder.nameCallback("n"); config = {};`, "config-provider-unmeasured/callbacksBuilder.nameCallback()"],
+      [`action.withHeader("h"); config = {};`, "config-provider-unmeasured/action.withHeader()"],
+    ] as const) {
+      expectHarnessFault(id);
+      const error = await run(id, source).then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(CaseRunError);
+      const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+      expect(ids).toContain(id);
+    }
+  }, 60_000);
 });
 
 describe("one JVM running config provider cases between other contexts' cases", () => {
@@ -256,37 +236,31 @@ describe("one JVM running config provider cases between other contexts' cases", 
     + `typeof sharedState, ${member("callbacks", "isEmpty")}, ${member("callbacks", "getNameCallbacks")}, `
     + `${member("callbacksBuilder", "nameCallback")}, ${member("action", "withHeader")}, `
     + "typeof nodeState.keys, String(nodeState.keys()), String(nodeState.get(\"seeded\"))])";
-  const nodeProbe = async (engine: Engine) => {
+  const nodeProbe = async () => {
     const { effects } = await runCase(runner, defineCase({
-      name: `isolation ${engine} decision node`,
-      script: engine === "legacy"
-        ? `sharedState.put("out", ${surface}); outcome = "true";`
-        : `nodeState.putShared("out", ${surface}); action.goTo("true");`,
-      given: { engine, sharedState: { seeded: "x" } },
+      name: "isolation decision node",
+      script: `nodeState.putShared("out", ${surface}); action.goTo("true");`,
+      given: { sharedState: { seeded: "x" } },
       expect: { outcome: "true", allowUndeclared: { sharedState: true } },
     }));
     return effects.sharedState.final.out;
   };
-  const configCase = (engine: Engine) => runCase(runner, defineCase({
-    name: `isolation ${engine} config provider`,
+  const configCase = () => runCase(runner, defineCase({
+    name: "isolation config provider",
     context: "CONFIG_PROVIDER_NODE",
     script: `var config = { a: "b" };`,
-    given: { engine, sharedState: { seeded: "x" } },
+    given: { sharedState: { seeded: "x" } },
     expect: { configProvider: { config: { a: "b" } } },
   }));
 
-  it("leaves a decision node on either engine exactly as a fresh runner sees it", async () => {
-    const before = { legacy: await nodeProbe("legacy"), "next-gen": await nodeProbe("next-gen") };
-    await configCase("legacy");
-    expect(await nodeProbe("next-gen")).toBe(before["next-gen"]);
-    expect(await nodeProbe("legacy")).toBe(before.legacy);
-    await configCase("next-gen");
-    expect(await nodeProbe("legacy")).toBe(before.legacy);
-    expect(await nodeProbe("next-gen")).toBe(before["next-gen"]);
+  it("leaves a decision node exactly as a fresh runner sees it", async () => {
+    const before = await nodeProbe();
+    await configCase();
+    expect(await nodeProbe()).toBe(before);
   }, 60_000);
 
   it("a config provider case after another sees no config left over", async () => {
-    await configCase("next-gen");
+    await configCase();
     const { effects } = await runCase(runner, defineCase({
       name: "leftover",
       context: "CONFIG_PROVIDER_NODE",

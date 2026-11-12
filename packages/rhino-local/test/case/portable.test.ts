@@ -76,7 +76,7 @@ describe("portability", () => {
     expect(
       isPortable(
         makeCase({
-          given: { engine: "legacy", realm: "bravo" },
+          given: { engine: "next-gen", realm: "bravo" },
           expect: { outcome: "true" },
         })
       )

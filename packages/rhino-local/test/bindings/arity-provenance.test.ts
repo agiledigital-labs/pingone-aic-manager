@@ -249,16 +249,6 @@ describe("arity provenance", () => {
     expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["arity-unknown/map.get"]);
   });
 
-  it("has no basis on the legacy engine, which has no introspection", () => {
-    const sandbox = loadBehaviour({ ...given, engine: "legacy" });
-    callWith(resolve(sandbox, "nodeState.get")!, []);
-    callWith(resolve(sandbox, "existingSession.get")!, []);
-    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual([
-      "arity-unknown/nodeState.get",
-      "arity-unknown/existingSession.get",
-    ]);
-  });
-
   // Every literal path an arity check names is either in the basis table or
   // one of these, each a range with no measurement and no introspection row.
   // The computed ones ("logger." + level, the attribute-input callbacks) are

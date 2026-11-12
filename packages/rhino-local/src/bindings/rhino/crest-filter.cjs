@@ -25,10 +25,9 @@
 // followed by `(`, trailing text, a quoted pointer, `null`/arrays after any
 // operator but the measured ones, and pointers holding `[]{}` or a bad `~`.
 //
-// Also `unsupported`, from E19 fix round 3, because the on-prem CREST 27.1.1
-// parser (QueryFilters.parse, run by the round-3 reviewer over 112 inputs)
-// rejects them and AIC is unmeasured. The jar is a hypothesis here, not an AIC
-// measurement, so these are faults, not catchable: an exponent with no `.`
+// Also `unsupported`, from E19 fix round 3, because a CREST filter parser
+// run by the round-3 reviewer over 112 inputs rejects them and AIC is
+// unmeasured. That is a hypothesis here, not an AIC measurement, so these are faults, not catchable: an exponent with no `.`
 // (`1e3`; CREST hands a value without `.` to Long.parseLong), an integer
 // beyond 2^53 - 1 (past Java long CREST refuses it; below that and past 2^53
 // a JS number cannot hold the long CREST compares), any separator but U+0020

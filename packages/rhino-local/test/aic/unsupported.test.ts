@@ -70,10 +70,7 @@ describe("aicUnsupportedReason", () => {
     ).toMatch(/putSecure/);
   });
 
-  it("skips legacy, resumedFromSuspend=true, and extra binding seeds", () => {
-    expect(
-      aicUnsupportedReason(caseWith({ given: { engine: "legacy" } }))
-    ).toMatch(/legacy/);
+  it("skips resumedFromSuspend=true and extra binding seeds", () => {
     expect(
       aicUnsupportedReason(caseWith({ given: { resumedFromSuspend: true } }))
     ).toMatch(/resumedFromSuspend/);

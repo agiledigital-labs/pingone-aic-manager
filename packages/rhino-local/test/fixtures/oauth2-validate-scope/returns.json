@@ -5,10 +5,6 @@
   "result": "http plus the token endpoint's scope or error/error_description; a loader hash in a cast message is levelled to @<hash>"
  },
  "duplicate": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a"
@@ -16,11 +12,6 @@
   "script": "// Validate-scope result probe: duplicate\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return [\"zzemuc5-a\", \"zzemuc5-a\"]; }\n"
  },
  "empty": {
-  "legacy": {
-   "error": "authorization_declined",
-   "error_description": "The user has declined authorization",
-   "http": 403
-  },
   "next-gen": {
    "error": "authorization_declined",
    "error_description": "The user has declined authorization",
@@ -29,11 +20,6 @@
   "script": "// Validate-scope result probe: empty\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return []; }\n"
  },
  "empty [scope=]": {
-  "legacy": {
-   "error": "authorization_declined",
-   "error_description": "The user has declined authorization",
-   "http": 403
-  },
   "next-gen": {
    "error": "authorization_declined",
    "error_description": "The user has declined authorization",
@@ -42,11 +28,6 @@
   "script": "// Validate-scope result probe: empty\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return []; }\n"
  },
  "invalid-scope": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "invalid_scope",
    "error_description": "zz denied",
@@ -55,10 +36,6 @@
   "script": "// Validate-scope result probe: invalid-scope\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { scopeValidatorHelper.throwInvalidScope(\"zz denied\"); return req(); }\n"
  },
  "invalid-scope-caught": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a"
@@ -66,11 +43,6 @@
   "script": "// Validate-scope result probe: invalid-scope-caught\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { try { scopeValidatorHelper.throwInvalidScope(\"zz denied\"); } catch (e) { return [\"zzemuc5-a\"]; } return [\"zzemuc5-b\"]; }\n"
  },
  "invalid-scope-noarg": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error while running validate scope script",
@@ -79,11 +51,6 @@
   "script": "// Validate-scope result probe: invalid-scope-noarg\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { scopeValidatorHelper.throwInvalidScope(); return req(); }\n"
  },
  "invalid-scope-null": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "invalid_scope",
    "error_description": "The requested scope is invalid, unknown, or malformed.",
@@ -92,11 +59,6 @@
   "script": "// Validate-scope result probe: invalid-scope-null\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { scopeValidatorHelper.throwInvalidScope(null); return req(); }\n"
  },
  "invalid-scope-number": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "invalid_scope",
    "error_description": "7",
@@ -105,11 +67,6 @@
   "script": "// Validate-scope result probe: invalid-scope-number\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { scopeValidatorHelper.throwInvalidScope(7); return req(); }\n"
  },
  "java-exception": {
-  "legacy": {
-   "error": "invalid_scope",
-   "error_description": "zz java",
-   "http": 400
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error while running validate scope script",
@@ -118,10 +75,6 @@
   "script": "// Validate-scope result probe: java-exception\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(\"zz java\"); }\n"
  },
  "java-list": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a zzemuc5-b"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a zzemuc5-b"
@@ -129,10 +82,6 @@
   "script": "// Validate-scope result probe: java-list\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return requestedScopes; }\n"
  },
  "mutate-requested": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a zzemuc5-b zzemuc5-c"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a zzemuc5-b zzemuc5-c"
@@ -140,10 +89,6 @@
   "script": "// Validate-scope result probe: mutate-requested\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { requestedScopes.add(\"zzemuc5-c\"); return requestedScopes; }\n"
  },
  "narrow": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a"
@@ -151,11 +96,6 @@
   "script": "// Validate-scope result probe: narrow\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return [\"zzemuc5-a\"]; }\n"
  },
  "no-function": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error while running validate scope script",
@@ -164,11 +104,6 @@
   "script": "// Validate-scope result probe: no-function\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nvar zzTop = req();\n"
  },
  "null": {
-  "legacy": {
-   "error": "authorization_declined",
-   "error_description": "The user has declined authorization",
-   "http": 403
-  },
   "next-gen": {
    "error": "authorization_declined",
    "error_description": "The user has declined authorization",
@@ -177,11 +112,6 @@
   "script": "// Validate-scope result probe: null\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return null; }\n"
  },
  "number-item": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "class java.lang.Double cannot be cast to class java.lang.String (java.lang.Double and java.lang.String are in module java.base of loader 'bootstrap')",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "class java.lang.Double cannot be cast to class java.lang.String (java.lang.Double and java.lang.String are in module java.base of loader 'bootstrap')",
@@ -190,11 +120,6 @@
   "script": "// Validate-scope result probe: number-item\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return [\"zzemuc5-a\", 7]; }\n"
  },
  "object": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error while running validate scope script",
@@ -203,10 +128,6 @@
   "script": "// Validate-scope result probe: object\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return { a: 1 }; }\n"
  },
  "other-names": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a zzemuc5-b"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a zzemuc5-b"
@@ -214,10 +135,6 @@
   "script": "// Validate-scope result probe: other-names\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateRefreshTokenScope() { return []; }\nfunction validateAuthorizationScope() { return []; }\nfunction validateAccessTokenScope() { return req(); }\n"
  },
  "passthrough": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a zzemuc5-b"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a zzemuc5-b"
@@ -225,11 +142,6 @@
   "script": "// Validate-scope result probe: passthrough\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return req(); }\n"
  },
  "passthrough [scope=]": {
-  "legacy": {
-   "error": "authorization_declined",
-   "error_description": "The user has declined authorization",
-   "http": 403
-  },
   "next-gen": {
    "error": "authorization_declined",
    "error_description": "The user has declined authorization",
@@ -245,11 +157,6 @@
   "script": "// Validate-scope result probe: passthrough\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return req(); }\n"
  },
  "string": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error while running validate scope script",
@@ -258,11 +165,6 @@
   "script": "// Validate-scope result probe: string\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return \"zzemuc5-a\"; }\n"
  },
  "string-two": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error while running validate scope script",
@@ -271,11 +173,6 @@
   "script": "// Validate-scope result probe: string-two\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return \"zzemuc5-a zzemuc5-b\"; }\n"
  },
  "throw-error": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "class org.mozilla.javascript.NativeError cannot be cast to class org.mozilla.javascript.NativeJavaObject (org.mozilla.javascript.NativeError and org.mozilla.javascript.NativeJavaObject are in unnamed module of loader org.apache.catalina.loader.ParallelWebappClassLoader @<hash>)",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "class org.mozilla.javascript.NativeError cannot be cast to class org.mozilla.javascript.NativeJavaObject (org.mozilla.javascript.NativeError and org.mozilla.javascript.NativeJavaObject are in unnamed module of loader org.apache.catalina.loader.ParallelWebappClassLoader @<hash>)",
@@ -284,11 +181,6 @@
   "script": "// Validate-scope result probe: throw-error\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { throw new Error(\"zz deliberate\"); }\n"
  },
  "throw-string": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "class java.lang.String cannot be cast to class org.mozilla.javascript.NativeJavaObject (java.lang.String is in module java.base of loader 'bootstrap'; org.mozilla.javascript.NativeJavaObject is in unnamed module of loader org.apache.catalina.loader.ParallelWebappClassLoader @<hash>)",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "class java.lang.String cannot be cast to class org.mozilla.javascript.NativeJavaObject (java.lang.String is in module java.base of loader 'bootstrap'; org.mozilla.javascript.NativeJavaObject is in unnamed module of loader org.apache.catalina.loader.ParallelWebappClassLoader @<hash>)",
@@ -297,11 +189,6 @@
   "script": "// Validate-scope result probe: throw-string\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { throw \"zz deliberate\"; }\n"
  },
  "top-return-value": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "Error while running validate scope script",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "Error while running validate scope script",
@@ -310,11 +197,6 @@
   "script": "// Validate-scope result probe: top-return-value\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nreq();\n"
  },
  "top-throw": {
-  "legacy": {
-   "error": "server_error",
-   "error_description": "class org.mozilla.javascript.NativeError cannot be cast to class org.mozilla.javascript.NativeJavaObject (org.mozilla.javascript.NativeError and org.mozilla.javascript.NativeJavaObject are in unnamed module of loader org.apache.catalina.loader.ParallelWebappClassLoader @<hash>)",
-   "http": 500
-  },
   "next-gen": {
    "error": "server_error",
    "error_description": "class org.mozilla.javascript.NativeError cannot be cast to class org.mozilla.javascript.NativeJavaObject (org.mozilla.javascript.NativeError and org.mozilla.javascript.NativeJavaObject are in unnamed module of loader org.apache.catalina.loader.ParallelWebappClassLoader @<hash>)",
@@ -323,11 +205,6 @@
   "script": "// Validate-scope result probe: top-throw\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nthrow new Error(\"zz top\");\nfunction validateAccessTokenScope() { return req(); }\n"
  },
  "undefined": {
-  "legacy": {
-   "error": "authorization_declined",
-   "error_description": "The user has declined authorization",
-   "http": 403
-  },
   "next-gen": {
    "error": "authorization_declined",
    "error_description": "The user has declined authorization",
@@ -336,10 +213,6 @@
   "script": "// Validate-scope result probe: undefined\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return; }\n"
  },
  "unknown-scope": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a zzemuc5-nope"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a zzemuc5-nope"
@@ -354,10 +227,6 @@
   "script": "// Validate-scope result probe: unknown-scope\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return [\"zzemuc5-a\", \"zzemuc5-nope\"]; }\n"
  },
  "var-function": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a"
@@ -365,10 +234,6 @@
   "script": "// Validate-scope result probe: var-function\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nvar validateAccessTokenScope = function () { return [\"zzemuc5-a\"]; };\n"
  },
  "widen": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a zzemuc5-b zzemuc5-c"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a zzemuc5-b zzemuc5-c"
@@ -383,10 +248,6 @@
   "script": "// Validate-scope result probe: widen\nfunction req() { var a = requestedScopes.toArray(); var o = []; for (var i = 0; i < a.length; i++) o.push(String(a[i])); return o; }\nfunction validateAccessTokenScope() { return req().concat([\"zzemuc5-c\"]); }\n"
  },
  "with-args": {
-  "legacy": {
-   "http": 200,
-   "scope": "zzemuc5-a"
-  },
   "next-gen": {
    "http": 200,
    "scope": "zzemuc5-a"

@@ -492,14 +492,14 @@ describe("library context", () => {
     expect(result.effects.returns).toBeUndefined();
   }, 60_000);
 
-  it("refuses a legacy engine, a missing export name, and the reserved library id", async () => {
+  it("refuses the removed legacy engine, a missing export name, and the reserved library id", async () => {
     expect(() => defineCase({
       name: "legacy",
       context: "LIBRARY",
       script: "exports.n = function () { return 1; };",
-      given: { engine: "legacy", library: { export: "n" } },
+      given: { engine: "legacy" as never, library: { export: "n" } },
       expect: { returns: { status: "returned", value: 1 } },
-    })).toThrow(/no legacy engine/);
+    })).toThrow(/no longer emulated/);
 
     expect(() => defineCase({
       name: "no export",
@@ -550,13 +550,5 @@ describe("oauth library caller allow-lists", () => {
       expect(list).toEqual(first);
       expect(list).not.toContain("java.util.HashSet");
     }
-  });
-});
-
-describe("library captures on engines with no require()", () => {
-  it.each(["decision-legacy.json", "token-legacy.json"])("%s records require as unbound", (file) => {
-    const live = readLive(file);
-    expect(live.required).toBe("err");
-    expect(live.requireMsg).toBe('ReferenceError: "require" is not defined.');
   });
 });

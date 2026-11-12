@@ -84,7 +84,7 @@ describe("case.context selector", () => {
       name: "typed",
       script: "s",
       context: ATM,
-      given: { engine: "legacy", accessToken: { clientId: "c", scope: ["a", "b"] }, client: { allowedScopes: ["a"] } },
+      given: { engine: "next-gen", accessToken: { clientId: "c", scope: ["a", "b"] }, client: { allowedScopes: ["a"] } },
       expect: { accessToken: { scope: ["a"] } },
     });
     expect(kase.given.accessToken).toEqual({ clientId: "c", scope: ["a", "b"] });

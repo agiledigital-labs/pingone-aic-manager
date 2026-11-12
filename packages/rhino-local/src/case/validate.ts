@@ -861,7 +861,7 @@ function parseIdentityAttributes(raw: unknown, path: string): Record<string, Ide
 
 /** Why a case that names the legacy engine fails. One wording, so every surface says the same. */
 export const LEGACY_ENGINE_REMOVED =
-  'the legacy (V1) script engine is no longer emulated; rhino-local runs next-gen scripts only. Upgrade the script to a next-gen script (context id with the _NEXT_GEN suffix) and drop given.engine, or leave it as "next-gen"';
+  'the legacy (V1) script engine is no longer emulated; rhino-local runs next-gen scripts only. Upgrade the script to a next-gen script and drop given.engine, or leave it as "next-gen"';
 
 function parseEngine(raw: unknown, path: string): Engine {
   if (raw === "legacy") {

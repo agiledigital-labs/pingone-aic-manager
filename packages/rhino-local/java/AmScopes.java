@@ -5,8 +5,8 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 
 /**
- * AM 8.1.1 {@code RhinoScriptEngine.makeScriptable} / {@code getScope},
- * measured with {@code javap -p -c}.
+ * AM 8.1.1 {@code RhinoScriptEngine.makeScriptable} / {@code getScope}, as
+ * observed to behave.
  *
  * <pre>
  *   ScriptContextScope scope = new ScriptContextScope(scriptContext);

@@ -26,8 +26,8 @@ describe("JavaImporter scope", () => {
 
   // Measured 2026-10-01: JsonValue comes through its class or its package,
   // as a Java class (typeof "function"), and through no other importer. The
-  // legacy result classes Action and HiddenValueCallback are absent on
-  // next-gen from every importer, including one that names them.
+  // result classes Action and HiddenValueCallback are absent from every
+  // importer, including one that names them.
   it("exposes JsonValue only to an importer that names it", async () => {
     const run = await lease.run().expect({
       outcome: "done",

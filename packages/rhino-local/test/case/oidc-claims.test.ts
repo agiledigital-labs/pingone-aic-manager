@@ -54,7 +54,7 @@ describe("OIDC_CLAIMS case validation", () => {
       name: "ok",
       script: "x.js",
       context: OIDC,
-      given: { engine: "legacy", oidc: { sub: "s", claimsLocales: ["en"] }, scopes: ["openid"] },
+      given: { engine: "next-gen", oidc: { sub: "s", claimsLocales: ["en"] }, scopes: ["openid"] },
       expect: { oidc: { userinfo: { a: "b" }, issued: true } },
     });
     expect(kase.given.oidc).toEqual({ sub: "s", claimsLocales: ["en"] });

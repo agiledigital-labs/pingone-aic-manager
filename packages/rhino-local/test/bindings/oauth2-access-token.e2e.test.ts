@@ -1,7 +1,7 @@
 /**
  * The access-token modification context on the real JVM, compared with live
  * captures. Each probe in test/fixtures/oauth2-atm/ ran unchanged on a sandbox
- * tenant (2026-11-10, both engines, a stateless client_credentials token) and
+ * tenant (2026-11-10, a stateless client_credentials token) and
  * its `<probe>.<engine>.json` holds what AIC answered: the probe's own record
  * (the `aicprobe` claim), the JWT's claims minus the per-token ones, and the
  * token endpoint's response body. Here the same script runs in the emulator
@@ -69,7 +69,8 @@ function asIssued(token: AccessTokenEffect): { claims: JsonObject; body: JsonObj
   return { claims, body: token.final.responseFields, scope: token.final.scope, lifetime: 0 };
 }
 
-describe.each(["next-gen", "legacy"] as const)("access-token modification on %s matches the live capture", (engine) => {
+describe("access-token modification matches the live capture", () => {
+  const engine = "next-gen" as const;
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
@@ -102,7 +103,7 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     expect(authMs / 1000).toBe(live.expMinusIat);
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("identity-string: String(identity) converts, identity.toString() does not exist", async () => {
+  it("identity-string: String(identity) converts, identity.toString() does not exist", async () => {
     const live = capture("identity-string", engine);
     expect(live.http).toBe(200);
     const { effects } = await run("identity-string");
@@ -112,20 +113,6 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     expect(local).toEqual(hashless);
   }, 60_000);
 
-  it.runIf(engine === "legacy")("java-strings: getters hand over java.lang.String, and a top-level var reads back as a JS string", async () => {
-    const live = capture("java-strings", engine);
-    expect(live.http).toBe(200);
-    const { effects, verdict } = await runCase(runner, defineCase({
-      name: "java-strings legacy",
-      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
-      script: script("java-strings"),
-      // The capture's client: getName() and getClientId() are both its id.
-      given: { engine, accessToken: { clientId: "zzemuC3-atm", scope: ["zzemuc3-probe"] }, identity: { name: "zzemuC3-atm" } },
-      expect: { allowUndeclared: { accessToken: true, logs: true } },
-    }));
-    expect(verdict.pass, verdict.summary).toBe(true);
-    expect(JSON.parse(effects.accessToken!.final.fields.aicprobe as string)).toEqual(live.probe!);
-  }, 60_000);
 
   it("remove-scopes: the script returns, and AM refuses to issue the token", async () => {
     const live = capture("remove-scopes", engine);
@@ -174,7 +161,7 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     expect(effects.accessToken!.final.fields.probe).toBe(1);
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r10 P2-1 an empty identity attribute still answers length and String", async () => {
+  it("r10 P2-1 an empty identity attribute still answers length and String", async () => {
     const { effects, verdict } = await runCase(runner, defineCase({
       name: `r10 empty attribute ${engine}`,
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
@@ -201,8 +188,7 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
   }, 60_000);
 
   // Sol ctx r11 P2-1. The empty identity-attribute surface does not measure
-  // getAudience, getScope or scopes. Each of these is one of the eight
-  // reproductions (getAudience on both engines, the other two next-gen).
+  // getAudience, getScope or scopes. Each of these is a reproduction.
   const emptyListFault = async (name: string, source: string, extra: Record<string, unknown>) => {
     const id = "oauth2-token-unmeasured/list";
     expectHarnessFault(id);
@@ -229,7 +215,7 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     );
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r11 P2-1 an empty getScope() list's surface is a named fault", async () => {
+  it("r11 P2-1 an empty getScope() list's surface is a named fault", async () => {
     await emptyListFault(
       "empty getScope",
       `accessToken.setField("probe", String(accessToken.getScope()) + "|" + accessToken.getScope().length);`,
@@ -237,7 +223,7 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     );
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r11 P2-1 an empty scopes list's surface is a named fault", async () => {
+  it("r11 P2-1 an empty scopes list's surface is a named fault", async () => {
     await emptyListFault(
       "empty scopes",
       `accessToken.setField("probe", String(scopes) + "|" + scopes.length);`,
@@ -263,38 +249,7 @@ describe.each(["next-gen", "legacy"] as const)("access-token modification on %s 
     await overloadName("string ctor", "java.lang.String", "getField(java.lang.Class,number)");
   }, 60_000);
 
-  // Next-gen access-token's allow-list names no java.util class, so resolving
-  // java.util.HashSet is the shutter's refusal and never reaches getField's
-  // signature. Legacy has no allow-list. The next-gen name is the decision-node
-  // test in host-ops.e2e.test.ts.
-  it.runIf(engine === "legacy")("r11 P2-2 java.util.HashSet constructor is java.lang.Class in the overload signature", async () => {
-    await overloadName("hashset ctor", "java.util.HashSet", "getField(java.lang.Class,number)");
-  }, 60_000);
-
   it("r11 P2-2 a Java method reference stays function in the overload signature", async () => {
     await overloadName("method ref", "(new java.lang.String(\"s\")).isEmpty", "getField(function,number)");
-  }, 60_000);
-});
-
-describe("legacy identity.getAttribute (docs/api/12, measured 2026-09-10)", () => {
-  let runner: RhinoRunner;
-  beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
-  afterAll(async () => { await runner?.close(); }, 30_000);
-
-  it("returns a HashSet read through toArray(), and an empty set for an attribute the identity lacks", async () => {
-    const { effects } = await runCase(runner, defineCase({
-      name: "getAttribute shapes",
-      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
-      script: `var held = identity.getAttribute("thing");
-var missing = identity.getAttribute("zzNoSuchAttr");
-var index; try { held[0]; index = "no throw"; } catch (e) { index = String(e); }
-accessToken.setField("out", [String(held.toArray()[0]), held.size(), String(held), missing.size(), missing.contains("x"),
-  String(missing), typeof held.length, index].join("|"));`,
-      given: { engine: "legacy", identity: { attributes: { thing: ["Confidential"] } } },
-      expect: { allowUndeclared: { accessToken: true } },
-    }));
-    expect(effects.accessToken!.final.fields.out).toBe(
-      'Confidential|1|[Confidential]|0|false|[]|undefined|InternalError: Java class "java.util.HashSet" has no public instance field or method named "0".'
-    );
   }, 60_000);
 });

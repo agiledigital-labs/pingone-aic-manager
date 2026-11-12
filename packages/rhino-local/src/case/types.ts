@@ -37,7 +37,7 @@ export type Engine = (typeof ENGINES)[number];
 
 /**
  * The AM script context a case runs in, by AM's context id without the
- * `_NEXT_GEN` suffix (the engine is `given.engine`). Absent means the
+ * `_NEXT_GEN` suffix (the engine is always next-gen). Absent means the
  * scripted decision node, which is how every case ran before contexts
  * existed. packages/rhino-local/docs/script-contexts.md.
  */

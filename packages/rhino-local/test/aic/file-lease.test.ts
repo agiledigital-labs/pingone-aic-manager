@@ -528,7 +528,7 @@ describe("AicFileLease", () => {
     const lease = makeLease(fake);
     await lease.open();
     const arms = fake.events.filter((event) => event === "arm").length;
-    await expect(lease.run(request("legacy", "alpha", { engine: "legacy" }))).rejects.toThrow(
+    await expect(lease.run(request("unsupported", "alpha", { resumedFromSuspend: true }))).rejects.toThrow(
       /AIC lane unsupported/
     );
     expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
@@ -548,8 +548,8 @@ describe("AicFileLease", () => {
     });
     await lease.open();
     const arms = fake.events.filter((event) => event === "arm").length;
-    const report = await lease.run(request("legacy", "alpha", { engine: "legacy" }));
-    expect(report.passes[0]?.aic.skipped).toMatch(/legacy engine/);
+    const report = await lease.run(request("unsupported", "alpha", { resumedFromSuspend: true }));
+    expect(report.passes[0]?.aic.skipped).toMatch(/resumedFromSuspend/);
     expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
     await lease.close();
   });

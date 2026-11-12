@@ -119,8 +119,8 @@ export const filterTable: FilterRow[] = [
   same('/a~2 eq "x"', "unsupported", "fault", "invalid RFC 6901 escape"),
   same('text eq"x"', "unsupported", "fault", "no space before a string, unmeasured"),
   same('text in "x"', "ast", "fault", "in with a scalar, unmeasured"),
-  // Round-3 P2-1: the on-prem CREST 27.1.1 parser rejects each of these
-  // (reviewer's QueryFilters.parse probe). That jar is a hypothesis about AIC,
+  // Round-3 P2-1: a CREST filter parser rejects each of these
+  // (reviewer's probe). That is a hypothesis about AIC,
   // not a measurement, so they are the fault, not AIC's catchable parse error.
   same("count eq 1e3", "unsupported", "fault", "exponent with no `.`: CREST 27.1.1 Long.parseLong refuses it"),
   same("count eq 1E3", "unsupported", "fault", "exponent with no `.`"),

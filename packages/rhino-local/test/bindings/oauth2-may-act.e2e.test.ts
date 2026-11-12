@@ -1,10 +1,10 @@
 /**
  * The OAuth2 may-act context on the real JVM, compared with live captures.
  * surface.script.js ran unchanged as a client's may-act script on a sandbox
- * tenant (2026-11-10, both engines, client_credentials). Its record leaves
+ * tenant (2026-11-10, client_credentials). Its record leaves
  * as the may_act claim's probe member, so surface.<engine>.json holds that
  * probe already parsed, plus the claim with the probe removed.
- * returns.json holds one script per engine and the claims AM stamped, or
+ * returns.json holds one script and the claims AM stamped, or
  * the error AM answered. Here the same scripts run in the emulator, and
  * every observable must agree.
  */
@@ -50,7 +50,7 @@ const SCOPE = "zzemuc6-a";
 const given = (engine: Engine, loggerName: string) => ({
   engine,
   realm: "/alpha",
-  scriptName: engine === "next-gen" ? "zzemuC6-ma-ng" : "zzemuC6-ma-legacy",
+  scriptName: "zzemuC6-ma-ng",
   loggerScriptId: /\.([0-9a-f-]{36})\./.exec(loggerName)![1]!,
   cookieName: "rhino-local-cookie",
   scopes: [SCOPE],
@@ -81,7 +81,8 @@ const level = (value: JsonValue): JsonValue => {
 /** `<absent>` in the captures is a missing claim, which is not JSON null. */
 const claim = (present: boolean, value: JsonValue | null): JsonValue => (present ? value : "<absent>");
 
-describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live capture", (engine) => {
+describe("may act matches the live capture", () => {
+  const engine = "next-gen" as const;
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
@@ -112,27 +113,16 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
     expect(rest).toEqual(live.mayActWithoutProbe);
     expect(claim(ma.actPresent, ma.act)).toEqual(live.act);
     const want = JSON.parse(JSON.stringify(live.probe)) as JsonObject;
-    // for...in over the token lists Java members on next-gen and throws the
-    // ResourceOwner shutter on legacy. Neither is reproduced (gaps).
+    // for...in over the token lists Java members. Not reproduced (gaps).
     delete probe.tokenMembers;
     delete want.tokenMembers;
-    if (engine === "legacy") {
-      // String(s.length) of a guarded java.lang.String is a JS function's
-      // source, not Rhino's rendering of the Java method (gaps).
-      for (const key of ["idName", "loggerName", "rpRealm"]) {
-        delete ((probe[key] as JsonObject).ok as JsonObject).len;
-        delete ((want[key] as JsonObject).ok as JsonObject).len;
-      }
-    }
     expect(level(probe as unknown as JsonValue)).toEqual(level(want as unknown as JsonValue));
   }, 60_000);
 
   const returns = Object.entries(RETURNS).filter(([, byEngine]) => byEngine[engine] !== undefined);
   it.each(returns)("returns.json %s", async (key, byEngine) => {
     const live = byEngine[engine]!;
-    const loggerName = engine === "next-gen"
-      ? "scripts.OAUTH2_MAY_ACT_NEXT_GEN.44cfa247-295a-4c01-8af0-ca0ff008361d.(zzemuC6-ma-ng)"
-      : "scripts.OAUTH2_MAY_ACT.52eb4f64-7d62-4683-a6ff-2a03ea2b4998.(zzemuC6-ma-legacy)";
+    const loggerName = "scripts.OAUTH2_MAY_ACT_NEXT_GEN.44cfa247-295a-4c01-8af0-ca0ff008361d.(zzemuC6-ma-ng)";
     const outcome = await run(key, live.script, loggerName, live.http === 200).then(
       (r) => r,
       (e: unknown) => e,
@@ -154,23 +144,16 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
     expect(ma.scope).toEqual(live.scope === undefined ? null : live.scope.split(" "));
   }, 60_000);
 
-  const faults: [string, string][] = engine === "legacy"
-    ? [["token.getClientId();", "oauth2-may-act-unmeasured/token.getClientId()"]]
-    : [["scopes.add(\"x\");", "oauth2-may-act-unmeasured/scopes"]];
+  const faults: [string, string][] = [["scopes.add(\"x\");", "oauth2-may-act-unmeasured/scopes"]];
   it.each(faults)("%s is a named fault", async (source, id) => {
     expectHarnessFault(id);
-    const loggerName = engine === "next-gen"
-      ? "scripts.OAUTH2_MAY_ACT_NEXT_GEN.44cfa247-295a-4c01-8af0-ca0ff008361d.(zzemuC6-ma-ng)"
-      : "scripts.OAUTH2_MAY_ACT.52eb4f64-7d62-4683-a6ff-2a03ea2b4998.(zzemuC6-ma-legacy)";
+    const loggerName = "scripts.OAUTH2_MAY_ACT_NEXT_GEN.44cfa247-295a-4c01-8af0-ca0ff008361d.(zzemuC6-ma-ng)";
     const error = await run(id, source, loggerName).then(() => null, (e: unknown) => e);
     expect(error).toBeInstanceOf(CaseRunError);
     const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
     expect(ids).toContain(id);
   }, 60_000);
 
-  const stamp = (body: string) => engine === "legacy"
-    ? `var m = new java.util.LinkedHashMap(); ${body} token.setMayAct(new org.forgerock.json.JsonValue(m));`
-    : body;
   const faulted = async (name: string, source: string, scopes: string[], id: string) => {
     expectHarnessFault(id);
     const error = await runCase(runner, defineCase({
@@ -187,56 +170,44 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
 
   it("P2-2 JSON.stringify of scopes.toArray() is a named fault", async () => {
     const id = "oauth2-may-act-unmeasured/scopes.toArray()";
-    const source = stamp(engine === "legacy"
-      ? "m.put(\"j\", JSON.stringify(scopes.toArray()));"
-      : "token.setMayAct({ j: JSON.stringify(scopes.toArray()) });");
+    const source = "token.setMayAct({ j: JSON.stringify(scopes.toArray()) });";
     await faulted("p2-2-json", source, ["a"], id);
   }, 60_000);
 
   it("P2-2 borrowing join on scopes.toArray() is a named fault", async () => {
     const id = "oauth2-may-act-unmeasured/scopes.toArray()";
-    const source = stamp(engine === "legacy"
-      ? "m.put(\"j\", Array.prototype.join.call(scopes.toArray(), \"|\"));"
-      : "token.setMayAct({ j: Array.prototype.join.call(scopes.toArray(), \"|\") });");
+    const source = "token.setMayAct({ j: Array.prototype.join.call(scopes.toArray(), \"|\") });";
     await faulted("p2-2-join", source, ["a", "b"], id);
   }, 60_000);
 
   it("P2-2 writing through scopes.toArray() is a named fault", async () => {
     const id = "oauth2-may-act-unmeasured/scopes.toArray().0";
-    const source = engine === "legacy"
-      ? "var a = scopes.toArray(); a[0] = \"z\"; var m = new java.util.LinkedHashMap(); m.put(\"j\", String(a[0])); token.setMayAct(new org.forgerock.json.JsonValue(m));"
-      : "var a = scopes.toArray(); a[0] = \"z\"; token.setMayAct({ j: String(a[0]) });";
+    const source = "var a = scopes.toArray(); a[0] = \"z\"; token.setMayAct({ j: String(a[0]) });";
     await faulted("p2-2-write", source, ["a"], id);
   }, 60_000);
 
   it("P2-2 the measured toArray shape still answers", async () => {
-    const source = engine === "legacy"
-      ? "var a = scopes.toArray(); var m = new java.util.LinkedHashMap(); m.put(\"t\", typeof a); m.put(\"arr\", Array.isArray(a)); m.put(\"len\", a.length); m.put(\"e\", typeof a[0]); token.setMayAct(new org.forgerock.json.JsonValue(m));"
-      : "var a = scopes.toArray(); token.setMayAct({ t: typeof a, arr: Array.isArray(a), len: a.length, e: typeof a[0] });";
+    const source = "var a = scopes.toArray(); token.setMayAct({ t: typeof a, arr: Array.isArray(a), len: a.length, e: typeof a[0] });";
     const { effects } = await runCase(runner, defineCase({
       name: `p2-2-shape ${engine}`,
       context: "OAUTH2_MAY_ACT",
       script: source,
       given: { engine, scopes: ["a"] },
-      expect: { mayAct: { mayAct: { t: "object", arr: false, len: 1, e: engine === "legacy" ? "object" : "string" } } },
+      expect: { mayAct: { mayAct: { t: "object", arr: false, len: 1, e: "string" } } },
     }));
     expect(effects.mayAct!.mayAct).toEqual({
-      t: "object", arr: false, len: 1, e: engine === "legacy" ? "object" : "string",
+      t: "object", arr: false, len: 1, e: "string",
     });
   }, 60_000);
 
   it("P2-3 getAct(1) is an unmeasured arity even when the error is caught", async () => {
     const id = "oauth2-may-act-unmeasured/token.getAct(1)";
-    const source = engine === "legacy"
-      ? "var obj = {}; try { token.getAct(1); } catch (e) { obj.error = e.name; } var m = new java.util.LinkedHashMap(); m.put(\"error\", obj.error); token.setMayAct(new org.forgerock.json.JsonValue(m));"
-      : "var obj = {}; try { token.getAct(1); } catch (e) { obj.error = e.name; } token.setMayAct(obj);";
+    const source = "var obj = {}; try { token.getAct(1); } catch (e) { obj.error = e.name; } token.setMayAct(obj);";
     await faulted("p2-3-getAct", source, ["a"], id);
   }, 60_000);
 
   it("P2-3 a captured wrong count still throws the ordinary overload error", async () => {
-    const source = engine === "legacy"
-      ? "var name = \"no-throw\"; try { token.getMayAct(1); } catch (e) { name = e.name; } var m = new java.util.LinkedHashMap(); m.put(\"error\", name); token.setMayAct(new org.forgerock.json.JsonValue(m));"
-      : "var name = \"no-throw\"; try { token.getMayAct(1); } catch (e) { name = e.name; } token.setMayAct({ error: name });";
+    const source = "var name = \"no-throw\"; try { token.getMayAct(1); } catch (e) { name = e.name; } token.setMayAct({ error: name });";
     const { effects } = await runCase(runner, defineCase({
       name: `p2-3-measured ${engine}`,
       context: "OAUTH2_MAY_ACT",
@@ -249,16 +220,12 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
 
   it("P2-6 JSON.stringify of a request value faults", async () => {
     const id = "oauth2-may-act-unmeasured/requestProperties";
-    const source = stamp(engine === "legacy"
-      ? "m.put(\"j\", JSON.stringify(requestProperties.requestParams.grant_type));"
-      : "token.setMayAct({ j: JSON.stringify(requestProperties.requestParams.grant_type) });");
+    const source = "token.setMayAct({ j: JSON.stringify(requestProperties.requestParams.grant_type) });";
     await faulted("p2-6-json", source, ["a"], id);
   }, 60_000);
 
   it("P2-6 a request value still answers String, length and [i]", async () => {
-    const source = engine === "legacy"
-      ? "var g = requestProperties.requestParams.grant_type; var m = new java.util.LinkedHashMap(); m.put(\"s\", String(g)); m.put(\"z\", String(g[0])); m.put(\"n\", g.length); token.setMayAct(new org.forgerock.json.JsonValue(m));"
-      : "var g = requestProperties.requestParams.grant_type; token.setMayAct({ s: String(g), z: String(g[0]), n: g.length });";
+    const source = "var g = requestProperties.requestParams.grant_type; token.setMayAct({ s: String(g), z: String(g[0]), n: g.length });";
     const { effects } = await runCase(runner, defineCase({
       name: `p2-6-measured ${engine}`,
       context: "OAUTH2_MAY_ACT",
@@ -271,11 +238,11 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
 
   // Sol ctx r10 P2-1. The empty redirect surface moved off the scopes kind.
   // Empty scopes JSON stays a fault. Empty redirect String and length stay.
-  it.runIf(engine === "next-gen")("r10 P2-1 JSON of an empty scopes list still faults", async () => {
+  it("r10 P2-1 JSON of an empty scopes list still faults", async () => {
     await faulted("r10-empty-scopes-json", "JSON.stringify(scopes);", [], "oauth2-may-act-unmeasured/scopes");
   }, 60_000);
 
-  it.runIf(engine === "next-gen")("r10 P2-1 an empty redirect-URI list still answers String and length", async () => {
+  it("r10 P2-1 an empty redirect-URI list still answers String and length", async () => {
     const { effects } = await runCase(runner, defineCase({
       name: `r10 redirect surface ${engine}`,
       context: "OAUTH2_MAY_ACT",
@@ -286,9 +253,9 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
     expect(effects.mayAct!.mayAct).toEqual({ j: "[]|0" });
   }, 60_000);
 
-  // Sol ctx r12 P2-1. Empty scopes.forEach answers 0, and the legacy set's
-  // toJSON returns its members at size zero. Neither was measured empty.
-  it.runIf(engine === "next-gen")("r12 P2-1 forEach of an empty scopes list is a named fault", async () => {
+  // Sol ctx r12 P2-1. Empty scopes.forEach answers 0, which was not measured
+  // empty.
+  it("r12 P2-1 forEach of an empty scopes list is a named fault", async () => {
     const id = "oauth2-may-act-unmeasured/scopes";
     expectHarnessFault(id);
     const error = await runCase(runner, defineCase({
@@ -302,21 +269,5 @@ describe.each(["next-gen", "legacy"] as const)("may act on %s matches the live c
     const faults = (error as CaseRunError).response.emulation?.faults ?? [];
     expect(faults.map((f) => f.id)).toContain(id);
     expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
-  }, 60_000);
-
-  it.runIf(engine === "legacy")("r12 P2-1 JSON of an empty scopes set is a named fault", async () => {
-    const id = "oauth2-may-act-unmeasured/JSON.stringify(scopes)";
-    expectHarnessFault(id);
-    const error = await runCase(runner, defineCase({
-      name: `r12 empty scopes json ${engine}`,
-      context: "OAUTH2_MAY_ACT",
-      script: stamp("m.put(\"j\", JSON.stringify(scopes));"),
-      given: { engine, scopes: [] },
-      expect: { mayAct: { mayAct: { j: "[]" } } },
-    })).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-    expect(faults.map((f) => f.id)).toContain(id);
-    expect(faults.map((f) => f.message).join("\n")).toContain("size-zero");
   }, 60_000);
 });

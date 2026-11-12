@@ -48,7 +48,7 @@ describe("SOCIAL_IDP_PROFILE_TRANSFORMATION case validation", () => {
       name: "ok",
       script: "x.js",
       context: SOCIAL,
-      given: { engine: "legacy", sharedState: { a: "b" }, socialIdp: { rawProfile: { sub: "s" }, selectedIdp: "idp" } },
+      given: { engine: "next-gen", sharedState: { a: "b" }, socialIdp: { rawProfile: { sub: "s" }, selectedIdp: "idp" } },
       expect: { socialIdp: { profile: { id: "s" }, accepted: true }, sharedState: { added: { c: "d" } } },
     });
     expect(kase.given.socialIdp).toEqual({ rawProfile: { sub: "s" }, selectedIdp: "idp" });

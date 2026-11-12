@@ -96,8 +96,7 @@ describe("the utils host bridge on the real Rhino engine", () => {
 });
 
 // Sol ctx r10 P2-2. nodeState.get uses the same signature helper. Next-gen
-// only: legacy has no arity basis, so the extra argument is a harness fault
-// and the message does not carry the signature.
+// only.
 describe("a regexp is function in a decision-node overload signature", () => {
   let runner: RhinoRunner;
 
