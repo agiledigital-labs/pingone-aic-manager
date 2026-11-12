@@ -20,3 +20,16 @@ if (all.size() > 0 && all.containsKey && all.containsKey("mail")) {
     logger.message("mail values: {}", String(mails.size()));
   }
 }
+
+// `session` is bound but `null` on a password grant, so it is guarded. The
+// identity answers getName/getUniversalId (Java strings) and isExists()
+// (measured 2026-11-10); `customProperties` is a map.
+if (session) {
+  session.getProperty("Principal");
+}
+if (identity.isExists()) {
+  logger.message("{} {}", String(identity.getName()), String(identity.getUniversalId()));
+}
+if (clientProperties.customProperties.size() === 0) {
+  logger.message("{}", String(logger.getName()));
+}

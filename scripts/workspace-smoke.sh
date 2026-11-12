@@ -110,7 +110,7 @@ function firstHeader(name) {
 }
 logger.info("{} {} {}", firstHeader("content-type"),
   requestProperties.requestUri, clientProperties.clientId);
-if (clientProperties.allowedScopes.contains("openid")) {
+if (clientProperties.clientId === "probe") {
   accessToken.setField("aicedit_smoke", true);
 }
 JS
@@ -125,7 +125,7 @@ logger.message(
   "" + ct + wanted + attr + scopes.contains("openid") +
   claimsLocales.includes("en") +
   clientProperties.allowedGrantTypes.contains("authorization_code") +
-  session.getProperty("Principal")
+  (session ? session.getProperty("Principal") : null)
 );
 JS
 
