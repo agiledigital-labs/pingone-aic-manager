@@ -119,6 +119,9 @@ describe("node state keys are a Java set and a map's values a Java list", () => 
       "true"],
     ["an array method on keys() is the engine's refusal", `try { nodeState.keys().map(function (x) { return x; }); return "returned"; } catch (e) { return e.name + ": " + String(e.message).split(" in object ")[0]; }`,
       "TypeError: Cannot find function map"],
+    // Measured on the sandbox (docs/api/12): indexing the key set is the engine's refusal.
+    ["keys()[0] is the engine's refusal", refusal("nodeState.keys()[0]"),
+      'InternalError: Java class "java.util.HashSet" has no public instance field or method named "0".'],
     // Measured: values() is a snapshot list; size(), get(i) and toArray() work and iterator() is refused.
     ["values() is a Java list", `var v = ${MAP}.values(); return [Object.prototype.toString.call(v), Array.isArray(v), typeof v.map, v.size(), v.get(0), v.toArray().length, v.contains("p")].join("|");`,
       "[object JavaList]|false|undefined|2|p|2|true"],
