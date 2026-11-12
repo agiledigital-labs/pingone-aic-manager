@@ -3,7 +3,8 @@ import java.util.List;
 import org.mozilla.javascript.ClassShutter;
 
 /**
- * Replica of the AM script sandbox's per-context Java class allow-list.
+ * The tenant script sandbox's per-context Java class allow-list, as the
+ * descriptor publishes it.
  *
  * <p>AM runs Rhino behind a class shutter that decides, per class and per
  * script context, whether a Java class is visible at all. The local runner had

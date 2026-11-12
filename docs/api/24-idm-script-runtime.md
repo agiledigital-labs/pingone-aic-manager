@@ -33,9 +33,9 @@ Read from inside a script: IDM has no class shutter, so
 
 | Property                    | IDM                                                                                                                                                                      | AM, for contrast (`packages/rhino-local/java/AmContextFactory.java`) |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| Rhino                       | `org.forgerock.openidm:rhino`, an OSGi repackaging of upstream **1.7.14.1** (`Export-Package` version `1.7.14.1`; `getImplementationVersion()` reports `Rhino Snapshot`) | 1.7.14.1                                                             |
+| Rhino                       | `org.forgerock.openidm:rhino`, upstream **1.7.14.1** (`getImplementationVersion()` reports `Rhino Snapshot`) | 1.7.14.1                                                             |
 | Language version            | 200 (`VERSION_ES6`)                                                                                                                                                      | per context                                                          |
-| Optimisation level          | **9** — scripts compile to JVM bytecode                                                                                                                                  | -1 (interpreted)                                                     |
+| Optimisation level          | **9** — scripts are compiled, not interpreted                                                                                                                                  | -1 (interpreted)                                                     |
 | Instruction observer        | threshold 0 — no script timeout                                                                                                                                          | every 1,000 instructions                                             |
 | Context factory             | plain `ContextFactory`; `hasFeature` true for 3, 5, 6, 14, 16, 20 only; 21 (Java map access) false; 22 throws                                                            | custom; 21 true                                                      |
 | `spawn(fn)` child           | Orchestrator sandbox probe **p20**, **2026-11-02**: language **200**, optimisation **9**, observer threshold **0**, plain `org.mozilla.javascript.ContextFactory`, features **13/21 false**, identical to parent; `eval("let v=42;v")` returns **42**, `typeof openidm` is **"object"**, parent `var` closure visible. A throwing child dies; `join(5000)` returns normally, exception not visible to parent. | Not measured |
@@ -241,8 +241,7 @@ Measured with a throwaway `config/endpoint/zzemu-probe`.
 
 ## Not yet measured
 
-Unverified runtime hypotheses and open cases. Some were read from IDM's bytecode
-while preparing these probes; none below was verified live:
+Unverified runtime hypotheses and open cases; none below was verified live:
 
 - A `PUT` whose content equals the stored record runs no hooks and does not bump
   `_rev`. (The `PATCH` row above is verified; the `PUT` probe was confounded by

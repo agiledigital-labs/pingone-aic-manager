@@ -2,30 +2,20 @@ import org.mozilla.javascript.Context;
 import org.mozilla.javascript.ContextFactory;
 
 /**
- * Replica of AM 8.1.1 {@code ObservedContextFactory} + its inner {@code
- * ObservedJavaScriptContext}, plus the {@code
- * RhinoScriptEngineFactory.getContext} knobs that constructor does not set.
- *
- * <p>Measured:
+ * The Rhino context factory the runner uses.
  *
  * <ul>
- *   <li>{@code makeContext} constructs {@code ObservedJavaScriptContext}
- *   <li>that constructor: {@code setOptimizationLevel(-1)}, {@code
- *       setInstructionObserverThreshold(1000)}, and {@code
- *       setLanguageVersion(200)} only when {@code
- *       org.forgerock.am.scripting.disableES6} is false. Language version is
- *       a per-job choice here (AIC's measured JS is {@code VERSION_DEFAULT}).
- *   <li>{@code observeInstructionCount}: if configured timeout (AM stores it
- *       in <em>seconds</em>) has elapsed since {@code startTime}, throw {@code
- *       new Error("Interrupt.")}
+ *   <li>{@code setOptimizationLevel(-1)} and {@code
+ *       setInstructionObserverThreshold(1000)}. Language version is a per-job
+ *       choice (AIC's measured JS is {@code VERSION_DEFAULT}).
+ *   <li>{@code observeInstructionCount}: if the configured timeout has elapsed
+ *       since {@code startTime}, throw {@code new Error("Interrupt.")}
  *   <li>{@code hasFeature(21)} is true ({@code FEATURE_ENABLE_JAVA_MAP_ACCESS})
- *   <li>{@code getContext} also {@code setMaximumInterpreterStackDepth} (default
- *       10000). We set that on every context.
+ *   <li>{@code setMaximumInterpreterStackDepth(10000)} on every context.
  * </ul>
  *
- * <p>Timeout is per-job milliseconds rather than AM's process-wide seconds, so
- * one runaway script cannot take the runner down. {@code 0} means no timeout,
- * matching AM's {@code ScriptEngineConfiguration.NO_TIMEOUT}.
+ * <p>Timeout is per-job milliseconds, so one runaway script cannot take the
+ * runner down. {@code 0} means no timeout.
  */
 final class AmContextFactory extends ContextFactory {
 
@@ -39,12 +29,12 @@ final class AmContextFactory extends ContextFactory {
 
   @Override
   protected Context makeContext() {
-    return new ObservedContext(this);
+    return new TimedContext(this);
   }
 
   @Override
   protected void observeInstructionCount(Context cx, int instructionCount) {
-    ObservedContext observed = (ObservedContext) cx;
+    TimedContext observed = (TimedContext) cx;
     long timeoutMs = observed.timeoutMs;
     if (timeoutMs <= 0) {
       return;
@@ -55,12 +45,12 @@ final class AmContextFactory extends ContextFactory {
     }
   }
 
-  static final class ObservedContext extends Context {
+  static final class TimedContext extends Context {
     final long startTime;
     long timeoutMs;
     AmHostBridge hostBridge;
 
-    ObservedContext(ContextFactory factory) {
+    TimedContext(ContextFactory factory) {
       super(factory);
       this.startTime = System.currentTimeMillis();
       setOptimizationLevel(-1);

@@ -5,9 +5,7 @@
 // `JavaArray<JavaString>`. Nothing had measured the container: the 2026-08-27
 // binding sweep proved the METHOD resolves (`getAttribute("mail")` returned the
 // real address) and never asked whether the thing it returned had `.length` or
-// `[0]`. The AM 8.1.1 class file says `getAttribute(String) -> java.util.Set`,
-// which is on-prem evidence about a different major version — this fixture is
-// the AIC measurement.
+// `[0]`. This fixture is the AIC measurement.
 //
 // It CALLS every candidate member rather than `typeof`-ing it, because in this
 // exact context `typeof` reports "function" for a Rhino-wrapped Java method
@@ -98,8 +96,7 @@ for (var i = 0; i < NAMES.length; i++) {
     out[NAMES[i]] = { fixtureError: String(e).slice(0, 100) };
   }
 }
-// `getAttributes()` is declared to return a Map in the 8.1.1 class file while
-// oidc-claims.d.ts calls it a JavaArray. Probe the container only — this object
+// oidc-claims.d.ts calls `getAttributes()` a JavaArray. Probe the container only — this object
 // carries the client's own `userpassword`, so NOTHING about its contents is
 // emitted beyond which accessors resolve.
 try {

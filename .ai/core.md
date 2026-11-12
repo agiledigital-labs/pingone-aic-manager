@@ -337,8 +337,8 @@ mechanism, so an unfixable advisory has to be dealt with, not waved through; the
 `scripts/shellcheck-all.sh`, and the two TypeScript gates —
 `scripts/type-tests/run.sh` and `npm run type-check` in
 `src/scripts/templates/typescript`, and four for the rhino-local harness
-(`packages/rhino-local`): typecheck, lint, the suite on the host JVM and the AM
-image's JVM (`AIC_SCRIPT_TESTER_JVM=both`), and `scripts/rhino-local-pack-smoke.sh`,
+(`packages/rhino-local`): typecheck, lint, the suite on the host JVM and the
+reference JVM image's JVM (`AIC_SCRIPT_TESTER_JVM=both`), and `scripts/rhino-local-pack-smoke.sh`,
 which installs the packed tarball outside the checkout and runs it with no
 `javac`. No cargo gate compiles a shipped `.d.ts` at all, so the Rust tests can
 be green while the declarations they emit do not type-check, and no cargo gate

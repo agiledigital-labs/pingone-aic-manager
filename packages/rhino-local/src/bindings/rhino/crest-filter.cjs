@@ -25,14 +25,12 @@
 // followed by `(`, trailing text, a quoted pointer, `null`/arrays after any
 // operator but the measured ones, and pointers holding `[]{}` or a bad `~`.
 //
-// Also `unsupported`, from E19 fix round 3, because a CREST filter parser
-// run by the round-3 reviewer over 112 inputs rejects them and AIC is
-// unmeasured. That is a hypothesis here, not an AIC measurement, so these are faults, not catchable: an exponent with no `.`
-// (`1e3`; CREST hands a value without `.` to Long.parseLong), an integer
-// beyond 2^53 - 1 (past Java long CREST refuses it; below that and past 2^53
-// a JS number cannot hold the long CREST compares), any separator but U+0020
-// (CREST splits on space and parentheses only, so a tab or newline is part of
-// a token there), and a `!` glued to the word or string before it (`and!(`).
+// Also `unsupported`, from E19 fix round 3, because AIC is unmeasured for
+// them. They are hypotheses here, not AIC measurements, so these are faults,
+// not catchable: an exponent with no `.` (`1e3`), an integer beyond 2^53 - 1
+// (a JS number cannot hold the long a filter would compare), any separator but
+// U+0020 (a tab or newline is probably part of a token), and a `!` glued to
+// the word or string before it (`and!(`).
 var __rhinoLocalCrestFilter = (function () {
   var NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
   // Written out rather than `\s`, whose membership differs between Rhino and
@@ -54,7 +52,7 @@ var __rhinoLocalCrestFilter = (function () {
 
   function numberValue(text) {
     if (/[eE]/.test(text) && text.indexOf(".") < 0) {
-      reject("unsupported", "an exponent with no . (CREST 27.1.1 reads it as a long): " + text);
+      reject("unsupported", "an exponent with no . (unmeasured on AIC): " + text);
     }
     var number = Number(text);
     if (text.indexOf(".") < 0 && Math.abs(number) > 9007199254740991) {
@@ -75,7 +73,7 @@ var __rhinoLocalCrestFilter = (function () {
         continue;
       }
       if (OTHER_SPACE.test(ch)) {
-        reject("unsupported", "a separator other than a space (CREST 27.1.1 splits on U+0020 only): " + JSON.stringify(ch));
+        reject("unsupported", "a separator other than a space (unmeasured on AIC): " + JSON.stringify(ch));
       }
       if (ch === "!" && !gap && tokens.length > 0 && tokens[tokens.length - 1].type !== "punct") {
         reject("unsupported", "a ! with no space before it: " + tokens[tokens.length - 1].text + "!");
@@ -699,8 +697,8 @@ var __rhinoLocalCrestFilter = (function () {
 
   // ---------------------------------------------------------------------
   // Field rules (E19 round 5 named them; the live probe of 2026-11-06,
-  // docs/api/10, measured the alpha_user ones). DS's core schema (opendj-core
-  // 8.1.1, RFC 4519) gives telephoneNumber EQUALITY telephoneNumberMatch, and
+  // docs/api/10, measured the alpha_user ones). DS's core schema (RFC 4519)
+  // gives telephoneNumber EQUALITY telephoneNumberMatch, and
   // frIndexedDate1-5 / frUnindexedDate1-5 are fr-attr-idateN / fr-attr-dateN,
   // GeneralizedTime (docs/api/14); frIndexedInteger1-5 / frUnindexedInteger1-5
   // are fr-attr-iintN / fr-attr-intN, integers. No string reading describes
