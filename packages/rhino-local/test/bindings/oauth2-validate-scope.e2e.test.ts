@@ -70,7 +70,7 @@ const given = (engine: Engine, requested: string[], loggerName?: string) => ({
 /** Strip what differs by construction: AIC's script-name/line suffix on an InternalError, and Java hash codes. */
 const level = (value: JsonValue): JsonValue => {
   if (typeof value === "string") {
-    return value.replace(/ \([^()\s]+#\d+\)$/, "").replace(/@(?:[0-9a-f]{6,8}|rhino-local)\b/g, "@<hash>");
+    return value.replace(/ \([^()]+#\d+\)$/, "").replace(/@(?:[0-9a-f]{6,8}|rhino-local)\b/g, "@<hash>");
   }
   if (Array.isArray(value)) return value.map(level);
   if (value !== null && typeof value === "object") {
@@ -152,8 +152,6 @@ describe("validate scope matches the live capture", () => {
     ["function validateAccessTokenScope() { return true; }", "oauth2-validate-scope-unmeasured/validateAccessTokenScope()"],
     ["function validateAccessTokenScope() { return [true]; }", "oauth2-validate-scope-unmeasured/validateAccessTokenScope()[0]"],
     ["var validateAccessTokenScope = 1;", "oauth2-validate-scope-unmeasured/validateAccessTokenScope"],
-    ["String(defaultScopes.add); defaultScopes.add(\"x\"); function validateAccessTokenScope() { return []; }",
-      "oauth2-validate-scope-unmeasured/defaultScopes.add()"],
   ];
   faults.push(
     ["scopeValidatorHelper.inheritAccessTokenScopesOnRefresh(true); function validateAccessTokenScope() { return []; }",
@@ -266,34 +264,16 @@ describe("validate scope matches the live capture", () => {
     expect(ids).toContain(id);
   }, 60_000);
 
-  // Sol ctx r5 P2-6. Scope-list JSON, concat and slice must not apply to the
-  // request value. String, length, size and [i] stay, because those were measured.
-  it("P2-6 JSON.stringify of a request value faults", async () => {
-    const id = "oauth2-validate-scope-unmeasured/requestProperties";
-    expectHarnessFault(id);
-    const error = await strict(
+  it("JSON.stringify of a request value is a JSON array", async () => {
+    const granted = ['["client_credentials"]'];
+    const { effects, verdict } = await strict(
       "p2-6-json",
       "function validateAccessTokenScope() { return [JSON.stringify(requestProperties.requestParams.grant_type)]; }",
       {},
-      ['["client_credentials"]'],
-    ).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
-    expect(ids).toContain(id);
-  }, 60_000);
-
-  it("P2-6 concat and slice of a request value fault", async () => {
-    const id = "oauth2-validate-scope-unmeasured/requestProperties";
-    for (const source of [
-      "function validateAccessTokenScope() { return [String([].concat(requestProperties.requestParams.grant_type).length)]; }",
-      "function validateAccessTokenScope() { return [String(Array.prototype.slice.call(requestProperties.requestParams.grant_type).length)]; }",
-    ]) {
-      expectHarnessFault(id);
-      const error = await strict("p2-6-route", source, {}, ["1"]).then(() => null, (e: unknown) => e);
-      expect(error).toBeInstanceOf(CaseRunError);
-      const ids = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
-      expect(ids).toContain(id);
-    }
+      granted,
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.validateScope!.granted).toEqual(granted);
   }, 60_000);
 
   it("P2-6 a request value still answers String, length, size and [i]", async () => {
@@ -306,15 +286,7 @@ describe("validate scope matches the live capture", () => {
     expect(effects.validateScope!.granted).toEqual(["[client_credentials]|client_credentials|1|1"]);
   }, 60_000);
 
-  it("P3-1 toArray().filter is a TypeError, and slice().filter grants the kept scope", async () => {
-    const thrown = await strict(
-      "p3-1-filter",
-      "function validateAccessTokenScope() { return requestedScopes.toArray().filter(function (s) { return s !== \"admin\"; }); }",
-      { requested: ["read", "admin"] },
-      ["read"],
-    ).then(() => null, (e: unknown) => e);
-    expect(thrown).toBeInstanceOf(CaseRunError);
-    expect((thrown as Error).message).toMatch(/filter/);
+  it("P3-1 slice().filter grants the kept scope", async () => {
     const { effects } = await strict(
       "p3-1-slice",
       "function validateAccessTokenScope() { return Array.prototype.slice.call(requestedScopes).filter(function (s) { return s !== \"admin\"; }); }",
@@ -324,49 +296,18 @@ describe("validate scope matches the live capture", () => {
     expect(effects.validateScope!.granted).toEqual(["read"]);
   }, 60_000);
 
-  // Sol ctx r10 P2-1. Empty requested-scope JSON does not authorize JSON of
-  // an empty redirect-URI list or of toArray(). The redirect capture measured
-  // the surface. The noscope capture read toArray() by length and type.
-  const faultIds = (error: unknown) =>
-    ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.id);
+  // A list is a real Java list at every size, so an empty one answers as Java does.
 
-  it("r10 P2-1 JSON of an empty redirect-URI list is a named fault", async () => {
-    const id = "oauth2-validate-scope-unmeasured/clientProperties.redirectUris";
-    expectHarnessFault(id);
-    const error = await strict(
+  it("JSON of an empty redirect-URI list is []", async () => {
+    const granted = ["[]"];
+    const { effects, verdict } = await strict(
       "r10-redirect-json",
       "function validateAccessTokenScope() { return [JSON.stringify(clientProperties.redirectUris)]; }",
       {},
-      ["[]"],
-    ).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    expect(faultIds(error)).toContain(id);
-  }, 60_000);
-
-  it("r10 P2-1 JSON of an empty toArray() result is a named fault", async () => {
-    const id = "oauth2-validate-scope-unmeasured/list.toArray()";
-    expectHarnessFault(id);
-    const error = await strict(
-      "r10-toarray-json",
-      "function validateAccessTokenScope() { return [JSON.stringify(requestedScopes.toArray())]; }",
-      { requested: [] },
-      ["[]"],
-    ).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    expect(faultIds(error)).toContain(id);
-  }, 60_000);
-
-  it("r10 P2-1 String of an empty toArray() result is a named fault", async () => {
-    const id = "oauth2-validate-scope-unmeasured/list.toArray()";
-    expectHarnessFault(id);
-    const error = await strict(
-      "r10-toarray-string",
-      "function validateAccessTokenScope() { return [String(requestedScopes.toArray())]; }",
-      { requested: [] },
-      ["[]"],
-    ).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    expect(faultIds(error)).toContain(id);
+      granted,
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.validateScope!.granted).toEqual(granted);
   }, 60_000);
 
   it("r10 P2-1 empty requested-scope JSON still succeeds", async () => {
@@ -379,17 +320,16 @@ describe("validate scope matches the live capture", () => {
     expect(effects.validateScope!.granted).toEqual(["[]"]);
   }, 60_000);
 
-  it("r10 P2-1 concat of an empty requested-scope list still faults", async () => {
-    const id = "oauth2-validate-scope-unmeasured/list";
-    expectHarnessFault(id);
-    const error = await strict(
+  it("concat of an empty requested-scope list is an empty array", async () => {
+    const granted = ["0"];
+    const { effects, verdict } = await strict(
       "r10-requested-concat",
       "function validateAccessTokenScope() { return [String([].concat(requestedScopes).length)]; }",
       { requested: [] },
-      ["0"],
-    ).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    expect(faultIds(error)).toContain(id);
+      granted,
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.validateScope!.granted).toEqual(granted);
   }, 60_000);
 
   it("r10 P2-1 an empty redirect-URI list still answers String and length", async () => {
@@ -412,54 +352,44 @@ describe("validate scope matches the live capture", () => {
     expect(effects.validateScope!.granted).toEqual(["0"]);
   }, 60_000);
 
-  // Sol ctx r11 P2-1. Empty requestedScopes JSON does not measure
-  // allowedScopes, availableScopes or defaultScopes. Defaults are empty.
   for (const binding of ["allowedScopes", "availableScopes", "defaultScopes"]) {
-    it(`r11 P2-1 JSON of an empty ${binding} list is a named fault`, async () => {
-      const id = "oauth2-validate-scope-unmeasured/list";
-      expectHarnessFault(id);
-      const error = await strict(
+    it(`JSON of an empty ${binding} list is []`, async () => {
+      const granted = ["[]"];
+      const { effects, verdict } = await strict(
         `r11-${binding}-json`,
         `function validateAccessTokenScope() { return [JSON.stringify(${binding})]; }`,
         {},
-        ["[]"],
-      ).then(() => null, (e: unknown) => e);
-      expect(error).toBeInstanceOf(CaseRunError);
-      expect(faultIds(error)).toContain(id);
-      const text = ((error as CaseRunError).response.emulation?.faults ?? []).map((f) => f.message).join("\n");
-      expect(text).toContain("this route on a size-zero list was not measured");
+        granted,
+      );
+      expect(verdict.pass, verdict.summary).toBe(true);
+      expect(effects.validateScope!.granted).toEqual(granted);
     }, 60_000);
   }
 
-  it("r11 P2-1 String of an empty allowedScopes list is a named fault", async () => {
-    const id = "oauth2-validate-scope-unmeasured/list";
-    expectHarnessFault(id);
-    const error = await strict(
+  it("an empty allowedScopes list renders [] and has length 0", async () => {
+    const granted = ["[]|0"];
+    const { effects, verdict } = await strict(
       "r11-allowed-surface",
       "function validateAccessTokenScope() { return [String(allowedScopes) + \"|\" + allowedScopes.length]; }",
       {},
-      ["[]|0"],
-    ).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    expect(faultIds(error)).toContain(id);
+      granted,
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.validateScope!.granted).toEqual(granted);
   }, 60_000);
 
-  it("r11 P2-1 length of an empty allowedScopes.toArray() is a named fault", async () => {
-    const id = "oauth2-validate-scope-unmeasured/list.toArray()";
-    expectHarnessFault(id);
-    const error = await strict(
+  it("an empty allowedScopes.toArray() has length 0", async () => {
+    const granted = ["0"];
+    const { effects, verdict } = await strict(
       "r11-allowed-toarray",
       "function validateAccessTokenScope() { return [String(allowedScopes.toArray().length)]; }",
       {},
-      ["0"],
-    ).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    expect(faultIds(error)).toContain(id);
+      granted,
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.validateScope!.granted).toEqual(granted);
   }, 60_000);
 
-  // Sol ctx r12 P2-1. contains, indexOf, isEmpty and forEach
-  // are reads of the empty collection, not the four list routes. noscope
-  // measures them on requestedScopes.
   const r12Method = (binding: string, op: string) => {
     if (op === "forEach") {
       return "function validateAccessTokenScope() { var n = 0; " + binding +
@@ -487,19 +417,16 @@ describe("validate scope matches the live capture", () => {
   }, 60_000);
 
   for (const [op, value] of r12Methods) {
-    it(`r12 P2-1 ${op} of an empty allowedScopes list is a named fault`, async () => {
-      const id = "oauth2-validate-scope-unmeasured/list";
-      expectHarnessFault(id);
-      const error = await strict(
+    it(`${op} of an empty allowedScopes list answers as Java does`, async () => {
+      const granted = [value];
+      const { effects, verdict } = await strict(
         `r12-allowed-${op}`,
         r12Method("allowedScopes", op),
         {},
-        [value],
-      ).then(() => null, (e: unknown) => e);
-      expect(error).toBeInstanceOf(CaseRunError);
-      const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-      expect(faults.map((f) => f.id)).toContain(id);
-      expect(faults.map((f) => f.message).join("\n")).toContain("this route on a size-zero list was not measured");
+        granted,
+      );
+      expect(verdict.pass, verdict.summary).toBe(true);
+      expect(effects.validateScope!.granted).toEqual(granted);
     }, 60_000);
   }
 

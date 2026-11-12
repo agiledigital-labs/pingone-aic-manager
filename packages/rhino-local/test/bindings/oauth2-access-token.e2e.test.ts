@@ -129,24 +129,17 @@ describe("access-token modification matches the live capture", () => {
     await expect(run("throws")).rejects.toThrow(/zz deliberate/);
   }, 60_000);
 
-  // Sol ctx r10 P2-1. No capture measured a size-zero request value. An empty
-  // identity attribute is a different list and does not permit this one.
-  it("r10 P2-1 a size-zero request value's length is a named fault", async () => {
-    const id = "oauth2-token-unmeasured/requestProperties";
-    expectHarnessFault(id);
-    const error = await runCase(runner, defineCase({
-      name: `r10 empty request ${engine}`,
+  // A list is a real Java list at every size, so an empty one answers as Java does.
+  it("a size-zero request value has length 0", async () => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `empty request ${engine}`,
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
-      script: `accessToken.setField("probe", requestProperties.requestParams.x.length);`,
+      script: `var x = requestProperties.requestParams.x; accessToken.setField("probe", x.length + "|" + x.size() + "|" + String(x) + "|" + JSON.stringify(x));`,
       given: { engine, request: { params: { x: [] } } },
-      expect: { accessToken: { fields: { added: { probe: 0 } } } },
-    })).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-    expect(faults.map((f) => f.id)).toContain(id);
-    const text = faults.map((f) => f.message).join("\n");
-    expect(text).toContain("this route on a size-zero list was not measured");
-    expect(text).not.toContain("never produced on AIC");
+      expect: { accessToken: { fields: { added: { probe: "0|0|[]|[]" } } } },
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.probe).toBe("0|0|[]|[]");
   }, 60_000);
 
   it("r10 P2-1 a non-empty request value still answers length", async () => {
@@ -187,44 +180,36 @@ describe("access-token modification matches the live capture", () => {
     expect(effects.accessToken!.final.fields.diagnostic).toBe(true);
   }, 60_000);
 
-  // Sol ctx r11 P2-1. The empty identity-attribute surface does not measure
-  // getAudience, getScope or scopes. Each of these is a reproduction.
-  const emptyListFault = async (name: string, source: string, extra: Record<string, unknown>) => {
-    const id = "oauth2-token-unmeasured/list";
-    expectHarnessFault(id);
-    const error = await runCase(runner, defineCase({
-      name: `r11 ${name} ${engine}`,
+  const emptyList = async (name: string, source: string, extra: Record<string, unknown>) => {
+    const { effects, verdict } = await runCase(runner, defineCase({
+      name: `${name} ${engine}`,
       context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
       script: source,
       given: { engine, ...extra },
       expect: { accessToken: { fields: { added: { probe: "[]|0" } } } },
-    })).then(() => null, (e: unknown) => e);
-    expect(error).toBeInstanceOf(CaseRunError);
-    const faults = (error as CaseRunError).response.emulation?.faults ?? [];
-    expect(faults.map((f) => f.id)).toContain(id);
-    const text = faults.map((f) => f.message).join("\n");
-    expect(text).toContain("this route on a size-zero list was not measured");
-    expect(text).not.toContain("never produced on AIC");
+    }));
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.probe).toBe("[]|0");
   };
 
-  it("r11 P2-1 an empty audience list's surface is a named fault", async () => {
-    await emptyListFault(
+  it("an empty audience list renders [] and has length 0", async () => {
+    await emptyList(
       "empty audience",
       `accessToken.setField("probe", String(accessToken.getAudience()) + "|" + accessToken.getAudience().length);`,
       { accessToken: { audience: [] } },
     );
   }, 60_000);
 
-  it("r11 P2-1 an empty getScope() list's surface is a named fault", async () => {
-    await emptyListFault(
+  it("an empty getScope() list renders [] and has length 0", async () => {
+    await emptyList(
       "empty getScope",
       `accessToken.setField("probe", String(accessToken.getScope()) + "|" + accessToken.getScope().length);`,
       { accessToken: { scope: [] } },
     );
   }, 60_000);
 
-  it("r11 P2-1 an empty scopes list's surface is a named fault", async () => {
-    await emptyListFault(
+  it("an empty scopes list renders [] and has length 0", async () => {
+    await emptyList(
       "empty scopes",
       `accessToken.setField("probe", String(scopes) + "|" + scopes.length);`,
       { scopes: [] },

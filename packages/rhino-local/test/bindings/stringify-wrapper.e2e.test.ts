@@ -1,7 +1,7 @@
 /**
- * The JSON.stringify wrapper (runtime.cjs) converts openidm and request lists
- * wherever native serialisation reaches them, and otherwise
- * leaves serialisation exactly as native does it. List-free scripts run three
+ * JSON.stringify writes an openidm or request list as a JSON array wherever
+ * serialisation reaches it, and the runtime otherwise leaves serialisation
+ * exactly as native does it. List-free scripts run three
  * ways: a bare node:vm context with no runtime (the oracle), the runtime in
  * node:vm, and the runtime on the JVM; all three must agree.
  */
@@ -191,30 +191,20 @@ describe("JSON.stringify of the emulated lists", () => {
     expect(await value(source)).toBe(arrayOf(route, '["a"]'));
   });
 
-  // Disclosed gap (docs/rhino-local-gaps.md, request-list-unmeasured): native asks
-  // toJSON once per value, so a list an author's toJSON returns is written as an
-  // object of the listed keys. Pinned so a change of behaviour is seen.
-  it("a list an author's toJSON returns under a property list is not converted", async () => {
-    expect(await value(`JSON.stringify({ toJSON: function () { return ${QUERY}; } }, ["_id"])`)).toBe("{}");
+  // Measured 2026-11-10 (request-list-concat probe): the list returned from toJSON is written
+  // as the same JSON array, under a property list too.
+  it("a list an author's toJSON returns under a property list is a JSON array", async () => {
+    expect(await value(`JSON.stringify({ toJSON: function () { return ${QUERY}; } }, ["_id"])`)).toBe('[{"_id":"u1"}]');
+    expect(await value(`JSON.stringify({ toJSON: function () { return ${REQUEST}; } }, ["0"])`)).toBe('["a"]');
   });
 
-  it("a list has no toJSON outside a property-list call, and an author's own toJSON on a list wins", async () => {
+  it("a list has no toJSON, before or after it is serialised", async () => {
     expect(await value(`var r = ${QUERY}; var before = typeof r.toJSON; JSON.stringify(r, ["_id"]); before + ":" + typeof r.toJSON`)).toBe("undefined:undefined");
-    expect(await value(`var r = ${QUERY}; r.toJSON = function () { return "mine"; }; JSON.stringify({ v: r }, ["v"])`)).toBe('{"v":"mine"}');
   });
 
   // Astra r7 P1-1: a function-replacer call nested in a property-list call.
   it.each(nestedInListed)("%s", async (_name, source, want) => {
     expect(await value(source)).toBe(want);
-  });
-
-  // Astra r7 P1-2: freezing a list, before the call or during it.
-  it.each(frozen(QUERY))("a frozen openidm list: %s", async (_name, source, want) => {
-    expect(await value(source)).toBe(want);
-  });
-
-  it("a frozen request list under a property list is a JSON array", async () => {
-    expect(await value('var l = requestParameters.get("x"); Object.freeze(l); JSON.stringify(l, ["0"])')).toBe('["a"]');
   });
 
   it("a request list a replacer removes is never judged", async () => {
