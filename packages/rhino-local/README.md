@@ -42,8 +42,9 @@ The methods measured absent on AIC stay the engine's `TypeError`: the next-gen
 `hasOwnProperty`. An identity's whole member set was captured, so any name
 outside it (`getAttribute`, `size`, `isExists`) is a `TypeError` and only a
 member AIC has and the harness lacks (`hashCode`, `equals`, `getClass`) faults.
-A request map's `getClass()` is the measured class refusal. So does a map
-entry named like a method (`get`), which hides the method as it does on AIC.
+A map entry named like a method (`get`) also gives a `TypeError`, because it
+hides the method as it does on AIC. A request map's `getClass()` is the
+measured class refusal.
 
 Implemented (still fail-loud for missing fixtures and for every method the
 overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
