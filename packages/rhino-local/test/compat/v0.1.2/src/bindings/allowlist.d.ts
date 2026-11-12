@@ -29,6 +29,7 @@
  * fold these into the descriptor's story or drop them.
  */
 export declare const OBSERVED_BASE: readonly string[];
+// compat-accepted: comment reworded (reference-image wording) since 0.1.2; no signature change.
 /**
  * The scripted decision node's Java class allow-list: the descriptor's declared
  * entries plus `OBSERVED_BASE`.

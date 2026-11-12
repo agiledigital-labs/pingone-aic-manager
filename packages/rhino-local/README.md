@@ -20,7 +20,7 @@ request maps, `outcome` / `action.goTo`, `logger`, `openidm`, `httpClient`,
 `callbacksBuilder` (the six authenticate-response types), `systemEnv`,
 `idRepository.getIdentity` (reads, and `store()` as `identityWrites`), next-gen `require()` (CommonJS eval of seeded
 library bodies; a missing id throws naming `given.libraries`), and an inert
-`JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
+`JavaImporter`. End-to-end cases live
 in `cases/`.
 
 ## Breaking change: the legacy (V1) script engine is no longer emulated
@@ -37,8 +37,9 @@ second engine would be a second mechanism to maintain.
   upgrading the script.
 - `ENGINES` is now `["next-gen"]` and `Engine` is `"next-gen"`.
 - The legacy-only bindings are gone: `sharedState`/`transientState` on a
-  decision node, `JsonValue` and `UserInfoClaims` construction, the legacy
-  `Action.send` importer path, and the legacy variants of every context above.
+  decision node, the legacy `JsonValue` construction route and `UserInfoClaims`
+  construction (the next-gen `JsonValue.json` / `JsonValue.object` route
+  remains), the legacy `Action.send` importer path, and the legacy variants of every context above.
 - The conformance catalog rows named `<context>.legacy.<binding>` are removed;
   `<context>.next.<binding>` ids are unchanged.
 - The JavaScript context ids (`OAUTH2_ACCESS_TOKEN_MODIFICATION`, ...) are

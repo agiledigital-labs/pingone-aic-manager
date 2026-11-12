@@ -166,10 +166,10 @@ export function checkEnvironment(env: RunnerEnvironment, lane: "host" | "contain
   if (problems.length > 0) {
     const remedy =
       lane === "host" && env.javaFeature !== EXPECTED_ENVIRONMENT.javaFeature
-        ? ` Point ${JAVA_HOME_ENV} (or JAVA_HOME) at a Java ${EXPECTED_ENVIRONMENT.javaFeature} — AM runs Temurin ${EXPECTED_ENVIRONMENT.javaFeature}.`
+        ? ` Point ${JAVA_HOME_ENV} (or JAVA_HOME) at a Java ${EXPECTED_ENVIRONMENT.javaFeature} — the reference JVM is Temurin ${EXPECTED_ENVIRONMENT.javaFeature}.`
         : "";
     throw new Error(
-      `rhino-local: the ${lane} JVM does not match AM: ${problems.join("; ")}.${remedy}`
+      `rhino-local: the ${lane} JVM does not match the reference JVM: ${problems.join("; ")}.${remedy}`
     );
   }
 }

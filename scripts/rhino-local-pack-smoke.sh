@@ -186,16 +186,14 @@ describe("installed rhino-local", () => {
   it("runs an OIDC claims case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
-      for (const [engine, script] of [
-        ["next-gen", '({ values: { owner: String(identity.getName()) } });'],
-      ] as const) {
-        const run = await runCase(runner, defineCase({
-          name: \`claims \${engine}\`, context: "OIDC_CLAIMS", script,
-          given: { engine, identity: { name: "widget-user" } },
-          expect: { oidc: { userinfo: { owner: "widget-user" } } },
-        }));
-        expect(run.verdict.summary, run.verdict.summary).toBe("");
-      }
+      const engine = "next-gen";
+      const script = '({ values: { owner: String(identity.getName()) } });';
+      const run = await runCase(runner, defineCase({
+        name: \`claims \${engine}\`, context: "OIDC_CLAIMS", script,
+        given: { engine, identity: { name: "widget-user" } },
+        expect: { oidc: { userinfo: { owner: "widget-user" } } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
     } finally { await runner.close(); }
   });
 
@@ -204,16 +202,14 @@ describe("installed rhino-local", () => {
   it("runs a social IdP profile transformation case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
-      for (const [engine, script] of [
-        ["next-gen", 'nodeState.putShared("idp", selectedIdp); ({ id: rawProfile.sub, mail: rawProfile.get("email") });'],
-      ] as const) {
-        const run = await runCase(runner, defineCase({
-          name: \`social \${engine}\`, context: "SOCIAL_IDP_PROFILE_TRANSFORMATION", script,
-          given: { engine, socialIdp: { selectedIdp: "widget-idp", rawProfile: { sub: "w-1", email: "w@example.com" } } },
-          expect: { socialIdp: { profile: { id: "w-1", mail: "w@example.com" } }, sharedState: { added: { idp: "widget-idp" } } },
-        }));
-        expect(run.verdict.summary, run.verdict.summary).toBe("");
-      }
+      const engine = "next-gen";
+      const script = 'nodeState.putShared("idp", selectedIdp); ({ id: rawProfile.sub, mail: rawProfile.get("email") });';
+      const run = await runCase(runner, defineCase({
+        name: \`social \${engine}\`, context: "SOCIAL_IDP_PROFILE_TRANSFORMATION", script,
+        given: { engine, socialIdp: { selectedIdp: "widget-idp", rawProfile: { sub: "w-1", email: "w@example.com" } } },
+        expect: { socialIdp: { profile: { id: "w-1", mail: "w@example.com" } }, sharedState: { added: { idp: "widget-idp" } } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
     } finally { await runner.close(); }
   });
 
@@ -222,16 +218,14 @@ describe("installed rhino-local", () => {
   it("runs a config provider node case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
-      for (const [engine, script] of [
-        ["next-gen", 'config = { message: { en: "Hello " + nodeState.get("who") }, size: 2 };'],
-      ] as const) {
-        const run = await runCase(runner, defineCase({
-          name: \`config provider \${engine}\`, context: "CONFIG_PROVIDER_NODE", script,
-          given: { engine, sharedState: { who: "widget" } },
-          expect: { configProvider: { config: { message: { en: "Hello widget" }, size: 2 } } },
-        }));
-        expect(run.verdict.summary, run.verdict.summary).toBe("");
-      }
+      const engine = "next-gen";
+      const script = 'config = { message: { en: "Hello " + nodeState.get("who") }, size: 2 };';
+      const run = await runCase(runner, defineCase({
+        name: \`config provider \${engine}\`, context: "CONFIG_PROVIDER_NODE", script,
+        given: { engine, sharedState: { who: "widget" } },
+        expect: { configProvider: { config: { message: { en: "Hello widget" }, size: 2 } } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
     } finally { await runner.close(); }
   });
 
@@ -240,15 +234,14 @@ describe("installed rhino-local", () => {
   it("runs a validate scope case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
-      for (const engine of ["next-gen"] as const) {
-        const run = await runCase(runner, defineCase({
-          name: \`validate scope \${engine}\`, context: "OAUTH2_VALIDATE_SCOPE",
-          script: "function validateAccessTokenScope() { return requestedScopes; }",
-          given: { engine, validateScope: { requested: ["read", "write"], allowed: ["read", "write"] } },
-          expect: { validateScope: { granted: ["write", "read"] } },
-        }));
-        expect(run.verdict.summary, run.verdict.summary).toBe("");
-      }
+      const engine = "next-gen";
+      const run = await runCase(runner, defineCase({
+        name: \`validate scope \${engine}\`, context: "OAUTH2_VALIDATE_SCOPE",
+        script: "function validateAccessTokenScope() { return requestedScopes; }",
+        given: { engine, validateScope: { requested: ["read", "write"], allowed: ["read", "write"] } },
+        expect: { validateScope: { granted: ["write", "read"] } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
     } finally { await runner.close(); }
   });
 
@@ -257,16 +250,14 @@ describe("installed rhino-local", () => {
   it("runs a may-act case", async () => {
     const runner = await RhinoRunner.spawn();
     try {
-      for (const [engine, script] of [
-        ["next-gen", 'token.setMayAct({ client_id: "actor" });'],
-      ] as const) {
-        const run = await runCase(runner, defineCase({
-          name: \`may act \${engine}\`, context: "OAUTH2_MAY_ACT", script,
-          given: { engine, client: { clientId: "actor-client" }, scopes: ["read"] },
-          expect: { mayAct: { mayAct: { client_id: "actor" }, scope: ["read"] } },
-        }));
-        expect(run.verdict.summary, run.verdict.summary).toBe("");
-      }
+      const engine = "next-gen";
+      const script = 'token.setMayAct({ client_id: "actor" });';
+      const run = await runCase(runner, defineCase({
+        name: \`may act \${engine}\`, context: "OAUTH2_MAY_ACT", script,
+        given: { engine, client: { clientId: "actor-client" }, scopes: ["read"] },
+        expect: { mayAct: { mayAct: { client_id: "actor" }, scope: ["read"] } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
     } finally { await runner.close(); }
   });
 

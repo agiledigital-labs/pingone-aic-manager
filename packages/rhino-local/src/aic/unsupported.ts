@@ -1,5 +1,6 @@
 import { isPortable } from "../case/portable.ts";
 import { ENV_INPUT_KEYS } from "../case/types.ts";
+import { LEGACY_ENGINE_REMOVED } from "../case/validate.ts";
 import type { Case, Given } from "../case/types.ts";
 
 function objectHasKeys(value: object | undefined): boolean {
@@ -21,6 +22,9 @@ export function aicUnsupportedReason(
   kase: Case,
   options: { harnessOwnsManaged?: boolean; harnessOwnsScriptName?: boolean; harnessOwnsLoggerScriptId?: boolean; harnessOwnsCookieName?: boolean } = {}
 ): string | undefined {
+  if ((kase.given.engine as string | undefined) === "legacy") {
+    return `given.engine "legacy": ${LEGACY_ENGINE_REMOVED}`;
+  }
   if (kase.context !== undefined && kase.context !== "SCRIPTED_DECISION_NODE") {
     return `case.context ${kase.context}: the AIC lane wraps the subject in a journey, which runs only decision-node scripts; a case in another script context runs locally only`;
   }
