@@ -105,9 +105,18 @@ final class AmClassShutter implements ClassShutter {
                         && f.getClassName().equals("org.mozilla.javascript.NativeJavaPackage")));
   }
 
+  /**
+   * The classes a list or map is presented through. They are how every list and map binding
+   * reaches a script, in every context, whatever the context's allow-list says about the
+   * collection behind them. A script cannot name them, exactly as it cannot name an engine class.
+   */
+  private static boolean presentation(String fullClassName) {
+    return fullClassName.equals("SequenceFacade") || fullClassName.equals("DictionaryFacade");
+  }
+
   @Override
   public boolean visibleToScripts(String fullClassName) {
-    if (fullClassName.startsWith(ENGINE_PACKAGE)) {
+    if (fullClassName.startsWith(ENGINE_PACKAGE) || presentation(fullClassName)) {
       return !namedByScript();
     }
     for (String name : exact) {

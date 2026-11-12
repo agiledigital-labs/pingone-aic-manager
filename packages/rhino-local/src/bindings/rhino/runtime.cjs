@@ -45,7 +45,6 @@ var __rhinoLocal = {
   identityGenerations: {},
   libraries: {},
   requireCache: {},
-  listsToJSON: false,
 };
 
 var sharedState;
@@ -255,10 +254,7 @@ function __rhinoLocalFixtureFault(id, message) {
 // A Java array as Rhino surfaces it: indexed, with length, not
 // Array.isArray, yet Array.prototype methods resolve — getAttributeValues(n)
 // .toArray().map(String) ran on AIC (live-identity-store-families, 2026-10-01).
-// `binding` registers the array under its parent collection's row
-// (__rhinoLocalCollectionRegister).
-function __rhinoLocalArrayLike(items, binding) {
-  __rhinoLocalCollectionRegister(binding);
+function __rhinoLocalArrayLike(items) {
   var out = typeof Object.create === "function" ? Object.create(Array.prototype) : {};
   var i;
   for (i = 0; i < items.length; i += 1) {
@@ -943,15 +939,10 @@ function __rhinoLocalMergeBucket(bucketName, object) {
   }
 }
 
-// A java.util.List as a real JS array. `binding` registers it
-// (__rhinoLocalCollectionRegister). An array cannot trap its own length, so
-// in a script context an empty one is a list view of the context's kind,
-// whose catalog row decides every empty read.
-function __rhinoLocalJavaList(items, binding) {
-  var row = __rhinoLocalCollectionRegister(binding);
-  if (row !== null && items.length === 0) {
-    return __rhinoLocalListView([], __rhinoLocalCtx.listKind, binding);
-  }
+// A java.util.List the decision node's own services hand over (node state
+// keys, a map's values, an identity attribute), as a JS array carrying the
+// list's methods.
+function __rhinoLocalJavaList(items) {
   var list = [];
   var i;
   for (i = 0; i < items.length; i += 1) {
@@ -970,7 +961,7 @@ function __rhinoLocalJavaList(items, binding) {
     return this.indexOf(value) !== -1;
   });
   __rhinoLocalHide(list, "toArray", function () {
-    return __rhinoLocalArrayLike(this, binding);
+    return __rhinoLocalArrayLike(this);
   });
   return list;
 }
@@ -990,368 +981,97 @@ function __rhinoLocalArgShape(args) {
   return shape;
 }
 
-// The two Java lists next-gen AM hands a script, as one emulation with two
-// measured surfaces (docs/api/12):
+// A list AIC hands a script as a Java list is a real java.util.ArrayList
+// here (java/JavaCollections.java), presented the way AIC presents one
+// (java/SequenceFacade.java): `[object JavaList]`, `length` and `[i]`,
+// size(), get(i), contains(), indexOf(), isEmpty(), add(), toArray() (a Java
+// array, not a JS one), forEach, `[].concat(v)`, JSON.stringify and
+// String(v), with the engine's own answer for each at every size, the empty
+// list included. iterator() and getClass() are the class shutter's refusals
+// because the classes they return are off the allow-list, not because this
+// file says so. An Array.prototype method is `Cannot find function`.
 //
-// - a request map's value list (request-map-foreach probe, 2026-11-08):
-//   typeof "object", Array.isArray false, `length` and `[i]` work, so do
-//   size() and get(i) in range, String() is Java's "[a, b]", getClass() is the
-//   class shutter's refusal, and Array.prototype methods are absent; and
-//   (request-list-concat probe, 2026-11-10) `[].concat(v)` copies the
-//   elements, as JS strings, into a JS array, among other arguments too, so
-//   does `Array.prototype.concat.call(v, …)` with the list as the receiver,
-//   and JSON.stringify writes a JSON array of the strings by every route the
-//   openidm lists were measured on;
-// - an openidm.query `result` and a has-many relationship array on a read
-//   (openidm-query-result-type and -string probes, 2026-11-08): the same,
-//   plus get(i) out of range either way throws Java's IndexOutOfBounds as an
-//   InternalError, `[].concat(v)` copies the elements into a JS array,
-//   JSON.stringify writes a JSON array, `typeof v.toJSON` is "undefined", and
-//   String(v) has the shape of Java's AbstractCollection form,
-//   `[{_id=…, _rev=…}]`, which is also how Rhino words "Cannot find function
-//   some in object [].".
+// A script string goes in as a Java string and reads back as a JS string. A
+// record the emulator holds as a script object goes in as it is, and
+// String(v) writes it the way Java prints a map (`[{_id=…, _rev=…}]`,
+// measured on an openidm query result).
 //
-// Not a JS array, so a script that calls an array method fails here as it
-// fails there. Every other call shape and List member faults `kind.id`.
-//
-// A script context's kind (context-common.cjs) may say `json: false`,
-// `concatArgument: false` or `genericReceiver: false` where its own captures
-// did not measure that route; the bridges below then fault instead of
-// borrowing these two kinds' measured behaviour. Absent means allowed, so
-// these two kinds behave as they always have. A context kind defaults to no
-// empty permission (`emptyRoutes: {}`). A binding whose own capture measured
-// a size-zero list opts in with a grant on that one list (the third argument
-// of __rhinoLocalListView): the operations the capture showed, and the fixture
-// file. `surface` is toString and string coercion and it implies `length`;
-// `length` alone does not imply string coercion; `json` and `concat` are the
-// copy. `contains`, `indexOf`, `isEmpty`, `forEach`, `toArray`, `add`,
-// `size`, `get`, `index` and iteration are the same grant, checked when
-// that read runs on a size-zero collection. The grant, when present,
-// replaces the kind's empty policy. Absent a grant, `allowEmptySize` and
-// `allowEmptyIndex` name the routes a kind measured on a size-zero list
-// (the request list's size() and [i]/get), then `emptyRoutes`, then
-// `emptyMeasured`. Building the list does not fault.
-var __rhinoLocalListKinds = {
-  request: {
-    id: "request-list-unmeasured",
-    noun: "a request map's value list",
-    measured: "only size(), get(i) with an index in range, [].concat(v), Array.prototype.concat.call(v, …), JSON.stringify, String(v) and the getClass() refusal were measured",
-    outOfRange: false,
-    concatReceiver: true,
-    // A size-zero request list was never produced on AIC: an empty header or
-    // parameter arrives as [""], an absent one as null. So copying one (concat,
-    // JSON.stringify) is unmeasured, though a `[]` seed is accepted.
-    // size() and [i]/get(i) still answer: every index is out of range, and
-    // that answer is the kind's, inside the one empty-read decision.
-    emptyMeasured: false,
-    allowEmptySize: true,
-    allowEmptyIndex: true,
-  },
-  openidm: {
-    id: "openidm-list-unmeasured",
-    noun: "an openidm query result or relationship list",
-    measured: "only size(), get(i), [].concat(v), JSON.stringify, String(v) and the getClass() refusal were measured",
-    outOfRange: true,
-    concatReceiver: false,
-    emptyMeasured: true,
-  },
-};
-
-// Each list view carries its {list, items, kind} row under this hidden key,
-// so finding one is a property read, not a scan. Rhino 1.7.14 has no WeakMap
-// and no Symbol.isConcatSpreadable. `row.list === value` refuses an object
-// that merely inherits or copied the key.
-var __rhinoLocalListKey = "__rhinoLocalList";
-// Each list carries one hidden `toJSON` accessor from birth, for
-// JSON.stringify under an array replacer (below). It answers only while the
-// innermost JSON.stringify running is such a call (`__rhinoLocal.listsToJSON`,
-// on `__rhinoLocal` because the JVM shares the runtime's top-level bindings
-// between cases and a case cannot assign them), and is `undefined` otherwise,
-// so a function-replacer call nested inside sees the list itself. Nothing is
-// installed or removed per call, so freezing a list changes nothing. An
-// author's assignment replaces it with their own, which then wins, as native
-// would have it.
-function __rhinoLocalListToJSONGet() {
-  return __rhinoLocal.listsToJSON ? __rhinoLocalListToJSON : undefined;
-}
-function __rhinoLocalListToJSONSet(value) {
-  try {
-    Object.defineProperty(this, "toJSON", { value: value, writable: true, enumerable: true, configurable: true });
-  } catch (e) {
-    // A frozen list keeps what it has, as a frozen object would.
-  }
-}
-function __rhinoLocalListToJSON() {
-  return __rhinoLocalJsonList(this);
-}
-
-function __rhinoLocalListRow(value) {
-  if (value === null || typeof value !== "object") {
-    return null;
-  }
-  // An own data property only, read through its descriptor, so an author's
-  // getter of this name never runs and an inherited one never counts. A Java
-  // object is not an ES5 object to the descriptor read, and is not a list.
-  var own;
-  try {
-    own = Object.getOwnPropertyDescriptor(value, __rhinoLocalListKey);
-  } catch (e) {
-    return null;
-  }
-  var row = own !== undefined && "value" in own ? own.value : null;
-  return row !== null && typeof row === "object" && row.list === value ? row : null;
-}
-
-// A grant on the list, when present, is the only empty permission: the kind's
-// emptyRoutes are ignored. It names the operations one capture measured
-// (`surface` implies `length`) and the fixture file. A grant with no capture,
-// or with no operation, is a prelude error. Absent a grant, the kind decides.
-// `emptyMeasured: true` with no `emptyRoutes` allows every empty route.
-// `emptyRoutes`, when present, lists only the routes a capture showed on a
-// size-zero list of that kind; a missing route stays refused. `surface`
-// (toString and string coercion) also allows `length`. `length` alone does
-// not allow string coercion, and neither implies contains, indexOf, isEmpty,
-// forEach, toArray, add or size. An empty object refuses every empty
-// operation and still uses the "not measured" sentence, rather than the
-// decision-node request list's. The request list and openidm do not set
-// emptyRoutes and keep the boolean. Unknown fields are dropped.
-// The operations a grant can name. Each is a capture citation: the fixture
-// file and the key where that operation was read on a size-zero collection.
-// `lengthAbsent` is not an operation (the property stays absent, which a
-// HashSet capture showed). `forIn` is for...in and for each over the
-// collection's keys; a bracket read does not imply it, because Rhino can
-// enumerate without reading a value. `toArray*` are the child view's reads.
-var __rhinoLocalEmptyOps = [
-  "surface", "length", "json", "concat", "contains", "indexOf", "isEmpty", "forEach", "toArray", "add",
-  "size", "get", "index", "forIn", "iterator", "lengthAbsent", "toArrayLength", "toArraySize",
-  "toArrayJson", "toArrayIndex",
-];
-
-// A context collection whose catalog row grants nothing: every empty read
-// faults with the "not measured" sentence, and the kind's own flags (a
-// decision-node request list's size()) never apply.
-var __rhinoLocalEmptyNone = { captures: {} };
-
-// A grant names, per operation, the capture that measured it on a size-zero
-// collection: `{size: "<fixture> <key>", ...}`. A field that is not an
-// operation, a citation that is not a non-empty string, or a grant that names
-// no operation is a prelude error. The result has a boolean per operation
-// and the citations under `captures`.
-function __rhinoLocalEmptyGrant(grant) {
-  if (grant === null || grant === undefined) {
-    return null;
-  }
-  var out = { captures: {} };
-  var any = false;
-  var name;
-  for (name in grant) {
-    if (!Object.prototype.hasOwnProperty.call(grant, name)) {
-      continue;
-    }
-    if (__rhinoLocalEmptyOps.indexOf(name) === -1) {
-      throw new Error("rhino-local: an empty-list permission names an unknown operation " + name);
-    }
-    if (typeof grant[name] !== "string" || grant[name].length === 0) {
-      throw new Error("rhino-local: an empty-list permission for " + name + " needs the capture that measured it");
-    }
-    out[name] = true;
-    out.captures[name] = grant[name];
-    if (name !== "lengthAbsent") {
-      any = true;
-    }
-  }
-  if (!any) {
-    throw new Error("rhino-local: an empty-list permission names no operation");
-  }
-  return out;
-}
-
-function __rhinoLocalEmptyAllows(kind, grant, route) {
-  if (grant !== null) {
-    if (route === "length") {
-      return grant.length === true || grant.surface === true;
-    }
-    return grant[route] === true;
-  }
-  if (kind.allowEmptySize === true && route === "size") {
-    return true;
-  }
-  if (kind.allowEmptyIndex === true && (route === "index" || route === "forIn" || route === "get")) {
-    return true;
-  }
-  return __rhinoLocalEmptyRoute(kind, route);
-}
-
-// The grant of the view a collection's toArray() returns: each `toArray*`
-// citation becomes the child's own operation. Fields the capture did not
-// show stay off, so size() and JSON of that view still fault.
-function __rhinoLocalToArrayGrant(parent) {
-  var out = {};
-  var any = false;
-  if (parent === null || parent === undefined) {
-    return null;
-  }
-  if (typeof parent.toArrayLength === "string") { out.length = parent.toArrayLength; any = true; }
-  if (typeof parent.toArraySize === "string") { out.size = parent.toArraySize; any = true; }
-  if (typeof parent.toArrayJson === "string") { out.json = parent.toArrayJson; any = true; }
-  if (typeof parent.toArrayIndex === "string") { out.index = parent.toArrayIndex; any = true; }
-  return any ? out : null;
-}
-
-// Registration (Sol ctx r14 P2-2). Every constructor of a script-visible
-// collection names its binding. In a script context (the catalog is loaded
-// only there, and the context overlay sets `__rhinoLocalCtx.catalog`) the
-// binding resolves to the catalog row `<context>.next.<binding>`,
-// and a binding with no row is a tallied fault at construction: a new
-// collection cannot reach a script without a row, and the conformance test
-// runs every row. Each constructed id is recorded in
-// `__rhinoLocal.collections`, which the test reads back. In the decision node
-// there is no catalog and the list kind is the policy. A constructor that
-// names no binding is a prelude error everywhere.
-function __rhinoLocalCollectionRegister(binding) {
-  if (typeof binding !== "string" || binding.length === 0) {
-    throw new Error("rhino-local: a collection constructor must name its catalog binding");
-  }
-  if (typeof __rhinoLocalCollectionCatalog === "undefined") {
-    return null;
-  }
-  var ctx = __rhinoLocalCtx.catalog;
-  if (typeof ctx !== "string") {
-    throw new Error("rhino-local: this script context names no collection catalog key");
-  }
-  var id = ctx + ".next." + binding;
-  var rows = __rhinoLocalCollectionCatalog;
-  var row = null;
-  var i;
-  for (i = 0; i < rows.length; i += 1) {
-    if (rows[i].id === id) {
-      row = rows[i];
-      break;
-    }
-  }
-  if (row === null || row.binding !== binding) {
-    throw __rhinoLocalFault("rhino-local-collection-unregistered/" + id,
-      "rhino-local: collection " + id + " has no row in collection-catalog.cjs, so its empty reads are undecided");
-  }
-  if (!__rhinoLocal.collections) {
-    __rhinoLocal.collections = [];
-  }
-  if (__rhinoLocal.collections.indexOf(id) === -1) {
-    __rhinoLocal.collections.push(id);
-  }
-  return row;
-}
-
-// The empty-read grant a constructor applies: `undefined` in the decision
-// node (the kind decides), otherwise the row's normalised grant, or its
-// toArray() child's, or __rhinoLocalEmptyNone.
-function __rhinoLocalCollectionEmpty(binding, child) {
-  var row = __rhinoLocalCollectionRegister(binding);
-  var raw;
-  if (row === null) {
-    return undefined;
-  }
-  if (child !== undefined && child !== "toArray") {
-    throw new Error("rhino-local: unknown child collection " + child + " of " + binding);
-  }
-  raw = child === "toArray" ? __rhinoLocalToArrayGrant(row.grant) : row.grant;
-  return raw === null ? __rhinoLocalEmptyNone : __rhinoLocalEmptyGrant(raw);
-}
-
-// java/IndexTrap.java, captured while the prelude can still see the host op:
-// a prototype that hands every index read its object lacks to `read`.
-// Absent (node:vm), collections keep finite non-enumerable index guards.
-var __rhinoLocalIndexTrap = (function (hostOp) {
+// java/HostOps.java is defined for the prelude only and is captured here.
+// The node:vm loader the unit tests use has no JVM: there a list is a plain
+// array carrying the same method names, which stands in for the list in
+// tests of everything else and is not a statement about AIC.
+var __rhinoLocalJavaListHost = (function (hostOp) {
   if (typeof hostOp !== "function") {
     return null;
   }
-  return function (proto, read) {
-    return hostOp("indexTrap", proto, read);
+  return {
+    list: function (items) { return hostOp("javaList", items); },
+    items: function (value) { return hostOp("javaListItems", value); },
   };
 })(typeof __rhinoLocalHostOp === "function" ? __rhinoLocalHostOp : null);
 
-// An object for a collection whose every missing index read goes to `read`
-// (which throws or returns). `proto` is the object's prototype without the
-// trap: Object.prototype for a list view, null for a bare set.
-function __rhinoLocalIndexTrapped(proto, read) {
-  if (__rhinoLocalIndexTrap === null) {
-    return proto === null && typeof Object.create === "function" ? Object.create(null) : {};
-  }
-  return Object.create(__rhinoLocalIndexTrap(proto, read));
-}
+var __rhinoLocalListKey = "__rhinoLocalList";
 
-// Key enumeration of an empty collection that no capture measured: for...in
-// and for each call `__iterator__` (Rhino 1.7.14), so the loop
-// faults before it can count a key, and no key is invented. The caller
-// removes it when the collection grows (__rhinoLocalEnumGrew).
-function __rhinoLocalEnumTrap(object, fault) {
-  __rhinoLocalHide(object, "__iterator__", function () {
-    throw fault();
-  });
-}
-
-function __rhinoLocalEnumGrew(object) {
-  if (Object.getOwnPropertyDescriptor(object, "__iterator__") !== undefined) {
-    delete object.__iterator__;
-  }
-}
-
-function __rhinoLocalEmptyRoute(kind, route) {
-  var routes = kind.emptyRoutes;
-  if (routes) {
-    if (route === "length") {
-      return routes.length === true || routes.surface === true;
+function __rhinoLocalJavaForm(value) {
+  var parts = [];
+  var i;
+  var keys;
+  if (Array.isArray(value)) {
+    for (i = 0; i < value.length; i += 1) {
+      parts.push(__rhinoLocalJavaForm(value[i]));
     }
-    return routes[route] === true;
+    return "[" + parts.join(", ") + "]";
   }
-  return kind.emptyMeasured === true;
+  if (value !== null && typeof value === "object" && Object.prototype.toString.call(value) === "[object Object]") {
+    keys = Object.keys(value);
+    for (i = 0; i < keys.length; i += 1) {
+      parts.push(keys[i] + "=" + __rhinoLocalJavaForm(value[keys[i]]));
+    }
+    return "{" + parts.join(", ") + "}";
+  }
+  return String(value);
 }
 
-function __rhinoLocalEmptyFault(kind, grant, what) {
-  var why = (grant !== null || kind.emptyRoutes)
-    ? "this route on a size-zero list was not measured"
-    : "never produced on AIC: an empty value arrives as [\"\"]";
-  return __rhinoLocalListUnmeasured(kind, what + " of a size-zero list (" + why + ")");
+function __rhinoLocalListDouble(items) {
+  var list = items.slice();
+  __rhinoLocalHide(list, "size", function () { return this.length; });
+  __rhinoLocalHide(list, "get", function (index) {
+    if (index < 0 || index >= this.length) {
+      throw __rhinoLocalInternalError("Index " + index + " out of bounds for length " + this.length);
+    }
+    return this[index];
+  });
+  __rhinoLocalHide(list, "isEmpty", function () { return this.length === 0; });
+  __rhinoLocalHide(list, "contains", function (value) { return this.indexOf(value) !== -1; });
+  __rhinoLocalHide(list, "add", function (value) { this.push(value); return true; });
+  __rhinoLocalHide(list, "toArray", function () { return this.slice(); });
+  __rhinoLocalHide(list, "toString", function () { return __rhinoLocalJavaForm(this); });
+  __rhinoLocalHide(list, __rhinoLocalListKey, list);
+  return list;
 }
 
-// A method a context installs on a list view (contains, indexOf, isEmpty,
-// forEach, add) calls this before it answers. The view's own stub already
-// faults that name at every size; the replacement is the read, and it faults
-// only while the list is empty and the grant does not name the operation.
-// size() and get(i) call the same decision. A size-zero request list still
-// answers them because its kind sets allowEmptySize and allowEmptyIndex.
-// [i] on an empty list whose grant does not name index is a throwing
-// accessor, so a read cannot miss the empty list. The check reads the
-// current size, so a list that grows past zero answers the non-empty
-// surface. The toArray() call itself does not fault unless the binding's
-// own method says so; a read of the array it returned does, when that
-// array is a list view.
-function __rhinoLocalEmptyOp(list, op) {
-  var row = __rhinoLocalListRow(list);
-  if (row === null || row.items.length !== 0) {
-    return;
+function __rhinoLocalListView(items) {
+  if (__rhinoLocalJavaListHost !== null) {
+    return __rhinoLocalJavaListHost.list(items);
   }
-  if (__rhinoLocalEmptyAllows(row.kind, row.grant, op)) {
-    return;
-  }
-  throw __rhinoLocalEmptyFault(row.kind, row.grant, op + "()");
+  return __rhinoLocalListDouble(items);
 }
 
-// A list's elements as a fresh array, for a measured copy (concat,
-// JSON.stringify). Refused for a size-zero list of a kind whose empty copy
-// of this route was never measured.
-function __rhinoLocalListCopy(row, call) {
-  var route = call === "JSON.stringify" ? "json" : "concat";
-  if (row.items.length === 0 && !__rhinoLocalEmptyAllows(row.kind, row.grant, route)) {
-    throw __rhinoLocalEmptyFault(row.kind, row.grant, call);
+// The elements of a list this harness handed out, as a new JS array, or null
+// when `value` is not one. The list is read as it is now, so what a script
+// added is included.
+function __rhinoLocalListItems(value) {
+  var own;
+  if (value === null || value === undefined || (typeof value !== "object" && typeof value !== "function")) {
+    return null;
   }
-  return row.items.slice();
+  if (__rhinoLocalJavaListHost !== null) {
+    return __rhinoLocalJavaListHost.items(value);
+  }
+  own = Object.getOwnPropertyDescriptor(value, __rhinoLocalListKey);
+  return own !== undefined && own.value === value ? value.slice() : null;
 }
 
-function __rhinoLocalListUnmeasured(kind, call) {
-  return __rhinoLocalFault(kind.id,
-    "rhino-local: " + call + " on " + kind.noun + " is unmeasured (AIC hands over a Java list; " + kind.measured + ")");
-}
 
 // A replacement for a Function.prototype builtin, with the builtin's own
 // metadata: its name, its length, no own `prototype` and no constructor. On
@@ -1433,315 +1153,41 @@ function __rhinoLocalNativeMethod(name, original, body) {
   }
 })();
 
-// Array.prototype.concat, as AIC's Rhino treats a Java list argument: copied
-// element by element (measured for both kinds). A request list as the
-// receiver is copied the same way (measured 2026-11-10); an openidm list as
-// the receiver is unmeasured and faults.
-// Strict, so a null or undefined receiver reaches the native concat as itself
-// and throws there, as it does without this wrapper.
-(function () {
-  "use strict";
-  var original = Array.prototype.concat;
-  var concat = function concat(item) {
-    var receiver = __rhinoLocalListRow(this);
-    if (receiver !== null && !receiver.kind.concatReceiver) {
-      throw __rhinoLocalListUnmeasured(receiver.kind, "Array.prototype.concat.call(v, …)");
-    }
-    var args = [];
-    var k;
-    var row;
-    for (k = 0; k < arguments.length; k += 1) {
-      row = __rhinoLocalListRow(arguments[k]);
-      if (row !== null && row.kind.concatArgument === false) {
-        throw __rhinoLocalListUnmeasured(row.kind, "[].concat(v)");
-      }
-      args[k] = row === null ? arguments[k] : __rhinoLocalListCopy(row, "[].concat(v)");
-    }
-    return original.apply(receiver === null ? this : __rhinoLocalListCopy(receiver, "Array.prototype.concat.call(v, …)"), args);
-  };
-  __rhinoLocalHide(Array.prototype, "concat", concat);
-})();
-
-// JSON.stringify with the lists converted where serialisation reaches them.
-// Native stringify does all the walking. With no replacer or a function
-// replacer, the wrapper passes a replacer that runs the author's first (with
-// the real holder as `this`), then turns a list into an array of its
-// elements. So `toJSON`, getters and replacer results are seen exactly once
-// and in native order, and a value a replacer drops is never judged.
-//
-// An array replacer (a property list) cannot ride alongside a function, so it
-// goes to native unchanged, and native applies it to every value exactly as it
-// would anyway. The lists are reached instead through `toJSON`, which native
-// asks of every object value: each list's hidden `toJSON` accessor (above)
-// does the same conversion while the call runs. Not covered: a list
-// returned by an author's own `toJSON` under a property list. Native asks
-// `toJSON` once per value, so that list is written as an object of the listed
-// keys; catching it would mean reading the property list a second
-// time, which a getter in it could see. And for the length of such a call a
-// getter that reads `list.toJSON` itself sees a function, where AIC's Java
-// list has no such member.
-// The serialisation boundary: every value native is about to write passes
-// here, after its toJSON and the author's replacer. A detail stub faults; a
-// list becomes an array of its elements.
+// The serialisation boundary: every value native JSON.stringify is about to
+// write passes here, after its toJSON and the author's replacer, so a detail
+// stub faults. A property-list replacer goes to native unchanged.
 function __rhinoLocalJsonValue(value) {
   var stub = __rhinoLocalStubRow(value);
   if (stub !== null && stub.unmeasured) {
     throw __rhinoLocalDetailUnmeasured("." + stub.name + " under JSON.stringify");
   }
-  return __rhinoLocalJsonList(value);
-}
-
-function __rhinoLocalJsonList(value) {
-  var row = __rhinoLocalListRow(value);
-  if (row === null) {
-    return value;
-  }
-  if (row.kind.json === false) {
-    throw __rhinoLocalListUnmeasured(row.kind, "JSON.stringify(v)");
-  }
-  return __rhinoLocalListCopy(row, "JSON.stringify");
+  return value;
 }
 
 (function () {
   "use strict";
   var original = JSON.stringify;
-  // The innermost call decides whether a list's toJSON answers.
-  var within = function (listsToJSON, run) {
-    var outer = __rhinoLocal.listsToJSON;
-    var result;
-    __rhinoLocal.listsToJSON = listsToJSON;
-    try {
-      result = run();
-    } finally {
-      __rhinoLocal.listsToJSON = outer;
-    }
-    return result;
-  };
   __rhinoLocalHide(JSON, "stringify", function stringify(value, replacer, space) {
     if (Array.isArray(replacer)) {
-      return within(true, function () {
-        return original.call(JSON, value, replacer, space);
-      });
+      return original.call(JSON, value, replacer, space);
     }
     var author = typeof replacer === "function" ? replacer : null;
-    return within(false, function () {
-      return original.call(JSON, value, function (key, v) {
-        return __rhinoLocalJsonValue(author === null ? v : author.call(this, key, v));
-      }, space);
-    });
+    return original.call(JSON, value, function (key, v) {
+      return __rhinoLocalJsonValue(author === null ? v : author.call(this, key, v));
+    }, space);
   });
 })();
 
-// Java's String form of an openidm list's contents: AbstractCollection's
-// "[a, b]" around AbstractMap's "{k=v, k2=v2}" (measured shape, 2026-11-08:
-// brackets, braces, `=`, no JSON quoting; `[]` empty verbatim; the ", "
-// separators are Java's, not seen). A number is refused,
-// because Java prints Integer and Double differently and which one AIC holds
-// was not measured. Key order is the record's own, which is unmeasured.
-function __rhinoLocalJavaForm(value, kind) {
-  var row = __rhinoLocalListRow(value);
-  var parts = [];
-  var i;
-  var keys;
-  if (row !== null || Array.isArray(value)) {
-    var items = row !== null ? row.items : value;
-    for (i = 0; i < items.length; i += 1) {
-      parts.push(__rhinoLocalJavaForm(items[i], kind));
-    }
-    return "[" + parts.join(", ") + "]";
-  }
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return String(value);
-  }
-  if (typeof value === "object" && Object.prototype.toString.call(value) === "[object Object]") {
-    keys = Object.keys(value);
-    for (i = 0; i < keys.length; i += 1) {
-      parts.push(keys[i] + "=" + __rhinoLocalJavaForm(value[keys[i]], kind));
-    }
-    return "{" + parts.join(", ") + "}";
-  }
-  throw __rhinoLocalListUnmeasured(kind, "String(v) holding a " + typeof value +
-    " (Java's rendering of it is unmeasured; if this came from calling an array method such as .map or .some, " +
-    "AIC has none: copy the list with [].concat(v) first)");
+// A request map's value list.
+function __rhinoLocalRequestList(items) {
+  return __rhinoLocalListView(items);
 }
 
-// The list-view implementation. `binding` is the catalog binding
-// (__rhinoLocalCollectionRegister); `child` is "toArray" for the view a
-// binding's toArray() returns, which takes the row's toArray* fields. In the
-// decision node the kind (request, openidm) is the policy.
-function __rhinoLocalListView(items, kind, binding, child) {
-  var grant = __rhinoLocalCollectionEmpty(binding, child);
-  if (grant === undefined) {
-    grant = null;
-  }
-  var indexAllowed = __rhinoLocalEmptyAllows(kind, grant, "index");
-  // An empty list whose [i] no capture measured: every index it lacks goes
-  // to the decision (java/IndexTrap.java), so [8] and [1000] fault as [0]
-  // does. A list that grows answers its own indices.
-  var list = items.length === 0 && !indexAllowed
-    ? __rhinoLocalIndexTrapped(Object.prototype, function (index) {
-      if (items.length === 0) {
-        throw __rhinoLocalEmptyFault(kind, grant, "[" + index + "]");
-      }
-    })
-    : {};
-  var i;
-  for (i = 0; i < items.length; i += 1) {
-    list[i] = items[i];
-  }
-  var unmeasured = function (call) {
-    return __rhinoLocalListUnmeasured(kind, call);
-  };
-  // A size-zero list whose empty array-like surface was never measured:
-  // length, toString and string coercion fault, so every borrowed
-  // Array.prototype method, Array.from, apply and coercion refuse without
-  // being named. size() and get(i) consult the same decision: a request
-  // list still answers them, and every other empty list faults unless its
-  // grant names the route. [i] is a throwing accessor while the list is
-  // empty and index is not granted, so the read cannot miss it. A method
-  // installed later (contains, indexOf, isEmpty, forEach, add) calls
-  // __rhinoLocalEmptyOp. The check reads the current size, so a list that
-  // grows past zero answers the non-empty surface its kind measured.
-  // `surface` answers length and "[]". `length` alone answers length.
-  var surfaceAllowed = __rhinoLocalEmptyAllows(kind, grant, "surface");
-  var lengthAllowed = __rhinoLocalEmptyAllows(kind, grant, "length");
-  var emptyFault = function (what) {
-    return __rhinoLocalEmptyFault(kind, grant, what);
-  };
-  if (!lengthAllowed) {
-    Object.defineProperty(list, "length", {
-      enumerable: false,
-      configurable: true,
-      get: function () {
-        if (items.length === 0) {
-          throw emptyFault("length");
-        }
-        return items.length;
-      },
-    });
-  } else {
-    __rhinoLocalHide(list, "length", items.length);
-  }
-  if (!surfaceAllowed) {
-    __rhinoLocalHide(list, "valueOf", function () {
-      if (items.length === 0) {
-        throw emptyFault("valueOf() or string coercion");
-      }
-      return list;
-    });
-  }
-  // Without the trap (node:vm) an ungranted empty list keeps non-enumerable
-  // throwing getters for 0..7; past 7 reads undefined there. A granted index,
-  // or a kind that measured [i] on a size-zero list, installs neither, so [0]
-  // stays undefined. Key enumeration is its own operation: an empty list
-  // whose for...in no capture measured faults the loop itself.
-  if (items.length === 0 && !__rhinoLocalEmptyAllows(kind, grant, "forIn")) {
-    __rhinoLocalEnumTrap(list, function () {
-      return __rhinoLocalEmptyFault(kind, grant, "for...in");
-    });
-  }
-  if (items.length === 0 && !indexAllowed && __rhinoLocalIndexTrap === null) {
-    for (i = 0; i < 8; i += 1) {
-      (function (index) {
-        Object.defineProperty(list, String(index), {
-          enumerable: false,
-          configurable: true,
-          get: function () {
-            if (items.length !== 0) {
-              return items[index];
-            }
-            throw emptyFault("[" + index + "]");
-          },
-          set: function (value) {
-            Object.defineProperty(list, String(index), {
-              value: value, writable: true, enumerable: true, configurable: true,
-            });
-          },
-        });
-      })(i);
-    }
-  }
-  __rhinoLocalHide(list, "size", function () {
-    if (arguments.length !== 0) {
-      throw unmeasured("size() with " + arguments.length + " argument(s)");
-    }
-    if (items.length === 0 && !__rhinoLocalEmptyAllows(kind, grant, "size")) {
-      throw emptyFault("size()");
-    }
-    return items.length;
-  });
-  __rhinoLocalHide(list, "get", function (index) {
-    // Only integral indices within a Java int were measured; a wider number's
-    // conversion to List.get(int) was not, so it faults before the catchable
-    // out-of-range answer.
-    var integer = arguments.length === 1 && typeof index === "number" && isFinite(index) && index % 1 === 0 &&
-      index >= -2147483648 && index <= 2147483647;
-    if (integer && items.length === 0 && !__rhinoLocalEmptyAllows(kind, grant, "get")) {
-      throw emptyFault("get(" + index + ")");
-    }
-    if (integer && kind.outOfRange && (index < 0 || index >= items.length)) {
-      throw __rhinoLocalInternalError("Index " + index + " out of bounds for length " + items.length);
-    }
-    if (!integer || index < 0 || index >= items.length) {
-      throw unmeasured("get(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    return items[index];
-  });
-  // Every public java.util.List / SequencedCollection / Collection / Iterable /
-  // Object method name except the measured size, get, toString and getClass.
-  // A name left off would be a catchable "Cannot find function", which a
-  // script's try/catch turns into a pass. forEach is present on AIC
-  // (measured: typeof "function"), but what its callback receives is not.
-  ["add", "addAll", "addFirst", "addLast", "clear", "contains", "containsAll", "equals", "forEach", "getFirst",
-    "getLast", "hashCode", "indexOf", "isEmpty", "iterator", "lastIndexOf", "listIterator", "notify", "notifyAll",
-    "parallelStream", "remove", "removeAll", "removeFirst", "removeIf", "removeLast", "replaceAll", "retainAll",
-    "reversed", "set", "sort", "spliterator", "stream", "subList", "toArray", "wait"].forEach(function (name) {
-    __rhinoLocalHide(list, name, function () {
-      throw unmeasured(name + "()");
-    });
-  });
-  __rhinoLocalHide(list, "toString", function () {
-    if (arguments.length !== 0) {
-      throw unmeasured("toString(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    if (items.length === 0 && !surfaceAllowed) {
-      throw emptyFault("toString() or String(v)");
-    }
-    if (kind.outOfRange) {
-      return __rhinoLocalJavaForm(list, kind);
-    }
-    var parts = [];
-    var j;
-    for (j = 0; j < items.length; j += 1) {
-      parts.push(String(items[j]));
-    }
-    return "[" + parts.join(", ") + "]";
-  });
-  __rhinoLocalHide(list, "getClass", function () {
-    if (arguments.length !== 0) {
-      throw unmeasured("getClass(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    throw __rhinoLocalShutterError("java.lang.Class");
-  });
-  __rhinoLocalHide(list, __rhinoLocalListKey, { list: list, items: items.slice(), kind: kind, grant: grant });
-  Object.defineProperty(list, "toJSON", {
-    get: __rhinoLocalListToJSONGet, set: __rhinoLocalListToJSONSet, enumerable: false, configurable: true,
-  });
-  return list;
-}
-
-// A request map's value list. In the decision node its empty size() and [i]
-// are the request kind's flags; in a script context the catalog row for
-// `binding` (requestHeaders, requestParameters) decides.
-function __rhinoLocalRequestList(items, binding) {
-  return __rhinoLocalListView(items, __rhinoLocalListKinds.request, binding);
-}
-
-// An openidm list. In the decision node emptyMeasured covers every empty
-// route; a script context that keeps openidm has a catalog row for it.
+// An openidm query result or a has-many relationship array on a read.
 function __rhinoLocalOpenidmList(items) {
-  return __rhinoLocalListView(items, __rhinoLocalListKinds.openidm, "openidm");
+  return __rhinoLocalListView(items);
 }
+
 
 function __rhinoLocalRequestMap(values, options) {
   var caseInsensitive = Boolean(options && options.caseInsensitive);
@@ -1987,7 +1433,7 @@ function __rhinoLocalNodeStateKeyNames() {
 
 nodeState.keys = function () {
   __rhinoLocalExpectArity("nodeState.keys", arguments, 0);
-  var list = __rhinoLocalJavaList(__rhinoLocalNodeStateKeyNames(), "nodeState.keys");
+  var list = __rhinoLocalJavaList(__rhinoLocalNodeStateKeyNames());
   __rhinoLocalHide(list, "iterator", function () {
     var index = 0;
     return {
@@ -2131,7 +1577,6 @@ function __rhinoLocalAsJavaMap(source) {
   // refuses, so next() and reading a toArray() element throw. Nothing else
   // on the view is modelled.
   __rhinoLocalHide(map, "entrySet", function () {
-    __rhinoLocalCollectionRegister("map.entrySet");
     var size = keys().length;
     var view = {};
     function refused() {
@@ -2162,7 +1607,7 @@ function __rhinoLocalAsJavaMap(source) {
   // Measured: a snapshot list; size(), get(i) and toArray() work, iterator()
   // is refused (ArrayList$Itr).
   __rhinoLocalHide(map, "values", function () {
-    var list = __rhinoLocalJavaList(values(), "map.values");
+    var list = __rhinoLocalJavaList(values());
     __rhinoLocalHide(list, "iterator", function () {
       throw __rhinoLocalShutterError("java.util.ArrayList$Itr");
     });
@@ -2893,7 +2338,6 @@ function __rhinoLocalRequireSubmitted() {
 // A Java List as AIC's getters return it: indexable, size/get/isEmpty/contains, and
 // printed "[a, b]" with each element formatted by format().
 function __rhinoLocalCallbackList(items, format) {
-  __rhinoLocalCollectionRegister("callbacks");
   var list = {};
   var i;
   for (i = 0; i < items.length; i += 1) {
@@ -2918,7 +2362,7 @@ function __rhinoLocalCallbackList(items, format) {
     return items.indexOf(value) !== -1;
   });
   __rhinoLocalHide(list, "toArray", function () {
-    return __rhinoLocalArrayLike(items, "callbacks");
+    return __rhinoLocalArrayLike(items);
   });
   __rhinoLocalHide(list, "toString", function () {
     var values = [];
@@ -4851,7 +4295,7 @@ idRepository.getIdentity = function (userName) {
       if (!found) {
         missing("getAttributeValues(String)");
       }
-      var list = __rhinoLocalJavaList(values(attributeName), "idRepository.getAttribute");
+      var list = __rhinoLocalJavaList(values(attributeName));
       __rhinoLocalHide(list, "includes", undefined);
       __rhinoLocalHide(list, "toString", function () {
         return "[" + this.join(", ") + "]";
@@ -5682,14 +5126,11 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.generatedId = 0;
   __rhinoLocal.outcome = null;
   __rhinoLocal.callbacks = [];
-  __rhinoLocal.listsToJSON = false;
   __rhinoLocal.openidm = [];
   __rhinoLocal.http = [];
   __rhinoLocal.logs = [];
   __rhinoLocal.identityWrites = [];
   __rhinoLocal.faults = [];
-  // Catalog ids of the collections this run constructed (script contexts).
-  __rhinoLocal.collections = [];
   // Local-only: the AIC lane runs against the tenant's real mapping.
   __rhinoLocal.identityAttributes = __rhinoLocalClone(given.identityAttributes || {});
 

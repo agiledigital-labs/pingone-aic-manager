@@ -77,10 +77,16 @@ public final class HostOps extends BaseFunction {
   private Object dispatch(Context cx, Scriptable scope, Object[] args) throws Exception {
     String op = (String) Context.jsToJava(args[0], String.class);
     switch (op) {
-      // A prototype that hands every missing index read to a collection's
-      // empty-read decision (java/IndexTrap.java).
-      case "indexTrap":
-        return IndexTrap.create(scope, args);
+      // A real java.util.ArrayList holding a script array's elements, presented as AIC presents
+      // a list (java/SequenceFacade.java). A script string is stored as a Java string, so the
+      // list's own contains(), indexOf() and toString() answer as Java does; a script object is
+      // stored as it is.
+      case "javaList":
+        return JavaCollections.list(cx, scope, args.length > 1 ? args[1] : null);
+      // The elements of a list this harness handed out, as a new script array, or null when the
+      // value is not such a list. The harness reads a list a script returned or grew this way.
+      case "javaListItems":
+        return JavaCollections.items(cx, scope, args.length > 1 ? args[1] : null);
       // Prelude only: the invalid-scope replacement asks whether this toString is Rhino's wrap.
       case "exceptionDetails":
         return Boolean.valueOf(inExceptionDetails());

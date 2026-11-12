@@ -12,6 +12,7 @@ import org.mozilla.javascript.ContextFactory;
  *       since {@code startTime}, throw {@code new Error("Interrupt.")}
  *   <li>{@code hasFeature(21)} is true ({@code FEATURE_ENABLE_JAVA_MAP_ACCESS})
  *   <li>{@code setMaximumInterpreterStackDepth(10000)} on every context.
+ *   <li>Java values reach a script through {@link BindingValuePresenter}.
  * </ul>
  *
  * <p>Timeout is per-job milliseconds, so one runaway script cannot take the
@@ -56,6 +57,7 @@ final class AmContextFactory extends ContextFactory {
       setOptimizationLevel(-1);
       setInstructionObserverThreshold(1000);
       setMaximumInterpreterStackDepth(10000);
+      setWrapFactory(new BindingValuePresenter());
     }
   }
 }
