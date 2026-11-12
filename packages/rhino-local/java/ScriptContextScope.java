@@ -8,9 +8,7 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.Wrapper;
 
 /**
- * Replica of AM 8.1.1 {@code
- * org.forgerock.openam.scripting.factories.ScriptContextScope}, as observed to
- * behave.
+ * The scope object scripts run in, over a JSR-223 {@code ScriptContext}.
  *
  * <p>Implements {@link Scriptable} only — not {@code ScriptableObject} and not
  * {@code ConstProperties}. That is the lever for top-level {@code const}:
@@ -18,9 +16,6 @@ import org.mozilla.javascript.Wrapper;
  * scope is not {@code ConstProperties}, after {@code defineConstProperty} has
  * already {@code put} {@code Undefined}. Decision-node scripts therefore read
  * top-level {@code const} back as {@code undefined}.
- *
- * <p>AM's class depends on {@code org.forgerock.util.Reject}; this replica does
- * not, so we do not have to extract forgerock-util.
  */
 final class ScriptContextScope implements Scriptable {
 

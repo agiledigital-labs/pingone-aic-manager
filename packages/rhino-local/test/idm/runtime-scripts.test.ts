@@ -102,7 +102,7 @@ describe("supplied runtime scripts", () => {
   });
 
   it("a module body runs once per id string per invocation: 'x' and 'x.js' are two instances", async () => {
-    // IDM's Require keys its module maps by the id as written (9.0.0 bytecode), so a module
+    // IDM's Require keys its module maps by the id as written (assumed, unmeasured on AIC), so a module
     // with an effect runs once for each spelling. Merging the spellings would run it once here
     // and twice on AIC.
     const counter = loader({ "standin/count.js": "effects.push(module.id); exports.calls = 1;" });

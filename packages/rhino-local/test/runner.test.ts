@@ -18,13 +18,13 @@ describe("RhinoRunner", () => {
     await runner.close();
   }, 30_000);
 
-  it("reports the expected AM environment for its selected lane", () => {
+  it("reports the expected environment for its selected lane", () => {
     expect(runner.environment).toMatchObject(EXPECTED_ENVIRONMENT);
   });
 
-  // What the AM image prints (MEASURED 2026-09-28). A host that leaked its own
+  // What the expected environment prints. A host that leaked its own
   // timezone or locale into the JVM would print its local midnight here.
-  it("formats dates and numbers as the AM image does", async () => {
+  it("formats dates and numbers as the expected environment does", async () => {
     const response = await runner.eval({
       source:
         "[new Date(0).toString(), (1234.5).toLocaleString(), java.util.TimeZone.getDefault().getID()].join('\\n')",
@@ -34,7 +34,7 @@ describe("RhinoRunner", () => {
     expect(response.value).toBe("Thu Jan 01 1970 00:00:00 GMT-0000 (UTC)\n1234.5\nEtc/UTC");
   });
 
-  // The host lane caps the heap at 256 MB; the container runs AM's default.
+  // The host lane caps the heap at 256 MB; the container runs the JVM default.
   // A job allocating ~100 MB must succeed on both, so the cap is headroom and
   // not a behaviour difference for anything a journey script plausibly does.
   it("runs a job that allocates ~100 MB", async () => {
@@ -230,7 +230,7 @@ describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both l
 
   // Positive control: a value that cannot be the same on both lanes, so a
   // comparison that silently stopped comparing would fail here. Not the Java
-  // build — CI installs the image's exact build, so that one must agree.
+  // build — CI installs the reference image's exact build, so that one must agree.
   it("detects a lane-specific difference", async () => {
     expectEmulationFailure(/LaneDivergenceError: rhino-local: host and container JVMs disagree[\s\S]*/);
     await expect(

@@ -75,8 +75,8 @@ export class Scripts {
   async require(args: readonly JsonValue[]): Promise<JsonValue> {
     const id = args[0];
     if (typeof id !== "string" || args.length !== 1) missing(this.evidence, "require host call without one string id");
-    this.evidence.assumed("require(id) loads <id>.js under the script root; IDM 9.0.0 bytecode, not measured on AIC");
-    this.evidence.assumed("a required module runs once per id string per script invocation (require('x') and require('x.js') are two instances), sees the caller's bindings and keeps its top-level vars; a cycle sees the original exports object; IDM 9.0.0 bytecode, not measured on AIC");
+    this.evidence.assumed("require(id) loads <id>.js under the script root; assumed, not measured on AIC");
+    this.evidence.assumed("a required module runs once per id string per script invocation (require('x') and require('x.js') are two instances), sees the caller's bindings and keeps its top-level vars; a cycle sees the original exports object; assumed, not measured on AIC");
     const path = modulePath(id);
     if (["lib/lodash.js", "lib/handlebars.js", "lib/validator.js"].includes(path)) {
       this.evidence.assumed("engine-preloaded lib/lodash, lib/handlebars and lib/validator run per invocation here and see the caller's bindings; IDM shares one exports object across invocations and runs them in a scope without the caller's bindings");

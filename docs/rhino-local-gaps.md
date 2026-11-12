@@ -427,12 +427,8 @@ fault `arity-unknown/<path>`. The basis table (`__rhinoLocalArityBasis` in
 `runtime.cjs`) is pinned against the introspection file by
 `test/bindings/arity-provenance.test.ts`.
 
-**Hypotheses from on-prem jars, each settled by one live probe.** The E19
-round-3 review read the AM 8.1.1 binding jars with `javap` and ran the CREST
-27.1.1 `QueryFilters.parse` from a ForgeOps AM image over 112 filters. On-prem
-signatures are a hypothesis in this project, not an AIC measurement (IDM's
-bundles import CREST `[28.0,29)`, a neighbouring version), so each of these
-stays a fault until a probe on AIC decides it:
+**Hypotheses, each settled by one live probe.** These are not AIC
+measurements, so each of them stays a fault until a probe on AIC decides it:
 
 - **Settled 2026-11-06: `logger.*` is true varargs** on `debug`, `info`,
   `warn` and `error` (4, 5 and 6 arguments accepted at all four; the
@@ -440,11 +436,9 @@ stays a fault until a probe on AIC decides it:
   `arity-unknown/logger.*` faults are gone for those four; `logger.trace`
   was not probed. `logger.warning` is AIC's catchable `TypeError: Cannot find
   function warning`, which the overlay already gave.
-- **The other `arrayTail` parameters are probably not varargs.** The jar types
-  `openidm`'s trailing parameter as `java.util.List`, the validated and
-  attribute-input callbacks' as `List<String>`, and `getRandomValues`' as a
-  `NativeArray`, so a count past the overloads is likely Rhino's catchable
-  refusal. The fault there is noise in the safe direction.
+- **The other `arrayTail` parameters are probably not varargs**, so a count
+  past the overloads is likely Rhino's catchable refusal. The fault there is
+  noise in the safe direction.
 - **Settled 2026-11-06: `mergeShared` takes a `Map`.** A non-object is a
   catchable `InternalError` in three measured shapes (see the fault table),
   and state is unchanged. `mergeTransient` was probed with a string only;
@@ -454,16 +448,15 @@ stays a fault until a probe on AIC decides it:
   AM's method body, never observed for `mergeTransient`, so
   `mergeTransient(null)` stays `node-state-merge-non-object`, as does a
   function.
-- **The filter grammar faults on inputs CREST 27.1.1 accepts**: keyword case
+- **The filter grammar faults on inputs not yet measured on AIC**: keyword case
   (`AND`, `Or`, `TRUE`, `PR`, `EQ`), single quotes, `+5`, `05`, `1.`, `.5`,
   the pointers `/a~2`, `text~`, `/` and `!text`, `"a"and`, `\x` escapes, a tab
   inside a pointer, and integers between 2^53 and `Long.MAX_VALUE` (the last
   on purpose: a JS number cannot hold the long CREST compares). Conversely the
-  grammar now refuses, as the fault, all eleven inputs the jar rejects that it
-  used to accept (exponent with no `.`, integers past `long`, tab or newline
-  separators, `!` glued to a keyword). One probe of uppercase `AND` and of
-  `'x'` on AIC would show whether AIC's CREST matches 27.1.1; if it does,
-  transcribing its `QueryFilterParser` would retire every grammar fault.
+  grammar now refuses, as the fault, eleven inputs it used to accept (exponent
+  with no `.`, integers past `long`, tab or newline separators, `!` glued to a
+  keyword). One probe of uppercase `AND` and of `'x'` on AIC would settle
+  whether these are accepted; if they are, the grammar faults retire.
 
 **Journey lane.** In a journey, AM's host bridge replaces the fault channel
 with its uncatchable `unsupported` refusal. The emulated AIC errors above stay
@@ -664,7 +657,7 @@ and neither carries a label:
   per-character lower-casing (U+0130 to `i`) and a full fold (U+1E9E to `ss`).
 
   **User attributes: measured rules (live probe 2026-11-06).** DS's core
-  schema (opendj-core 8.1.1, RFC 4519) gives `telephoneNumber` `EQUALITY
+  schema (RFC 4519) gives `telephoneNumber` `EQUALITY
   telephoneNumberMatch`; `frIndexedDate1`–`5` / `frUnindexedDate1`–`5` are
   GeneralizedTime and `frIndexedInteger1`–`5` / `frUnindexedInteger1`–`5`
   integers (`docs/api/14`). The probe (`docs/api/10`, REST and IDM's

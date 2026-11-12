@@ -1562,7 +1562,7 @@ once per file without it.
 `src/runner.ts` launches Java 25 from `AIC_SCRIPT_TESTER_JAVA_HOME` or `JAVA_HOME`
 (`shell.nix` provides `temurin-bin-25`) and speaks line-delimited JSON.
 `AIC_SCRIPT_TESTER_JVM` selects `host` (default), `container`, or `both`; the latter
-lanes require Docker and the AM image. The cache defaults to
+lanes require Docker and the reference JVM image. The cache defaults to
 `~/.cache/aic-script-tester`; `AIC_SCRIPT_TESTER_CACHE` overrides it. Correlate by job `id`
 — do not assume the JVM answers in order. A crashed JVM rejects every pending
 job rather than hanging. `close()` ends stdin and waits for the process;
@@ -2244,10 +2244,9 @@ under the root. Forks share the index.
 
 A `file` reference runs the supplied source with the bindings an inline script
 in the same place gets. `require(id)` loads `<id>.js` (or `id` if it already
-ends in `.js`) as a CommonJS module, following IDM 9.0.0's engine as read from
-its bytecode rather than measured on AIC. The module sees the caller's bindings
+ends in `.js`) as a CommonJS module, as an assumption not yet measured on AIC. The module sees the caller's bindings
 (`openidm`, `object`, `request`, …) and keeps its own top-level `var`s. The
-module cache is keyed by the id as written, as IDM's is: within one script
+module cache is keyed by the id as written: within one script
 invocation `require('x')` runs `x.js` once, but `require('x')` and
 `require('x.js')` are two instances and each runs the body. Everything runs
 again in the next invocation. A require cycle sees the partial exports: the

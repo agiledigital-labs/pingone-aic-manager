@@ -1894,8 +1894,7 @@ profile and no user data is in reach).
 | `String(v)` | `[]` empty, `[Confidential]` populated — a collection's bracketed `toString` |
 
 **AM names the class in its own error**, which is what makes this a measurement
-rather than an inference from the 8.1.1 `getAttribute(String) -> java.util.Set`
-signature. It is the same failure shape `scopes` gives in this context, and the
+rather than an inference from a method signature. It is the same failure shape `scopes` gives in this context, and the
 same class shutter behaviour: `HashSet`'s iterator is allowed where
 `ArrayList$Itr` is not.
 

@@ -7,7 +7,7 @@ export declare class RhinoRunnerExitError extends Error {
     constructor(exitCode: number | null, signal: NodeJS.Signals | null, stderr: string);
 }
 /**
- * The host JVM and the AM image's JVM answered one job differently. This is
+ * The host JVM and the reference JVM image's JVM answered one job differently. This is
  * the whole reason the `both` lane exists, so it fails the test rather than
  * picking a winner.
  */
