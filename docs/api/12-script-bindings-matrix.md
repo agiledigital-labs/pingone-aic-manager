@@ -593,6 +593,8 @@ also works and avoids the deprecated boxing constructor — prefer it. For
 contrast, `new java.lang.Double(1)` renders `1.0`, confirming the culprit is the
 Java numeric type the value lands in.
 
+Not measured: a number the engine itself holds as an integer, such as `'abc'.length` or an `indexOf` result. `rhino-local` cannot tell one from a boxed `Integer`, so it writes `3`, not `3.0`, and marks the run's body text as assumed.
+
 Note that `java.lang.Integer` is **not** in the next-gen allow-list declared in
 `docs/api/bindings/scripted-decision-next.json` (which has `Byte`, `Short`,
 `Long`, `Float`, `Number`, `Void` but no `Integer`) yet constructs fine — a

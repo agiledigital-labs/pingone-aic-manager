@@ -477,16 +477,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-callback
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > arity 1`] = `
-{
-  "base64Encode": "function",
-  "confirmationCallback": 0,
-  "hiddenValueCallback": 2,
-  "nameCallback": 2,
-}
-`;
-
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > base64 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types > base64 1`] = `
 [
   "atob",
   "btoa",
@@ -496,7 +487,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-su
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > base64url 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types > base64url 1`] = `
 [
   "atob",
   "btoa",
@@ -506,7 +497,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-su
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > crypto 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types > crypto 1`] = `
 [
   "checkBcrypt",
   "getRandomValues",
@@ -515,7 +506,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-su
 ]
 `;
 
-exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types, arity > types 1`] = `
+exports[`real scripted-decision corpus > known local-vs-AIC gaps > enum-utils-sub — differs on base64, base64url, crypto, types > types 1`] = `
 [
   "bytesToString",
   "stringToBytes",
@@ -1011,7 +1002,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-heade
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multivalue — differs on headers, parameters > headers 1`] = `
 {
-  "className": "err:TypeError: Cannot find function getClass in object [object Object].",
+  "className": "err:Error: rhino-local: not implemented: requestHeaders.getClass() is not a member this harness has; if AIC has it, it needs adding",
   "counts": {
     "x-aic-probe": 2,
     "x-aic-probe-joined": 1,
@@ -1045,7 +1036,7 @@ exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multi
 
 exports[`real scripted-decision corpus > known local-vs-AIC gaps > request-multivalue — differs on headers, parameters > parameters 1`] = `
 {
-  "className": "err:TypeError: Cannot find function getClass in object [object Object].",
+  "className": "err:Error: rhino-local: not implemented: requestParameters.getClass() is not a member this harness has; if AIC has it, it needs adding",
   "counts": {
     "probeq": 2,
     "probeqjoined": 1,

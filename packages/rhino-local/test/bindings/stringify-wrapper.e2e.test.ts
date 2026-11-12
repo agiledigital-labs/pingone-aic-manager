@@ -191,8 +191,8 @@ describe("JSON.stringify of the emulated lists", () => {
     expect(await value(source)).toBe(arrayOf(route, '["a"]'));
   });
 
-  // Measured 2026-11-10 (request-list-concat probe): the list returned from toJSON is written
-  // as the same JSON array, under a property list too.
+  // Measured 2026-11-10 (request-list-concat probe): a list returned from toJSON is written as
+  // a JSON array, and so is a list under a property list. The two together were not probed.
   it("a list an author's toJSON returns under a property list is a JSON array", async () => {
     expect(await value(`JSON.stringify({ toJSON: function () { return ${QUERY}; } }, ["_id"])`)).toBe('[{"_id":"u1"}]');
     expect(await value(`JSON.stringify({ toJSON: function () { return ${REQUEST}; } }, ["0"])`)).toBe('["a"]');

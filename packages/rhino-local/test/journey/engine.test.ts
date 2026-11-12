@@ -1190,15 +1190,16 @@ const FRACTION =
 const STRING = "httpClient body text for a string body, sent as the string itself";
 const TOP = "httpClient body text for a top-level non-object body";
 const INTEGER =
-  "httpClient body text for a number the script engine holds as a Java Integer (a boxed value, or a result of length, indexOf, JSON.parse), written as an integer";
+  "httpClient body text for a number the script engine holds as a Java Integer: written as an integer, which is measured for a boxed value and assumed for a result of length, indexOf or JSON.parse";
 it.each([
   ["a fraction", "body:{f:1.5}", '{"f":1.5}', [FRACTION]],
   ["an integer past 1e6", "body:{n:1e7}", '{"n":1.0E7}', [FRACTION]],
   ["a string body", "body:'raw'", "raw", [STRING]],
   ["a top-level array", "body:[1]", "[1.0]", [TOP]],
-  // A boxed Integer is a plain number to the script and goes out as written (docs/api/12). The
-  // engine holds these other results in the same class, so they cannot go out differently.
+  // Measured (docs/api/12): a boxed Integer goes out as written. It is a plain number to the
+  // script, so the harness cannot tell it from the rows below it and the note rides it too.
   ["a boxed Integer", "body:{j:java.lang.Integer.valueOf(1)}", '{"j":1}', [INTEGER]],
+  // Assumed: none of these three was sent from a tenant.
   ["a string length", "body:{count:'abc'.length}", '{"count":3}', [INTEGER]],
   ["an indexOf result", "body:{at:'abc'.indexOf('c')}", '{"at":2}', [INTEGER]],
   ["a JSON.parse result", "body:JSON.parse('{\"n\":2}')", '{"n":2}', [INTEGER]],
