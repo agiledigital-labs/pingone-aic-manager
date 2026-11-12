@@ -48,12 +48,15 @@ type TokenFieldValue = StringLike | number | boolean | any[] | object;
 /**
  * The token being modified.
  *
- * Getters that had nothing to return handed back `null` rather than throwing or
- * yielding a blank — `getNonce`, `getAct`, `getMayAct`, `getPermissions`,
- * `getClaims`, `getAuthLevel`, `getConfirmationKey` and `getField` of an unset
- * key were all `null` on a plain `client_credentials` token — so they are typed
- * nullable and `strictNullChecks` will make you say what you want when it is
- * missing.
+ * Getters that had nothing to return did not throw or yield a blank, but they
+ * are not all the same thing. `getNonce`, `getClaims` and `getAuthLevel` were JS
+ * `null` on a plain `client_credentials` token (2026-08-27). `getAct`, `getMayAct`,
+ * `getPermissions`, `getConfirmationKey` and `getField` of an unset key were
+ * objects that PRINT `null` and have `size()` 0 on a stateless token (measured
+ * 2026-11-10), so `=== null` is `false` for them. All are typed nullable, and
+ * `strictNullChecks` will make you say what you want when it is missing; test
+ * those five with `String(v) === "null"` or `v.size() === 0`, not
+ * `v === null`.
  */
 interface AccessToken {
   /** The value set by `setField`/`setFields`, or `null` if the key is unset. */

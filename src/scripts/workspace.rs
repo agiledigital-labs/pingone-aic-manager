@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 104;
+pub const TEMPLATES_VERSION: u32 = 106;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -96,6 +96,14 @@ const MANAGED: &[(&str, &str)] = &[
     (
         "am/types/social-handler.d.ts",
         include_str!("templates/am/types/social-handler.d.ts"),
+    ),
+    (
+        "am/types/social-normalize-ng.d.ts",
+        include_str!("templates/am/types/social-normalize-ng.d.ts"),
+    ),
+    (
+        "am/types/config-provider-ng.d.ts",
+        include_str!("templates/am/types/config-provider-ng.d.ts"),
     ),
     (
         "am/types/saml-nameid-mapper.d.ts",
@@ -1355,13 +1363,31 @@ mod tests {
             .1
             .to_string();
 
-        let leaves: [(&str, String); 5] = [
+        let leaves: [(&str, String); 11] = [
             (
                 "legacy-access-token",
                 am::leaf_tsconfig("oauth2-access-token"),
             ),
             ("nextgen-decision-node", am::leaf_tsconfig("decision-node")),
             ("legacy-oidc-claims", am::leaf_tsconfig("oidc-claims")),
+            (
+                "nextgen-access-token",
+                am::leaf_tsconfig("oauth2-access-token-ng"),
+            ),
+            (
+                "nextgen-validate-scope",
+                am::leaf_tsconfig("oauth2-validate-scope-ng"),
+            ),
+            ("nextgen-oidc-claims", am::leaf_tsconfig("oidc-claims-ng")),
+            ("nextgen-may-act", am::leaf_tsconfig("oauth2-may-act-ng")),
+            (
+                "nextgen-social-normalize",
+                am::leaf_tsconfig("social-normalize-ng"),
+            ),
+            (
+                "nextgen-config-provider",
+                am::leaf_tsconfig("config-provider-ng"),
+            ),
             ("idm-endpoint", idm_endpoint),
             (
                 "idm-managed-hook",

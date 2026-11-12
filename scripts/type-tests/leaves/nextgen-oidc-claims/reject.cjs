@@ -1,0 +1,8 @@
+session; // expect: TS2304 — not bound on next-gen: ReferenceError
+typeof session !== "undefined"; // expect: TS2304 — undeclared, so the probe is a type error too
+scopes.map(function (s) { return s; }); // expect: TS2339 — a Java list has no map
+clientProperties.allowedGrantTypes; // expect: TS4111 — the class shutter on every read
+/** @type {OidcClaimsResult} */ var noValues = { compositeScopes: {} }; // expect: TS2741 — a result with no `values` emits no claims
+/** @type {OidcClaimsResult} */ var badValues = { values: "x" }; // expect: TS2322 — values is a map
+claims.put("a"); // expect: TS2554 — put takes a key and a value
+String(noValues) + String(badValues);
