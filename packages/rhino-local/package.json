@@ -68,7 +68,6 @@
     "LICENSE-APACHE",
     "LICENSE-MIT",
     "src/bindings/rhino/runtime.cjs",
-    "src/bindings/rhino/collection-catalog.cjs",
     "src/bindings/rhino/identity-policy.cjs",
     "src/bindings/rhino/crest-filter.cjs",
     "src/bindings/rhino/context-common.cjs",

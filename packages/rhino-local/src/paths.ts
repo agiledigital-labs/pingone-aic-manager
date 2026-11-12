@@ -70,8 +70,6 @@ export const sourceOidcClaimsBindingsJsonPath = join(repoRoot, "docs", "api", "b
 /** `generate`'s verbatim copy of {@link sourceOidcClaimsBindingsJsonPath}: the context's class allow-list. */
 export const oidcClaimsBindingsJsonPath = join(generatedDir, "oidc-claims-next.json");
 
-/** Every collection binding's empty-read grant. Loaded before context-common, which looks the grant up by id. */
-export const bindingsCollectionCatalogPath = join(packageRoot, "src", "bindings", "rhino", "collection-catalog.cjs");
 
 /** The view helpers every non-decision context overlay builds on, appended before it. */
 export const bindingsContextCommonPath = join(packageRoot, "src", "bindings", "rhino", "context-common.cjs");

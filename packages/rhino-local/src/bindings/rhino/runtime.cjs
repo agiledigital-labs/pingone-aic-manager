@@ -1005,7 +1005,7 @@ var __rhinoLocalJavaListHost = (function (hostOp) {
     return null;
   }
   return {
-    list: function (items) { return hostOp("javaList", items); },
+    list: function (items, immutable) { return hostOp("javaList", items, immutable === true); },
     items: function (value) { return hostOp("javaListItems", value); },
   };
 })(typeof __rhinoLocalHostOp === "function" ? __rhinoLocalHostOp : null);
@@ -1050,11 +1050,21 @@ function __rhinoLocalListDouble(items) {
   return list;
 }
 
-function __rhinoLocalListView(items) {
+// `immutable` true is a list that refuses writes, as Java's unmodifiable
+// list does (measured on accessToken.getScope(): add() is `InternalError:
+// null`).
+function __rhinoLocalListView(items, immutable) {
+  var list;
   if (__rhinoLocalJavaListHost !== null) {
-    return __rhinoLocalJavaListHost.list(items);
+    return __rhinoLocalJavaListHost.list(items, immutable === true);
   }
-  return __rhinoLocalListDouble(items);
+  list = __rhinoLocalListDouble(items);
+  if (immutable === true) {
+    __rhinoLocalHide(list, "add", function () {
+      throw __rhinoLocalInternalError("null");
+    });
+  }
+  return list;
 }
 
 // The elements of a list this harness handed out, as a new JS array, or null

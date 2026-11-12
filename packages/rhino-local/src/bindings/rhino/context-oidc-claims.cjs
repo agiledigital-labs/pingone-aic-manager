@@ -39,60 +39,8 @@ var __rhinoLocalOidcReserved = [
   "amr", "at_hash", "c_hash", "s_hash", "sid", "auditTrackingId", "org.forgerock.openidconnect.ops",
 ];
 
-__rhinoLocalListKinds.oidcClaims = {
-  id: "oidc-claims-unmeasured/list",
-  noun: "an OIDC claims context list",
-  measured: "only size(), length, [i], String(v) and, where docs/api/12 says so, contains() and toArray() were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-  // No binding of this kind is granted an empty list by the kind (Sol ctx
-  // r11 P2-1). claimsLocales, redirectUris and a missing attribute
-  // each opt in on their own list. scopes was captured
-  // non-empty (size 4), so an empty contains() faults. json and concat were
-  // not measured at any length. A request value is oidcClaimsRequest. An
-  // empty scopes.toArray() is oidcClaimsArray, not this kind.
-  emptyRoutes: {},
-};
-
-// scopes.toArray() of a size-zero scopes list. The OIDC surface reads
-// scopes.toArray().length on four scopes, which stays a plain array. Nothing
-// measured an empty scopes.toArray(). json is true so an ungranted empty
-// JSON.stringify uses the empty-route sentence (Sol ctx r12 P2-1).
-__rhinoLocalListKinds.oidcClaimsArray = {
-  id: "oidc-claims-unmeasured/list.toArray()",
-  noun: "an OIDC toArray() result",
-  measured: "an empty scopes.toArray() result was not measured (the surface capture read length of four scopes)",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: true,
-  genericReceiver: false,
-  emptyRoutes: {},
-};
-
-// A requestProperties value. The surface probe reads String, length, [i] and
-// size() of grant_type, which has one element. No capture shows a size-zero
-// request value. emptyRoutes is present and empty so that route faults as
-// unmeasured, and not with the decision-node request list's "[\"\"]" sentence.
-__rhinoLocalListKinds.oidcClaimsRequest = {
-  id: "oidc-claims-unmeasured/requestProperties",
-  noun: "an OIDC claims request value",
-  measured: "only length, size(), [i] and String(v) of a non-empty value were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-  emptyRoutes: {},
-};
-
 __rhinoLocalCtx.prefix = "oidc-claims-unmeasured";
-__rhinoLocalCtx.catalog = "oidc";
 __rhinoLocalCtx.noun = "OIDC claims";
-__rhinoLocalCtx.listKind = __rhinoLocalListKinds.oidcClaims;
 
 // --- The `claims` binding ------------------------------------------------------
 
@@ -309,17 +257,14 @@ function __rhinoLocalSeedOidcClaims(given) {
     realm = d.realm;
   }
   identity = __rhinoLocalCtxBuildIdentity(d.identity);
-  scopes = __rhinoLocalCtxBuildScopes(d.scopes, {
-    toArray: true,
-    toArrayKind: __rhinoLocalListKinds.oidcClaimsArray,
-  });
+  scopes = __rhinoLocalCtxBuildScopes(d.scopes);
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.realm, {
-    paramsGetMissing: true, listKind: __rhinoLocalListKinds.oidcClaimsRequest,
+    paramsGetMissing: true,
   });
   clientProperties = __rhinoLocalCtxBuildClient(d.client, {
     redirectUris: true,
   });
-  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.slice(), "claimsLocales", null, "claimsLocales");
+  claimsLocales = __rhinoLocalCtxList(d.oidc.claimsLocales.slice());
   claims = __rhinoLocalOidcNextGenClaims(d.oidc);
   requestedClaims = __rhinoLocalCtxMap("requestedClaims", [], null, function () {
     return "{  }";

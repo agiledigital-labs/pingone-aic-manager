@@ -20,15 +20,11 @@ var __rhinoLocalTop = this;
 // the node vm path.
 var __rhinoLocalCtxHostOp = typeof __rhinoLocalHostOp !== "undefined" ? __rhinoLocalHostOp : null;
 
-// Set by the context overlay (prefix, noun, listKind).
+// Set by the context overlay (prefix, noun).
 // `views` holds the binding objects whose own properties the harvest audits.
 var __rhinoLocalCtx = {
-  // The collection catalog's context key (validate, token, ...), set by the
-  // overlay; __rhinoLocalCollectionRegister builds ids from it.
-  catalog: null,
   prefix: "context-unmeasured",
   noun: "script",
-  listKind: null,
   views: [],
   sealed: true,
 };
@@ -117,44 +113,6 @@ function __rhinoLocalCtxTag(target, tag, label) {
     }
     return original.call(this);
   });
-})();
-
-// --- Generic Array.prototype receivers ----------------------------------------
-//
-// `Array.prototype.map.call(list, fn)` works on any array-like, so a list view
-// would answer it as a JS array would, where AIC hands over a Java list whose
-// behaviour as such a receiver is unmeasured. Each Array.prototype method is
-// wrapped thinly: a real array takes the native path first and unchanged, any
-// other receiver too, unless it is a list view whose kind says
-// `genericReceiver: false`, which faults. concat keeps runtime.cjs's wrapper.
-(function () {
-  "use strict";
-  var names = Object.getOwnPropertyNames(Array.prototype);
-  var i;
-  for (i = 0; i < names.length; i += 1) {
-    (function (name) {
-      if (name === "constructor" || name === "concat" || name === "length") {
-        return;
-      }
-      var own = Object.getOwnPropertyDescriptor(Array.prototype, name);
-      if (own === undefined || typeof own.value !== "function") {
-        return;
-      }
-      var original = own.value;
-      __rhinoLocalHide(Array.prototype, name, function () {
-        if (!Array.isArray(this)) {
-          var row = __rhinoLocalListRow(this);
-          // `genericReceiver` may instead list the method names its context
-          // measured (validate scope: slice); every other name faults.
-          var allowed = row === null ? true : row.kind.genericReceiver;
-          if (row !== null && (allowed === false || (Array.isArray(allowed) && allowed.indexOf(name) === -1))) {
-            throw __rhinoLocalListUnmeasured(row.kind, "Array.prototype." + name + ".call(v, …)");
-          }
-        }
-        return original.apply(this, arguments);
-      });
-    })(names[i]);
-  }
 })();
 
 // --- Mutation audit ----------------------------------------------------------
@@ -273,20 +231,11 @@ function __rhinoLocalCtxBare() {
   return typeof Object.create === "function" ? Object.create(null) : {};
 }
 
-// A Java list, through runtime.cjs's list view. `kind` omitted uses the
-// context's own kind; a caller passes one when this list was measured
-// separately from the context's scope lists (Sol ctx r5 P2-6). `grant`
-// omitted leaves the kind's empty policy; a caller passes one only for the
-// binding a capture measured empty (Sol ctx r11 P2-1). Watched like the
-// other views (Sol ctx r2 P2-3): an index write or a replaced method is
-// found by the harvest audit.
-// Every context list is this constructor. `binding` is the catalog binding
-// and `child` "toArray" for a binding's toArray() view
-// (__rhinoLocalCollectionRegister).
-function __rhinoLocalCtxList(items, label, kind, binding, child) {
-  var list = __rhinoLocalListView(items, kind || __rhinoLocalCtx.listKind, binding, child);
-  __rhinoLocalCtxTag(list, null, label || "a Java list");
-  return __rhinoLocalCtxWatch(list, label || "list");
+// A Java list: a real one (runtime.cjs, __rhinoLocalListView). It is not
+// watched like the JS views: what a script does to it is the list's own
+// behaviour, and the harvest reads the list as it then is.
+function __rhinoLocalCtxList(items, immutable) {
+  return __rhinoLocalListView(items, immutable);
 }
 
 // Member names every map view defines itself. A seeded key of one of these
@@ -432,13 +381,13 @@ function __rhinoLocalCtxPlainJson(value) {
   var names;
   var i;
   var own;
+  if (__rhinoLocalListItems(value) !== null) {
+    return false;
+  }
   try {
     proto = Object.getPrototypeOf(value);
     names = Object.getOwnPropertyNames(value);
   } catch (e) {
-    return false;
-  }
-  if (__rhinoLocalListRow(value) !== null) {
     return false;
   }
   if (Array.isArray(value)) {
@@ -544,8 +493,7 @@ function __rhinoLocalCtxCopy(value) {
 
 // `opts.tag`: the measured Object.prototype.toString tag (`"JavaObject"` for
 // may-act, 2026-11-10). Absent, the tag stays unmeasured and faults, as it
-// did before that option existed. The empty getAttribute and
-// getAttributeValues grants come from the collection catalog.
+// did before that option existed.
 function __rhinoLocalCtxBuildIdentity(seed, opts) {
   // Measured 2026-11-10: String(identity) is the wrapper's Java toString
   // (class@hash) while identity.toString() is "Cannot find function
@@ -566,10 +514,8 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
   });
   __rhinoLocalCtxMethod(identity, "identity", ngCls, "getAttributeValues", 1, function (name) {
     var key = String(name);
-    // An attribute the identity lacks reads as an empty list. The catalog
-    // grant is that binding's empty surface, not the context kind's.
-    return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : [],
-      undefined, undefined, "getAttributeValues");
+    // An attribute the identity lacks reads as an empty list.
+    return __rhinoLocalCtxList(Object.prototype.hasOwnProperty.call(attrs, key) ? attrs[key].slice() : []);
   });
   __rhinoLocalHide(identity, "valueOf", function () {
     return ngCls + "@rhino-local";
@@ -582,75 +528,22 @@ function __rhinoLocalCtxBuildIdentity(seed, opts) {
   return __rhinoLocalCtxWatch(identity, "identity");
 }
 
-// `opts.add`: next-gen add() works on this list (measured for the token
-// context). `opts.toArray`: next-gen toArray() answers a JS array when the
-// list is non-empty (OIDC surface scopesToArray is 4). A size-zero result is
-// a list view of `opts.toArrayKind`, so a later read faults unless that kind
-// carries a grant (Sol ctx r12 P2-1). The call itself does not fault.
-function __rhinoLocalCtxBuildScopes(items, opts) {
-  var store = items.slice();
-  var list = __rhinoLocalCtxList(store, "scopes", null, "scopes");
-  // Measured on next-gen: contains() answers, and add() works on this list
-  // (it is not the token's scope; setScope copies it). Both were captured on
-  // a non-empty list. An empty read faults unless the list's grant names it.
-  __rhinoLocalHide(list, "contains", function (v) {
-    if (arguments.length !== 1) {
-      throw __rhinoLocalCtxUnmeasured("scopes.contains(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    __rhinoLocalEmptyOp(list, "contains");
-    return store.indexOf(String(v)) !== -1;
-  });
-  __rhinoLocalHide(list, "add", function (v) {
-    if (!opts || !opts.add) {
-      throw __rhinoLocalCtxUnmeasured("scopes.add()");
-    }
-    if (arguments.length !== 1 || typeof v !== "string") {
-      throw __rhinoLocalCtxUnmeasured("scopes.add(" + __rhinoLocalArgShape(arguments) + ")");
-    }
-    __rhinoLocalEmptyOp(list, "add");
-    __rhinoLocalCtxCheck(list);
-    store.push(v);
-    list[store.length - 1] = v;
-    __rhinoLocalHide(list, "length", store.length);
-    list[__rhinoLocalListKey].items.push(v);
-    __rhinoLocalEnumGrew(list);
-    __rhinoLocalCtxRewatch(list);
-    return true;
-  });
-  if (opts && opts.toArray) {
-    __rhinoLocalCtxMethod(list, "scopes", "java.util.List", "toArray", 0, function () {
-      if (store.length === 0) {
-        // Empty scopes.toArray(). The call itself does not fault.
-        return __rhinoLocalCtxList([], "scopes.toArray()", opts.toArrayKind, "scopes", "toArray");
-      }
-      __rhinoLocalCollectionRegister("scopes");
-      return store.slice();
-    });
-  }
-  return list;
+// The scopes binding: a real Java list of the scope strings.
+function __rhinoLocalCtxBuildScopes(items) {
+  return __rhinoLocalCtxList(items.slice());
 }
 
 // `opts.paramsGetMissing`: requestParams.get() of an absent key is null
 // (measured for OIDC claims); otherwise it faults. `opts.javaTags`: the value
 // lists' tag is `[object JavaList]` (measured for validate scope).
-// `opts.listKind`: the value lists' own kind, when it was not measured as
-// the context's scope lists were (Sol ctx r5 P2-6, Sol ctx r10 P2-1).
-// Omitted, they use the context kind. Access-token and OIDC pass a request
-// kind that refuses a size-zero value: an empty identity attribute or
-// claimsLocales list does not measure a request value.
 function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
-  // Parameter and header values are separate catalog rows.
-  var listOf = function (values, binding) {
-    var list = __rhinoLocalCtxList(values.slice(), undefined, opts && opts.listKind, binding);
-    if (opts && opts.javaTags) {
-      __rhinoLocalCtxTag(list, "JavaList", "a Java list");
-    }
-    return list;
+  var listOf = function (values) {
+    return __rhinoLocalCtxList(values.slice());
   };
   var listMap = function (label, values, aliases, methods) {
     var lists = __rhinoLocalCtxBare();
     Object.keys(values).forEach(function (k) {
-      lists[k] = listOf(values[k], label.substring("requestProperties.".length));
+      lists[k] = listOf(values[k]);
     });
     return __rhinoLocalCtxMap(label, Object.keys(values), function (k) {
       return lists[k];
@@ -686,13 +579,9 @@ function __rhinoLocalCtxBuildRequest(seed, realm, opts) {
 }
 
 // `opts.redirectUris`: next-gen redirectUris reads as a list (measured for
-// OIDC claims); otherwise it is unmeasured. `opts.redirectKind`: that list's
-// own kind, when it was measured apart from the context list (Sol ctx r10
-// P2-1). Omitted, the context kind, which is what OIDC claims measured.
-// The empty redirect grant is the catalog row for this context. Omitted
-// from the catalog, an empty redirect list faults (Sol ctx r11 P2-1).
-// `opts.javaTags`: customProperties is `[object JavaMap]` and redirectUris
-// `[object JavaList]` (measured for validate scope).
+// OIDC claims and validate scope); otherwise it is unmeasured.
+// `opts.javaTags`: customProperties is `[object JavaMap]` (measured for
+// validate scope).
 function __rhinoLocalCtxBuildClient(seed, opts) {
   var custom = __rhinoLocalCtxMap("clientProperties.customProperties", Object.keys(seed.customProperties),
     function () {
@@ -720,13 +609,7 @@ function __rhinoLocalCtxBuildClient(seed, opts) {
       if (!opts || !opts.redirectUris) {
         throw __rhinoLocalCtxUnmeasured("clientProperties.redirectUris");
       }
-      // Built here rather than through __rhinoLocalCtxList, because a read
-      // happens after the seal and a tag added to a watched view would read
-      // as the script's own mutation.
-      var redirectKind = opts && opts.redirectKind ? opts.redirectKind : __rhinoLocalCtx.listKind;
-      var uris = __rhinoLocalListView(seed.redirectUris.slice(), redirectKind, "redirectUris");
-      __rhinoLocalCtxTag(uris, opts.javaTags ? "JavaList" : null, "clientProperties.redirectUris");
-      return __rhinoLocalCtxWatch(uris, "clientProperties.redirectUris");
+      return __rhinoLocalCtxList(seed.redirectUris.slice());
     }
     // Measured: the raw Java set is handed over, which the context's class
     // shutter refuses.

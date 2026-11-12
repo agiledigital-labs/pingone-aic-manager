@@ -33,21 +33,8 @@ var __rhinoLocalSocialUnbound = [
   "session", "claims", "scopes", "normalizedProfile", "sharedState", "transientState", "callbacks",
 ];
 
-__rhinoLocalListKinds.socialIdp = {
-  id: "social-idp-unmeasured/list",
-  noun: "a social IdP profile transformation list",
-  measured: "only size(), length and String(v) were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-};
-
 __rhinoLocalCtx.prefix = "social-idp-unmeasured";
-__rhinoLocalCtx.catalog = "social";
 __rhinoLocalCtx.noun = "social IdP profile transformation";
-__rhinoLocalCtx.listKind = __rhinoLocalListKinds.socialIdp;
 
 // --- rawProfile ----------------------------------------------------------------
 
@@ -99,11 +86,8 @@ function __rhinoLocalSocialNextGenProfile(profile) {
     keys: {
       arity: 0,
       fn: function () {
-        var list = __rhinoLocalCtxList(keys.slice(), "rawProfile.keys()", null, "rawProfile.keys");
         // Measured: `[object JavaList]`.
-        __rhinoLocalCtxTag(list, "JavaList", "rawProfile.keys()");
-        __rhinoLocalCtxRewatch(list);
-        return list;
+        return __rhinoLocalCtxList(keys.slice());
       },
     },
   });

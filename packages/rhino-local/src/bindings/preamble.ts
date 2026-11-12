@@ -6,7 +6,6 @@ import type { EnvProfile } from "../profile/types.ts";
 import { managedInvalidDefault, managedPolicy, managedWriteFaults } from "../profile/write-guard.ts";
 import {
   bindingsAccessTokenPath,
-  bindingsCollectionCatalogPath,
   bindingsConfigProviderPath,
   bindingsContextCommonPath,
   bindingsCrestFilterPath,
@@ -46,8 +45,8 @@ export interface MockPreambleOptions {
 
 /**
  * Each non-decision context's overlays (in load order, after runtime.cjs),
- * seed call and harvest call. Every context loads the collection catalog,
- * then context-common.cjs. The decision node loads neither.
+ * seed call and harvest call. Every context loads context-common.cjs first.
+ * The decision node does not.
  */
 const CONTEXT_RUNTIME: {
   readonly [K in ScriptContext]?: {
@@ -62,20 +61,20 @@ const CONTEXT_RUNTIME: {
   };
 } = {
   OAUTH2_ACCESS_TOKEN_MODIFICATION: {
-    overlays: [bindingsCollectionCatalogPath, bindingsContextCommonPath, bindingsAccessTokenPath],
+    overlays: [bindingsContextCommonPath, bindingsAccessTokenPath],
     seed: "__rhinoLocalSeedAccessToken",
     harvest: "__rhinoLocalHarvestAccessToken",
   },
   // The script's result is the value it evaluates to, so nothing is appended.
   OIDC_CLAIMS: {
-    overlays: [bindingsCollectionCatalogPath, bindingsContextCommonPath, bindingsOidcClaimsPath],
+    overlays: [bindingsContextCommonPath, bindingsOidcClaimsPath],
     seed: "__rhinoLocalSeedOidcClaims",
     harvest: "__rhinoLocalHarvestOidcClaims",
     completion: true,
   },
   // The transformed profile is the value the script evaluates to.
   SOCIAL_IDP_PROFILE_TRANSFORMATION: {
-    overlays: [bindingsCollectionCatalogPath, bindingsContextCommonPath, bindingsSocialIdpPath],
+    overlays: [bindingsContextCommonPath, bindingsSocialIdpPath],
     seed: "__rhinoLocalSeedSocialIdp",
     harvest: "__rhinoLocalHarvestSocialIdp",
     completion: true,
@@ -84,21 +83,21 @@ const CONTEXT_RUNTIME: {
   // (measured: a script that only evaluates to a map is refused), so the
   // harvest is appended like the access-token context's.
   CONFIG_PROVIDER_NODE: {
-    overlays: [bindingsCollectionCatalogPath, bindingsContextCommonPath, bindingsConfigProviderPath],
+    overlays: [bindingsContextCommonPath, bindingsConfigProviderPath],
     seed: "__rhinoLocalSeedConfigProvider",
     harvest: "__rhinoLocalHarvestConfigProvider",
   },
   // AM runs the body, then calls validateAccessTokenScope() and grants what
   // it returns (measured), so the appended harvest makes that call.
   OAUTH2_VALIDATE_SCOPE: {
-    overlays: [bindingsCollectionCatalogPath, bindingsContextCommonPath, bindingsValidateScopePath],
+    overlays: [bindingsContextCommonPath, bindingsValidateScopePath],
     seed: "__rhinoLocalSeedValidateScope",
     harvest: "__rhinoLocalHarvestValidateScope",
   },
   // AM runs the body and, if it did not throw, stamps may_act and act. The
   // completion value is ignored, so the harvest is appended.
   OAUTH2_MAY_ACT: {
-    overlays: [bindingsCollectionCatalogPath, bindingsContextCommonPath, bindingsMayActPath],
+    overlays: [bindingsContextCommonPath, bindingsMayActPath],
     seed: "__rhinoLocalSeedMayAct",
     harvest: "__rhinoLocalHarvestMayAct",
   },
@@ -106,7 +105,7 @@ const CONTEXT_RUNTIME: {
   // The source the runner executes is empty; this harvest loads it and calls
   // the named export.
   LIBRARY: {
-    overlays: [bindingsCollectionCatalogPath, bindingsContextCommonPath, bindingsLibraryPath],
+    overlays: [bindingsContextCommonPath, bindingsLibraryPath],
     seed: "__rhinoLocalSeedLibrary",
     harvest: "__rhinoLocalHarvestLibrary",
   },

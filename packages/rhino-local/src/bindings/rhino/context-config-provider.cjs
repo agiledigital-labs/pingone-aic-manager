@@ -54,21 +54,8 @@ var __rhinoLocalCfgActionMethods = [
   "suspend",
 ];
 
-__rhinoLocalListKinds.configProvider = {
-  id: "config-provider-unmeasured/list",
-  noun: "a config provider node list",
-  measured: "only length and String(v) were measured",
-  outOfRange: false,
-  concatReceiver: false,
-  concatArgument: false,
-  json: false,
-  genericReceiver: false,
-};
-
 __rhinoLocalCtx.prefix = "config-provider-unmeasured";
-__rhinoLocalCtx.catalog = "config";
 __rhinoLocalCtx.noun = "config provider node";
-__rhinoLocalCtx.listKind = __rhinoLocalListKinds.configProvider;
 
 // --- Request maps -------------------------------------------------------------
 
@@ -86,10 +73,7 @@ function __rhinoLocalCfgRequestMap(values, caseInsensitive, label) {
   Object.keys(values || {}).forEach(function (raw) {
     var key = caseInsensitive ? raw.toLowerCase() : raw;
     var items = typeof values[raw] === "string" ? [values[raw]] : values[raw].slice();
-    var itemLabel = label + ".get(" + JSON.stringify(key) + ")";
-    var list = __rhinoLocalCtxList(items.slice(), itemLabel, null, label);
-    __rhinoLocalCtxTag(list, "JavaList", itemLabel);
-    __rhinoLocalCtxRewatch(list);
+    var list = __rhinoLocalCtxList(items.slice());
     if (keys.indexOf(key) === -1) {
       keys.push(key);
     }
