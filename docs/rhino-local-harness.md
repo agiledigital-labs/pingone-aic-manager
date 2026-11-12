@@ -617,7 +617,7 @@ shift author line numbers.
 
 `timeoutMs` is per-job. `0` means no timeout. Omitted uses a 10s harness
 default so a runaway cannot hang the process. The observer threshold of 1000
-and the `Interrupt.` message are reproduced.
+and the timeout error message are reproduced.
 
 `globals` is a JSON object placed in `ENGINE_SCOPE` Bindings before eval. This
 slice does not know what `nodeState` is; a later slice injects the generated
@@ -660,7 +660,7 @@ Easier than the contradiction suggested:
 - The two top-level `const` rows now match AIC. A declarative given/expect case
   format does not need a special-case for them; they fail the same way on the
   tenant and locally, which is what the lint rules exist to catch.
-- Bindings inject into ENGINE_SCOPE, which is where AM puts them. The mock
+- Bindings are visible to the script as globals, as on the tenant. The mock
   surface generated into `generated/scripted-decision-mocks.cjs` can ride
   `preamble` (keeps author line numbers) or `globals` (JSON-shaped values).
 
@@ -1086,8 +1086,7 @@ chain with one step read, one final read, and one cleanup delete at 45 calls.
 
 - Which tenant setting leaves the language version at 0. The observed JS is 0
   either way; this slice did not look for the cause.
-- LIBRARY scripts (function-like top level, CommonJS `require` via
-  `libraryBindings`). Measured 2026-09-12 to be the single largest fidelity gap
+- LIBRARY scripts (function-like top level, CommonJS `require`). Measured 2026-09-12 to be the single largest fidelity gap
   in the real-script corpus: live AIC reports `typeof require === "function"`
   and the harness reports `"undefined"`, which blocks 8 of the 52 probe scripts.
   No longer out of scope.
