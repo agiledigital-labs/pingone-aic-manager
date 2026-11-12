@@ -27,7 +27,7 @@ final class JavaCollections {
     if (immutable) {
       list = java.util.Collections.unmodifiableList(list);
     }
-    return cx.getWrapFactory().wrapAsJavaObject(cx, ScriptableObject.getTopLevelScope(scope), list, List.class);
+    return cx.getWrapFactory().wrapAsJavaObject(cx, ScriptableObject.getTopLevelScope(scope), new SequenceFacade(list), List.class);
   }
 
   /** What a script value is once it is inside a Java list. */

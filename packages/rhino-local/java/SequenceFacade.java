@@ -20,7 +20,7 @@ import org.mozilla.javascript.Undefined;
  *
  * <p>{@code equals} and {@code hashCode} are identity.
  */
-public final class SequenceFacade implements List<Object> {
+final class SequenceFacade implements List<Object> {
   private final List<Object> list;
 
   @SuppressWarnings("unchecked")

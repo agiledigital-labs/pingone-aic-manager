@@ -13,7 +13,7 @@ import java.util.Set;
  * list copies. {@code String(map)} is the measured {@code { "k": v }} form ({@code {  }} when
  * empty), not Java's {@code {k=v}}. {@code equals} and {@code hashCode} are identity.
  */
-public final class DictionaryFacade implements Map<String, Object> {
+final class DictionaryFacade implements Map<String, Object> {
   private final Map<String, Object> map;
 
   @SuppressWarnings("unchecked")
