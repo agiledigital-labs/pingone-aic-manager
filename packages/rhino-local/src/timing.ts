@@ -53,6 +53,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
+import { buildIdentity } from "./paths.ts";
 
 export const TIMING_ENV = "AIC_SCRIPT_TESTER_TIMING";
 
@@ -92,6 +93,8 @@ export interface TimingSummaryRow {
 }
 
 export interface TimingSummary {
+  /** `<version> (<commit>[-dirty])`, or `<version> (commit unknown)` from a checkout. */
+  harness: string;
   jobs: number;
   /** Jobs whose response carried an emulation failure (`emulationFault` rows). */
   faultedJobs: number;
@@ -179,6 +182,7 @@ export function summarizeTiming(text: string, options: TimingSummaryOptions = {}
   }
   const bySum = (a: TimingSummaryRow, b: TimingSummaryRow): number => b.sum - a.sum || a.field.localeCompare(b.field);
   return {
+    harness: buildIdentity,
     jobs, faultedJobs, spawns, borrows, publishes, jobsShippingSources,
     fields: rows(fields.values).sort((a, b) => a.field.localeCompare(b.field)),
     libraries: rows(libraries.values).sort(bySum),
@@ -188,6 +192,7 @@ export function summarizeTiming(text: string, options: TimingSummaryOptions = {}
 
 export function formatTimingSummary(summary: TimingSummary, top = 20): string {
   const lines = [
+    summary.harness,
     `jobs ${summary.jobs} (${summary.jobsShippingSources} shipped source text, ${summary.faultedJobs} with an emulation fault), spawns ${summary.spawns}, borrows ${summary.borrows}, publishes ${summary.publishes}`,
   ];
   const num = (v: number, w: number): string => (Number.isInteger(v) ? String(v) : v.toFixed(3)).padStart(w);

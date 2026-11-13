@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { packageVersion } from "../src/paths.ts";
+import { buildIdentity } from "../src/paths.ts";
 import { watchRunnerJvms } from "../test/harness/runner-jvms.ts";
 
 const workersArg = process.argv.find((a) => a.startsWith("--workers="));
@@ -48,7 +48,7 @@ function stats(xs: number[]): string {
 }
 
 const report = {
-  harness: packageVersion,
+  harness: buildIdentity,
   exit: code,
   wallMs: Math.round(wallMs),
   jvms: javas.size,
