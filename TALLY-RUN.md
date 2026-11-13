@@ -1,8 +1,14 @@
 # DO NOT MERGE: emulator fault-tally run
 
-This branch exists only to run the E19 fault tally of the unreleased emulator
-build (`feat/emulator` at `458f91e`) over a client project's tests, on a machine
-that can only reach this repository. It must never be merged into `main`; it is
+This branch exists only to run the E19 fault tally of the emulator build
+released in `aic` v0.17.0 (`main` at the `v0.17.0` tag) over a client project's
+tests, on a machine that can only reach this repository. It is v0.17.0 plus this
+file and nothing else.
+
+Since the previous run the emulator is next-gen only, hands scripts real Java
+collections (`length`/`get(i)`, not `some`/`map`), covers every script context,
+and runs a `require()`d library in its own scope, as the tenant does. Expect
+different fault rows from last time; that difference is the point of the run. It must never be merged into `main`; it is
 deleted when the run is done.
 
 The run installs the branch's build of
