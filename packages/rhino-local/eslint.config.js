@@ -15,6 +15,15 @@ export default tseslint.config(
       "failures/**",
       // Declaration output of the 0.1.2 tag, vendored for test/compat.
       "test/compat/v0.1.2/**",
+      // AM token-context probes, run byte-for-byte on AIC: ES5, AM globals,
+      // and a deliberate `==` against a Java string.
+      "test/fixtures/oauth2-atm/*.script.js",
+      "test/fixtures/oidc-claims/*.script.js",
+      "test/fixtures/social-idp/*.script.js",
+      "test/fixtures/config-provider/*.script.js",
+      "test/fixtures/oauth2-validate-scope/*.script.js",
+      "test/fixtures/oauth2-may-act/*.script.js",
+      "test/fixtures/library/*.script.js",
     ],
   },
   eslint.configs.recommended,

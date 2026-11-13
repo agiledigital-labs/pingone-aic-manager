@@ -117,16 +117,6 @@ describe("emitWrapperJourney", () => {
     expect(wrapper.treeBody.identityResource).toBe("managed/bravo_user");
   });
 
-  it("refuses to emit a legacy wrapper", () => {
-    expect(() =>
-      emitWrapperJourney(
-        caseWith({ given: { engine: "legacy" } }),
-        SUBJECT,
-        { runId: "leg" }
-      )
-    ).toThrow(/next-gen only/);
-  });
-
   it("emits AM-lint-clean instrumented subject and result scripts", async () => {
     const wrapper = emitWrapperJourney(
       caseWith({

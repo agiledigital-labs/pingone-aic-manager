@@ -83,7 +83,24 @@ export function emitJs(doc: ContextsDocument): string {
   for (const binding of doc.bindings) {
     lines.push(emitBinding(binding));
   }
+  lines.push(emitServices(doc.bindings));
   return lines.join("\n").replace(/\n+$/, "") + "\n";
+}
+
+/**
+ * The service objects above, by name, as they are bound when it is called. The runtime guards
+ * each one so that a method no one wrote is a fault rather than an ordinary TypeError. A binding
+ * a context has removed is left out.
+ */
+function emitServices(bindings: readonly Binding[]): string {
+  const names = bindings
+    .filter((binding) => classifyBinding(binding) === "object")
+    .map((binding) => assertIdent(binding.name, "binding name"));
+  return (
+    `function __rhinoLocalServices() {\n  var out = {};\n` +
+    names.map((name) => `  if (typeof ${name} !== "undefined") { out.${name} = ${name}; }\n`).join("") +
+    `  return out;\n}\n`
+  );
 }
 
 function emitBinding(binding: Binding): string {

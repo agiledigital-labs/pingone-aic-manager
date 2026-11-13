@@ -80,13 +80,10 @@ describe("existingSession", () => {
     expect(() => session().keySet()).toThrow(/class shutter/);
   });
 
-  it("renders toString per evaluator, because the wrapper differs", () => {
+  it("renders toString as the JSON-style wrapper", () => {
     expect(String(session())).toBe(
       '{ "UserId": "alice", "Principals": "alice", "AuthLevel": "0", "rlProbe": "hello" }'
     );
-    expect(
-      String(session({ existingSession: SEED, engine: "legacy" }))
-    ).toBe("{UserId=alice, Principals=alice, AuthLevel=0, rlProbe=hello}");
   });
 
   it("refuses get() with AIC's catchable InternalError, as measured", () => {

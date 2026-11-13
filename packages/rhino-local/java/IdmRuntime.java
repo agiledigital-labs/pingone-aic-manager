@@ -288,9 +288,9 @@ final class IdmRuntime {
   /**
    * CommonJS require over the host's runtime-script provider (E15). The module
    * runs in its own scope whose prototype is the caller's top scope, so it sees
-   * the caller's bindings and keeps its top-level vars (IDM 9.0.0's ModuleScope,
-   * read from bytecode). Exports are cached for this invocation only, keyed by
-   * the id string as given, as IDM's Require keys its maps (bytecode): so
+   * the caller's bindings and keeps its top-level vars (unmeasured on AIC).
+   * Exports are cached for this invocation only, keyed by
+   * the id string as given (unmeasured on AIC): so
    * require('x') and require('x.js') are two instances and each body runs. While
    * a module runs, a cyclic require sees the original exports object, not a
    * replacement assigned to module.exports; after it returns, the cache holds

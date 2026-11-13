@@ -31,6 +31,16 @@ final class HarnessFaults extends BaseFunction {
     return Undefined.instance;
   }
 
+  /** Records a fault from Java, as the preamble's {@code __rhinoLocalHarnessFault} call does. */
+  void record(String id, String message) {
+    Map<String, Object> fault = new LinkedHashMap<String, Object>();
+    fault.put("id", id);
+    fault.put("message", message);
+    synchronized (faults) {
+      faults.add(fault);
+    }
+  }
+
   /** Adds {@code emulation} to the response when this job recorded any fault. */
   Map<String, Object> attach(Map<String, Object> response) {
     List<Map<String, Object>> held;

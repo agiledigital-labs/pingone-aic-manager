@@ -473,7 +473,18 @@ mod tests {
         assert!(find_in(&after, &key("https://sp-b.example.com", "serviceProvider")).is_some());
 
         // Released afterwards, so the next command is not locked out forever.
-        assert!(shared_lock_available(&lock_path(&file)));
+        // Polled rather than read once: under the full parallel suite this
+        // read rarely failed, never alone. The likely cause (unproven) is a
+        // sibling test spawning a process while the lock was held, whose child
+        // keeps a copy of the descriptor until its exec closes it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !shared_lock_available(&lock_path(&file)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the journal lock was never released"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

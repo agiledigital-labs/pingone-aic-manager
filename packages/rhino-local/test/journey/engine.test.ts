@@ -1148,7 +1148,7 @@ async function send(options: string) {
 }
 it("an HTTP body reaches the mock as parsed JSON and as AIC's text (docs/api/12)", async () => {
   const sent = await send(
-    `{method:'POST',${JSON_HEADER},body:{u:undefined,n:1,big:1000000,neg:-5,nested:{u:undefined},arr:[1,undefined],j:java.lang.Integer.valueOf(1),s:'s',t:true}}`,
+    `{method:'POST',${JSON_HEADER},body:{u:undefined,n:1,big:1000000,neg:-5,nested:{u:undefined},arr:[1,undefined],s:'s',t:true}}`,
   );
   // Parsed JSON cannot carry 1.0; the text the tenant would send does.
   expect(sent.body).toEqual({
@@ -1158,12 +1158,11 @@ it("an HTTP body reaches the mock as parsed JSON and as AIC's text (docs/api/12)
     neg: -5,
     nested: { u: null },
     arr: [1, null],
-    j: 1,
     s: "s",
     t: true,
   });
   expect(sent.text).toBe(
-    '{"u":null,"n":1.0,"big":1000000.0,"neg":-5.0,"nested":{"u":null},"arr":[1.0,null],"j":1,"s":"s","t":true}',
+    '{"u":null,"n":1.0,"big":1000000.0,"neg":-5.0,"nested":{"u":null},"arr":[1.0,null],"s":"s","t":true}',
   );
   expect(sent.provenance).toContainEqual(BODY_TEXT);
   expect(sent.provenance).toContainEqual({
@@ -1191,15 +1190,20 @@ const FRACTION =
 const STRING = "httpClient body text for a string body, sent as the string itself";
 const TOP = "httpClient body text for a top-level non-object body";
 const INTEGER =
-  "httpClient body text for a number the script engine holds as a Java Integer (results of length, indexOf, JSON.parse), written as a Java double";
+  "httpClient body text for a number the script engine holds as a Java Integer: written as an integer, which is measured for a boxed value and for length, indexOf and size() results, and assumed for a JSON.parse result";
 it.each([
   ["a fraction", "body:{f:1.5}", '{"f":1.5}', [FRACTION]],
   ["an integer past 1e6", "body:{n:1e7}", '{"n":1.0E7}', [FRACTION]],
   ["a string body", "body:'raw'", "raw", [STRING]],
   ["a top-level array", "body:[1]", "[1.0]", [TOP]],
-  ["a string length", "body:{count:'abc'.length}", '{"count":3.0}', [INTEGER]],
-  ["an indexOf result", "body:{at:'abc'.indexOf('c')}", '{"at":2.0}', [INTEGER]],
-  ["a JSON.parse result", "body:JSON.parse('{\"n\":2}')", '{"n":2.0}', [INTEGER]],
+  // Measured (docs/api/12): a boxed Integer goes out as written. It is a plain number to the
+  // script, so the harness cannot tell it from the rows below it and the note rides it too.
+  ["a boxed Integer", "body:{j:java.lang.Integer.valueOf(1)}", '{"j":1}', [INTEGER]],
+  // Measured on the sandbox (docs/api/12): length and indexOf go out as integers.
+  ["a string length", "body:{count:'abc'.length}", '{"count":3}', [INTEGER]],
+  ["an indexOf result", "body:{at:'abc'.indexOf('c')}", '{"at":2}', [INTEGER]],
+  // Assumed: a JSON.parse result was not sent from a tenant.
+  ["a JSON.parse result", "body:JSON.parse('{\"n\":2}')", '{"n":2}', [INTEGER]],
 ])("HTTP body text for %s is labelled assumed", async (_name, body, text, reasons) => {
   const sent = await send(`{method:'POST',${JSON_HEADER},${body}}`);
   if (text !== undefined) expect(sent.text).toBe(text);

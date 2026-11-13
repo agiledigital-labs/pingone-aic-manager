@@ -295,11 +295,7 @@ fn query_rows(conn: &Connection, sql: &str) -> Result<QueryRows> {
         ));
     }
 
-    let columns = stmt
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let columns = stmt.column_names().map(str::to_owned).collect::<Vec<_>>();
     let column_count = columns.len();
     let mut rows = stmt
         .query([])

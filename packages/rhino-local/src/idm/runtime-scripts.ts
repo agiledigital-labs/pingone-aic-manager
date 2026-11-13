@@ -41,8 +41,8 @@ export const RUNTIME_SCRIPT_FETCH =
 /**
  * The path IDM's module loader looks up for `require(id)`: the id with `.js`
  * appended, under the script root. Rhino's loader tries `<id>.js` first; an id
- * that already ends in `.js` is taken as the file name (stock scripts call
- * both `require('lib/lodash')` and `require("lib/lodash.js")`). The two
+ * that already ends in `.js` is taken as the file name, so both
+ * `require('lib/lodash')` and `require("lib/lodash.js")` resolve. The two
  * spellings are still two module instances (the engine caches by id).
  */
 export function modulePath(id: string): string {

@@ -4,28 +4,39 @@
 // Applied metadata refinements:
 //   - `AccessToken.getField` returns `any`, not metadata's bare `object`.
 //   - `AccessToken.setField` accepts `TokenFieldValue`, not metadata's bare `object`.
+//   - `AccessToken` getters that answer JS `null` on a token with no value return `T | null`.
+//   - `AccessToken.addExtraJsonData` also accepts the JSON string measured on next-gen.
+//   - `AccessToken.setScope` accepts a JS array or the `scopes` list.
 //   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
+//   - `scopes` is a `TokenScopeList` (a Java list), not a JS array.
 
 // A custom access-token field: any JSON-ish scalar, array, or object. Whatever
 // you set here lands in the CTS entry, or as a JWT claim for client-based
 // tokens — keep it small.
 type TokenFieldValue = StringLike | number | boolean | any[] | object;
 
+// `add()` was measured on this context's `scopes` only: it returned `true` and
+// grew the list, and a later `setScope` copy does not see it (docs/api/12).
+interface TokenScopeList extends ScopeList {
+  /** Grows the list in place; `true` on success. */
+  add(scope: StringLike): boolean;
+}
+
 declare const requestProperties: RequestProperties;
 declare const clientProperties: ClientProperties;
 interface AccessToken {
   getField(key: StringLike): any;
   toMap(): object;
-  getPermissions(): object;
+  getPermissions(): object | null;
   getScope(): any[];
   setPermissions(permissions: object): void;
   setFields(fields: object): void;
   setField(field: StringLike, value: TokenFieldValue): void;
   setNonce(nonce: StringLike): void;
-  getNonce(): StringLike;
+  getNonce(): StringLike | null;
   getRealm(): StringLike;
   setRealm(realm: StringLike): void;
-  setScope(scopes: any[]): void;
+  setScope(scopes: any[] | ScopeList): void;
   removeRealm(): void;
   getAudience(): any[];
   setId(tokenId: StringLike): void;
@@ -33,21 +44,21 @@ interface AccessToken {
   isExpired(): boolean;
   getResourceOwnerId(): StringLike;
   getAuthTimeSeconds(): number;
-  getAct(): object;
-  getMayAct(): object;
+  getAct(): object | null;
+  getMayAct(): object | null;
   setAct(value: object): void;
   setMayAct(value: object): void;
   getCustomFields(): object;
   getAuthGrantId(): StringLike;
   getTokenId(): StringLike;
-  getAuthLevel(): number;
+  getAuthLevel(): number | null;
   getExpiryTime(): number;
   setAuthLevel(authLevel: number): void;
-  getClaims(): StringLike;
+  getClaims(): StringLike | null;
   getClientId(): StringLike;
   getGrantType(): StringLike;
   getTokenType(): StringLike;
-  getConfirmationKey(): object;
+  getConfirmationKey(): object | null;
   addExtraData(key: StringLike, value: StringLike): void;
   getResourceOwner(): object;
   setClientId(clientId: StringLike): void;
@@ -57,7 +68,7 @@ interface AccessToken {
   setClaims(claims: StringLike): void;
   setExpiryTime(expiryTime: number): void;
   removeConfirmationKey(): void;
-  addExtraJsonData(key: StringLike, value: object): void;
+  addExtraJsonData(key: StringLike, value: StringLike | object): void;
   setAuditTrackingId(auditTrackingId: StringLike): void;
   removeAuditTrackingId(): void;
   removePermissions(): void;
@@ -106,12 +117,17 @@ interface Identity {
 }
 declare const identity: Identity;
 
-declare const scopes: any[];
+declare const scopes: TokenScopeList;
 
-// Conditional binding: check `typeof session !== 'undefined' && session != null`
-// before using it. The context metadata omits this binding.
+// `session` is conditional. Ping documents it for this context and the descriptor
+// omits it. Bare reads were `ReferenceError: "session" is not defined.` on a
+// `client_credentials` grant (token modification) and on a password grant (OIDC
+// claims), neither of which has an SSO session (measured 2026-11-10, docs/api/12);
+// an `authorization_code` grant is unmeasured. Guard with
+// `typeof session !== "undefined"` before reading it, and do not rely on `null`:
+// no grant measured here binds one. The two members are Ping's, unmeasured.
 interface OAuthScriptedSession {
   getProperty(name: StringLike): StringLike | null;
   setProperty(name: StringLike, value: StringLike): void;
 }
-declare const session: OAuthScriptedSession | null | undefined;
+declare const session: OAuthScriptedSession | undefined;

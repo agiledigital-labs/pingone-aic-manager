@@ -266,6 +266,81 @@ All three lookups returned in 4–13s. A reported 180s timeout from
 A wide `logs range` or `logs grep` is the expensive shape — see the throughput
 note under `aic logs grep` in `docs/CLI.md`.
 
+### Writes correlate the same way (verified 2026-11-01)
+
+Measured on the sandbox with a relationship-restore write: `aic managed
+relationship map` sent `PATCH /openidm/managed/<obj>/<id>` carrying its saved
+`X-ForgeRock-TransactionId: aic-<uuid>` and was killed with `SIGKILL` after
+dispatch, before it recorded the result. About 40s later
+`aic logs tx aic-<uuid> --source idm-access --wait` returned **one** `access`
+event stored as `aic-<uuid>/0`, with `http.request.method` `PATCH`, the record's
+path, `response.status` `SUCCESSFUL` and `response.statusCode` `200`. So the
+terminal `access` event is the completion evidence for an IDM write as well as
+a read. Not measured: a write that failed, and how long the log lags under load.
+
+### Hook writes share the caller's transaction id (verified 2026-11-05)
+
+Measured on the sandbox with throwaway managed objects. One `PATCH` sent with
+`X-ForgeRock-TransactionId: <root>`, whose `onUpdate` queried a relationship and
+created a record and whose `postUpdate` created another. `aic logs tx <root>`
+over `idm-access`, `idm-activity`, `idm-core`, `idm-sync`, `idm-config` and
+`idm-authentication` returned four events, all stored under `<root>/0`:
+
+| source         | event      | what                                            |
+| -------------- | ---------- | ----------------------------------------------- |
+| `idm-activity` | `activity` | `CREATE` of the `onUpdate` side-effect record   |
+| `idm-activity` | `activity` | `PATCH` of the parent, the next revision        |
+| `idm-activity` | `activity` | `CREATE` of the `postUpdate` side-effect record |
+| `idm-access`   | `access`   | the outer `PATCH`, `SUCCESSFUL`, `200`          |
+
+`idm-activity` has one event per write the change caused: the request's own, and
+every `openidm.create` or `patch` a hook made. Each carries `operation`,
+`objectId`, the new `revision`, `runAs`, `userId`, `status`, and the full
+`before` and `after` documents. `changedFields` was `[]` on this run. The
+revisions' order is the phase order.
+
+Reads are not in any of those sources. The hook's relationship query left no
+event, and neither did an endpoint's `openidm.read` plus `openidm.query`: that
+transaction held only the outer `POST`'s `idm-access` event. A script
+`openidm.patch` has no access event of its own either. The access event is the
+outer call, with `response.status`, `response.statusCode` and
+`response.elapsedTime`.
+
+Script `logger` output is not keyed by transaction id. `logger.info` from the
+hook does reach `idm-core`, as `text/plain`, with no transaction id, so
+`aic logs tx` does not return it. An endpoint's `logger.debug`, `info`, `warn`
+and `error` were not found by transaction id either.
+
+A script can read its own id. `context.transactionId.transactionId.value` is
+`<root>/0`. Only that field was read; `context` itself carries the caller's
+bearer and must not be logged. The way to make a read countable is to put that
+value in a message the hook writes down
+(`logger.info("TX " + tx + " read " + path)`), or to persist a counter. Finding
+the logger line is a time-window scan of `idm-core`, not `logs tx`. One such
+scan on the sandbox read about 80,000 events in 171 s.
+
+Under contention the same rule holds, and a lost compare-and-swap attempt adds
+no parent write. Ten concurrent revision-less appends, each with its own id
+`<stem>-00` … `<stem>-09` (zero-padded, because matching is a prefix match — see
+below — and `<stem>-1` would also return `<stem>-10`), trace on so every
+`onUpdate` run created a sink record:
+
+- `aic logs tx <stem> --source idm-access,idm-activity --wait` returned all ten
+  requests. `aic logs tx <stem>-03` returned only that one. Each stored id was
+  `<root>/0`.
+- Every request had exactly one `idm-activity` `PATCH` of the parent, status
+  `SUCCESS`, however many times `onUpdate` ran (one to ten times).
+- Sink `CREATE`s equalled the `onUpdate` runs plus one `postUpdate` create, on
+  every request. The log's 65 creates matched a query of the sink records (55 +
+  10). Retried attempts' side-effect writes are logged. The parent write that
+  lost the swap is not.
+
+`pocs/managed-aggregate-cas/trace.mjs` prints this summary for an id or a stem:
+write count by operation and object type, the object ids, and the access event's
+status and latency. It does not count reads. A failed request's transaction, and
+a `412` from a stale `If-Match`, were not measured; every call in the contention
+run was `200`.
+
 ## Transaction id matching is a prefix match
 
 Verified 2026-09-14 on the sandbox, against `am-access`.
@@ -407,6 +482,14 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
 
 ## Verified against
 
+- Date: 2026-11-05 — IDM hook writes under a caller-supplied transaction id,
+  sandbox, throwaway managed objects. One `PATCH` with `onUpdate` and
+  `postUpdate` side effects, then ten concurrent `PATCH`es with zero-padded
+  ids. `aic logs tx` over `idm-access` and `idm-activity` (and, for the single
+  call, `idm-core`, `idm-sync`, `idm-config`, `idm-authentication`). Activity
+  shows the committed parent write once and every retried hook write; reads
+  and script logger lines do not. See "Hook writes share the caller's
+  transaction id".
 - Tenant: `tenant.example.com` (the pingone-aic-manager
   sandbox)
 - Date: 2026-09-14 — transaction-id matching and caller-supplied ids

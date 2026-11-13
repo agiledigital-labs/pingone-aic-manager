@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 import { loadBehaviour, runScript, sandboxFaults } from "./load-behaviour.ts";
 
 describe("require", () => {
-  it("is a function on next-gen and undefined on legacy", () => {
+  it("is a function", () => {
     expect(typeof loadBehaviour().require).toBe("function");
-    expect(typeof loadBehaviour({ engine: "legacy" }).require).toBe("undefined");
   });
 
   it("explains why an undeclared top-level require would diverge from AIC", () => {

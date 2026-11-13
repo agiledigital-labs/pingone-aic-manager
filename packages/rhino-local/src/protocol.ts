@@ -93,6 +93,12 @@ export interface JobRequest {
   libraries?: Record<string, string>;
   /** Return this global after evaluation instead of Rhino's completion value. */
   resultGlobal?: string;
+  /**
+   * A preamble function called with the script's completion value after it
+   * runs; its return is the job's value. For a context whose result is what
+   * the script evaluates to (OIDC claims), so the source needs no suffix.
+   */
+  completionHarvest?: string;
 }
 
 export interface JobError {

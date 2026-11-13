@@ -11,7 +11,16 @@ import {
   OPENIDM_WRITE_METHODS,
   STATE_CHANNELS,
 } from "./types.ts";
+import { TOKEN_VALUE_KEYS } from "./context.ts";
 import type {
+  AccessTokenEffect,
+  OidcClaimsEffect,
+  SocialIdpEffect,
+  ConfigProviderEffect,
+  ValidateScopeEffect,
+  MayActEffect,
+  LibraryEffect,
+  AccessTokenState,
   AllowUndeclared,
   AllowUndeclaredChannel,
   CallbackEffect,
@@ -25,6 +34,7 @@ import type {
   IdentityWriteEffect,
   IdentityWriteExpect,
   JsonObject,
+  JsonValue,
   LogEffect,
   LogExpect,
   LogLevel,
@@ -42,7 +52,7 @@ import type {
   Unverified,
   Verdict,
 } from "./types.ts";
-import { formatValue, isPlainObject, parseIdentityWriteEffect, parseJsonObject, parseJsonValue } from "./util.ts";
+import { defineOwn, formatValue, isPlainObject, parseIdentityWriteEffect, parseJsonObject, parseJsonValue } from "./util.ts";
 import { validateCase } from "./validate.ts";
 
 /**
@@ -126,6 +136,27 @@ export function judge(input: unknown, effects: unknown): Verdict {
     ...(unobserved.has("identityWrites")
       ? []
       : judgeIdentityWrites(kase.expect, recorded, strictness.identityWrites)),
+    ...(kase.context === "OAUTH2_ACCESS_TOKEN_MODIFICATION"
+      ? judgeAccessToken(kase.expect, recorded, strictness.accessToken)
+      : []),
+    ...(kase.context === "OIDC_CLAIMS"
+      ? judgeOidcClaims(kase.expect, recorded, strictness.oidc)
+      : []),
+    ...(kase.context === "SOCIAL_IDP_PROFILE_TRANSFORMATION"
+      ? judgeSocialIdp(kase.expect, recorded, strictness.socialIdp)
+      : []),
+    ...(kase.context === "CONFIG_PROVIDER_NODE"
+      ? judgeConfigProvider(kase.expect, recorded, strictness.configProvider)
+      : []),
+    ...(kase.context === "OAUTH2_VALIDATE_SCOPE"
+      ? judgeValidateScope(kase.expect, recorded, strictness.validateScope)
+      : []),
+    ...(kase.context === "OAUTH2_MAY_ACT"
+      ? judgeMayAct(kase.expect, recorded, strictness.mayAct)
+      : []),
+    ...(kase.context === "LIBRARY"
+      ? judgeLibrary(kase.expect, recorded, strictness.returns)
+      : []),
   ];
   return {
     pass: mismatches.length === 0,
@@ -470,6 +501,449 @@ function judgeOutcome(kase: Case, effects: CompleteRecordedEffects): Mismatch[] 
   return [miss("outcome", "outcome", wanted, actual, message)];
 }
 
+/**
+ * The token the access-token context leaves behind, fail-closed like the state
+ * channels: every difference from the starting token must be declared, unless
+ * `allowUndeclared.accessToken`. A run that recorded no token is a mismatch,
+ * never a pass.
+ */
+function judgeAccessToken(
+  expect: Expect,
+  recorded: CompleteRecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const effect = recorded.accessToken;
+  if (effect === undefined) {
+    return [
+      miss("accessToken", "accessToken", "a recorded token", "<none>",
+        "accessToken: the runner recorded no token for an access-token modification case"),
+    ];
+  }
+  const want = expect.accessToken ?? {};
+  const mismatches: Mismatch[] = [];
+  const prefixed = (prefix: string, items: Mismatch[]): Mismatch[] =>
+    items.map((item) => ({
+      ...item,
+      path: `${prefix}.${item.path}`,
+      message: item.message.replace(/^accessToken: /, `accessToken.${prefix}: `),
+    }));
+  mismatches.push(
+    ...prefixed("fields", judgeState("accessToken", want.fields,
+      { initial: effect.initial.fields, final: effect.final.fields }, allowUndeclared)),
+    ...prefixed("responseFields", judgeState("accessToken", want.responseFields,
+      { initial: effect.initial.responseFields, final: effect.final.responseFields }, allowUndeclared))
+  );
+  const issued = effect.refusal === null;
+  const wantIssued = want.issued ?? true;
+  if (issued !== wantIssued) {
+    mismatches.push(
+      miss("accessToken", "issued", String(wantIssued), String(issued),
+        issued
+          ? "accessToken.issued: expected AM to refuse the token, but nothing the script did makes it refuse"
+          : `accessToken.issued: AM would refuse the token request after this script (500 server_error: ${effect.refusal})`)
+    );
+  }
+  // Both directions: validation refuses a repeated scope in a case, and the
+  // harvested scope is a set, but the comparison must not rely on either.
+  const sameSet = (a: string[], b: string[]): boolean => {
+    const left = new Set(a);
+    const right = new Set(b);
+    return left.size === right.size && [...left].every((item) => right.has(item));
+  };
+  if (want.scope !== undefined) {
+    if (!sameSet(want.scope, effect.final.scope)) {
+      mismatches.push(
+        miss("accessToken", "scope", formatValue(want.scope), formatValue(effect.final.scope),
+          "accessToken.scope: the final scope differed (compared as a set)")
+      );
+    }
+  } else if (!allowUndeclared && issued && !sameSet(effect.initial.scope, effect.final.scope)) {
+    mismatches.push(
+      miss("accessToken", "scope", "unchanged", formatValue(effect.final.scope),
+        "accessToken.scope: undeclared change; declare expect.accessToken.scope or set allowUndeclared.accessToken")
+    );
+  }
+  for (const key of TOKEN_VALUE_KEYS) {
+    const before = effect.initial[key];
+    const after = effect.final[key];
+    if (key in want) {
+      const expected = want[key];
+      if (expected !== undefined && !matchesValue(expected, after)) {
+        mismatches.push(
+          miss("accessToken", key, formatValue(expected), formatValue(after), `accessToken.${key}: differed`)
+        );
+      }
+      continue;
+    }
+    if (!allowUndeclared && !deepEqual(before, after)) {
+      mismatches.push(
+        miss("accessToken", key, `unchanged ${formatValue(before)}`, formatValue(after),
+          `accessToken.${key}: undeclared change; declare expect.accessToken.${key} or set allowUndeclared.accessToken`)
+      );
+    }
+  }
+  return mismatches;
+}
+
+/**
+ * The claims an OIDC claims script returns, fail-closed: returned values and
+ * composite scopes must be declared unless `allowUndeclared.oidc`. The id
+ * token's script claims are a function of the returned values and the seeded
+ * subject, so once the userinfo values are judged an undeclared id token adds
+ * nothing to check; a declared one is still compared exactly. A run that
+ * recorded no result is a mismatch, never a pass.
+ */
+function judgeOidcClaims(
+  expect: Expect,
+  recorded: CompleteRecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const effect = recorded.oidc;
+  if (effect === undefined) {
+    return [
+      miss("oidc", "oidc", "a recorded result", "<none>",
+        "oidc: the runner recorded no result for an OIDC claims case"),
+    ];
+  }
+  const want = expect.oidc ?? {};
+  const mismatches: Mismatch[] = [];
+  const issued = effect.refusal === null;
+  const wantIssued = want.issued ?? true;
+  if (issued !== wantIssued) {
+    mismatches.push(
+      miss("oidc", "issued", String(wantIssued), String(issued),
+        issued
+          ? "oidc.issued: expected AM to fail the token request, but nothing the script did makes it fail"
+          : `oidc.issued: AM would fail the token request after this script (500 server_error: ${effect.refusal})`)
+    );
+  }
+  const values: { key: "userinfo" | "idToken" | "compositeScopes"; actual: JsonValue; undeclared: boolean }[] = [
+    { key: "userinfo", actual: effect.userinfo, undeclared: Object.keys(effect.userinfo).length > 0 },
+    { key: "idToken", actual: effect.idToken, undeclared: false },
+    {
+      key: "compositeScopes",
+      actual: effect.compositeScopes,
+      undeclared: !isEmptyComposite(effect.compositeScopes),
+    },
+  ];
+  for (const { key, actual, undeclared } of values) {
+    if (key in want) {
+      const expected = want[key];
+      if (expected !== undefined && !matchesValue(expected, actual)) {
+        mismatches.push(miss("oidc", key, formatValue(expected), formatValue(actual), `oidc.${key}: differed`));
+      }
+      continue;
+    }
+    if (!allowUndeclared && issued && undeclared) {
+      mismatches.push(
+        miss("oidc", key, "none", formatValue(actual),
+          `oidc.${key}: undeclared claims; declare expect.oidc.${key} or set allowUndeclared.oidc`)
+      );
+    }
+  }
+  return mismatches;
+}
+
+/**
+ * The profile a social IdP transformation returns, fail-closed: a returned
+ * profile must be declared unless `allowUndeclared.socialIdp`. A run that
+ * recorded no result is a mismatch, never a pass.
+ */
+function judgeSocialIdp(
+  expect: Expect,
+  recorded: CompleteRecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const effect = recorded.socialIdp;
+  if (effect === undefined) {
+    return [
+      miss("socialIdp", "socialIdp", "a recorded result", "<none>",
+        "socialIdp: the runner recorded no result for a social IdP profile transformation case"),
+    ];
+  }
+  const want = expect.socialIdp ?? {};
+  const mismatches: Mismatch[] = [];
+  const accepted = effect.refusal === null;
+  const wantAccepted = want.accepted ?? true;
+  if (accepted !== wantAccepted) {
+    mismatches.push(
+      miss("socialIdp", "accepted", String(wantAccepted), String(accepted),
+        accepted
+          ? "socialIdp.accepted: expected AM to fail the journey, but the script returned a profile"
+          : `socialIdp.accepted: ${effect.refusal ?? ""}`)
+    );
+  }
+  if ("profile" in want) {
+    const expected = want.profile;
+    if (expected !== undefined && !matchesValue(expected, effect.profile)) {
+      mismatches.push(
+        miss("socialIdp", "profile", formatValue(expected), formatValue(effect.profile), "socialIdp.profile: differed")
+      );
+    }
+  } else if (!allowUndeclared && accepted) {
+    mismatches.push(
+      miss("socialIdp", "profile", "none", formatValue(effect.profile),
+        "socialIdp.profile: undeclared profile; declare expect.socialIdp.profile or set allowUndeclared.socialIdp")
+    );
+  }
+  return mismatches;
+}
+
+/**
+ * The `config` map a config provider node script builds, fail-closed like the
+ * social profile: a map must be declared unless `allowUndeclared.configProvider`,
+ * and a run that recorded no result is a mismatch.
+ */
+function judgeConfigProvider(
+  expect: Expect,
+  recorded: CompleteRecordedEffects,
+  allowUndeclared: boolean
+): Mismatch[] {
+  const effect = recorded.configProvider;
+  if (effect === undefined) {
+    return [
+      miss("configProvider", "configProvider", "a recorded result", "<none>",
+        "configProvider: the runner recorded no result for a config provider node case"),
+    ];
+  }
+  const want = expect.configProvider ?? {};
+  const mismatches: Mismatch[] = [];
+  const accepted = effect.refusal === null;
+  const wantAccepted = want.accepted ?? true;
+  if (accepted !== wantAccepted) {
+    mismatches.push(
+      miss("configProvider", "accepted", String(wantAccepted), String(accepted),
+        accepted
+          ? "configProvider.accepted: expected AM to fail the journey, but the script set a config map"
+          : `configProvider.accepted: ${effect.refusal ?? ""}`)
+    );
+  }
+  if ("config" in want) {
+    const expected = want.config;
+    if (expected !== undefined && !matchesValue(expected, effect.config)) {
+      mismatches.push(
+        miss("configProvider", "config", formatValue(expected), formatValue(effect.config), "configProvider.config: differed")
+      );
+    }
+  } else if (!allowUndeclared && accepted) {
+    mismatches.push(
+      miss("configProvider", "config", "none", formatValue(effect.config),
+        "configProvider.config: undeclared config map; declare expect.configProvider.config or set allowUndeclared.configProvider")
+    );
+  }
+  return mismatches;
+}
+
+/**
+ * The token request a validate scope script decides, fail-closed: granted
+ * scopes must be declared unless `allowUndeclared.validateScope`, and a run
+ * that recorded no result is a mismatch. Scopes compare as a set, as AM
+ * grants one.
+ */
+function judgeValidateScope(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
+  const effect = recorded.validateScope;
+  if (effect === undefined) {
+    return [
+      miss("validateScope", "validateScope", "a recorded result", "<none>",
+        "validateScope: the runner recorded no result for a validate scope case"),
+    ];
+  }
+  const want = expect.validateScope ?? {};
+  const mismatches: Mismatch[] = [];
+  const accepted = effect.refusal === null;
+  const wantAccepted = want.accepted ?? want.invalidScope === undefined;
+  if (accepted !== wantAccepted) {
+    mismatches.push(
+      miss("validateScope", "accepted", String(wantAccepted), String(accepted),
+        accepted
+          ? `validateScope.accepted: expected AM to issue no token, but it granted ${formatValue(effect.granted)}`
+          : `validateScope.accepted: AM answers ${effect.status}: ${effect.refusal ?? ""}`)
+    );
+  }
+  if (want.invalidScope !== undefined && want.invalidScope !== effect.invalidScope) {
+    mismatches.push(
+      miss("validateScope", "invalidScope", JSON.stringify(want.invalidScope), formatValue(effect.invalidScope),
+        "validateScope.invalidScope: differed")
+    );
+  }
+  if (want.granted !== undefined) {
+    const got = effect.granted ?? [];
+    const same = got.length === new Set(want.granted).size && got.every((s) => want.granted!.includes(s));
+    if (!same || effect.granted === null) {
+      mismatches.push(
+        miss("validateScope", "granted", formatValue(want.granted), formatValue(effect.granted),
+          "validateScope.granted: differed (compared as a set)")
+      );
+    }
+  } else if (!allowUndeclared && accepted && wantAccepted) {
+    // When a refusal was expected, the accepted mismatch already names the grant.
+    mismatches.push(
+      miss("validateScope", "granted", "none", formatValue(effect.granted),
+        "validateScope.granted: undeclared grant; declare expect.validateScope.granted or set allowUndeclared.validateScope")
+    );
+  }
+  return mismatches;
+}
+
+/**
+ * The claims a may-act script stamps, fail-closed. A present `mayAct` or
+ * `act` key, including null, is JSON null; an omitted key requires the claim
+ * to be absent. `issued: false` is the 500 and does not also demand claims.
+ * The token's scope must be declared when it differs from the request's,
+ * unless `allowUndeclared.mayAct`.
+ */
+/**
+ * The export a library case called, fail-closed. Omitting `expect.returns`
+ * requires a return of `undefined`. A declared JSON value does not match that
+ * return: `undefined` and `null` are different results. A throw, including one
+ * while the library loads, is a mismatch unless declared.
+ */
+function judgeLibrary(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
+  const effect = recorded.returns;
+  if (effect === undefined) {
+    return [
+      miss("returns", "returns", "a recorded result", "<none>",
+        "returns: the runner recorded no result for a library case"),
+    ];
+  }
+  const want = expect.returns;
+  if (want === undefined) {
+    if (allowUndeclared) {
+      return [];
+    }
+    if (effect.status === "returned" && effect.undefined && effect.phase === "export") {
+      return [];
+    }
+    return [
+      miss("returns", "returns", "undefined", libraryResultText(effect),
+        "returns: undeclared result; declare expect.returns or set allowUndeclared.returns"),
+    ];
+  }
+  const mismatches: Mismatch[] = [];
+  if (effect.status !== want.status) {
+    mismatches.push(miss("returns", "status", want.status, effect.status, "returns.status: differed"));
+    return mismatches;
+  }
+  const phase = want.phase ?? "export";
+  if (effect.phase !== phase) {
+    mismatches.push(miss("returns", "phase", phase, effect.phase, "returns.phase: differed"));
+  }
+  if (want.status === "returned") {
+    if (want.undefined === true) {
+      if (!effect.undefined) {
+        mismatches.push(miss("returns", "value", "undefined", formatValue(effect.value), "returns: expected undefined"));
+      }
+    } else if (effect.undefined) {
+      mismatches.push(miss("returns", "value", formatValue(want.value ?? null), "undefined",
+        "returns: a returned undefined is not a JSON value"));
+    } else if (!deepEqual(effect.value, want.value ?? null)) {
+      mismatches.push(miss("returns", "value", formatValue(want.value), formatValue(effect.value), "returns.value: differed"));
+    }
+    return mismatches;
+  }
+  if (effect.message !== want.message) {
+    mismatches.push(miss("returns", "message", formatValue(want.message), formatValue(effect.message), "returns.message: differed"));
+  }
+  if (effect.name !== (want.name ?? "")) {
+    mismatches.push(miss("returns", "name", formatValue(want.name ?? ""), formatValue(effect.name), "returns.name: differed"));
+  }
+  if (want.type !== undefined && effect.type !== want.type) {
+    mismatches.push(miss("returns", "type", want.type, effect.type, "returns.type: differed"));
+  }
+  return mismatches;
+}
+
+function libraryResultText(effect: LibraryEffect): string {
+  if (effect.status === "thrown") {
+    return `thrown ${effect.phase}: ${effect.message}`;
+  }
+  return effect.undefined ? "undefined" : formatValue(effect.value);
+}
+
+function judgeMayAct(expect: Expect, recorded: CompleteRecordedEffects, allowUndeclared: boolean): Mismatch[] {
+  const effect = recorded.mayAct;
+  if (effect === undefined) {
+    return [
+      miss("mayAct", "mayAct", "a recorded result", "<none>",
+        "mayAct: the runner recorded no result for a may-act case"),
+    ];
+  }
+  const want = expect.mayAct ?? {};
+  const mismatches: Mismatch[] = [];
+  const issued = effect.status === 200 && effect.refusal === null;
+  const wantIssued = want.issued !== false;
+  if (issued !== wantIssued) {
+    mismatches.push(
+      miss("mayAct", "issued", String(wantIssued), String(issued),
+        issued
+          ? "mayAct.issued: expected the token request to fail, but AM stamped the claims"
+          : `mayAct.issued: AM answers ${effect.status}: ${effect.refusal ?? ""}`)
+    );
+  }
+  if (want.refusal !== undefined && want.refusal !== effect.refusal) {
+    mismatches.push(
+      miss("mayAct", "refusal", JSON.stringify(want.refusal), formatValue(effect.refusal),
+        "mayAct.refusal: differed")
+    );
+  }
+  if (!wantIssued) {
+    return mismatches;
+  }
+  judgeMayActClaim(mismatches, "mayAct", "mayAct" in want, want.mayAct, effect.mayActPresent, effect.mayAct, allowUndeclared);
+  judgeMayActClaim(mismatches, "act", "act" in want, want.act, effect.actPresent, effect.act, allowUndeclared);
+  if (want.scope !== undefined) {
+    if (!sameScopeSet(effect.scope, want.scope)) {
+      mismatches.push(
+        miss("mayAct", "scope", formatValue(want.scope), formatValue(effect.scope),
+          "mayAct.scope: differed (compared as a set)")
+      );
+    }
+  } else if (!allowUndeclared && issued && !sameScopeSet(effect.scope, effect.seedScope)) {
+    mismatches.push(
+      miss("mayAct", "scope", formatValue(effect.seedScope), formatValue(effect.scope),
+        "mayAct.scope: the granted scope differs from the request; declare expect.mayAct.scope or set allowUndeclared.mayAct")
+    );
+  }
+  return mismatches;
+}
+
+function judgeMayActClaim(
+  mismatches: Mismatch[],
+  name: "mayAct" | "act",
+  declared: boolean,
+  expected: JsonValue | undefined,
+  present: boolean,
+  actual: JsonValue | null,
+  allowUndeclared: boolean,
+): void {
+  if (declared) {
+    if (!present || !deepEqual(actual, expected)) {
+      mismatches.push(
+        miss("mayAct", name, formatValue(expected), present ? formatValue(actual) : "<absent>",
+          `mayAct.${name}: differed`)
+      );
+    }
+    return;
+  }
+  if (!allowUndeclared && present) {
+    mismatches.push(
+      miss("mayAct", name, "<absent>", formatValue(actual),
+        `mayAct.${name}: undeclared claim; declare expect.mayAct.${name} or set allowUndeclared.mayAct`)
+    );
+  }
+}
+
+function sameScopeSet(actual: string[] | null, expected: readonly string[]): boolean {
+  if (actual === null || actual.length !== expected.length) return false;
+  return expected.every((item) => actual.includes(item));
+}
+
+// No composite scopes, whether the script passed null or an empty map, adds
+// nothing a case author needs to declare.
+function isEmptyComposite(value: JsonValue): boolean {
+  return value === null || (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0);
+}
+
 function diffState(
   initial: JsonObject,
   final: JsonObject
@@ -483,14 +957,14 @@ function diffState(
     if (!initialKeys.has(key)) {
       const value = final[key];
       if (value !== undefined) {
-        added[key] = value;
+        defineOwn(added, key, value);
       }
       continue;
     }
     if (!deepEqual(initial[key], final[key])) {
       const value = final[key];
       if (value !== undefined) {
-        changed[key] = value;
+        defineOwn(changed, key, value);
       }
     }
   }
@@ -504,7 +978,7 @@ function diffState(
 }
 
 function judgeState(
-  channel: "sharedState" | "transientState" | "secureState" | "sessionProperties",
+  channel: "sharedState" | "transientState" | "secureState" | "sessionProperties" | "accessToken",
   expected: StateDiff | undefined,
   bucket: StateBucket,
   allowUndeclared: boolean,
@@ -1121,6 +1595,27 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
       ? []
       : parseArray(raw.identityWrites, "effects.identityWrites", parseIdentityWriteEffect),
   };
+  if (raw.accessToken !== undefined) {
+    recorded.accessToken = parseAccessTokenEffect(raw.accessToken);
+  }
+  if (raw.oidc !== undefined) {
+    recorded.oidc = parseOidcClaimsEffect(raw.oidc);
+  }
+  if (raw.socialIdp !== undefined) {
+    recorded.socialIdp = parseSocialIdpEffect(raw.socialIdp);
+  }
+  if (raw.configProvider !== undefined) {
+    recorded.configProvider = parseConfigProviderEffect(raw.configProvider);
+  }
+  if (raw.validateScope !== undefined) {
+    recorded.validateScope = parseValidateScopeEffect(raw.validateScope);
+  }
+  if (raw.mayAct !== undefined) {
+    recorded.mayAct = parseMayActEffect(raw.mayAct);
+  }
+  if (raw.returns !== undefined) {
+    recorded.returns = parseLibraryEffect(raw.returns);
+  }
   if (raw.discardedOutcome !== undefined) {
     if (raw.discardedOutcome !== null && typeof raw.discardedOutcome !== "string") {
       throw new Error("rhino-local: effects.discardedOutcome must be a string or null");
@@ -1156,6 +1651,197 @@ function parseEffects(raw: unknown): CompleteRecordedEffects {
     };
   }
   return recorded;
+}
+
+function parseAccessTokenEffect(raw: unknown): AccessTokenEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.accessToken is not an object");
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.accessToken.refusal must be a string or null");
+  }
+  return {
+    initial: parseAccessTokenState(raw.initial, "effects.accessToken.initial"),
+    final: parseAccessTokenState(raw.final, "effects.accessToken.final"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseSocialIdpEffect(raw: unknown): SocialIdpEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.socialIdp is not an object");
+  }
+  if (raw.returned !== "profile" && raw.returned !== "none") {
+    throw new Error(`rhino-local: effects.socialIdp.returned must be "profile" or "none"`);
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.socialIdp.refusal must be a string or null");
+  }
+  return {
+    returned: raw.returned,
+    profile: raw.profile === null ? null : parseJsonObject(raw.profile, "effects.socialIdp.profile"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseLibraryEffect(raw: unknown): LibraryEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.returns is not an object");
+  }
+  if (raw.status !== "returned" && raw.status !== "thrown") {
+    throw new Error("rhino-local: effects.returns.status must be \"returned\" or \"thrown\"");
+  }
+  if (raw.phase !== "export" && raw.phase !== "module") {
+    throw new Error("rhino-local: effects.returns.phase must be \"export\" or \"module\"");
+  }
+  if (typeof raw.undefined !== "boolean") {
+    throw new Error("rhino-local: effects.returns.undefined must be a boolean");
+  }
+  if (typeof raw.type !== "string" || typeof raw.name !== "string" || typeof raw.message !== "string") {
+    throw new Error("rhino-local: effects.returns type, name and message must be strings");
+  }
+  return {
+    status: raw.status,
+    phase: raw.phase,
+    undefined: raw.undefined,
+    value: raw.value === undefined ? null : parseJsonValue(raw.value, "effects.returns.value"),
+    type: raw.type,
+    name: raw.name,
+    message: raw.message,
+  };
+}
+
+function parseMayActEffect(raw: unknown): MayActEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.mayAct is not an object");
+  }
+  if (raw.status !== 200 && raw.status !== 500) {
+    throw new Error("rhino-local: effects.mayAct.status must be 200 or 500");
+  }
+  const flag = (value: unknown, key: string): boolean => {
+    if (typeof value !== "boolean") {
+      throw new Error(`rhino-local: effects.mayAct.${key} must be a boolean`);
+    }
+    return value;
+  };
+  const claim = (value: unknown, key: string): JsonValue | null => {
+    if (value === null) return null;
+    return parseJsonValue(value, `effects.mayAct.${key}`);
+  };
+  const strings = (value: unknown, key: string, nullable: boolean): string[] | null => {
+    if (value === null && nullable) return null;
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+      throw new Error(`rhino-local: effects.mayAct.${key} must be an array of strings${nullable ? " or null" : ""}`);
+    }
+    return value.slice() as string[];
+  };
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.mayAct.refusal must be a string or null");
+  }
+  const seedScope = strings(raw.seedScope, "seedScope", false);
+  return {
+    status: raw.status,
+    mayActPresent: flag(raw.mayActPresent, "mayActPresent"),
+    mayAct: claim(raw.mayAct, "mayAct"),
+    actPresent: flag(raw.actPresent, "actPresent"),
+    act: claim(raw.act, "act"),
+    scope: strings(raw.scope, "scope", true),
+    seedScope: seedScope ?? [],
+    refusal: raw.refusal,
+  };
+}
+
+function parseValidateScopeEffect(raw: unknown): ValidateScopeEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.validateScope is not an object");
+  }
+  if (raw.returned !== "scopes" && raw.returned !== "none") {
+    throw new Error(`rhino-local: effects.validateScope.returned must be "scopes" or "none"`);
+  }
+  if (typeof raw.status !== "number" || ![200, 400, 403, 500].includes(raw.status)) {
+    throw new Error("rhino-local: effects.validateScope.status must be 200, 400, 403 or 500");
+  }
+  const strOrNull = (v: unknown, key: string): string | null => {
+    if (v !== null && typeof v !== "string") throw new Error(`rhino-local: effects.validateScope.${key} must be a string or null`);
+    return v;
+  };
+  let granted: string[] | null = null;
+  if (raw.granted !== null) {
+    if (!Array.isArray(raw.granted) || raw.granted.some((s) => typeof s !== "string")) {
+      throw new Error("rhino-local: effects.validateScope.granted must be an array of strings or null");
+    }
+    granted = raw.granted.slice() as string[];
+  }
+  return {
+    returned: raw.returned,
+    status: raw.status,
+    granted,
+    invalidScope: strOrNull(raw.invalidScope, "invalidScope"),
+    refusal: strOrNull(raw.refusal, "refusal"),
+  };
+}
+
+function parseConfigProviderEffect(raw: unknown): ConfigProviderEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.configProvider is not an object");
+  }
+  if (raw.returned !== "config" && raw.returned !== "none") {
+    throw new Error(`rhino-local: effects.configProvider.returned must be "config" or "none"`);
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.configProvider.refusal must be a string or null");
+  }
+  return {
+    returned: raw.returned,
+    config: raw.config === null ? null : parseJsonObject(raw.config, "effects.configProvider.config"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseOidcClaimsEffect(raw: unknown): OidcClaimsEffect {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.oidc is not an object");
+  }
+  if (raw.returned !== "claims" && raw.returned !== "none") {
+    throw new Error(`rhino-local: effects.oidc.returned must be "claims" or "none"`);
+  }
+  if (raw.refusal !== null && typeof raw.refusal !== "string") {
+    throw new Error("rhino-local: effects.oidc.refusal must be a string or null");
+  }
+  return {
+    returned: raw.returned,
+    userinfo: parseJsonObject(raw.userinfo, "effects.oidc.userinfo"),
+    idToken: parseJsonObject(raw.idToken, "effects.oidc.idToken"),
+    compositeScopes: parseJsonValue(raw.compositeScopes, "effects.oidc.compositeScopes"),
+    refusal: raw.refusal,
+  };
+}
+
+function parseAccessTokenState(raw: unknown, path: string): AccessTokenState {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  if (!Array.isArray(raw.scope) || raw.scope.some((item) => typeof item !== "string")) {
+    throw new Error(`rhino-local: ${path}.scope must be an array of strings`);
+  }
+  const scope = (raw.scope as string[]).slice();
+  if (typeof raw.expiryTime !== "number") {
+    throw new Error(`rhino-local: ${path}.expiryTime must be a number`);
+  }
+  const value = (key: string): AccessTokenState["nonce"] =>
+    raw[key] === undefined ? null : parseJsonValue(raw[key], `${path}.${key}`);
+  return {
+    fields: parseJsonObject(raw.fields, `${path}.fields`),
+    responseFields: parseJsonObject(raw.responseFields, `${path}.responseFields`),
+    scope,
+    expiryTime: raw.expiryTime,
+    nonce: value("nonce"),
+    authLevel: value("authLevel"),
+    claims: value("claims"),
+    act: value("act"),
+    mayAct: value("mayAct"),
+    permissions: value("permissions"),
+  };
 }
 
 function parseManagedStore(raw: unknown): Record<string, JsonObject[]> {

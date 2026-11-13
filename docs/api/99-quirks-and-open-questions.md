@@ -66,6 +66,25 @@ Measured with `scripts/experiment-journey-*.sh`; details and controls in
 
 ---
 
+## 2026-11-01 — the schema route works, but not for the service account
+
+The 2026-10-26 entry below says the `/openidm/schema` API "refused all five
+write forms tried". That was the service account with `resource=1.0` and an
+unquoted `If-Match`. A console HAR shows the console mapping a relationship
+through `PUT /openidm/schema/managed/<obj>/properties/<key>` with
+`resource=2.0` and `If-Match: "*"`, and the server allocates the
+`fr-idm-reference-<n>` column itself. The service account is `403` on that
+exact request, so `aic` writes the same two `repo.ds` entries directly.
+
+Converting a pair this way — console or `repo.ds` — **hides** its existing
+links rather than deleting them: removing the mapping again brought them back.
+That is the mechanism behind the operator-reported "re-saving a relationship
+breaks it", and why a conversion must capture links before the switch.
+Measured, with the table, in `10-managed-objects.md` ("Converting a pair
+between storage modes").
+
+---
+
 ## 2026-10-26 — relationships carry `repo.ds` mappings after all
 
 `10-managed-objects.md` said generic custom objects need no `repo.ds`
@@ -275,9 +294,9 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
   nested types and optional removes"):** accepted and stored as `null` when
   `schema.required` exists and does not name the property; 403 `VALID_TYPE`
   (`invalidType "null"`) when the schema has no `required` key; 403
-  `VALID_TYPE` when `required` names it. The last **diverges from the stock
-  `policy.js` reading** this entry recorded (`REQUIRED` + `VALID_TYPE`): a null
-  counts as present, so only `VALID_TYPE` is listed. The same probe found that
+  `VALID_TYPE` when `required` names it. The last **diverges from the
+  prediction** this entry recorded (`REQUIRED` + `VALID_TYPE`): a null counts
+  as present, so only `VALID_TYPE` is listed. The same probe found that
   only the top-level `type` is checked — nested `properties`/`items` schemas are
   stored and not enforced — and that a `PATCH remove` of an undefaulted,
   non-required property is 200 with the key gone.
@@ -287,9 +306,8 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
     accept it, and faults it where a create would refuse it;
   - a `PATCH remove` of a **defaulted** property that `required` does not name.
     The measured 403 `REQUIRED` was taken with the property also in
-    `schema.required`; stock `policy.js` adds an implicit `required` for any
-    `default` (`null` included) and predicts 403; doc 10 used to state 200.
-    Both rhino-local lanes fault it (`idm-policy/required`,
+    `schema.required`; without it the answer is unmeasured (doc 10 used to
+    state 200). Both rhino-local lanes fault it (`idm-policy/required`,
     `openidm-managed-policy/<type>`);
   - ~~what triggers `NOT_NULL`~~ — answered 2026-11-08 by the zzemu_def probe
     (`probe-def/note.md`): a non-null default. An object defaulting to `{x: 1}`
@@ -1800,3 +1818,259 @@ sampled: journeys, scripts and ESV secret mappings listed as added or
 modified were byte-identical on both tenants. The report is the service's
 claim against some baseline that is not the live upper env. Measurement and
 the sampled table: `docs/api/23-promotion.md`.
+
+## 2026-11-02 — a managed lifecycle hook cannot ask which event it is
+
+Asked whether a lifecycle script can read its event from context. It cannot:
+no `hook`/`event`/`method` binding exists, and the hook attachment is the only
+signal. `request`/`context` are plain objects without `getClass`. Measured with
+a throwaway type; `onDelete`/`postDelete` are unmeasured. Dumping `context`
+leaks the caller's bearer token. Detail: `docs/api/10-managed-objects.md`
+("Hook bindings").
+
+## 2026-11-05 — revision-less `PATCH` retries on conflict; a confirmed managed create can still vanish
+
+The four claims below were hypotheses, measured on a sandbox on 2026-11-05
+with throwaway managed objects. Tables: `docs/api/10-managed-objects.md`
+("Concurrent `PATCH` and hooks") and `pocs/managed-aggregate-cas/RESULTS.md`.
+
+1. A `PATCH` with no revision reads the record, applies the operations, runs
+   `onUpdate`, writes conditional on the revision it read, and on conflict
+   re-reads and repeats, including `onUpdate`, with no obvious retry bound.
+   **Matches.** No lost append through 200 concurrent writers, no `412`, no 5xx.
+   `onUpdate` re-ran on every retry (up to 50 times for one request, 1670 runs
+   for 100 commits with a side effect inside the hook). Every traced retry saw a
+   newer `oldObject`. No bound appeared inside that range. N above 200 was not
+   run.
+2. A `PATCH` with `If-Match` does not retry. A conflict is `412`. **Matches.**
+   The second call with the stale revision was `412` and stored nothing.
+3. Relationship fields are stripped before the conditional write and persisted
+   afterwards. `postUpdate` runs after that, once per successful write.
+   **Matches, with a storage difference the hypothesis does not spell out.**
+   `onUpdate` during a link add does not see the link that request is adding,
+   mapped or generic, so a derivation from the relationship is stale and which
+   subset it sees changes run to run. `postUpdate` ran once per committed parent
+   revision, including at 200 writers. An edge `_refProperties` write does not
+   run the parent's hooks. On a mapped pair it does move the parent's `_rev`
+   (the link lives on the parent's entry); on a generic pair the `_rev` stays
+   put. `notify` / `notifySelf` do not add a second, post-persist parent run for
+   the link add. The strip itself was not observed; the
+   hook timing and the `_rev` split are what was measured.
+4. `update` (`PUT`) passes the request's revision straight through, and with no
+   revision is an unconditional last-writer-wins. **The no-revision half
+   matches.** Concurrent revision-less `PUT`s all returned `200` and kept one or
+   two of twenty updates. `PUT` with a revision was not measured, so "passed
+   straight through" is still only a hypothesis.
+
+The same day, during install of those throwaway types, three sequential
+`aic managed object create` calls each confirmed, and the second type was gone
+after the third. Same family as Q14. `replace_managed_confirmed` retries until
+its own conditions hold, and object create's only condition is that the new name
+is present (`ObjectPresent` in `create_object_request`). A later create whose
+read is missing an earlier type can `PUT` a document without it and still return
+success. The installer waits until all three names survive three consecutive
+reads (`pocs/managed-aggregate-cas/setup.mjs`). This pass did not re-run the
+lost-create sequence.
+
+Teardown the same day did not restore `config/repo.ds`. `aic managed
+relationship delete alpha_poc_agg.children --remove-mapping` wrote nothing.
+`repair::plan_sequence` refuses to remove `alpha_poc_agg.children` because
+`config/repo.ds` reads through it from `alpha_poc_child.parent`, and refuses
+that reverse end because it is the last mapped property of
+`managed/alpha_poc_child`. Removing a mapping another one reads through, and
+removing an object's last mapping, are both unmeasured
+(`src/managed/repair.rs`). *(2026-11-09: the last-mapping refusal is gone —
+the property is removed and the per-type entry kept with no properties, the
+measured state of a new entry — so this teardown would now go through, reverse
+end first. Removal of a last mapping was measured live the same day: records
+stayed readable and creatable, `10-managed-objects.md`.)* The refusal is judged on the managed document the
+delete would write, so both ends already look stale while the live objects are
+still there, and the command returns before either write. The three object
+deletes then removed the types from `config/managed` and left the two
+`genericMapping` entries. The script's compare printed `config equals backup:
+false` (leftover type `alpha_poc_sink`) and `genericMapping equals backup:
+false` (keys `managed/alpha_poc_agg`, `managed/alpha_poc_child`).
+
+The sink type coming back is the delete-shaped sibling of the lost create
+above. `delete_object_request` confirms only `ObjectAbsent` for the name it is
+deleting (`src/managed/ops.rs`). The child delete's document still contained
+`alpha_poc_sink`. The teardown's read, after the sink delete had printed
+success, still listed that type. One more `aic managed object delete
+alpha_poc_sink` removed it, and the whole `config/managed` document then
+equaled the backup taken before the POC. `genericMapping` still has those two
+keys and no others beyond the backup; their only properties are `children` and
+`parent`. Both endpoint deletes returned 200, and a later read of each is 404.
+No `PUT` of either config document was sent after the script stopped.
+
+The same day's first relationship-notification pass reported that `DELETE` of a
+linked child ran the parent's hooks when `notifySelf` was on the parent's
+relationship and `notify` was on the child's. The script put `notify` on the
+relationship node. A remeasure with the flag there did not run the parent
+hooks: not at 6 s, not at 30 s, not with the child's scripts removed. The same
+delete with `notify` on the child's `resourceCollection` did run them, mapped
+and generic, which is where Ping's relationship-notification page says to put
+`notify`
+(`docs.pingidentity.com/pingidm/8/objects-guide/relationships-notification.html`).
+The first pass's result matches the `resourceCollection` placement, not the
+node placement its script wrote. Detail:
+`pocs/managed-aggregate-cas/RESULTS.md`, "E21".
+
+The same measurement found two further disagreements with that page, and one
+hazard the page does not mention.
+
+Putting `notifyRelationships` on a relationship property and naming that same
+property (`parent` set to `["parent"]`) made `GET` and `POST` of the managed
+type return 404, `Resource 'managed/<type>' not found`, while `config/managed`
+still listed it. The other type stayed 200. Clearing the property restored
+the type on the next read. The page's examples name a different relationship
+(`attributes` names `roles`; `assignments` names `members`). They do not say
+that naming itself removes the resource.
+
+The page's `notifyRelationships` example is a property of the object. Setting
+the array on the managed object itself stored it and did not notify the other
+side, for a plain field change or a link change, with and without the
+`notify` flags.
+
+The page says relationship auditing is independent of `notify` and
+`notifySelf`. A fetch of the caller's transaction for an edge patch contained
+`relationshipUpdated` when `NOTIFY=1` was on the relationship node, and no
+activity events when the flags were off. An audit under an id that does not
+start with the caller's id was not searched for, so this is not a proof the
+audit was skipped.
+
+**2026-11-05 — concurrent edge patches on a mapped relationship drop edges.**
+Ten concurrent `PATCH`es of `_refProperties` on ten different edges of one
+mapped parent lost edges on every repetition (two to six), with `notify` /
+`notifySelf` on the relationship node, with those flags off, and with
+`notify` on `resourceCollection`. The generic pair, written the same way,
+kept all ten edges in both flag states. The same ten mapped patches sent one
+at a time kept every edge, and two concurrent mapped patches kept both. The
+404 names an edge id that both sides listed immediately before the burst. The
+child record stays. The edge is gone from the parent and from the child, and
+is still gone about 30 s later. The 404 transaction has an access event and
+no activity write: no `DELETE`, no relationship-removed event. `idm-core` in
+the window had no `ERROR` line. Nothing in Ping's relationship-notification
+page describes this. Detail: `pocs/managed-aggregate-cas/RESULTS.md`, "E21
+`cas` repeated".
+
+### Closed: removing the empty per-type `repo.ds` entry of an existing type (2026-11-10)
+
+Measured live 2026-11-10 (`10-managed-objects.md`, "2026-11-10 — removing the
+empty per-type `repo.ds` entry of an **existing** type"): records written while
+the type was mapped stayed readable by id and by query, and new records stayed
+creatable, immediately and after ~65 s. `relationship repair <object>
+--empty-entry` therefore accepts an existing type, but only an entry equal to
+the layout `aic` generates (`storage::generated_entry`); a custom `dnTemplate`,
+`jsonAttribute`, object classes, matching rule or any extra field is refused by
+name, because it was not measured. Also refused: an entry that maps a property,
+and one another mapping names as a `resourcePath`.
+
+## 2026-11-10 — two rows of the legacy access-token list were wrong
+
+`docs/api/12-script-bindings-matrix.md`'s 2026-08-27 legacy
+access-token-modification sweep said `addExtraJsonData` works and that
+`getAct`, `getMayAct`, `getPermissions`, `getConfirmationKey` and
+`getField("<unset>")` return `null`. The
+rhino-local token-context probes (a stateless `client_credentials` token on a
+throwaway client, results read back from the token's `aicprobe` claim) found:
+
+- `accessToken.addExtraJsonData("<k>", "<json string>")` throws `Can't find
+  method …StatelessAccessToken.addExtraJsonData(string,string).` The earlier
+  row never recorded which argument types it called with, so it may have used
+  another overload; `(string, string)` is the refused shape.
+- `getAct()`, `getMayAct()`, `getPermissions()`, `getConfirmationKey()` and
+  `getField` of an unset key are
+  objects: `typeof` is `object`, `String(v)` is `null` and `v.size()` is `0`.
+  A script testing `=== null` gets `false`.
+
+Both rows are corrected in place; the probe scripts and captures are
+`packages/rhino-local/test/fixtures/oauth2-atm/setters.*` and `surface.*`.
+
+## 2026-11-10 — validate scope widens the grant, and legacy binds the scope sets
+
+Two claims about the validate scope context did not survive the rhino-local
+probes (a stateless `client_credentials` client in `alpha`, both engines;
+method and captures in `docs/api/12-script-bindings-matrix.md`, "OAuth2
+validate scope on both engines"):
+
+- **AM grants exactly the list `validateAccessTokenScope()` returns.** It does
+  not intersect it with the request. Returning `zzemuc5-c` beside the two
+  requested scopes granted all three, and returning `zzemuc5-nope`, which the
+  client does not hold, granted that too. `docs/api/12`'s 2026-07-29 note
+  ("did **not** widen the grant … AM appears to intersect") was a
+  `client_credentials` grant as well, so the grant type does not explain the
+  difference; what did is not identified. `docs/api/22-token-exchange.md` says
+  the same of the token-exchange and `password` grants, where it was not
+  re-measured. Both notes now point here. Until one of those grants is
+  re-measured, treat a validate scope script as able to widen any grant, and
+  write it to return only scopes it means to issue.
+- **Legacy `OAUTH2_VALIDATE_SCOPE` is not bindingless.** `docs/api/13` lists it
+  among the contexts whose descriptor has 0 bindings, which is true of the
+  descriptor. At runtime it binds `requestedScopes` (a `java.util.HashSet`),
+  `allowedScopes` and `defaultScopes` (`java.util.TreeSet`s), `logger`,
+  `realm`, `scriptName` and `systemEnv`, and its invalid-scope denial is
+  `throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(msg)`
+  (`400`, `msg` verbatim).
+
+
+## 2026-11-10 — legacy may-act accepts a JsonValue, and the claim's nulls differ
+
+Three claims about the may-act context did not survive the rhino-local probes
+(a stateless `client_credentials` client in `alpha`, both engines; method and
+captures in `docs/api/12-script-bindings-matrix.md`, "OAuth2 may act on both
+engines"):
+
+- **A plain object is what fails on legacy, not the context.** `docs/api/22`
+  and `docs/api/04` say the same JS body on `OAUTH2_MAY_ACT` is HTTP 500
+  because Rhino will not coerce an object literal into the map `setMayAct`
+  wants. That call does fail, with `Error running may_act script`.
+  `token.setMayAct(new org.forgerock.json.JsonValue(linkedHashMap))` is
+  accepted, and the issued `may_act` is that map. `new JsonValue(null)`
+  writes JSON null; `new JsonValue("…")` writes that string. Both notes now
+  point here.
+- **JSON null and a missing claim are different, and the engines disagree
+  about `setMayAct(null)`.** Next-gen `token.setMayAct(null)` issues
+  `"may_act": null`. Legacy `token.setMayAct(null)` leaves the claim out of
+  the token. `getMayAct()` is JS `null` in both of the next-gen states, and
+  a null JsonValue (`size()` `0`, not `=== null`) in both of the legacy
+  states. A case that treats "no call" and "called with null" as the same
+  assertion is wrong on one engine.
+- **Legacy `OAUTH2_MAY_ACT` is not bindingless, and the next-gen token is
+  exactly the descriptor's five methods.** `docs/api/13` lists the legacy id
+  among the contexts whose descriptor has 0 bindings, which is true of the
+  descriptor. At runtime it binds `token`, `scopes`, `identity`,
+  `requestProperties`, `clientProperties`, `logger`, `realm`, `scriptName`,
+  `systemEnv` and `session`. The next-gen descriptor's `getField`, `getAct`,
+  `getMayAct`, `setAct` and `setMayAct` are the methods that exist:
+  `typeof token.setField` and `typeof token.toString` are `undefined`.
+  `requestProperties.requestParams` values are JS strings on next-gen
+  (`grant_type[0] === "client_credentials"`), not the `JavaString` the
+  generated types describe.
+
+
+## 2026-11-11 — a library's scope is the caller's common bindings, not the caller's context
+
+A `LIBRARY` script required from five next-gen callers (decision node, token
+modification, validate scope, may-act, evaluate scope) sees one set of
+bindings. The caller's context bindings do not leak. Two earlier notes do not
+survive that probe (`docs/api/12-script-bindings-matrix.md`, "Library scope
+when required"):
+
+- **`cacheManager` and `idRepository` are not in library scope.** The
+  2026-07-29 token-mod note assumed `logger`, `secrets`, `utils`,
+  `systemEnv`, `cacheManager` and `idRepository` were available because they
+  had not been probed. The first four are bound. `cacheManager` and
+  `idRepository` are not: `typeof eval(name)` throws. `nodeState` and
+  `accessToken` are unbound too, which that note had only as a typing
+  decision for the decision-node globals.
+- **`emailService`, `jwtAssertion`, `jwtValidator` and `policy` are present,**
+  and none of them is in the 11-name library metadata. No method on them was
+  called.
+- **`new java.util.HashSet()` follows the caller.** A library required from a
+  decision node can construct one. The same library required from each of the
+  four OAuth callers cannot. `docs/api/12`'s "`LIBRARY` reaches `HashSet` and
+  `ArrayList`" row is the decision-node caller. `ArrayList` was not re-probed
+  from an OAuth caller. The class shutter is the caller's, not a property of
+  the library.
+- **A nested `require()` does not get its own `scriptName`.** `scriptName` and
+  `logger.getName()` inside the inner library are the top-level caller's.

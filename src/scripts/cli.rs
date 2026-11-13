@@ -174,7 +174,7 @@ pub enum ScriptCommand {
         #[arg(long, help = "AM scripting context or workspace folder slug")]
         context: Option<String>,
         #[arg(long, value_name = "FILE", help = "Read the source from FILE")]
-        from: Option<std::path::PathBuf>,
+        from: Option<crate::config::UserPath>,
         #[arg(long)]
         language: Option<String>,
         #[arg(long = "evaluator-version")]
@@ -213,7 +213,7 @@ pub enum ScriptCommand {
     /// tenant's, by name. Read-only; exits non-zero on any disagreement.
     Ids {
         /// A directory of exported config, e.g. an fr-config-manager tree.
-        dir: std::path::PathBuf,
+        dir: crate::config::UserPath,
         /// Realm for files whose path has no `realms/<realm>/` component.
         #[arg(long, default_value = "alpha")]
         realm: String,
@@ -300,7 +300,7 @@ pub enum ScriptCommand {
         /// Compare the tenant's copy of an exact ref against this file — a
         /// build artefact, say — by SHA-256. Records nothing.
         #[arg(long, value_name = "FILE")]
-        against: Option<std::path::PathBuf>,
+        against: Option<crate::config::UserPath>,
         /// Exit non-zero unless every selected script matches the tenant (in
         /// sync, or converged) and at least one was selected — or, with
         /// --against, unless the file matches the tenant's copy (the workspace
@@ -341,12 +341,28 @@ pub enum ScriptCommand {
     /// Bidirectionally sync the workspace with the tenant: push local-only
     /// changes, pull remote-only changes, and resolve conflicts or deleted scripts.
     /// Scope with an optional <ref>; default reconciles everything synced.
+    ///
+    /// A script deleted on the tenant prompts (skip, re-create, forget); with no
+    /// terminal it is left unresolved and the command exits non-zero. To resolve
+    /// it without a prompt: `--resolve remote --force` forgets the sync record
+    /// and keeps the local file; add `--remove-local` to also remove the local
+    /// file when it is unedited (`--remove-local` alone resolves nothing).
+    /// `--resolve local --force` re-creates it. `--resolve` applies to every
+    /// selected entry, so name the script with <ref>.
     Sync {
         #[arg(help = "namespace, <namespace>/<name>, `all`, or empty for everything synced")]
         reference: Option<String>,
         /// Make this side win for every selected entry, including non-conflicts.
+        /// Needs bare --force beside it.
         #[arg(long, value_enum)]
         resolve: Option<Resolution>,
+        /// When a script deleted on the tenant is forgotten, also remove its
+        /// local file — only if it still holds the last-synced bytes. An
+        /// edited file, or a symlink, is kept and named. It only takes effect
+        /// where the script is forgotten: at the prompt, or non-interactively
+        /// as `--resolve remote --force --remove-local`.
+        #[arg(long)]
+        remove_local: bool,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
@@ -387,7 +403,7 @@ pub enum ScriptCommand {
             value_name = "REPO",
             conflicts_with_all = ["local_vs_snapshot", "snapshot_vs_remote"]
         )]
-        find_in_git: Option<std::path::PathBuf>,
+        find_in_git: Option<crate::config::UserPath>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -404,18 +420,63 @@ pub enum Resolution {
     Remote,
 }
 
+/// POSIX single-quote `word` so a shell reads it back as exactly one argument.
+fn shell_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
 fn validate_resolution_force(
     resolve: Option<Resolution>,
     force: OperationAndSyntaxCheckForce,
+    remove_local: bool,
 ) -> Result<()> {
-    if resolve.is_some() == force.operation() {
-        Ok(())
-    } else {
-        Err(Error::Config(
-            "script sync requires --resolve local|remote with bare --force, and bare --force requires --resolve"
+    // Checked first: no refusal below may suggest a combination this rejects.
+    if remove_local && resolve == Some(Resolution::Local) {
+        return Err(Error::Config(
+            "--remove-local applies to forgetting a deleted script, which --resolve local never does"
                 .into(),
-        ))
+        ));
     }
+    if resolve.is_some() == force.operation() {
+        return Ok(());
+    }
+    let extra = if remove_local { " --remove-local" } else { "" };
+    Err(Error::Config(match resolve {
+        Some(side) => {
+            let side = match side {
+                Resolution::Local => "local",
+                Resolution::Remote => "remote",
+            };
+            format!(
+                "--resolve {side} overwrites without prompting, so it also needs bare --force: \
+                 `aic script sync <ref> --resolve {side} --force{extra}`. \
+                 To forget a script deleted on the tenant and remove its unedited local file, \
+                 use `--resolve remote --force --remove-local`"
+            )
+        }
+        None => "bare --force on `script sync` needs --resolve local|remote beside it: \
+                 `aic script sync <ref> --resolve remote --force [--remove-local]` forgets \
+                 scripts deleted on the tenant (--remove-local also removes their unedited \
+                 local file); `--resolve local --force` re-creates them"
+            .into(),
+    }))
+}
+
+/// What a non-interactive run can do about scripts the tenant no longer has.
+/// `--resolve` applies to every selected entry, so the hint scopes to one
+/// script by ref instead of inviting a bare `--resolve remote --force`. The
+/// ref is a script name, which may hold spaces or shell metacharacters, so it
+/// is quoted: the command must run as printed.
+fn remote_missing_hint(first: &str, remove_local: bool) -> String {
+    let extra = if remove_local { " --remove-local" } else { "" };
+    let first = shell_quote(first);
+    format!(
+        "to proceed without a prompt, name the script and say which side wins — \
+         forget the record: `aic script sync {first} --resolve remote --force{extra}` \
+         (add --remove-local to also remove the local file if it is unedited); \
+         re-create from the local copy: `aic script sync {first} --resolve local --force`. \
+         Without a ref, --resolve applies to every synced script"
+    )
 }
 
 #[derive(Subcommand, Debug)]
@@ -429,6 +490,8 @@ pub enum WorkspaceCommand {
     Update {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[arg(long, help = "Preview changes without writing any files")]
+        dry_run: bool,
     },
 }
 
@@ -1196,7 +1259,7 @@ pub(crate) async fn run_with_runtime(
             if !json {
                 workspace_update_hint(&t)?;
             }
-            check_managed_types_stale(&t).await;
+            check_managed_types_stale(&t, false).await;
             if check && !ok {
                 return Err(Error::Config(match &against {
                     Some(against) => format!(
@@ -1224,11 +1287,12 @@ pub(crate) async fn run_with_runtime(
         ScriptCommand::Sync {
             reference,
             resolve,
+            remove_local,
             tenant,
             yes,
             force,
         } => {
-            validate_resolution_force(resolve, force)?;
+            validate_resolution_force(resolve, force, remove_local)?;
             let t = runtime.writable_tenant_for(tenant)?;
             runtime.guard_legacy_workspace(&t)?;
             let cands = select_synced(runtime.push_candidates(&t)?, reference)?;
@@ -1238,6 +1302,7 @@ pub(crate) async fn run_with_runtime(
             }
             let (mut pushed, mut pulled, mut in_sync, mut invalid) = (0u32, 0u32, 0u32, 0u32);
             let mut failed = 0u32;
+            let mut forgotten = 0u32;
             let mut conflicts: Vec<String> = Vec::new();
             let mut remote_missing: Vec<(String, Option<String>)> = Vec::new();
             let mut stopped = false;
@@ -1301,7 +1366,9 @@ pub(crate) async fn run_with_runtime(
                         let choice = match resolve {
                             Some(Resolution::Local) => RemoteMissingChoice::Recreate,
                             Some(Resolution::Remote) => RemoteMissingChoice::Forget,
-                            None => prompt_remote_missing(&full, unavailable.as_deref())?,
+                            None => {
+                                prompt_remote_missing(&full, unavailable.as_deref(), remove_local)?
+                            }
                         };
                         match choice {
                             RemoteMissingChoice::Recreate if unavailable.is_some() => {
@@ -1352,9 +1419,37 @@ pub(crate) async fn run_with_runtime(
                                     }
                                 }
                             }
+                            RemoteMissingChoice::Forget if remove_local => {
+                                match sync::forget_removing_local(
+                                    &t,
+                                    ns.realm_arg(),
+                                    c.kind,
+                                    &c.name,
+                                ) {
+                                    Ok(sync::LocalDisposition::Removed) => {
+                                        forgotten += 1;
+                                        println!("forgot {full} from sync (local file removed)")
+                                    }
+                                    Ok(sync::LocalDisposition::Absent) => {
+                                        forgotten += 1;
+                                        println!("forgot {full} from sync (no local file)")
+                                    }
+                                    Ok(sync::LocalDisposition::Kept(why)) => {
+                                        forgotten += 1;
+                                        println!("forgot {full} from sync (local file kept: {why})")
+                                    }
+                                    Err(error) => {
+                                        eprintln!("! {full}: {error}");
+                                        failed += 1;
+                                    }
+                                }
+                            }
                             RemoteMissingChoice::Forget => {
                                 match sync::forget(&t, ns.realm_arg(), c.kind, &c.name) {
-                                    Ok(()) => println!("forgot {full} from sync (local file kept)"),
+                                    Ok(()) => {
+                                        forgotten += 1;
+                                        println!("forgot {full} from sync (local file kept)")
+                                    }
                                     Err(error) => {
                                         eprintln!("! {full}: {error}");
                                         failed += 1;
@@ -1496,22 +1591,19 @@ pub(crate) async fn run_with_runtime(
                 }
             }
             println!(
-                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {} · remote missing {}{}{}",
-                if stopped { " (stopped, partial)" } else { "" },
-                conflicts.len(),
-                remote_missing.len(),
-                if invalid > 0 {
-                    format!(" · refused {invalid}")
-                } else {
-                    // Stay off the happy-path line: a zero here would invite
-                    // reading its absence elsewhere as "checked and fine".
-                    String::new()
-                },
-                if failed > 0 {
-                    format!(" · failed {failed}")
-                } else {
-                    String::new()
+                "\n{}",
+                SyncSummary {
+                    stopped,
+                    pushed,
+                    pulled,
+                    in_sync,
+                    conflicts: conflicts.len(),
+                    remote_missing: remote_missing.len(),
+                    forgotten,
+                    refused: invalid,
+                    failed,
                 }
+                .line()
             );
             if !conflicts.is_empty() {
                 println!("unresolved (try `aic script diff <ref>`, then push/pull --force):");
@@ -1521,6 +1613,12 @@ pub(crate) async fn run_with_runtime(
             }
             if !remote_missing.is_empty() {
                 println!("remote scripts left unresolved (choose re-create or forget):");
+                if !prompt_available() {
+                    println!(
+                        "  {}",
+                        remote_missing_hint(&remote_missing[0].0, remove_local)
+                    );
+                }
                 for (name, reason) in &remote_missing {
                     if let Some(reason) = reason {
                         println!("  {name} — re-create unavailable: {reason}");
@@ -1680,15 +1778,37 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
                 sync_types,
                 workspace::TEMPLATES_VERSION
             );
-            print_seed_notes(&r);
+            print_seed_notes(&r, false);
             println!(
                 "next: cd {} && npm install   (installs the lint/type-check toolchain)",
                 crate::config::display_path(&r.tree)
             );
             Ok(())
         }
-        WorkspaceCommand::Update { tenant } => {
+        WorkspaceCommand::Update { tenant, dry_run } => {
             let t = tenant_for(tenant)?;
+            if dry_run {
+                if let Err(error) = guard_legacy_workspace(&t) {
+                    println!(
+                        "{}",
+                        templates_preview_note(workspace::applied_version(&t)?)
+                    );
+                    eprintln!("warning: {error}");
+                    return Ok(());
+                }
+                let preview = workspace::preview_update(&t)?;
+                print_workspace_preview(&preview);
+                if preview.report.applied_version != 0 {
+                    if let Some(schema) = check_managed_types_stale(&t, true).await {
+                        check_sync_types_stale(&t, &schema).await;
+                    } else {
+                        eprintln!(
+                            "warning: sync-mapping type staleness unknown (managed schema unavailable)"
+                        );
+                    }
+                }
+                return Ok(());
+            }
             guard_legacy_workspace(&t)?;
             let r = workspace::update(&t)?;
             let managed_types = generate_managed_types(&t).await;
@@ -1701,17 +1821,50 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
                 sync_types,
                 crate::config::display_path(&r.tree)
             );
-            print_seed_notes(&r);
+            print_seed_notes(&r, false);
             Ok(())
         }
     }
 }
 
-fn print_seed_notes(report: &crate::scripts::workspace::WorkspaceReport) {
+fn print_workspace_preview(preview: &crate::scripts::workspace::WorkspacePreview) {
+    use crate::scripts::workspace::{FileChange, TEMPLATES_VERSION};
+    let applied = preview.report.applied_version;
+    println!("{}", templates_preview_note(applied));
+    for (path, change) in &preview.changes {
+        let action = match change {
+            FileChange::Create => "create",
+            FileChange::Change => "change",
+            FileChange::Remove => "remove",
+        };
+        println!("{action} {}", path.display());
+    }
+    if preview.changes.is_empty() {
+        println!("no scaffold file changes (bundled v{TEMPLATES_VERSION})");
+    }
+    print_seed_notes(&preview.report, true);
+}
+
+fn templates_preview_note(applied: u32) -> String {
+    use crate::scripts::workspace::TEMPLATES_VERSION;
+    if applied == 0 {
+        format!(
+            "templates: workspace never initialised (v0) → bundled v{TEMPLATES_VERSION}; run `aic workspace init`"
+        )
+    } else if applied == TEMPLATES_VERSION {
+        format!("templates: workspace v{applied} → bundled v{TEMPLATES_VERSION} (up to date)")
+    } else {
+        format!("templates: workspace v{applied} → bundled v{TEMPLATES_VERSION}")
+    }
+}
+
+fn print_seed_notes(report: &crate::scripts::workspace::WorkspaceReport, dry_run: bool) {
     for path in &report.pruned {
         let rel = path.strip_prefix(&report.tree).unwrap_or(path);
+        let action = if dry_run { "remove" } else { "pruned" };
+        let suffix = if dry_run { "/" } else { "" };
         println!(
-            "pruned {rel} (generated files only; no script source)",
+            "{action} {rel}{suffix} (generated files only; no script source)",
             rel = rel.display()
         );
     }
@@ -2132,9 +2285,10 @@ fn parse_ref(arg: Option<String>) -> Result<Vec<Job>> {
     };
     if let Some((prefix, name)) = s.split_once('/') {
         let ns = Namespace::parse(prefix).ok_or_else(|| unknown_ns(prefix))?;
+        let name = ns.canonical_name(name);
         return Ok(vec![Job {
             ns,
-            selector: script::sync::Selector::Name(name.to_string()),
+            selector: script::sync::Selector::Name(name),
         }]);
     }
     if let Some(ns) = Namespace::parse(&s) {
@@ -2154,7 +2308,8 @@ fn parse_ref(arg: Option<String>) -> Result<Vec<Job>> {
 fn parse_one(arg: &str) -> Result<(Namespace, String)> {
     if let Some((prefix, name)) = arg.split_once('/') {
         let ns = Namespace::parse(prefix).ok_or_else(|| unknown_ns(prefix))?;
-        return Ok((ns, name.to_string()));
+        let name = ns.canonical_name(name);
+        return Ok((ns, name));
     }
     if Namespace::parse(arg).is_some() {
         return Err(Error::Config(format!(
@@ -2225,12 +2380,14 @@ fn scripts_are_writable(theme: TenantTheme) -> bool {
 /// A `status` argument naming exactly one script: `<namespace>/<name>` with a
 /// known namespace and a non-empty name. Anything else stays a free-text
 /// filter, which keeps `endpoint/` (a namespace) and fragments working.
-fn exact_status_ref(reference: &str) -> Option<(Namespace, &str)> {
+fn exact_status_ref(reference: &str) -> Option<(Namespace, String)> {
     let (prefix, name) = reference.split_once('/')?;
     if name.is_empty() {
         return None;
     }
-    Some((Namespace::parse(prefix)?, name))
+    let ns = Namespace::parse(prefix)?;
+    let name = ns.canonical_name(name);
+    Some((ns, name))
 }
 
 /// One line of `script status`, tracked or not, in the shape `--json` prints.
@@ -2610,7 +2767,13 @@ fn recreate_unavailable_reason(
 fn prompt_remote_missing(
     full: &str,
     unavailable_reason: Option<&str>,
+    remove_local: bool,
 ) -> Result<RemoteMissingChoice> {
+    let forget = if remove_local {
+        "forget — remove sync record and the local file, if unedited"
+    } else {
+        "forget — remove sync record, keep local file"
+    };
     use inquire::{Select, error::InquireError};
     if crate::cli::prompting_disabled() {
         return Ok(RemoteMissingChoice::Skip);
@@ -2626,13 +2789,10 @@ fn prompt_remote_missing(
         vec![
             "skip — leave local copy and sync record",
             "re-create — write the local copy to the tenant",
-            "forget — remove sync record, keep local file",
+            forget,
         ]
     } else {
-        vec![
-            "skip — leave local copy and sync record",
-            "forget — remove sync record, keep local file",
-        ]
+        vec!["skip — leave local copy and sync record", forget]
     };
     match Select::new(&prompt, opts).raw_prompt() {
         Ok(answer) if allow_recreate => Ok(match answer.index {
@@ -3436,12 +3596,13 @@ fn guard_legacy_workspace(tenant: &str) -> Result<()> {
 }
 
 /// Print a "templates out of date" nudge if the workspace predates the bundled
-/// template version (mirrors p1-sync's update prompt).
+/// template version (mirrors p1-sync's update prompt). Stderr, like every
+/// advisory: stdout may be a `--json` document a consumer pipes to `jq`.
 fn workspace_update_hint(tenant: &str) -> Result<()> {
     use crate::scripts::workspace;
     let applied = workspace::applied_version(tenant)?;
     if applied != 0 && applied < workspace::TEMPLATES_VERSION {
-        println!(
+        eprintln!(
             "note: workspace templates v{applied} → v{} available — run `aic workspace update`",
             workspace::TEMPLATES_VERSION
         );
@@ -3450,20 +3611,24 @@ fn workspace_update_hint(tenant: &str) -> Result<()> {
 }
 
 /// Compare on-disk managed type files to a fresh in-memory generation from the
-/// live schema. Prints one summary line when any file is missing or differs;
-/// stays silent when current. Never writes, and never fails the caller: a
+/// live schema. Prints one summary line to stderr when any file is missing or differs;
+/// stays silent when current unless `report_current` is set. Returns the schema
+/// for the preview's sync-type check. Never writes or fails the caller: a
 /// fetch or generate error warns once and returns, matching
 /// [`generate_managed_types`]'s best-effort discipline.
 ///
 /// Skips when no workspace has been initialised (`applied_version == 0`):
 /// every expected file would be "missing", and the remedy would be
 /// `workspace init`, not `update`.
-async fn check_managed_types_stale(tenant: &str) {
+async fn check_managed_types_stale(
+    tenant: &str,
+    report_current: bool,
+) -> Option<serde_json::Value> {
     let Ok(applied) = crate::scripts::workspace::applied_version(tenant) else {
-        return;
+        return None;
     };
     if applied == 0 {
-        return;
+        return None;
     }
     let schema = match crate::aic::api::get(tenant, "/openidm/config/managed").await {
         Ok(schema) => schema,
@@ -3471,7 +3636,7 @@ async fn check_managed_types_stale(tenant: &str) {
             eprintln!(
                 "warning: could not fetch managed schema (stale-types check skipped): {error}"
             );
-            return;
+            return None;
         }
     };
     let files = match crate::scripts::managed_types::generate(&schema) {
@@ -3480,13 +3645,52 @@ async fn check_managed_types_stale(tenant: &str) {
             eprintln!(
                 "warning: could not generate managed types (stale-types check skipped): {error}"
             );
+            return None;
+        }
+    };
+    let stale =
+        crate::scripts::managed_types::stale_files(&ProjectConfig::workspace_tree(tenant), &files);
+    if report_current {
+        print_type_staleness("managed", &stale);
+    } else if let Some(note) = managed_types_stale_note(stale.len()) {
+        eprintln!("{note}");
+    }
+    Some(schema)
+}
+
+/// Same pure generation and byte comparison as managed types; no type writes.
+async fn check_sync_types_stale(tenant: &str, schema: &serde_json::Value) {
+    let sync_doc = match crate::aic::api::get(tenant, "/openidm/config/sync").await {
+        Ok(doc) => doc,
+        Err(error) => {
+            eprintln!(
+                "warning: could not fetch sync mappings (stale-types check skipped): {error}"
+            );
+            return;
+        }
+    };
+    let files = match crate::scripts::sync_types::generate(&sync_doc, schema) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!(
+                "warning: could not generate sync mapping types (stale-types check skipped): {error}"
+            );
             return;
         }
     };
     let stale =
         crate::scripts::managed_types::stale_files(&ProjectConfig::workspace_tree(tenant), &files);
-    if let Some(note) = managed_types_stale_note(stale.len()) {
-        println!("{note}");
+    print_type_staleness("sync-mapping", &stale);
+}
+
+fn print_type_staleness(kind: &str, stale: &[std::path::PathBuf]) {
+    if stale.is_empty() {
+        println!("{kind} type files: up to date");
+    } else {
+        println!("{kind} type files: {} stale", stale.len());
+        for relative in stale {
+            println!("  {}", relative.display());
+        }
     }
 }
 
@@ -3511,12 +3715,98 @@ fn print_conflict(name: &str, tw: &crate::scripts::sync::ThreeWay) {
     println!("=== {name}: local ===\n{}", tw.local);
 }
 
+/// The closing line of `aic script sync`.
+struct SyncSummary {
+    stopped: bool,
+    pushed: u32,
+    pulled: u32,
+    in_sync: u32,
+    conflicts: usize,
+    remote_missing: usize,
+    forgotten: u32,
+    refused: u32,
+    failed: u32,
+}
+
+impl SyncSummary {
+    fn line(&self) -> String {
+        // Forgotten, refused and failed stay off the happy-path line when
+        // zero: a zero there would invite reading its absence elsewhere as
+        // "checked and fine".
+        let counted = |label: &str, n: u32| {
+            if n > 0 {
+                format!(" · {label} {n}")
+            } else {
+                String::new()
+            }
+        };
+        format!(
+            "sync{}: pushed {} · pulled {} · in sync {} · conflicts {} · remote missing {}{}{}{}",
+            if self.stopped {
+                " (stopped, partial)"
+            } else {
+                ""
+            },
+            self.pushed,
+            self.pulled,
+            self.in_sync,
+            self.conflicts,
+            self.remote_missing,
+            counted("forgotten", self.forgotten),
+            counted("refused", self.refused),
+            counted("failed", self.failed),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_sync_summary_names_forgotten_refused_and_failed_only_when_nonzero() {
+        let quiet = super::SyncSummary {
+            stopped: false,
+            pushed: 1,
+            pulled: 2,
+            in_sync: 3,
+            conflicts: 0,
+            remote_missing: 1,
+            forgotten: 0,
+            refused: 0,
+            failed: 0,
+        };
+        assert_eq!(
+            quiet.line(),
+            "sync: pushed 1 · pulled 2 · in sync 3 · conflicts 0 · remote missing 1"
+        );
+        let busy = super::SyncSummary {
+            stopped: true,
+            forgotten: 2,
+            refused: 1,
+            failed: 4,
+            ..quiet
+        };
+        assert_eq!(
+            busy.line(),
+            "sync (stopped, partial): pushed 1 · pulled 2 · in sync 3 · conflicts 0 · remote missing 1 · forgotten 2 · refused 1 · failed 4"
+        );
+    }
+
+    #[test]
+    fn preview_version_note_covers_old_current_and_uninitialised_workspaces() {
+        use crate::scripts::workspace::TEMPLATES_VERSION;
+        assert_eq!(
+            templates_preview_note(93),
+            format!("templates: workspace v93 → bundled v{TEMPLATES_VERSION}")
+        );
+        assert!(templates_preview_note(TEMPLATES_VERSION).contains("up to date"));
+        let uninitialised = templates_preview_note(0);
+        assert!(uninitialised.contains("never initialised"));
+        assert!(uninitialised.contains("aic workspace init"));
+    }
+
+    #[test]
     fn status_ref_is_exact_only_for_a_known_namespace_and_a_name() {
-        let exact =
-            |r: &str| exact_status_ref(r).map(|(ns, name)| (ns.kind, ns.realm, name.to_string()));
+        let exact = |r: &str| exact_status_ref(r).map(|(ns, name)| (ns.kind, ns.realm, name));
         assert_eq!(
             exact("endpoint/foo"),
             Some((script::Kind::IdmEndpoint, None, "foo".into()))
@@ -3528,6 +3818,46 @@ mod tests {
         assert_eq!(exact("endpoint/"), None);
         assert_eq!(exact("Email"), None);
         assert_eq!(exact("bogus/foo"), None);
+        assert_eq!(
+            exact("managed/custom_widget/onCreate"),
+            Some((
+                script::Kind::IdmManagedHook,
+                None,
+                "custom_widget.onCreate".into()
+            ))
+        );
+    }
+
+    /// A managed hook can be named by its workspace path
+    /// (`idm/managed/<object>/<hook>.cjs`) as well as its dotted ref, on every
+    /// verb that parses one; other kinds keep their slashes.
+    #[test]
+    fn managed_hook_refs_accept_the_workspace_path_form() {
+        for arg in [
+            "managed/custom_widget/onCreate",
+            "managed/custom_widget.onCreate",
+        ] {
+            let (ns, name) = parse_one(arg).unwrap();
+            assert_eq!(
+                (ns.kind, name.as_str()),
+                (script::Kind::IdmManagedHook, "custom_widget.onCreate"),
+                "{arg}"
+            );
+            let jobs = parse_ref(Some(arg.into())).unwrap();
+            assert!(
+                matches!(&jobs[..], [Job { selector: script::sync::Selector::Name(n), .. }] if n == "custom_widget.onCreate"),
+                "{arg}"
+            );
+        }
+        // Discriminating: the rewrite is managed-only, and not applied to a
+        // name that already has its dot or to an empty side.
+        assert_eq!(parse_one("endpoint/a/b").unwrap().1, "a/b");
+        assert_eq!(parse_one("sync/Map/x").unwrap().1, "Map/x");
+        assert_eq!(parse_one("managed/a.b/c.d").unwrap().1, "a.b/c.d");
+        assert_eq!(
+            parse_one("managed/custom_widget/").unwrap().1,
+            "custom_widget/"
+        );
     }
 
     /// D-S2b: with `--against`, the file is the whole verdict. The
@@ -3971,10 +4301,33 @@ mod tests {
         ] {
             let (resolve, force) = parsed(&args);
             assert!(
-                validate_resolution_force(resolve, force).is_err(),
+                validate_resolution_force(resolve, force, false).is_err(),
                 "{args:?}"
             );
         }
+        // The refusal names the flags that would proceed, not just the rule.
+        let (resolve, force) = parsed(&["--resolve", "remote", "--remove-local"]);
+        let message = validate_resolution_force(resolve, force, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("--resolve remote --force --remove-local"),
+            "{message}"
+        );
+        let (resolve, force) = parsed(&["--force"]);
+        let message = validate_resolution_force(resolve, force, false)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("--resolve remote --force"), "{message}");
+        // --resolve local with --remove-local is rejected first, so its refusal
+        // cannot suggest a command that the next run rejects.
+        let (resolve, force) = parsed(&["--resolve", "local", "--remove-local"]);
+        let message = validate_resolution_force(resolve, force, true)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("--resolve local never does"), "{message}");
+        assert!(!message.contains("--resolve local --force --remove-local"));
+        assert!(!remote_missing_hint("a/b", false).contains("--force --remove-local`"));
         for args in [
             vec![],
             vec!["--force=syntax-check"],
@@ -3984,9 +4337,62 @@ mod tests {
         ] {
             let (resolve, force) = parsed(&args);
             assert!(
-                validate_resolution_force(resolve, force).is_ok(),
+                validate_resolution_force(resolve, force, false).is_ok(),
                 "{args:?}"
             );
+        }
+    }
+
+    /// Runs each command the hint suggests under `sh` with `aic` replaced by
+    /// a function that prints its arguments, and returns one line per `aic`
+    /// invocation. A substring match could not tell one argument from two, or
+    /// one command from two.
+    fn invocations(hint: &str) -> Vec<Vec<String>> {
+        let commands: Vec<&str> = hint.split('`').skip(1).step_by(2).collect();
+        assert_eq!(commands.len(), 2, "{hint}");
+        commands
+            .iter()
+            .map(|command| {
+                let script = format!("aic() {{ printf '<%s>' \"$@\"; printf '\\n'; }}; {command}");
+                let out = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .output()
+                    .unwrap();
+                String::from_utf8(out.stdout).unwrap()
+            })
+            .flat_map(|text| {
+                text.lines()
+                    .map(|line| {
+                        line.split('>')
+                            .filter(|piece| !piece.is_empty())
+                            .map(|piece| piece.trim_start_matches('<').to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_remote_missing_hint_runs_as_printed_for_awkward_names() {
+        for name in [
+            "alpha/Example Script",
+            "alpha/Example; aic script sync all --resolve remote --force #",
+            "alpha/it's $(touch x) \"q\"",
+            "managed/thing.onCreate",
+        ] {
+            let calls = invocations(&remote_missing_hint(name, true));
+            // One `aic` per suggested command: nothing ran a second command.
+            assert_eq!(calls.len(), 2, "{name}: {calls:?}");
+            for call in &calls {
+                assert_eq!(&call[..3], ["script", "sync", name], "{name}: {call:?}");
+            }
+            assert_eq!(
+                calls[0][3..],
+                ["--resolve", "remote", "--force", "--remove-local"]
+            );
+            assert_eq!(calls[1][3..], ["--resolve", "local", "--force"]);
         }
     }
 

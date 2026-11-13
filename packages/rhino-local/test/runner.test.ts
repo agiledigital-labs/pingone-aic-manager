@@ -18,13 +18,13 @@ describe("RhinoRunner", () => {
     await runner.close();
   }, 30_000);
 
-  it("reports the expected AM environment for its selected lane", () => {
+  it("reports the expected environment for its selected lane", () => {
     expect(runner.environment).toMatchObject(EXPECTED_ENVIRONMENT);
   });
 
-  // What the AM image prints (MEASURED 2026-09-28). A host that leaked its own
+  // What the expected environment prints. A host that leaked its own
   // timezone or locale into the JVM would print its local midnight here.
-  it("formats dates and numbers as the AM image does", async () => {
+  it("formats dates and numbers as the expected environment does", async () => {
     const response = await runner.eval({
       source:
         "[new Date(0).toString(), (1234.5).toLocaleString(), java.util.TimeZone.getDefault().getID()].join('\\n')",
@@ -34,7 +34,7 @@ describe("RhinoRunner", () => {
     expect(response.value).toBe("Thu Jan 01 1970 00:00:00 GMT-0000 (UTC)\n1234.5\nEtc/UTC");
   });
 
-  // The host lane caps the heap at 256 MB; the container runs AM's default.
+  // The host lane caps the heap at 256 MB; the container runs the JVM default.
   // A job allocating ~100 MB must succeed on both, so the cap is headroom and
   // not a behaviour difference for anything a journey script plausibly does.
   it("runs a job that allocates ~100 MB", async () => {
@@ -48,15 +48,35 @@ describe("RhinoRunner", () => {
     expect(response.value).toBe(100);
   });
 
-  // The shutter always admits org.mozilla.javascript, so a shuttered script
-  // can reach the global ContextFactory; it must not be able to change it.
-  it("hands a shuttered script a sealed global ContextFactory", async () => {
+  // A raw job with no shutter names engine classes freely, so the global
+  // factory must be sealed against it. (A shuttered job cannot name it at all:
+  // the next test.)
+  it("the global ContextFactory is sealed against an unshuttered script", async () => {
     const response = await runner.eval({
-      source: "String(Packages.org.mozilla.javascript.ContextFactory.getGlobal().isSealed())",
+      source: `(function () {
+        var f = Packages.org.mozilla.javascript.ContextFactory.getGlobal();
+        var refused;
+        try { f.addListener(null); refused = "accepted"; } catch (e) { refused = String(e.javaException || e); }
+        return String(f.isSealed()) + "|" + refused;
+      })()`,
+      timeoutMs: 2_000,
+    });
+    expect(response.outcome).toBe("ok");
+    expect(String(response.value)).toMatch(/^true\|.*IllegalStateException/);
+  });
+
+  it("a shuttered script cannot name the engine's ContextFactory (it was the sealed-factory probe)", async () => {
+    // Author-named access to org.mozilla.javascript.* is refused the way AM
+    // refuses it (docs/api/12, 2026-11-10), so the global factory is not
+    // reachable to be sealed or otherwise.
+    const response = await runner.eval({
+      source: "(function () { try { Packages.org.mozilla.javascript.ContextFactory.getGlobal(); return 'reached'; } catch (e) { return String(e).replace(/ \\(.*$/, ''); } })()",
       classAllowList: decisionNodeClassAllowList(),
       timeoutMs: 2_000,
     });
-    expect(response.value).toBe("true");
+    expect(response.value).toBe(
+      'TypeError: Cannot call property getGlobal in object [JavaPackage org.mozilla.javascript.ContextFactory]. It is not a function, it is "object".'
+    );
   });
 
   it("compiles and runs a trivial script", async () => {
@@ -210,7 +230,7 @@ describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both l
 
   // Positive control: a value that cannot be the same on both lanes, so a
   // comparison that silently stopped comparing would fail here. Not the Java
-  // build — CI installs the image's exact build, so that one must agree.
+  // build — CI installs the reference image's exact build, so that one must agree.
   it("detects a lane-specific difference", async () => {
     expectEmulationFailure(/LaneDivergenceError: rhino-local: host and container JVMs disagree[\s\S]*/);
     await expect(

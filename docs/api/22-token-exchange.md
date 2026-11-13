@@ -94,6 +94,11 @@ pin the actor to one identity (the sandbox's pre-existing
 `500 … "Error running may_act script"` — legacy Rhino does not coerce a JS
 object literal into the Java map `setMayAct` wants. Either use the `_NEXT_GEN`
 context, or write Groovy with `JsonValue.json(JsonValue.object(...))`.
+A `JsonValue` is the other measured way. `new org.forgerock.json.JsonValue(map)` over a `java.util.LinkedHashMap`
+is accepted and the claim is issued; `setMayAct(null)` clears the claim
+(absent, not JSON null) and `new JsonValue(null)` writes JSON null
+(measured 2026-11-10, `docs/api/12`, "OAuth2 may act on both engines",
+and `docs/api/99`).
 
 ### `evaluatorVersion` is decided by the context, not by the field
 
@@ -148,6 +153,9 @@ retest ([21-am-policies.md](21-am-policies.md), open question 1).
   `password`.
 - **AM intersects the return with what was requested**, so the script can narrow
   a request and never widen one. That makes fail-closed easy and fail-open hard.
+  _2026-11-10: not reproduced on a `client_credentials` client, where AM granted
+  exactly the returned list, widened scopes included; not re-measured on this
+  grant. See `docs/api/99`, 2026-11-10._
 
 It is a function-entry-point script (`validateAccessTokenScope()` and friends —
 see [12](12-script-bindings-matrix.md)).

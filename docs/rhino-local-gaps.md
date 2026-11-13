@@ -6,7 +6,8 @@ this repo actually has, instead of the three toy cases.
 Cases live under `packages/rhino-local/cases/real/`. Overlay:
 `packages/rhino-local/src/bindings/rhino/runtime.cjs`. Measured 2026-09-12
 against the JVM runner (`VERSION_DEFAULT` + `ScriptContextScope`) after
-`callbacks.isEmpty`, next-gen `require()`, and legacy `Action.send`.
+`callbacks.isEmpty` and next-gen `require()`. The legacy (V1) engine was
+removed on 2026-11-12; this file now describes next-gen only.
 
 ## What runs today
 
@@ -220,9 +221,9 @@ with `null` faults. An operation whose `value` is `undefined`, or which has no
 docs/api/12; the absent key is inference). Both refusals, like an unknown
 operation, are judged before the record lookup and the revision check (assumed
 for the script path). A PATCH `remove` of a property that declares a `default`,
-`null` included, faults `openidm-managed-policy/<type>`: stock `policy.js`
-predicts `403 REQUIRED`, but AIC was measured only with the property also
-required (Q18). Still **not checked** here, and passing silently:
+`null` included, faults `openidm-managed-policy/<type>`: AIC's `403 REQUIRED`
+was measured only with the property also required, and without that the answer
+is unmeasured (Q18). Still **not checked** here, and passing silently:
 
 - a mismatch on a `relationship` or untyped (`any`) property — which includes a
   property whose `type` lists two concrete types (profile version 3 records it
@@ -344,17 +345,14 @@ assumption in `docs/api/`:
 | Id                                                                                | Refusal                                                                                                               |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `not-mocked/<binding>.<method>`                                                   | a generated binding method the overlay does not implement                                                            |
+| `not-implemented/<binding>.<method>` | a method the harness never wrote, called on a service object, an object nested in one (`utils.crypto.subtle`), a request map (`requestParameters`, `requestHeaders`, `requestCookies`, `existingSession`) or an object with methods that a service call returns, named by the call that made it (`idRepository.getIdentity().<method>`, `httpClient.send().get().<method>`, `nodeState.get().<method>`). Not covered: a property read without a call (`typeof openidm.frobnicate`, `openidm.frobnicate.call(openidm)`), which the engine gives no hook for, so an empty tally does not prove nothing missing was touched; plain data a call returns (a record, a parsed body); a Java list or set, which refuses the member itself; and another context's own views, which fault under their `<context>-unmeasured` id. A method measured absent on AIC (`logger.message`, `existingSession.hasOwnProperty`, a map entry named like a method) stays the engine's `TypeError`; an identity's member set was captured whole, so there every name outside the set is a `TypeError` and only a captured member the harness lacks (`hashCode`, `equals`, `getClass`) faults. Unmeasured beside it: assigning a named property to a Java list (`v["x"] = 1`) is an `InternalError` whose text names the harness's own list class, where AIC's text was never captured |
 | `arity-unknown/<binding>.<method>`                                                | an argument count outside the harness's own guessed range, or one only a varargs reading would accept (see below) |
 | `fixture/<kind>`                                                                  | an unseeded fixture: `managed`, `http`, `esv`, `secrets`, `library`, `callbacks`, `callback-value`, `openidm-action`, `cache-manager`, `journey`, `match-pattern-type` |
 | `script-defect/send-body-js-date`, `script-defect/send-body-regexp`, `script-defect/send-body-function` | an `httpClient.send` body AIC **measurably** sends as a Rhino object dump. Not a harness gap: the `script-defect/` family is a refusal to pass a script that would send the dump, and the tally lists it apart from the harness's work |
 | `send-body-error`, `send-body-array-cycle`                                        | an `httpClient.send` body whose AIC behaviour is unmeasured                                                           |
 | `state-put-undefined`                                                             | `nodeState.put*` / `sharedState.put` / `transientState.put` with `undefined`                                         |
 | `request-map-foreach-argument`                                                    | `requestParameters`/`requestHeaders`/`requestCookies`.`forEach` with anything but one function, no argument, or one number. Those three are measured (2026-11-08): the callback gets `(key, value)` and the other two are Rhino's catchable `Can't find method java.util.Map.forEach(<type>).`; key order is seeding order, where AIC's is hash order |
-| `request-map-foreach-legacy`                                                      | `forEach` on a request map under the legacy engine, which was not probed |
-| `request-list-serialize`                                                          | `JSON.stringify` reaching a next-gen `requestParameters`/`requestHeaders` value list, by any path but one: under an array replacer, a list returned by an author's own `toJSON` is written as an object of the listed keys, unfaulted (native asks `toJSON` once per value); and while such a call runs, a getter that reads `list.toJSON` sees a function, where AIC's Java list has no such member. The list's shape is measured (2026-11-08) but its serialisation is not; copy the values into an array first |
-| `request-list-unmeasured`                                                        | A next-gen request value list called any way but `size()` or `get(i)` with an integer index in range (measured 2026-11-08): another argument shape, or another `List` member (every public `java.util.List`, `Collection`, `Iterable` and `Object` method name: `set`, `remove`, `isEmpty`, `contains`, `toArray`, `forEach`, `listIterator`, …), or `[].concat(v)` (measured for `openidm` lists only). A JavaScript object would answer with ignore-the-extra-argument rules that nothing says a Java list follows. Not covered: an out-of-range bracket read (`v[5]`) returns `undefined` unfaulted, since an index read cannot be intercepted; AIC's answer is unmeasured |
-| `openidm-list-unmeasured`                                                        | An `openidm.query` `result` or a projected has-many array (next-gen) called any way but `size()`, `get(i)` with an integer index (out of range is the measured `InternalError`), `[].concat(v)`, `JSON.stringify` or `String(v)` (measured 2026-11-08): another argument shape, another `List` member (`forEach` included), the list as `concat`'s receiver, or `String(v)` reaching a number, whose Java rendering (`Integer` or `Double`) was not measured |
-| `openidm-failure-detail`                                                          | `e.javaException.getDetail()` on an `openidmFailures` failure whose stub gave no `reply.detail`; a `JsonValue` member the 2026-11-08 probe did not exercise (anything but `get`, `isNull`, `getObject`, `toString`); `get` on a non-object detail; the string form of an empty object or array, a non-integral number or a string needing an escape |
+| `openidm-failure-detail`                                                          | `e.javaException.getDetail()` on an `openidmFailures` failure whose stub gave no `reply.detail`; calling (directly, through `call`/`apply`, or a copy made with `bind`), rendering as a string (its own `toString` or a borrowed `Function.prototype.toString`), or serialising with `JSON.stringify` (by every route native gives a hook for: directly, nested, or as what a `toJSON` or replacer returns), a `JsonValue` member the 2026-11-08 and 2026-11-10 probes did not exercise (anything but `get`, `isNull`, `getObject`, `toString`, `asString`; `typeof` and `in` answer as measured and never fault; not covered: a stub an author's own `toJSON` returns under a property list is skipped unfaulted, the same hole as for lists, because native asks `toJSON` once per value and a property list leaves no hook on the result); rendering a measured member other than `asString` as a string (its own `toString`, a borrowed `Function.prototype.toString`, `String()` or concatenation; only `asString`'s text was measured, and every route gives it); `get(string)` on a string or boolean value, `get(number)` on a boolean, an index that is non-integral, non-finite or outside a Java `int` (checked before the null-value answer); `asString` on a number or with an argument other than one number; an error pointer whose key needs a JSON Pointer escape; the string form of an empty object or array, a non-integral number or a string needing an escape |
 | `node-state-merge-non-object`                                                     | `nodeState.mergeShared`/`mergeTransient` with a function, and `mergeTransient(null)`. Every other non-object is AIC's measured catchable `InternalError` (2026-11-06): `Can't find method …NodeStateScriptWrapper.<m>(<type>).` for a string, number, boolean or `undefined`, `null` for `mergeShared(null)`, `Cannot convert …NativeArray@<hash> to java.util.Map` for an array; state is unchanged |
 | `action-suspend-additional-logic`                                                 | `action.suspend` with a non-function `additionalLogic`                                                               |
 | `openidm-collection-path-as-record`                                               | a record verb (`read`, …) on a collection path                                                                        |
@@ -370,7 +368,7 @@ assumption in `docs/api/`:
 | `idm-script-file-and-source`                                                      | IDM emulator: a script declaring both `file` and `source`                                                            |
 | `idm-policy/not-null`                                                             | IDM emulator, no `policy` evaluator (E15a): an explicit `null` on a property with a non-null `default` outside the measured case (a create of a new record), which is emulated as AIC's `403`: `NOT_NULL`, plus `VALID_TYPE` when the schema has no `required` key (2026-11-08). Covers an update, a PUT or create over an existing record, and a refusal naming several properties, whose order is unmeasured. A PATCH `replace` with `null` never gets here: it is the measured `400` "not a valid JSON patch" (below) |
 | `idm-patch/add-null`                                                              | IDM emulator: a PATCH `add` whose `value` is `null` (a script's `undefined` arrives as `null`), or that has no `value` key at all, which both lanes treat as `null` (inferred, not measured; astra-r1 P2-3). AIC refuses `replace` with `null` as `400` "not a valid JSON patch", before policy, on a defaulted boolean and on an undefaulted has-one relationship (docs/api/10), and that is emulated for every property, checked over the whole patch before the record lookup, the revision check, read hooks and the capability gate (CREST parses the body before routing; assumed for a script's call). So it also answers on a relationship type, which the gate faults for every other write. What AIC does with `add` is unmeasured. A `replace` with no `value` key gets the same 400 at the same point. Only the status and the phrase are measured; the rest of the 400's message is local |
-| `idm-policy/required`                                                             | IDM emulator, no `policy` evaluator: a PATCH `remove` of a property that declares a `default`, `null` included. Stock `policy.js` adds an implicit `required` for any default; AIC's `403 REQUIRED` was measured only with the property also in `schema.required` (which the capability gate faults), so this case is unmeasured (docs/api/99 Q18). Removing an undefaulted optional property is the measured 200 (2026-11-08) |
+| `idm-policy/required`                                                             | IDM emulator, no `policy` evaluator: a PATCH `remove` of a property that declares a `default`, `null` included. AIC's `403 REQUIRED` was measured only with the property also in `schema.required` (which the capability gate faults), so this case is unmeasured (docs/api/99 Q18). Removing an undefaulted optional property is the measured 200 (2026-11-08) |
 | `idm-policy/valid-type`                                                           | IDM emulator, no `policy` evaluator (E15a): any mismatch outside a create of a new record; any value or `null` for a property with no `type`; an undefaulted `null` outside a create when the schema has no `required` array; a non-string's `default: null` when the schema has no `required` array; a `null` sent to a null-defaulted array outside a create; and a refusal naming several properties. Emulated, not faulted (measured 2026-11-08, docs/api/10): a create's top-level mismatch against `string`/`boolean`/`number`/`integer`/`object`/`array` (any number on `integer`, zzemu_nd) and its `null` with no `required` key are `403 VALID_TYPE`; a `default: null` passes a sent `null` with no `NOT_NULL`, and on an array stores `[]`; an undefaulted `null` with a `required` array not naming it is stored; nested `properties`/`items` are not checked |
 | `idm-policy/valid-array-items`                                                    | IDM emulator, no `policy` evaluator (E15a): an item of a **top-level** array whose JSON type is not the declared `items.type`. Unmeasured: the 2026-11-08 probe measured only nested `items` (stored unenforced), never a top-level array's own items |
 | `idm-exception/unmeasured`                                                        | IDM emulator (sol-r2 P2-3): a script reading a member of a caught tenant exception (`e.javaException`) that no probe read — anything but `getCode()`, `getReason()`, `getDetail()` and `toString()`, **including reading `getClass`** (sol-e15ab r6) — or `in` with any name but those and `getClass`, or enumerating its members (`Object.keys`, `for…in`, `JSON.stringify`; sol-r3 P2-2), or `getReason()` on an error that carries no reason phrase, or the string form of a `getDetail()` holding a spelling no capture showed (an empty object or array, a string needing an escape, a non-integral number). On AIC `e.javaException` is a CREST `ResourceException` subclass; the emulator's is not, and reproducing the class would mean shipping the vendor class, and a hand-built stand-in for `getClass()` and its `Class` stayed distinguishable from Rhino's native method and class through three review rounds (function names and source, arity and receiver checks, identity, the Java string `getName()` returns, engine diagnostics that read the implementation class), so `getClass` faults on read even though `getClass().getName()` is measured equal to the class the message names (403 and 404, probe-pol and probe-def, 2026-11-08). Match on `e.message`. **Known limit, not gated (sol-e15ab r7):** the gate is on member lookup, so a native Java method borrowed from another object — `new java.lang.Object().getClass.call(e.javaException)`, `Function.prototype.call`, `Method.invoke` — has Rhino unwrap the receiver, and passing it as a Java argument (`Class.isInstance(e.javaException)`) unwraps it too; native code then answers from the emulator's own exception (`HostCalls$HostException`) — its class, membership, or an unadmitted method such as a borrowed `Throwable.getMessage` — with no fault. No observed script does this; closing it would mean gating Rhino's receiver unwrapping or withholding `javaException`. `String(getDetail())` is the captured one-line form, and a 404's detail is a Java null (measured for an unavailable type; assumed for a missing record) |
@@ -423,19 +421,13 @@ accepted counts have a basis:
 
 Everywhere else the accepted range is the harness's own guess — the request
 maps' `get`/`containsKey`, `existingSession.put`/`containsKey`, the identity
-wrapper's `setAttribute`/`addAttribute`/`store`, `secret.getAsUtf8`, `require`,
-the legacy `sharedState`/`transientState`, and every check on the legacy
-engine, which has no introspection — and a count outside it is the harness
+wrapper's `setAttribute`/`addAttribute`/`store`, `secret.getAsUtf8` and `require` — and a count outside it is the harness
 fault `arity-unknown/<path>`. The basis table (`__rhinoLocalArityBasis` in
 `runtime.cjs`) is pinned against the introspection file by
 `test/bindings/arity-provenance.test.ts`.
 
-**Hypotheses from on-prem jars, each settled by one live probe.** The E19
-round-3 review read the AM 8.1.1 binding jars with `javap` and ran the CREST
-27.1.1 `QueryFilters.parse` from a ForgeOps AM image over 112 filters. On-prem
-signatures are a hypothesis in this project, not an AIC measurement (IDM's
-bundles import CREST `[28.0,29)`, a neighbouring version), so each of these
-stays a fault until a probe on AIC decides it:
+**Hypotheses, each settled by one live probe.** These are not AIC
+measurements, so each of them stays a fault until a probe on AIC decides it:
 
 - **Settled 2026-11-06: `logger.*` is true varargs** on `debug`, `info`,
   `warn` and `error` (4, 5 and 6 arguments accepted at all four; the
@@ -443,11 +435,9 @@ stays a fault until a probe on AIC decides it:
   `arity-unknown/logger.*` faults are gone for those four; `logger.trace`
   was not probed. `logger.warning` is AIC's catchable `TypeError: Cannot find
   function warning`, which the overlay already gave.
-- **The other `arrayTail` parameters are probably not varargs.** The jar types
-  `openidm`'s trailing parameter as `java.util.List`, the validated and
-  attribute-input callbacks' as `List<String>`, and `getRandomValues`' as a
-  `NativeArray`, so a count past the overloads is likely Rhino's catchable
-  refusal. The fault there is noise in the safe direction.
+- **The other `arrayTail` parameters are probably not varargs**, so a count
+  past the overloads is likely Rhino's catchable refusal. The fault there is
+  noise in the safe direction.
 - **Settled 2026-11-06: `mergeShared` takes a `Map`.** A non-object is a
   catchable `InternalError` in three measured shapes (see the fault table),
   and state is unchanged. `mergeTransient` was probed with a string only;
@@ -457,16 +447,15 @@ stays a fault until a probe on AIC decides it:
   AM's method body, never observed for `mergeTransient`, so
   `mergeTransient(null)` stays `node-state-merge-non-object`, as does a
   function.
-- **The filter grammar faults on inputs CREST 27.1.1 accepts**: keyword case
+- **The filter grammar faults on inputs not yet measured on AIC**: keyword case
   (`AND`, `Or`, `TRUE`, `PR`, `EQ`), single quotes, `+5`, `05`, `1.`, `.5`,
   the pointers `/a~2`, `text~`, `/` and `!text`, `"a"and`, `\x` escapes, a tab
   inside a pointer, and integers between 2^53 and `Long.MAX_VALUE` (the last
-  on purpose: a JS number cannot hold the long CREST compares). Conversely the
-  grammar now refuses, as the fault, all eleven inputs the jar rejects that it
-  used to accept (exponent with no `.`, integers past `long`, tab or newline
-  separators, `!` glued to a keyword). One probe of uppercase `AND` and of
-  `'x'` on AIC would show whether AIC's CREST matches 27.1.1; if it does,
-  transcribing its `QueryFilterParser` would retire every grammar fault.
+  on purpose: a JS number cannot hold the long integers a filter compares). Conversely the
+  grammar now refuses, as the fault, eleven inputs it used to accept (exponent
+  with no `.`, integers past `long`, tab or newline separators, `!` glued to a
+  keyword). One probe of uppercase `AND` and of `'x'` on AIC would settle
+  whether these are accepted; if they are, the grammar faults retire.
 
 **Journey lane.** In a journey, AM's host bridge replaces the fault channel
 with its uncatchable `unsupported` refusal. The emulated AIC errors above stay
@@ -488,13 +477,12 @@ Each is a `gap` entry with its reason; this is the index.
 | Case                          | AIC                                                                                          | Local                                                              |
 | ----------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `enum-callbacks-utils`        | `callbacksBuilder`/`utils` are Java objects; for-in lists `class`, `getClass`, `wait`, …     | plain JS mocks enumerate only their methods                        |
-| `enum-utils-sub`              | same for `utils.base64`/`crypto`/`types`; varargs callbacks have arity 0                     | JS methods, declared arity 2                                       |
-| `request-multivalue`          | Java maps: `getClass()` → `Access to Java class "java.lang.Class" is prohibited`             | JS object: `Cannot find function getClass`                         |
+| `enum-utils-sub`              | same for `utils.base64`/`crypto`/`types` | JS methods (the three measured callbacks' `length` 0 now matches; other methods' `length` was not measured) |
+| `request-multivalue`          | Java maps: `String()`/JSON show Java map formatting; the probe ran with its own request | JS object with its own formatting (`getClass()` gives the same refusal) |
 | `request-headers-dump`        | same, plus Java map formatting from `String()`                                               | JS object                                                          |
 | `httpclient-body-coercion`    | `java.lang.Integer`/`Long` body fields are sent                                              | the mock drops them                                                |
 | `java-collections`            | `new (JavaImporter(java.util)).HashSet()` works                                              | throws                                                             |
 | `identity-resolve-diag`       | `getIdentity` resolves a UUID only; payload committed abbreviated                            | same resolution; emits the full `attr-error: <message>` text       |
-| `identity-getattribute-shape` | Java collection: no `includes` member (`Cannot find function`), prints `[{}]`                | `toArray`/`contains`/`[{}]` match; shadowed `includes` (`Cannot call property`) |
 | `identity-enum-attrs`         | **not measured** — every count came back `err`; the probe's IDM setup users are gone         | —                                                                  |
 
 `.includes()` on `getAttributeValues` and `getClass()` on a request map were
@@ -505,7 +493,7 @@ The custom bag no longer relies on an AM-named property seeded in IDM: the
 2026-10-02 populated-bag measurement is implemented as a projection of exactly
 `custom_*` properties, including boolean JSON types and whole-bag store behavior.
 Equivalent explicit bag seeds remain accepted for 0.2.0 compatibility; conflicting
-ones fail. The `identity-getattribute-shape` row now derives its empty `{}`.
+ones fail. `identity-getattribute-shape` matches AIC now that `getAttributeValues` is a Java list.
 
 Two request cases are also **not comparable** beyond their `getClass` row: the
 live run was a curl with its own headers and parameters, not the case's
@@ -604,21 +592,17 @@ never measured, and AIC does the opposite. Not modelled: anything on an
 `entrySet()` view beyond `size`, `iterator().hasNext/next` and `toArray`;
 `for…in` over a view (AIC enumerates the Java object's members); a key named
 `toString` or `toJSON` (the local map uses those to print and harvest).
-The legacy result classes `Action` and `HiddenValueCallback` are `undefined`
-on next-gen from every importer — `JavaImporter()`, `JavaImporter(java.util)`,
+The result classes `Action` and `HiddenValueCallback` are `undefined`
+from every importer — `JavaImporter()`, `JavaImporter(java.util)`,
 and even one naming `org.forgerock.openam.auth.node.api.Action` or
 `com.sun.identity.authentication.callbacks.HiddenValueCallback` (measured
 2026-10-01, `live-java-importer-scope`); the local lane matches all six.
-Locally the legacy engine exposes each one only to an importer that names its
-class or its package. That legacy scope is **unmeasured**: the AIC wrapper
-emit is next-gen only, so no legacy script reaches the tenant lane.
 
 What the 2026-09-12 ranking called the shutter gap is closed:
 `java-class-shutter`, `for-each-java-collection` and
 `lib-java-collections-consumer` now equal the live payload exactly, as does
 `logger-placeholders` (its `E0-shape` row was the only miss, and it was the
-expectation that was incomplete). The five legacy cases were dropped on
-2026-09-12 (`7bb0195`); legacy scripts are not supported.
+expectation that was incomplete).
 
 ### Unlabelled query matching and send bodies (listed 2026-11-04)
 
@@ -671,7 +655,7 @@ and neither carries a label:
   per-character lower-casing (U+0130 to `i`) and a full fold (U+1E9E to `ss`).
 
   **User attributes: measured rules (live probe 2026-11-06).** DS's core
-  schema (opendj-core 8.1.1, RFC 4519) gives `telephoneNumber` `EQUALITY
+  schema (RFC 4519) gives `telephoneNumber` `EQUALITY
   telephoneNumberMatch`; `frIndexedDate1`–`5` / `frUnindexedDate1`–`5` are
   GeneralizedTime and `frIndexedInteger1`–`5` / `frUnindexedInteger1`–`5`
   integers (`docs/api/14`). The probe (`docs/api/10`, REST and IDM's
@@ -861,7 +845,6 @@ those flows start is not modelled.
 | Source                                                                                | What it is                                                                | Verdict                                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scripts/rhino-script-tester/fixtures/*.script.js`                                    | Next-gen scripted-decision probes, run live through `AIC-Rhino-Let-Probe` | **This is the in-repo corpus.** Recorded outcomes live in `docs/api/12-script-bindings-matrix.md` and `docs/api/14-am-identity-attributes.md`. `tmp/rhino-script-tester/probe-results.json` is gitignored and was not in this checkout. |
-| `scripts/rhino-script-tester/fixtures-legacy/*.script.js`                             | Legacy (`evaluatorVersion` 1.0) scripted-decision probes                  | Same kind, different engine. Converted with `given.engine = "legacy"`.                                                                                                                                                                  |
 | `scripts/rhino-script-tester/scripts/*.script.js`                                     | Earlier `let` / `var` probes, same journey                                | Converted.                                                                                                                                                                                                                              |
 | `scripts/rhino-script-tester/fixtures/*.lib.js`                                       | LIBRARY bodies, not decision-node scripts                                 | Not cases. Consumers `require()` them; suites carry library source by exact require name in `libraries`, which becomes `given.libraries` on each case.                                                                                     |
 | `scripts/rhino-script-tester/fixtures-oauth2/`, `fixtures-atm/`, `fixtures-exchange/` | Validate-scope, access-token-modification, may-act                        | **Wrong script kind.** Different binding JSON, different invocation. Not converted.                                                                                                                                                     |
@@ -883,7 +866,6 @@ actually assert.
 origin fixture under `scripts/rhino-script-tester/`:
 
 - 55 next-gen (53 `fixtures/*.script.js` + 2 `scripts/*.script.js`)
-- 2 legacy
 
 Identity cases originally named a sandbox test user and three managed-object
 UUIDs. Cases rewrite those to reserved placeholders (`alice` / `bob` /
@@ -924,12 +906,388 @@ language-fidelity cases on the bindings runner. Library top-level `const` also
 passes (`lib-const-consumer`); loop-body `const` inside a library function still
 yields `"0,0,0"` (`lib-const-loop-consumer`), matching live.
 
+## Access-token modification context (listed 2026-11-10)
+
+`context: "OAUTH2_ACCESS_TOKEN_MODIFICATION"` runs from the
+overlay `packages/rhino-local/src/bindings/rhino/context-oauth2-access-token.cjs`.
+Its conformance test replays six live probes
+(`test/bindings/oauth2-access-token.e2e.test.ts`). What it approximates or
+leaves out:
+
+- **Java values are script objects.** `Object.prototype.toString` is emulated
+  only where a capture measured the tag. On every other view the call is the
+  named fault
+  `oauth2-token-unmeasured/Object.prototype.toString.call(<binding>)` (Sol ctx
+  r1 P2-5); the conformance test compares the captured tags unchanged.
+- **Mutating a binding is unmeasured, and faults.** Assigning a map entry or a
+  `HashSet` index faults at once. Adding, deleting or redefining a member of a
+  map, set, `accessToken` or `identity` cannot be intercepted in this Rhino (no
+  `Proxy`), so the harvest audits each view against its build-time snapshot and
+  records the fault then: the script may read its own write back before the run
+  fails. A seeded map key that shares a name with a `java.util.Map` method
+  (`get`, `size`, …) is refused at seed.
+- **Lists admit only their measured routes.** `JSON.stringify`, `[].concat(v)`
+  and `Array.prototype.<method>.call(v, …)` on a token-context list fault; the
+  decision node's request and openidm lists keep their measured behaviour.
+- **Unmeasured call counts fault.** Only `setField`/`getField` at a wrong count
+  are Rhino's ordinary overload error (measured); any other method at an
+  unmeasured count is a named fault rather than a catchable error.
+- **Setter values are JSON or a fault.** `setField`, `setFields`, `setAct`,
+  `setMayAct` and `setPermissions` accept strings, finite numbers, booleans,
+  dense arrays and objects whose prototype is `Object.prototype` (or `null`)
+  with only enumerable data properties, recursively. A `Date`, `RegExp`,
+  getter, list view or Java object is unmeasured and faults.
+- **Property reads cannot be intercepted.** A Java bean's missing member reads
+  as `undefined` on both sides, but a member that exists on the script object
+  only to raise a fault is visible to `typeof` and `in`.
+- **Hash order is not reproduced.** Sets and maps keep the fixture's order.
+- **Header aliases are lower and Title case only.** AIC's header map is
+  case-insensitive; `requestHeaders["CONTENT-TYPE"]` is not emulated.
+- **JSON numbers.** The JWT carries `42` for a number the script set, and the
+  recorded effect holds the JS value the script set.
+- **`expires_in`.** The default custom field and the response body say `3599`
+  and the JWT claim says `3600`, measured. The effect records the custom field.
+- **Shared bindings are the decision node's.** `logger`, `httpClient`,
+  `systemEnv`, and on next-gen `openidm`, `secrets`, `utils` and `require`, were
+  measured as present (`typeof`) in this context, not member by member. Their
+  behaviour is the decision node's implementation.
+- **The next-gen identity converts through `valueOf`.** `String(identity)` is
+  the wrapper's class name plus `@rhino-local` where AIC prints a hash code;
+  `identity.toString()` is a `Cannot find function` as on AIC, and so
+  `identity.valueOf()` answers where AIC is unmeasured.
+- **Assigning into a map.** `requestProperties.requestParams.x = …` and the
+  like are unmeasured and are not refused.
+- **`requestUri`'s type** on next-gen is inferred from its rendering (a path
+  after the host), not from a method call.
+- **Faults** (`oauth2-token-unmeasured/<binding>.<member>`): every
+  `accessToken` method not listed as measured in
+  `docs/api/12-script-bindings-matrix.md` (`toMap`, `getTokenInfo`, `setScope`
+  with anything but the measured shapes, the other `remove*`/`set*`,
+  next-gen `getResourceOwner`), Object methods on the views, `JSON.stringify` of
+  any view, set iterators and streams,
+  next-gen `clientProperties.redirectUris`, overwriting a reserved claim, and
+  the `identity` writers. `identity.getAttributes()` is a fault on purpose: it
+  returns the client's password (`.ai/core.md` §8).
+- **The AIC lane** runs only decision-node scripts, so a token-context case is
+  reported unsupported there and runs locally only.
+
+## OIDC claims context (listed 2026-11-10)
+
+`context: "OIDC_CLAIMS"` runs from the overlay
+`packages/rhino-local/src/bindings/rhino/context-oidc-claims.cjs`, on the same
+`context-common.cjs` views as the token context, so the view-level gaps listed
+above apply here too, with the prefix `oidc-claims-unmeasured/`. The
+conformance test (`test/bindings/oidc-claims.e2e.test.ts`) replays five live
+probes at both the token and the userinfo endpoint, plus twelve one-line
+result scripts (eighteen engine runs). What it approximates or leaves out:
+
+- **One invocation per run.** AM runs the script once for the id token and
+  again for each userinfo call. A case models one run. The userinfo run is
+  modelled by its request (the userinfo URI, no params and no
+  `claimsLocales`), not by a second pass.
+- **The id token is derived, not issued.** The effect's `idToken` holds only
+  the script's claims, under the measured subject rule, with nulls dropped. AM's
+  own claims (`aud`, `azp`, `realm`, `tokenName`, `tokenType`, `iss`, `exp`, …)
+  are not emulated. A returned value that names one of them faults, because
+  which side wins was not observed.
+- **`requestedClaims` and `requestedTypedClaims` are always empty.** The
+  sandbox realm has `claimsParameterSupported: false`, so a populated request
+  could not be measured without a realm-wide change. That change was declined.
+- **Composite scopes filter nothing.** As measured: a claim mapped to a scope
+  the token was not granted is still emitted. The recorded `compositeScopes`
+  is what the script returned.
+- **Known fidelity limits of the JS view representation** (Sol ctx r2 P2-2,
+  P2-4; not fixed by decision, 2026-11-10: the harness runs trusted scripts,
+  so it targets fidelity, not defence against reflective JS).
+  - An author's `toJSON` plus a property-list `JSON.stringify` replacer
+    serialises a list view as an object instead of refusing it.
+  - The mutation audit compares values only: a changed property descriptor
+    (`enumerable`, ...) or a replaced `__proto__` on a view is not detected.
+  - A write to a view that the script undoes before it ends (write, read,
+    delete) is not detected, because the audit compares final state.
+- **Next-gen `claims` is a script object.** Its seeded `toString`/`toJSON`
+  render the measured `{sub, subname}` text. After the script changes the map,
+  either one faults. `put` over an existing key faults as unmeasured. `delete
+  claims.<key>` answers false on AIC and keeps the key; this Rhino cannot do
+  that while `remove()` works, so the delete is a fault, found by `remove()` or
+  by the harvest audit. A deleted key the script itself added is not detected.
+- **Numbers.** AM renders a returned `42` as `42.0` in both the userinfo body
+  and the id token. JSON cannot tell those apart, and the effect holds `42`.
+- **Results AM was not measured with fault.** That is anything but
+  `undefined`, `{values}`, `{values, compositeScopes}` or an object without
+  `values`. Inside the values, a nested null, a
+  non-finite number, a Java object other than a string, number, boolean, list
+  or map, and a map with a non-string key all fault.
+- **Shared bindings are the decision node's.** `logger`,
+  `httpClient`, `systemEnv`, `openidm`, `secrets`, `utils`,
+  `require`, `jwtAssertion`, `jwtValidator`, `policy` and `emailService` were
+  measured as present only (`typeof`). `logger.getName()` is a fault.
+- **The AIC lane** runs only decision-node scripts, so an OIDC case runs
+  locally only.
+
+## Social IdP profile transformation context (listed 2026-11-10)
+
+`context: "SOCIAL_IDP_PROFILE_TRANSFORMATION"` runs from the
+overlay `packages/rhino-local/src/bindings/rhino/context-social-idp.cjs`, on
+the same `context-common.cjs` views, so the view-level gaps above apply here
+too, with the prefix `social-idp-unmeasured/`. The conformance test
+(`test/bindings/social-idp.e2e.test.ts`) replays the surface probe captured
+during a headless social login, plus one-line result scripts. What it approximates or leaves out:
+
+- **The transform only.** The context id is shared with
+  `SocialProviderHandlerNodeV2`'s own `script`, which binds
+  `normalizedProfile` (a JsonValue) and returns a JsonValue. That invocation
+  was measured but is not emulated.
+- **Next-gen `JSON.stringify(rawProfile)` key order.** AIC lists the keys in
+  the Java map's hash order, while String conversion and `keys()` keep the
+  provider's order. The view keeps the provider's order everywhere. A
+  Java-binding candidate.
+- **Only string profile values were measured.** Reading any other value faults
+  as `social-idp-unmeasured/rawProfile.<key>`. So does a seeded key named like
+  a Java map method.
+- **Seeded node state.** `selectedIdp` is seeded into the shared state, as the
+  SelectIdPNode leaves it. AM also holds `expectProfileInformation` there.
+  Its value was not read, so it is not seeded.
+- **Results AM was not measured with fault.** Measured: `undefined`, `null`
+  and a string (each a 401), a plain object, . A top-level `undefined` or `null` property is
+  kept as `null`. A nested null or undefined, a non-finite number, a function
+  or Java object in a plain result, a top-level number, boolean or array all fault. Numbers reach the node as
+  doubles, which JSON cannot tell apart.
+- **Shared bindings are the decision node's.** `requestHeaders` and
+  `requestParameters` were measured by key count only. The next-gen
+  `httpClient`, `openidm`, `secrets`, `utils`, `require`, `jwtAssertion`,
+  `jwtValidator`, `policy`, `emailService` and `systemEnv` were measured as
+  present only (`typeof`). `logger.getName()` was measured.
+- **The AIC lane** runs only decision-node scripts, so a social IdP case runs
+  locally only.
+
+## Config provider node context (listed 2026-11-10)
+
+`context: "CONFIG_PROVIDER_NODE"` runs from the overlay
+`packages/rhino-local/src/bindings/rhino/context-config-provider.cjs`, on the
+same `context-common.cjs` views, so the view-level gaps above apply here too,
+with the prefix `config-provider-unmeasured/`. The conformance test
+(`test/bindings/config-provider.e2e.test.ts`) replays the surface probe
+captured from a journey (a decision node seeding the node state, a
+ConfigProviderNode wrapping a MessageNode, a decision node reading back), plus
+thirty-one one-line `config` scripts per engine (sixty-two engine runs), each
+compared with the message and buttons the MessageNode showed or the HTTP 500.
+What it approximates or leaves out:
+
+- **One invocation.** AM runs the script again on every request that reaches
+  the node, including the one that submits the wrapped node's callbacks. In
+  that re-run (measured) transient values from the earlier request are gone,
+  next-gen `callbacks.isEmpty()` is `false`, and a next-gen node-state object
+  comes back as a Java map (`[object JavaMap]`, numbers as doubles). A case is
+  the first invocation only.
+- **The wrapped node is not emulated.** The case asserts the `config` map;
+  what the wrapped node does with it (here, a MessageNode rendering numbers as
+  `42.0` and objects as `[object Object]`) is that node's business.
+- **Values AM was not measured with fault.** Measured inside a plain-object
+  `config`: strings, integral and fractional numbers, booleans, `null` and
+  `undefined` (kept as `null`) at depths one and two, an array of a number and
+  a string, and nested objects. A `null` or `undefined` inside an array, a
+  non-finite number and a non-plain object (a `Date`, a view) fault as
+  `config-provider-unmeasured/config.<path>`.
+  `new java.util.HashMap()` is
+  AIC's `TypeError`; the emulator's class shutter refuses it with a different
+  message, but the run fails either way.
+- **Refusals.** Measured: `config` never assigned,
+  `undefined`, `null`, a string, a number, a boolean, an array, a function and
+  a script that only evaluates to a map, each an HTTP 500 with AM logging
+  "Script must set 'config' to a Map.". A `var config;` that is never assigned
+  is recorded as `undefined`.
+- **Next-gen bindings whose effect belongs to the wrapped node.**
+  `callbacks.isEmpty()` (`true`), `callbacksBuilder.textOutputCallback(type,
+  message)` (accepted, adds nothing to what the wrapped node shows) and
+  `action.goTo(name)` (accepted; whether it can change routing is unmeasured)
+  answer. Every other member of the three faults. The rest of the next-gen
+  surface is the decision node's, measured as present (`typeof`) only, apart
+  from `nodeState` (`get` of a string, number, nested object, boolean,
+  transient value and absent key; `isDefined`; `putShared`/`putTransient`,
+  read back by the next node) and `nodeState.keys()`, which is AIC's
+  class-shutter error.
+- **`idRepository` and `journey` under `for...in`.** AIC lists their Java
+  members, `java.lang.Object`'s included; the emulator lists only its
+  own JS members. No member of `idRepository` was called in this slice. A
+  Java-binding candidate.
+- **Request maps.** `requestHeaders.get(name)` and
+  `requestParameters.get(name)` are tagged Java lists here (measured
+  `[object JavaList]`, `[v1]`). runtime.cjs's decision-node maps answer an
+  untagged view; that was not compared for the decision node in this slice.
+- **`existingSession`** was measured only on a request without a session
+  cookie, where it is a `ReferenceError` (the
+  descriptor lists it). With a session it may be bound, as on the decision
+  node; `given.existingSession` is refused until that is measured.
+- **The AIC lane** runs only decision-node scripts, so a config provider case
+  runs locally only.
+
+## OAuth2 validate scope context (listed 2026-11-10)
+
+`context: "OAUTH2_VALIDATE_SCOPE"` runs from the overlay
+`packages/rhino-local/src/bindings/rhino/context-oauth2-validate-scope.cjs`,
+on the same `context-common.cjs` views, so the view-level gaps above apply
+here too, with the prefix `oauth2-validate-scope-unmeasured/`. The
+conformance test (`test/bindings/oauth2-validate-scope.e2e.test.ts`) replays
+the surface probe captured from a `client_credentials` token request, with and
+without a `scope` parameter, plus twenty-nine one-line result scripts compared
+with the token's `scope` or AM's error. What it approximates or leaves out:
+
+- **One entry point.** Only `validateAccessTokenScope` on a
+  `client_credentials` grant was measured. AM's refresh, authorization-code,
+  back-channel and device-code entry points are never called, and
+  `inheritAccessTokenScopesOnRefresh()` returns `undefined` without changing
+  anything a case can see.
+- **`identity` with a resource owner.** On `client_credentials` the next-gen
+  `identity` has a null `AMIdentity`: `exists()` is `false`, `getName()` is
+  AIC's `InternalError`, and every other member faults. A grant with a user
+  (`password`, token exchange) was not measured here.
+- **What a script that catches a denial reads.** An uncaught
+  `throwInvalidScope(msg)` is the
+  measured HTTP 400, with `msg` as the `error_description`. The thrown value
+  is a plain object, matched by identity at the harvest. Reading `message` or
+  `name`, calling `String(e)` or `JSON.stringify(e)` faults
+  (`...throwInvalidScope().message`, `.name`, `.toString`,
+  `JSON.stringify(...)`): none
+  of those was measured. Rhino calls `toString` from
+  `JavaScriptException.getDetails` while it wraps the throw; that frame is
+  the engine's and does not fault. A script that catches the exception and
+  returns a list without reading it still succeeds (measured).
+  `throwInvalidScope()` with no argument, an object or a boolean faults: AIC
+  answers the request with a 500, but whether the call itself throws something
+  the script could catch was not observed.
+- **`for...in` over the Java bindings.** AIC lists the Java members of
+  `scopeValidatorHelper`, `java.lang.Object`'s
+  included; the emulator lists only its own JS members.
+- **Request value lists.** `String`, `length`, `size()` and `[i]` answer.
+  `JSON.stringify`, `[].concat` and `Array.prototype.slice` fault: those were
+  measured on the scope lists, not on `requestProperties`.
+- **`clientProperties` sets.** Reading `allowedGrantTypes`, `allowedScopes`
+  or `allowedResponseTypes` is AIC's class-shutter error, so a case cannot see
+  them either way.
+- **Why widening differs from the 2026-07-29 note.** The emulator grants
+  whatever the function returns, as measured. An older
+  `docs/api/12` note on a different client saw no widening; the cause is not
+  identified (`docs/api/99`, 2026-11-10).
+- **The AIC lane** runs only decision-node scripts, so a validate scope case
+  runs locally only.
+
+## OAuth2 may-act context (listed 2026-11-10)
+
+`context: "OAUTH2_MAY_ACT"` runs from the overlay
+`packages/rhino-local/src/bindings/rhino/context-oauth2-may-act.cjs`,
+on the same `context-common.cjs` views, so the view-level gaps above apply
+here too, with the prefix `oauth2-may-act-unmeasured/`. The conformance
+test (`test/bindings/oauth2-may-act.e2e.test.ts`) replays the surface probe
+and the 38 result cases captured from a `client_credentials` token request.
+What it approximates or leaves out:
+
+- **One entry point.** Only the access-token may-act script on a
+  `client_credentials` grant was measured. Authorization-code, refresh and
+  token-exchange requests were not, and `oidcMayActScript` was not.
+- **`for...in` over `token`.** AIC lists the Java bean members;
+  the emulator does not. The conformance test drops `tokenMembers`.
+- **`cookieName`'s value** on next-gen. The capture records `typeof`
+  `string`. The characters were not read.
+- **`scopes.toArray()`.** The capture records `typeof`, `Array.isArray`,
+  `length` and `typeof [i]`. `JSON.stringify`, borrowed Array methods and
+  index writes fault.
+- **Request value lists.** `String`, `length` and `[i]` answer.
+  `JSON.stringify`, `[].concat` and `Array.prototype.slice` fault. JSON was
+  measured on `scopes`, not on the request, and concat and slice were already
+  refused.
+- **`clientProperties` sets.** Reading `allowedGrantTypes`, `allowedScopes`
+  or `allowedResponseTypes` on next-gen is AIC's class-shutter error, so a
+  case cannot see them either way.
+- **Caught-exception objects.** The err-args and err-java probes recorded
+  `typeof`, the tag, `name` and `String`. Other properties of the thrown
+  value were not read.
+- **Unmeasured claim shapes.** A function, a `RegExp`, a getter, a cycle or
+  `Infinity` inside the object faults at the harvest. A `Date` that is a
+  direct property is the measured Jackson 500. A `Date` nested further down
+  was not measured and faults. `size()` of a map or number JsonValue, `get`
+  on a string, number or list JsonValue, and `JSON.stringify` of a non-null
+  JsonValue fault.
+- **The AIC lane** runs only decision-node scripts, so a may-act case runs
+  locally only.
+
+## LIBRARY context (listed 2026-11-11)
+
+`context: "LIBRARY"` runs on next-gen only, from the overlay
+`packages/rhino-local/src/bindings/rhino/context-library.cjs`. The conformance
+test (`test/bindings/library.e2e.test.ts`) replays the surface probe required
+from a decision node and from four next-gen OAuth callers, plus the return,
+throw, module-load throw and `module.exports` replacement those callers
+recorded. What it approximates or leaves out:
+
+- **The caller's shutter, not a measured message.**
+  `given.library.callerContext` installs that caller's class allow-list. The
+  decision node constructs `java.util.HashSet` (`"ok-1"`). Token modification,
+  validate scope, may-act and evaluate scope refuse it (`"err"`). The probe did
+  not record the error text; the runner's refusal is that caller's class
+  shutter, whose wording was not re-measured inside a library. `ArrayList` was
+  not probed on those callers. Evaluate scope is a caller, not a case context.
+  Its descriptor's `allowLists` matches the other three OAuth callers, and the
+  runner uses that shared list.
+- **Callers not probed.** OIDC claims, the social IdP profile transformation and
+  the config provider node were not used as library callers.
+  `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` was not reached.
+  `OAUTH2_SCRIPTED_JWT_ISSUER` has no configuration hook. Evaluate scope is a
+  caller, not a case context.
+- **`undefined` as an argument.** The live `echo(undefined)` returned
+  `undefined`. `given.library.args` is JSON, which cannot carry a top-level
+  `undefined`, so that call is not a case.
+- **Members present but not called.** `emailService`, `jwtAssertion`,
+  `jwtValidator` and `policy` were objects. Every function member faults as
+  `library-unmeasured/<binding>.<member>`. `String` and `JSON.stringify` of
+  those four were not measured and fault the same way
+  (`library-unmeasured/String(<binding>)`,
+  `library-unmeasured/JSON.stringify(<binding>)`). `logger.getName` was called
+  with no arguments; any other count faults
+  `library-unmeasured/logger.getName(…)`. `httpClient.send`, the other `logger`
+  methods, `secrets`, and `utils` beyond `base64.encode` keep the decision-node
+  harness. The probe did not show those members differing inside a library, and
+  it did not call them.
+- **`cookieName`'s characters.** The capture records a 15-character string that
+  is not `iPlanetDirectoryPro`. The characters were not kept.
+- **The error `HashSet` raised on an OAuth caller.** The probe recorded `"err"`
+  and not the message. The runner's catchable error is the caller's class
+  shutter, not a string copied from the capture.
+- **`bindingOverrides`.** They run after the library unbind. An override of a
+  name on the unbound list does not reach a library (the library scope filters
+  it), but an override of a name a library sees (`logger`, say) does.
+- **Library scope from every caller.** A library `require()`d from any case
+  runs in its own scope (`java/LibraryHost.java`, `java/LibraryScope.java`): the
+  names bound after the preamble, less the measured unbound list. A caller's
+  binding on that list, or a `var` the caller declared, is the engine's
+  `ReferenceError` inside the library, as on AIC. Assignments a library makes to an undeclared name stay in
+  that library's scope; whether AIC shares them between libraries or with the
+  caller is unmeasured. The `node:vm` unit-test helper evaluates libraries in
+  the caller's scope and does not model this.
+- **The AIC lane** runs only decision-node scripts, so a library case runs
+  locally only.
+
+## Native error location inside the `toSource` wrapper (2026-11-10)
+
+`Function.prototype.toSource` is wrapped (script source in the preamble) so a
+branded detail member refuses. A native error raised inside it, such as
+`Function.prototype.toSource.call(new java.util.ArrayList())`, keeps its kind
+and message (`InternalError: Cannot find default value for object.`) but ends
+`(<preamble>#NNNN)` where bare Rhino ends in the author's script and line.
+Preserving it would need the wrapper in Java; not done. Pinned by
+`test/bindings/tosource-native-error-location.e2e.test.ts`.
+
 ## What this does _not_ claim
 
 - It does not claim the 384-script production corpus was run. That tree is not
   here.
-- It does not claim OAuth2 / ATM / may-act scripts were pointed at this harness.
-  They are a different binding surface.
+- It does not claim OAuth2 scripts in general run here. Access-token
+  modification, OIDC claims and the social IdP profile transformation do,
+  as do the config provider node, validate scope and may-act (sections
+  above). A next-gen library script can be called directly (`LIBRARY`,
+  section above). The other OAuth2 contexts are a different binding surface
+  and are not emulated. Evaluate scope was measured only as a caller of a
+  library.
 - A known gap is not coverage. Eighteen of 57 differ from AIC on at least one key,
   and one of those (`identity-enum-attrs`) has no valid live measurement.
 - `require()` is a CommonJS eval of seeded source, not AM's wrap factory. The

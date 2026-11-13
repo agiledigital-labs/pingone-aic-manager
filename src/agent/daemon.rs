@@ -1,5 +1,6 @@
 //! Agent daemon: listens on a Unix socket, holds decrypted JWKs in memory,
-//! mints/refreshes bearer tokens on request.
+//! mints/refreshes bearer tokens on request. Journaled JSON writes carry their
+//! caller-chosen transaction id through to AicClient without regeneration.
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
@@ -397,6 +398,9 @@ async fn handle(
             Ok(None) => Response::Locked,
             Err(Error::ProdConfirmRequired) => Response::ProdConfirmRequired,
             Err(Error::Api { status, body }) => Response::ApiError { status, body },
+            Err(e @ Error::Http(_)) => Response::Transport {
+                message: e.to_string(),
+            },
             Err(e) => Response::Error {
                 message: e.to_string(),
             },
@@ -704,8 +708,11 @@ async fn do_api_call(
                     &call.path,
                     call.body.unwrap_or(serde_json::Value::Null),
                     call.confirmed_prod,
-                    av,
-                    None,
+                    crate::aic::WriteHeaders::new(
+                        av,
+                        call.if_match.as_deref(),
+                        call.transaction_id.as_deref(),
+                    ),
                 )
                 .await?
         }
@@ -716,8 +723,11 @@ async fn do_api_call(
                     &call.path,
                     call.body.unwrap_or(serde_json::Value::Null),
                     call.confirmed_prod,
-                    av,
-                    call.if_match.as_deref(),
+                    crate::aic::WriteHeaders::new(
+                        av,
+                        call.if_match.as_deref(),
+                        call.transaction_id.as_deref(),
+                    ),
                 )
                 .await?
         }
@@ -728,8 +738,11 @@ async fn do_api_call(
                     &call.path,
                     call.body.unwrap_or(serde_json::Value::Null),
                     call.confirmed_prod,
-                    av,
-                    None,
+                    crate::aic::WriteHeaders::new(
+                        av,
+                        call.if_match.as_deref(),
+                        call.transaction_id.as_deref(),
+                    ),
                 )
                 .await?
         }
@@ -740,8 +753,11 @@ async fn do_api_call(
                     &call.path,
                     call.body.unwrap_or(serde_json::Value::Null),
                     call.confirmed_prod,
-                    av,
-                    None,
+                    crate::aic::WriteHeaders::new(
+                        av,
+                        call.if_match.as_deref(),
+                        call.transaction_id.as_deref(),
+                    ),
                 )
                 .await?
         }

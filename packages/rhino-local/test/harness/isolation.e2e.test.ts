@@ -283,13 +283,6 @@ describe("case isolation across files on a pooled JVM", () => {
         return (await runCase(runner, kase, { classShutter: false })).effects.sharedState.final.leak;
       },
     ],
-    [
-      "a legacy-engine case",
-      async (runner) => {
-        const kase = defineCase({ name: "legacy", script: `sharedState.put("leak", ${POLLUTE_JVM}); outcome = "done";`, outcomes: ["done"], given: { engine: "legacy" }, expect: { outcome: "done" } });
-        return (await runCase(runner, kase)).effects.sharedState.final.leak;
-      },
-    ],
   ];
   it.each(unshuttered)("a JVM that ran %s is not lent to the next file", async (_name, polluteJvm) => {
     const first = await file(async (runner) => {

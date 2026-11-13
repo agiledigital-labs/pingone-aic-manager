@@ -11,6 +11,11 @@
 //! generates (leaf `tsconfig.json`, AM LIBRARY wrappers). Script source is
 //! never deleted.
 
+mod mutations;
+
+pub(crate) use mutations::FileChange;
+use mutations::Mutations;
+
 use crate::Result;
 use crate::app::App;
 use crate::app::event::ToastKind;
@@ -23,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 104;
+pub const TEMPLATES_VERSION: u32 = 107;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -91,6 +96,14 @@ const MANAGED: &[(&str, &str)] = &[
     (
         "am/types/social-handler.d.ts",
         include_str!("templates/am/types/social-handler.d.ts"),
+    ),
+    (
+        "am/types/social-normalize-ng.d.ts",
+        include_str!("templates/am/types/social-normalize-ng.d.ts"),
+    ),
+    (
+        "am/types/config-provider-ng.d.ts",
+        include_str!("templates/am/types/config-provider-ng.d.ts"),
     ),
     (
         "am/types/saml-nameid-mapper.d.ts",
@@ -450,19 +463,14 @@ fn state_path_in(tree: &Path) -> PathBuf {
 
 fn load_state(tree: &Path) -> Result<WorkspaceState> {
     let path = state_path_in(tree);
-    if !path.exists() {
+    if !path.try_exists()? {
         return Ok(WorkspaceState::default());
     }
     Ok(toml::from_str(&std::fs::read_to_string(&path)?)?)
 }
 
-fn save_state(tree: &Path, state: &WorkspaceState) -> Result<()> {
-    let path = state_path_in(tree);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, toml::to_string_pretty(state)?)?;
-    Ok(())
+fn save_state(tree: &Path, state: &WorkspaceState, mutations: &mut Mutations) -> Result<()> {
+    mutations.write(&state_path_in(tree), toml::to_string_pretty(state)?)
 }
 
 /// SHA-256 of the exact bytes we write (or read back), lowercase hex.
@@ -616,35 +624,40 @@ fn merge_object_value(
 }
 
 /// Write the TypeScript project's `package.json`, merging with any existing one.
-fn write_ts_package_json(tree: &Path, report: &mut WorkspaceReport) -> Result<()> {
+fn write_ts_package_json(
+    tree: &Path,
+    report: &mut WorkspaceReport,
+    mutations: &mut Mutations,
+) -> Result<()> {
     let path = tree.join(PROJECT_DIR).join("package.json");
     let contents = match std::fs::read_to_string(&path) {
         Ok(existing) => merge_package_json(&existing, TS_PACKAGE_JSON)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => TS_PACKAGE_JSON.to_string(),
         Err(error) => return Err(error.into()),
     };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, contents)?;
+    mutations.write(&path, contents)?;
     report.written.push(path);
     Ok(())
 }
 
-fn write_if(path: &Path, contents: &str, overwrite: bool) -> Result<bool> {
-    if path.exists() && !overwrite {
+fn write_if(
+    path: &Path,
+    contents: &str,
+    overwrite: bool,
+    mutations: &mut Mutations,
+) -> Result<bool> {
+    if mutations.exists(path)? && !overwrite {
         return Ok(false);
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, contents)?;
+    mutations.write(path, contents)?;
     Ok(true)
 }
 
 /// What a scaffolding run wrote (and, on update, removed or left).
 #[derive(Debug, Default)]
 pub struct WorkspaceReport {
+    /// Template version at the start of this run (zero means uninitialised).
+    pub applied_version: u32,
     pub written: Vec<PathBuf>,
     pub removed: Vec<PathBuf>,
     /// Per-script folders that held only generated scaffolding (leaf
@@ -673,6 +686,24 @@ pub fn update(tenant: &str) -> Result<WorkspaceReport> {
     scaffold(tenant, true)
 }
 
+/// Preview the real update decisions without creating or changing anything.
+pub(crate) fn preview_update(tenant: &str) -> Result<WorkspacePreview> {
+    preview_update_at(&ProjectConfig::workspace_tree(tenant))
+}
+
+/// Scaffold decisions plus byte changes relative to the workspace root.
+pub(crate) struct WorkspacePreview {
+    pub report: WorkspaceReport,
+    pub changes: BTreeMap<PathBuf, FileChange>,
+}
+
+fn preview_update_at(tree: &Path) -> Result<WorkspacePreview> {
+    let mut mutations = Mutations::preview();
+    let report = scaffold_with(tree, true, &mut mutations)?;
+    let changes = mutations.changes(tree)?;
+    Ok(WorkspacePreview { report, changes })
+}
+
 fn scaffold(tenant: &str, is_update: bool) -> Result<WorkspaceReport> {
     let tree = ProjectConfig::workspace_tree(tenant);
     scaffold_at(&tree, is_update)
@@ -681,33 +712,42 @@ fn scaffold(tenant: &str, is_update: bool) -> Result<WorkspaceReport> {
 /// Scaffold into an explicit `tree` dir (no tenant state). Split out from
 /// [`scaffold`] so it can be exercised against a temp dir in tests.
 fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
+    scaffold_with(tree, is_update, &mut Mutations::Apply)
+}
+
+fn scaffold_with(
+    tree: &Path,
+    is_update: bool,
+    mutations: &mut Mutations,
+) -> Result<WorkspaceReport> {
     let mut report = WorkspaceReport {
         tree: tree.to_path_buf(),
         ..Default::default()
     };
     let mut state = load_state(tree)?;
+    report.applied_version = state.templates_version;
 
     // An update that first introduces the TypeScript project still has to seed
     // its user files — otherwise an existing workspace gets a framework with no
     // `src/` to build, and `npm run build` reports "nothing to build" forever.
-    let typescript_is_new = !tree.join(PROJECT_DIR).join("src").exists();
+    let typescript_is_new = !tree.join(PROJECT_DIR).join("src").try_exists()?;
 
     // AM script folders are created per type on pull (each gets its own leaf
     // `tsconfig.json` then — see `am::extra_files`), so we only scaffold the
     // shared `am/` defs here. IDM folders are fixed, so create them up front.
-    std::fs::create_dir_all(tree.join("am"))?;
-    std::fs::create_dir_all(tree.join("idm").join("endpoint"))?;
-    std::fs::create_dir_all(tree.join("idm").join("managed"))?;
-    std::fs::create_dir_all(tree.join("idm").join("schedule"))?;
-    std::fs::create_dir_all(tree.join("idm").join("sync"))?;
+    mutations.create_dir_all(&tree.join("am"))?;
+    mutations.create_dir_all(&tree.join("idm").join("endpoint"))?;
+    mutations.create_dir_all(&tree.join("idm").join("managed"))?;
+    mutations.create_dir_all(&tree.join("idm").join("schedule"))?;
+    mutations.create_dir_all(&tree.join("idm").join("sync"))?;
     for sub in ["src/endpoints", "src/shared", "src/generated", "tests"] {
-        std::fs::create_dir_all(tree.join(PROJECT_DIR).join(sub))?;
+        mutations.create_dir_all(&tree.join(PROJECT_DIR).join(sub))?;
     }
 
     // Managed shared files (always (re)written).
     for (rel, contents) in MANAGED {
         let path = tree.join(rel);
-        if write_if(&path, contents, true)? {
+        if write_if(&path, contents, true, mutations)? {
             report.written.push(path);
         }
     }
@@ -715,23 +755,23 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     if !is_update {
         for (rel, contents) in USER {
             let path = tree.join(rel);
-            if write_if(&path, contents, false)? {
+            if write_if(&path, contents, false, mutations)? {
                 report.written.push(path);
             }
         }
     }
-    seed_typescript_user_files(tree, typescript_is_new, &mut state, &mut report)?;
+    seed_typescript_user_files(tree, typescript_is_new, &mut state, &mut report, mutations)?;
     // Persist the seed hashes before the fallible writes below. They describe
     // bytes already on disk, so losing them to a later error would leave a
     // tool-written seed looking user-edited — and a seed reported as drifted is
     // never refreshed again. `templates_version` is deliberately still the old
     // value here, so a failed run retries the whole update rather than
     // recording work it did not finish.
-    save_state(tree, &state)?;
-    write_ts_package_json(tree, &mut report)?;
+    save_state(tree, &state, mutations)?;
+    write_ts_package_json(tree, &mut report, mutations)?;
     // `.gitignore` is managed (always refreshed).
     let gi = tree.join(".gitignore");
-    if write_if(&gi, GITIGNORE, true)? {
+    if write_if(&gi, GITIGNORE, true, mutations)? {
         report.written.push(gi);
     }
 
@@ -740,8 +780,8 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     // user scripts. (No-op on a fresh init — none exist yet.)
     for rel in OBSOLETE {
         let path = tree.join(rel);
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        if mutations.exists(&path)? {
+            mutations.remove_file(&path)?;
             report.removed.push(path);
         }
     }
@@ -749,7 +789,7 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     // Generated-only script folders (leaf tsconfig, no `.cjs`) are the same
     // class of leftover: files this tool wrote, now with no source to justify
     // them. Prune before refreshing leaves so we don't rewrite an orphan.
-    prune_orphaned_script_folders(tree, &mut report)?;
+    prune_orphaned_script_folders(tree, &mut report, mutations)?;
 
     // Leaf `tsconfig.json` files are normally (re)written per script folder on
     // pull (`am::extra_files`). Renaming the shared type files means existing,
@@ -757,17 +797,14 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     // so an update refreshes every already-pulled AM leaf in place.
     for realm in REALMS {
         let realm_dir = tree.join("am").join(realm);
-        let Ok(entries) = std::fs::read_dir(&realm_dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        for entry in mutations.read_dir(&realm_dir)? {
             let dir = entry.path();
             let leaf = dir.join("tsconfig.json");
             // `entry.file_type()`, not `dir.is_dir()`: the latter follows a
             // symlink and would rewrite a `tsconfig.json` outside the tree.
-            if entry.file_type().is_ok_and(|t| t.is_dir()) && leaf.exists() {
+            if entry.file_type()?.is_dir() && mutations.exists(&leaf)? {
                 let slug = entry.file_name().to_string_lossy().into_owned();
-                std::fs::write(&leaf, super::am::leaf_tsconfig(&slug))?;
+                mutations.write(&leaf, super::am::leaf_tsconfig(&slug))?;
                 report.written.push(leaf);
             }
         }
@@ -776,21 +813,19 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     // Managed hooks also use one leaf project per object so each folder sees
     // only its own generated `object` binding.
     let managed_dir = tree.join("idm").join("managed");
-    if let Ok(entries) = std::fs::read_dir(&managed_dir) {
-        for entry in entries.flatten() {
-            let dir = entry.path();
-            let leaf = dir.join("tsconfig.json");
-            // Same non-following selection as the AM realm pass above.
-            if entry.file_type().is_ok_and(|t| t.is_dir()) && leaf.exists() {
-                let object = entry.file_name().to_string_lossy().into_owned();
-                std::fs::write(&leaf, super::managed_hooks::leaf_tsconfig(&object))?;
-                report.written.push(leaf);
-            }
+    for entry in mutations.read_dir(&managed_dir)? {
+        let dir = entry.path();
+        let leaf = dir.join("tsconfig.json");
+        // Same non-following selection as the AM realm pass above.
+        if entry.file_type()?.is_dir() && mutations.exists(&leaf)? {
+            let object = entry.file_name().to_string_lossy().into_owned();
+            mutations.write(&leaf, super::managed_hooks::leaf_tsconfig(&object))?;
+            report.written.push(leaf);
         }
     }
 
     state.templates_version = TEMPLATES_VERSION;
-    save_state(tree, &state)?;
+    save_state(tree, &state, mutations)?;
     Ok(report)
 }
 
@@ -809,87 +844,76 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
 /// next to a *shared* folder `tsconfig.json` that `MANAGED` owns, not a
 /// per-script leaf. Managed-hook object folders and sync-mapping category
 /// folders do, so they get the same pass.
-fn prune_orphaned_script_folders(tree: &Path, report: &mut WorkspaceReport) -> Result<()> {
+fn prune_orphaned_script_folders(
+    tree: &Path,
+    report: &mut WorkspaceReport,
+    mutations: &mut Mutations,
+) -> Result<()> {
     for realm in REALMS {
-        prune_child_dirs(&tree.join("am").join(realm), report)?;
+        prune_child_dirs(&tree.join("am").join(realm), report, mutations)?;
     }
-    prune_child_dirs(&tree.join("idm").join("managed"), report)?;
-    prune_sync_mapping_dirs(&tree.join("idm").join("sync"), report)?;
+    prune_child_dirs(&tree.join("idm").join("managed"), report, mutations)?;
+    prune_sync_mapping_dirs(&tree.join("idm").join("sync"), report, mutations)?;
     Ok(())
 }
 
-fn prune_sync_mapping_dirs(sync_root: &Path, report: &mut WorkspaceReport) -> Result<()> {
-    let Some(mappings) = read_dir_complete(sync_root) else {
-        return Ok(());
-    };
+fn prune_sync_mapping_dirs(
+    sync_root: &Path,
+    report: &mut WorkspaceReport,
+    mutations: &mut Mutations,
+) -> Result<()> {
+    let mappings = mutations.read_dir(sync_root)?;
     for mapping in mappings {
-        if !entry_is_dir(&mapping) {
+        if !mapping.file_type()?.is_dir() {
             continue;
         }
         let mapping_dir = mapping.path();
-        prune_child_dirs(&mapping_dir, report)?;
+        prune_child_dirs(&mapping_dir, report, mutations)?;
         // Category prune may have emptied the mapping folder.
-        prune_if_generated_only(&mapping_dir, report)?;
+        prune_if_generated_only(&mapping_dir, report, mutations)?;
     }
     Ok(())
 }
 
-fn prune_child_dirs(parent: &Path, report: &mut WorkspaceReport) -> Result<()> {
-    let Some(entries) = read_dir_complete(parent) else {
-        return Ok(());
-    };
+fn prune_child_dirs(
+    parent: &Path,
+    report: &mut WorkspaceReport,
+    mutations: &mut Mutations,
+) -> Result<()> {
+    let entries = mutations.read_dir(parent)?;
     for entry in entries {
-        if entry_is_dir(&entry) {
-            prune_if_generated_only(&entry.path(), report)?;
+        if entry.file_type()?.is_dir() {
+            prune_if_generated_only(&entry.path(), report, mutations)?;
         }
     }
     Ok(())
-}
-
-/// `None` if the directory is missing or any entry could not be read — a
-/// partial listing must not decide a prune.
-fn read_dir_complete(dir: &Path) -> Option<Vec<std::fs::DirEntry>> {
-    std::fs::read_dir(dir)
-        .ok()
-        .and_then(|iter| iter.collect::<std::io::Result<Vec<_>>>().ok())
-}
-
-/// True for a real directory. `DirEntry::file_type` does not follow
-/// symlinks; `Path::is_dir` does, and would let a prune walk outside
-/// the workspace.
-fn entry_is_dir(entry: &std::fs::DirEntry) -> bool {
-    entry.file_type().is_ok_and(|t| t.is_dir())
 }
 
 /// Delete `dir` when every entry is a generated scaffold: a file named
 /// `tsconfig.json` (matched by name, not contents) or an AM LIBRARY wrapper
 /// (`am::is_library_wrapper_file`). Any other file, subdirectory, or
 /// symlink is treated as user content and the folder is left alone.
-fn prune_if_generated_only(dir: &Path, report: &mut WorkspaceReport) -> Result<()> {
-    let Some(entries) = read_dir_complete(dir) else {
-        return Ok(());
-    };
+fn prune_if_generated_only(
+    dir: &Path,
+    report: &mut WorkspaceReport,
+    mutations: &mut Mutations,
+) -> Result<()> {
+    let entries = mutations.read_dir(dir)?;
     let mut generated = Vec::new();
     for entry in entries {
         let path = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(t) => t,
-            Err(_) => return Ok(()),
-        };
+        let file_type = entry.file_type()?;
         if !file_type.is_file() || !is_generated_scaffold(&path) {
             return Ok(());
         }
         generated.push(path);
     }
     for path in &generated {
-        std::fs::remove_file(path)?;
+        mutations.remove_file(path)?;
         report.removed.push(path.clone());
     }
-    match std::fs::remove_dir(dir) {
-        Ok(()) => report.pruned.push(dir.to_path_buf()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
+    mutations.remove_dir(dir)?;
+    report.pruned.push(dir.to_path_buf());
     Ok(())
 }
 
@@ -913,9 +937,18 @@ fn seed_typescript_user_files(
     typescript_is_new: bool,
     state: &mut WorkspaceState,
     report: &mut WorkspaceReport,
+    mutations: &mut Mutations,
 ) -> Result<()> {
     for (rel, contents) in TS_USER {
-        seed_one(tree, rel, contents, typescript_is_new, state, report)?;
+        seed_one(
+            tree,
+            rel,
+            contents,
+            typescript_is_new,
+            state,
+            report,
+            mutations,
+        )?;
     }
     state
         .seed_hashes
@@ -930,18 +963,19 @@ fn seed_one(
     typescript_is_new: bool,
     state: &mut WorkspaceState,
     report: &mut WorkspaceReport,
+    mutations: &mut Mutations,
 ) -> Result<()> {
     let path = tree.join(rel);
     let wanted = content_hash(contents.as_bytes());
 
-    if !path.exists() {
+    if !path.try_exists()? {
         // A missing `src/` is "the project is new", not "the user deleted
         // every seed": re-seed. A missing file next to a live `src/` whose
         // hash we recorded is a deletion — the README told them to do that.
         if !typescript_is_new && state.seed_hashes.contains_key(rel) {
             return Ok(());
         }
-        if write_if(&path, contents, true)? {
+        if write_if(&path, contents, true, mutations)? {
             report.written.push(path);
         }
         state.seed_hashes.insert(rel.to_string(), wanted);
@@ -952,7 +986,7 @@ fn seed_one(
     let disk_hash = content_hash(&on_disk);
     match state.seed_hashes.get(rel) {
         Some(recorded) if recorded == &disk_hash => {
-            if disk_hash != wanted && write_if(&path, contents, true)? {
+            if disk_hash != wanted && write_if(&path, contents, true, mutations)? {
                 report.written.push(path);
             }
             state.seed_hashes.insert(rel.to_string(), wanted);
@@ -992,8 +1026,8 @@ mod tests {
     #[test]
     fn every_template_edit_is_covered_by_a_version_bump() {
         const TEMPLATE_RELEASE: (u32, &str) = (
-            104,
-            "fcc3e5938045f03bb164fbce4cf095d1d819340d245e4f246b95f77d36d67d73",
+            107,
+            "97dcbde28f64582bac0ba4f1ac9e7e46b8b1dc77e23435ab9156420d1cc7dd7e",
         );
         const LOCAL_ARTIFACTS: &[&str] = &[
             "node_modules",
@@ -1329,13 +1363,31 @@ mod tests {
             .1
             .to_string();
 
-        let leaves: [(&str, String); 5] = [
+        let leaves: [(&str, String); 11] = [
             (
                 "legacy-access-token",
                 am::leaf_tsconfig("oauth2-access-token"),
             ),
             ("nextgen-decision-node", am::leaf_tsconfig("decision-node")),
             ("legacy-oidc-claims", am::leaf_tsconfig("oidc-claims")),
+            (
+                "nextgen-access-token",
+                am::leaf_tsconfig("oauth2-access-token-ng"),
+            ),
+            (
+                "nextgen-validate-scope",
+                am::leaf_tsconfig("oauth2-validate-scope-ng"),
+            ),
+            ("nextgen-oidc-claims", am::leaf_tsconfig("oidc-claims-ng")),
+            ("nextgen-may-act", am::leaf_tsconfig("oauth2-may-act-ng")),
+            (
+                "nextgen-social-normalize",
+                am::leaf_tsconfig("social-normalize-ng"),
+            ),
+            (
+                "nextgen-config-provider",
+                am::leaf_tsconfig("config-provider-ng"),
+            ),
             ("idm-endpoint", idm_endpoint),
             (
                 "idm-managed-hook",
@@ -1972,6 +2024,306 @@ mod tests {
         std::env::temp_dir().join(format!("aic-ws-test-{}", uuid::Uuid::new_v4()))
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum TreeEntry {
+        Directory,
+        File(String),
+        Symlink(PathBuf),
+    }
+
+    // Include hidden state, empty directories and link targets without following
+    // links: byte-only file comparisons miss dry-run directory creation.
+    fn tree_snapshot(tree: &Path) -> BTreeMap<PathBuf, TreeEntry> {
+        fn walk(root: &Path, dir: &Path, entries: &mut BTreeMap<PathBuf, TreeEntry>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let file_type = entry.file_type().unwrap();
+                let value = if file_type.is_dir() {
+                    walk(root, &path, entries);
+                    TreeEntry::Directory
+                } else if file_type.is_symlink() {
+                    TreeEntry::Symlink(std::fs::read_link(&path).unwrap())
+                } else {
+                    TreeEntry::File(content_hash(&std::fs::read(&path).unwrap()))
+                };
+                entries.insert(path.strip_prefix(root).unwrap().to_path_buf(), value);
+            }
+        }
+        let mut entries = BTreeMap::new();
+        if tree.try_exists().unwrap() {
+            entries.insert(PathBuf::new(), TreeEntry::Directory);
+            walk(tree, tree, &mut entries);
+        }
+        entries
+    }
+
+    #[test]
+    fn preview_predicts_the_real_update_and_leaves_the_entire_tree_untouched() {
+        // Pins all mutation paths, especially package merge and nested prune:
+        // a preview that duplicates only MANAGED cannot pass this comparison.
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let missing = "am/types/common.d.ts";
+        let changed = "am/tsconfig.json";
+        std::fs::remove_file(tree.join(missing)).unwrap();
+        std::fs::write(tree.join(changed), "old managed config").unwrap();
+        std::fs::write(tree.join("am/src.d.ts"), "obsolete").unwrap();
+        let package = tree.join("typescript/package.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&package).unwrap()).unwrap();
+        json["devDependencies"]["typescript"] = "0.0.1".into();
+        json["dependencies"]["my-user-dependency"] = "^1.0.0".into();
+        std::fs::write(&package, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        for folder in [
+            "am/alpha/lib",
+            "idm/managed/old_object",
+            "idm/sync/old_mapping/transform",
+        ] {
+            std::fs::create_dir_all(tree.join(folder)).unwrap();
+            std::fs::write(tree.join(folder).join("tsconfig.json"), "{}").unwrap();
+        }
+        std::fs::write(
+            tree.join("am/alpha/lib/Helper.js"),
+            super::super::am::library_wrapper_contents("Helper"),
+        )
+        .unwrap();
+        for folder in ["am/bravo/oidc-claims", "idm/managed/alpha_user"] {
+            std::fs::create_dir_all(tree.join(folder)).unwrap();
+            std::fs::write(tree.join(folder).join("tsconfig.json"), "old leaf").unwrap();
+            std::fs::write(tree.join(folder).join("source.cjs"), "// user source").unwrap();
+        }
+        let drifted = TS_USER[0].0;
+        let unverifiable = TS_USER[1].0;
+        let refreshed = TS_USER[2].0;
+        std::fs::write(tree.join(drifted), "// user edit").unwrap();
+        std::fs::write(tree.join(unverifiable), "// unknown provenance").unwrap();
+        std::fs::write(tree.join(refreshed), "// old seed").unwrap();
+        let mut state = load_state(&tree).unwrap();
+        state.templates_version = 93;
+        state.seed_hashes.remove(unverifiable);
+        state
+            .seed_hashes
+            .insert(refreshed.into(), content_hash(b"// old seed"));
+        save_state(&tree, &state, &mut Mutations::Apply).unwrap();
+        std::fs::write(tree.join(".aic-sync/other-state"), "leave alone").unwrap();
+        let before = tree_snapshot(&tree);
+
+        let preview = preview_update_at(&tree).unwrap();
+        assert_eq!(tree_snapshot(&tree), before, "preview must write nothing");
+        assert_eq!(preview.report.applied_version, 93);
+        let expected = BTreeMap::from([
+            (PathBuf::from(missing), FileChange::Create),
+            (PathBuf::from(changed), FileChange::Change),
+            (PathBuf::from("typescript/package.json"), FileChange::Change),
+            (PathBuf::from(".aic-sync/state.toml"), FileChange::Change),
+            (PathBuf::from(refreshed), FileChange::Change),
+            (
+                PathBuf::from("am/bravo/oidc-claims/tsconfig.json"),
+                FileChange::Change,
+            ),
+            (
+                PathBuf::from("idm/managed/alpha_user/tsconfig.json"),
+                FileChange::Change,
+            ),
+            (PathBuf::from("am/src.d.ts"), FileChange::Remove),
+            (
+                PathBuf::from("am/alpha/lib/tsconfig.json"),
+                FileChange::Remove,
+            ),
+            (PathBuf::from("am/alpha/lib/Helper.js"), FileChange::Remove),
+            (
+                PathBuf::from("idm/managed/old_object/tsconfig.json"),
+                FileChange::Remove,
+            ),
+            (
+                PathBuf::from("idm/sync/old_mapping/transform/tsconfig.json"),
+                FileChange::Remove,
+            ),
+        ]);
+        assert_eq!(preview.changes, expected);
+        assert_eq!(preview.report.drifted, vec![tree.join(drifted)]);
+        assert_eq!(preview.report.unverifiable, vec![tree.join(unverifiable)]);
+        let pruned = preview
+            .report
+            .pruned
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_pruned = [
+            "am/alpha/lib",
+            "idm/managed/old_object",
+            "idm/sync/old_mapping/transform",
+            "idm/sync/old_mapping",
+        ]
+        .map(|rel| tree.join(rel));
+        assert_eq!(pruned, expected_pruned.iter().collect());
+
+        let real = scaffold_at(&tree, true).unwrap();
+        let after = tree_snapshot(&tree);
+        let mut actual = BTreeMap::new();
+        for (path, entry) in &after {
+            if let TreeEntry::File(_) = entry {
+                match before.get(path) {
+                    None => {
+                        actual.insert(path.clone(), FileChange::Create);
+                    }
+                    Some(old) if old != entry => {
+                        actual.insert(path.clone(), FileChange::Change);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (path, entry) in &before {
+            if matches!(entry, TreeEntry::File(_)) && !after.contains_key(path) {
+                actual.insert(path.clone(), FileChange::Remove);
+            }
+        }
+        assert_eq!(
+            actual, preview.changes,
+            "preview must predict every real byte change"
+        );
+        assert_eq!(real.drifted, preview.report.drifted);
+        assert_eq!(real.unverifiable, preview.report.unverifiable);
+        assert_eq!(
+            real.pruned
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            pruned
+        );
+        let merged: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(package).unwrap()).unwrap();
+        assert_eq!(merged["dependencies"]["my-user-dependency"], "^1.0.0");
+        assert!(
+            preview_update_at(&tree).unwrap().changes.is_empty(),
+            "identical bytes must not be listed"
+        );
+        std::fs::remove_dir_all(tree).unwrap();
+    }
+
+    #[test]
+    fn preview_of_an_uninitialised_tree_does_not_even_create_the_root() {
+        let tree = temp_tree();
+        let preview = preview_update_at(&tree).unwrap();
+        assert_eq!(preview.report.applied_version, 0);
+        assert!(!preview.changes.is_empty());
+        assert!(!tree.exists());
+    }
+
+    #[test]
+    fn preview_introduces_a_missing_typescript_project_without_creating_directories() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        std::fs::remove_dir_all(tree.join(PROJECT_DIR)).unwrap();
+        let before = tree_snapshot(&tree);
+        let preview = preview_update_at(&tree).unwrap();
+        assert_eq!(tree_snapshot(&tree), before);
+        for (rel, _) in MANAGED
+            .iter()
+            .filter(|(rel, _)| rel.starts_with("typescript/"))
+            .chain(TS_USER)
+        {
+            assert_eq!(
+                preview.changes.get(Path::new(rel)),
+                Some(&FileChange::Create),
+                "{rel}"
+            );
+        }
+        scaffold_at(&tree, true).unwrap();
+        // A newly introduced package is copied verbatim; its next update
+        // normalises the JSON through the real merge, which is a byte change.
+        assert_eq!(
+            preview_update_at(&tree).unwrap().changes,
+            BTreeMap::from([(PathBuf::from("typescript/package.json"), FileChange::Change),])
+        );
+        scaffold_at(&tree, true).unwrap();
+        assert!(preview_update_at(&tree).unwrap().changes.is_empty());
+        std::fs::remove_dir_all(tree).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_does_not_follow_directory_symlinks_for_prune_or_leaf_refresh() {
+        // A symlink into generated-only content catches prune traversal; one
+        // into content with a source catches the separate leaf-refresh walker.
+        let tree = temp_tree();
+        let outside = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        scaffold_at(&tree, true).unwrap();
+        for folder in ["generated", "with-source"] {
+            std::fs::create_dir_all(outside.join(folder)).unwrap();
+            std::fs::write(outside.join(folder).join("tsconfig.json"), "far side").unwrap();
+        }
+        std::fs::write(outside.join("with-source/source.cjs"), "// mine").unwrap();
+        for parent in ["am/alpha", "idm/managed", "idm/sync/mapping"] {
+            std::fs::create_dir_all(tree.join(parent)).unwrap();
+            for folder in ["generated", "with-source"] {
+                std::os::unix::fs::symlink(outside.join(folder), tree.join(parent).join(folder))
+                    .unwrap();
+            }
+        }
+        // Broken links are user content too; filtering them as absent would
+        // incorrectly predict pruning this mapping's parent directory.
+        std::os::unix::fs::symlink(outside.join("absent"), tree.join("idm/sync/mapping/broken"))
+            .unwrap();
+        let before = tree_snapshot(&tree);
+        let outside_before = tree_snapshot(&outside);
+        let preview = preview_update_at(&tree).unwrap();
+        assert!(preview.changes.is_empty());
+        assert!(preview.report.pruned.is_empty());
+        assert_eq!(tree_snapshot(&tree), before);
+        assert_eq!(tree_snapshot(&outside), outside_before);
+        scaffold_at(&tree, true).unwrap();
+        assert_eq!(tree_snapshot(&outside), outside_before);
+        std::fs::remove_dir_all(tree).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn update_persists_repaired_seed_hashes_before_a_later_failure() {
+        // The sink must keep the two state writes ordered: a failed package
+        // read must retain repaired provenance without marking templates done.
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let seed = TS_USER[0].0;
+        std::fs::write(tree.join(seed), "// previous bundled seed").unwrap();
+        let mut state = load_state(&tree).unwrap();
+        state.templates_version = 93;
+        state
+            .seed_hashes
+            .insert(seed.into(), content_hash(b"// previous bundled seed"));
+        save_state(&tree, &state, &mut Mutations::Apply).unwrap();
+        std::fs::remove_file(tree.join("typescript/package.json")).unwrap();
+        std::fs::create_dir(tree.join("typescript/package.json")).unwrap();
+        let before = tree_snapshot(&tree);
+        assert!(preview_update_at(&tree).is_err());
+        assert_eq!(tree_snapshot(&tree), before);
+        assert!(scaffold_at(&tree, true).is_err());
+        let state = load_state(&tree).unwrap();
+        assert_eq!(state.templates_version, 93);
+        assert_eq!(
+            state.seed_hashes.get(seed),
+            Some(&content_hash(TS_USER[0].1.as_bytes()))
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.join(seed)).unwrap(),
+            TS_USER[0].1
+        );
+        std::fs::remove_dir_all(tree).unwrap();
+    }
+
+    #[test]
+    fn preview_propagates_read_errors_without_writing() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        std::fs::remove_file(tree.join("am/types/common.d.ts")).unwrap();
+        std::fs::create_dir(tree.join("am/types/common.d.ts")).unwrap();
+        let before = tree_snapshot(&tree);
+        assert!(preview_update_at(&tree).is_err());
+        assert_eq!(tree_snapshot(&tree), before);
+        std::fs::remove_dir_all(tree).unwrap();
+    }
+
     #[test]
     fn init_writes_managed_and_user_files() {
         let tree = temp_tree();
@@ -2151,7 +2503,7 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, parent.join("foo")).unwrap();
 
         let mut report = WorkspaceReport::default();
-        prune_child_dirs(&parent, &mut report).unwrap();
+        prune_child_dirs(&parent, &mut report, &mut Mutations::Apply).unwrap();
 
         assert!(far.exists(), "far-side file must survive");
         assert!(parent.join("foo").exists(), "symlink itself stays");
@@ -2372,7 +2724,7 @@ mod tests {
         state
             .seed_hashes
             .insert(WIDGETS_SEED.to_string(), content_hash(b"// old seed\n"));
-        save_state(&tree, &state).unwrap();
+        save_state(&tree, &state, &mut Mutations::Apply).unwrap();
 
         let report = scaffold_at(&tree, true).unwrap();
         assert_eq!(
@@ -2415,7 +2767,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let mut state = load_state(&tree).unwrap();
         state.seed_hashes.remove(WIDGETS_SEED);
-        save_state(&tree, &state).unwrap();
+        save_state(&tree, &state, &mut Mutations::Apply).unwrap();
 
         let report = scaffold_at(&tree, true).unwrap();
         assert_eq!(
@@ -2459,7 +2811,7 @@ mod tests {
         std::fs::write(&path, "// maybe mine\n").unwrap();
         let mut state = load_state(&tree).unwrap();
         state.seed_hashes.remove(WIDGETS_SEED);
-        save_state(&tree, &state).unwrap();
+        save_state(&tree, &state, &mut Mutations::Apply).unwrap();
 
         let report = scaffold_at(&tree, true).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "// maybe mine\n");
@@ -2479,7 +2831,7 @@ mod tests {
         scaffold_at(&tree, false).unwrap();
         let mut state = load_state(&tree).unwrap();
         state.seed_hashes.remove(WIDGETS_SEED);
-        save_state(&tree, &state).unwrap();
+        save_state(&tree, &state, &mut Mutations::Apply).unwrap();
 
         let report = scaffold_at(&tree, true).unwrap();
         assert!(!report_has(&report.unverifiable, WIDGETS_SEED));

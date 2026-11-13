@@ -13,16 +13,69 @@ handwritten overlay in `src/bindings/rhino/runtime.cjs` replaces it. A mock
 that returned `undefined` would turn a missing feature into a passing test. That
 throw is a [harness fault](#harness-faults-refusals-a-script-cannot-catch)
 (`not-mocked/<binding>.<method>`), so catching it does not rescue the case.
+A method the generated surface does not declare at all is refused the same way
+(`not-implemented/<binding>.<method>`): AIC may have it, so the call is not
+answered with a `TypeError` a script could catch and carry on from. That covers
+every service object, the objects nested in one (`utils.crypto.subtle`), the
+request maps (`requestParameters`, `requestHeaders`, `requestCookies`,
+`existingSession`) and any object with methods that a service call returns,
+named by the call that made it (`idRepository.getIdentity().<method>`,
+`httpClient.send().get().<method>`, `nodeState.get().<method>`).
+
+What it does not cover:
+
+- A property read without a call. `typeof openidm.frobnicate` is `"undefined"`
+  and `openidm.frobnicate.call(openidm)` is a plain `TypeError`; the engine
+  gives no hook for a read, so an empty fault tally does not prove a script
+  touched nothing the harness lacks.
+- Plain data: a record `openidm.read` returns or a parsed body is the script's
+  own object, where a missing method is a `TypeError` on AIC too.
+- Java lists and sets, which refuse an unknown member themselves, as on AIC.
+  On a decision node `nodeState.keys()` is a `java.util.HashSet` (walk it with
+  `iterator()`), and a map's `values()` and an identity's
+  `getAttributeValues()` are Java lists.
+- The other script contexts' own views (`accessToken`, `identity`, `session`,
+  …), which fault under their `<context>-unmeasured` ids.
+
+The methods measured absent on AIC stay the engine's `TypeError`: the next-gen
+`logger` has no `message`, `warning` or `*Enabled`, and `existingSession` has no
+`hasOwnProperty`. An identity's whole member set was captured, so any name
+outside it (`getAttribute`, `size`, `isExists`) is a `TypeError` and only a
+member AIC has and the harness lacks (`hashCode`, `equals`, `getClass`) faults.
+A map entry named like a method (`get`) also gives a `TypeError`, because it
+hides the method as it does on AIC. A request map's `getClass()` is the
+measured class refusal.
 
 Implemented (still fail-loud for missing fixtures and for every method the
 overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
-legacy `sharedState`/`transientState` when `given.engine === "legacy"`,
 request maps, `outcome` / `action.goTo`, `logger`, `openidm`, `httpClient`,
 `callbacksBuilder` (the six authenticate-response types), `systemEnv`,
 `idRepository.getIdentity` (reads, and `store()` as `identityWrites`), next-gen `require()` (CommonJS eval of seeded
-library bodies; a missing id throws naming `given.libraries`), legacy
-`JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
+library bodies; a missing id throws naming `given.libraries`), and an inert
+`JavaImporter`. End-to-end cases live
 in `cases/`.
+
+## Breaking change: the legacy (V1) script engine is no longer emulated
+
+The emulator runs next-gen scripts only. Legacy decision nodes and the legacy
+variants of the OAuth2 access-token, OIDC claims, social IdP, config provider,
+validate-scope and may-act contexts get upgraded to next-gen in AM, not
+patched, and the emulator is moving its next-gen bindings onto real Java, so a
+second engine would be a second mechanism to maintain.
+
+- A case with `given.engine: "legacy"` fails `validateCase` / `defineCase` /
+  `runCase` at once, with a message naming the removal. It never falls through
+  to next-gen. Drop `given.engine` (or leave it as `"next-gen"`) after
+  upgrading the script.
+- `ENGINES` is now `["next-gen"]` and `Engine` is `"next-gen"`.
+- The legacy-only bindings are gone: `sharedState`/`transientState` on a
+  decision node, the legacy `JsonValue` construction route and `UserInfoClaims`
+  construction (the next-gen `JsonValue.json` / `JsonValue.object` route
+  remains), the legacy `Action.send` importer path, and the legacy variants of every context above.
+- The conformance catalog rows named `<context>.legacy.<binding>` are removed;
+  `<context>.next.<binding>` ids are unchanged.
+- The JavaScript context ids (`OAUTH2_ACCESS_TOKEN_MODIFICATION`, ...) are
+  unchanged and mean the next-gen context.
 
 ## Breaking change in 0.4.0-emulator.1: request values are Java lists
 
@@ -36,18 +89,27 @@ here and failed on the tenant.
 | `v.length`, `v[0]`, `v.size()`, `v.get(0)`        | `v.map(…)`, `v.join(…)`, any `Array.prototype` method |
 | `String(v)` gives Java's `"[a, b]"`               | `Array.isArray(v)` is `false`                        |
 | `requestParameters.forEach(function (k, v) {…})`  | `v.getClass()` (the class shutter refuses it)        |
+| `[].concat(v)` copies it into a JS array          |                                                      |
+| `JSON.stringify(v)` writes a JSON array           |                                                      |
 
-Only `size()` and `get(i)` with an index in range were measured. Any other
-call shape (`get()`, `get("0")`, an out-of-range index, `size(1)`) and every
-other `List` member (`isEmpty`, `contains`, `toArray`, `indexOf`, `iterator`,
-…) faults `request-list-unmeasured`. One gap: an out-of-range bracket read
-(`v[5]`) returns `undefined` without a fault, because an index read cannot be
-intercepted here; AIC's answer is unmeasured, so use `get(i)` with an index
-below `size()`. `JSON.stringify` of a value list was not
-measured either, so it faults `request-list-serialize` (one miss: a list an
-author's own `toJSON` returns under an array replacer is written unfaulted, and
-during such a call a list reads as having a `toJSON` function);
-copy the values into an array first:
+`[].concat(v)` (alone, among several lists or among plain values),
+`Array.prototype.concat.call(v, …)` and `JSON.stringify` by every route were
+measured on 2026-11-10. An empty header or parameter is a list of one empty
+string, and a key not sent is `null`, so `[].concat(missing)` is `[null]`.
+
+The value is a real `java.util.List`, so every other member answers as Java
+does: `isEmpty()`, `contains(x)`, `indexOf(x)`, `toArray()`,
+`forEach(function (x) {…})`. `get(i)` out of range throws
+`InternalError: Index 2 out of bounds for length 2`, a wrong argument shape is
+Rhino's catchable `Can't find method java.util.List.get().`, and `iterator()`
+is refused by the class allow-list, as `getClass()` is. Those two refusals and
+the `InternalError` come from the allow-list: a case run with
+`classShutter: false` gets a `JavaException` from `get(2)` and a working
+`iterator()`. A `[]` seed is an
+empty list (`size()` 0, `String(v)` `"[]"`); AIC itself hands over `[""]` for
+an empty value. An out-of-range bracket read (`v[5]`) is `undefined`.
+The simplest copy is `[].concat(v)`; the loop
+below also works:
 
 ```js
 var values = requestParameters.get("q");
@@ -55,8 +117,7 @@ var copy = [];
 for (var i = 0; i < values.size(); i++) copy.push(String(values.get(i)));
 ```
 
-`requestCookies` values are still plain strings (measured). The legacy engine
-was not measured and keeps the older array shape.
+`requestCookies` values are still plain strings (measured).
 
 ### `openidm` query results and relationship arrays are Java lists too
 
@@ -76,10 +137,11 @@ var ids = [].concat(openidm.query("managed/alpha_user", params, ["_id"]).result)
   .map(function (r) { return r._id; });
 ```
 
-Any other `List` member or call shape (`forEach`, `isEmpty`, `get(0.5)`, …)
-faults `openidm-list-unmeasured`, and so does `String(v)` of a list holding a
-number, whose Java rendering was not measured. A has-many array read with `*`
-alone, or with no field list, is still a JS array.
+It is a real `java.util.List`, so `forEach`, `isEmpty`, `contains`, `indexOf`
+and `toArray` answer as Java does, and an empty result is an empty list.
+`String(v)` of a list holding a number writes the number as the script engine
+does (`3`, not `3.0`); AIC's rendering of that one was not measured. A has-many
+array read with `*` alone, or with no field list, is still a JS array.
 
 ## Using the installed package
 
@@ -173,6 +235,7 @@ rhino-local harness fault script-defect/send-body-js-date: httpClient.send body.
 
 Every fault has a stable id: a kebab-case slug, or a family prefix such as
 `arity-unknown/<binding.method>`, `not-mocked/<binding.method>`,
+`not-implemented/<binding.method>`,
 `fixture/<kind>` or `script-defect/<kind>`.
 Ids are never derived from line numbers or message text, so they survive a
 release. [`docs/rhino-local-gaps.md`](../../docs/rhino-local-gaps.md#harness-faults)
@@ -211,8 +274,7 @@ wherever the accepted counts have a basis: measured on AIC
 (`existingSession.get`, `utils.crypto.randomUUID`, `nodeState.mergeShared`) or read from AIC's binding
 introspection (`docs/api/bindings/scripted-decision-next.json`). Where the
 harness's range is its own guess, the call is the harness fault
-`arity-unknown/<binding.method>` instead, and so is every argument-count check
-on the legacy engine, which has no introspection. The same fault covers a count
+`arity-unknown/<binding.method>` instead, The same fault covers a count
 that only a reading of the introspection decides: where an overload's last
 parameter is listed as an `array`, it may be Java varargs, which Rhino calls
 with any count from one fewer upwards. So `logger.trace` with four or more
@@ -279,7 +341,11 @@ const suite = defineSuite({
 ```
 
 For example, `lib/codeLookup.js` can contain `exports.code = function () {
-return "ready"; };`. Another library in the same map can call
+return "ready"; };`. A library cannot see its caller's bindings or the caller's
+own `var`s: on AIC, `nodeState`, `action`, `callbacks`, `requestHeaders` and the
+other context bindings are unbound inside a required library, and reading one is
+a `ReferenceError`, locally as on the tenant. Pass what the library needs as
+arguments (`require("codeLookup").save(nodeState, "code")`). Another library in the same map can call
 `require("codeLookup")`. The local lane loads both from the map; the AIC file
 lease provisions absent entries as `LIBRARY` scripts in declaration order,
 then creates the subject. AM's write path does not syntax-check scripts;
@@ -316,8 +382,7 @@ host per `aic.id`, as for the other leased resources.
 Before blanking or deleting a library it created, the lease checks its current
 source and ownership fields; if they changed, it leaves the library and recovery
 journal in place and reports a cleanup warning. It never blanks or deletes a
-reused library. Legacy scripts
-cannot use libraries, and `given.engine: "legacy"` with `libraries` is rejected.
+reused library.
 
 ### Callback suspension
 
@@ -325,7 +390,7 @@ On a next-gen pass, queued callbacks make AM pause and wait for a reply. They
 win even if the script also called `action.goTo()`: the pass has no outcome.
 Expect `outcome: null` and the emitted callbacks, then use `.step({ reply })`
 to submit a response and run the next pass. A pass with no queued callbacks
-keeps its `goTo` outcome. Legacy `Action.send` behavior is separate.
+keeps its `goTo` outcome.
 
 `action.putSessionProperty` and `removeSessionProperty` produce a judged
 `sessionProperties` state diff. Declare `added`, `changed`, and `removed` keys
@@ -585,7 +650,9 @@ hooks a `LeaseLane` calls, which hand your `check()` the complete form with
 the missing channels marked unobserved. What the harness hands *to* your code
 (`RunResult`, `StepResult`, `CheckContext`, `StepContext`, `BeforeRunContext`)
 stays complete, so a test that builds one of those by hand needs the new
-fields. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
+fields. The one deliberate widening is `EvidenceChannel`, which gained
+`"accessToken"` and `"oidc"` for the access-token and OIDC claims contexts, so an
+exhaustive `switch` over it written against 0.1.2 needs new arms. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
 0.1.2 export's shape against the current one, and `npm run typecheck` fails on
 any new break.
 
@@ -759,12 +826,25 @@ outside CREST's table faults, `openidm-failure-reason`). The message text
 is the harness's own unless the stub gives `message`, which replaces the text
 after `ResourceExceptionScriptAdapter: `; AIC's carries the reason phrase or
 IDM's own words, not the number. `detail` is what `getDetail()` returns, as
-AIC's CREST `JsonValue` (measured 2026-11-08, docs/api/12): `get(key)`,
-`isNull()`, `getObject()` and its one-line string form. A policy failure's
-detail is its `{ result: false, failedPolicyRequirements: [...] }` object; a
-404 or 400 from `openidm` carries `null`. Without `detail`, calling
-`getDetail()` is the fault `openidm-failure-detail`, as is any `JsonValue`
-member the probe did not exercise. These
+AIC's CREST `JsonValue` (measured 2026-11-08 and 2026-11-10, docs/api/12):
+`get(key)`, `get(index)`, `isNull()`, `getObject()`, `asString()` and its
+one-line string form. `asString()` is the string, or `null` for a null value
+(a null detail, a missing key, an index past the end), and on a boolean,
+object or array throws AIC's catchable `<pointer>: Expecting a
+java.lang.String but got <class>`. A policy failure's detail is its
+`{ result: false, failedPolicyRequirements: [...] }` object; a 404 or 400 from
+`openidm` carries `null`, so `getDetail().get("x").asString()` is `null`
+there. `typeof detail.<member>` is `"function"` and `"<member>" in detail` is
+`true` for every `JsonValue` method, as measured, so feature detection works;
+calling a member the probes did not exercise (or binding it, rendering it as a
+string, or serialising it with `JSON.stringify` by any route but one: an
+author's `toJSON` returning it under a property list is not caught) is the
+fault `openidm-failure-detail`, as is rendering any member but `asString` as a
+string (`String(detail.get)`), whose text was not measured; `asString` renders
+as AIC's Java signature by every route, as
+is a `get` index that is not an integer within a Java `int` (on any value,
+a null one included), as is calling `getDetail()` on a stub
+without `detail`. These
 stubs are AIC-ineligible. An AIC-enabled file lease refuses such a case unless
 its `aic.unsupported` is `"skip"`, which keeps the local verdict and reports
 the observation gap.
@@ -837,7 +917,7 @@ In next-gen decision-node scripts, local `logger.getName()` uses the measured
 With an AIC lease, the ID is its deterministic subject UUID. A local-only
 suite uses `<unseeded-script-id>` as an obvious placeholder; a raw `Case` can
 provide `given.loggerScriptId`. The logger-name form for other script contexts
-has not been measured, and the legacy mock keeps its earlier bare name.
+has not been measured.
 
 ### Match a value's shape
 
@@ -963,6 +1043,482 @@ and hook (E19).
 More detail lives in this repository's `docs/rhino-local-harness.md`, which is
 not shipped with the package.
 
+### Access-token modification scripts
+
+A case runs a decision-node script unless it names another script context.
+`context: "OAUTH2_ACCESS_TOKEN_MODIFICATION"` runs an OAuth2 access-token
+modification script instead (the next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`
+engine). A case without `context` behaves exactly as before.
+
+```ts
+import { defineCase } from "@agiledigital/pingone-aic-script-tester/case";
+
+defineCase({
+  name: "stamps the owner claim",
+  context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+  script,
+  given: {
+    engine: "next-gen",
+    accessToken: { clientId: "widget-client", scope: ["read"] },
+    identity: { attributes: { "com.forgerock.openam.oauth2provider.clientType": ["Confidential"] } },
+    client: { allowedScopes: ["read", "write"], customProperties: { owner: "a" } },
+    request: { headers: { "Content-Type": ["application/x-www-form-urlencoded"] } },
+  },
+  expect: { accessToken: { fields: { added: { owner: "a" } } } },
+});
+```
+
+**Fixtures.** Every one is optional. `accessToken` is the token's starting
+state (client, owner, grant type, realm, scope, audience, auth time, expiry,
+custom `fields`, nonce, auth level, claims); by default it is a
+`client_credentials` token for `test-client` in `/alpha`, valid for an hour,
+whose custom fields are AM's `subname` and `expires_in`. `identity` is the
+client's agent identity (name, universal id, `exists`, attributes). `client` is
+what `clientProperties` reports. `scopes` overrides the `scopes` binding, which
+otherwise holds the token's scope. `request` is `requestProperties`: params,
+headers and the request URI.
+
+**Assertions.** `expect.accessToken` judges the token after the script:
+`fields` and `responseFields` (added/changed/removed, as for state buckets),
+`scope` (compared as a set), `expiryTime`, `nonce`, `authLevel`, `claims`,
+`act`, `mayAct` and `permissions` (each a value or a matcher), and `issued`.
+Any change the case does not declare fails the verdict, as every other channel
+does, unless `allowUndeclared: { accessToken: true }`. `issued` defaults to
+`true`. A script can return normally and still leave AM unable to issue the
+token: measured, `accessToken.removeScopes()` makes the token
+endpoint answer 500 with `Cannot invoke "java.util.Collection.size()" because
+"c" is null`. Such a run reports that refusal; declare `issued: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as AM fails the
+token request. `expect.outcome` and `outcomes` are refused: this script decides
+nothing. `logs`, `http` and `openidm` are judged as usual.
+
+**Bindings.** Only measured members are emulated (2026-08-27 and 2026-11-10,
+`docs/api/12-script-bindings-matrix.md`). There is no `session` (reading it is a `ReferenceError`).
+Decision-node bindings such as `nodeState`, `action` and `callbacksBuilder` are
+not defined. Every member
+nobody measured raises a harness fault, `oauth2-token-unmeasured/<binding>.<member>`,
+which fails the run and is tallied. `docs/rhino-local-gaps.md` lists what is
+approximated.
+
+A token-context case runs locally only: the AIC lane wraps its subject in a
+journey, which can run only a decision-node script, so it reports the case as
+unsupported rather than run it.
+
+The types are exported from `./case`: `AccessTokenCaseInit` (what
+`defineCase` accepts for this context), `AccessTokenSeed`, `IdentitySeed`,
+`ClientSeed`, `TokenRequestSeed`, `AccessTokenExpect` and the recorded
+`AccessTokenEffect`. Types for the script itself are the `aic` script
+workspace's `oauth2-access-token.d.ts` and `oauth2-access-token-ng.d.ts`.
+
+### OIDC claims scripts
+
+`context: "OIDC_CLAIMS"` runs an OIDC claims script (next-gen,
+`OIDC_CLAIMS_NEXT_GEN`). The script's
+result is its **completion value**, the value of its last expression, as AM
+reads it: `({ values: { … }, compositeScopes: { … } })`, with
+`compositeScopes` optional.
+
+```ts
+defineCase({
+  name: "adds the mail claim",
+  context: "OIDC_CLAIMS",
+  script, // ...; ({ values: { mail: String(identity.getAttributeValues("mail")[0]) } });
+  given: {
+    engine: "next-gen",
+    identity: { name: "user-1", attributes: { mail: ["user@example.com"] } },
+    scopes: ["openid", "email"],
+  },
+  expect: { oidc: { userinfo: { mail: "user@example.com" } } },
+});
+```
+
+**Fixtures.** Every one is optional. `identity` is the user (name, universal
+id, `exists`, attributes); the name defaults to `rhino-local-user`. `scopes`
+defaults to `["openid"]`. `client` is what `clientProperties` reports. `request` is `requestProperties`. By default it is a
+password-grant token request, with AM's filtering applied: no `password` and
+no `client_secret`. To model the userinfo endpoint, which runs the same script
+a second time, give the userinfo URI with empty params. `oidc` holds the
+`claims` binding's seed (`sub` and `subname`, both defaulting to the identity's
+name) and `claimsLocales`.
+
+**Assertions.** `expect.oidc` judges what AM would emit:
+
+- `userinfo`: the userinfo body, which is the returned values verbatim, nulls
+  included.
+- `idToken`: the id token's script claims. These are the values with nulls
+  dropped, under AM's subject rule: when the values hold `sub`, the token takes
+  `sub` and `subname` from them; otherwise the seed's `sub` and `subname` win.
+- `compositeScopes`: as returned.
+- `issued`: defaults to `true`.
+
+Any of the first three can be a value or a matcher. A non-empty userinfo body
+or composite-scopes map that the case does not declare fails the verdict
+unless `allowUndeclared: { oidc: true }` is set. The id token is never called
+undeclared, because it is derived from the values.
+
+An uncaught throw fails the run with
+`CaseRunError`. A completion value of `undefined`, or an object without
+`values`, is a 200 with no script claims. A refused token request is recorded;
+declare `issued: false` to expect it.
+`expect.outcome` is refused.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- `claims` is a JS-friendly map: its keys enumerate, `===`
+  works, and `get`/`put`/`remove`/`containsKey` are available. Changing it
+  changes nothing unless the script returns it.
+- `accessToken` and the decision-node bindings are not bound.
+
+Every unmeasured member raises the harness fault
+`oidc-claims-unmeasured/<binding>.<member>`. So does returning a claim AM
+writes itself (`aud`, `iss`, …) and deleting a key of next-gen `claims`
+(which AIC refuses quietly).
+
+An OIDC case runs locally only. The types are exported from `./case`:
+`OidcClaimsCaseInit`, `OidcClaimsSeed`, `OidcClaimsExpect` and the recorded
+`OidcClaimsEffect`.
+
+### Social IdP profile transformation scripts
+
+`context: "SOCIAL_IDP_PROFILE_TRANSFORMATION"` runs a social identity
+provider's `transform` script (next-gen,
+`SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN`). The script turns the provider's
+raw profile into the normalised profile that `SocialProviderHandlerNodeV2`
+reads. Its result is its **completion value**: a plain object.
+
+```ts
+defineCase({
+  name: "maps the provider's subject",
+  context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+  script, // ...; ({ id: rawProfile.sub, mail: rawProfile.get("email") });
+  given: {
+    engine: "next-gen",
+    socialIdp: { selectedIdp: "my-idp", rawProfile: { sub: "abc", email: "user@example.com" } },
+  },
+  expect: { socialIdp: { profile: { id: "abc", mail: "user@example.com" } } },
+});
+```
+
+**Fixtures.** `socialIdp.rawProfile` is the provider's profile (default `{}`)
+and `socialIdp.selectedIdp` the provider's name (default `rhino-local-idp`),
+which also seeds `nodeState.get("selectedIdp")` unless the case seeds that
+key. The node state comes from `sharedState` / `transientState`, as on the
+decision node. `requestHeaders`, `requestParameters`, `cookieName` and
+`loggerScriptId` are accepted too.
+
+**Assertions.** `expect.socialIdp.profile` is the profile the handler node
+receives, as a value or a matcher. A returned profile the case does not
+declare fails the verdict unless `allowUndeclared: { socialIdp: true }`.
+Numbers reach the node as doubles (`4` arrives as `4.0`), which JSON cannot
+tell apart. A top-level `undefined` property arrives as `null`. If the script
+evaluates to `undefined`, `null` or a string, AM fails the journey with 401
+Login failure. The run records that refusal; declare `accepted: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as it fails
+the journey. Node-state writes (`nodeState.putShared`/`putTransient`) persist to later nodes and are judged through
+`expect.sharedState` / `expect.transientState`, fail-closed.
+`expect.outcome` is refused.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- `rawProfile` is a Java map with map access: `rawProfile.sub`
+  and `rawProfile.get("sub")` are JS strings, a missing key reads `undefined`
+  by dot and `null` by `get`, and `keys()`/`size()` work. `nodeState.keys()`
+  fails with AIC's class-shutter error. `httpClient`, `openidm`, `secrets`,
+  `utils`, `require` and the other next-gen shared bindings are the decision
+  node's. `sharedState`, `transientState` and `callbacks` are not bound.
+- `existingSession` (a `ReferenceError`, although the
+  descriptor lists it), `normalizedProfile`, `action` and `outcome` are not bound.
+
+Only string profile values were measured, so reading any other value raises
+the harness fault `social-idp-unmeasured/rawProfile.<key>`. Every other
+unmeasured member raises `social-idp-unmeasured/<binding>.<member>`, as does a
+result of any other kind.
+
+A social IdP case runs locally only. The types are exported from `./case`:
+`SocialIdpCaseInit`, `SocialIdpSeed`, `SocialIdpExpect` and the recorded
+`SocialIdpEffect`.
+
+### Config provider node scripts
+
+`context: "CONFIG_PROVIDER_NODE"` runs a Configuration Provider node's
+script (next-gen, `CONFIG_PROVIDER_NODE_NEXT_GEN`). The script builds the configuration of the
+node the Configuration Provider wraps. AM reads its **`config` global** after
+the script ends: a plain object. A script that only evaluates to a map is refused.
+
+```ts
+defineCase({
+  name: "greets by name",
+  context: "CONFIG_PROVIDER_NODE",
+  script, // config = { message: { en: "Hello " + nodeState.get("username") } };
+  given: { engine: "next-gen", sharedState: { username: "ada" } },
+  expect: { configProvider: { config: { message: { en: "Hello ada" } } } },
+});
+```
+
+**Fixtures.** The node state comes from `sharedState` / `transientState`, as
+on the decision node. `requestHeaders`, `requestParameters`, `cookieName` and
+`loggerScriptId` are accepted too.
+
+**Assertions.** `expect.configProvider.config` is the map the wrapped node is
+configured from, as a value or a matcher. How the wrapped node reads it is
+that node's business and is not emulated. A map the case does not declare
+fails the verdict unless `allowUndeclared: { configProvider: true }`. Numbers
+reach the node as doubles (`42` arrives as `42.0`), which JSON cannot tell
+apart. An `undefined` property arrives as `null`. If `config` is never
+assigned, or is `undefined`, `null`, a string, a number, a boolean, an array
+or a function, AM fails the journey with HTTP 500 ("Script must set 'config'
+to a Map."). The run records that refusal; declare `accepted: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as it fails
+the journey. Node-state writes (`nodeState.putShared`/`putTransient`) persist
+to later nodes and are judged through `expect.sharedState` /
+`expect.transientState`, fail-closed. `expect.outcome` is refused: the
+wrapped node decides the outcome.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- **Next-gen** binds the decision node's bindings except `sharedState`,
+  `transientState` and `outcome`. `nodeState.keys()` fails with AIC's
+  class-shutter error. `callbacks.isEmpty()` is `true`,
+  `callbacksBuilder.textOutputCallback(type, message)` is accepted and adds
+  nothing to what the wrapped node shows, and `action.goTo(name)` is accepted
+  and routes nothing. Every other member of those three raises a harness
+  fault.
+- `identity`, `session` and `cacheManager` are not bound.
+  `existingSession` is a `ReferenceError` on a request without a session
+  cookie, although the descriptor lists it; with one it was not
+  measured, so `given.existingSession` is refused.
+  `requestHeaders.get(name)` and `requestParameters.get(name)` are Java lists
+  (`[v1]`), and `null` for an absent name.
+
+A value inside `config` of any kind not measured raises the harness fault
+`config-provider-unmeasured/config.<path>`. Every other unmeasured member
+raises `config-provider-unmeasured/<binding>.<member>`.
+
+AM runs the script again on every request that reaches the node, including
+the one that submits the wrapped node's callbacks. One case is one
+invocation; the re-run, in which transient state is gone and next-gen node
+state objects come back as Java maps, is not emulated.
+
+A config provider case runs locally only. The types are exported from
+`./case`: `ConfigProviderCaseInit`, `ConfigProviderExpect` and the recorded
+`ConfigProviderEffect`.
+
+### OAuth2 validate scope scripts
+
+`context: "OAUTH2_VALIDATE_SCOPE"` runs an OAuth2 client's validate scope
+script (next-gen, `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`). AM runs the script's body, then calls its
+global **`validateAccessTokenScope()`** with no arguments and grants **exactly
+the list it returns**: AM does not intersect it with the request, so a script
+can widen a grant, even with a scope the client does not hold.
+
+```ts
+defineCase({
+  name: "drops the admin scope",
+  context: "OAUTH2_VALIDATE_SCOPE",
+  script, // function validateAccessTokenScope() { return Array.prototype.slice.call(requestedScopes).filter(function (s) { return s !== "admin"; }); }
+  given: { engine: "next-gen", validateScope: { requested: ["read", "admin"], allowed: ["read", "admin"] } },
+  expect: { validateScope: { granted: ["read"] } },
+});
+```
+
+**Fixtures.** `given.validateScope` seeds `requested`, `allowed`,
+`available` (next-gen only; defaults to `allowed`) and `defaults`, each a list
+of scope strings (default `[]`). `client` and `request` seed next-gen's
+`clientProperties` and `requestProperties`, as for access-token modification;
+the default request is a `client_credentials` token request whose `scope`
+parameter is `requested`. `loggerScriptId` and `cookieName` are accepted too.
+
+**Assertions.** `expect.validateScope.granted` is the granted scopes, compared
+as a set (AM removes duplicates). A grant the case does not declare fails the
+verdict unless `allowUndeclared: { validateScope: true }`. AM issues no token
+when the function returns `[]`, `null` or `undefined` (HTTP 403, "The user has
+declined authorization"), a string or a plain object (HTTP 500), or a list
+holding a number (HTTP 500, a `Double` cast), or when there is no
+`validateAccessTokenScope` function at all (HTTP 500). The run records those
+refusals; declare `accepted: false` to expect one. `scopeValidatorHelper.throwInvalidScope(message)` is AM's invalid-scope denial
+(HTTP 400 with `message` as the `error_description`, verbatim); declare it as
+`invalidScope: "<message>"`. Any other uncaught throw fails the run with
+`CaseRunError`, as it fails the token request with HTTP 500. A denial the
+script catches itself denies nothing.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- `requestedScopes`, `allowedScopes`, `availableScopes`
+  and `defaultScopes` as Java lists (`[object JavaList]`) of JS strings:
+  `length`, `size()`, `[i]`, `contains()`, `indexOf()`, `isEmpty()`,
+  `forEach()`, `toArray()` (not a JS array), `JSON.stringify`,
+  `[].concat(v)` and `Array.prototype.slice.call(v)` answer, and so does
+  `add()` on `requestedScopes` and `allowedScopes`; `iterator()` is AIC's
+  class-shutter error. It also binds `scopeValidatorHelper`
+  (`throwInvalidScope`, and `inheritAccessTokenScopesOnRefresh()`, which
+  returns `undefined`), `identity` (on a `client_credentials` grant
+  `exists()` is `false` and `getName()` throws), `requestProperties`,
+  `clientProperties`, `logger`, `httpClient`, `secrets`, `systemEnv`,
+  `realm`, `scriptName`, `cookieName`, `openidm`, `utils`, `emailService`,
+  `jwtAssertion`, `jwtValidator`, `policy` and `require`.
+- Not bound: the request maps, node state, callbacks, `session`
+  or `existingSession`.
+
+A returned value of a kind not measured raises the harness fault
+`oauth2-validate-scope-unmeasured/validateAccessTokenScope()`. Every other
+unmeasured member raises `oauth2-validate-scope-unmeasured/<binding>.<member>`.
+
+One case is one access-token request. AM's other entry points
+(`validateRefreshTokenScope`, `validateAuthorizationScope`, …) were not
+measured and are never called.
+
+A validate scope case runs locally only. The types are exported from
+`./case`: `ValidateScopeCaseInit`, `ValidateScopeSeed`, `ValidateScopeExpect`
+and the recorded `ValidateScopeEffect`.
+
+### OAuth2 may act scripts
+
+`context: "OAUTH2_MAY_ACT"` runs an OAuth2 client's may-act script, on either
+(next-gen, `OAUTH2_MAY_ACT_NEXT_GEN`).
+AM runs the script's body and then, if it did not throw, stamps `may_act` and
+`act` from what the script stored on `token`. The body's return value is
+ignored. A script that throws is HTTP 500 (`Error running may_act script`) and a
+claim set earlier in that script is discarded.
+
+```ts
+defineCase({
+  name: "names the actor",
+  context: "OAUTH2_MAY_ACT",
+  script, // next-gen: token.setMayAct({ client_id: "actor" })
+  given: {
+    engine: "next-gen",
+    client: { clientId: "subject-client" },
+    scopes: ["read"],
+  },
+  expect: { mayAct: { mayAct: { client_id: "actor" }, scope: ["read"] } },
+});
+```
+
+**Fixtures.** There is no `given.mayAct`. `client`, `scopes`, `request`,
+`identity` and `accessToken` seed the same bindings as access-token
+modification, but a may-act `accessToken` accepts only `clientId`, `grantType`
+(`"client_credentials"` only), `realm`, `scope` and `fields.expires_in`. Any
+other token member, any other field, and `request.params.grant_type` other than
+`["client_credentials"]` are rejected: this context was measured only for that
+grant, and an unread member would otherwise be a fixture the script never sees.
+`loggerScriptId` and `cookieName` are accepted too. The default request is a
+`client_credentials` token request. `scopes` defaults to `accessToken.scope`, or
+`[]`. `expires_in` defaults to `3600`.
+
+**Assertions.** `expect.mayAct.mayAct` is the `may_act` claim and
+`expect.mayAct.act` is the `act` claim. A key present with the value `null`
+means the claim was JSON null; omitting the key means the claim was absent.
+On this context `token.setMayAct(null)` writes
+JSON null.
+A claim the case does not declare fails the verdict unless
+`allowUndeclared: { mayAct: true }`. `scope` is the issued token's scopes,
+compared as a set; it defaults to the request's scopes. `issued: false` expects no token (HTTP 500) and
+cannot be combined with `mayAct`, `act` or `scope`. `refusal` is the
+`error_description`. A `Date` stored as a direct property of the claim does not
+throw inside the script; AM then fails the write with its Jackson message, which
+`refusal` can name. Any other uncaught throw fails the run with `CaseRunError`.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- `token` has five methods: `getField`, `getAct`, `getMayAct`,
+  `setAct` and `setMayAct`. `setMayAct` and `setAct` take one plain object,
+  stored by reference, or `null` (JSON null). A string, number, boolean or a
+  second argument is `Can't find method`; a function or an array, where a map is
+  required, is the recorded `InternalError`. `getField("scope")` is the class
+  shutter's refusal of `java.util.TreeSet`. `scopes` is a Java list of JS
+  strings. `identity.exists()` is `true` and `getName()` is the client id on a
+  `client_credentials` grant. `requestProperties` and `clientProperties` are the
+  same maps as access-token modification. The decision-node host bindings
+  (`httpClient`, `openidm`, `require`, …) stay bound. `session` is not bound.
+  `cookieName` is a string; the capture records the type, not the value.
+
+
+An unmeasured member raises `oauth2-may-act-unmeasured/<binding>.<member>`.
+
+One case is one access-token request. Authorization-code, refresh and
+token-exchange entry points were not measured.
+
+A may-act case runs locally only. The types are exported from `./case`:
+`MayActCaseInit`, `MayActExpect` and the recorded `MayActEffect`.
+
+### Library scripts
+
+`context: "LIBRARY"` calls an export of a next-gen library script directly.
+The case's `script` is the library body. The harness `require()`s it through the
+same loader a decision node uses and calls `given.library.export` with
+`given.library.args` (default `[]`). The call is a method call, so `this` is the
+object `require()` returned.
+
+```ts
+defineCase({
+  name: "echoes its argument",
+  context: "LIBRARY",
+  script, // exports.echo = function (v) { return v; };
+  given: { library: { export: "echo", args: [{ n: 1 }] } },
+  expect: { returns: { status: "returned", value: { n: 1 } } },
+});
+```
+
+**Assertions.** `expect.returns` is fail-closed. Omitting it requires the export
+to return `undefined` and not throw, unless
+`allowUndeclared: { returns: true }`. A returned JSON value is `value`. A
+returned `undefined` is `undefined: true` (JSON `null` is a different result).
+Declare exactly one of those. A throw is `status: "thrown"` with `type`
+(`typeof` of the thrown value), `name` (`""` for a thrown string) and `message`
+(`String(error)`, so `new Error("x")` is `"Error: x"`). `phase` is `"export"`
+(the default) or `"module"` when the library body throws while it loads, before
+the export is called. A status mismatch does not also compare the other fields.
+
+An argument of `undefined` is not a JSON value, so `args` cannot express one. A
+returned value is admitted only when it is JSON, nested `null` included, or
+top-level `undefined`. A function, a cycle, a nested `undefined`, a non-finite
+number (including `-0`), a `Date`, an `Error`, a Java object, or anything else
+JSON would drop or rewrite is the harness fault `library-unmeasured/return`.
+`JSON.stringify` succeeding is not that check.
+
+**Bindings.** Measured 2026-11-11 (`docs/api/12-script-bindings-matrix.md`).
+Inside the library, at module scope and inside the export, the same names are
+bound. Present: `require`, `JavaImporter`, `exports`, `module`, `logger`,
+`httpClient`, `openidm`, `secrets`, `systemEnv`, `utils`, `emailService`,
+`jwtAssertion`, `jwtValidator`, `policy`, `realm`, `scriptName` and
+`cookieName`. The caller's own bindings (`nodeState`, `accessToken`, `scopes`,
+…) are not. `scriptName` and `logger.getName()` are the caller's, including
+inside a nested `require()`. `logger.getName()` is
+`scripts.<caller context>.<script id>.(<script name>)`. `systemEnv.getProperty`
+of a missing key is `null`. `utils.base64.encode` and `openidm.read` of a
+missing id behave as they do for a decision node.
+
+`given.library.callerContext` selects that logger segment and that caller's
+class shutter. The default is `AUTHENTICATION_TREE_DECISION_NODE`, where
+`new java.util.HashSet()` constructs (`"ok-1"`). The other measured callers are
+`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`, `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`,
+`OAUTH2_MAY_ACT_NEXT_GEN` and `OAUTH2_EVALUATE_SCOPE_NEXT_GEN`. Each of those
+refuses `HashSet` (the captures record `"err"`). The refusal message was not
+captured; the runner uses that caller's allow-list, so the error is the class
+shutter's. `logger.getName()` was measured with no arguments. Any other count is
+`library-unmeasured/logger.getName(…)`. `realm`, `scriptName`, `loggerScriptId`
+and `cookieName` seed the same values the caller would have had.
+
+`emailService`, `jwtAssertion`, `jwtValidator` and `policy` were present and
+none of their methods was called. Each function member is
+`library-unmeasured/<binding>.<member>`. `String(binding)` and
+`JSON.stringify(binding)` were not measured either:
+`library-unmeasured/String(<binding>)` and
+`library-unmeasured/JSON.stringify(<binding>)`. `logger`, `httpClient`,
+`openidm`, `secrets`, `systemEnv` and `utils` keep the decision-node harness:
+the probe called `logger.getName`, `systemEnv.getProperty`,
+`utils.base64.encode` and `openidm.read`. Shared channels (`logs`, `http`,
+`openidm`) are judged as elsewhere.
+
+A library case runs locally only. The types are exported from `./case`:
+`LibraryCaseInit`, `LibrarySeed`, `LibraryExpect`, `LibraryCallerContext`,
+`LIBRARY_CALLER_CONTEXTS` and the recorded `LibraryEffect`.
+
 ### Phase timing
 
 To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and
@@ -971,6 +1527,7 @@ summarise it afterwards:
 ```sh
 AIC_SCRIPT_TESTER_TIMING=timing.jsonl npx vitest run
 npx aic-script-tester-timing timing.jsonl        # --json for machine output
+npx aic-script-tester-timing --share timing.jsonl  # names replaced by hashes
 ```
 
 Every JVM spawn, pool lease and eval job appends one JSON line. A job row
@@ -979,12 +1536,26 @@ carries the bytes written (`lineBytes`), the source text shipped with it
 `transportMs`, and the JVM's own phases under `jvm`: reader decode, setup,
 prelude, preamble (where the seed is parsed) and subject compile and exec,
 library compile and load, harvest, host-call wait, and compile-cache hits and
-misses. Exec phases include the library bodies and host-call waits that ran
-inside them. A phase that threw or timed out still reports its time. `harvestMs`
-is measured only for journey-bridge jobs: an ordinary case's harvest runs at the
-end of the subject script, so its cost (large for a big fixture store) is inside
-`subjectExecMs`. Timing is off unless the variable is set, and it never changes a
-response or a lane comparison. `src/timing.ts` documents every field.
+misses. A phase that threw or timed out still reports its time.
+
+Subject execution breaks down further. `moduleBodyMs` is the time library
+module bodies ran (a body runs when a script first requires it, inside subject
+execution), and `moduleBodies` gives each library its own share, less the
+libraries it required in turn. `harvestMs` is collecting the case's result.
+`subjectOwnMs` is what is left: the script's own work and the bindings it
+called. `libraryLoaderExecMs` is only creating each module's loader function,
+not running its body.
+
+`outcome` is the script's own outcome, so a script that caught a harness
+refusal reads `"ok"`; `emulationFault` says whether the run failed the fault
+audit, and `faultIds` names the faults.
+
+The summary adds a table of module-body time per library and of JVM time per
+test source. `--share` replaces every library id and source name with a salted
+hash, so the summary can be sent to someone outside the project; the salt is
+random unless you pass `--salt=<text>`, which makes two summaries comparable.
+Timing is off unless the variable is set, and it never changes a response or a
+lane comparison. `src/timing.ts` documents every field.
 
 ### Vitest settings for a fast suite
 
@@ -1029,7 +1600,7 @@ once per file without it.
 `src/runner.ts` launches Java 25 from `AIC_SCRIPT_TESTER_JAVA_HOME` or `JAVA_HOME`
 (`shell.nix` provides `temurin-bin-25`) and speaks line-delimited JSON.
 `AIC_SCRIPT_TESTER_JVM` selects `host` (default), `container`, or `both`; the latter
-lanes require Docker and the AM image. The cache defaults to
+lanes require Docker and the reference JVM image. The cache defaults to
 `~/.cache/aic-script-tester`; `AIC_SCRIPT_TESTER_CACHE` overrides it. Correlate by job `id`
 — do not assume the JVM answers in order. A crashed JVM rejects every pending
 job rather than hanging. `close()` ends stdin and waits for the process;
@@ -1053,7 +1624,7 @@ What reuse guarantees:
   `java.lang.Thread` can change the JVM itself (a default timezone, a system
   property, a thread it started), and a normal finish does not undo that. The
   next-gen decision-node shutter, which is on by default, hides all of those
-  classes. Any job without it (a `legacy`-engine case, `classShutter: false`,
+  classes. Any job without it (`classShutter: false`,
   an IDM-engine script, or a raw `runner.eval` with no `classAllowList`) marks
   its JVM as not lendable, so the file that ran it gets a JVM to itself and the
   next file starts a new one, as it would with no pool.
@@ -1461,9 +2032,18 @@ naming sources. Vitest 5's `aroundEach` preserves separate contexts for concurre
 tests, including sibling forks; a clean sibling does not inherit another test's
 failures. `useLease` also installs ownership guarding automatically. Legacy
 `useEmulationGuard()` calls remain supported; their source arguments are ignored.
-The custom runner publishes audit snapshots in task metadata through Vitest's
-`onTaskUpdate` hook. Its `onAfterRunFiles` check runs outside test control flow;
-the reporter checks the snapshots in the main process at `onTestRunEnd` and
+The custom runner publishes audit deltas in task metadata through Vitest's
+`onTaskUpdate` hook: each boundary sends only the entries recorded or changed
+since the last acknowledged publish, plus any earlier ones not yet
+acknowledged, and the reporter merges them into one ledger per worker, newest
+revision of each entry winning. The hook resolves only after the main process
+has handled the update, so an entry is dropped from the worker's resend set
+only once the reporter holds it; a worker that crashes or times out loses
+nothing it had already published. `AIC_SCRIPT_TESTER_AUDIT_SNAPSHOTS=1` sends
+the whole audit at every boundary instead, as earlier releases did; it is a
+diagnostic fallback and gives the same verdict. Its `onAfterRunFiles` check
+runs outside test control flow; the reporter checks the ledger in the main
+process at `onTestRunEnd` and
 sets a non-zero exit status, naming every unexpected cause and its original
 owner. It also handles updates received after that final check. This backstop
 works in the `forks` and `threads` pools with either isolation setting. Import-time
@@ -1702,10 +2282,9 @@ under the root. Forks share the index.
 
 A `file` reference runs the supplied source with the bindings an inline script
 in the same place gets. `require(id)` loads `<id>.js` (or `id` if it already
-ends in `.js`) as a CommonJS module, following IDM 9.0.0's engine as read from
-its bytecode rather than measured on AIC. The module sees the caller's bindings
+ends in `.js`) as a CommonJS module, as an assumption not yet measured on AIC. The module sees the caller's bindings
 (`openidm`, `object`, `request`, …) and keeps its own top-level `var`s. The
-module cache is keyed by the id as written, as IDM's is: within one script
+module cache is keyed by the id as written: within one script
 invocation `require('x')` runs `x.js` once, but `require('x')` and
 `require('x.js')` are two instances and each runs the body. Everything runs
 again in the next invocation. A require cycle sees the partial exports: the
@@ -1911,8 +2490,7 @@ IDM. Callbacks use the tenant `{authId, callbacks}` output/input envelopes;
 the node runs again on resume. Shared state survives, transient survives
 callback-free edges and is dropped at a round trip. Inner trees share shared
 state, isolate their transient state and restore outer transient state. Inner
-exceptions, callbacks and nested inner trees remain missing. Legacy scripts,
-unsupported bindings, session-property actions, `noSession`, unsupported tree
+exceptions, callbacks and nested inner trees remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
 flags and unmocked HTTP are fatal missing behavior, even if script catches or
 `finally` tries to hide the failure. So is every `rhino-local:` diagnostic the
 binding runtime raises for behaviour it does not model (an argument count whose
@@ -1947,7 +2525,8 @@ other shape is rendered the same way and labelled assumed with its reason: no
 such header, a string or top-level non-object body, `\r`/`\b`/`\f`, a C1
 control, a lone low surrogate, a
 fraction or an integer past 1e6, or a number the script engine holds as a Java
-Integer (`s.length`, `indexOf`, `JSON.parse` results). A `form` request is
+Integer (written as an integer, which is measured for `s.length`, `indexOf` and
+`size()` results and assumed for a `JSON.parse` result). A `form` request is
 missing, because its body is not the JSON text. `objectAttributes` that a node
 wrote, or that crossed a callback round trip, reaches the next script as a Java
 map (`get`/`put` work); its printed form is measured, the methods are inferred

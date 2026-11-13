@@ -499,6 +499,9 @@ pub fn start_rename_object(app: &mut App) {
         );
         return;
     }
+    if refuse_marked(app, &object_name, &object, "rename") {
+        return;
+    }
     let Some(LoadState::Loaded(doc)) = app.managed.data.get(&tenant_name) else {
         return;
     };
@@ -508,6 +511,23 @@ pub fn start_rename_object(app: &mut App) {
         doc.clone(),
     ));
     app.input_mode = InputMode::Managed(Mode::RenameObject);
+}
+
+/// An object carrying Ping's marker under a non-Ping name needs explicit
+/// consent, which the tab has no flag for; point at the CLI's `--force`.
+fn refuse_marked(app: &mut App, name: &str, object: &serde_json::Value, verb: &str) -> bool {
+    if crate::managed::state::object_protection(object)
+        != crate::managed::state::ObjectProtection::Marked
+    {
+        return false;
+    }
+    app.push_toast(
+        ToastKind::Info,
+        format!(
+            "{name} carries Ping's \"Managed Object\" marker; if it is yours, run `aic managed object {verb} {name} --force`"
+        ),
+    );
+    true
 }
 
 /// Starts a guarded whole-document object delete for custom objects only.
@@ -520,6 +540,9 @@ pub fn start_delete_object(app: &mut App) {
     }
     if crate::managed::state::is_ping_shipped_object(&object) {
         app.push_toast(ToastKind::Info, "Ping-shipped objects cannot be deleted");
+        return;
+    }
+    if refuse_marked(app, &object_name, &object, "delete") {
         return;
     }
     let Some(LoadState::Loaded(doc)) = app.managed.data.get(&tenant_name) else {

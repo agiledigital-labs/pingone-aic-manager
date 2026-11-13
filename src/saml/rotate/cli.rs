@@ -18,8 +18,6 @@
 //!   create returned, and a `PUT` of the entity is compared whole against a
 //!   fresh read.
 
-use std::path::PathBuf;
-
 use clap::Subcommand;
 
 use crate::cli::force::OperationForce;
@@ -80,7 +78,7 @@ pub enum RotateCommand {
         secret_id: String,
         /// `cat key.pem cert.pem` — the private key and its certificate.
         #[arg(long, value_name = "PATH")]
-        key_file: Option<PathBuf>,
+        key_file: Option<crate::config::UserPath>,
         /// Read the key pair from stdin instead.
         #[arg(long)]
         key_stdin: bool,
@@ -122,7 +120,7 @@ pub enum RotateCommand {
         entity_id: String,
         /// `cat key.pem cert.pem` — the **new** private key and certificate.
         #[arg(long, value_name = "PATH")]
-        key_file: Option<PathBuf>,
+        key_file: Option<crate::config::UserPath>,
         /// Read the key pair from stdin instead.
         #[arg(long)]
         key_stdin: bool,

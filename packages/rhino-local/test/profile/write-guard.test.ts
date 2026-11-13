@@ -126,7 +126,7 @@ describe("managedPolicy gives the lane plain lists (P2-2, sol-r1b)", () => {
     expect(loose?.defaults).toEqual({ n: 0, b: false, cleared: null, list: null, flag: null });
   });
   // sol-r1c, zzemu_def probe D1/D2: `default: null` is applied (stored as null) and gives no NOT_NULL.
-  // P3-1 (fix round 2): it is still a default to stock policy.js, so the lane faults a PATCH remove of it.
+  // P3-1 (fix round 2): it is still a declared default, so the lane faults a PATCH remove of it (unmeasured).
   it("a null default is applied as null, listed as defaulted, and is not a NOT_NULL", () => {
     const profile: EnvProfile = { ...META, profileVersion: PROFILE_VERSION, sources: [], objects: { gizmo: { name: "gizmo", required: [], hooks: [],
       properties: { cleared: { type: "string", default: null }, both: { type: "string", nullable: true, default: null },
@@ -491,8 +491,8 @@ describe("the lane's PATCH null refusals (P2-1)", () => {
 });
 
 describe("the lane's PATCH remove of a defaulted property (fix round 2, P3-1)", () => {
-  // Stock policy.js adds an implicit required for any default; AIC's 403 REQUIRED was measured only
-  // with the property also in schema.required. Unmeasured either way, so it faults.
+  // AIC's 403 REQUIRED was measured only with the property also in schema.required; without it
+  // the answer is unmeasured, so it faults.
   // sol-r1c: `default: null` is a valid declaration (zzemu_def probe D1), so it reaches this check
   // again, as before sol-r1. Removing it is unmeasured for a null default as for a non-null one.
   it.each([

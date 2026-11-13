@@ -3,7 +3,8 @@ import java.util.List;
 import org.mozilla.javascript.ClassShutter;
 
 /**
- * Replica of the AM script sandbox's per-context Java class allow-list.
+ * The tenant script sandbox's per-context Java class allow-list, as the
+ * descriptor publishes it.
  *
  * <p>AM runs Rhino behind a class shutter that decides, per class and per
  * script context, whether a Java class is visible at all. The local runner had
@@ -78,10 +79,45 @@ final class AmClassShutter implements ClassShutter {
    */
   private static final String ENGINE_PACKAGE = "org.mozilla.javascript.";
 
+  /**
+   * Whether this lookup is a script naming a class, rather than the engine
+   * using one of its own.
+   *
+   * <p>Measured 2026-11-10 on AIC: {@code
+   * Packages.org.mozilla.javascript.Context} and {@code
+   * org.mozilla.javascript.Context} resolve to a {@code [JavaPackage ...]}
+   * placeholder (so {@code new} is {@code TypeError: [JavaPackage
+   * org.mozilla.javascript.Context] is not a function, it is object.}), exactly
+   * as any class off the allow-list does. A script cannot construct a Context,
+   * so it cannot decompile an emulator-installed function or mint a fresh
+   * unguarded scope. Rhino resolves a script-written name only through {@code
+   * NativeJavaPackage.getPkgProperty} (the importer and {@code JavaImporter}
+   * paths end there too), so that frame tells the two callers apart.
+   */
+  private static final StackWalker WALKER = StackWalker.getInstance();
+
+  private static boolean namedByScript() {
+    return WALKER.walk(
+        frames ->
+            frames.anyMatch(
+                f ->
+                    f.getMethodName().equals("getPkgProperty")
+                        && f.getClassName().equals("org.mozilla.javascript.NativeJavaPackage")));
+  }
+
+  /**
+   * The class a list is presented through. It is how every list binding reaches a script, in
+   * every context, whatever the context's allow-list says about the collection behind it. A
+   * script cannot name it, exactly as it cannot name an engine class.
+   */
+  private static boolean presentation(String fullClassName) {
+    return fullClassName.equals("SequenceFacade");
+  }
+
   @Override
   public boolean visibleToScripts(String fullClassName) {
-    if (fullClassName.startsWith(ENGINE_PACKAGE)) {
-      return true;
+    if (fullClassName.startsWith(ENGINE_PACKAGE) || presentation(fullClassName)) {
+      return !namedByScript();
     }
     for (String name : exact) {
       if (name.equals(fullClassName)) {
@@ -93,6 +129,15 @@ final class AmClassShutter implements ClassShutter {
         return true;
       }
     }
-    return false;
+    return adapter(fullClassName) && !namedByScript();
+  }
+
+  /**
+   * The class a script function becomes when it is passed where Java wants an interface ({@code
+   * list.forEach(function (x) {...})}). Measured: {@code scopes.forEach(fn)} runs in the OAuth2
+   * contexts, whose allow-lists name no such class, so it is the engine's own and never hidden.
+   */
+  private static boolean adapter(String fullClassName) {
+    return fullClassName.matches("(jdk\\.proxy\\d*|com\\.sun\\.proxy)\\.\\$Proxy\\d+");
   }
 }

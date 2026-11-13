@@ -66,26 +66,81 @@ describe("an injected failure's getDetail matches the live capture", () => {
 
   it.each([
     ["a stub with no detail", undefined, "String(e.javaException.getDetail())"],
-    ["an unmeasured member", null, "e.javaException.getDetail().asMap"],
+    // Presence is measured (typeof, in: openidm-detail-asstring.e2e); calling or rendering is not.
+    ["calling an unmeasured member", null, "e.javaException.getDetail().asMap()"],
+    ["an unmeasured member as a string", null, "String(e.javaException.getDetail().asMap)"],
+    // JSON.stringify skips a function without calling toString, so these need their own refusal.
+    ["an unmeasured member under JSON.stringify", null, "JSON.stringify(e.javaException.getDetail().asBoolean)"],
+    ["an unmeasured member nested in an object under JSON.stringify", null, "JSON.stringify({ m: e.javaException.getDetail().asBoolean })"],
+    ["an unmeasured member nested in an array under JSON.stringify", null, "JSON.stringify([e.javaException.getDetail().asBoolean])"],
+    // The serialisation boundary: whatever toJSON or replacer hands native a stub, it faults.
+    ["a stub an author's toJSON returns", null, "var d = e.javaException.getDetail(); JSON.stringify({ toJSON: function () { return d.asBoolean; } })"],
+    ["a stub a nested toJSON returns", null, "var d = e.javaException.getDetail(); JSON.stringify({ m: { toJSON: function () { return d.asBoolean; } } })"],
+    ["a stub a toJSON in an array returns", null, "var d = e.javaException.getDetail(); JSON.stringify([{ toJSON: function () { return d.asBoolean; } }])"],
+    ["a stub a replacer returns at the root", null, "var d = e.javaException.getDetail(); JSON.stringify(1, function () { return d.asBoolean; })"],
+    ["a stub a replacer returns for a key", null, 'var d = e.javaException.getDetail(); JSON.stringify({ m: 1 }, function (k, v) { return k === "m" ? d.asBoolean : v; })'],
+    ["a stub a replacer returns for an index", null, 'var d = e.javaException.getDetail(); JSON.stringify([1], function (k, v) { return String(k) === "0" ? d.asBoolean : v; })'],
+    ["a stub under a property list", null, 'JSON.stringify({ m: e.javaException.getDetail().asBoolean }, ["m"])'],
+    // A bound copy would escape every guard, so binding is refused; call and apply invoke the stub.
+    ["binding a stub", null, "var d = e.javaException.getDetail(); JSON.stringify(d.asBoolean.bind(d))"],
+    ["borrowing bind onto a stub", null, "var d = e.javaException.getDetail(); Function.prototype.bind.call(d.asBoolean, d)"],
+    ["calling a stub through call", null, "var d = e.javaException.getDetail(); d.asBoolean.call(d)"],
+    ["calling a stub through a borrowed apply", null, "var d = e.javaException.getDetail(); Function.prototype.apply.call(d.asBoolean, d, [])"],
+    ["asString with a string argument", { result: false }, 'e.javaException.getDetail().asString("x")'],
+    ["asString on a number", { n: 1 }, 'e.javaException.getDetail().get("n").asString()'],
+    ["get(string) on a string value", { s: "v" }, 'e.javaException.getDetail().get("s").get("k")'],
+    ["get(number) on a boolean value", { result: false }, 'e.javaException.getDetail().get("result").get(0)'],
+    ["get with a non-integral index", { a: [1] }, 'e.javaException.getDetail().get("a").get(0.5)'],
+    // Index shape is judged before the null-value answer, and only a Java int was measured.
+    ["get with a non-integral index on a null child", { a: ["alpha"], result: false }, 'e.javaException.getDetail().get("absent").get(0.5).asString()'],
+    ["get with an infinite index", { a: ["alpha"], result: false }, 'e.javaException.getDetail().get("a").get(Infinity).asString()'],
+    ["get with an index beyond a Java int", { a: ["alpha"], result: false }, 'e.javaException.getDetail().get("a").get(2147483648).asString()'],
+    ["get with NaN on a null detail", null, "e.javaException.getDetail().get(NaN)"],
+    ["a pointer segment needing an escape", { "a/b": true }, 'e.javaException.getDetail().get("a/b").asString()'],
     ["an empty object's string form", {}, "String(e.javaException.getDetail())"],
     ["getDetail with an argument", { result: false }, "String(e.javaException.getDetail(1))"],
     ["get with no argument", { result: false }, "String(e.javaException.getDetail().get())"],
     ["get with two arguments", { result: false }, 'String(e.javaException.getDetail().get("result", 1))'],
     ["get with an object key", { result: false }, 'String(e.javaException.getDetail().get({ toString: function () { return "result"; } }))'],
-    ["get with a number key", { result: false }, "String(e.javaException.getDetail().get(0))"],
     ["isNull with an argument", null, "e.javaException.getDetail().isNull(1)"],
     ["getObject with an argument", null, "e.javaException.getDetail().getObject(1)"],
     ["toString with an argument", { result: false }, "e.javaException.getDetail().toString(1)"],
     // The refusal is formatted before it is recorded, so it must not call a builtin the script replaced.
     ["getDetail(1) while join/push are replaced", { result: false }, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
     ["isNull(1) while join/push are replaced", null, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail().isNull(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
-    ["get(1) while join/push are replaced", { result: false }, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail().get(1); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
+    ["get(0.5) while join/push are replaced", { result: false }, 'var J = Array.prototype.join, P = Array.prototype.push; Array.prototype.join = function () { throw new Error("j"); }; Array.prototype.push = function () { throw new Error("p"); }; try { e.javaException.getDetail().get(0.5); } finally { Array.prototype.join = J; Array.prototype.push = P; }'],
   ])("%s faults openidm-failure-detail, even when caught", async (_name, d, read) => {
     expectHarnessFault("openidm-failure-detail");
     const reply = d === undefined ? { code: 404 } : { code: 404, detail: d };
     const stubbed: Given = { managed: { "managed/widget": [] }, openidmFailures: [{ match: { method: "delete", resource: "managed/widget/w1", ordinal: 1 }, reply }] };
     const response = await runner.eval({ preamble: mockPreamble(stubbed), source: withHarvest(`try { openidm.delete("managed/widget/w1", null); } catch (e) { try { ${read}; } catch (x) {} }`) });
     expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-failure-detail"]);
+  });
+
+  // Disclosed gap (docs/rhino-local-gaps.md, openidm-failure-detail): native asks toJSON once per value
+  // and a property list leaves no hook on the result, so this stub is skipped as a function. Pinned so a
+  // change of behaviour is seen.
+  it("a stub an author's toJSON returns under a property list is not refused", async () => {
+    const stubbed: Given = { managed: { "managed/widget": [] }, openidmFailures: [{ match: { method: "delete", resource: "managed/widget/w1", ordinal: 1 }, reply: { code: 404, detail: null } }] };
+    const response = await runner.eval({
+      preamble: mockPreamble(stubbed),
+      source: withHarvest('try { openidm.delete("managed/widget/w1", null); } catch (e) { var d = e.javaException.getDetail(); nodeState.putShared("r", JSON.stringify({ m: { toJSON: function () { return d.asBoolean; } } }, ["m"])); }'),
+    });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(parseHarvest(response.value as string).sharedState.final.r).toBe("{}");
+  });
+
+  // The controls for the JSON refusal above: presence checks on the same stub stay measured answers.
+  it("typeof and in on an unmeasured member still answer without a fault", async () => {
+    const stubbed: Given = { managed: { "managed/widget": [] }, openidmFailures: [{ match: { method: "delete", resource: "managed/widget/w1", ordinal: 1 }, reply: { code: 404, detail: null } }] };
+    const response = await runner.eval({
+      preamble: mockPreamble(stubbed),
+      source: withHarvest('try { openidm.delete("managed/widget/w1", null); } catch (e) { var d = e.javaException.getDetail(); nodeState.putShared("r", typeof d.asBoolean + "|" + ("asBoolean" in d) + "|" + d.get("x").get(2147483647).asString()); }'),
+    });
+    expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
+    expect(response.emulation?.faults ?? []).toEqual([]);
+    expect(parseHarvest(response.value as string).sharedState.final.r).toBe("function|true|null");
   });
 });
 

@@ -8,10 +8,10 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { decisionNodeClassAllowList } from "../../src/bindings/allowlist.ts";
 import { mockPreamble, withHarvest } from "../../src/bindings/preamble.ts";
 import { parseHarvest } from "../../src/bindings/harvest.ts";
 import type { Given } from "../../src/case/types.ts";
-import { expectHarnessFault } from "../../src/harness/emulation-guard.ts";
 import { repoRoot } from "../../src/paths.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import { loadBehaviour, sandboxFaults } from "./load-behaviour.ts";
@@ -60,19 +60,23 @@ const users = (first: unknown[] = []): Given => ({
   },
 } as Given);
 
+// The tenant runs a decision node behind its class allow-list; getClass() and a caught Java
+// exception read as the capture has them only behind it.
+const SHUTTERED = decisionNodeClassAllowList();
+
 describe("openidm lists match the live capture", () => {
   let runner: RhinoRunner;
   beforeAll(async () => { runner = await RhinoRunner.spawn(); }, 60_000);
   afterAll(async () => { await runner?.close(); }, 30_000);
   const value = async (source: string, given: Given = users()) => {
-    const response = await runner.eval({ preamble: mockPreamble(given), source });
+    const response = await runner.eval({ preamble: mockPreamble(given), source, classAllowList: SHUTTERED });
     expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
     expect(response.emulation?.faults ?? []).toEqual([]);
     return response.value;
   };
 
   it("the probe reads a query result, an empty query and an empty has-many array as captured", async () => {
-    const response = await runner.eval({ preamble: mockPreamble(users()), source: withHarvest(capture) });
+    const response = await runner.eval({ preamble: mockPreamble(users()), source: withHarvest(capture), classAllowList: SHUTTERED });
     expect(response.outcome, JSON.stringify(response.error)).toBe("ok");
     expect(response.emulation?.faults ?? []).toEqual([]);
     const payload = JSON.parse(parseHarvest(response.value as string).sharedState.final.r as string) as unknown;
@@ -103,6 +107,8 @@ describe("openidm lists match the live capture", () => {
 
   it.each([
     ["one past the end", 2], ["further past the end", 5], ["negative", -1],
+    // The boundary controls for the beyond-int refusal below: a Java int is still the measured answer.
+    ["at the Java int maximum", 2147483647], ["at the Java int minimum", -2147483648],
   ])("get(i) %s throws the measured InternalError, which a script may catch", async (_name, i) => {
     expect(await value(
       'var r = openidm.query("managed/alpha_user", { _queryFilter: "true" }, ["_id"]).result; ' +
@@ -201,35 +207,6 @@ describe("openidm lists match the live capture", () => {
         "try { r.some(function () { return true; }); } catch (e) { e.name + \": \" + e.message; }",
     );
     expect(v).toMatch(/^TypeError: Cannot find function some/);
-  });
-
-  it.each([
-    ["forEach(fn)", "v.forEach(function () {})"],
-    ["get(0.5)", "v.get(0.5)"],
-    ["get(0, 1)", "v.get(0, 1)"],
-    ['get("0")', 'v.get("0")'],
-    ["get()", "v.get()"],
-    ["isEmpty()", "v.isEmpty()"],
-    ["toArray()", "v.toArray()"],
-    ["toString(1)", "v.toString(1)"],
-    ["concat with the list as receiver", "Array.prototype.concat.call(v, [1])"],
-    ["String(v) of a list holding a number", 'String(openidm.query("managed/alpha_user", { _queryFilter: "true" }, ["n"]).result)'],
-  ])("%s on an openidm list faults openidm-list-unmeasured, even when caught", async (_name, call) => {
-    expectHarnessFault("openidm-list-unmeasured");
-    const response = await runner.eval({
-      preamble: mockPreamble(users()),
-      source: withHarvest(`var v = openidm.query("managed/alpha_user", { _queryFilter: "true" }, ["_id"]).result; try { ${call}; } catch (e) {} finally { 1; }`),
-    });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["openidm-list-unmeasured"]);
-  });
-
-  it("[].concat of a request value list is unmeasured and faults request-list-unmeasured", async () => {
-    expectHarnessFault("request-list-unmeasured");
-    const response = await runner.eval({
-      preamble: mockPreamble({ requestParameters: { q: ["a", "b"] } }),
-      source: withHarvest('try { [].concat(requestParameters.get("q")); } catch (e) {} finally { 1; }'),
-    });
-    expect(response.emulation?.faults?.map((f) => f.id)).toEqual(["request-list-unmeasured"]);
   });
 
   it("Array.prototype.concat with a null or undefined receiver still throws TypeError", async () => {

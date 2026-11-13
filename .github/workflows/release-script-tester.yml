@@ -77,7 +77,7 @@ jobs:
 
       # A JDK, not a JRE: the build compiles the prebuilt runner classes. Same
       # Temurin build as the CI job that tested them.
-      - name: Install Java (AM's Temurin)
+      - name: Install Java (Temurin)
         uses: actions/setup-java@v6
         with:
           distribution: temurin
