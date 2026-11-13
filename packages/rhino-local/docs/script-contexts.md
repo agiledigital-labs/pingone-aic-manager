@@ -180,11 +180,11 @@ empty script. The context's harvest, appended like the other non-completion
 contexts, `require()`s that body through the existing loader and calls the
 export with `Function.prototype.apply`, so `this` is the object `require()`
 returned. A top-level `return` is legal because the loader wraps the body in a
-function. A top-level throw is `expect.returns` with `phase: "module"`. The
-decision-node loader still closes a library over the caller's scope when some
-other context `require()`s one; this context deletes the caller's bindings
-before the `require()`, which is what AIC does. That deletion is not applied to
-the other contexts.
+function. A top-level throw is `expect.returns` with `phase: "module"`. Every
+`require()`, from this context or any other, loads the library in its own scope
+(`java/LibraryScope.java`): the measured unbound list and the caller's own
+`var`s are absent there, which is what AIC does. This context also deletes the
+caller's bindings before the `require()`.
 
 `scriptName` and `logger.getName()` are the caller's, including inside a nested
 `require()`. `given.library.callerContext` is the context segment of that name

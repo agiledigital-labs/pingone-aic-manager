@@ -4829,20 +4829,40 @@ var __rhinoLocalPhase = (function (timer) {
   return typeof Object.freeze === "function" ? Object.freeze(phase) : phase;
 })(typeof __rhinoLocalTimer === "function" ? __rhinoLocalTimer : null);
 
+// What a required library cannot see, from any next-gen caller (docs/api/12,
+// "Library scope when required", measured 2026-11-11). Reading one inside the
+// library is the engine's ReferenceError; so is reading a local var of the
+// caller. java/LibraryHost.java reads this list after the preamble; the
+// LIBRARY overlay also unbinds it from its own (empty) caller.
+var __rhinoLocalLibUnbound = [
+  "accessToken", "action", "allowedScopes", "auditEntryDetail", "availableScopes",
+  "cacheManager", "callbacks", "callbacksBuilder", "claims", "claimsLocales",
+  "clientProperties", "config", "console", "defaultScopes", "existingSession",
+  "idRepository", "identity", "journey", "locales", "nodeState", "oauthApplication",
+  "outcome", "process", "properties", "rawProfile", "requestCookies", "requestHeaders",
+  "requestParameters", "requestProperties", "requestedClaims", "requestedScopes",
+  "resumedFromSuspend", "samlApplication", "scopeValidatorHelper", "scopes",
+  "selectedIdp", "session", "sharedState", "token", "transientState"
+];
+
 // The runner defines __rhinoLocalLibraries for the preamble only
 // (java/LibraryHost.java) and deletes it before the script runs: it answers a
-// declared id with the module's loader, evaluated in this case's scope from a
-// compiled form shared across cases, so a library body is compiled once per
-// JVM rather than once per case. Absent (the node vm path, or a direct runner
-// caller that seeds given.libraries), the bodies are eval'd from the seed.
+// declared id with the module's loader, evaluated in a library scope (the
+// bindings bound after the preamble, less the list above) from a compiled form
+// shared across cases, so a library body is compiled once per JVM rather than
+// once per case. A body a direct runner caller seeds in given.libraries is
+// passed to it as source and compiled into the same library scope. Absent
+// (the node vm unit-test path only), the bodies are eval'd here, in the
+// caller's scope: that path does not model library scope.
 var __rhinoLocalLoadLibrary = (function (host) {
   return function (name) {
     var id = String(name);
     if (__rhinoLocalHas(__rhinoLocal.requireCache, id)) {
       return __rhinoLocal.requireCache[id];
     }
+    var seeded = __rhinoLocalHas(__rhinoLocal.libraries, id);
     var loader = host === null ? undefined : host(id);
-    if (loader === undefined && !__rhinoLocalHas(__rhinoLocal.libraries, id)) {
+    if (loader === undefined && !seeded) {
       throw __rhinoLocalFixtureFault("library", 
         "rhino-local: require: library " + JSON.stringify(id) +
           " is not declared on the suite (given.libraries); if this name exists on AIC, AM would load the tenant's copy and the lanes would disagree"
@@ -4851,6 +4871,9 @@ var __rhinoLocalLoadLibrary = (function (host) {
     var exports = {};
     var module = { exports: exports };
     __rhinoLocal.requireCache[id] = exports;
+    if (loader === undefined && host !== null) {
+      loader = host(id, String(__rhinoLocal.libraries[id]));
+    }
     if (loader === undefined) {
       loader = eval(
         "(function (require, exports, module) {\n" + String(__rhinoLocal.libraries[id]) + "\n})"
