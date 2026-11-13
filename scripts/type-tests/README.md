@@ -15,6 +15,11 @@ at it, and asserts BOTH directions:
 - `reject.cjs` — every call that is a runtime defect must fail, and the
   `// expect:` comment on the line names the diagnostic code expected there.
 
+A reject row whose comment starts `policy:` is the one exception to "runtime
+defect": it pins something the declarations deliberately leave out (a member no
+script measured, or dot access that the base tsconfig forbids on an index
+signature) and says so. Keep those few and keep them labelled.
+
 A reject file that compiles clean is a failure, and so is one that fails on a
 line with no `// expect:` marker — a type that rejects the wrong thing is worse
 than one that rejects nothing, because it breaks a workspace of client scripts
@@ -57,7 +62,7 @@ weakening the leaf.
 
 ## Leaves
 
-Five. The interesting coverage is the conditional types and the
+Eleven. The interesting coverage is the conditional types and the
 generation-split globals, not "the file compiled".
 
 | Leaf                    | Workspace | What it pins                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -67,6 +72,30 @@ generation-split globals, not "the file compiled".
 | `legacy-oidc-claims`    | am        | rhino + the OIDC overlay only (no `common.d.ts`); Debug logger; AMIdentity `HashSet` shape                                                                                                                                                                                                                                                                                                                                                                                                |
 | `idm-endpoint`          | idm       | the IDM copy of the managed-record projection (below)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `idm-managed-hook`      | idm       | hook overlay + slf4j logger arity                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+Six more pin the next-gen OAuth2, OIDC, social and config-provider overlays
+against what a script measured on the sandbox (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`). Each has an accept row for the
+measured call and a reject row for the call the old declaration let through:
+
+- `nextgen-access-token`: `session` is `| undefined` (unbound on a
+  `client_credentials` grant; the `typeof` probe compiles, as it does for
+  `existingSession`, and a bare unguarded read is a documented limitation, not a
+  row); the getters that answer `null` are nullable; `scopes` is a Java
+  list (no `map`/`join`); `clientProperties.allowed*` are not readable.
+- `nextgen-validate-scope`: the four scope sets are Java lists, and
+  `scopeValidatorHelper.throwInvalidScope` needs its argument.
+  `requestProperties.requestParams` takes both `[name]` and `get(name)`, and only
+  `requestedScopes` declares `add`.
+- `nextgen-oidc-claims`: `session` is `| undefined` (unbound on a password
+  grant), `claims` a map, the result shape
+  (`OidcClaimsResult`) requires `values`.
+- `nextgen-may-act`: `getMayAct`/`getAct` nullable, `setMayAct(null)` accepted.
+- `nextgen-social-normalize` and `nextgen-config-provider`: the bindings the
+  legacy default arm never declared, and absence rows for the legacy-only ones
+  (`sharedState`, `outcome`, `identity`, `cacheManager`, `nodeState.keys`).
+  `config` is assigned, never declared (`var config` is an unused module local),
+  and an array, a function or `undefined` is refused.
 
 There is no `legacy-decision-node` leaf. `decision-node-legacy.d.ts` stays
 uncompiled by this gate on purpose: anything more than a trivial edit to a

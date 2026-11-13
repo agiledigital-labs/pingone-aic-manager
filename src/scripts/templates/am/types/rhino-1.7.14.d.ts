@@ -48,6 +48,51 @@ interface JavaArray<T = JavaString> {
   toArray(): T[];
 }
 
+// A Java list whose script-side surface was measured member by member on the
+// next-gen engine (2026-11-08, docs/api/12): a request map's value list, an
+// `openidm.query` `result`, and a has-many relationship array on a read.
+// `typeof` is "object" and `Array.isArray` is false; `length`, `[i]`, `size()`
+// and in-range `get(i)` work, and NO `Array.prototype` method exists — `map`,
+// `some`, `filter`, `join`, `includes` throw `Cannot find function`. Copy one
+// into a JS array with `[].concat(list)` — measured for the openidm lists and
+// the validate-scope sets (2026-11-10), so only a `ConcatMeasuredList` is
+// accepted by `concat`. Other `List` members are left off because nothing
+// measured them.
+//
+// `MeasuredJavaListCore` is the part every such list has (`[i]`, `length`,
+// `size()`). `get(i)` is on `MeasuredJavaList` only: it was measured on the
+// request-map lists, not on the OAuth2 scope sets.
+interface MeasuredJavaListCore<T> {
+  readonly [index: number]: T | undefined;
+  readonly length: number;
+  size(): number;
+}
+
+interface MeasuredJavaList<T> extends MeasuredJavaListCore<T> {
+  get(index: number): T;
+}
+
+// What `toArray()` hands back on a next-gen scope set: not a JS array (measured
+// 2026-11-10, OIDC claims, may-act and validate scope). Nothing else was read from
+// it, so only `[i]` and `length` are declared, over `unknown` elements.
+interface MeasuredJavaArray {
+  readonly [index: number]: unknown;
+  readonly length: number;
+}
+
+// Marks the lists `[].concat` was measured to copy. Never present at runtime;
+// it only keeps a request map's value list out of the `concat` overload.
+declare const __aicConcatMeasured: unique symbol;
+
+// A list `[].concat(list)` was measured to copy into a JS array.
+interface ConcatMeasuredList<T> extends MeasuredJavaListCore<T> {
+  readonly [__aicConcatMeasured]: true;
+}
+
+// An `openidm.query` `result` or a has-many relationship array on a read:
+// a `MeasuredJavaList` that `[].concat(list)` copies into a JS array.
+interface OpenidmJavaList<T> extends MeasuredJavaList<T>, ConcatMeasuredList<T> {}
+
 interface JavaMap<Key = JavaString, Value = JavaString> {
   get(key: Lookup<Key>): Value | null;
   containsKey?(key: Lookup<Key>): boolean;
@@ -83,8 +128,13 @@ interface RequestMap {
    *
    * Header keys are matched case-insensitively; a single header whose value
    * contains a comma stays ONE element (it is not split).
+   *
+   * Each element is a JS string, and the list is a `MeasuredJavaList`: no
+   * `includes`, `indexOf` or `join` (measured on the next-gen engine,
+   * 2026-11-08; the legacy engine's list was not measured and is typed the
+   * same, the narrower claim).
    */
-  get(key: StringLike): JavaArray<JavaString> | null;
+  get(key: StringLike): MeasuredJavaList<string> | null;
   containsKey(key: StringLike): boolean;
 }
 
@@ -109,6 +159,13 @@ interface JavaSet<T = JavaString> {
 // Rhino lets a JS Array concat Java arrays; widen the lib signature so scripts
 // that concat a JavaArray<T> into a JS array still type-check.
 interface Array<T> {
+  // `[].concat(q.result)`: the empty literal is `never[]`, so the copy takes
+  // its element type from the list.
+  // A request map's value list is not accepted: its concat is unmeasured
+  // (the emulator faults request-list-unmeasured).
+  concat<U>(list: ConcatMeasuredList<U>): (T | U)[];
+  // Several lists, mixed with arrays and values, anywhere among the arguments.
+  concat<U>(...items: (T | ConcatArray<T> | ConcatMeasuredList<U>)[]): (T | U)[];
   concat<U extends T[]>(...items: U[]): T[];
   concat(...items: (T | JavaArray<T>)[]): T[];
 }

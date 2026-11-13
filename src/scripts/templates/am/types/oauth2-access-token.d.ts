@@ -46,14 +46,27 @@
 type TokenFieldValue = StringLike | number | boolean | any[] | object;
 
 /**
+ * What `getAct`, `getMayAct`, `getPermissions` and `getConfirmationKey` hand back.
+ * With no value they are an object that PRINTS `null` and has `size()` 0, not JS
+ * `null` (measured 2026-11-10, stateless token), so `v === null` is `false` and
+ * `v.size() === 0` is the test. Nothing else about it is claimed.
+ */
+interface AbsentTokenValue {
+  size(): number;
+}
+
+/**
  * The token being modified.
  *
- * Getters that had nothing to return handed back `null` rather than throwing or
- * yielding a blank — `getNonce`, `getAct`, `getMayAct`, `getPermissions`,
- * `getClaims`, `getAuthLevel`, `getConfirmationKey` and `getField` of an unset
- * key were all `null` on a plain `client_credentials` token — so they are typed
- * nullable and `strictNullChecks` will make you say what you want when it is
- * missing.
+ * Getters that had nothing to return did not throw or yield a blank, but they
+ * are not all the same thing. `getNonce`, `getClaims` and `getAuthLevel` were JS
+ * `null` on a plain `client_credentials` token (2026-08-27), so they are typed
+ * nullable and `strictNullChecks` makes you say what you want when one is
+ * missing. `getAct`, `getMayAct`, `getPermissions` and `getConfirmationKey`
+ * (and `getField` of an unset key, typed `any`) were objects that PRINT `null`
+ * and have `size()` 0 on a stateless token (measured 2026-11-10), so
+ * `=== null` is `false` for them: the four are typed `AbsentTokenValue`, and
+ * `v.size() === 0` is the test.
  */
 interface AccessToken {
   /** The value set by `setField`/`setFields`, or `null` if the key is unset. */
@@ -144,11 +157,11 @@ interface AccessToken {
   addExtraData(key: StringLike, value: StringLike): void;
   addExtraJsonData(key: StringLike, value: object): void;
 
-  getAct(): object | null;
-  getMayAct(): object | null;
-  getPermissions(): object | null;
+  getAct(): AbsentTokenValue;
+  getMayAct(): AbsentTokenValue;
+  getPermissions(): AbsentTokenValue;
   removePermissions(): void;
-  getConfirmationKey(): object | null;
+  getConfirmationKey(): AbsentTokenValue;
   removeConfirmationKey(): void;
   getTokenInfo(): object;
 

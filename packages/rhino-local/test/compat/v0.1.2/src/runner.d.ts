@@ -6,8 +6,9 @@ export declare class RhinoRunnerExitError extends Error {
     readonly stderr: string;
     constructor(exitCode: number | null, signal: NodeJS.Signals | null, stderr: string);
 }
+// compat-accepted: comment reworded (reference-image wording) since 0.1.2; no signature change.
 /**
- * The host JVM and the AM image's JVM answered one job differently. This is
+ * The host JVM and the reference JVM image's JVM answered one job differently. This is
  * the whole reason the `both` lane exists, so it fails the test rather than
  * picking a winner.
  */

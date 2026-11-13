@@ -34,6 +34,14 @@ pub enum ManagedCommand {
         /// Print only the `schema` member (still narrowed by --fields).
         #[arg(long)]
         schema_only: bool,
+        /// Print the definition and nothing else, on either stream: no
+        /// "omitted … hook sources" or "showing N of M" notes and no
+        /// relationship-storage lines (which also skips the `config/repo.ds`
+        /// read). Content is unchanged: hook sources stay replaced unless
+        /// --hook-sources is given. A --fields pattern that matched nothing is
+        /// still named on stderr, since that is usually a typo.
+        #[arg(long)]
+        json: bool,
         #[arg(long)]
         tenant: Option<String>,
     },
@@ -377,9 +385,19 @@ pub enum RelationshipCommand {
     /// later `set` on that key refuse. Remove only: it never adds or edits a
     /// mapping. Replaces the whole document after backing it up locally, and
     /// confirms by reading it back.
+    ///
+    /// With `--empty-entry`, instead remove the empty per-type
+    /// `genericMapping."managed/<object>"` entry that deleting a type (or its
+    /// last mapped property) leaves behind, for a deleted or an existing
+    /// type. Only while the entry maps nothing, no mapping names the type, and
+    /// the entry is the layout aic generates (anything else is refused).
     Repair {
-        /// `<object>.<key>` of the stale mapping.
+        /// `<object>.<key>` of the stale mapping; with `--empty-entry`, the
+        /// `<object>` whose empty per-type entry to remove.
         field: String,
+        /// Remove `<object>`'s empty per-type entry rather than one mapping.
+        #[arg(long)]
+        empty_entry: bool,
         /// Report the plan; write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -465,6 +483,7 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
             hook_sources,
             property,
             schema_only,
+            json,
             tenant,
         } => {
             let projection = match (property, schema_only) {
@@ -472,7 +491,7 @@ pub async fn run(cmd: ManagedCommand) -> Result<()> {
                 (None, true) => spec::GetProjection::Schema,
                 (None, false) => spec::GetProjection::Object,
             };
-            get(name, fields, hook_sources, projection, tenant).await
+            get(name, fields, hook_sources, projection, json, tenant).await
         }
         ManagedCommand::Object { command } => object(command).await,
         ManagedCommand::Field { command } => field(command).await,
@@ -486,6 +505,7 @@ async fn get(
     fields: Vec<String>,
     hook_sources: bool,
     projection: spec::GetProjection,
+    json: bool,
     tenant: Option<String>,
 ) -> Result<()> {
     let tenant = tenant_for(tenant)?;
@@ -502,27 +522,52 @@ async fn get(
         &spec::project_managed_get(view.object, &name, &projection)
             .map_err(crate::Error::Config)?,
     )?;
-    if let Some((shown, total)) = view.fields_shown {
-        eprintln!("showing {shown} of {total} properties");
+    for note in get_notes(
+        json,
+        whole,
+        view.fields_shown,
+        &view.unmatched_patterns,
+        view.elided_hooks,
+    ) {
+        eprintln!("{note}");
     }
-    for pattern in &view.unmatched_patterns {
-        eprintln!("--fields {pattern:?} matched no properties");
+    if json {
+        return Ok(());
     }
-    // Object-level hooks sit outside `schema`, so a projection never shows
-    // them and has nothing to report about eliding them.
-    if whole && view.elided_hooks > 0 {
-        let noun = if view.elided_hooks == 1 {
+    print_relationship_storage(&tenant, &managed, &name, storage_key).await;
+    Ok(())
+}
+
+/// The stderr notes `managed get` prints after the definition. `--json` keeps
+/// only the unmatched-pattern warning: the rest is commentary on the output,
+/// and a caller that merges the streams must get the definition alone.
+/// Object-level hooks sit outside `schema`, so a projection (`whole` false)
+/// never shows them and has nothing to report about eliding them.
+fn get_notes(
+    json: bool,
+    whole: bool,
+    fields_shown: Option<(usize, usize)>,
+    unmatched_patterns: &[String],
+    elided_hooks: usize,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !json && let Some((shown, total)) = fields_shown {
+        notes.push(format!("showing {shown} of {total} properties"));
+    }
+    for pattern in unmatched_patterns {
+        notes.push(format!("--fields {pattern:?} matched no properties"));
+    }
+    if !json && whole && elided_hooks > 0 {
+        let noun = if elided_hooks == 1 {
             "source"
         } else {
             "sources"
         };
-        eprintln!(
-            "omitted {} inline hook {noun}; pass --hook-sources to include them",
-            view.elided_hooks
-        );
+        notes.push(format!(
+            "omitted {elided_hooks} inline hook {noun}; pass --hook-sources to include them"
+        ));
     }
-    print_relationship_storage(&tenant, &managed, &name, storage_key).await;
-    Ok(())
+    notes
 }
 
 /// Where each relationship's links are stored, on stderr so the JSON on
@@ -1127,9 +1172,14 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     let label = plan.label();
                     let outcome = match send_repo_change(&ok, plan, permit).await {
                         Ok(applied) => {
-                            repair_readback(&label, &plan.object, &applied).map(|()| applied)
+                            repair_readback(&label, &repair_check(&plan.object, false), &applied)
+                                .map(|()| applied)
                         }
-                        Err(failure) => Err(repair_failure(&label, &plan.object, failure)),
+                        Err(failure) => Err(repair_failure(
+                            &label,
+                            &repair_check(&plan.object, false),
+                            failure,
+                        )),
                     };
                     match outcome {
                         Ok(applied) => {
@@ -1350,12 +1400,24 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
         } => super::conversion_cli::rollback_map(file.into(), tenant, options).await,
         RelationshipCommand::Repair {
             field,
+            empty_entry,
             dry_run,
             force,
             tenant,
             yes,
             json,
-        } => relationship_repair(field, dry_run, force.operation(), tenant, yes, json).await,
+        } => {
+            relationship_repair(
+                field,
+                empty_entry,
+                dry_run,
+                force.operation(),
+                tenant,
+                yes,
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -2022,23 +2084,41 @@ async fn check_orphans(tenant: &str, object: &str, key: &str, column: &str) -> R
 
 async fn relationship_repair(
     field: String,
+    empty_entry: bool,
     dry_run: bool,
     force: bool,
     tenant: Option<String>,
     yes: bool,
     json: bool,
 ) -> Result<()> {
-    let (object, key) = parse_object_key(&field)?;
     let tenant = tenant_for(tenant)?;
     let managed = api::get_managed(&tenant).await?;
     let repo_ds = api::get_repo_ds(&tenant).await?;
-    let plan = repair::plan(&managed, &repo_ds, &object, &key).map_err(crate::Error::Config)?;
+    let (object, plan) = if empty_entry {
+        if field.contains('.') {
+            return Err(crate::Error::Config(format!(
+                "--empty-entry takes an object name, not {field:?}; it removes the object's \
+                 per-type entry, not one mapping"
+            )));
+        }
+        let plan =
+            repair::plan_remove_entry(&managed, &repo_ds, &field).map_err(crate::Error::Config)?;
+        (field.clone(), plan)
+    } else {
+        let (object, key) = parse_object_key(&field)?;
+        let plan = repair::plan(&managed, &repo_ds, &object, &key).map_err(crate::Error::Config)?;
+        (object, plan)
+    };
     let mapping = match (&plan.mapping.resource_path, &plan.mapping.property_name) {
         (Some(path), Some(through)) => format!("{} of {path} through {through}", plan.mapping.kind),
         (Some(path), None) => format!("{} to {path}", plan.mapping.kind),
         _ => plan.mapping.kind.clone(),
     };
-    eprintln!("repair {field}: remove its config/repo.ds mapping ({mapping})");
+    if empty_entry {
+        eprintln!("repair {field}: remove its empty config/repo.ds per-type entry ({mapping})");
+    } else {
+        eprintln!("repair {field}: remove its config/repo.ds mapping ({mapping})");
+    }
     for note in &plan.notes {
         eprintln!("  note: {note}");
     }
@@ -2049,8 +2129,13 @@ async fn relationship_repair(
         || crate::cli::confirm_destructive(
             "relationship repair",
             &format!(
-                "Remove {field}'s mapping from config/repo.ds? The whole document is replaced; \
-                 the current one is backed up locally first"
+                "Remove {} from config/repo.ds? The whole document is replaced; \
+                 the current one is backed up locally first",
+                if empty_entry {
+                    format!("{field}'s empty per-type entry")
+                } else {
+                    format!("{field}'s mapping")
+                }
             ),
             "--force",
         )?;
@@ -2061,15 +2146,23 @@ async fn relationship_repair(
     };
     let ok = ensure_prod_confirmed(&tenant, yes)?;
     match send_repo_change(&ok, &plan, &permit).await {
-        Err(failure) => Err(repair_failure(&field, &object, failure)),
+        Err(failure) => Err(repair_failure(
+            &field,
+            &repair_check(&object, empty_entry),
+            failure,
+        )),
         Ok(applied) => {
             eprintln!("  backup: {}", applied.backup.display());
             if json {
                 print_json(&serde_json::json!({ "plan": &plan, "applied": &applied }))?;
             }
-            repair_readback(&field, &object, &applied)?;
+            repair_readback(&field, &repair_check(&object, empty_entry), &applied)?;
             // No undo entry: the backup above is the way back.
-            eprintln!("removed {field}'s config/repo.ds mapping (confirmed by re-read)");
+            if empty_entry {
+                eprintln!("removed {field}'s per-type config/repo.ds entry (confirmed by re-read)");
+            } else {
+                eprintln!("removed {field}'s config/repo.ds mapping (confirmed by re-read)");
+            }
             Ok(())
         }
     }
@@ -2109,14 +2202,29 @@ async fn send_repo_change(
     .await
 }
 
-fn repair_failure(field: &str, object: &str, failure: repair::Failure) -> crate::Error {
+/// What to run to see how a repo.ds write settled. `relationship verify` reads
+/// the object out of `config/managed`, so it refuses a type that is no longer
+/// declared, which is the usual subject of `--empty-entry`: that path is pointed
+/// at the repair's own dry run, which reports whether the entry is still there.
+fn repair_check(object: &str, empty_entry: bool) -> String {
+    if empty_entry {
+        format!(
+            "`aic managed relationship repair {object} --empty-entry --dry-run` \
+             (`relationship verify` refuses a type config/managed no longer declares)"
+        )
+    } else {
+        format!("`aic managed relationship verify {object}`")
+    }
+}
+
+fn repair_failure(field: &str, check: &str, failure: repair::Failure) -> crate::Error {
     crate::Error::Config(match failure {
         repair::Failure::NotWritten(message) => {
             format!("relationship repair {field}: {message}")
         }
         repair::Failure::SendFailed { error, backup } => format!(
             "relationship repair {field}: the write failed ({error}), and whether it landed is \
-             unknown. Run `aic managed relationship verify {object}` to see. The document it \
+             unknown. Run {check} to see. The document it \
              replaced is at {}",
             backup.display()
         ),
@@ -2124,24 +2232,24 @@ fn repair_failure(field: &str, object: &str, failure: repair::Failure) -> crate:
 }
 
 /// `Ok` only when a read-back showed exactly the document sent.
-fn repair_readback(field: &str, object: &str, applied: &repair::Applied) -> Result<()> {
+fn repair_readback(field: &str, check: &str, applied: &repair::Applied) -> Result<()> {
     match &applied.readback {
         repair::Readback::Confirmed => Ok(()),
         repair::Readback::Unchanged => Err(crate::Error::Config(format!(
             "relationship repair {field}: the write was accepted, but config/repo.ds \
              still reads as it did before it after 30s. Nothing appears to have \
-             changed; run repair again, or `relationship verify {object}`"
+             changed; run repair again, or {check}"
         ))),
         repair::Readback::Different => Err(crate::Error::Config(format!(
             "relationship repair {field}: the write was accepted, but a read of \
              config/repo.ds returned neither the document sent nor the one it replaced — another \
-             writer, or the tenant rewrote it. Run `relationship verify {object}`; the \
+             writer, or the tenant rewrote it. Run {check}; the \
              replaced document is at {}",
             applied.backup.display()
         ))),
         repair::Readback::Unread { error } => Err(crate::Error::Config(format!(
             "relationship repair {field}: the write was accepted, but reading it back \
-             failed ({error}). Run `relationship verify {object}`; the replaced \
+             failed ({error}). Run {check}; the replaced \
              document is at {}",
             applied.backup.display()
         ))),
@@ -3730,6 +3838,37 @@ mod tests {
     use super::*;
     use crate::cli::Cli;
 
+    /// `relationship verify` refuses a type `config/managed` no longer declares,
+    /// which is the usual subject of `--empty-entry`, so a read-back failure on
+    /// that path must not send the operator to it. The other path still does.
+    #[test]
+    fn repair_readback_points_empty_entry_at_its_own_dry_run() {
+        let applied = repair::Applied {
+            backup: std::path::PathBuf::from("/backups/repo.ds.json"),
+            readback: repair::Readback::Unread {
+                error: "boom".into(),
+            },
+        };
+        let entry = repair_readback("thing", &repair_check("thing", true), &applied)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            entry.contains("repair thing --empty-entry --dry-run"),
+            "{entry}"
+        );
+        assert!(
+            !entry.contains("Run `aic managed relationship verify"),
+            "{entry}"
+        );
+        let mapping = repair_readback("thing.owner", &repair_check("thing", false), &applied)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            mapping.contains("`aic managed relationship verify thing`"),
+            "{mapping}"
+        );
+    }
+
     /// `--force` overrides the marker and never a Ping object.
     #[test]
     fn force_overrides_the_marker_but_never_a_ping_object() {
@@ -4104,6 +4243,60 @@ mod tests {
             }
             other => panic!("not a managed get: {other:?}"),
         }
+    }
+
+    #[test]
+    fn repair_empty_entry_flag_parses() {
+        let parsed = Cli::try_parse_from([
+            "aic",
+            "managed",
+            "relationship",
+            "repair",
+            "gone",
+            "--empty-entry",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(crate::cli::Command::Managed {
+            command:
+                ManagedCommand::Relationship {
+                    command:
+                        RelationshipCommand::Repair {
+                            field,
+                            empty_entry,
+                            dry_run,
+                            ..
+                        },
+                },
+        }) = parsed.command
+        else {
+            panic!("not a relationship repair")
+        };
+        assert_eq!(field, "gone");
+        assert!(empty_entry && dry_run);
+    }
+
+    #[test]
+    fn get_json_keeps_only_the_unmatched_pattern_warning() {
+        let unmatched = ["nope*".to_string()];
+        let plain = get_notes(false, true, Some((1, 4)), &unmatched, 2);
+        assert_eq!(plain.len(), 3, "{plain:?}");
+        assert!(plain.iter().any(|n| n.starts_with("omitted 2 inline hook")));
+        assert!(plain.iter().any(|n| n == "showing 1 of 4 properties"));
+        let json = get_notes(true, true, Some((1, 4)), &unmatched, 2);
+        assert_eq!(json, ["--fields \"nope*\" matched no properties"]);
+        assert!(get_notes(true, true, None, &[], 3).is_empty());
+        // A projection never reports elided hooks, json or not.
+        assert!(get_notes(false, false, None, &[], 3).is_empty());
+
+        let parsed =
+            Cli::try_parse_from(["aic", "managed", "get", "alpha_user", "--json"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(crate::cli::Command::Managed {
+                command: ManagedCommand::Get { json: true, .. }
+            })
+        ));
     }
 
     #[test]
