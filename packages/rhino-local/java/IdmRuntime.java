@@ -95,8 +95,14 @@ final class IdmRuntime {
     } catch (RhinoException e) {
       response = Runner.errorFromRhino(id, compiling ? "compile_error" : "runtime_error", e);
       response.put("thrown", thrown(e));
+      if (HarnessFaults.isStackOverflow(e)) {
+        response.put("outcome", "runtime_error");
+        response.put("emulation", HarnessFaults.stackOverflowEmulation());
+      }
     } catch (Throwable e) {
-      if (runtime == null && calls != null) calls.fail(new EmulationFailure(
+      boolean overflow = HarnessFaults.isStackOverflow(e);
+      // A stack overflow is the script's fault. Do not record it as an internal setup failure.
+      if (!overflow && runtime == null && calls != null) calls.fail(new EmulationFailure(
           e instanceof IllegalArgumentException ? "protocol" : "internal", "IDM protocol setup: " + e.getMessage()));
       response = e instanceof Error && Runner.isInterrupt((Error) e) ? Runner.timeoutResponse(id)
           : Runner.errorResponse(id, "runtime_error", e, sourceName, -1, -1, null);
@@ -105,6 +111,7 @@ final class IdmRuntime {
       thrown.put("class", e.getClass().getName());
       thrown.put("message", e.getMessage());
       response.put("thrown", thrown);
+      if (overflow) response.put("emulation", HarnessFaults.stackOverflowEmulation());
     } finally {
       factory.finish();
       if (calls != null) calls.close();

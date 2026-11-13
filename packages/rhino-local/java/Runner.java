@@ -267,7 +267,11 @@ public final class Runner {
       }
     } catch (Throwable t) {
       result = errorResponse(id, "runtime_error", t, null, -1, -1, null);
-      result.put("emulation", new EmulationFailure("internal", t.toString()).info);
+      // A stack overflow is the script's, including one that escaped the
+      // interpreter (a compiled call, or a journey, where no fault list is open).
+      result.put("emulation", HarnessFaults.isStackOverflow(t)
+          ? HarnessFaults.stackOverflowEmulation()
+          : new EmulationFailure("internal", t.toString()).info);
     } finally {
       Timing.end();
     }
@@ -448,13 +452,16 @@ public final class Runner {
           ((ScriptContextScope) scope).sealHarnessGlobals();
           libraries.snapshot(scope);
         } catch (EvaluatorException e) {
+          if (HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, preambleName);
           return errorFromRhino(id, "compile_error", e);
         } catch (RhinoException e) {
+          if (HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, preambleName);
           return errorFromRhino(id, "runtime_error", e);
         } catch (Error e) {
           if (isInterrupt(e)) {
             return timeoutResponse(id);
           }
+          if (faults != null && HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, preambleName);
           throw e;
         }
       }
@@ -483,11 +490,13 @@ public final class Runner {
       try {
         completion = script.exec(cx, scope);
       } catch (RhinoException e) {
+        if (HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, sourceName);
         return errorFromRhino(id, "runtime_error", e);
       } catch (Error e) {
         if (isInterrupt(e)) {
           return timeoutResponse(id);
         }
+        if (faults != null && HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, sourceName);
         throw e;
       } finally {
         Timing.add("subjectExec", phase);
@@ -519,7 +528,12 @@ public final class Runner {
           final Object harvested = ((org.mozilla.javascript.Function) harvest).call(cx, scope, scope, new Object[] { completion });
           return response(id, "ok", JsValues.of(harvested), null);
         } catch (RhinoException e) {
+          if (HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, sourceName);
           return errorFromRhino(id, "runtime_error", e);
+        } catch (Error e) {
+          if (isInterrupt(e)) return timeoutResponse(id);
+          if (faults != null && HarnessFaults.isStackOverflow(e)) return stackOverflowResponse(id, e, faults, sourceName);
+          throw e;
         } finally {
           Timing.add("harvest", phase);
         }
@@ -560,6 +574,21 @@ public final class Runner {
 
   static boolean isInterrupt(Error e) {
     return "Interrupt.".equals(e.getMessage());
+  }
+
+  /**
+   * One named fault for both forms of stack exhaustion. When {@code faults} is
+   * open the caller attaches it with any other fault from this job; otherwise
+   * the emulation goes on the response here.
+   */
+  private static Map<String, Object> stackOverflowResponse(
+      String id, Throwable error, HarnessFaults faults, String sourceName) {
+    Map<String, Object> response = error instanceof RhinoException
+        ? errorFromRhino(id, "runtime_error", (RhinoException) error)
+        : errorResponse(id, "runtime_error", error, sourceName, -1, -1, null);
+    if (faults != null) faults.record(HarnessFaults.STACK_OVERFLOW_ID, HarnessFaults.STACK_OVERFLOW_MESSAGE);
+    else response.put("emulation", HarnessFaults.stackOverflowEmulation());
+    return response;
   }
 
   static Map<String, Object> errorFromRhino(String id, String outcome, RhinoException e) {
