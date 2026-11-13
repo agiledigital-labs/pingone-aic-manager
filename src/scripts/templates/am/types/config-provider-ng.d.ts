@@ -3,7 +3,7 @@
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
 // Applied metadata refinements:
 //   - Fluent builder methods return their own interface, not metadata's bare `object`.
-//   - `nodeState.get` returns `any`, `put*` take `any`, and `keys` is not declared (it throws on next-gen).
+//   - `nodeState.get` returns `any`, `put*` take `any`, and `keys` is not declared (it throws in this context).
 //   - NodeState members other than `get`, `isDefined`, `putShared`, `putTransient` are the descriptor's, unmeasured here.
 
 interface SamlApplication {
@@ -391,7 +391,14 @@ declare const resumedFromSuspend: boolean;
 // function is a 500 with an empty body. `config` is a ReferenceError until assigned
 // (measured 2026-11-10, docs/api/12). Numbers become doubles, and `new
 // java.util.HashMap()` is not available on next-gen.
+//
+// ASSIGN it, do not declare it: `config = { … }`. `var config = { … }` is accepted
+// at runtime too, but the base tsconfig's `moduleDetection: force` makes it an unused
+// module local (TS6133) and the value is then not checked against this type.
+// An array or a function is refused here through `length?: never`, so a config key
+// named `length` is refused with them.
 interface ConfigProviderConfig {
   [key: string]: any;
+  length?: never;
 }
-declare let config: ConfigProviderConfig | undefined;
+declare let config: ConfigProviderConfig;

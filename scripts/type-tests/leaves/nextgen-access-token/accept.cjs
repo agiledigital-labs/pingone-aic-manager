@@ -1,8 +1,12 @@
 // Next-gen access-token modification, as measured on the sandbox 2026-11-10
 // (docs/api/12-script-bindings-matrix.md).
 
-// `session` is not bound at all, and is not declared: neither a bare read nor a
-// `typeof` probe compiles (see reject.cjs).
+// `session` was unbound on a client_credentials grant (authorization_code is
+// unmeasured), so it is `| undefined` and the `typeof` probe is the way to read it.
+// A bare unguarded read is a documented limitation, not a reject row.
+if (typeof session !== "undefined" && session !== undefined) {
+  logger.info("session bound");
+}
 
 // Getters answer JS null on a token with no value, so each read is guarded.
 var level = accessToken.getAuthLevel();

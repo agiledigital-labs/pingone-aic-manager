@@ -1172,9 +1172,13 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     let label = plan.label();
                     let outcome = match send_repo_change(&ok, plan, permit).await {
                         Ok(applied) => {
-                            repair_readback(&label, &plan.object, &applied).map(|()| applied)
+                            repair_readback(&label, &repair_check(&plan.object, false), &applied).map(|()| applied)
                         }
-                        Err(failure) => Err(repair_failure(&label, &plan.object, failure)),
+                        Err(failure) => Err(repair_failure(
+                            &label,
+                            &repair_check(&plan.object, false),
+                            failure,
+                        )),
                     };
                     match outcome {
                         Ok(applied) => {
@@ -2141,13 +2145,17 @@ async fn relationship_repair(
     };
     let ok = ensure_prod_confirmed(&tenant, yes)?;
     match send_repo_change(&ok, &plan, &permit).await {
-        Err(failure) => Err(repair_failure(&field, &object, failure)),
+        Err(failure) => Err(repair_failure(
+            &field,
+            &repair_check(&object, empty_entry),
+            failure,
+        )),
         Ok(applied) => {
             eprintln!("  backup: {}", applied.backup.display());
             if json {
                 print_json(&serde_json::json!({ "plan": &plan, "applied": &applied }))?;
             }
-            repair_readback(&field, &object, &applied)?;
+            repair_readback(&field, &repair_check(&object, empty_entry), &applied)?;
             // No undo entry: the backup above is the way back.
             if empty_entry {
                 eprintln!("removed {field}'s per-type config/repo.ds entry (confirmed by re-read)");
@@ -2193,14 +2201,29 @@ async fn send_repo_change(
     .await
 }
 
-fn repair_failure(field: &str, object: &str, failure: repair::Failure) -> crate::Error {
+/// What to run to see how a repo.ds write settled. `relationship verify` reads
+/// the object out of `config/managed`, so it refuses a type that is no longer
+/// declared, which is the usual subject of `--empty-entry`: that path is pointed
+/// at the repair's own dry run, which reports whether the entry is still there.
+fn repair_check(object: &str, empty_entry: bool) -> String {
+    if empty_entry {
+        format!(
+            "`aic managed relationship repair {object} --empty-entry --dry-run` \
+             (`relationship verify` refuses a type config/managed no longer declares)"
+        )
+    } else {
+        format!("`aic managed relationship verify {object}`")
+    }
+}
+
+fn repair_failure(field: &str, check: &str, failure: repair::Failure) -> crate::Error {
     crate::Error::Config(match failure {
         repair::Failure::NotWritten(message) => {
             format!("relationship repair {field}: {message}")
         }
         repair::Failure::SendFailed { error, backup } => format!(
             "relationship repair {field}: the write failed ({error}), and whether it landed is \
-             unknown. Run `aic managed relationship verify {object}` to see. The document it \
+             unknown. Run {check} to see. The document it \
              replaced is at {}",
             backup.display()
         ),
@@ -2208,24 +2231,24 @@ fn repair_failure(field: &str, object: &str, failure: repair::Failure) -> crate:
 }
 
 /// `Ok` only when a read-back showed exactly the document sent.
-fn repair_readback(field: &str, object: &str, applied: &repair::Applied) -> Result<()> {
+fn repair_readback(field: &str, check: &str, applied: &repair::Applied) -> Result<()> {
     match &applied.readback {
         repair::Readback::Confirmed => Ok(()),
         repair::Readback::Unchanged => Err(crate::Error::Config(format!(
             "relationship repair {field}: the write was accepted, but config/repo.ds \
              still reads as it did before it after 30s. Nothing appears to have \
-             changed; run repair again, or `relationship verify {object}`"
+             changed; run repair again, or {check}"
         ))),
         repair::Readback::Different => Err(crate::Error::Config(format!(
             "relationship repair {field}: the write was accepted, but a read of \
              config/repo.ds returned neither the document sent nor the one it replaced — another \
-             writer, or the tenant rewrote it. Run `relationship verify {object}`; the \
+             writer, or the tenant rewrote it. Run {check}; the \
              replaced document is at {}",
             applied.backup.display()
         ))),
         repair::Readback::Unread { error } => Err(crate::Error::Config(format!(
             "relationship repair {field}: the write was accepted, but reading it back \
-             failed ({error}). Run `relationship verify {object}`; the replaced \
+             failed ({error}). Run {check}; the replaced \
              document is at {}",
             applied.backup.display()
         ))),
@@ -3813,6 +3836,34 @@ fn join_or_dash(values: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::cli::Cli;
+
+    /// `relationship verify` refuses a type `config/managed` no longer declares,
+    /// which is the usual subject of `--empty-entry`, so a read-back failure on
+    /// that path must not send the operator to it. The other path still does.
+    #[test]
+    fn repair_readback_points_empty_entry_at_its_own_dry_run() {
+        let applied = repair::Applied {
+            backup: std::path::PathBuf::from("/backups/repo.ds.json"),
+            readback: repair::Readback::Unread {
+                error: "boom".into(),
+            },
+        };
+        let entry = repair_readback("thing", &repair_check("thing", true), &applied)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            entry.contains("repair thing --empty-entry --dry-run"),
+            "{entry}"
+        );
+        assert!(!entry.contains("Run `aic managed relationship verify"), "{entry}");
+        let mapping = repair_readback("thing.owner", &repair_check("thing", false), &applied)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            mapping.contains("`aic managed relationship verify thing`"),
+            "{mapping}"
+        );
+    }
 
     /// `--force` overrides the marker and never a Ping object.
     #[test]

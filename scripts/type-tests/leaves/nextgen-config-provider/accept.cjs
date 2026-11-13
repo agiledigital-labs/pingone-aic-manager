@@ -8,3 +8,7 @@ if (callbacks.isEmpty()) {
 }
 config = { message: { en: "hello" }, count: 1 };
 config = {};
+// Assign, do not declare (`var config` is an unused module local); an assigned
+// config can still be changed afterwards, and the final value is used.
+config = { message: { en: "hello" } };
+config["count"] = 2;

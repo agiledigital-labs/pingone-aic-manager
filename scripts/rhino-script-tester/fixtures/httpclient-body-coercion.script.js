@@ -13,8 +13,9 @@
 // between the two isolates httpClient's serializer from JS-level rendering.
 //
 // The echo target is httpbin.org (public request-reflector) and the payload is
-// synthetic scalars only — no tenant data, no secrets, nothing derived from
-// nodeState. If egress is blocked the fixture reports the transport error and the
+// synthetic scalars only — no tenant data, no secrets. The only values taken from
+// the engine are counts (`nodeState.keys().size()`, `requestHeaders.size()`),
+// never a key or a value. If egress is blocked the fixture reports the transport error and the
 // java.lang.* constructibility rows below are still meaningful.
 var ECHO_URL = "https://httpbin.org/post";
 

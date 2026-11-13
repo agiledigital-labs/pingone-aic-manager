@@ -112,8 +112,15 @@ declare const identity: Identity;
 
 declare const scopes: ScopeList;
 
-// `session` is deliberately not declared. Ping documents it for this context, the
-// descriptor omits it, and the runtime does not bind it: reading it bare is
-// `ReferenceError: "session" is not defined.` (measured 2026-11-10, docs/api/12).
-// Declared as nullable it would let `session != null` compile and then throw. Left
-// undeclared, a bare read and a `typeof session` probe are both type errors.
+// `session` is conditional. Ping documents it for this context and the descriptor
+// omits it. Bare reads were `ReferenceError: "session" is not defined.` on a
+// `client_credentials` grant (token modification) and on a password grant (OIDC
+// claims), neither of which has an SSO session (measured 2026-11-10, docs/api/12);
+// an `authorization_code` grant is unmeasured. Guard with
+// `typeof session !== "undefined"` before reading it, and do not rely on `null`:
+// no grant measured here binds one. The two members are Ping's, unmeasured.
+interface OAuthScriptedSession {
+  getProperty(name: StringLike): StringLike | null;
+  setProperty(name: StringLike, value: StringLike): void;
+}
+declare const session: OAuthScriptedSession | undefined;

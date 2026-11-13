@@ -15,6 +15,22 @@ function validateAccessTokenScope() {
     });
   }
   requestedScopes.add("b");
+  // Both spellings of a request value are measured: [name] and get(name), with
+  // header names matched case-insensitively by get.
+  var viaIndex = requestProperties.requestParams["grant_type"];
+  var viaGet = requestProperties.requestParams.get("grant_type");
+  var absent = requestProperties.requestParams.get("absent");
+  var header = requestProperties.requestHeaders.get("Authorization");
+  if (viaIndex && viaGet && viaGet[0] === viaIndex[0] && absent === null) {
+    logger.info("grant {}", String(viaGet[0]));
+  }
+  if (header && header.length > 0) {
+    logger.info("has authorization header");
+  }
+  var copy = allowedScopes.toArray();
+  if (copy.length > 0) {
+    logger.info("first {}", String(copy[0]));
+  }
   if (granted.length === 0) {
     scopeValidatorHelper.throwInvalidScope("nothing requested");
   }

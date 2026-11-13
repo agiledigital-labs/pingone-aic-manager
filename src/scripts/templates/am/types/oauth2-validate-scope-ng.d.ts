@@ -3,7 +3,7 @@
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
 // Applied metadata refinements:
 //   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
-//   - The four scope sets are `ValidateScopeList`s (Java lists), not JS arrays.
+//   - The four scope sets are `ValidateScopeList`s (Java lists), not JS arrays; only `requestedScopes` declares `add`.
 //   - `scopeValidatorHelper` is a `ScopeValidatorHelper`, not `any`.
 
 // AM calls the global `validateAccessTokenScope()` with NO arguments after the body
@@ -11,11 +11,15 @@
 // 2026-11-10, docs/api/12). Those four sets are Java lists of JS strings: `map`,
 // `join` and the other Array methods throw `Cannot find function`, and `iterator()`
 // is the class shutter. `[].concat(list)` copies one into a JS array (measured).
-interface ValidateScopeList extends ScopeList, OpenidmJavaList<string> {
+interface ValidateScopeList extends ScopeList, ConcatMeasuredList<string> {
   indexOf(scope: StringLike): number;
   isEmpty(): boolean;
   forEach(callback: (scope: string) => void): void;
-  toArray(): JavaArray<string>;
+}
+
+// `add` was called on `requestedScopes` only (it returned `true` and grew the
+// list); the other three sets were read, never written.
+interface RequestedScopeList extends ValidateScopeList {
   /** Grows the list in place; `true` on success. */
   add(scope: StringLike): boolean;
 }
@@ -34,7 +38,7 @@ declare const scopeValidatorHelper: ScopeValidatorHelper;
 declare const requestProperties: RequestProperties;
 declare const clientProperties: ClientProperties;
 declare const availableScopes: ValidateScopeList;
-declare const requestedScopes: ValidateScopeList;
+declare const requestedScopes: RequestedScopeList;
 declare const allowedScopes: ValidateScopeList;
 interface EmailService {
   send(to: StringLike, subject: StringLike, body: StringLike): void;

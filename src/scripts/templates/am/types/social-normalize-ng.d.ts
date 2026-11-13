@@ -13,7 +13,8 @@
 // `rawProfile["sub"]` or `rawProfile.get("sub")`.
 interface RawProfile {
   get(key: StringLike): unknown;
-  keys(): MeasuredJavaList<unknown>;
+  /** A `[object JavaList]` of the keys; nothing else was read from it. */
+  keys(): object;
   size(): number;
   [key: string]: unknown;
 }
