@@ -582,7 +582,7 @@ function strings(raw: unknown, path: string): string[] {
  * scopes as sets. A repeated entry is refused rather than collapsed, so an
  * expectation cannot look stricter than it is (Sol ctx r1 P1-1).
  */
-function scopeSet(raw: unknown, path: string): string[] {
+export function scopeSet(raw: unknown, path: string): string[] {
   const list = strings(raw, path);
   const seen = new Set<string>();
   for (const item of list) {

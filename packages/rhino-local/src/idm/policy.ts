@@ -174,17 +174,16 @@ export function implicitPolicy(type: ManagedType, object: Document, write: Polic
       // capability gate faults it).
       if (Object.hasOwn(config, "default")) {
         return fault("idm-policy/required", `${path} declares a default and the write removes it. ` +
-          "Stock policy.js adds an implicit required for any default, null included; AIC's 403 REQUIRED for a PATCH remove " +
-          "is measured only with the property also named in schema.required (docs/api/10-managed-objects.md), so what AIC " +
-          "answers here is unmeasured");
+          "AIC's 403 REQUIRED for a PATCH remove was measured only with the property also named in schema.required " +
+          "(docs/api/10-managed-objects.md); without it, what AIC answers is unmeasured");
       }
       measured.add(POLICY_MEASURED.optionalRemove);
       continue;
     }
     const value = object[name] as JsonValue;
     if (typeof config.type !== "string") {
-      return fault("idm-policy/valid-type", `${path} declares no type, and stock policy.js's implicit builder reads every ` +
-        "property's type; what AIC does is unmeasured");
+      return fault("idm-policy/valid-type", `${path} declares no type; what AIC does with a write ` +
+        "to an untyped property is unmeasured");
     }
     if (value === null) {
       const defaulted = Object.hasOwn(config, "default") && config.default !== null;

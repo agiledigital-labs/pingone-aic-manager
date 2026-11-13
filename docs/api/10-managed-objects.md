@@ -621,9 +621,8 @@ Three consequences worth carrying:
   default already applies on create. It does not make an explicit `null`
   acceptable. Whether it also loses the `PATCH remove` guard is **unmeasured**
   (inference, 2026-11-08): the 403 `REQUIRED` above was taken with the property
-  still in `schema.required`, and stock `policy.js` adds an implicit `required`
-  for any `default`, `null` included, which predicts the remove is still
-  refused. See Q18 in `99-quirks-and-open-questions.md`.
+  still in `schema.required`; without it, whether the remove is refused has
+  not been measured. See Q18 in `99-quirks-and-open-questions.md`.
 - **`null` is never a substitute for "unset".** A caller that sends `null` for
   an untouched field gets a 403 that reads like "you must supply a value", when
   the fix is to _omit_ the key and let the default land. Strip null-valued keys
@@ -2717,6 +2716,7 @@ on create, or when actually rotating it.
   audit trail stays exact under contention;
   `idm-activity` shows the committed parent write once and every retried hook
   side effect. See "Concurrent `PATCH` and hooks".
+
 - Date: 2026-10-31 — `config/repo.ds` repair, sandbox `test_from` / `test_to`
   with throwaway records, both config documents restored byte-identical
   afterwards: `PATCH /openidm/config/repo.ds` with one `remove` (200, document
