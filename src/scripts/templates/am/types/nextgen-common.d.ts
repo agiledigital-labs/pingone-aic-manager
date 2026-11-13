@@ -548,9 +548,14 @@ type AmUserAttribute =
 // live token request), and earlier on validate scope (docs/api/22-token-exchange.md,
 // 2026-08-25):
 //
-//     var params = requestProperties.requestParams;   // property access, not .get()
+//     var params = requestProperties.requestParams;
 //     var v = params[name];                           // a Java list of JS strings
 //     return v && v.length ? v[0] : null;
+//
+// Both spellings are measured: `params[name]` (a missing key is `undefined`) and
+// `params.get(name)` (a missing key is `null`; on validate scope, 2026-11-10).
+// Header keys answer to `get` case-insensitively and to lower and Title case as
+// properties.
 //
 // `requestProperties` has four entries: `realm`, `requestUri` (JS strings),
 // `requestHeaders` (which carries the client's `Authorization: Basic …`; keys
@@ -581,12 +586,17 @@ type AmUserAttribute =
 // which is the same fault `noUncheckedIndexedAccess` catches on the named
 // members, waved away one line lower down. `unknown` keeps the key reachable
 // and makes you narrow it first.
+type RequestPropertyMap = Record<string, MeasuredJavaList<string>> & {
+  /** `null` for a key the request lacks (measured on validate scope). */
+  get(key: StringLike): MeasuredJavaList<string> | null;
+};
+
 interface RequestProperties {
   /** Query/form parameters of the OAuth2 request. Does **not** carry
    * `password` or `client_secret` (verified on the `password` grant). */
-  requestParams: Record<string, MeasuredJavaList<string>>;
+  requestParams: RequestPropertyMap;
   /** Request headers, client credentials included — keep them out of logs. */
-  requestHeaders: Record<string, MeasuredJavaList<string>>;
+  requestHeaders: RequestPropertyMap;
   requestUri: string;
   realm: string;
   [key: string]: unknown;
@@ -614,10 +624,16 @@ interface ClientProperties {
 // A next-gen OAuth2 scope collection: `scopes` in token modification, may-act and
 // OIDC claims. A Java list of JS strings, not a JS array — `Array.isArray` is
 // false and no `Array.prototype` method exists (measured 2026-11-10, docs/api/12).
-// Only the members every one of those contexts measured are here; validate scope
-// has more (`ValidateScopeList`, in its overlay).
-interface ScopeList extends MeasuredJavaList<string> {
+// Declared: `length`, `[i]` and `contains()`, measured in all three contexts;
+// `size()`, measured in token modification and may-act but not in OIDC claims; and
+// `toArray()`, measured in OIDC claims and may-act (not a JS array). `get(i)` is
+// not declared, because no scope set was measured calling it, and `add()` is
+// measured only on token modification and validate scope (on may-act it faults),
+// so it is not here either. Validate scope has more (`ValidateScopeList`, in its
+// overlay).
+interface ScopeList extends MeasuredJavaListCore<string> {
   contains(scope: StringLike): boolean;
+  toArray(): MeasuredJavaArray;
 }
 
 // Only next-generation scripts can require() library scripts (resolved via the

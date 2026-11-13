@@ -2,12 +2,14 @@
 // scripts/gen-binding-types.mjs — do not edit by hand. Context: OAUTH2_EVALUATE_SCOPE_NEXT_GEN.
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
 // Applied metadata refinements:
-//   - `AccessToken.getField` returns `any`, not metadata's bare `object`.
-//   - `AccessToken.setField` accepts `TokenFieldValue`, not metadata's bare `object`.
-//   - `AccessToken` getters that answer JS `null` on a token with no value return `T | null`.
-//   - `AccessToken.addExtraJsonData` also accepts the JSON string measured on next-gen.
-//   - `AccessToken.setScope` accepts a JS array or the `scopes` list.
+//   - `AccessToken.getField` returns `any`, not metadata's bare `object` (measured in token modification; unmeasured here).
+//   - `AccessToken.setField` accepts `TokenFieldValue`, not metadata's bare `object` (measured in token modification; unmeasured here).
+//   - `AccessToken` getters that answer JS `null` on a token with no value return `T | null` (measured in token modification; unmeasured here).
+//   - `AccessToken.addExtraJsonData` also accepts the JSON string measured on next-gen (measured in token modification; unmeasured here).
+//   - `AccessToken.setScope` accepts a JS array or the `scopes` list (measured in token modification; unmeasured here).
 //   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
+//   - `RequestProperties` is a shared type, measured in four other OAuth2 contexts; unmeasured here.
+//   - `ClientProperties` is a shared type, measured in four other OAuth2 contexts; unmeasured here.
 
 // A custom access-token field: any JSON-ish scalar, array, or object. Whatever
 // you set here lands in the CTS entry, or as a JWT claim for client-based

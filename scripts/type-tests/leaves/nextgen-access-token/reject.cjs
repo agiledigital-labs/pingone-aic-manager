@@ -1,6 +1,4 @@
 // Each marked line is a runtime failure on next-gen token modification.
-session != null; // expect: TS2304 — not bound: a bare read is a ReferenceError
-typeof session !== "undefined"; // expect: TS2304 — undeclared, so the probe is a type error too
 accessToken.getAuthLevel() + 1; // expect: TS2531 — null on a token with no value
 accessToken.getNonce().length; // expect: TS2531 — null on a token with no value
 accessToken.getAct().toString(); // expect: TS2531 — JS null when there is no act claim

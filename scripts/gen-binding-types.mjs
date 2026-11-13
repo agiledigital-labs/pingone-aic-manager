@@ -142,23 +142,42 @@ const selfReturns = (iface, member) => {
 //   notes      lines for the "Applied metadata refinements" header
 //   preamble   declarations the `types` above name (emitted first)
 //   trailer    declarations appended after the bindings
-//   noSession  token modification / OIDC claims: `session` is NOT bound
-const SESSION_UNBOUND = [
-  "// `session` is deliberately not declared. Ping documents it for this context, the",
-  "// descriptor omits it, and the runtime does not bind it: reading it bare is",
-  "// `ReferenceError: \"session\" is not defined.` (measured 2026-11-10, docs/api/12).",
-  "// Declared as nullable it would let `session != null` compile and then throw. Left",
-  "// undeclared, a bare read and a `typeof session` probe are both type errors.",
+//   conditionalSession  token modification / OIDC claims: `session` is conditional (`| undefined`)
+const SESSION_GUARDED = [
+  "// `session` is conditional. Ping documents it for this context and the descriptor",
+  "// omits it. Bare reads were `ReferenceError: \"session\" is not defined.` on a",
+  "// `client_credentials` grant (token modification) and on a password grant (OIDC",
+  "// claims), neither of which has an SSO session (measured 2026-11-10, docs/api/12);",
+  "// an `authorization_code` grant is unmeasured. Guard with",
+  "// `typeof session !== \"undefined\"` before reading it, and do not rely on `null`:",
+  "// no grant measured here binds one. The two members are Ping's, unmeasured.",
+  "interface OAuthScriptedSession {",
+  "  getProperty(name: StringLike): StringLike | null;",
+  "  setProperty(name: StringLike, value: StringLike): void;",
+  "}",
+  "declare const session: OAuthScriptedSession | undefined;",
 ];
 const EXISTING_SESSION_GUARDED = [
   "// `existingSession` is listed by the descriptor but is a ReferenceError on a request",
   "// with no session cookie (measured 2026-11-10); with one it is unmeasured here.",
   "// Guard with `typeof existingSession !== \"undefined\"` before reading it.",
 ];
+// `unmeasuredShared` names the shared types a context inherits from the contexts
+// that were measured (token modification, OIDC claims, validate scope, may-act):
+// `AccessToken` (a refinement header), `RequestProperties` and `ClientProperties`.
 const CONTEXTS = {
+  OAUTH2_EVALUATE_SCOPE_NEXT_GEN: {
+    unmeasuredShared: ["AccessToken", "RequestProperties", "ClientProperties"],
+  },
+  OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER_NEXT_GEN: {
+    unmeasuredShared: ["RequestProperties", "ClientProperties"],
+  },
+  OAUTH2_DYNAMIC_CLIENT_REGISTRATION: {
+    unmeasuredShared: ["RequestProperties"],
+  },
   OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN: {
     types: { scopes: "ScopeList" },
-    noSession: true,
+    conditionalSession: true,
     notes: ["`scopes` is a `ScopeList` (a Java list), not a JS array."],
   },
   OAUTH2_MAY_ACT_NEXT_GEN: {
@@ -167,7 +186,7 @@ const CONTEXTS = {
   },
   OIDC_CLAIMS_NEXT_GEN: {
     types: { scopes: "ScopeList", claims: "OidcClaimsMap" },
-    noSession: true,
+    conditionalSession: true,
     notes: [
       "`scopes` is a `ScopeList` (a Java list), not a JS array.",
       "`claims` is an `OidcClaimsMap`, and the script's result is an `OidcClaimsResult`.",
@@ -203,13 +222,13 @@ const CONTEXTS = {
   OAUTH2_VALIDATE_SCOPE_NEXT_GEN: {
     types: {
       scopeValidatorHelper: "ScopeValidatorHelper",
-      requestedScopes: "ValidateScopeList",
+      requestedScopes: "RequestedScopeList",
       availableScopes: "ValidateScopeList",
       allowedScopes: "ValidateScopeList",
       defaultScopes: "ValidateScopeList",
     },
     notes: [
-      "The four scope sets are `ValidateScopeList`s (Java lists), not JS arrays.",
+      "The four scope sets are `ValidateScopeList`s (Java lists), not JS arrays; only `requestedScopes` declares `add`.",
       "`scopeValidatorHelper` is a `ScopeValidatorHelper`, not `any`.",
     ],
     preamble: [
@@ -218,11 +237,15 @@ const CONTEXTS = {
       "// 2026-11-10, docs/api/12). Those four sets are Java lists of JS strings: `map`,",
       "// `join` and the other Array methods throw `Cannot find function`, and `iterator()`",
       "// is the class shutter. `[].concat(list)` copies one into a JS array (measured).",
-      "interface ValidateScopeList extends ScopeList, OpenidmJavaList<string> {",
+      "interface ValidateScopeList extends ScopeList, ConcatMeasuredList<string> {",
       "  indexOf(scope: StringLike): number;",
       "  isEmpty(): boolean;",
       "  forEach(callback: (scope: string) => void): void;",
-      "  toArray(): JavaArray<string>;",
+      "}",
+      "",
+      "// `add` was called on `requestedScopes` only (it returned `true` and grew the",
+      "// list); the other three sets were read, never written.",
+      "interface RequestedScopeList extends ValidateScopeList {",
       "  /** Grows the list in place; `true` on success. */",
       "  add(scope: StringLike): boolean;",
       "}",
@@ -256,7 +279,8 @@ const CONTEXTS = {
       "// `rawProfile[\"sub\"]` or `rawProfile.get(\"sub\")`.",
       "interface RawProfile {",
       "  get(key: StringLike): unknown;",
-      "  keys(): MeasuredJavaList<unknown>;",
+      "  /** A `[object JavaList]` of the keys; nothing else was read from it. */",
+      "  keys(): object;",
       "  size(): number;",
       "  [key: string]: unknown;",
       "}",
@@ -275,7 +299,7 @@ const CONTEXTS = {
     params: { NodeState: { putShared: { value: "any" }, putTransient: { value: "any" } } },
     omit: { NodeState: ["keys"] },
     notes: [
-      "`nodeState.get` returns `any`, `put*` take `any`, and `keys` is not declared (it throws on next-gen).",
+      "`nodeState.get` returns `any`, `put*` take `any`, and `keys` is not declared (it throws in this context).",
       "NodeState members other than `get`, `isDefined`, `putShared`, `putTransient` are the descriptor's, unmeasured here.",
     ],
     guards: EXISTING_SESSION_GUARDED,
@@ -286,10 +310,17 @@ const CONTEXTS = {
       "// function is a 500 with an empty body. `config` is a ReferenceError until assigned",
       "// (measured 2026-11-10, docs/api/12). Numbers become doubles, and `new",
       "// java.util.HashMap()` is not available on next-gen.",
+      "//",
+      "// ASSIGN it, do not declare it: `config = { … }`. `var config = { … }` is accepted",
+      "// at runtime too, but the base tsconfig's `moduleDetection: force` makes it an unused",
+      "// module local (TS6133) and the value is then not checked against this type.",
+      "// An array or a function is refused here through `length?: never`, so a config key",
+      "// named `length` is refused with them.",
       "interface ConfigProviderConfig {",
       "  [key: string]: any;",
+      "  length?: never;",
       "}",
-      "declare let config: ConfigProviderConfig | undefined;",
+      "declare let config: ConfigProviderConfig;",
     ],
   },
 };
@@ -379,9 +410,15 @@ const interfaceBindings = (ctx, skip) =>
       binding.elements?.length
   );
 
-const refinementHeaders = (ifaces) => {
+// A context that inherits a shared type measured elsewhere says so on the header,
+// so the overlay does not read as measured in a context where it was not.
+const UNMEASURED_HERE = " (measured in token modification; unmeasured here)";
+
+const refinementHeaders = (ifaces, unmeasured = []) => {
   const headers = ifaces.flatMap((iface) =>
-    Object.values(REFINEMENTS[iface] ?? {}).map((refinement) => refinement.header)
+    Object.values(REFINEMENTS[iface] ?? {}).map((refinement) =>
+      unmeasured.includes(iface) ? refinement.header.replace(/\.$/, `${UNMEASURED_HERE}.`) : refinement.header
+    )
   );
   if (ifaces.some((iface) => SELF_RETURNING[iface])) headers.push(SELF_RETURNING_HEADER);
   return [...new Set(headers)];
@@ -412,7 +449,13 @@ function perContext(jsonPath, skip) {
     `// GENERATED from docs/api/bindings/${basename(jsonPath)} by`,
     `// scripts/gen-binding-types.mjs — do not edit by hand. Context: ${ctx._id}.`,
     `// Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.`,
-    ...refinementNotes([...refinementHeaders(ifaces), ...(cfg.notes ?? [])]),
+    ...refinementNotes([
+      ...refinementHeaders(ifaces, cfg.unmeasuredShared ?? []),
+      ...(cfg.notes ?? []),
+      ...(cfg.unmeasuredShared ?? [])
+        .filter((name) => !ifaces.includes(name))
+        .map((name) => `\`${name}\` is a shared type, measured in four other OAuth2 contexts; unmeasured here.`),
+    ]),
     "",
   ];
   if (ifaces.includes("AccessToken")) out.push(...TOKEN_FIELD_VALUE);
@@ -443,7 +486,7 @@ function perContext(jsonPath, skip) {
     const iface = pascal(b.name);
     out.push(`interface ${iface} {`, ...body(b.elements, iface, "  ", cfg).map((m) => m.text), `}`, `declare const ${safe(b.name)}: ${iface};`, "");
   }
-  if (cfg.noSession) out.push("", ...SESSION_UNBOUND);
+  if (cfg.conditionalSession) out.push("", ...SESSION_GUARDED);
   if (cfg.trailer) out.push("", ...cfg.trailer);
   emit(out);
 }

@@ -90,3 +90,12 @@ if (session) {
 // Nullable getters force the question.
 var nonce = accessToken.getNonce();
 accessToken.setField("aic_nonce", nonce === null ? "none" : String(nonce));
+
+// These four print `null` but are objects, so `size()` is the absence test
+// (measured 2026-11-10); `=== null` would be `false` there.
+if (accessToken.getAct().size() === 0 && accessToken.getPermissions().size() === 0) {
+  logger.message("no act, no permissions");
+}
+if (accessToken.getMayAct().size() === 0 && accessToken.getConfirmationKey().size() === 0) {
+  logger.message("no may_act, no confirmation key");
+}

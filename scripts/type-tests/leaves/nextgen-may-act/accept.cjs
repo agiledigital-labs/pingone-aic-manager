@@ -10,3 +10,5 @@ logger.info("{}", String(token.getAct()));
 if (scopes.contains("openid") && scopes.length > 0) {
   logger.info("scope {}", String(scopes[0]));
 }
+// toArray() is measured (not a JS array), so only length and [i] are declared.
+logger.info("{}", String(scopes.toArray().length));

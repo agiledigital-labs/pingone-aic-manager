@@ -1,6 +1,10 @@
 // Next-gen OIDC claims (measured 2026-11-10).
 
-// `session` is not bound on a password grant, and is not declared (reject.cjs).
+// `session` was unbound on a password grant (authorization_code is unmeasured), so
+// it is `| undefined`: probe it with `typeof`. A bare read is a documented limitation.
+if (typeof session !== "undefined" && session !== undefined) {
+  logger.info("session bound");
+}
 
 // `claims` is a copy of AM's { sub, subname }; values are JS strings.
 if (claims.sub === identity.getName() && claims.containsKey("subname")) {
@@ -20,3 +24,5 @@ var result = {
 /** @type {OidcClaimsResult} */
 var minimal = { values: {} };
 logger.info("{} {}", String(result), String(minimal));
+// toArray() is measured (not a JS array), so only length and [i] are declared.
+logger.info("{}", String(scopes.toArray().length));

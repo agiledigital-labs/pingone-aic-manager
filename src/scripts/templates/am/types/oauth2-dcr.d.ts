@@ -1,6 +1,8 @@
 // GENERATED from docs/api/bindings/oauth2-dcr-next.json by
 // scripts/gen-binding-types.mjs — do not edit by hand. Context: OAUTH2_DYNAMIC_CLIENT_REGISTRATION.
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
+// Applied metadata refinements:
+//   - `RequestProperties` is a shared type, measured in four other OAuth2 contexts; unmeasured here.
 
 declare const softwareStatement: object;
 declare const requestProperties: RequestProperties;

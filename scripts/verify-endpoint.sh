@@ -128,11 +128,12 @@ PATH_ARG="$1"
 shift
 
 # Anything but an absolute path is a mistyped flag or a URL. Refuse it before
-# curl sees it: curl's own error names the host it tried, unredacted.
+# curl sees it: curl's own error names the host it tried, unredacted. The
+# argument is not echoed either, for the same reason: a URL names the tenant.
 case "$PATH_ARG" in
   /*) ;;
   *)
-    echo "error: path must start with '/' (got '$PATH_ARG'); see --help." >&2
+    echo "error: path must start with '/'; see --help." >&2
     exit 2
     ;;
 esac
