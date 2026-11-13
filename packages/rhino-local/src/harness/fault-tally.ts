@@ -14,7 +14,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { EmulationAudit } from "../emulation.ts";
-import { packageVersion } from "../paths.ts";
+import { buildIdentity } from "../paths.ts";
 import { ensureStateSubdir, stateDir } from "../project.ts";
 
 /** The fault-id family for measured AIC behaviour a script gets wrong, not a harness gap. */
@@ -42,7 +42,7 @@ export interface FaultTallyRow {
 
 export interface FaultTally {
   version: 1;
-  /** The package version that produced the tally (`package.json`'s `version`). */
+  /** `<version> (<commit>[-dirty])`, or `<version> (commit unknown)` from a checkout. */
   harness: string;
   /** Rows sorted by `cases` descending, then id. */
   faults: FaultTallyRow[];
@@ -98,7 +98,7 @@ export function tallyFaults(source: Iterable<EmulationAudit>, root?: string): Fa
       }
     }
   }
-  return { version: 1, harness: packageVersion, faults: rows(byId), unidentified: rows(byCause) };
+  return { version: 1, harness: buildIdentity, faults: rows(byId), unidentified: rows(byCause) };
 }
 
 function rows(from: Map<string, Acc>): FaultTallyRow[] {

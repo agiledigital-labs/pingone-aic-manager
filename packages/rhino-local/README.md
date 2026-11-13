@@ -302,14 +302,18 @@ yet is listed separately, under its cause text. In watch mode with
 cases from earlier runs; read the tally from a plain `vitest run`.
 
 ```json
-{ "version": 1, "harness": "0.4.0-emulator.1",
+{ "version": 1, "harness": "0.4.0-emulator.2 (commit unknown)",
   "faults": [{ "id": "script-defect/send-body-js-date", "cases": 2, "failed": 2,
                "files": ["test/a.test.ts", "test/b.test.ts"], "message": "…" }],
   "unidentified": [] }
 ```
 
-`harness` is the version of this package that ran the suite; the summary's
-heading names it too, so a pasted tally says which build produced it.
+`harness` is the version of this package and the commit of the packed tree:
+`<version> (<commit>)`, or `<version> (<commit>-dirty)` when that tree was
+dirty. A checkout that has not been packed prints `<version> (commit unknown)`
+and does not ask git. The summary's heading names the same string, so a pasted
+tally says which build produced it. The timing summary and the benchmark print
+it too.
 `failed` is the number of cases the fault failed. The rest declared it on
 purpose with `expectHarnessFault(id)`, which is how a test that exercises the
 refusal itself asserts it:
@@ -1536,6 +1540,9 @@ AIC_SCRIPT_TESTER_TIMING=timing.jsonl npx vitest run
 npx aic-script-tester-timing timing.jsonl        # --json for machine output
 npx aic-script-tester-timing --share timing.jsonl  # names replaced by hashes
 ```
+
+The summary's first line, and `harness` in `--json`, is the same build identity
+the fault tally prints.
 
 Every JVM spawn, pool lease and eval job appends one JSON line. A job row
 carries the bytes written (`lineBytes`), the source text shipped with it

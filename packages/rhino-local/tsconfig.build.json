@@ -11,5 +11,5 @@
     "outDir": "dist"
   },
   "include": ["src/**/*.ts", "bin/**/*.ts"],
-  "exclude": ["src/generate.ts", "src/measure.ts", "src/build-classes.ts"]
+  "exclude": ["src/generate.ts", "src/measure.ts", "src/build-classes.ts", "src/write-build-identity.ts"]
 }
