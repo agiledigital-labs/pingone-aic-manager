@@ -1854,6 +1854,10 @@ The string overwrite agrees with the 2026-08-28 exchange measurement in
 `docs/api/22-token-exchange.md`. The array, `null`, and `removeField` cases
 were not part of that run.
 
+The throwaway client `zzemuR3M-atm` and script `zzemuR3M-atm` were deleted
+later the same day. The client re-read was HTTP 404 and the script was not
+on the tenant.
+
 #### `identity.setAttribute` and `identity.store` (verified 2026-11-14)
 
 Next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` on a password grant as
@@ -1885,6 +1889,10 @@ same wrapper. `store()` writes `description` through to a fresh managed read,
 and the same wrapper then reads the stored value. This is the decision-node
 rule in `docs/api/14-am-identity-attributes.md` (measured 2026-10-01). This
 context had not been measured before.
+
+The managed user `zzemuR3M-user` was deleted the same day, with `description`
+still `zzemuR3M-baseline`. A query for that `userName` returned `resultCount`
+0, and a read of the id returned 404.
 
 #### Legacy additions to the 2026-08-27 surface
 
@@ -2595,6 +2603,10 @@ The script has no `try`/`catch`. A `client_credentials` grant returned HTTP
 `log` rename and the `nodeState` read were not repeated on may-act. The
 client's access-token modification script for that request was the audience
 baseline, which returns on this grant.
+
+The journey, its decision node, the library, the decision script and the
+may-act script were deleted the same day. The tree re-read was HTTP 404, the
+node re-read was HTTP 404, and each script was not on the tenant.
 
 **Next-gen scripted decision sends callbacks by accumulation, not by an
 `action.send` (2026-08-25).** There is no `send` on the `action` binding at all;

@@ -469,6 +469,7 @@ a capability token with `expires_in: 59` from a 900s identity token.
   `client_credentials` on throwaway client `zzemuR3M-atm`. `setField("aud", …)`
   with a string, a one-element array, a two-element array and `null`, plus
   `removeField("aud")`. Recorded in `docs/api/12-script-bindings-matrix.md`.
+  Client and script deleted the same day; the client re-read was HTTP 404.
 - Date: 2026-08-28 — realm `bravo`, throwaway `ZZProbe_sub` / `ZZProbe_atm`
   client pair plus two throwaway scripts, all deleted afterwards.
 - Calls: one exchange per row of the `requested_token_type` table above, each
