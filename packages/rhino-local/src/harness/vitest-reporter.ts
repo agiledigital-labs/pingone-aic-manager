@@ -5,6 +5,23 @@ import { EmulationAuditLedger, emulationAuditDiagnostics, type EmulationAudit } 
 import { EMULATION_REPORTER_CONTEXT, EMULATION_REPORTER_VERSION } from "./vitest-context.ts";
 import { JVM_POOL_CONTEXT, JvmPool, poolEnabled } from "../pool.ts";
 import { formatFaultTally, tallyFaults, writeFaultTally } from "./fault-tally.ts";
+import { caseValidationAudit, type ValidationFailure } from "./validation-audit.ts";
+
+function validationFailures(modules: readonly TestModule[]): ValidationFailure[] {
+  const failures: ValidationFailure[] = [];
+  for (const module of modules) {
+    const file = module.moduleId;
+    const collect = (ownerId: string, ownerName: string, errors: ReadonlyArray<{ name?: string; cause?: unknown }>): void => {
+      if (errors.length > 0) failures.push({ file, ownerId, ownerName, errors });
+    };
+    collect(`${file}\0collection`, module.relativeModuleId, module.errors());
+    for (const test of module.children.allTests("failed")) {
+      const result = test.result();
+      if (result.state === "failed") collect(`${file}\0${test.fullName}`, test.fullName, result.errors);
+    }
+  }
+  return failures;
+}
 
 export default class EmulationReporter implements Reporter {
   /** Every worker's audit, merged from the deltas they send (and any full audit). */
@@ -48,15 +65,16 @@ export default class EmulationReporter implements Reporter {
     for (const module of modules) this.#accept(module.meta());
     this.#ended = true;
     this.#enforce();
-    this.#tally();
+    this.#tally(modules);
     // A watch run keeps its warm JVMs for the next rerun; idle ones never hold the process open.
     if (!this.#watch) await (await this.#pool)?.stop();
   }
   // Every worker's audit is here by now, so this covers all files, workers and
   // pooled JVMs. A tally that cannot be written is a warning, not a verdict:
   // the faults themselves already failed their cases.
-  #tally(): void {
-    const tally = tallyFaults(this.#ledger.audits(), this.#root);
+  #tally(modules: readonly TestModule[]): void {
+    const validation = caseValidationAudit(validationFailures(modules));
+    const tally = tallyFaults(validation === undefined ? this.#ledger.audits() : [...this.#ledger.audits(), validation], this.#root);
     try {
       const path = writeFaultTally(tally);
       const summary = formatFaultTally(tally, path);

@@ -55,6 +55,14 @@ library bodies; a missing id throws naming `given.libraries`), and an inert
 `JavaImporter`. End-to-end cases live
 in `cases/`.
 
+## Supported engines
+
+Next-gen (evaluator 2.0) scripts only. A case with `given.engine: "legacy"` is
+refused at validation with fault id `case-invalid/engine-legacy`, and that
+refusal is a row in the fault tally. Every other case-validation refusal is a
+row too, one id per kind (`case-invalid/unknown-key`, `case-invalid/required`,
+and the rest of `case-invalid/`), counted the same way an emulation fault is.
+
 ## Breaking change: the legacy (V1) script engine is no longer emulated
 
 The emulator runs next-gen scripts only. Legacy decision nodes and the legacy
@@ -64,9 +72,9 @@ patched, and the emulator is moving its next-gen bindings onto real Java, so a
 second engine would be a second mechanism to maintain.
 
 - A case with `given.engine: "legacy"` fails `validateCase` / `defineCase` /
-  `runCase` at once, with a message naming the removal. It never falls through
-  to next-gen. Drop `given.engine` (or leave it as `"next-gen"`) after
-  upgrading the script.
+  `runCase` at once, with fault id `case-invalid/engine-legacy` and a message
+  naming the removal. It never falls through to next-gen. Drop `given.engine`
+  (or leave it as `"next-gen"`) after upgrading the script.
 - `ENGINES` is now `["next-gen"]` and `Engine` is `"next-gen"`.
 - The legacy-only bindings are gone: `sharedState`/`transientState` on a
   decision node, the legacy `JsonValue` construction route and `UserInfoClaims`

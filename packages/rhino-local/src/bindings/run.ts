@@ -1,4 +1,6 @@
-import { judge, validateCase } from "../case/index.ts";
+import { CaseValidationError, judge, validateCase } from "../case/index.ts";
+import { isPlainObject } from "../case/util.ts";
+import { recordTiming } from "../timing.ts";
 import type { Case, CompleteRecordedEffects, LibraryCallerContext, Verdict } from "../case/types.ts";
 import type { JobRequest, JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
@@ -78,7 +80,7 @@ export async function runCase(
   input: Case,
   options: RunCaseOptions = {}
 ): Promise<CaseRun> {
-  const kase = validateCase(input);
+  const kase = validateOrRecord(input);
   const executed = libraryExecution(kase);
   if (options.profile !== undefined) {
     // Fail before the JVM sees the case: a fixture that names a property the
@@ -150,6 +152,28 @@ function classAllowListFor(kase: Case): string[] {
       const unexpected: never = kase.context;
       throw new Error(`rhino-local: no class allow-list for ${String(unexpected)}`);
     }
+  }
+}
+
+/**
+ * A validation refusal never reaches a JVM, so it has no job row unless this
+ * writes one. `--share` hashes `sourceName`; `faultIds` stays literal.
+ */
+function validateOrRecord(input: Case): Case {
+  try {
+    return validateCase(input);
+  } catch (error) {
+    if (error instanceof CaseValidationError) {
+      const sourceName = isPlainObject(input) && typeof input.name === "string" && input.name !== "" ? input.name : "case";
+      recordTiming({
+        type: "job",
+        sourceName,
+        outcome: "protocol_error",
+        emulationFault: true,
+        faultIds: [error.faultId],
+      });
+    }
+    throw error;
   }
 }
 
