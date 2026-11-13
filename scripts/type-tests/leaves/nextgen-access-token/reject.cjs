@@ -9,3 +9,4 @@ clientProperties["allowedGrantTypes"].contains("x"); // expect: TS2571 — unkno
 requestProperties.requestHeaders["x"]?.includes("a"); // expect: TS2339 — the value list has no includes
 // policy: not a known runtime failure; forEach is an unmeasured member here, left undeclared.
 scopes.forEach(function (s) { return s; }); // expect: TS2339 — policy: forEach was not measured on token-modification scopes
+[].concat(scopes); // expect: TS2769 — policy: concat was measured on the validate-scope sets, not on token-modification scopes

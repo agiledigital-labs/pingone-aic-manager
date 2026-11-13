@@ -11,3 +11,14 @@ clientProperties.allowedScopes; // expect: TS4111 — the class shutter on every
 // policy: not runtime failures but unmeasured members, left undeclared.
 availableScopes.add("a"); // expect: TS2339 — policy: add() was called on requestedScopes only
 requestedScopes.toArray().includes("a"); // expect: TS2339 — policy: toArray() is only measured as "not a JS array"
+// policy: `[].concat` was measured on a decision node's request value lists,
+// not on an OAuth2 `requestProperties` list. Inside a function because the
+// `throwInvalidScope()` call above returns `never`, so top-level code after it
+// is unreachable and its `null` check would not narrow.
+function concatRequestParam() {
+  var scopeParamList = requestProperties.requestParams.get("scope");
+  if (scopeParamList !== null) {
+    logger.info("{}", [].concat(scopeParamList).length); // expect: TS2769 — policy: requestProperties concat is unmeasured
+  }
+}
+concatRequestParam();
