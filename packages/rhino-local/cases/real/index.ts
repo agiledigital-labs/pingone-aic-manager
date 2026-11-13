@@ -616,7 +616,7 @@ export const realCases: RealEntry[] = [
     },
   }),
 
-  // Live payload, verbatim (probe run 2026-09-28).
+  // Live payload, verbatim (probe run 2026-11-13).
   ng("httpclient-body-coercion", "fixtures/httpclient-body-coercion.script.js", {
     "javaIntAdded": true,
     "localStringify": "{\"intOne\":1,\"intZero\":0,\"negInt\":-5,\"bigInt\":1000000,\"floatVal\":1.5,\"nullField\":null,\"strField\":\"s\",\"boolField\":true,\"nested\":{\"n\":null,\"i\":2},\"arr\":[1,null,3],\"javaInt\":1,\"javaLong\":1}",
@@ -650,15 +650,55 @@ export const realCases: RealEntry[] = [
         "name": "httpClient.send echo",
         "ok": true,
         "value": "{\"intOne\":1.0,\"intZero\":0.0,\"negInt\":-5.0,\"bigInt\":1000000.0,\"floatVal\":1.5,\"undefField\":null,\"nullField\":null,\"strField\":\"s\",\"boolField\":true,\"nested\":{\"u\":null,\"n\":null,\"i\":2.0},\"arr\":[1.0,null,3.0],\"javaInt\":1,\"javaLong\":1}"
+      },
+      {
+        "name": "engine int mapSize",
+        "ok": false,
+        "error": "TypeError: [JavaPackage java.util.HashMap] is not a function, it is object."
+      },
+      {
+        "name": "engine int typeof",
+        "ok": true,
+        "value": "{\"jsLiteral\":\"number/nogetClass\",\"jsComputed\":\"number/nogetClass\",\"strLength\":\"number/nogetClass\",\"strIndexOf\":\"number/nogetClass\",\"listSize\":\"number/nogetClass\",\"nodeStateKeysSize\":\"number/nogetClass\",\"reqHeadersSize\":\"number/nogetClass\",\"jsStrLength\":\"number/nogetClass\",\"jsStrIndexOf\":\"number/nogetClass\"}"
+      },
+      {
+        "name": "engine ints, object body",
+        "ok": true,
+        "value": "{\"jsLiteral\":3.0,\"jsComputed\":3.0,\"strLength\":3,\"strIndexOf\":2,\"listSize\":3,\"nodeStateKeysSize\":3,\"reqHeadersSize\":20,\"jsStrLength\":3,\"jsStrIndexOf\":2}"
+      },
+      {
+        "name": "engine ints, local JSON.stringify",
+        "ok": true,
+        "value": "{\"jsLiteral\":3,\"jsComputed\":3,\"strLength\":3,\"strIndexOf\":2,\"listSize\":3,\"nodeStateKeysSize\":3,\"reqHeadersSize\":20,\"jsStrLength\":3,\"jsStrIndexOf\":2}"
+      },
+      {
+        "name": "engine ints, JSON.stringify body",
+        "ok": true,
+        "value": "{\"jsLiteral\":3,\"jsComputed\":3,\"strLength\":3,\"strIndexOf\":2,\"listSize\":3,\"nodeStateKeysSize\":3,\"reqHeadersSize\":20,\"jsStrLength\":3,\"jsStrIndexOf\":2}"
+      },
+      {
+        "name": "nodeState.keys()[0]",
+        "ok": false,
+        "error": "InternalError: Java class \"java.util.HashSet\" has no public instance field or method named \"0\". (AIC Rhino Let Probe#174)"
+      },
+      {
+        "name": "typeof nodeState.keys()",
+        "ok": true,
+        "value": "object"
+      },
+      {
+        "name": "nodeState.keys().iterator().next()",
+        "ok": true,
+        "value": "realm"
       }
     ]
   }, {
     gap: {
       reason:
-        "AIC serialises java.lang.Integer/Long body fields into the request (javaInt, javaLong appear in the echoed body); the local httpClient mock drops them. The echo reply in `given.http` is also a fixed string recorded without those fields, so closing this needs both the mock serialising Java boxed numbers and the reply echoing the request.",
+        "AIC serialises java.lang.Integer/Long body fields into the request (javaInt, javaLong appear in the echoed body); the local httpClient mock drops them. The echo reply in `given.http` is also a fixed string recorded without those fields, so closing this needs both the mock serialising Java boxed numbers and the reply echoing the request. The same fixed reply stands in for all three requests the probe sends, so the engine-integer rows, the `nodeState.keys()` rows and the engine-held header/state counts also differ locally.",
       differs: ["value"],
     },
-    http: [{ url: "https://httpbin.org/post", method: "POST" }],
+    http: [{ url: "https://httpbin.org/post", method: "POST", times: 3 }],
     given: {
       http: [
         {
