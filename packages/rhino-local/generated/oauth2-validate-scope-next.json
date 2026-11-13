@@ -1,0 +1,1753 @@
+{
+  "_id": "OAUTH2_VALIDATE_SCOPE_NEXT_GEN",
+  "bindings": [
+    {
+      "name": "scopeValidatorHelper",
+      "javaScriptType": "unknown"
+    },
+    {
+      "name": "httpClient",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.wrappers.HttpClientScriptWrapper",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "send",
+          "parameters": [
+            {
+              "name": "uri",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "requestOptions",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "send",
+          "parameters": [
+            {
+              "name": "uri",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        }
+      ]
+    },
+    {
+      "name": "requestProperties",
+      "javaScriptType": "object",
+      "elements": []
+    },
+    {
+      "name": "clientProperties",
+      "javaScriptType": "object",
+      "elements": []
+    },
+    {
+      "name": "logger",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.logging.ScriptedLoggerWrapper",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "getName",
+          "parameters": [],
+          "returnType": "string"
+        },
+        {
+          "elementType": "method",
+          "name": "info",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "info",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg1",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "arg2",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "info",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "info",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arguments",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "info",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "t",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "trace",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg1",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "arg2",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "trace",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "trace",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "trace",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arguments",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "trace",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "t",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "error",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "t",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "error",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arguments",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "error",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg1",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "arg2",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "error",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "error",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "warn",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "warn",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "warn",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg1",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "arg2",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "warn",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "t",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "warn",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arguments",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "debug",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg1",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "arg2",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "debug",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arg",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "debug",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "t",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "debug",
+          "parameters": [
+            {
+              "name": "format",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "arguments",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "debug",
+          "parameters": [
+            {
+              "name": "msg",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "isTraceEnabled",
+          "parameters": [],
+          "returnType": "boolean"
+        },
+        {
+          "elementType": "method",
+          "name": "isDebugEnabled",
+          "parameters": [],
+          "returnType": "boolean"
+        },
+        {
+          "elementType": "method",
+          "name": "isErrorEnabled",
+          "parameters": [],
+          "returnType": "boolean"
+        },
+        {
+          "elementType": "method",
+          "name": "isInfoEnabled",
+          "parameters": [],
+          "returnType": "boolean"
+        },
+        {
+          "elementType": "method",
+          "name": "isWarnEnabled",
+          "parameters": [],
+          "returnType": "boolean"
+        }
+      ]
+    },
+    {
+      "name": "availableScopes",
+      "javaScriptType": "array"
+    },
+    {
+      "name": "requestedScopes",
+      "javaScriptType": "array"
+    },
+    {
+      "name": "secrets",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.api.secrets.ScriptedSecretsFacadeImpl",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "getGenericSecret",
+          "parameters": [
+            {
+              "name": "secretId",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "getEncryptionKey",
+          "parameters": [
+            {
+              "name": "secretId",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "getSigningKey",
+          "parameters": [
+            {
+              "name": "secretId",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "getVerificationKey",
+          "parameters": [
+            {
+              "name": "secretId",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "getDecryptionKey",
+          "parameters": [
+            {
+              "name": "secretId",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        }
+      ]
+    },
+    {
+      "name": "allowedScopes",
+      "javaScriptType": "array"
+    },
+    {
+      "name": "emailService",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.bindings.ScriptEmailService",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "send",
+          "parameters": [
+            {
+              "name": "to",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "subject",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "body",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "send",
+          "parameters": [
+            {
+              "name": "to",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "subject",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "body",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "mimeType",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "void"
+        }
+      ]
+    },
+    {
+      "name": "systemEnv",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.bindings.SystemEnvScriptWrapper",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "getProperty",
+          "parameters": [
+            {
+              "name": "propertyName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "defaultValue",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "returnType",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "getProperty",
+          "parameters": [
+            {
+              "name": "propertyName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "defaultValue",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "returnType",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "getProperty",
+          "parameters": [
+            {
+              "name": "propertyName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "defaultValue",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "string"
+        },
+        {
+          "elementType": "method",
+          "name": "getProperty",
+          "parameters": [
+            {
+              "name": "propertyName",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "string"
+        }
+      ]
+    },
+    {
+      "name": "jwtAssertion",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.bindings.JwtAssertionScriptWrapper",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "generateJwt",
+          "parameters": [
+            {
+              "name": "jwtData",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "string"
+        }
+      ]
+    },
+    {
+      "name": "identity",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.api.identity.ScriptedIdentityScriptWrapper",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "getName",
+          "parameters": [],
+          "returnType": "string"
+        },
+        {
+          "elementType": "method",
+          "name": "store",
+          "parameters": [],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "exists",
+          "parameters": [],
+          "returnType": "boolean"
+        },
+        {
+          "elementType": "method",
+          "name": "setAttribute",
+          "parameters": [
+            {
+              "name": "attributeName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "attributeValues",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "addAttribute",
+          "parameters": [
+            {
+              "name": "attributeName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "attributeValue",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "void"
+        },
+        {
+          "elementType": "method",
+          "name": "getUniversalId",
+          "parameters": [],
+          "returnType": "string"
+        },
+        {
+          "elementType": "method",
+          "name": "getAttributeValues",
+          "parameters": [
+            {
+              "name": "attributeName",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "array"
+        }
+      ]
+    },
+    {
+      "name": "utils",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.bindings.ScriptUtilityService",
+      "elements": [
+        {
+          "elementType": "field",
+          "name": "crypto",
+          "javaScriptType": "object",
+          "javaClass": "org.forgerock.openam.scripting.bindings.crypto.ScriptCryptoService",
+          "elements": [
+            {
+              "elementType": "method",
+              "name": "randomUUID",
+              "parameters": [],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "getRandomValues",
+              "parameters": [
+                {
+                  "name": "array",
+                  "javaScriptType": "array"
+                }
+              ],
+              "returnType": "array"
+            },
+            {
+              "elementType": "method",
+              "name": "checkBcrypt",
+              "parameters": [
+                {
+                  "name": "bcryptString",
+                  "javaScriptType": "string"
+                },
+                {
+                  "name": "password",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "boolean"
+            },
+            {
+              "elementType": "field",
+              "name": "subtle",
+              "javaScriptType": "object",
+              "javaClass": "org.forgerock.openam.scripting.bindings.crypto.subtle.ScriptSubtleService",
+              "elements": [
+                {
+                  "elementType": "method",
+                  "name": "sign",
+                  "parameters": [
+                    {
+                      "name": "algorithmOptions",
+                      "javaScriptType": "object"
+                    },
+                    {
+                      "name": "key",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "array"
+                },
+                {
+                  "elementType": "method",
+                  "name": "sign",
+                  "parameters": [
+                    {
+                      "name": "algorithm",
+                      "javaScriptType": "string"
+                    },
+                    {
+                      "name": "key",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "array"
+                },
+                {
+                  "elementType": "method",
+                  "name": "digest",
+                  "parameters": [
+                    {
+                      "name": "algorithm",
+                      "javaScriptType": "string"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "array"
+                },
+                {
+                  "elementType": "method",
+                  "name": "verify",
+                  "parameters": [
+                    {
+                      "name": "algorithmOptions",
+                      "javaScriptType": "object"
+                    },
+                    {
+                      "name": "key",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "signature",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "boolean"
+                },
+                {
+                  "elementType": "method",
+                  "name": "verify",
+                  "parameters": [
+                    {
+                      "name": "algorithm",
+                      "javaScriptType": "string"
+                    },
+                    {
+                      "name": "key",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "signature",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "boolean"
+                },
+                {
+                  "elementType": "method",
+                  "name": "encrypt",
+                  "parameters": [
+                    {
+                      "name": "algorithmOptions",
+                      "javaScriptType": "object"
+                    },
+                    {
+                      "name": "key",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "array"
+                },
+                {
+                  "elementType": "method",
+                  "name": "encrypt",
+                  "parameters": [
+                    {
+                      "name": "algorithm",
+                      "javaScriptType": "string"
+                    },
+                    {
+                      "name": "key",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "array"
+                },
+                {
+                  "elementType": "method",
+                  "name": "generateKey",
+                  "parameters": [
+                    {
+                      "name": "algorithm",
+                      "javaScriptType": "string"
+                    }
+                  ],
+                  "returnType": "object"
+                },
+                {
+                  "elementType": "method",
+                  "name": "generateKey",
+                  "parameters": [
+                    {
+                      "name": "algorithm",
+                      "javaScriptType": "object"
+                    }
+                  ],
+                  "returnType": "object"
+                },
+                {
+                  "elementType": "method",
+                  "name": "decrypt",
+                  "parameters": [
+                    {
+                      "name": "algorithm",
+                      "javaScriptType": "string"
+                    },
+                    {
+                      "name": "key",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "array"
+                },
+                {
+                  "elementType": "method",
+                  "name": "decrypt",
+                  "parameters": [
+                    {
+                      "name": "algorithmOptions",
+                      "javaScriptType": "object"
+                    },
+                    {
+                      "name": "key",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "data",
+                      "javaScriptType": "array"
+                    }
+                  ],
+                  "returnType": "array"
+                },
+                {
+                  "elementType": "method",
+                  "name": "deriveKey",
+                  "parameters": [
+                    {
+                      "name": "algorithm",
+                      "javaScriptType": "object"
+                    },
+                    {
+                      "name": "baseKey",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "derivedKeyLength",
+                      "javaScriptType": "number"
+                    }
+                  ],
+                  "returnType": "array"
+                },
+                {
+                  "elementType": "method",
+                  "name": "deriveKey",
+                  "parameters": [
+                    {
+                      "name": "algorithmName",
+                      "javaScriptType": "string"
+                    },
+                    {
+                      "name": "baseKey",
+                      "javaScriptType": "array"
+                    },
+                    {
+                      "name": "derivedKeyLength",
+                      "javaScriptType": "number"
+                    }
+                  ],
+                  "returnType": "array"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "elementType": "field",
+          "name": "base64",
+          "javaScriptType": "object",
+          "javaClass": "org.forgerock.openam.scripting.bindings.ScriptBase64Service",
+          "elements": [
+            {
+              "elementType": "method",
+              "name": "decode",
+              "parameters": [
+                {
+                  "name": "toDecode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "encode",
+              "parameters": [
+                {
+                  "name": "toEncode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "encode",
+              "parameters": [
+                {
+                  "name": "toEncode",
+                  "javaScriptType": "array"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "decodeToBytes",
+              "parameters": [
+                {
+                  "name": "toDecode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "array"
+            },
+            {
+              "elementType": "method",
+              "name": "btoa",
+              "parameters": [
+                {
+                  "name": "toEncode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "atob",
+              "parameters": [
+                {
+                  "name": "toDecode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "string"
+            }
+          ]
+        },
+        {
+          "elementType": "field",
+          "name": "base64url",
+          "javaScriptType": "object",
+          "javaClass": "org.forgerock.openam.scripting.bindings.ScriptBase64UrlService",
+          "elements": [
+            {
+              "elementType": "method",
+              "name": "decode",
+              "parameters": [
+                {
+                  "name": "toDecode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "encode",
+              "parameters": [
+                {
+                  "name": "toEncode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "encode",
+              "parameters": [
+                {
+                  "name": "toEncode",
+                  "javaScriptType": "array"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "decodeToBytes",
+              "parameters": [
+                {
+                  "name": "toDecode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "array"
+            },
+            {
+              "elementType": "method",
+              "name": "btoa",
+              "parameters": [
+                {
+                  "name": "toEncode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "atob",
+              "parameters": [
+                {
+                  "name": "toDecode",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "string"
+            }
+          ]
+        },
+        {
+          "elementType": "field",
+          "name": "types",
+          "javaScriptType": "object",
+          "javaClass": "org.forgerock.openam.scripting.bindings.ScriptTypesService",
+          "elements": [
+            {
+              "elementType": "method",
+              "name": "bytesToString",
+              "parameters": [
+                {
+                  "name": "bytes",
+                  "javaScriptType": "array"
+                }
+              ],
+              "returnType": "string"
+            },
+            {
+              "elementType": "method",
+              "name": "stringToBytes",
+              "parameters": [
+                {
+                  "name": "string",
+                  "javaScriptType": "string"
+                }
+              ],
+              "returnType": "array"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "defaultScopes",
+      "javaScriptType": "array"
+    },
+    {
+      "name": "scriptName",
+      "javaScriptType": "string"
+    },
+    {
+      "name": "realm",
+      "javaScriptType": "string"
+    },
+    {
+      "name": "jwtValidator",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.bindings.JwtValidatorScriptWrapper",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "validateJwtClaims",
+          "parameters": [
+            {
+              "name": "jwtData",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        }
+      ]
+    },
+    {
+      "name": "openidm",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.wrappers.IdmIntegrationServiceScriptWrapper",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "update",
+          "parameters": [
+            {
+              "name": "id",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "value",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "fields",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "update",
+          "parameters": [
+            {
+              "name": "id",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "value",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "update",
+          "parameters": [
+            {
+              "name": "id",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "value",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "action",
+          "parameters": [
+            {
+              "name": "resource",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "actionName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "content",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "action",
+          "parameters": [
+            {
+              "name": "resource",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "actionName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "content",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "fields",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "action",
+          "parameters": [
+            {
+              "name": "resource",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "actionName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "content",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "action",
+          "parameters": [
+            {
+              "name": "resource",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "actionName",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "create",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "newResourceId",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "content",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "create",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "newResourceId",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "content",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "create",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "newResourceId",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "content",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "fields",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "delete",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "delete",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "fields",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "delete",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "read",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "read",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "read",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "fields",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "query",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "fields",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "query",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "patch",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "patch",
+              "javaScriptType": "array"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "fields",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "patch",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "patch",
+              "javaScriptType": "array"
+            }
+          ],
+          "returnType": "object"
+        },
+        {
+          "elementType": "method",
+          "name": "patch",
+          "parameters": [
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "rev",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "patch",
+              "javaScriptType": "array"
+            },
+            {
+              "name": "params",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "object"
+        }
+      ]
+    },
+    {
+      "name": "cookieName",
+      "javaScriptType": "string"
+    },
+    {
+      "name": "policy",
+      "javaScriptType": "object",
+      "javaClass": "org.forgerock.openam.scripting.bindings.ScriptPolicyService",
+      "elements": [
+        {
+          "elementType": "method",
+          "name": "evaluate",
+          "parameters": [
+            {
+              "name": "subject",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "application",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "resourceNames",
+              "javaScriptType": "array"
+            },
+            {
+              "name": "environment",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "array"
+        },
+        {
+          "elementType": "method",
+          "name": "evaluateTree",
+          "parameters": [
+            {
+              "name": "subject",
+              "javaScriptType": "object"
+            },
+            {
+              "name": "application",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "resourceName",
+              "javaScriptType": "string"
+            },
+            {
+              "name": "environment",
+              "javaScriptType": "object"
+            }
+          ],
+          "returnType": "array"
+        }
+      ]
+    }
+  ],
+  "allowLists": [
+    "org.forgerock.util.promise.PromiseImpl",
+    "org.forgerock.util.promise.Promises$*",
+    "java.lang.Object"
+  ],
+  "evaluatorVersions": {
+    "JAVASCRIPT": [
+      "2.0"
+    ]
+  }
+}

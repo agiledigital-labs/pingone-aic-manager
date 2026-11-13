@@ -1,5 +1,10 @@
+import { withHostEvidence, reportResponseEvidence } from "./host-evidence.ts";
+import { recordTiming, since, timingPath } from "./timing.ts";
+import { decodeProtocol, stringifyProtocol } from "./protocol-values.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { EmulationFailure, EmulationFailureJournal, bindEmulationOwner, emulationFailure, failedResponse, responseFailure } from "./emulation.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual, promisify } from "node:util";
 import {
   cacheDir,
@@ -14,7 +19,74 @@ import {
   type Launch,
   type RunnerEnvironment,
 } from "./jvm.ts";
-import { parseJobResponse, type JobRequest, type JobResponse } from "./protocol.ts";
+import { PooledChild, type PoolAddress } from "./pool.ts";
+import type { Readable } from "node:stream";
+import {
+  parseHostCall,
+  parseJobResponse,
+  type BehaviorEvidence,
+  type HostCall,
+  type HostError,
+  type HostReply,
+  type JobRequest,
+  type JobResponse,
+  type JsonValue,
+} from "./protocol.ts";
+export type { HostCall, HostError, JobRequest, JobResponse, JsonValue } from "./protocol.ts";
+
+export interface EvalOptions {
+  onCall?: (call: HostCall) => JsonValue | Promise<JsonValue>;
+}
+
+/** Throw from onCall to expose a CREST-shaped failure to the IDM script. */
+export class HostCallError extends Error {
+  readonly class: string;
+  readonly code: number;
+  readonly reason: string | undefined;
+  readonly detail: JsonValue;
+  readonly emulation: HostError["emulation"];
+  readonly missing: string[] | undefined;
+  constructor(error: HostError) {
+    super(error.message);
+    this.name = "HostCallError";
+    this.class = error.class;
+    this.code = error.code;
+    this.reason = error.reason;
+    this.detail = error.detail;
+    this.missing = error.missing;
+    this.emulation = error.emulation;
+  }
+}
+
+function hostError(error: unknown): HostError {
+  const record =
+    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+  const tenant = error instanceof HostCallError || (typeof record.class === "string" && typeof record.code === "number");
+  const fatal = emulationFailure(error) ?? (tenant ? undefined : {
+    kind: "internal" as const, message: typeof record.message === "string" ? record.message : String(error),
+  });
+  const normalized: HostError = {
+    class: typeof record.class === "string" ? record.class : "rhino.local.HostCallException",
+    message: typeof record.message === "string" ? record.message : String(error),
+    code: typeof record.code === "number" ? record.code : 500,
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+    // A null detail stays null: a script reads it as a Java null (measured for a 404).
+    detail: (record.detail === undefined ? {} : record.detail) as JsonValue,
+    ...(error instanceof HostCallError && error.missing ? { missing: error.missing } : {}),
+    ...(fatal ? { emulation: fatal } : {}),
+  };
+  try {
+    return decodeProtocol(JSON.parse(stringifyProtocol(normalized))) as HostError;
+  } catch {
+    return {
+      class: "rhino.local.HostCallException",
+      message: "rhino-local: host error is not JSON serializable",
+      code: 500,
+      detail: {},
+      emulation: { kind: "protocol", message: "rhino-local: host error is not JSON serializable" },
+    };
+  }
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -47,11 +119,12 @@ export class LaneDivergenceError extends Error {
   readonly host: JobResponse;
   readonly container: JobResponse;
 
-  constructor(job: string, host: JobResponse, container: JobResponse) {
+  constructor(job: string, host: JobResponse, container: JobResponse, detail?: string) {
     super(
       `rhino-local: host and container JVMs disagree on ${job}\n` +
         `  host:      ${JSON.stringify(withoutId(host))}\n` +
-        `  container: ${JSON.stringify(withoutId(container))}`
+        `  container: ${JSON.stringify(withoutId(container))}` +
+        (detail === undefined ? "" : `\n  host calls: ${detail}`)
     );
     this.name = "LaneDivergenceError";
     this.job = job;
@@ -71,40 +144,85 @@ export interface SpawnRunnerOptions {
   /** Jar and compiled-class cache. Default: `AIC_SCRIPT_TESTER_CACHE`, else `~/.cache/aic-script-tester`. */
   cache?: string;
   spawnTimeoutMs?: number;
+  /** Immediate protocol_error when all workers are occupied. Default 128; no queued jobs. */
+  maxConcurrentJobs?: number;
+  /** Accepted jobs finish or receive a refusal before exit. Default 5000ms. */
+  shutdownWaitMs?: number;
 }
 
 type Pending = {
   resolve: (response: JobResponse) => void;
   reject: (error: Error) => void;
+  onCall: ((call: HostCall) => Promise<HostReply>) | undefined;
+};
+
+/** What {@link JvmProcess} needs of a child: a spawned JVM, or a pooled one ({@link PooledChild}). */
+type RunnerChild = Pick<ChildProcessWithoutNullStreams, "stdin" | "kill"> & {
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  on(event: "error", listener: (error: Error) => void): unknown;
 };
 
 /** One JVM speaking the line protocol. {@link RhinoRunner} holds one or two. */
+/**
+ * A timing row's fault flag: `outcome` is the script's own, so a run whose
+ * script caught a harness refusal says "ok" though the run failed.
+ */
+function faultFlag(response: JobResponse): { emulationFault: boolean; faultIds?: string[] } {
+  const failure = responseFailure(response);
+  const ids = [...new Set((failure?.faults ?? []).map((fault) => fault.id))].sort();
+  return { emulationFault: failure !== undefined, ...(ids.length > 0 ? { faultIds: ids } : {}) };
+}
+
 class JvmProcess {
   readonly lane: "host" | "container";
   readonly containerName: string | undefined;
-  #child: ChildProcessWithoutNullStreams;
+  #child: RunnerChild;
+  /** Borrowed from the pool: closing returns it there instead of shutting it down. */
+  readonly #pooled: PooledChild | undefined;
   #pending = new Map<string, Pending>();
   #stdoutBuf = "";
   #stderrBuf = "";
   #closed = false;
+  readonly #shutdownWaitMs: number;
   #spawnError: Error | undefined;
+  /**
+   * What this JVM has been sent; a separate set per process, so each lane gets
+   * every text once. A pooled JVM's set outlives the lease: the pool hands the
+   * next lease the hashes earlier ones shipped, so a file that borrows a warm
+   * JVM does not send the prelude and libraries again.
+   */
+  #sources = new ShippedSources();
   #exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   #exitWaiters: Array<() => void> = [];
+  /** JVM phase timing by job id, taken off the response line before it is parsed. */
+  readonly #timings = new Map<string, unknown>();
+  readonly #startedAt = performance.now();
   environment: RunnerEnvironment | undefined;
 
-  constructor(lane: "host" | "container", launch: Launch) {
+  constructor(lane: "host" | "container", launch: Launch | PooledChild, shutdownWaitMs = 5000) {
+    this.#shutdownWaitMs = shutdownWaitMs;
     this.lane = lane;
-    this.containerName = launch.containerName;
-    const child = spawn(launch.command, launch.args, {
-      env: launch.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    let child: RunnerChild;
+    if (launch instanceof PooledChild) {
+      this.#pooled = launch;
+      this.containerName = undefined;
+      child = launch as unknown as RunnerChild;
+    } else {
+      this.containerName = launch.containerName;
+      child = spawn(launch.command, launch.args, {
+        env: launch.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    }
     this.#child = child;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => this.#onStdout(chunk));
     child.stderr.on("data", (chunk: string) => {
       this.#stderrBuf += chunk;
+      this.#wake();
     });
     child.stdin.on("error", () => {
       // EPIPE after a crash is reported via the exit handler.
@@ -112,6 +230,7 @@ class JvmProcess {
     child.on("error", (error) => {
       this.#spawnError = error;
       this.#stderrBuf += `\n${error.message}`;
+      this.#wake();
     });
     child.on("exit", (code, signal) => {
       this.#exit = { code, signal };
@@ -124,7 +243,14 @@ class JvmProcess {
         waiter();
       }
       this.#exitWaiters = [];
+      this.#wake();
     });
+  }
+
+  /** Readiness waiters, woken by anything that can change its answer: stderr, a spawn error, exit. */
+  readonly #wakers = new Set<() => void>();
+  #wake(): void {
+    for (const waker of [...this.#wakers]) waker();
   }
 
   get stderr(): string {
@@ -140,6 +266,11 @@ class JvmProcess {
         const env = parseEnvironment(this.#stderrBuf.slice(at, end));
         checkEnvironment(env, this.lane);
         this.environment = env;
+        if (this.#pooled !== undefined) this.#sources = new ShippedSources(this.#pooled.knownSources);
+        recordTiming(this.#pooled === undefined
+          ? { type: "spawn", lane: this.lane, pooled: false, spawnToReadyMs: since(this.#startedAt) }
+          : { type: "borrow", lane: this.lane, readyMs: since(this.#startedAt), knownSources: this.#pooled.knownSources.length,
+            ...(this.#pooled.jvmId === undefined ? {} : { jvmId: this.#pooled.jvmId }) });
         return;
       }
       if (this.#spawnError) {
@@ -161,11 +292,25 @@ class JvmProcess {
           `rhino-local: ${this.lane} runner did not become ready within ${timeoutMs}ms: ${this.#stderrBuf}`
         );
       }
-      await sleep(25);
+      // Event-driven: a warm pooled JVM's ready line arrives within a
+      // millisecond, and a fixed poll made every lease wait for the tick.
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          clearTimeout(timer);
+          this.#wakers.delete(done);
+          resolve();
+        };
+        const timer = setTimeout(done, Math.max(1, timeoutMs - (Date.now() - started) + 1));
+        this.#wakers.add(done);
+      });
     }
   }
 
-  send(id: string, payload: Record<string, unknown>): Promise<JobResponse> {
+  send(
+    id: string,
+    payload: Record<string, unknown>,
+    onCall?: Pending["onCall"]
+  ): Promise<JobResponse> {
     if (this.#closed || this.#exit) {
       return Promise.reject(
         this.#exit
@@ -173,21 +318,86 @@ class JvmProcess {
           : new Error("rhino-local: runner is closed")
       );
     }
+    if (this.#pending.has(id)) {
+      return Promise.reject(new Error(`rhino-local: duplicate active job id: ${id}`));
+    }
+    const timed = timingPath() !== undefined;
+    const job = timed ? { ...payload, timing: true } : payload;
+    let measure: { lineBytes: number; sourceBytes: number; sourcesShipped: number; stringifyMs: number; sentAt: number } | undefined;
     return new Promise<JobResponse>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
-      const ok = this.#child.stdin.write(`${JSON.stringify(payload)}\n`);
-      if (!ok) {
-        const onError = (error: Error): void => {
-          this.#child.stdin.off("drain", onDrain);
-          this.#pending.delete(id);
-          reject(error);
-        };
-        const onDrain = (): void => {
-          this.#child.stdin.off("error", onError);
-        };
-        this.#child.stdin.once("error", onError);
-        this.#child.stdin.once("drain", onDrain);
-      }
+      const write = (): void => {
+        const startedAt = timed ? performance.now() : 0;
+        const addressed = this.#sources.address(job);
+        const line = `${stringifyProtocol(addressed)}\n`;
+        if (timed) {
+          const shipped = Object.values((addressed.sources ?? {}) as Record<string, string>);
+          measure = {
+            lineBytes: Buffer.byteLength(line),
+            sourceBytes: shipped.reduce((n, text) => n + Buffer.byteLength(text), 0),
+            sourcesShipped: shipped.length,
+            stringifyMs: since(startedAt),
+            sentAt: performance.now(),
+          };
+        }
+        const ok = this.#child.stdin.write(line);
+        if (!ok) {
+          const onError = (error: Error): void => {
+            this.#child.stdin.off("drain", onDrain);
+            this.#pending.delete(id);
+            reject(error);
+          };
+          const onDrain = (): void => {
+            this.#child.stdin.off("error", onError);
+          };
+          this.#child.stdin.once("error", onError);
+          this.#child.stdin.once("drain", onDrain);
+        }
+      };
+      let resent = false;
+      const settle = (response: JobResponse): void => {
+        // The JVM lost a source this side counted as shipped (a line it could
+        // not decode is skipped before its sources are registered). Ship
+        // everything again, once, rather than failing every later job.
+        if (!resent && unknownSource(response)) {
+          resent = true;
+          this.#sources.forget();
+          this.#pending.set(id, { resolve: settle, reject, onCall });
+          write();
+          return;
+        }
+        if (timed) this.#recordJob(id, payload, response, measure, resent);
+        resolve(response);
+      };
+      this.#pending.set(id, { resolve: settle, reject, onCall });
+      write();
+    });
+  }
+
+  #recordJob(
+    id: string,
+    payload: Record<string, unknown>,
+    response: JobResponse,
+    measure: { lineBytes: number; sourceBytes: number; sourcesShipped: number; stringifyMs: number; sentAt: number } | undefined,
+    resent: boolean
+  ): void {
+    const jvm = this.#timings.get(id) as { totalMs?: number } | undefined;
+    this.#timings.delete(id);
+    if (measure === undefined) return;
+    const roundTripMs = since(measure.sentAt);
+    const { sentAt: _sentAt, ...sizes } = measure;
+    recordTiming({
+      type: "job",
+      lane: this.lane,
+      id,
+      ...(typeof payload.sourceName === "string" ? { sourceName: payload.sourceName } : {}),
+      engine: typeof payload.engine === "string" ? payload.engine : "am",
+      outcome: response.outcome,
+      ...faultFlag(response),
+      ...sizes,
+      roundTripMs,
+      ...(typeof jvm?.totalMs === "number" ? { transportMs: Math.round((roundTripMs - jvm.totalMs) * 1000) / 1000 } : {}),
+      ...(resent ? { resent: true } : {}),
+      ...(jvm === undefined ? {} : { jvm }),
     });
   }
 
@@ -202,14 +412,32 @@ class JvmProcess {
       return;
     }
     this.#closed = true;
-    try {
-      this.#child.stdin.end();
-    } catch {
-      // already closed
+    if (this.#pooled !== undefined) {
+      if (this.#pending.size > 0) {
+        // A job still running would keep running in whichever file borrowed
+        // this JVM next. The unpooled path shuts the JVM down, which bounds it;
+        // here the JVM is discarded instead, and the pool starts a fresh one.
+        const error = new Error(
+          `rhino-local: lease closed with ${this.#pending.size} job(s) still pending; JVM discarded`
+        );
+        for (const [id, pending] of this.#pending) {
+          this.#pending.delete(id);
+          pending.reject(error);
+        }
+        this.#pooled.kill();
+      } else {
+        this.#pooled.release(this.#sources.hashes());
+      }
+    } else {
+      try {
+        this.#child.stdin.write(`${JSON.stringify({ id: randomUUID(), op: "shutdown" })}\n`);
+      } catch {
+        // already closed
+      }
     }
     const exited = await Promise.race([
       this.#waitForExit().then(() => true),
-      sleep(5_000).then(() => false),
+      sleep(this.#shutdownWaitMs + 1_000).then(() => false),
     ]);
     if (!exited) {
       this.#child.kill("SIGTERM");
@@ -256,7 +484,7 @@ class JvmProcess {
   #dispatch(line: string): void {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(line) as unknown;
+      parsed = decodeProtocol(JSON.parse(line) as unknown);
     } catch (error) {
       const first = this.#pending.entries().next().value;
       if (first) {
@@ -269,6 +497,13 @@ class JvmProcess {
     }
     let response: JobResponse;
     try {
+      const call = parseHostCall(parsed);
+      if (call !== undefined) {
+        void this.#answerCall(call);
+        return;
+      }
+      const timing = typeof parsed === "object" && parsed !== null ? (parsed as { id?: unknown; timing?: unknown }) : undefined;
+      if (timing?.timing !== undefined && typeof timing.id === "string") this.#timings.set(timing.id, timing.timing);
       response = parseJobResponse(parsed, line);
     } catch (error) {
       const first = this.#pending.entries().next().value;
@@ -286,6 +521,32 @@ class JvmProcess {
     pending.resolve(response);
   }
 
+  async #answerCall(call: HostCall): Promise<void> {
+    const pending = this.#pending.get(call.id);
+    if (pending === undefined) return;
+    let reply: HostReply;
+    try {
+      if (pending.onCall === undefined)
+        throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
+      reply = await pending.onCall(call);
+      // Validate serializability before writing, so a bad handler cannot strand a worker.
+      const line = stringifyProtocol(reply);
+      if (this.#pending.get(call.id) === pending && !this.#exit)
+        this.#child.stdin.write(`${line}\n`);
+      return;
+    } catch (error) {
+      reply = {
+        type: "reply",
+        id: call.id,
+        seq: call.seq,
+        error: hostError(error),
+      };
+    }
+    if (this.#pending.get(call.id) === pending && !this.#exit) {
+      this.#child.stdin.write(`${stringifyProtocol(reply)}\n`);
+    }
+  }
+
   #waitForExit(): Promise<void> {
     if (this.#exit) {
       return Promise.resolve();
@@ -300,19 +561,105 @@ class JvmProcess {
       return;
     }
     try {
-      await execFileAsync("docker", ["rm", "-f", this.containerName], { timeout: 10_000 });
+      await execFileAsync("docker", ["rm", "-f", this.containerName], {
+        timeout: 10_000,
+      });
     } catch {
       // already removed via --rm, or never created
     }
   }
 }
 
+/**
+ * Replaces a job's `prelude` and `libraries` texts by their hashes, attaching
+ * under `sources` each text this JVM has not been sent yet. The JVM registers
+ * a line's sources on its reader thread, in line order, before it admits or
+ * refuses the job, so a text counts as shipped as soon as its line is written.
+ */
+class ShippedSources {
+  readonly #sent: Set<string>;
+
+  constructor(known: Iterable<string> = []) {
+    this.#sent = new Set(known);
+  }
+
+  hashes(): Iterable<string> {
+    return this.#sent;
+  }
+
+  forget(): void {
+    this.#sent.clear();
+  }
+
+  address(payload: Record<string, unknown>): Record<string, unknown> {
+    const { prelude, libraries, ...rest } = payload as {
+      prelude?: string;
+      libraries?: Record<string, string>;
+    } & Record<string, unknown>;
+    if (prelude === undefined && libraries === undefined) return payload;
+    const sources: Record<string, string> = {};
+    const ref = (text: string): string => {
+      const hash = sourceHash(text);
+      if (!this.#sent.has(hash)) {
+        this.#sent.add(hash);
+        sources[hash] = text;
+      }
+      return hash;
+    };
+    const out: Record<string, unknown> = { ...rest };
+    if (prelude !== undefined) out.prelude = ref(prelude);
+    if (libraries !== undefined) {
+      const refs: Record<string, string> = {};
+      for (const [id, text] of Object.entries(libraries)) refs[id] = ref(String(text));
+      out.libraryRefs = refs;
+    }
+    if (Object.keys(sources).length > 0) out.sources = sources;
+    return out;
+  }
+}
+
+function unknownSource(response: JobResponse): boolean {
+  return (
+    response.outcome === "protocol_error" &&
+    typeof response.error?.message === "string" &&
+    /(?:^|: )unknown source [0-9a-f]{64}$/.test(response.error.message)
+  );
+}
+
+const HASH_MEMO_LIMIT = 4096;
+const hashMemo = new Map<string, string>();
+
+/**
+ * SHA-256 over UTF-16LE code units, as java/ScriptCache.java#sha256 computes
+ * it. Memoized by text: the same prelude and library strings come back every
+ * case, and a Map lookup is cheaper than rehashing 300 KB.
+ */
+function sourceHash(text: string): string {
+  const known = hashMemo.get(text);
+  if (known !== undefined) return known;
+  const hash = createHash("sha256").update(Buffer.from(text, "utf16le")).digest("hex");
+  if (hashMemo.size >= HASH_MEMO_LIMIT) hashMemo.delete(hashMemo.keys().next().value as string);
+  hashMemo.set(text, hash);
+  return hash;
+}
+
+// The logical host-call chain can cross runner instances; independent async
+// chains still have separate stores. A nested runner must mark its caller's scope.
+const callScope = new AsyncLocalStorage<{ failure?: NonNullable<HostError["emulation"]> }>();
+
 export class RhinoRunner {
   readonly lane: JvmLane;
+  readonly #failures = new EmulationFailureJournal();
   #primary: JvmProcess;
   #shadow: JvmProcess | undefined;
+  #closing = false;
+  #closePromise: Promise<void> | undefined;
+  #jobs = new Set<Promise<void>>();
+  readonly #shutdownWaitMs: number;
+  #activeIds = new Set<string>();
 
-  private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined) {
+  private constructor(lane: JvmLane, primary: JvmProcess, shadow: JvmProcess | undefined, shutdownWaitMs: number) {
+    this.#shutdownWaitMs = shutdownWaitMs;
     this.lane = lane;
     this.#primary = primary;
     this.#shadow = shadow;
@@ -324,13 +671,20 @@ export class RhinoRunner {
     const jar = await ensureRhinoJar(cache);
     const classes = await ensureRunnerClasses(jar, { cache });
     const spawnTimeoutMs = options.spawnTimeoutMs ?? 60_000;
+    const limits: string[] = [];
+    for (const [flag, value] of [["max-concurrent-jobs", options.maxConcurrentJobs], ["shutdown-wait-ms", options.shutdownWaitMs]] as const) {
+      if (value === undefined) continue;
+      if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`rhino-local: ${flag} must be a positive integer`);
+      limits.push(`--${flag}=${value}`);
+    }
+    const withLimits = (launch: Launch): Launch => ({ ...launch, args: [...launch.args, ...limits] });
     const processes: JvmProcess[] = [];
     try {
       if (lane === "host" || lane === "both") {
-        processes.push(new JvmProcess("host", hostLaunch(classes, jar)));
+        processes.push(new JvmProcess("host", withLimits(hostLaunch(classes, jar)), options.shutdownWaitMs));
       }
       if (lane === "container" || lane === "both") {
-        processes.push(new JvmProcess("container", containerLaunch(classes, jar)));
+        processes.push(new JvmProcess("container", withLimits(containerLaunch(classes, jar)), options.shutdownWaitMs));
       }
       await Promise.all(processes.map((p) => p.waitUntilReady(spawnTimeoutMs)));
     } catch (error) {
@@ -341,7 +695,28 @@ export class RhinoRunner {
     if (primary === undefined) {
       throw new Error("rhino-local: no runner lane selected");
     }
-    return new RhinoRunner(lane, primary, shadow);
+    return new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
+  }
+
+  /**
+   * A runner on JVMs borrowed from a {@link JvmPool}; `close()` returns them.
+   * @internal Used by `useLease`; the pool's address comes from the package reporter.
+   */
+  static async borrow(address: PoolAddress, options: Pick<SpawnRunnerOptions, "lane" | "cache" | "spawnTimeoutMs" | "shutdownWaitMs"> = {}): Promise<RhinoRunner> {
+    const lane = options.lane ?? laneFromEnv();
+    const cache = options.cache ?? cacheDir();
+    const slot = process.env.VITEST_POOL_ID ?? `pid-${process.pid}`;
+    const kinds = lane === "both" ? (["host", "container"] as const) : ([lane] as const);
+    const processes = kinds.map((kind) => new JvmProcess(kind, new PooledChild(address, kind, slot, cache)));
+    try {
+      await Promise.all(processes.map((p) => p.waitUntilReady(options.spawnTimeoutMs ?? 60_000)));
+    } catch (error) {
+      await Promise.all(processes.map((p) => p.close()));
+      throw error;
+    }
+    const [primary, shadow] = processes;
+    if (primary === undefined) throw new Error("rhino-local: no runner lane selected");
+    return new RhinoRunner(lane, primary, shadow, options.shutdownWaitMs ?? 5000);
   }
 
   /** What the (primary) JVM reported at startup. */
@@ -353,9 +728,72 @@ export class RhinoRunner {
     return env;
   }
 
-  async eval(job: JobRequest): Promise<JobResponse> {
+  /** Detached, append-only diagnostic snapshots; independent of caller assertions. */
+  get emulationFailures() { return this.#failures.entries; }
+
+  eval(job: JobRequest, options: EvalOptions = {}): Promise<JobResponse> {
     const id = job.id ?? randomUUID();
+    const owned = options.onCall ? { ...options, onCall: bindEmulationOwner(options.onCall) } : options;
+    return this.#failures.run(`eval ${id}`, () => this.#evaluate({ ...job, id }, owned));
+  }
+
+  async #evaluate(job: JobRequest, options: EvalOptions): Promise<JobResponse> {
+    const id = job.id ?? randomUUID();
+    if (this.#activeIds.has(id)) {
+      const failure = { kind: "protocol" as const, message: `rhino-local: duplicate active job id: ${id}` };
+      this.#failures.record(failure, `job ${id}`);
+      const parent = callScope.getStore();
+      if (parent) parent.failure ??= failure;
+      throw new EmulationFailure(failure);
+    }
+    if (this.#closing && !callScope.getStore()) {
+      const failure = { kind: "protocol" as const, message: "rhino-local: runner is closing" };
+      this.#failures.record(failure, `job ${id}`);
+      throw new EmulationFailure(failure);
+    }
+    this.#activeIds.add(id);
+    let finish!: () => void;
+    const done = new Promise<void>((resolve) => { finish = resolve; });
+    this.#jobs.add(done);
+    try {
+      const response = await this.#evalJob({ ...job, id }, options);
+      reportResponseEvidence(response);
+      const fatal = responseFailure(response);
+      if (fatal) this.#failures.record(fatal, `job ${id}`);
+      const parent = callScope.getStore();
+      if (fatal && parent) parent.failure ??= fatal;
+      return fatal ? { ...response, ...(response.outcome === "ok" ? { ...failedResponse(id, fatal), faultedValue: response.value } : { emulation: fatal }) } : response;
+    } catch (error) {
+      if (error instanceof LaneDivergenceError) {
+        reportResponseEvidence(error.host);
+        reportResponseEvidence(error.container);
+      }
+      const failure = emulationFailure(error) ?? { kind: "internal" as const, message: String(error) };
+      this.#failures.record(failure, `job ${id}`);
+      const parent = callScope.getStore();
+      if (parent) parent.failure ??= failure;
+      throw error;
+    } finally {
+      this.#activeIds.delete(id);
+      this.#jobs.delete(done);
+      finish();
+    }
+  }
+
+  async #evalJob(job: JobRequest & { id: string }, options: EvalOptions): Promise<JobResponse> {
+    const id = job.id;
     const payload: Record<string, unknown> = { id, source: job.source };
+    if (job.engine !== undefined) payload.engine = job.engine;
+    if (job.hostCalls !== undefined) payload.hostCalls = job.hostCalls;
+    if (job.bindings !== undefined) payload.bindings = job.bindings;
+    if (job.properties !== undefined) payload.properties = job.properties;
+    if (job.bindingAliases !== undefined) payload.bindingAliases = job.bindingAliases;
+    if (job.resourceNameBindings !== undefined)
+      payload.resourceNameBindings = job.resourceNameBindings;
+    if (job.reportMissing !== undefined) payload.reportMissing = job.reportMissing;
+    if (job.internalValues !== undefined) payload.internalValues = job.internalValues;
+    if (job.crestBindings !== undefined) payload.crestBindings = job.crestBindings;
+    if (job.idmRequire !== undefined) payload.idmRequire = job.idmRequire;
     if (job.sourceName !== undefined) {
       payload.sourceName = job.sourceName;
     }
@@ -374,19 +812,106 @@ export class RhinoRunner {
     if (job.preambleName !== undefined) {
       payload.preambleName = job.preambleName;
     }
+    if (job.prelude !== undefined) payload.prelude = job.prelude;
+    if (job.preambleData !== undefined) payload.preambleData = job.preambleData;
+    if (job.libraries !== undefined) payload.libraries = job.libraries;
     if (job.classAllowList !== undefined) {
       payload.classAllowList = job.classAllowList;
     }
     if (job.resultGlobal !== undefined) {
       payload.resultGlobal = job.resultGlobal;
     }
-    if (this.#shadow === undefined) {
-      return this.#primary.send(id, payload);
+    if (job.completionHarvest !== undefined) payload.completionHarvest = job.completionHarvest;
+    const transcript: Array<{ call: HostCall; reply: HostReply | undefined }> = [];
+    let transcriptFrozen = false;
+    const primaryCall = bindEmulationOwner((call: HostCall): Promise<HostReply> => this.#failures.run(
+      `host callback ${id}#${call.seq}`, async () => {
+      const entry = {
+        call: structuredClone(call),
+        reply: undefined as HostReply | undefined,
+      };
+      transcript.push(entry);
+      let reply: HostReply;
+      const provenance: BehaviorEvidence[] = [];
+      const scope: { failure?: NonNullable<HostError["emulation"]> } = {};
+      try {
+        if (options.onCall === undefined)
+          throw new EmulationFailure({ kind: "protocol", message: "rhino-local: no onCall handler for IDM job" });
+        const result = await callScope.run(scope, () => withHostEvidence(provenance, () => options.onCall!(call)));
+        if (scope.failure) throw new EmulationFailure(scope.failure);
+        if (result === undefined)
+          throw new EmulationFailure({ kind: "protocol", message: "rhino-local: onCall must return a JSON value (use null)" });
+        // Freeze the reply before handing control back to user code or the shadow.
+        try {
+          reply = decodeProtocol(JSON.parse(stringifyProtocol({ type: "reply", id, seq: entry.call.seq, result }))) as HostReply;
+        } catch {
+          throw new EmulationFailure({ kind: "protocol", message: "rhino-local: host result is not JSON serializable" });
+        }
+      } catch (error) {
+        reply = {
+          type: "reply",
+          id,
+          seq: entry.call.seq,
+          error: hostError(scope.failure ? new EmulationFailure(scope.failure) : error),
+        };
+      }
+      if (provenance.length > 0) reply = { ...reply, provenance: structuredClone(provenance) };
+      const fatal = "error" in reply ? emulationFailure(reply.error) : undefined;
+      if (fatal) this.#failures.record(fatal, `host callback ${id}#${call.seq}`);
+      if (!transcriptFrozen) entry.reply = reply;
+      return reply;
+    }));
+    if (this.#shadow === undefined) return this.#primary.send(id, payload, primaryCall);
+    if (job.engine !== "idm" && !job.hostCalls) {
+      const [host, container] = await Promise.all([
+        this.#primary.send(id, payload),
+        this.#shadow.send(id, payload),
+      ]);
+      if (host.outcome === "protocol_error") return host;
+      if (container.outcome === "protocol_error") return container;
+      if (!isDeepStrictEqual(withoutId(host), withoutId(container))) {
+        throw new LaneDivergenceError(job.sourceName ?? id, host, container);
+      }
+      return host;
     }
-    const [host, container] = await Promise.all([
-      this.#primary.send(id, payload),
-      this.#shadow.send(id, payload),
-    ]);
+    // Sequential shadow replay avoids duplicate effects and naturally supports nested evals.
+    const host = await this.#primary.send(id, payload, primaryCall);
+    transcriptFrozen = true;
+    // A harness admission refusal ran no script. Shadow replay must not admit work
+    // that the primary refused while its ancestors occupied all workers.
+    if (host.outcome === "protocol_error") return host;
+    const replay = structuredClone(transcript);
+    let at = 0;
+    let divergence: string | undefined;
+    const container = await this.#shadow.send(id, payload, async (call) => {
+      const recorded = replay[at++];
+      if (recorded === undefined || !isDeepStrictEqual(recorded.call, call)) {
+        divergence ??= `expected ${JSON.stringify(recorded?.call)}, received ${JSON.stringify(call)}`;
+        return {
+          type: "reply",
+          id,
+          seq: call.seq,
+          error: {
+            class: "rhino.local.LaneDivergenceException",
+            message: "rhino-local: shadow host call sequence differs",
+            code: 500,
+            detail: {},
+          },
+        };
+      }
+      // Primary finished without a reply only when its worker timed out waiting.
+      // Leave the shadow waiting too, so its own deadline produces the same outcome.
+      return !host.unanswered?.includes(call.seq) && recorded.reply ? recorded.reply : new Promise<HostReply>(() => {});
+    });
+    if (container.outcome === "protocol_error") return container;
+    if (divergence !== undefined || at !== replay.length) {
+      throw new LaneDivergenceError(
+        job.sourceName ?? id,
+        host,
+        container,
+        divergence ?? `expected ${replay.length} calls, received ${at}`
+      );
+    }
     if (!isDeepStrictEqual(withoutId(host), withoutId(container))) {
       throw new LaneDivergenceError(job.sourceName ?? id, host, container);
     }
@@ -394,7 +919,13 @@ export class RhinoRunner {
   }
 
   async close(): Promise<void> {
-    await Promise.all(this.#processes().map((p) => p.close()));
+    this.#closePromise ??= (async () => {
+      this.#closing = true;
+      // Keep both lanes usable until accepted evaluations (including shadow replay) finish.
+      await Promise.race([Promise.all([...this.#jobs]), sleep(this.#shutdownWaitMs)]);
+      await Promise.all(this.#processes().map((p) => p.close()));
+    })();
+    await this.#closePromise;
   }
 
   /** Forcibly stop every JVM. Every pending eval rejects. Used by crash tests. */

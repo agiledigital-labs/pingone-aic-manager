@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normaliseEffects, validateCase } from "../../src/case/index.ts";
 import { caseWith } from "../aic/helpers.ts";
-import { runScript } from "./load-behaviour.ts";
+import { expectCaughtFault, runScript, runScriptWithFaults } from "./load-behaviour.ts";
 
 const resource = "managed/alpha_user/example";
 const record = {
@@ -153,7 +153,7 @@ describe("custom bag edges (review #1–4)", () => {
   });
 
   it("delete then recreate refuses the retained wrapper but leaves fresh reads and stored record consistent", () => {
-    const effects = runScript(
+    const { effects, faults } = runScriptWithFaults(
       identity +
         'identity.setAttribute("fr-idm-custom-attrs", []); identity.store();' +
         `openidm.delete("${resource}", null); openidm.create("managed/alpha_user", "example", {givenName:"Recreated"}); try { identity.getAttributeValues("givenName"); } catch(e) { nodeState.putShared("error", String(e)); }` +
@@ -164,6 +164,7 @@ describe("custom bag edges (review #1–4)", () => {
     expect(effects.sharedState.final.error).toMatch(
       /after delete and recreate is unmeasured; get a fresh identity wrapper/,
     );
+    expectCaughtFault({ effects, faults }, "identity-wrapper-after-recreate");
     expect(effects.sharedState.final.fresh).toBe("Recreated");
     expect(effects.sharedState.final.bag).toBe("{}");
     expect(effects.sharedState.final.row).toEqual({

@@ -1,0 +1,57 @@
+{
+ "body": {
+  "expires_in": 3599,
+  "scope": "openid profile zzemuc2-probe email",
+  "token_type": "Bearer"
+ },
+ "http": 200,
+ "idToken": {
+  "aud": "zzemuC2-oidc",
+  "azp": "zzemuC2-oidc",
+  "realm": "/alpha",
+  "sub": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+  "subname": "93f085ef-fb2a-45ad-98a2-ec5ca6632993",
+  "tokenName": "id_token",
+  "tokenType": "JWTToken"
+ },
+ "idTokenProbe": {
+  "claimObjects": "throw:ReferenceError: \"claimObjects\" is not defined.",
+  "claims": "object|{ \"sub\": \"93f085ef-fb2a-45ad-98a2-ec5ca6632993\", \"subname\": \"93f085ef-fb2a-45ad-98a2-ec5ca6632993\" }|size=2|len=undefined",
+  "claimsKeys": "sub,subname",
+  "claimsLocales": "object|[fr-CA, en]|size=2|len=2",
+  "claimsLocales0": "string|fr-CA|size=n/a|len=5",
+  "claimsLocales0Type": "string|string|size=n/a|len=6",
+  "objects": "throw:ReferenceError: \"claimObjects\" is not defined.",
+  "requestedClaims": "object|{  }|size=0|len=undefined",
+  "requestedKeys": "",
+  "requestedReq": "undefined",
+  "requestedReqGet": "null",
+  "requestedTypedClaims": "throw:ReferenceError: \"requestedTypedClaims\" is not defined.",
+  "requestedVal": "undefined",
+  "requestedVal0": "throw:TypeError: Cannot read property \"0\" from undefined",
+  "requestedValArr": "throw:TypeError: Cannot call method \"toArray\" of undefined",
+  "typed": "throw:ReferenceError: \"requestedTypedClaims\" is not defined.",
+  "where": "string|access_token|size=n/a|len=12"
+ },
+ "userinfo": {},
+ "userinfoHttp": 200,
+ "userinfoProbe": {
+  "claimObjects": "throw:ReferenceError: \"claimObjects\" is not defined.",
+  "claims": "object|{ \"sub\": \"93f085ef-fb2a-45ad-98a2-ec5ca6632993\", \"subname\": \"93f085ef-fb2a-45ad-98a2-ec5ca6632993\" }|size=2|len=undefined",
+  "claimsKeys": "sub,subname",
+  "claimsLocales": "object|[]|size=0|len=0",
+  "claimsLocales0": "undefined",
+  "claimsLocales0Type": "string|undefined|size=n/a|len=9",
+  "objects": "throw:ReferenceError: \"claimObjects\" is not defined.",
+  "requestedClaims": "object|{  }|size=0|len=undefined",
+  "requestedKeys": "",
+  "requestedReq": "undefined",
+  "requestedReqGet": "null",
+  "requestedTypedClaims": "throw:ReferenceError: \"requestedTypedClaims\" is not defined.",
+  "requestedVal": "undefined",
+  "requestedVal0": "throw:TypeError: Cannot read property \"0\" from undefined",
+  "requestedValArr": "throw:TypeError: Cannot call method \"toArray\" of undefined",
+  "typed": "throw:ReferenceError: \"requestedTypedClaims\" is not defined.",
+  "where": "string|userinfo|size=n/a|len=8"
+ }
+}

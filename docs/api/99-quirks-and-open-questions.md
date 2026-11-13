@@ -6,6 +6,66 @@ new things are learned.
 
 ---
 
+## 2026-11-08 — an invalid `default` freezes all of `config/managed`
+
+`10-managed-objects.md` said a type-mismatched `default` bricks only its own
+object ("the blast radius is that one object"). **Wrong.** Measured on the
+sandbox by the zzemu_def probe (orchestrator probe note `probe-def/note.md`,
+REST and IDM-script lanes; run by someone else, read by the rhino-local writer,
+not re-run): the config `PUT` is 200 and reads back, but IDM keeps serving its
+**last good compile**. Every type added afterwards stays 404, a type removed
+meanwhile keeps serving, and the whole pending document applies at once when
+the bad declaration is removed. The original measurement only checked that
+already-live types still answered, which is exactly what stays true while the
+config is frozen.
+
+The same probe settled what counts as invalid: the top-level `type`, and for an
+array each item against `items.type` (`["a", 2]` against `items: string` is
+fatal, `["a", "b"]` is fine). An object default's nested `properties` are not
+checked, and `default: null` on a string (plain or nullable) is valid, stored as
+`null`, with no `NOT_NULL`. `NOT_NULL` keys on a non-null default, not on the
+type. A follow-up the same day (zzemu_nd, `probe-nd/note.md`, run by someone
+else, read by the rhino-local writer) found `default: null` valid on every type
+tried, an array's null default stored as `[]`, and that **no JSON number is an
+`integer`**: `{i: 3}` is 403 `VALID_TYPE invalidType: "number"`, so a numeric
+`integer` default — `3` included — is invalid and freezes the config. Details, the unavailable-type surface, and what rhino-local does about
+it: doc 10, "An invalid `default` freezes all of `config/managed`".
+
+The `aic managed` default coercion already refused both measured invalid
+shapes; its error text ("the object then 404s forever") still describes the old
+one-object model.
+
+---
+
+## 2026-11-02 — journey runtime surprises
+
+Measured with `scripts/experiment-journey-*.sh`; details and controls in
+`25-journey-runtime.md`.
+
+- **Deleting a tree deletes its nodes**, page children included. A node
+  referenced by no tree survives the same `DELETE`; scripts are never deleted
+  with a tree. `09-journeys.md` recorded only that the tree `GET` 404s
+  afterwards. Anything that deletes a tree and then its nodes must accept 404
+  for the nodes.
+- **A node type's outcomes are listable**: `POST …/nodes/{nodeType}?_action=listOutcomes`
+  with the node config as the body. The per-node path (`…/{id}?_action=listOutcomes`)
+  is `501`. `09-journeys.md`'s catalog section did not list this action.
+- **A replayed `authId` is accepted**, and callbacks posted with no `authId`
+  start a fresh journey whose first node is handed them as if resuming.
+- **Two different empty-body 500s** stand in for configuration faults: an
+  outcome declared on a node (or page) but not connected in the tree, and
+  reaching Success with no `username` in shared state. An outcome the node
+  does not declare is instead the ordinary `401 Login failure`.
+- **A Page node runs its scripted children when the page is first shown**,
+  callback-free ones included, and runs them again on submit. `25-journey-runtime.md`
+  first said a callback-free child "runs once" on submission; that came from a
+  `nodeState` counter. Re-measured 2026-11-02 with an external side effect
+  (`scripts/experiment-journey-page-discovery.sh`, an `openidm.create` per
+  execution): two executions, the discovery run's state kept, its `goTo`
+  ignored, and a throw in it fails the first POST with `401`.
+
+---
+
 ## 2026-11-01 — the schema route works, but not for the service account
 
 The 2026-10-26 entry below says the `/openidm/schema` API "refused all five
@@ -71,6 +131,12 @@ lane: it queued a TextOutputCallback, wrote shared state, and called
 contradicts the earlier claim in `12-script-bindings-matrix.md` and
 `09-journeys.md` that callbacks are sent only without `goTo`. The measurement
 was supplied to this change; it was not re-run by the implementing agent.
+
+**Re-run 2026-11-02** (`scripts/experiment-journey-flow.sh`, part 3, with a
+control identical minus the callback): **confirmed**. The callback was
+returned and the outcome discarded; on resume the script ran again from the
+top with `callbacks` non-empty and its `goTo` was then acted on. See
+`25-journey-runtime.md`, "Callbacks versus `goTo`".
 
 ---
 
@@ -216,6 +282,53 @@ was supplied to this change; it was not re-run by the implementing agent.
 ---
 
 ## Open
+
+### Q18. Is `null` on an undefaulted property accepted? (2026-11-06; create answered 2026-11-08)
+
+- **Question:** every measured `null` refusal on a managed write (`403
+  NOT_NULL` on create; see `10-managed-objects.md`, `default` and `required`
+  table) used a property with a non-null `default`. Does a create or update
+  sending `null` for a property with **no** `default` succeed?
+- **Answered for a create of a new record (2026-11-08, orchestrator probe note
+  `probe-pol/note.md`, REST and IDM-script lanes; doc 10, "Explicit `null`,
+  nested types and optional removes"):** accepted and stored as `null` when
+  `schema.required` exists and does not name the property; 403 `VALID_TYPE`
+  (`invalidType "null"`) when the schema has no `required` key; 403
+  `VALID_TYPE` when `required` names it. The last **diverges from the stock
+  `policy.js` reading** this entry recorded (`REQUIRED` + `VALID_TYPE`): a null
+  counts as present, so only `VALID_TYPE` is listed. The same probe found that
+  only the top-level `type` is checked — nested `properties`/`items` schemas are
+  stored and not enforced — and that a `PATCH remove` of an undefaulted,
+  non-required property is 200 with the key gone.
+- **Still open:**
+  - an **update** (whole-record `PUT`) sending `null` for an undefaulted
+    property; rhino-local assumes it behaves as on create where a create would
+    accept it, and faults it where a create would refuse it;
+  - a `PATCH remove` of a **defaulted** property that `required` does not name.
+    The measured 403 `REQUIRED` was taken with the property also in
+    `schema.required`; stock `policy.js` adds an implicit `required` for any
+    `default` (`null` included) and predicts 403; doc 10 used to state 200.
+    Both rhino-local lanes fault it (`idm-policy/required`,
+    `openidm-managed-policy/<type>`);
+  - ~~what triggers `NOT_NULL`~~ — answered 2026-11-08 by the zzemu_def probe
+    (`probe-def/note.md`): a non-null default. An object defaulting to `{x: 1}`
+    gets `NOT_NULL`, a string with `default: null` does not. A default-less
+    boolean sent `null` is still untested;
+  - a **top-level** array whose own items mismatch `items.type`
+    (`{tags: [2]}` with `tags` a top-level `string[]`); both rhino-local lanes
+    fault it;
+  - ~~a top-level mismatch against a declared `number`, `integer` or
+    `boolean`~~ — answered 2026-11-08 by the zzemu_nd probe
+    (`probe-nd/note.md`): 403 `VALID_TYPE` on each (`"x"` against all three),
+    and on `integer` every number too (`invalidType: "number"`). Both
+    rhino-local lanes now emulate the 403;
+  - all of the above from a next-gen journey script's `openidm` binding.
+- **To settle the rest:** on a throwaway type with `required: []`, an
+  undefaulted string and a defaulted property not in `required`: `PUT` a whole
+  record with the string `null`; `PATCH remove` the defaulted property (with
+  the measured required-named remove as the positive control); create
+  `{tags: [2]}` and a number property sent as a string; add a default-less
+  boolean and send it `null`.
 
 ### Q5. Log API keys not present in `.envrc`
 
@@ -1852,3 +1965,113 @@ the layout `aic` generates (`storage::generated_entry`); a custom `dnTemplate`,
 `jsonAttribute`, object classes, matching rule or any extra field is refused by
 name, because it was not measured. Also refused: an entry that maps a property,
 and one another mapping names as a `resourcePath`.
+
+## 2026-11-10 — two rows of the legacy access-token list were wrong
+
+`docs/api/12-script-bindings-matrix.md`'s 2026-08-27 legacy
+access-token-modification sweep said `addExtraJsonData` works and that
+`getAct`, `getMayAct`, `getPermissions`, `getConfirmationKey` and
+`getField("<unset>")` return `null`. The
+rhino-local token-context probes (a stateless `client_credentials` token on a
+throwaway client, results read back from the token's `aicprobe` claim) found:
+
+- `accessToken.addExtraJsonData("<k>", "<json string>")` throws `Can't find
+  method …StatelessAccessToken.addExtraJsonData(string,string).` The earlier
+  row never recorded which argument types it called with, so it may have used
+  another overload; `(string, string)` is the refused shape.
+- `getAct()`, `getMayAct()`, `getPermissions()`, `getConfirmationKey()` and
+  `getField` of an unset key are
+  objects: `typeof` is `object`, `String(v)` is `null` and `v.size()` is `0`.
+  A script testing `=== null` gets `false`.
+
+Both rows are corrected in place; the probe scripts and captures are
+`packages/rhino-local/test/fixtures/oauth2-atm/setters.*` and `surface.*`.
+
+## 2026-11-10 — validate scope widens the grant, and legacy binds the scope sets
+
+Two claims about the validate scope context did not survive the rhino-local
+probes (a stateless `client_credentials` client in `alpha`, both engines;
+method and captures in `docs/api/12-script-bindings-matrix.md`, "OAuth2
+validate scope on both engines"):
+
+- **AM grants exactly the list `validateAccessTokenScope()` returns.** It does
+  not intersect it with the request. Returning `zzemuc5-c` beside the two
+  requested scopes granted all three, and returning `zzemuc5-nope`, which the
+  client does not hold, granted that too. `docs/api/12`'s 2026-07-29 note
+  ("did **not** widen the grant … AM appears to intersect") was a
+  `client_credentials` grant as well, so the grant type does not explain the
+  difference; what did is not identified. `docs/api/22-token-exchange.md` says
+  the same of the token-exchange and `password` grants, where it was not
+  re-measured. Both notes now point here. Until one of those grants is
+  re-measured, treat a validate scope script as able to widen any grant, and
+  write it to return only scopes it means to issue.
+- **Legacy `OAUTH2_VALIDATE_SCOPE` is not bindingless.** `docs/api/13` lists it
+  among the contexts whose descriptor has 0 bindings, which is true of the
+  descriptor. At runtime it binds `requestedScopes` (a `java.util.HashSet`),
+  `allowedScopes` and `defaultScopes` (`java.util.TreeSet`s), `logger`,
+  `realm`, `scriptName` and `systemEnv`, and its invalid-scope denial is
+  `throw new org.forgerock.oauth2.core.exceptions.InvalidScopeException(msg)`
+  (`400`, `msg` verbatim).
+
+
+## 2026-11-10 — legacy may-act accepts a JsonValue, and the claim's nulls differ
+
+Three claims about the may-act context did not survive the rhino-local probes
+(a stateless `client_credentials` client in `alpha`, both engines; method and
+captures in `docs/api/12-script-bindings-matrix.md`, "OAuth2 may act on both
+engines"):
+
+- **A plain object is what fails on legacy, not the context.** `docs/api/22`
+  and `docs/api/04` say the same JS body on `OAUTH2_MAY_ACT` is HTTP 500
+  because Rhino will not coerce an object literal into the map `setMayAct`
+  wants. That call does fail, with `Error running may_act script`.
+  `token.setMayAct(new org.forgerock.json.JsonValue(linkedHashMap))` is
+  accepted, and the issued `may_act` is that map. `new JsonValue(null)`
+  writes JSON null; `new JsonValue("…")` writes that string. Both notes now
+  point here.
+- **JSON null and a missing claim are different, and the engines disagree
+  about `setMayAct(null)`.** Next-gen `token.setMayAct(null)` issues
+  `"may_act": null`. Legacy `token.setMayAct(null)` leaves the claim out of
+  the token. `getMayAct()` is JS `null` in both of the next-gen states, and
+  a null JsonValue (`size()` `0`, not `=== null`) in both of the legacy
+  states. A case that treats "no call" and "called with null" as the same
+  assertion is wrong on one engine.
+- **Legacy `OAUTH2_MAY_ACT` is not bindingless, and the next-gen token is
+  exactly the descriptor's five methods.** `docs/api/13` lists the legacy id
+  among the contexts whose descriptor has 0 bindings, which is true of the
+  descriptor. At runtime it binds `token`, `scopes`, `identity`,
+  `requestProperties`, `clientProperties`, `logger`, `realm`, `scriptName`,
+  `systemEnv` and `session`. The next-gen descriptor's `getField`, `getAct`,
+  `getMayAct`, `setAct` and `setMayAct` are the methods that exist:
+  `typeof token.setField` and `typeof token.toString` are `undefined`.
+  `requestProperties.requestParams` values are JS strings on next-gen
+  (`grant_type[0] === "client_credentials"`), not the `JavaString` the
+  generated types describe.
+
+
+## 2026-11-11 — a library's scope is the caller's common bindings, not the caller's context
+
+A `LIBRARY` script required from five next-gen callers (decision node, token
+modification, validate scope, may-act, evaluate scope) sees one set of
+bindings. The caller's context bindings do not leak. Two earlier notes do not
+survive that probe (`docs/api/12-script-bindings-matrix.md`, "Library scope
+when required"):
+
+- **`cacheManager` and `idRepository` are not in library scope.** The
+  2026-07-29 token-mod note assumed `logger`, `secrets`, `utils`,
+  `systemEnv`, `cacheManager` and `idRepository` were available because they
+  had not been probed. The first four are bound. `cacheManager` and
+  `idRepository` are not: `typeof eval(name)` throws. `nodeState` and
+  `accessToken` are unbound too, which that note had only as a typing
+  decision for the decision-node globals.
+- **`emailService`, `jwtAssertion`, `jwtValidator` and `policy` are present,**
+  and none of them is in the 11-name library metadata. No method on them was
+  called.
+- **`new java.util.HashSet()` follows the caller.** A library required from a
+  decision node can construct one. The same library required from each of the
+  four OAuth callers cannot. `docs/api/12`'s "`LIBRARY` reaches `HashSet` and
+  `ArrayList`" row is the decision-node caller. `ArrayList` was not re-probed
+  from an OAuth caller. The class shutter is the caller's, not a property of
+  the library.
+- **A nested `require()` does not get its own `scriptName`.** `scriptName` and
+  `logger.getName()` inside the inner library are the top-level caller's.

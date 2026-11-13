@@ -393,7 +393,7 @@ The repo-local `tmp/` directory is ignored. Logs can be large, so summarize or f
 records structured results to `tmp/rhino-script-tester/probe-results.json`:
 
 ```bash
-BASE="$(aic ctx list --no-prompt | awk '/^\*/{print $4}')" \
+BASE="$(aic ctx list --no-prompt | awk '$1=="*"{print $NF}')" \
   scripts/rhino-script-tester/run-probes.sh                       # all fixtures
 BASE=... scripts/rhino-script-tester/run-probes.sh fixtures/arrow-function.script.js
 FETCH_LOGS=1 BASE=... scripts/rhino-script-tester/run-probes.sh ...  # also pull logs

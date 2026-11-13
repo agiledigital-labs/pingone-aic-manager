@@ -1,8 +1,10 @@
+import { expectEmulationFailure } from "../src/harness/emulation-guard.ts";
 import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LaneDivergenceError, RhinoRunner, RhinoRunnerExitError } from "../src/runner.ts";
+import { decisionNodeClassAllowList } from "../src/bindings/allowlist.ts";
 import { cacheDir, ensureRhinoJar, ensureRunnerClasses, EXPECTED_ENVIRONMENT } from "../src/jvm.ts";
 
 describe("RhinoRunner", () => {
@@ -44,6 +46,37 @@ describe("RhinoRunner", () => {
     });
     expect(response.outcome).toBe("ok");
     expect(response.value).toBe(100);
+  });
+
+  // A raw job with no shutter names engine classes freely, so the global
+  // factory must be sealed against it. (A shuttered job cannot name it at all:
+  // the next test.)
+  it("the global ContextFactory is sealed against an unshuttered script", async () => {
+    const response = await runner.eval({
+      source: `(function () {
+        var f = Packages.org.mozilla.javascript.ContextFactory.getGlobal();
+        var refused;
+        try { f.addListener(null); refused = "accepted"; } catch (e) { refused = String(e.javaException || e); }
+        return String(f.isSealed()) + "|" + refused;
+      })()`,
+      timeoutMs: 2_000,
+    });
+    expect(response.outcome).toBe("ok");
+    expect(String(response.value)).toMatch(/^true\|.*IllegalStateException/);
+  });
+
+  it("a shuttered script cannot name the engine's ContextFactory (it was the sealed-factory probe)", async () => {
+    // Author-named access to org.mozilla.javascript.* is refused the way AM
+    // refuses it (docs/api/12, 2026-11-10), so the global factory is not
+    // reachable to be sealed or otherwise.
+    const response = await runner.eval({
+      source: "(function () { try { Packages.org.mozilla.javascript.ContextFactory.getGlobal(); return 'reached'; } catch (e) { return String(e).replace(/ \\(.*$/, ''); } })()",
+      classAllowList: decisionNodeClassAllowList(),
+      timeoutMs: 2_000,
+    });
+    expect(response.value).toBe(
+      'TypeError: Cannot call property getGlobal in object [JavaPackage org.mozilla.javascript.ContextFactory]. It is not a function, it is "object".'
+    );
   });
 
   it("compiles and runs a trivial script", async () => {
@@ -143,6 +176,7 @@ describe("RhinoRunner", () => {
   });
 
   it("times out a runaway loop per-job and keeps serving", async () => {
+    expectEmulationFailure("Rhino harness timeout");
     const timed = await runner.eval({
       id: "loop",
       source: "while (true) {}",
@@ -198,6 +232,7 @@ describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both l
   // comparison that silently stopped comparing would fail here. Not the Java
   // build — CI installs the reference image's exact build, so that one must agree.
   it("detects a lane-specific difference", async () => {
+    expectEmulationFailure(/LaneDivergenceError: rhino-local: host and container JVMs disagree[\s\S]*/);
     await expect(
       runner.eval({
         source: 'String(java.lang.System.getProperty("user.dir"))',
@@ -234,6 +269,7 @@ describe.runIf(process.env.AIC_SCRIPT_TESTER_JVM === "both")("RhinoRunner both l
 
 describe("RhinoRunner crash", () => {
   it("rejects every pending job when the JVM exits", async () => {
+    expectEmulationFailure(/RhinoRunnerExitError: rhino-local: JVM runner exited[\s\S]*/);
     const runner = await RhinoRunner.spawn();
     try {
       const pending = runner.eval({

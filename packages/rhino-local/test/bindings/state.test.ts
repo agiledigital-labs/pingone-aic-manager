@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadBehaviour, runScript } from "./load-behaviour.ts";
+import { loadBehaviour, runScript, runScriptWithFaults } from "./load-behaviour.ts";
 
 describe("nodeState", () => {
   it("reads shared, transient, then secure in that lookup order", () => {
@@ -154,32 +154,56 @@ describe("nodeState", () => {
     expect(effects.transientState.final).toEqual({ t: 2, extra: 3 });
   });
 
-  it("does not bind legacy maps on next-gen", () => {
+  // E19 live probe 2026-11-06 (docs/api/12): a non-object merge is AIC's catchable InternalError
+  // in three shapes, and leaves both buckets exactly as they were (no "0" key from the array).
+  it("refuses a non-object merge catchably with AIC's three measured messages, state unchanged", () => {
+    const W = "org.forgerock.openam.auth.node.api.NodeStateScriptWrapper";
+    const calls = [
+      ['mergeShared("x")', `Can't find method ${W}.mergeShared(string).`],
+      ["mergeShared(42)", `Can't find method ${W}.mergeShared(number).`],
+      ["mergeShared(true)", `Can't find method ${W}.mergeShared(boolean).`],
+      ["mergeShared(undefined)", `Can't find method ${W}.mergeShared(org.mozilla.javascript.Undefined).`],
+      ["mergeShared()", `Can't find method ${W}.mergeShared().`],
+      ['mergeTransient("x")', `Can't find method ${W}.mergeTransient(string).`],
+      ["mergeTransient(7)", `Can't find method ${W}.mergeTransient(number).`],
+      ["mergeShared(null)", "null"],
+      ['mergeShared(["a", "b"])', /^Cannot convert org\.mozilla\.javascript\.NativeArray@[0-9a-f]+ to java\.util\.Map$/],
+      ['mergeTransient(["a"])', /^Cannot convert org\.mozilla\.javascript\.NativeArray@[0-9a-f]+ to java\.util\.Map$/],
+    ] as const;
+    const script = `var out = [];\n${calls.map(([call]) =>
+      `try { nodeState.${call}; out.push("ok"); } catch (e) { out.push(e.name + "|" + e.message); }`).join("\n")}\nreturn out;`;
+    const { effects, faults } = runScriptWithFaults(`var r = (function () { ${script} })(); nodeState.putTransient("r", JSON.stringify(r));`, {
+      sharedState: { zzemuK: "x", zzemuM: "v" },
+      transientState: { t: 1 },
+    });
+    expect(faults).toEqual([]);
+    const results = JSON.parse(String((effects.transientState.final as Record<string, unknown>).r)) as string[];
+    calls.forEach(([call, message], index) => {
+      const [name, text] = results[index]!.split("|");
+      expect(name, call).toBe("InternalError");
+      if (typeof message === "string") expect(text, call).toBe(message);
+      else expect(text, call).toMatch(message);
+    });
+    expect(effects.sharedState.final).toEqual({ zzemuK: "x", zzemuM: "v" });
+    expect(Object.keys(effects.transientState.final as object).sort()).toEqual(["r", "t"]);
+  });
+
+  it("a function merge is still the unmeasured fault", () => {
+    const { faults } = runScriptWithFaults("try { nodeState.mergeShared(function () {}); } catch (e) {}");
+    expect(faults.map((fault) => fault.id)).toEqual(["node-state-merge-non-object"]);
+  });
+
+  // Review pf-01 P3-3: null fails inside AM's method body, observed for mergeShared only.
+  it("mergeTransient(null) is the unmeasured fault", () => {
+    const { faults } = runScriptWithFaults("try { nodeState.mergeTransient(null); } catch (e) {}");
+    expect(faults.map((fault) => [fault.id, fault.message])).toEqual([["node-state-merge-non-object",
+      "rhino-local: nodeState.mergeTransient: what AIC does with a null argument is unmeasured"]]);
+  });
+
+  it("does not bind the sharedState / transientState globals", () => {
     const sandbox = loadBehaviour();
     expect(sandbox.sharedState).toBeUndefined();
     expect(sandbox.transientState).toBeUndefined();
-  });
-
-  it("binds legacy sharedState / transientState as views of the same buckets", () => {
-    const sandbox = loadBehaviour({
-      engine: "legacy",
-      sharedState: { a: 1 },
-      transientState: { b: 2 },
-    });
-    const shared = sandbox.sharedState as {
-      get: (key: string) => unknown;
-      put: (key: string, value: unknown) => void;
-    };
-    const transient = sandbox.transientState as {
-      get: (key: string) => unknown;
-      put: (key: string, value: unknown) => void;
-    };
-    const nodeState = sandbox.nodeState as { get: (key: string) => unknown };
-    expect(shared.get("a")).toBe(1);
-    expect(shared.get("b")).toBeNull();
-    expect(transient.get("b")).toBe(2);
-    shared.put("c", 3);
-    expect(nodeState.get("c")).toBe(3);
   });
 
   it("seeds secureState as a readable bucket with no writer", () => {

@@ -118,7 +118,10 @@ Cross-context shape facts (worth knowing before hand-writing types):
   than the scripted-decision binding of the same name: `createUser` (2
   overloads) + `getIdentity` only.
 - `token` (may-act) is a 5-member subset of the access-token wrapper:
-  `getField`, `get`/`set` `Act`/`MayAct`.
+  `getField`, `get`/`set` `Act`/`MayAct`. That list is what next-gen binds
+  at runtime too (`setField` and `toString` are absent). Legacy's `token`
+  is a `StatelessAccessToken` with a much larger method list
+  (2026-11-10, `docs/api/12`).
 
 Library `require()` is runtime-verified for token mod, validate scope, evaluate
 scope and may-act (see `docs/api/12-script-bindings-matrix.md`). Two caveats
@@ -148,6 +151,13 @@ still 0 bindings / `1.0` only): `OIDC_CLAIMS`,
 `SOCIAL_IDP_PROFILE_TRANSFORMATION`, `CONFIG_PROVIDER_NODE`,
 `SAML2_IDP_ADAPTER`, `SAML2_SP_ADAPTER`, `SAML2_IDP_ATTRIBUTE_MAPPER`,
 `AUTHENTICATION_TREE_DECISION_NODE` (legacy scripted decision).
+"0 bindings" is the descriptor, not the runtime: legacy `OAUTH2_VALIDATE_SCOPE`
+binds the three scope sets, `logger`, `realm`, `scriptName` and `systemEnv`
+(measured 2026-11-10, `docs/api/99`). Legacy `OAUTH2_MAY_ACT` likewise
+binds `token`, `scopes`, `identity`, `requestProperties`, `clientProperties`,
+`logger`, `realm`, `scriptName`, `systemEnv` and `session` at runtime; its
+`token` is a `StatelessAccessToken`, and `setMayAct` takes a `JsonValue`
+(measured 2026-11-10, `docs/api/99`).
 
 Bad ids (`400`): `DEVICE_PROFILE_MATCH_NODE`, `PINGONE_VERIFY_EVALUATION_NODE`.
 

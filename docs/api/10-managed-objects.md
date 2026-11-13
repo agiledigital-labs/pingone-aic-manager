@@ -70,12 +70,21 @@ single-node test reproduces. Prefer create-based acquisition over PUT-upsert,
 but do not treat any managed-object create as a hard mutex in a replicated
 deployment without further validation.
 
+Orchestrator-supplied sandbox probe **p24**, **2026-11-02**, reconfirmed that
+script reads of an unconfigured managed type, endpoint, config resource and
+system resource return `null`. Querying the unconfigured managed collection
+instead threw `org.forgerock.json.resource.NotFoundException: Resource
+'managed/<name>' not found`. This measures genuinely absent tenant resources;
+it does not establish that an arbitrary unimplemented emulator namespace is
+absent. A local emulator needs authoritative configuration coverage before
+answering such an existence probe.
+
 ### Record fields and ids are object-type-specific
 
 The maintainer measured two fixture-relevant differences on the sandbox on
 2026-09-14:
 
-- `managed/alpha_user.password` is write-only. A create containing `password`
+- `managed/alpha_user.password` is write-only over HTTP. A create containing `password`
   returned 201 and produced a readable record, but the subsequent GET omitted
   `password`; teardown then deleted the record. A control retaining mixed-case
   `mail` without `password` round-tripped exactly. No other field has been
@@ -85,6 +94,49 @@ The maintainer measured two fixture-relevant differences on the sandbox on
   `Invalid Attribute Syntax`, while `managed/alpha_role` accepted the readable
   id `rl-fix-role-01`. Do not generalize the user constraint to every managed
   object type.
+
+**Internal calls differ from HTTP.** Orchestrator-supplied sandbox probes
+**p22/p23**, **2026-11-02**, created and deleted UUID-named throwaway
+`alpha_user` records through `script?_action=eval`:
+
+| Read surface | `password` result |
+| --- | --- |
+| HTTP GET (2026-09-14 measurement above) | Omitted |
+| `openidm.read(path)`, `read(path, null, ["password"])`, `read(path, null, ["*"])` | Present, string |
+| `openidm.query(collection, {_queryFilter: ...})`, also with `_fields: "password"` | Present on returned row, string |
+
+The internal string was **90 characters**, began **`{PBKDF2-HMAC-SHA256}`**,
+and differed from the submitted 27-character password. The body after the
+prefix was not inspected: salt, iterations and encoding are **unmeasured**.
+Only `alpha_user` was probed; do not infer `bravo_user` behavior from this.
+These are the orchestrator's tenant measurements, not local emulator runs.
+
+**Encoded password write-back.** The orchestrator's sandbox probe **p25**,
+**2026-11-02**, created two throwaway UUID `alpha_user` records and deleted both:
+
+| Internal write/call | Observed result |
+| --- | --- |
+| `openidm.update(path, null, readObject)` after changing `sn` | Stored password hash identical to the original (90 characters) |
+| `openidm.patch(path, null, [{operation: "replace", field: "password", value: hash}])` | Stored password hash identical |
+| `openidm.create(collection, secondId, {password: firstHash, ...})` | Second record's stored hash identical to the first record's; not re-hashed |
+| `openidm.matches(plain, hash)` | `false` for the original password against its own stored hash and every other pairing tried, including a hash passed as the plain argument |
+
+Thus an already encoded `{PBKDF2-HMAC-SHA256}` password can be written back
+verbatim, including to a different record; preservation is not conditional on
+matching that record's previous value. These are orchestrator-supplied tenant
+measurements, not local emulator runs. The hash body was not inspected. Acceptance
+of malformed bodies or other `{SCHEME}` prefixes remains **unmeasured**. The
+`matches` results do not establish verifier semantics: do not implement a password
+verifier, or a constant-false substitute, from this observation.
+
+The orchestrator's sandbox `script?_action=eval` probe **p21** on
+**2026-11-02** also rejected readable ids on both `alpha_user` and `bravo_user`
+with `org.forgerock.json.resource.BadRequestException: Invalid Attribute Syntax:
+Entry "fr-idm-uuid=<id>,ou=user,o=<realm>,o=root,ou=identities" contains a value
+"<id>…`. Nothing was created. The captured diagnostic was truncated at 200
+characters; its remaining suffix is not established. This is supplied tenant
+measurement, not a local emulator run. Other user-like type names remain
+unmeasured.
 
 Consequently, confirming a user create with GET can prove that the record and
 its readable fields landed, but cannot prove the submitted password value.
@@ -342,17 +394,126 @@ that writes a schema and then immediately writes records against it must poll
 for that, not for the type responding. (`scripts/experiment-managed-defaults.sh`
 does exactly this.)
 
-**A type-mismatched `default` bricks the object with no error anywhere.**
-`{"type": "boolean", "default": "nope"}` is accepted by the config `PUT` with
-**200**, and the managed object then never comes live: every
-`/openidm/managed/<object>` call returns **404 indefinitely** (still 404 after
-two minutes of polling). Nothing server-side reports why. The blast radius is
-that one object — every other managed type keeps serving, and removing the bad
-default restores it. Because there is no server-side signal,
-`aic managed field add`/`edit` coerce `--default` against the declared type and
-refuse a mismatch locally. A default outside an `enum` is refused for a
-different reason: the default is applied before policy, so every create would
-fail `VALID_ENUM_VALUE`.
+**An invalid `default` freezes all of `config/managed`, with no error
+anywhere (corrected 2026-11-08).** `{"type": "boolean", "default": "nope"}` is
+accepted by the config `PUT` with **200**, reads back verbatim, and the object
+never comes live: every `/openidm/managed/<object>` call returns **404
+indefinitely**. This doc used to say "the blast radius is that one object".
+**That was wrong.** The config change as a whole fails to apply, and IDM keeps
+serving the **last good compile** of `config/managed` (zzemu_def probe below):
+
+- a valid type added while the bad one is present stays 404 — a type declaring
+  nothing but a readiness sentinel stayed 404 for 150 s, twice;
+- a type **removed** while the bad one is present keeps serving: it answered
+  200 for a minute after its removal was confirmed, and `create {}` still
+  applied its default;
+- changed schemas keep their old behaviour, by the same mechanism;
+- types that were already live keep working, which is why "the other types
+  still answer" is not evidence that a schema write took effect;
+- removing the bad declaration applies the **whole** pending document at once:
+  everything waiting came live, and the removed type went 404, at the first
+  poll (≤1 s).
+
+Because there is no server-side signal, `aic managed field add`/`edit` coerce
+`--default` against the declared type (array items included) and refuse a
+mismatch locally. A readiness check after any schema write has to see a
+sentinel default land on the **changed** type; a check that only re-reads types
+that were already live stays green while every later managed change is
+frozen. A default outside an `enum` is refused for a different reason: the
+default is applied before policy, so every create would fail
+`VALID_ENUM_VALUE`.
+
+**Default validation (verified 2026-11-08).** What makes a `default` invalid,
+from the same probe (each type added alone, with `required: []`):
+
+| Declaration                                                         | Valid? | Notes                                                                                   |
+| ------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `{type: "boolean", default: true}`                                  | yes    | control; `create {}` stores `true`                                                      |
+| `{type: "boolean", default: "nope"}`                                | **no** | top-level type mismatch; freezes the config                                             |
+| `{type: "string", default: null}`                                   | yes    | `create {}` stores and returns `"text": null` (present, not absent)                     |
+| `{type: ["string", "null"], default: null}`                         | yes    | same as the plain string in every row                                                   |
+| `{type: "array", items: {type: "string"}, default: ["a", "b"]}`     | yes    | `create {}` stores `["a", "b"]`                                                         |
+| `{type: "array", items: {type: "string"}, default: ["a", 2]}`       | **no** | an item mismatching `items.type` is fatal, though a record's nested items are not checked |
+| `{type: "object", properties: {x: {type: "string"}}, default: {x: 1}}` | yes  | nested `properties` are **not** checked against an object default; stored `{x: 1}`      |
+| `{type: "boolean", default: null}`                                  | yes    | `create {}` stores `flag: null` (present); zzemu_nd                                     |
+| `{type: "number", default: null}`                                   | yes    | `create {}` stores `null`; zzemu_nd                                                     |
+| `{type: "integer", default: null}`                                  | yes    | `create {}` stores `null`; zzemu_nd                                                     |
+| `{type: "object", default: null}`                                   | yes    | `create {}` stores `null`; zzemu_nd                                                     |
+| `{type: "array", items: {type: "string"}, default: null}`           | yes    | `create {}` stores **`[]`**, not `null`; zzemu_nd                                       |
+| `{type: "string", default: null}`, no `required` key                | yes    | `create {}` stores `null`; zzemu_nd                                                     |
+| `{type: "number", default: 3}` / `default: 3.5`                     | yes    | applies `3` / `3.5`; zzemu_nd                                                           |
+| `{type: "integer", default: 3}` / `default: 3.5`                    | **no** | **both** freeze the config: no JSON number is an `integer` (below); zzemu_nd            |
+
+So the check is the top-level `type` against the default, plus each item of an
+array default against `items.type` — the same `VALID_TYPE` check a record
+gets. It does not recurse into an object default's `properties`, and a `null`
+default passes on every type tried (string, boolean, number, integer, object,
+array). Not measured: arrays of arrays, a `null` default nested under `items`,
+a type list other than one concrete type plus `"null"` (two concrete types, a singleton such as `["string"]`, a repeated `"null"`), a default nested under `properties` or
+`items`, non-empty `required` lists, and whether the frozen state survives an
+IDM restart.
+
+**`integer` admits no number (verified 2026-11-08, zzemu_nd).** `integer` is an
+accepted declared type, but IDM's type check classifies every JSON number as
+`"number"`, never `"integer"`. On `i: {type: "integer", default: null}`, in
+both lanes: `{i: 3}` and `{i: 3.5}` are each 403
+`VALID_TYPE {invalidType: "number", validTypes: ["integer"]}`, `{i: "x"}` is
+403 `invalidType: "string"`, and only `null` or omitting the key succeed. A
+numeric `default` on `integer` — `3` as much as `3.5` — is therefore invalid
+and freezes `config/managed` like any other invalid default; the `number`
+controls with defaults `3` and `3.5` came live and applied them.
+
+**`default: null` (verified 2026-11-08).** On `string` and `["string", "null"]`
+with `required: []`, in both lanes: `create {}` is 201 holding `text: null`;
+`{text: "a"}` is 201; an explicit `{text: null}` is **201 with no `NOT_NULL`**;
+`{text: 5}` is 403 `VALID_TYPE` whose `validTypes` echoes the declared type
+verbatim (`["string"]`, or `["string", "null"]` for the nullable form).
+`NOT_NULL` keys on a **non-null** default, not on the type: the control's
+`flag: {type: "boolean", default: true}` and an object defaulting to `{x: 1}`
+both refuse `null` with 403 `NOT_NULL`, while the null-defaulted string does
+not.
+
+The zzemu_nd probe extended this to every type, with `required: []`: on
+`boolean`, `number`, `integer`, `object` and `array` a `default: null` is
+valid, `create {}` stores the property, and an explicit `null` is 201 with no
+`NOT_NULL`. **An array is the exception in what it stores**: both `create {}`
+and an explicit `{a: null}` store and read back `a: []`. A wrong-typed value is
+403 `VALID_TYPE` on each (`{flag: "x"}`, `{n: "x"}`, `{o: "x"}`, `{a: "x"}`,
+all `invalidType: "string"`). Dropping the `required` key flips the explicit
+null on a string: `text: {type: "string", default: null}` with no `required`
+key still stores `null` for `create {}`, but `{text: null}` is 403
+`VALID_TYPE {invalidType: "null", validTypes: ["string"]}`. Whether the other
+types flip the same way without the key was not measured.
+
+**An unavailable type looks exactly like an undeclared one (verified
+2026-11-08).** Captured for an invalid type, a valid type frozen behind it, and
+a name never declared: all three are byte-identical.
+
+| Lane       | Call                                                    | Result                                                                                              |
+| ---------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| REST       | `GET managed/<t>?_queryFilter=true`                      | 404 `{"code":404,"reason":"Not Found","message":"Resource &#39;managed/<t>&#39; not found"}` — the quote is HTML-escaped in the body |
+| REST       | `GET`/`PATCH`/`DELETE managed/<t>/<id>`                  | 404, message names `managed/<t>/<id>`                                                               |
+| REST       | `POST managed/<t>?_action=create`                        | 404, message names `managed/<t>`                                                                    |
+| REST       | `PUT managed/<t>/<id>` with `If-None-Match: *`           | 404, message names **`managed/<t>`**, not the id                                                    |
+| IDM script | `openidm.read("managed/<t>/<id>")`                       | returns **`null`**, does not throw (as for a missing record in a live type)                         |
+| IDM script | `openidm.query` / `create` / `patch` / `delete`          | throws `JavaException`: `org.forgerock.json.resource.NotFoundException: Resource 'managed/<t>' not found` (patch/delete name the id), `getCode()` 404, reason `Not Found`, `getDetail()` null; not HTML-escaped |
+
+The next-gen journey (AM) `openidm` binding was not probed for an unavailable
+type.
+
+**What rhino-local does with this.** Both lanes judge a default with one
+function (`packages/rhino-local/src/declared-default.ts`): a default is invalid
+exactly when it fails `VALID_TYPE` for the declared type, `null` always passes,
+and so every numeric default on `integer` is invalid. A default it calls
+invalid, or one no probe covered (a type list other than one concrete type plus `"null"` (two concrete types, a singleton such as `["string"]`, a repeated `"null"`), or a
+default nested under `items` or `properties`, for example), means the tenant is serving an earlier config the local one does not
+describe, so neither lane answers **any** managed call. The IDM emulator refuses
+the whole config before every request. The AM lane faults every `openidm` call
+on a `managed/…` resource. Both use one stable id naming the first offending
+property, `openidm-managed-invalid-default/<type>.<property>` (or
+`…-unmeasured-default/…`). Neither emulates the 404 surface above: answering
+404 for the bad type would imply its siblings are live as written, which is
+false.
 
 `default` and `required` answer different questions and neither blocks the
 other:
@@ -361,21 +522,122 @@ other:
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **Create** omitting a property that has a `default`            | 201, and the record comes back holding the default — `false`/`true`/`0` alike |
 | **Create** omitting a `required` property that has a `default` | 201 — the default is applied _before_ policy runs, so `REQUIRED` is satisfied |
-| **Create** sending an explicit `null`                          | **403 `NOT_NULL`** (+ `VALID_TYPE` when the property is also `required`)      |
-| Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — the null guard is independent of `required`        |
+| **Create** sending an explicit `null` on a property with a non-null `default` | **403 `NOT_NULL`** (+ a separate `VALID_TYPE` entry when the property is also `required`, or the schema has no `required` key — 2026-11-08) |
+| **Create** from a next-gen journey script's `openidm.create` with the property `undefined` | **403 `NOT_NULL`**, exactly as `null` — the key is sent as `null`, not dropped, so the default does not land (2026-11-04, below) |
+| Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — for a defaulted property the null guard is independent of `required` |
+| **Create** omitting a property declaring `default: null` (`required: []`) | 201, stored and read back as `null` (2026-11-08) |
+| **Create** sending `null` on a property declaring `default: null` (`required: []`) | **201**, no `NOT_NULL` (2026-11-08), on every type tried |
+| **Create** omitting, or sending `null` on, an **array** declaring `default: null` (`required: []`) | 201, stored and read back as **`[]`** (2026-11-08, zzemu_nd) |
+| **Create** sending `null` on a **string** declaring `default: null`, the schema has **no `required` key** | **403 `VALID_TYPE`** `{invalidType: "null", validTypes: ["string"]}`; omitting it still stores `null` (2026-11-08, zzemu_nd) |
+| **Create** sending any number (`3`, `3.5`) to an `integer` property | **403 `VALID_TYPE`** `{invalidType: "number", validTypes: ["integer"]}` (2026-11-08, zzemu_nd) |
+| **Create** sending `null` on an **undefaulted** property, `schema.required` present and not naming it (`[]` or a list of others) | **201**, stored and read back as JSON `null` (2026-11-08) |
+| Same, the schema has **no `required` key**                     | **403 `VALID_TYPE`**, `{invalidType: "null", validTypes: [<type>]}` (2026-11-08) |
+| **Create** sending `null` on an undefaulted property that `required` names | **403 `VALID_TYPE`**, not `REQUIRED`: a null counts as present (2026-11-08) |
+| `PATCH remove` an undefaulted property that `required` does not name | **200**, the key absent on read-back, with `required: []` and with no key (2026-11-08) |
 | **Update** (`PUT` whole record) omitting the property          | **200, and the stored value is dropped** — `required` does not catch this     |
-| `PATCH remove` the property                                    | 403 `REQUIRED`                                                                |
+| `PATCH remove` the property (still named in `schema.required`) | 403 `REQUIRED`                                                                |
 | `PATCH replace` it with `null`                                 | 400 — rejected as an invalid JSON patch, before policy                        |
+
+**Explicit `null`, nested types and optional removes (verified 2026-11-08).**
+The 2026-08-05 `null` rows were all measured on properties with a `default`. A
+probe on 2026-11-08 (orchestrator probe note `probe-pol/note.md`, REST and IDM
+script lanes; read by the rhino-local writer, not re-run) measured the
+undefaulted case on three throwaway types sharing `text: {type: "string"}`,
+`box: {type: "object", properties: {tags: {type: "array", items: {type: "string"}}}}`,
+`rows: {type: "array", items: {type: "object", properties: {inner: {type: "number"}}}}`
+and a readiness sentinel `zready: {type: "boolean", default: true}`, differing
+only in `required`: `[]`, absent, and `["rows"]`. Policy was live before any
+answer counted: a default had landed, and the top-level negative controls were
+refused. Most rows ran in both lanes (the `["rows"]` type and the `box`/`rows`
+negative controls were REST only; the note lists each), and the lanes agreed
+wherever both ran.
+
+- **Only the top-level property's `type` is checked.** `{text: 5}`,
+  `{box: "s"}` and `{rows: "s"}` are 403 `VALID_TYPE` with
+  `{invalidType: <sent>, validTypes: [<declared>]}`. Schemas under `properties`
+  and `items` are stored and **not enforced**: `{box: {tags: [2]}}` and
+  `{rows: [{inner: "bad"}]}` are 201 and read back verbatim. A top-level array
+  whose own items mismatch `items.type` (`{tags: [2]}` with `tags` a top-level
+  `string[]`) was **not** tested.
+- **A `null` passes the type check only when `schema.required` exists and does
+  not name the property.** With `required: []`, or `["rows"]` for `text`,
+  `{text: null}` is 201 and reads back `"text": null`. With no `required` key
+  the same body is 403 `VALID_TYPE`, `invalidType "null"`. `{rows: null}` with
+  `rows` required is `VALID_TYPE`, not `REQUIRED`; omitting `rows` is
+  `REQUIRED`. So an absent `required` key is not "everything required" — an
+  omitted property is still accepted — it only changes whether `null` passes.
+  A tool that normalises a missing `required` key to `[]` accepts nulls the
+  tenant refuses.
+- **`NOT_NULL` was seen only on a defaulted property.** `{zready: null}` is
+  `NOT_NULL` alone with `required: []`, and `NOT_NULL` then a separate
+  `VALID_TYPE` (`invalidType "null"`, `validTypes ["boolean"]`) entry with no
+  `required` key. A default-less string never gets `NOT_NULL`. This probe did
+  not separate the `default` from the boolean type; the zzemu_def probe later
+  the same day did: an object with a non-null default gets `NOT_NULL`, a string
+  with `default: null` does not ("Default validation" above).
+- **`PATCH remove` of an undefaulted property `required` does not name** is 200
+  under both `required` shapes, and the key is then absent, not `null`.
+- **Read-back shows only what was stored.** On these custom types a record's
+  read with `_fields=*` and its create response carried only the properties
+  written or defaulted: no `null` for an unset string, no `[]` for an unset
+  array. That differs from `alpha_user`'s materialized read (below).
+- **Surfaces.** REST: the 403 body
+  `{code: 403, reason: "Forbidden", message: "Policy validation failed", detail: {result: false, failedPolicyRequirements: [...]}}`,
+  one entry per failing requirement, each `{policyRequirements: [{params?, policyRequirement}], property}`.
+  IDM script (`openidm.create`): a catchable `JavaException`; `e.message` is
+  `org.forgerock.json.resource.ForbiddenException: Policy validation failed`,
+  `e.javaException.getCode()` is 403, and `getDetail()` holds the same
+  `failedPolicyRequirements`. `e.javaException.getClass().getName()` is
+  `org.forgerock.json.resource.ForbiddenException`, and
+  `String(e.javaException.getDetail())` is CREST's **one-line** JsonValue
+  form, `{ "result": false, "failedPolicyRequirements": [ { "policyRequirements": [ { "policyRequirement": "NOT_NULL" } ], "property": "zready" } ] }`
+  (probe-pol and probe-def, 2026-11-08). The rhino-local IDM emulator
+  reproduces three of those reads — `getCode()`, `getReason()` and
+  `String(getDetail())` — and faults every other member of `e.javaException`
+  as `idm-exception/unmeasured`, because its exception is not a CREST class
+  and would otherwise answer for the wrong one. That includes **reading
+  `getClass`**, although `getClass().getName()` is measured: a stand-in for
+  the Java method and class could not be made indistinguishable from Rhino's
+  native ones (function names, source text, arity and receiver checks,
+  identity, the Java string returned, engine diagnostics; three review rounds,
+  sol-e15ab r4–r6). Match on `e.message`, which names the class. Membership
+  follows the same gate: `name in e.javaException` is `true` for those members
+  and for `getClass`, and faults for any other name; `Object.keys`, `for…in` and `JSON.stringify` fault, since no
+  probe listed AIC's members. `Object.getOwnPropertyNames` is Rhino's
+  `TypeError` for any Java object, before the object is asked (assumed the same
+  on AIC's Rhino; not probed).
+
+Not measured: `PATCH replace` with `null` beyond the existing 400 rows, a
+`PATCH` operation with no `value` key (rhino-local treats it as `value: null`
+in both lanes, an inference), a hook, `enum`, `policies` or `required`
+declared under `properties` or `items` (rhino-local faults such a write in
+both lanes rather than guess), a whole-record `PUT` with `null`, the next-gen
+journey `openidm` lane for these cases, and a default-less boolean sent `null`. Open remainder: Q18 in
+`99-quirks-and-open-questions.md`.
 
 Three consequences worth carrying:
 
 - **Removing `required` will not make a `default` "start working"** — the
-  default already applies on create, and dropping `required` only loses the
-  `PATCH remove` guard. It does not make an explicit `null` acceptable.
+  default already applies on create. It does not make an explicit `null`
+  acceptable. Whether it also loses the `PATCH remove` guard is **unmeasured**
+  (inference, 2026-11-08): the 403 `REQUIRED` above was taken with the property
+  still in `schema.required`, and stock `policy.js` adds an implicit `required`
+  for any `default`, `null` included, which predicts the remove is still
+  refused. See Q18 in `99-quirks-and-open-questions.md`.
 - **`null` is never a substitute for "unset".** A caller that sends `null` for
   an untouched field gets a 403 that reads like "you must supply a value", when
   the fix is to _omit_ the key and let the default land. Strip null-valued keys
   from create bodies rather than adding `default`s to satisfy them.
+- **`undefined` from a journey script is `null`, not "omitted".** Measured
+  2026-11-04 with `scripts/experiment-journey-defaults-case.sh` on `bravo_user.frIndexedInteger1`
+  (`default: 0`; `alpha_user` has **no** property with a `default` in the live
+  schema, and no schema was written). One next-gen decision node called
+  `openidm.create` four times: key omitted → created, stored `0` (control: the
+  default applies); `null` → refused, `detail` naming `NOT_NULL` on the
+  property (control); `undefined` → **refused identically**; `7` → stored `7`
+  (positive control). IDM REST repeated the omitted (201, `0`) and `null` (403
+  `NOT_NULL`) controls. So a script building `{x: maybeValue}` defeats the
+  default; delete the key instead. Run twice, same result.
 - **Defaults apply on create only, and whole-record `PUT` silently drops absent
   properties.** So a read-modify-write that loses a key doesn't re-default it
   and isn't refused either — it just erases the value. Adding a `required`
@@ -1978,12 +2240,124 @@ Three ways a filter silently matches nothing, all HTTP 200:
   `resultCount: 0`.
 - **A number matches quoted or unquoted.** `frIndexedInteger1 eq 7` and
   `frIndexedInteger1 eq "7"` both matched the same integer-valued field, so
-  quoting cannot be used to distinguish a string from a number.
+  quoting cannot be used to distinguish a string from a number. That holds
+  for a DS integer attribute only: on a generic (JSON-stored) type a quoted
+  literal never matches a number (below, 2026-11-06).
+
+**`eq` on `mail` and `userName` is case-insensitive** (verified 2026-11-04,
+`scripts/experiment-journey-defaults-case.sh`, run twice). One `alpha_user` stored with an all-lower-case
+`userName` and `mail`; `mail eq "<alternating-case copy>"` and
+`userName eq "<alternating-case copy>"` each returned the record
+(`resultCount: 1`), as the exact-case controls did — over IDM REST and through
+`openidm.query` from a next-gen journey script alike. Identify Existing User
+matches the same way (`docs/api/25-journey-runtime.md`).
+
+The rest of the comparison is case- and edge-space-insensitive too (verified
+2026-11-04, `scripts/experiment-journey-escaping-query.sh`, run twice). One
+`alpha_user` stored with lower-case `userName` `<p>-alice` and `mail`
+`<p>@example.com`, each filter returning 0 or 1 row:
+
+| Filter | IDM REST | `openidm.query` (journey) | Control |
+| --- | --- | --- | --- |
+| `mail eq " <mail>"`, `mail eq "<mail> "` (leading / trailing space) | **1** | **1** | exact value: 1 |
+| `mail eq "<local>@ example.com"` (space after `@`) | 0 | 0 | exact value: 1 |
+| `userName eq " <name>"`, `"<name> "` | **1** | **1** | exact value: 1 |
+| `userName eq "zze mu…"` (interior space) | 0 | 0 | exact value: 1 |
+| `userName gt "<p>-Alice"` | **0** (code-point order would match) | 0 | `gt "<p>-alice"`: 0 |
+| `userName ge "<p>-ALICE"` | **1** (code-point order would not) | 1 | `ge "<p>-alice"`: 1 |
+| `userName lt "<p>-B"` | **1** (code-point order would not) | 1 | `lt "<p>-b"`: 1 |
+| `userName gt "<p>-alicd"` (same case) | 1 | 1 | — |
+| `givenName`, `sn`, `description`, `frIndexedString1`, `frUnindexedString1` `eq` the case-swapped value | **1** each (REST) | not run | exact value: 1 each |
+
+Each `gt`/`ge`/`lt` filter was run ANDed with `_id eq "<uuid>"` and,
+separately, with `userName sw "<p>"`; both agreed. Identify Existing User
+seeded with `objectAttributes.mail` behaved as `eq`: leading and trailing space
+→ `true` (the user found), space after `@` → `false`.
+
+So on `alpha_user` string properties — indexed, unindexed and `description`
+alike — `eq` and the ordering operators compare **case-folded with leading and
+trailing spaces ignored**; an inserted interior space is significant. That is
+the shape of LDAP `caseIgnoreMatch` / `caseIgnoreOrderingMatch` on the DS
+repository. Not probed: whether a run of interior spaces collapses to one (as
+that matching rule would), non-ASCII case folding, `sw`/`co` with edge spaces,
+and other managed objects.
 
 `true`, `false` and `3.5` all parse as literals. **`eq null` is a 400** —
 there is no null literal; ask for absence with `!(field pr)`. A malformed
 filter is 400 `A value could not be parsed as a valid query filter`, as is the
 word form `not (…)` (see the 2026-07-03 notes above).
+
+**DS matching rules on `alpha_user`, and JSON storage** (verified
+2026-11-06, E19 live probe). Three throwaway `alpha_user` records (a, b, c)
+and three records on an existing empty generic type, created and deleted the
+same day. Every filter ran ANDed with a prefix on the probe's own records, over
+IDM REST and from an IDM script (`openidm.query` via `script?_action=eval`);
+**the two agreed on every case**, and where REST answered 400 the script got a
+catchable `JavaException: org.forgerock.json.resource.BadRequestException`
+with the same message. A second probe the same day (below) ran the open
+cases again through REST, the IDM script and AM's next-gen `openidm.query`.
+
+`telephoneNumber` (a stores `+614-9999-9999`; the sandbox's phone policy
+needs a mobile shape) is DS `telephoneNumberMatch` — **spaces, hyphens and
+`+` are ignored anywhere, in the value and the literal**, for `eq`, `sw` and
+`co` (`+` settled by the second probe; b stores `+614-1111-1111`):
+
+| Filter | Rows |
+| --- | --- |
+| `eq "+614-9999-9999"` / `eq "+614-9999-9998"` (controls) | a / — |
+| `eq "+614 9999 9999"`, `eq "+61499999999"`, `eq "+61 4 9999 9999"`, `eq "+6 1-4 99 99-9999"` | a |
+| `sw "+6149"`, `co "99 99"` | a |
+| `eq "61499999999"`, `eq "614-9999-9999"`, `eq "6+1499999999"`, `co "+9999"`, `co "9999"` (second probe) | a |
+| `sw "614"`, `sw "+614"` (second probe) | a, b |
+| `eq "61499999998"`, `eq "+61499999998"` (second probe, negative controls) | — |
+
+Other separators (`(`, `)`, `.`) and ordering were not probed.
+
+**AM's next-gen `openidm.query` returns the same rows** (second probe,
+2026-11-06). The same three records, the same filters, from a throwaway
+next-gen scripted decision node: every phone row above, `frIndexedDate1`
+`gt`/`lt` `"2026-01-01T00:00:00Z"` and `eq "2025-12-31T23:00:00Z"`,
+`frIndexedInteger1` `eq 7`, `eq "7"` and `eq 7.0`, and `pr` / `!(… pr)` on
+`frIndexedMultivalued1` gave exactly the REST and IDM-script rows. `eq 7.5`
+and `eq "notadate"` threw; that surface differs from IDM's and is in
+`docs/api/12` (`openidm`).
+
+`frIndexedDate1` and `frUnindexedDate1` (a stores
+`2026-01-01T10:00:00+11:00`, an earlier instant than `2026-01-01T00:00:00Z`
+that sorts later as text; b `2026-01-02T00:00:00Z`) **compare as instants**:
+`gt "2026-01-01T00:00:00Z"` → b, `lt` → a, `eq "2025-12-31T23:00:00Z"` → a,
+and an offset literal orders the same way. **`eq "notadate"` is a 400**:
+`The request cannot be processed because it contained an illegal filter
+assertion value 'notadate' for field '/frIndexedDate1'` (quotes HTML-escaped
+over REST). Not probed: `ge`/`le`, fractional seconds, date-only and
+GeneralizedTime-form literals, the other date attributes.
+
+`frIndexedInteger1` (a `7`, b `8`) **converts the literal to an integer
+whatever its JSON type**: `eq 7`, `eq "7"`, `eq 7.0`, `eq 7.00` and
+`eq "7.0"` → a; `ge 7.0` → a, b. **`eq 7.5`, `lt 7.5`, `gt 6.5`, `eq "7.5"`
+and `eq "abc"` are each a 400** `illegal filter assertion value '<v>'`, not
+an empty result. The other integer attributes were not probed.
+
+**An explicitly written `[]` is not present.** a wrote `[]` to
+`frIndexedMultivalued1` and `frUnindexedMultivalued1` and PATCHed `roles` to
+`[]`; b holds `["x"]` and one role; c never wrote them. `pr` → b and
+`!(… pr)` → a, c on all three: a behaves like c.
+
+**On a generic type a quoted literal never matches a number.** A
+`type: number` property on a type under the `managed/*` generic mapping, with
+records holding `7`, `8` and `7.5`:
+
+| Filter | Rows |
+| --- | --- |
+| `count eq 7` (control), `count eq 7.0` | the `7` record |
+| `count eq 7.5` | the `7.5` record — a fraction is an ordinary value |
+| `count gt 6.5` | all three |
+| `count eq "7"`, `eq "7.0"`, `eq "7.5"`, `gt "6"`, `lt "10"` | **none**, 200 |
+
+So JSON storage compares numbers by value and never coerces a quoted literal
+— the **opposite** of `frIndexedInteger1`. A rule for "a number field"
+must be per storage kind. `custom_*` properties on `alpha_user` (a JSON
+attribute on a DS-mapped type) were not probed: the sandbox declares none.
 
 **`mail`, `givenName` and `sn` are required by policy on `alpha_user`.** A
 create missing any of them is refused `403 Policy validation failed` — and the
@@ -2235,6 +2609,90 @@ on create, or when actually rotating it.
   then removed from `config/repo.ds` by a backed-up whole-document `PUT`
   confirmed by re-read (`object delete` leaves them, as recorded in
   `99-quirks-and-open-questions.md`).
+
+- Date: 2026-11-08 — `default: null` on non-string types and `integer`
+  defaults (orchestrator probe note `probe-nd/note.md` with its driver,
+  scripts and redacted log; sandbox tenant, REST and IDM-script lanes; run by
+  someone else and read by the rhino-local writer, not re-run). Fourteen
+  throwaway types `zzemu_nd*`, each added alone by one confirmed
+  `PUT /openidm/config/managed` with the `zready` readiness sentinel and
+  `required: []` unless stated, polled up to 150 s. Calls:
+  `POST /openidm/managed/<t>?_action=create`, `GET …/<id>?_fields=*`, and
+  `POST /openidm/script?_action=eval` running `openidm.create/read`; REST and
+  IDM agreed on every row. Results: `default: null` valid on boolean, number,
+  integer, object, array and string (no `required` key too), each live at 0 s;
+  explicit `null` 201 with no `NOT_NULL` on all of them; an array's null
+  default and an explicit null both stored `[]`; `{i: 3}` and `{i: 3.5}` on an
+  `integer` 403 `VALID_TYPE invalidType: "number"`; `integer` defaults `3` and
+  `3.5` each left the type 404 for 150 s (unfrozen by removal, proved by a
+  fresh control), while `number` defaults `3` and `3.5` applied; a string
+  `default: null` with no `required` key refused an explicit `null` with 403
+  `VALID_TYPE` and accepted it with `required: []`. Records (75) deleted, each
+  confirmed by a 404; the config restored and compared equal to the backup,
+  ignoring `_rev`, on 8/8 re-reads.
+- Date: 2026-11-08 — edge and invalid `default` declarations (orchestrator
+  probe note `probe-def/note.md` with its driver, scripts and redacted log;
+  sandbox tenant, REST and IDM-script lanes; run by someone else and read by
+  the rhino-local writer, not re-run). Ten throwaway types `zzemu_def*`, each
+  added by one confirmed `PUT /openidm/config/managed` (every `PUT` 200), each
+  carrying a readiness sentinel `zready: {type: "boolean", default: true}` and
+  `required: []`; poll up to 150 s for the sentinel to land. Calls:
+  `POST /openidm/managed/<t>?_action=create`, `GET`/`PUT`/`PATCH`/`DELETE
+  …/<id>`, `GET …?_queryFilter=true`, and `POST /openidm/script?_action=eval`
+  running `openidm.create/read/query/patch/delete`. Results: `default: null`
+  valid on `string` and `["string","null"]` (`create {}` stores `null`; explicit
+  `null` 201, no `NOT_NULL`); an object default with a nested mismatch valid and
+  stored verbatim, with `NOT_NULL` on `null`; boolean `"nope"` and array
+  `["a", 2]` against `items: string` invalid, each leaving the type 404 **and**
+  every later type 404 until it was removed, a type removed meanwhile still
+  serving, and the whole document applying at once on removal; the unavailable
+  type's REST and IDM-script shapes identical to an undeclared name's. Records
+  (48) deleted, each confirmed by a 404; the config restored and compared
+  equal to the backup, ignoring `_rev`, on 8/8 re-reads.
+- Date: 2026-11-08 — explicit `null`, nested types and optional remove
+  (orchestrator probe note `probe-pol/note.md` with its driver, scripts and
+  redacted log; sandbox tenant, REST and IDM-script lanes; read by the
+  rhino-local writer, not re-run): three throwaway types `zzemu_pol`
+  (`required: []`), `zzemu_pol2` (no `required`) and `zzemu_pol3`
+  (`required: ["rows"]`, REST only), appended by one confirmed
+  `PUT /openidm/config/managed` each and restored to the byte-equal backup
+  afterwards. Calls: `POST /openidm/managed/<t>?_action=create`,
+  `PATCH /openidm/managed/<t>/<id>`, `GET …/<id>?_fields=*`, and
+  `POST /openidm/script?_action=eval` running `openidm.create/patch/read`.
+  Results: top-level mismatches 403 `VALID_TYPE`; nested `properties`/`items`
+  mismatches 201 stored verbatim; `{text: null}` 201 stored `null` with a
+  `required` array not naming it, 403 `VALID_TYPE` with no `required` key;
+  `{rows: null}` with `rows` required 403 `VALID_TYPE`; defaulted boolean null
+  `NOT_NULL` (+ `VALID_TYPE` with no key); `PATCH remove` of an optional
+  undefaulted property 200, key absent. Q1–Q4 on `zzemu_pol` repeated two
+  minutes later with identical results. All 24 records deleted, each confirmed
+  by a 404.
+- Date: 2026-11-06 — E19 second live probe (orchestrator probe note 2 and
+  its captures `compare.out`, `am-errshape.out`; read by the fix-round writer,
+  not re-run): three throwaway `alpha_user` records (`zzemu-e19b-` prefix),
+  every filter in three lanes — `GET /openidm/managed/alpha_user?_queryFilter=…`,
+  `POST /openidm/script?_action=eval` (`openidm.query`), and a throwaway
+  next-gen scripted decision node (`openidm.query`) — rows identical on all
+  22 row-returning filters: `telephoneNumber` `eq "61499999999"`,
+  `eq "614-9999-9999"`, `eq "6+1499999999"`, `sw "614"`, `co "+9999"` (match:
+  `+` ignored), `eq "61499999998"`, `eq "+61499999998"` (no match);
+  `frIndexedDate1` `gt`/`lt`/`eq`; `frIndexedInteger1` `eq 7`/`"7"`/`7.0`;
+  `frIndexedMultivalued1` `pr`/`!pr`. `eq 7.5` and `eq "notadate"` threw in
+  both script lanes (surfaces in `docs/api/12`). Records, script, node and
+  journey deleted, each confirmed by a 404 read.
+- Date: 2026-11-06 — E19 live probe (orchestrator probe note, §3–§4;
+  throwaway records, every delete confirmed by a 404 read):
+  `POST /openidm/managed/alpha_user?_action=create` ×3 (a, b, c);
+  `GET /openidm/managed/alpha_user?_queryFilter=…` and the same filters
+  through `POST /openidm/script?_action=eval` (`openidm.query`), three runs,
+  identical: `telephoneNumber` `eq`/`sw`/`co` with spaces and hyphens (match),
+  `frIndexedDate1` / `frUnindexedDate1` `gt`/`lt`/`eq` across offsets
+  (instant order), `eq "notadate"` (400), `frIndexedInteger1` with `7`,
+  `"7"`, `7.0`, `7.00`, `"7.0"`, `ge 7.0` (match) and `eq 7.5`, `lt 7.5`,
+  `gt 6.5`, `eq "7.5"`, `eq "abc"` (400), `pr` and `!(… pr)` on `frIndexedMultivalued1`,
+  `frUnindexedMultivalued1` and `roles` written as `[]` (absent);
+  `POST /openidm/managed/<generic type>?_action=create` ×3 and `count` with
+  `7`, `"7"`, `7.0`, `"7.0"`, `7.5`, `"7.5"`, `gt 6.5`, `gt "6"`, `lt "10"`.
 
 - Date: 2026-11-05 — concurrent `PATCH` and managed hooks, sandbox, throwaway
   `alpha_poc_agg` / `alpha_poc_child` / `alpha_poc_sink`. Parent and sink

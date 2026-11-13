@@ -1,4 +1,6 @@
 export { defineSuite, Lease, managed, RunBuilder } from "./lease.ts";
+export { layerChannels, withSuiteDefaults } from "./defaults.ts";
+export type { SuiteDefaults } from "./defaults.ts";
 export type {
   LeaseOptions,
   LeaseLane,
@@ -15,8 +17,8 @@ export type {
 } from "./lease.ts";
 export { carryGiven, submittedCallbacks } from "./step.ts";
 export type { CallbackReply, StepContext, StepExpect, StepSpec } from "./step.ts";
-export { aicWhenEnabled, AIC_LANE_ENV, useLease } from "./vitest.ts";
-export type { UseLeaseAicOptions, UseLeaseOptions } from "./vitest.ts";
+export { aicWhenEnabled, AIC_LANE_ENV, expectEmulationFailure, expectHarnessFault, useEmulationGuard, useLease } from "./vitest.ts";
+export type { EmulationGuardSource, UseLeaseAicOptions, UseLeaseOptions } from "./vitest.ts";
 export { localIdmHandle, ledgerToManaged, splitResource } from "./idm.ts";
 export { describeResidue, findResidue } from "./residue.ts";
 export type { ResidueEntry } from "./residue.ts";
@@ -32,3 +34,4 @@ export {
   toGiven,
 } from "./spec.ts";
 export type * from "./types.ts";
+export type { EmulationFailureSource, RecordedEmulationFailure } from "../emulation.ts";

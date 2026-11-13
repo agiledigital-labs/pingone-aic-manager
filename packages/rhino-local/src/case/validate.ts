@@ -19,6 +19,13 @@ import type {
   CallbackExpect,
   Case,
   CaseInit,
+  AccessTokenCaseInit,
+  OidcClaimsCaseInit,
+  SocialIdpCaseInit,
+  ConfigProviderCaseInit,
+  ValidateScopeCaseInit,
+  MayActCaseInit,
+  LibraryCaseInit,
   Engine,
   Expect,
   ExpectedObject,
@@ -39,9 +46,31 @@ import type {
   OpenidmFailureStub,
   OpenidmMethod,
   Pattern,
+  ScriptContext,
   StateDiff,
 } from "./types.ts";
-import { assertDenseArray, isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
+import {
+  CONTEXTS,
+  checkContextKeys,
+  parseAccessTokenExpect,
+  parseAccessTokenSeed,
+  parseMayActAccessTokenSeed,
+  parseClientSeed,
+  parseContext,
+  parseIdentitySeed,
+  parseOidcClaimsExpect,
+  parseOidcClaimsSeed,
+  parseSocialIdpExpect,
+  parseConfigProviderExpect,
+  parseValidateScopeExpect,
+  parseValidateScopeSeed,
+  parseMayActExpect,
+  parseLibraryExpect,
+  parseLibrarySeed,
+  parseSocialIdpSeed,
+  parseTokenRequestSeed,
+} from "./context.ts";
+import { assertDenseArray, defineOwn, isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
 
 const GIVEN_BINDING_SEED_SET: ReadonlySet<string> = new Set(GIVEN_BINDING_SEEDS);
 const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
@@ -63,7 +92,17 @@ function knownBindingNames(): ReadonlySet<string> {
 }
 
 /** Typed entry point for case authors. */
-export function defineCase(input: CaseInit): Case {
+export function defineCase(
+  input:
+    | CaseInit
+    | AccessTokenCaseInit
+    | OidcClaimsCaseInit
+    | SocialIdpCaseInit
+    | ConfigProviderCaseInit
+    | ValidateScopeCaseInit
+    | MayActCaseInit
+    | LibraryCaseInit
+): Case {
   return validateCase(input);
 }
 
@@ -76,16 +115,38 @@ export function validateCase(input: unknown): Case {
     throw new Error("rhino-local: case is not an object");
   }
   rejectUnknownKeys("case", input, CASE_KEYS);
+  // First, so a legacy case is refused for the removal and not for whichever
+  // legacy-shaped key happens to be checked next.
+  if (isPlainObject(input.given) && input.given.engine === "legacy") {
+    throw new Error(`rhino-local: case.given.engine "legacy": ${LEGACY_ENGINE_REMOVED}`);
+  }
   const name = parseNonEmptyString(input.name, "case.name");
   const script = parseNonEmptyString(input.script, "case.script");
+  const context = parseContext(input.context, "case.context");
+  const declaration = CONTEXTS[context];
+  if (isPlainObject(input.given)) {
+    checkContextKeys(context, "given", Object.keys(input.given), "case.given");
+  }
   const given =
-    input.given === undefined ? {} : parseGiven(input.given, "case.given");
+    input.given === undefined ? {} : parseGiven(input.given, "case.given", context);
   if (!("expect" in input)) {
     throw new Error("rhino-local: case.expect is required");
   }
-  const expect = parseExpect(input.expect, "case.expect");
+  if (isPlainObject(input.expect)) {
+    checkContextKeys(context, "expect", Object.keys(input.expect), "case.expect");
+    if (isPlainObject(input.expect.allowUndeclared)) {
+      checkContextKeys(context, "allowUndeclared", Object.keys(input.expect.allowUndeclared), "case.expect.allowUndeclared");
+    }
+  }
+  const expect = parseExpect(input.expect, "case.expect", declaration.hasOutcome);
   const kase: Case = { name, script, given, expect };
+  if (input.context !== undefined) {
+    kase.context = context;
+  }
   if (input.outcomes !== undefined) {
+    if (!declaration.hasOutcome) {
+      throw new Error(`rhino-local: case.outcomes is not accepted in context ${context}; it decides no outcome`);
+    }
     kase.outcomes = parseOutcomes(input.outcomes, "case.outcomes", expect.outcome);
   }
   return kase;
@@ -130,7 +191,7 @@ function parseOutcomes(
   return raw.slice() as readonly string[];
 }
 
-function parseGiven(raw: unknown, path: string): Given {
+function parseGiven(raw: unknown, path: string, context: ScriptContext): Given {
   if (!isPlainObject(raw)) {
     throw new Error(`rhino-local: ${path} is not an object`);
   }
@@ -243,23 +304,72 @@ function parseGiven(raw: unknown, path: string): Given {
   if (raw.engine !== undefined) {
     given.engine = parseEngine(raw.engine, `${path}.engine`);
   }
-  if (given.engine === "legacy" && given.libraries !== undefined) {
-    throw new Error(`rhino-local: ${path}.libraries requires the next-gen engine; legacy has no require()`);
-  }
   if (raw.bindings !== undefined) {
     given.bindings = parseBindings(raw.bindings, `${path}.bindings`);
+  }
+  if (raw.accessToken !== undefined) {
+    given.accessToken = context === "OAUTH2_MAY_ACT"
+      ? parseMayActAccessTokenSeed(raw.accessToken, `${path}.accessToken`)
+      : parseAccessTokenSeed(raw.accessToken, `${path}.accessToken`);
+  }
+  if (raw.identity !== undefined) {
+    given.identity = parseIdentitySeed(raw.identity, `${path}.identity`);
+  }
+  if (raw.client !== undefined) {
+    given.client = parseClientSeed(raw.client, `${path}.client`);
+  }
+  if (raw.scopes !== undefined) {
+    if (!Array.isArray(raw.scopes) || raw.scopes.some((item) => typeof item !== "string")) {
+      throw new Error(`rhino-local: ${path}.scopes must be an array of strings`);
+    }
+    assertDenseArray(raw.scopes, `${path}.scopes`);
+    given.scopes = raw.scopes.slice() as string[];
+  }
+  if (raw.request !== undefined) {
+    given.request = parseTokenRequestSeed(raw.request, `${path}.request`);
+  }
+  if (context === "OAUTH2_MAY_ACT") {
+    const grant = given.request?.params?.grant_type;
+    if (grant !== undefined && (grant.length !== 1 || grant[0] !== "client_credentials")) {
+      throw new Error(
+        `rhino-local: ${path}.request.params.grant_type must be ["client_credentials"] until another grant is measured`
+      );
+    }
+  }
+  if (raw.oidc !== undefined) {
+    given.oidc = parseOidcClaimsSeed(raw.oidc, `${path}.oidc`);
+  }
+  if (raw.socialIdp !== undefined) {
+    given.socialIdp = parseSocialIdpSeed(raw.socialIdp, `${path}.socialIdp`);
+  }
+  if (raw.validateScope !== undefined) {
+    given.validateScope = parseValidateScopeSeed(raw.validateScope, `${path}.validateScope`);
+  }
+  if (raw.library !== undefined) {
+    given.library = parseLibrarySeed(raw.library, `${path}.library`);
+  }
+  if (context === "LIBRARY" && given.library === undefined) {
+    throw new Error(`rhino-local: ${path}.library is required in context LIBRARY`);
   }
   return normaliseIdentitySeeds(given);
 }
 
-function parseExpect(raw: unknown, path: string): Expect {
+function parseExpect(raw: unknown, path: string, hasOutcome = true): Expect {
   if (!isPlainObject(raw)) {
     throw new Error(`rhino-local: ${path} is not an object`);
   }
   rejectUnknownKeys(path, raw, EXPECT_KEYS);
+  if (!hasOutcome) {
+    // A context with no outcome is judged as "no outcome reached", which the
+    // script cannot change: the outcome bindings are not installed there.
+    if (raw.outcome !== undefined && raw.outcome !== null) {
+      throw new Error(`rhino-local: ${path}.outcome is not accepted in this script context; it decides no outcome`);
+    }
+    return parseExpectBody(raw, path, { outcome: null });
+  }
   if (!("outcome" in raw)) {
     throw new Error(
-      `rhino-local: ${path}.outcome is required (engine-neutral; use "true" whether the script returns via action.goTo or a legacy outcome variable)`
+      `rhino-local: ${path}.outcome is required (use "true" when the script returns via action.goTo)`
     );
   }
   if (raw.outcome !== null && typeof raw.outcome !== "string") {
@@ -267,7 +377,10 @@ function parseExpect(raw: unknown, path: string): Expect {
       `rhino-local: ${path}.outcome must be a string, or null for a pass that suspends with callbacks`
     );
   }
-  const expect: Expect = { outcome: raw.outcome };
+  return parseExpectBody(raw, path, { outcome: raw.outcome });
+}
+
+function parseExpectBody(raw: Record<string, unknown>, path: string, expect: Expect): Expect {
   if (raw.sharedState !== undefined) {
     expect.sharedState = parseStateDiff(raw.sharedState, `${path}.sharedState`);
   }
@@ -307,6 +420,30 @@ function parseExpect(raw: unknown, path: string): Expect {
       raw.allowUndeclared,
       `${path}.allowUndeclared`
     );
+  }
+  if (raw.accessToken !== undefined) {
+    expect.accessToken = parseAccessTokenExpect(raw.accessToken, `${path}.accessToken`, {
+      stateDiff: parseStateDiff,
+      expectedValue: parseExpectedValue,
+    });
+  }
+  if (raw.oidc !== undefined) {
+    expect.oidc = parseOidcClaimsExpect(raw.oidc, `${path}.oidc`, parseExpectedValue);
+  }
+  if (raw.socialIdp !== undefined) {
+    expect.socialIdp = parseSocialIdpExpect(raw.socialIdp, `${path}.socialIdp`, parseExpectedValue);
+  }
+  if (raw.configProvider !== undefined) {
+    expect.configProvider = parseConfigProviderExpect(raw.configProvider, `${path}.configProvider`, parseExpectedValue);
+  }
+  if (raw.validateScope !== undefined) {
+    expect.validateScope = parseValidateScopeExpect(raw.validateScope, `${path}.validateScope`);
+  }
+  if (raw.mayAct !== undefined) {
+    expect.mayAct = parseMayActExpect(raw.mayAct, `${path}.mayAct`);
+  }
+  if (raw.returns !== undefined) {
+    expect.returns = parseLibraryExpect(raw.returns, `${path}.returns`);
   }
   return expect;
 }
@@ -399,7 +536,7 @@ function parseCallCounts(raw: unknown, path: string): Record<string, number> {
 function parseOpenidmFailureStub(raw: unknown, path: string): OpenidmFailureStub {
   const stub = parseStub(raw, path);
   rejectUnknownKeys(`${path}.match`, stub.match, ["method", "resource", "ordinal"]);
-  rejectUnknownKeys(`${path}.reply`, stub.reply, ["code"]);
+  rejectUnknownKeys(`${path}.reply`, stub.reply, ["code", "detail", "message"]);
   if (!Number.isInteger(stub.match.ordinal) || (stub.match.ordinal as number) < 1) {
     throw new Error(`rhino-local: ${path}.match.ordinal must be a positive integer`);
   }
@@ -412,7 +549,11 @@ function parseOpenidmFailureStub(raw: unknown, path: string): OpenidmFailureStub
       resource: parseRequiredPattern(stub.match.resource, `${path}.match.resource`),
       ordinal: stub.match.ordinal as number,
     },
-    reply: { code: stub.reply.code as number },
+    reply: {
+      code: stub.reply.code as number,
+      ...(stub.reply.detail === undefined ? {} : { detail: parseJsonValue(stub.reply.detail, `${path}.reply.detail`) }),
+      ...(stub.reply.message === undefined ? {} : { message: parseNonEmptyString(stub.reply.message, `${path}.reply.message`) }),
+    },
   };
 }
 
@@ -577,7 +718,7 @@ function parseExpectedObject(raw: unknown, path: string): ExpectedObject {
   }
   const out: ExpectedObject = {};
   for (const [key, value] of Object.entries(raw)) {
-    out[key] = parseExpectedValue(value, `${path}.${key}`);
+    defineOwn(out, key, parseExpectedValue(value, `${path}.${key}`));
   }
   return out;
 }
@@ -718,7 +859,14 @@ function parseIdentityAttributes(raw: unknown, path: string): Record<string, Ide
   return out;
 }
 
+/** Why a case that names the legacy engine fails. One wording, so every surface says the same. */
+export const LEGACY_ENGINE_REMOVED =
+  'the legacy (V1) script engine is no longer emulated; rhino-local runs next-gen scripts only. Upgrade the script to a next-gen script and drop given.engine, or leave it as "next-gen"';
+
 function parseEngine(raw: unknown, path: string): Engine {
+  if (raw === "legacy") {
+    throw new Error(`rhino-local: ${path} "legacy": ${LEGACY_ENGINE_REMOVED}`);
+  }
   if (typeof raw !== "string" || !ENGINE_SET.has(raw)) {
     throw new Error(
       `rhino-local: ${path} must be ${ENGINES.map((engine) => JSON.stringify(engine)).join(" or ")}`

@@ -8,6 +8,15 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return proto === Object.prototype || proto === null;
 }
 
+/**
+ * Set `key` as an own enumerable data property. Plain assignment runs the legacy `__proto__`
+ * setter for that one name and the key disappears, so code copying names it did not choose (schema
+ * property names, record keys) into an object uses this instead (astra-r1 P2-2).
+ */
+export function defineOwn<T>(object: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(object, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
 export function isStandardSchema(value: unknown): value is StandardSchema {
   if (typeof value !== "object" || value === null || !("~standard" in value)) return false;
   const standard = value["~standard"];
@@ -147,7 +156,9 @@ export function parseJsonValue(raw: unknown, path: string): JsonValue {
   if (isPlainObject(raw)) {
     const object: JsonObject = {};
     for (const [key, value] of Object.entries(raw)) {
-      object[key] = parseJsonValue(value, `${path}.${key}`);
+      // A recorded key `__proto__` is data: assignment would drop it, or with an object value
+      // replace this object's prototype (astra-r1 P2-2).
+      defineOwn(object, key, parseJsonValue(value, `${path}.${key}`));
     }
     return object;
   }

@@ -103,7 +103,8 @@ describe("ensureStateSubdir", () => {
 });
 
 describe("profile store", () => {
-  const profile = { tenant: "sandbox", objects: [] } as unknown as EnvProfile;
+  // `objects` is a map; an array is refused on read since sol-r1 P1-2.
+  const profile = { tenant: "sandbox", objects: {} } as unknown as EnvProfile;
 
   it("writes profiles/<tenant>.json 0600 inside a self-ignoring state directory", () => {
     const root = join(dir, "state");

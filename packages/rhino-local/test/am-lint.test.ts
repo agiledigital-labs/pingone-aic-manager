@@ -36,7 +36,6 @@ describe("AM script lint", () => {
   // the AM rules ban, on purpose — that is what they probe — so each must be
   // rejected (keeping this list honest), and every other one must be clean.
   const deliberatelyBanned = new Set([
-    "legacy-es2015-globals",
     "const-dup-across-blocks",
     "const-in-do-while-body",
     "const-in-for-in",

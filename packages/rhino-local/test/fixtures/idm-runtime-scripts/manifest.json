@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "note": "Invented stand-ins in the E15 provider layout; not fetched from any tenant.",
+  "source": { "tenant": "<your-tenant>.forgeblocks.com", "fetched": "2026-11-06T00:00:00Z", "idmVersion": "invented" },
+  "scripts": {
+    "standin/label.js": { "sha256": "ef810a0c56d3ca93c7675e964e5ca9e863e72d727c1b77cd6af26c7fcb39dd6b", "bytes": 344 },
+    "standin/stamp.js": { "sha256": "061f1d3a02400b7daaa7fad54901e881806a9c2e7bfe48538bbb6247cbc37929", "bytes": 233 }
+  }
+}

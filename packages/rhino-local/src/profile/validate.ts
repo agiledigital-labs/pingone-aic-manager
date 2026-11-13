@@ -62,7 +62,8 @@ export function objectFor(
   resource: string
 ): ObjectSchema | undefined {
   const name = managedObjectName(splitResource(resource).type);
-  return name === undefined ? undefined : profile.objects[name];
+  // Own keys only: `managed/constructor` must not find Object.prototype.constructor (astra-r1 P2-2).
+  return name === undefined || !Object.hasOwn(profile.objects, name) ? undefined : profile.objects[name];
 }
 
 /** Names a type that is not in the profile, listing near misses. */
@@ -128,7 +129,8 @@ export function checkRecord(
     if (CREST_META.has(key)) {
       continue;
     }
-    const property = schema.properties[key];
+    // Own keys only: a record key `toString` or `constructor` is not a declared property (astra-r1 P2-2).
+    const property = Object.hasOwn(schema.properties, key) ? schema.properties[key] : undefined;
     if (property === undefined) {
       throw new SchemaViolation(
         "unknown-property",

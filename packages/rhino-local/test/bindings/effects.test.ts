@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { loadBehaviour, runScript } from "./load-behaviour.ts";
+import { reasons } from "../../src/idm/errors.ts";
+import { loadBehaviour, runScript, runScriptWithFaults, sandboxFaults } from "./load-behaviour.ts";
 
 describe("logger", () => {
   it("formats slf4j {} placeholders, escapes, and surplus args", () => {
@@ -27,7 +28,8 @@ describe("logger", () => {
         "error:a {} b",
         "error:a \\X b",
         "info:plain",
-        "warn:two 1 and true",
+        // A JS number reaches SLF4J as a java.lang.Double: `1.0` (E19 live probe, 2026-11-06).
+        "warn:two 1.0 and true",
         "debug:one alice bound",
       ],
     );
@@ -60,6 +62,47 @@ describe("openidm", () => {
     // AIC's adapter has no `code` property (live-openidm-error-shape.e2e);
     // an injected one must not invent it.
     expect(effects.sharedState.final.codeType).toBe("undefined");
+  });
+
+  // Review pf-02 P3-3: every ResourceExceptionScriptAdapter is e.javaException, answering
+  // getCode()/getReason() (measured on the illegal-assertion 400, docs/api/12). An injected
+  // failure's status is the stub's own code. P3-2: `name` is not an own enumerable key.
+  const injected = (code: number, probe: string) => runScriptWithFaults(
+    `try { openidm.read("managed/alpha_user/alice"); } catch (e) { nodeState.putShared("r", ${probe}); }`,
+    { managed: { "managed/alpha_user": [{ _id: "alice" }] },
+      openidmFailures: [{ match: { method: "read", resource: "managed/alpha_user/alice", ordinal: 1 }, reply: { code } }] });
+  it.each([[404, "Not Found"], [409, "Conflict"], [412, "Precondition Failed"], [503, "Service Unavailable"]])(
+    "an injected %i answers getCode and getReason from its own status", (code, reason) => {
+      const { effects, faults } = injected(code,
+        "JSON.stringify([e.name, e.message, e.javaException.getCode(), e.javaException.getReason(), String(e.javaException), (function () { var k = []; for (var p in e) k.push(p); return k; })(), Object.keys(e.javaException)])");
+      const message = `org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: injected ResourceException code ${code}`;
+      expect(JSON.parse(String(effects.sharedState.final.r))).toEqual(["JavaException", message, code, reason, message, [], []]);
+      expect(faults).toEqual([]);
+    });
+  it("an injected status outside CREST's reason table faults on getReason, not on getCode", () => {
+    const sandbox = loadBehaviour({ managed: { "managed/alpha_user": [{ _id: "alice" }] },
+      openidmFailures: [{ match: { method: "read", resource: "managed/alpha_user/alice", ordinal: 1 }, reply: { code: 418 } }] });
+    let caught: { javaException: { getCode(): number; getReason(): string } } | undefined;
+    try {
+      (sandbox.openidm as { read(r: string): unknown }).read("managed/alpha_user/alice");
+    } catch (error) {
+      caught = error as typeof caught;
+    }
+    expect(caught?.javaException.getCode()).toBe(418);
+    expect(sandboxFaults(sandbox)).toEqual([]);
+    expect(() => caught?.javaException.getReason()).toThrow(/reason for status 418/);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual(["openidm-failure-reason"]);
+  });
+  it("the runtime's reason table is the IDM emulator's", () => {
+    expect(loadBehaviour().__rhinoLocalCrestReasons).toEqual(reasons);
+  });
+  it("a revision mismatch keeps its measured text and no adapter (its status is unmeasured)", () => {
+    const effects = runScript(
+      'try { openidm.update("managed/alpha_user/alice", "0", { sn: "x" }); } catch (e) { nodeState.putShared("r", JSON.stringify([e.name, String(e), typeof e.javaException, (function () { var k = []; for (var p in e) k.push(p); return k; })()])); }',
+      { managed: { "managed/alpha_user": [{ _id: "alice", _rev: "1" }] } });
+    expect(JSON.parse(String(effects.sharedState.final.r))).toEqual(["JavaException",
+      "JavaException: org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: openidm.update: The resource could not be accessed because the expected version '0' does not match the current version '1'",
+      "undefined", []]);
   });
 
   it.each([
@@ -185,9 +228,9 @@ describe("openidm", () => {
       ) => { result: Array<{ _id: string }> };
     };
     function ids(filter: string): string[] {
-      return openidm
+      return Array.from(openidm
         .query("managed/alpha_user", { _queryFilter: filter })
-        .result.map((row) => row._id);
+        .result as ArrayLike<{ _id: string }>).map((row) => row._id);
     }
 
     // and binds tighter than or: bob OR (York AND alice-mail) → alice, bob.
@@ -227,11 +270,11 @@ describe("openidm", () => {
       ) => { result: Array<{ _id: string }> };
     };
     expect(
-      openidm
+      Array.from(openidm
         .query("managed/alpha_user", {
           _queryFilter: 'mail eq "alice@example.com"',
         })
-        .result.map((row) => row._id),
+        .result as ArrayLike<{ _id: string }>).map((row) => row._id),
     ).toEqual(["alice"]);
   });
 
@@ -252,9 +295,9 @@ describe("openidm", () => {
       ) => { result: Array<{ _id: string }> };
     };
     expect(
-      openidm
+      Array.from(openidm
         .query("managed/alpha_user", { _queryFilter: '/name/last eq "Smith"' })
-        .result.map((row) => row._id),
+        .result as ArrayLike<{ _id: string }>).map((row) => row._id),
     ).toEqual(["alice", "carol"]);
   });
 
@@ -271,10 +314,42 @@ describe("openidm", () => {
       openidm.query("managed/alpha_user", { _queryFilter: '/_id ne "alice"' }),
     ).toThrow(/unmocked filter "\/_id ne \\"alice\\""/);
     expect(() =>
-      openidm.query("managed/alpha_user", {
-        _queryFilter: 'not (userName eq "alice")',
-      }),
-    ).toThrow(/unmocked filter/);
+      openidm.query("managed/alpha_user", { _queryFilter: "count gt 1" }),
+    ).toThrow(/unmocked filter "count gt 1"/);
+    expect(sandboxFaults(sandbox).map((f) => f.id)).toEqual([
+      "openidm-query-filter",
+      "openidm-query-filter",
+    ]);
+  });
+
+  // AIC parses the filter before it reads a row, so a malformed one is its
+  // catchable parse error even against an empty collection: the reviewer's
+  // false pass was "name eq" over [] returning an empty result. Which inputs
+  // count as malformed is the shared table's call (test/crest-filter-table.ts).
+  it.each([
+    ["an empty collection", []],
+    ["a populated one", [{ _id: "alice", name: "alice" }]],
+  ])("a malformed filter is AIC's catchable parse error on %s", (_name, rows) => {
+    for (const filter of [
+      "name eq",
+      'not (name eq "alice")',
+      "name eq null",
+      "name in [1]",
+      "name eq [1]",
+      'name eq "open',
+      "(name pr",
+      "name pr)",
+      "name",
+    ]) {
+      const sandbox = loadBehaviour({ managed: { "managed/alpha_user": rows } });
+      const openidm = sandbox.openidm as {
+        query: (resource: string, params: { _queryFilter: string }) => unknown;
+      };
+      expect(() => openidm.query("managed/alpha_user", { _queryFilter: filter }), filter).toThrow(
+        `rhino-local: openidm.query: The value '${filter}' for parameter '_queryFilter' could not be parsed as a valid query filter`,
+      );
+      expect(sandboxFaults(sandbox), filter).toEqual([]);
+    }
   });
 
   it("records actionName and body as content ?? params", () => {

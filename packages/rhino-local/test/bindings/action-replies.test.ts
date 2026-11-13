@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadBehaviour, runScript } from "./load-behaviour.ts";
+import { loadBehaviour, runScript, sandboxFaults } from "./load-behaviour.ts";
 
 describe("OpenIDM action replies (D9)", () => {
   it("returns the first matching reply and records the unchanged call", () => {
@@ -36,10 +36,14 @@ describe("OpenIDM action replies (D9)", () => {
     expect(effects.openidm).toHaveLength(1);
   });
 
-  it.each(["patch", "triggerSyncCheck", "updateLastSync"])("retains the measured collection default for %s and allows a declared override", (action) => {
+  // Only the three names are measured (the refusal lists them); the `{}` these used to return
+  // was not. Since E15b an unstubbed one faults, and a declared reply still answers.
+  it.each(["patch", "triggerSyncCheck", "updateLastSync"])("faults an unstubbed collection %s and allows a declared reply", (action) => {
     const sandbox = loadBehaviour();
     const openidm = sandbox.openidm as { action(resource: string, action: string): unknown };
-    expect(openidm.action("managed/alpha_user", action)).toEqual({});
+    expect(() => openidm.action("managed/alpha_user", action))
+      .toThrow(`rhino-local: openidm.action: ${action} on "managed/alpha_user" is not emulated`);
+    expect(sandboxFaults(sandbox).map((fault) => fault.id)).toEqual([`openidm-managed-collection-action/${action}`]);
     const effects = runScript(`nodeState.putShared("reply", openidm.action("managed/alpha_user", "${action}"));`, {
       openidmActions: [{ match: { resource: "managed/alpha_user", action }, reply: { body: true } }],
     });

@@ -80,13 +80,31 @@ cat >"$consumer/tsconfig.json" <<'JSON'
   "include": ["test/**/*.ts"]
 }
 JSON
+# Exercise the shipped worker/reporter entries and documented runner subclass.
+cat >"$consumer/test/client-runner.ts" <<TS
+import EmulationRunner from "$name/vitest-runner";
+import type { RunnerTask } from "vitest";
+export default class ClientRunner extends EmulationRunner {
+  override onAfterRunTask(task: RunnerTask): void {
+    super.onAfterRunTask(task);
+  }
+}
+TS
+cat >"$consumer/vitest.config.ts" <<TS
+import { defineConfig } from "vitest/config";
+export default defineConfig({ test: {
+  setupFiles: ["$name/vitest-setup"],
+  runner: "./test/client-runner.ts",
+  reporters: ["default", "$name/vitest-reporter"],
+} });
+TS
 cat >"$consumer/test/smoke.test.ts" <<TS
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { defineSuite, useLease } from "$name";
-import { validateCase } from "$name/case";
+import { defineSuite, expectHarnessFault, useLease } from "$name";
+import { defineCase, validateCase } from "$name/case";
 import { RhinoRunner } from "$name/runner";
-import { mockPreamble, withHarvest, parseHarvest } from "$name/bindings";
+import { mockPreamble, withHarvest, parseHarvest, runCase } from "$name/bindings";
 import { tokenCallbackProvider } from "$name/aic";
 import { readFailures, runShowLog } from "$name/diagnostics";
 import { profilePath } from "$name/profile";
@@ -130,6 +148,7 @@ describe("installed rhino-local", () => {
     })).toThrow(/collides with/);
     const runner = await RhinoRunner.spawn();
     try {
+      expectHarnessFault("identity-bag-key-collision");
       const response = await runner.eval({
         preamble: mockPreamble({ ...seed, identityCustomAttrsOwnedKeys: { [resource]: ["plain"] } }),
         source: withHarvest([
@@ -139,13 +158,122 @@ describe("installed rhino-local", () => {
           '__rhinoLocal.identityCustomAttrsOwnedKeys["managed/alpha_user/example"] = ["plain"];',
         ].join("\\n")),
       });
-      expect(response.outcome, JSON.stringify(response)).toBe("ok");
-      if (typeof response.value !== "string") throw new Error("missing harvest");
-      const effects = parseHarvest(response.value);
-      expect(effects.sharedState.final.error).toMatch(/openidm.patch:.*collides with/);
-      expect(effects.managedStore).toEqual(managed);
-      expect(effects.identityCustomAttrs).toEqual(seed.identityCustomAttrs);
-      expect(effects.identityCustomAttrsOwnedKeys).toEqual({ [resource]: ["plain"] });
+      // The script catches the refusal, but it is a harness fault (E19), so
+      // the job fails naming it, and expectHarnessFault is reachable from the
+      // installed package.
+      expect(response.outcome, JSON.stringify(response)).toBe("runtime_error");
+      expect(response.error?.message).toMatch(/^rhino-local harness fault identity-bag-key-collision: openidm.patch:.*collides with/);
+    } finally { await runner.close(); }
+  });
+
+  // A script context's overlay is a separate packaged asset; it must load
+  // from the installed package, and the case types must accept the context.
+  it("runs an access-token modification case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const run = await runCase(runner, defineCase({
+        name: "token", context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+        script: 'accessToken.setField("owner", String(identity.getName()));',
+        given: { engine: "next-gen", accessToken: { clientId: "widget-client" } },
+        expect: { accessToken: { fields: { added: { owner: "widget-client" } } } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
+    } finally { await runner.close(); }
+  });
+
+  // The OIDC claims overlay is a second packaged asset, and its result is
+  // the script's completion value, read through the runner's completion hook.
+  it("runs an OIDC claims case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const engine = "next-gen";
+      const script = '({ values: { owner: String(identity.getName()) } });';
+      const run = await runCase(runner, defineCase({
+        name: \`claims \${engine}\`, context: "OIDC_CLAIMS", script,
+        given: { engine, identity: { name: "widget-user" } },
+        expect: { oidc: { userinfo: { owner: "widget-user" } } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
+    } finally { await runner.close(); }
+  });
+
+  // The social IdP overlay is a third packaged asset; its result is also the
+  // script's completion value, and its node-state writes are judged.
+  it("runs a social IdP profile transformation case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const engine = "next-gen";
+      const script = 'nodeState.putShared("idp", selectedIdp); ({ id: rawProfile.sub, mail: rawProfile.get("email") });';
+      const run = await runCase(runner, defineCase({
+        name: \`social \${engine}\`, context: "SOCIAL_IDP_PROFILE_TRANSFORMATION", script,
+        given: { engine, socialIdp: { selectedIdp: "widget-idp", rawProfile: { sub: "w-1", email: "w@example.com" } } },
+        expect: { socialIdp: { profile: { id: "w-1", mail: "w@example.com" } }, sharedState: { added: { idp: "widget-idp" } } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
+    } finally { await runner.close(); }
+  });
+
+  // The config provider overlay is a fourth packaged asset; AM reads its
+  // \`config\` global after the script, and its node-state reads are next-gen shaped.
+  it("runs a config provider node case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const engine = "next-gen";
+      const script = 'config = { message: { en: "Hello " + nodeState.get("who") }, size: 2 };';
+      const run = await runCase(runner, defineCase({
+        name: \`config provider \${engine}\`, context: "CONFIG_PROVIDER_NODE", script,
+        given: { engine, sharedState: { who: "widget" } },
+        expect: { configProvider: { config: { message: { en: "Hello widget" }, size: 2 } } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
+    } finally { await runner.close(); }
+  });
+
+  // The validate scope overlay is a fifth packaged asset; AM grants exactly
+  // the list the function returns.
+  it("runs a validate scope case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const engine = "next-gen";
+      const run = await runCase(runner, defineCase({
+        name: \`validate scope \${engine}\`, context: "OAUTH2_VALIDATE_SCOPE",
+        script: "function validateAccessTokenScope() { return requestedScopes; }",
+        given: { engine, validateScope: { requested: ["read", "write"], allowed: ["read", "write"] } },
+        expect: { validateScope: { granted: ["write", "read"] } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
+    } finally { await runner.close(); }
+  });
+
+  // The may-act overlay is a sixth packaged asset; AM stamps may_act from
+  // token.setMayAct after the body.
+  it("runs a may-act case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const engine = "next-gen";
+      const script = 'token.setMayAct({ client_id: "actor" });';
+      const run = await runCase(runner, defineCase({
+        name: \`may act \${engine}\`, context: "OAUTH2_MAY_ACT", script,
+        given: { engine, client: { clientId: "actor-client" }, scopes: ["read"] },
+        expect: { mayAct: { mayAct: { client_id: "actor" }, scope: ["read"] } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
+    } finally { await runner.close(); }
+  });
+
+  // The library overlay is a seventh packaged asset. The case script is the
+  // library body; the harness require()s it and calls the named export.
+  it("runs a library case", async () => {
+    const runner = await RhinoRunner.spawn();
+    try {
+      const run = await runCase(runner, defineCase({
+        name: "library export",
+        context: "LIBRARY",
+        script: "exports.n = function () { return 1; };",
+        given: { library: { export: "n" } },
+        expect: { returns: { status: "returned", value: 1 } },
+      }));
+      expect(run.verdict.summary, run.verdict.summary).toBe("");
     } finally { await runner.close(); }
   });
 
@@ -160,6 +288,7 @@ describe("installed rhino-local", () => {
 
   it("exports the case, provider, diagnostics and profile surfaces", () => {
     expect(typeof validateCase).toBe("function");
+    expect(typeof parseHarvest).toBe("function");
     expect(typeof readFailures).toBe("function");
     expect(typeof runShowLog).toBe("function");
     expect(profilePath("sandbox")).toMatch(/[.]aic-script-tester[/]profiles[/]sandbox[.]json$/);

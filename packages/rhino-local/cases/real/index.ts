@@ -1,10 +1,12 @@
 import type { AllowUndeclared, Given, HttpExpect } from "../../src/case/types.ts";
+import type { EnvProfile } from "../../src/profile/types.ts";
 import {
   hiddenValue,
   librarySource,
   realCase,
   type BlockedBy,
   type KnownGap,
+  type LiveHooks,
   type RealEntry,
   type Rewrite,
 } from "./load.ts";
@@ -89,6 +91,8 @@ interface Extras {
   libraries?: Record<string, string>;
   rewrites?: readonly Rewrite[];
   gap?: KnownGap;
+  profile?: EnvProfile;
+  liveHooks?: LiveHooks;
   /** Requests the script makes; required alongside a `given.http` stub. */
   http?: HttpExpect[];
   /**
@@ -100,7 +104,6 @@ interface Extras {
 }
 
 function entry(
-  kind: "nextgen" | "legacy",
   name: string,
   originFile: string,
   expectPayload: Record<string, unknown>,
@@ -108,7 +111,6 @@ function entry(
 ): RealEntry {
   const init: {
     name: string;
-    kind: "nextgen" | "legacy";
     origin: string;
     expect: {
       outcome: string | null;
@@ -121,12 +123,13 @@ function entry(
     libraries?: Record<string, string>;
     rewrites?: readonly Rewrite[];
     gap?: KnownGap;
+    profile?: EnvProfile;
+    liveHooks?: LiveHooks;
   } = {
     name,
-    kind,
     origin: `scripts/rhino-script-tester/${originFile}`,
     expect: {
-      outcome: kind === "legacy" ? "ok" : null,
+      outcome: null,
       callbacks: hiddenValue(expectPayload),
     },
     given: firstVisit(extras.given),
@@ -149,6 +152,12 @@ function entry(
   if (extras.gap !== undefined) {
     init.gap = extras.gap;
   }
+  if (extras.profile !== undefined) {
+    init.profile = extras.profile;
+  }
+  if (extras.liveHooks !== undefined) {
+    init.liveHooks = extras.liveHooks;
+  }
   return realCase(init);
 }
 
@@ -158,7 +167,7 @@ function ng(
   payload: Record<string, unknown>,
   extras: Extras = {}
 ): RealEntry {
-  return entry("nextgen", name, originFile, { ok: true, feature: name, ...payload }, extras);
+  return entry(name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
 
 function ngFeature(
@@ -168,16 +177,7 @@ function ngFeature(
   payload: Record<string, unknown>,
   extras: Extras = {}
 ): RealEntry {
-  return entry("nextgen", name, originFile, { ok: true, feature, ...payload }, extras);
-}
-
-function legacy(
-  name: string,
-  originFile: string,
-  payload: Record<string, unknown>,
-  extras: Extras = {}
-): RealEntry {
-  return entry("legacy", name, originFile, { ok: true, feature: name, ...payload }, extras);
+  return entry(name, originFile, { ok: true, feature, ...payload }, extras);
 }
 
 const BINDINGS_AVAILABILITY_VALUE = JSON.stringify({
@@ -254,7 +254,7 @@ const STRING_NORMALIZE_RESULTS = [
 ];
 
 /**
- * Next-gen and legacy scripted-decision probes copied from
+ * Next-gen scripted-decision probes copied from
  * `scripts/rhino-script-tester/`. Expects are the live-recorded outcomes from
  * `docs/api/12-script-bindings-matrix.md` and `docs/api/14-am-identity-attributes.md`
  * (and, for language rows, the values the fixture itself computes).
@@ -291,7 +291,6 @@ export const realCases: RealEntry[] = [
   // without a `value` key because JSON.stringify drops `undefined`.
   realCase({
     name: "const-top-level",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/fixtures/const-top-level.script.js",
     expect: {
       outcome: null,
@@ -384,7 +383,6 @@ export const realCases: RealEntry[] = [
 
   realCase({
     name: "rhino-var-control",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/scripts/rhino-var-control.script.js",
     expect: {
       outcome: null,
@@ -560,8 +558,8 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "Same Java-host-object enumeration as enum-callbacks-utils, for utils.base64/base64url/crypto/types (crypto on AIC also has checkBcrypt and randomValues). And AIC reports arity 0 for nameCallback/hiddenValueCallback/confirmationCallback (Java varargs bridges), where the JS mocks declare their parameters.",
-      differs: ["base64", "base64url", "crypto", "types", "arity"],
+        "Same Java-host-object enumeration as enum-callbacks-utils, for utils.base64/base64url/crypto/types (crypto on AIC also has checkBcrypt and randomValues).",
+      differs: ["base64", "base64url", "crypto", "types"],
     },
   }),
 
@@ -591,7 +589,7 @@ export const realCases: RealEntry[] = [
   ng("request-multivalue", "fixtures/request-multivalue.script.js", {}, {
     gap: {
       reason:
-        "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object (`TypeError: Cannot find function getClass`). (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
+        "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object that gives the same getClass() refusal and its own formatting. (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
       differs: ["headers", "parameters"],
     },
     given: {
@@ -608,7 +606,7 @@ export const realCases: RealEntry[] = [
   ng("request-headers-dump", "fixtures/request-headers-dump.script.js", {}, {
     gap: {
       reason:
-        "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object (`TypeError: Cannot find function getClass`). (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
+        "Two differences, and the second makes the rest incomparable. (1) AIC's requestHeaders/requestParameters are Java maps: getClass() is refused with `InternalError: Access to Java class \"java.lang.Class\" is prohibited.` and String()/JSON show Java map formatting; the local mock is a JS object that gives the same getClass() refusal and its own formatting. (2) The live probe run was a curl with its own headers, parameters and cookies, not this case's `given`, so the remaining keys were never measured against the same input. The live payload is not committed: it carries the tenant host and client-certificate headers.",
       differs: ["headers", "parameters", "cookies"],
     },
     given: {
@@ -1043,10 +1041,22 @@ export const realCases: RealEntry[] = [
       unknownTypeMiss: { threw: false, value: "null" },
     },
     {
-      gap: {
-        reason:
-          "openidm.read of a managed type that does not exist returns null on AIC. Locally an unseeded collection throws `no given.managed entry`, which is deliberate — it catches a case that forgot to seed — so closing this needs a way to declare a type absent rather than making every miss silent.",
-        differs: ["unknownTypeMiss"],
+      // openidm.read of a managed type the tenant does not have returns null
+      // on AIC. Without a profile the harness cannot tell an absent type from
+      // a forgotten seed, so the case names the types that exist.
+      profile: {
+        tenant: "sandbox",
+        pulledAt: "2026-09-28T00:00:00.000Z",
+        sources: [],
+        objects: {
+          idr_name_variants: { name: "idr_name_variants", properties: {}, required: [], hooks: [] },
+          idr_name_variant_discrepancies: {
+            name: "idr_name_variant_discrepancies",
+            properties: {},
+            required: [],
+            hooks: [],
+          },
+        },
       },
       given: {
         managed: {
@@ -1124,11 +1134,6 @@ export const realCases: RealEntry[] = [
     {
       given: identityGiven,
       rewrites: probeUserIs(ALICE_ID),
-      gap: {
-        reason:
-          "Only the failed includes() call differs. Both lanes' getAttributeValues have length, size, get, [0], toArray and contains, lack includes, and print `[{}]`. On AIC the Java collection has no includes member, so the call throws `Cannot find function includes`; the local list is a JS array with includes shadowed by undefined, so it throws `Cannot call property includes`.",
-        differs: ["value"],
-      },
     }
   ),
   ng("identity-enum-attrs", "fixtures/identity-enum-attrs.script.js", {}, {
@@ -1148,63 +1153,6 @@ export const realCases: RealEntry[] = [
       B_manager: 1,
     }),
   }, { given: managerSwapGiven, rewrites: reportAndManager }),
-
-  // Legacy engine. Emit is JavaImporter + Action.send; next-gen-only
-  // bindings are undefined so scripts cannot take the callbacksBuilder
-  // fallback.
-  legacy("legacy-bindings", "fixtures-legacy/legacy-bindings.script.js", {
-    value: JSON.stringify({
-      nodeState: "object",
-      sharedState: "object",
-      transientState: "object",
-      callbacks: "object",
-      callbacksBuilder: "undefined",
-      action: "undefined",
-      idRepository: "object",
-      openidm: "undefined",
-      httpClient: "object",
-      utils: "undefined",
-      requestHeaders: "object",
-      requestParameters: "object",
-      requestCookies: "undefined",
-      existingSession: "undefined",
-      resumedFromSuspend: "boolean",
-      secrets: "object",
-      JavaImporter: "function",
-      logger: "object",
-      realm: "string",
-      systemEnv: "object",
-      scriptName: "string",
-    }),
-  }),
-  legacy(
-    "legacy-es2015-globals",
-    "fixtures-legacy/legacy-es2015-globals.script.js",
-    {
-      value: [
-        { name: "typeof Map", ok: true, value: "undefined" },
-        { name: "typeof Set", ok: true, value: "undefined" },
-        { name: "typeof WeakMap", ok: true, value: "undefined" },
-        { name: "typeof WeakSet", ok: true, value: "undefined" },
-        { name: "typeof Symbol", ok: true, value: "undefined" },
-        { name: "typeof Proxy", ok: true, value: "undefined" },
-        { name: "typeof Reflect", ok: true, value: "undefined" },
-        { name: "typeof Promise", ok: true, value: "undefined" },
-        { name: "typeof JSON", ok: true, value: "object" },
-        {
-          name: "new Map + set/get/size",
-          ok: false,
-          error: 'ReferenceError: "Map" is not defined.',
-        },
-        {
-          name: "new Set + add/has/size",
-          ok: false,
-          error: 'ReferenceError: "Set" is not defined.',
-        },
-        { name: "java.util.HashMap", ok: true, value: "1:1" },
-      ],
-    }
-  ),
 
   // Live payload, verbatim (probe run 2026-09-29).
   ng("binding-utils", "fixtures/binding-utils.script.js", {
@@ -1629,6 +1577,7 @@ export const realCases: RealEntry[] = [
       reason:
         "Base64/UTF-8, UUID, random values and every subtle result and rejection match, through java/HostOps.java. Still different: encoding a JS array fails on both, but AIC suffixes its conversion error with the calling script's (name#line) and local with the mock's; checkBcrypt is unmocked (no bcrypt in the JDK, and no dependency added); PBKDF2 with a JS-array salt fails on both, but AIC's ClassCastException also names its webapp class loader.",
       differs: ["base64/encode/bytes","base64url/encode/bytes","crypto/checkBcrypt/right","crypto/checkBcrypt/wrong","subtle/deriveKey/object"],
+      faults: ["not-mocked/utils.crypto.checkBcrypt"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -3124,6 +3073,7 @@ export const realCases: RealEntry[] = [
       reason:
         "57/80 measured payload keys now match: ESV defaults and conversions, cacheManager, the seeded journey values and flags, null SAML/OAuth bindings, and logger.isTraceEnabled. Remaining gaps are tenant-backed JWT creation/validation and policy results; idRepository.getIdentity on an absent user (both lanes return the wrapper with the same class name and methods, but AIC's Java object also enumerates bean properties and java.lang.Object members such as class, getClass and wait); JavaException wrappers for absent secrets; logger.getName includes the tenant script id; and Java reflection shapes for emailService enumeration and locales.",
       differs: ["logger.getName","secrets.getGenericSecret","secrets.getDecryptionKey","secrets.getEncryptionKey","secrets.getSigningKey","secrets.getVerificationKey","jwtAssertion.generateJwt","jwtValidator.validateJwtClaims","policy.evaluate","policy.evaluateTree","idRepository.getIdentity","emailService/typeof-enumeration","locales","jwtAssertion.generateJwt/empty","jwtAssertion.generateJwt/HS256","jwtAssertion.generateJwt/HS256/string-key","jwtValidator.validateJwtClaims/empty","jwtValidator.validateJwtClaims/HS256","policy.evaluate/claims/oauth2Scopes","policy.evaluateTree/claims/oauth2Scopes","policy.evaluate/ssoToken","policy.evaluate/jwt","policy.evaluate/claims"],
+      faults: ["not-mocked/jwtAssertion.generateJwt", "not-mocked/jwtValidator.validateJwtClaims", "not-mocked/policy.evaluate", "not-mocked/policy.evaluateTree"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -3618,11 +3568,30 @@ export const realCases: RealEntry[] = [
         "managed/alpha_role": []
       }
     },
+    // The tenant declares alpha_role and not rlNoSuchType, so the absent type
+    // is answered as AIC answers it rather than as a missing fixture. The
+    // hand-written profile records alpha_role's two object hooks as doc 10
+    // records them on this sandbox (postCreate; onDelete,
+    // roles/onDelete-roles.js). The lane runs neither. The live writes above
+    // ran both, and every compared key equals the live payload, which is the
+    // measurement that they did not change what these writes return; so
+    // `liveHooks` exempts exactly those two hooks for this case (P2-2, fix
+    // round 2). It is the only live-anchored guard of the lane's write paths
+    // (`fields` on create/update/patch/delete, the duplicate-create message).
+    liveHooks: { probed: "2026-09-29", hooks: { alpha_role: ["postCreate", "onDelete"] } },
+    profile: {
+      profileVersion: 3,
+      tenant: "sandbox",
+      pulledAt: "2026-09-29T00:00:00.000Z",
+      sources: [],
+      objects: { alpha_role: { name: "alpha_role", properties: {}, required: [], hooks: ["onDelete", "postCreate"] } },
+    },
     allowUndeclared: {"openidmWrites":true},
     gap: {
       reason:
-        "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (undeclared action replies throw naming given.openidmActions). Writes were not captured live, so the write channel is not judged. openidm.query: a filter the local parser does not support is reported as unmocked rather than as AIC's parse error, and an unseeded managed type throws the harness's missing-fixture error rather than AIC's \"Resource … not found\".",
+        "AIC reports write failures as JavaException wrappers of ResourceExceptionScriptAdapter carrying the LDAP DN; the mock throws a rhino-local Error with AIC's message phrase instead, rather than forge a Java exception. validateObject answers from tenant policy, which the mock does not model (undeclared action replies throw naming given.openidmActions). Writes were not captured live, so the write channel is not judged. openidm.query: a malformed filter and a managed type the profile does not declare throw AIC's parse and \"Resource … not found\" phrases, catchably, as plain Errors.",
       differs: ["cleanup/before","create/duplicate","update/wrong-rev","patch/bad-operation","query/2/bad-filter","query/2/no-filter","query/2/absent-type","query/2/queryExpression","query/2/two-kinds","patch/wrong-rev","delete/wrong-rev","action/4/validateObject","action/3/validateObject","action/5/validateObject","action/2/unknown","delete","delete/absent","update/absent"],
+      faults: ["fixture/openidm-action"],
     },
   }),
   // Live payload, verbatim (probe run 2026-09-29).
@@ -3725,7 +3694,7 @@ export const realCases: RealEntry[] = [
   }, {
     gap: {
       reason:
-        "ECDSA interop (P1363 accepted, DER false), generated key encodings, digest/AES/HMAC edges and JS-array handling match. Still different: a 5-byte AES key fails on both, but AIC wraps it as JavaException ScriptCryptoException; randomUUID(1) and getRandomValues({}) fail on both, but with the harness arity message and without AIC's (name#line) suffix respectively.",
+        "ECDSA interop (P1363 accepted, DER false), generated key encodings, digest/AES/HMAC edges and JS-array handling match. Still different: a 5-byte AES key fails on both, but AIC wraps it as JavaException ScriptCryptoException; randomUUID(1) and getRandomValues({}) fail on both with AIC's catchable InternalError text, but without AIC's (name#line) suffix.",
       differs: ["aes/key-5","crypto/randomUUID/1","crypto/getRandomValues/js-object"],
     },
   }),
@@ -4228,7 +4197,6 @@ export const realCases: RealEntry[] = [
   // Live callbacks, parsed from the probe run's /authenticate body (2026-09-29).
   realCase({
     name: "binding-callbacks-builder",
-    kind: "nextgen",
     origin: "scripts/rhino-script-tester/fixtures/binding-callbacks-builder.script.js",
     given: firstVisit(),
     expect: {

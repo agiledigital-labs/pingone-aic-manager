@@ -4,23 +4,144 @@ Two jobs, one package:
 
 1. Generate the **scripted-decision mock binding surface** from the captured AM
    contexts metadata at `docs/api/bindings/scripted-decision-next.json`.
-2. Talk to the long-lived host-JVM runner so tests can eval scripts without
+2. Talk to the long-lived JVM runner so tests can eval AM or IDM scripts without
    starting a JVM per case.
 
 The generator emits presence, not behaviour: every method throws
 `rhino-local: not mocked: <binding>.<method> arity=N overload=[…]` until the
 handwritten overlay in `src/bindings/rhino/runtime.cjs` replaces it. A mock
-that returned `undefined` would turn a missing feature into a passing test.
+that returned `undefined` would turn a missing feature into a passing test. That
+throw is a [harness fault](#harness-faults-refusals-a-script-cannot-catch)
+(`not-mocked/<binding>.<method>`), so catching it does not rescue the case.
+A method the generated surface does not declare at all is refused the same way
+(`not-implemented/<binding>.<method>`): AIC may have it, so the call is not
+answered with a `TypeError` a script could catch and carry on from. That covers
+every service object, the objects nested in one (`utils.crypto.subtle`), the
+request maps (`requestParameters`, `requestHeaders`, `requestCookies`,
+`existingSession`) and any object with methods that a service call returns,
+named by the call that made it (`idRepository.getIdentity().<method>`,
+`httpClient.send().get().<method>`, `nodeState.get().<method>`).
+
+What it does not cover:
+
+- A property read without a call. `typeof openidm.frobnicate` is `"undefined"`
+  and `openidm.frobnicate.call(openidm)` is a plain `TypeError`; the engine
+  gives no hook for a read, so an empty fault tally does not prove a script
+  touched nothing the harness lacks.
+- Plain data: a record `openidm.read` returns or a parsed body is the script's
+  own object, where a missing method is a `TypeError` on AIC too.
+- Java lists and sets, which refuse an unknown member themselves, as on AIC.
+  On a decision node `nodeState.keys()` is a `java.util.HashSet` (walk it with
+  `iterator()`), and a map's `values()` and an identity's
+  `getAttributeValues()` are Java lists.
+- The other script contexts' own views (`accessToken`, `identity`, `session`,
+  …), which fault under their `<context>-unmeasured` ids.
+
+The methods measured absent on AIC stay the engine's `TypeError`: the next-gen
+`logger` has no `message`, `warning` or `*Enabled`, and `existingSession` has no
+`hasOwnProperty`. An identity's whole member set was captured, so any name
+outside it (`getAttribute`, `size`, `isExists`) is a `TypeError` and only a
+member AIC has and the harness lacks (`hashCode`, `equals`, `getClass`) faults.
+A map entry named like a method (`get`) also gives a `TypeError`, because it
+hides the method as it does on AIC. A request map's `getClass()` is the
+measured class refusal.
 
 Implemented (still fail-loud for missing fixtures and for every method the
 overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
-legacy `sharedState`/`transientState` when `given.engine === "legacy"`,
 request maps, `outcome` / `action.goTo`, `logger`, `openidm`, `httpClient`,
 `callbacksBuilder` (the six authenticate-response types), `systemEnv`,
 `idRepository.getIdentity` (reads, and `store()` as `identityWrites`), next-gen `require()` (CommonJS eval of seeded
-library bodies; a missing id throws naming `given.libraries`), legacy
-`JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
+library bodies; a missing id throws naming `given.libraries`), and an inert
+`JavaImporter`. End-to-end cases live
 in `cases/`.
+
+## Breaking change: the legacy (V1) script engine is no longer emulated
+
+The emulator runs next-gen scripts only. Legacy decision nodes and the legacy
+variants of the OAuth2 access-token, OIDC claims, social IdP, config provider,
+validate-scope and may-act contexts get upgraded to next-gen in AM, not
+patched, and the emulator is moving its next-gen bindings onto real Java, so a
+second engine would be a second mechanism to maintain.
+
+- A case with `given.engine: "legacy"` fails `validateCase` / `defineCase` /
+  `runCase` at once, with a message naming the removal. It never falls through
+  to next-gen. Drop `given.engine` (or leave it as `"next-gen"`) after
+  upgrading the script.
+- `ENGINES` is now `["next-gen"]` and `Engine` is `"next-gen"`.
+- The legacy-only bindings are gone: `sharedState`/`transientState` on a
+  decision node, the legacy `JsonValue` construction route and `UserInfoClaims`
+  construction (the next-gen `JsonValue.json` / `JsonValue.object` route
+  remains), the legacy `Action.send` importer path, and the legacy variants of every context above.
+- The conformance catalog rows named `<context>.legacy.<binding>` are removed;
+  `<context>.next.<binding>` ids are unchanged.
+- The JavaScript context ids (`OAUTH2_ACCESS_TOKEN_MODIFICATION`, ...) are
+  unchanged and mean the next-gen context.
+
+## Breaking change in 0.4.0-emulator.1: request values are Java lists
+
+On the next-gen engine, a `requestParameters` or `requestHeaders` value is now
+the Java list AIC hands over (measured 2026-11-08), not a JavaScript array.
+Earlier builds returned an array, so a script calling an array method passed
+here and failed on the tenant.
+
+| Works, as on AIC                                  | Fails, as on AIC                                     |
+| ------------------------------------------------- | ---------------------------------------------------- |
+| `v.length`, `v[0]`, `v.size()`, `v.get(0)`        | `v.map(…)`, `v.join(…)`, any `Array.prototype` method |
+| `String(v)` gives Java's `"[a, b]"`               | `Array.isArray(v)` is `false`                        |
+| `requestParameters.forEach(function (k, v) {…})`  | `v.getClass()` (the class shutter refuses it)        |
+| `[].concat(v)` copies it into a JS array          |                                                      |
+| `JSON.stringify(v)` writes a JSON array           |                                                      |
+
+`[].concat(v)` (alone, among several lists or among plain values),
+`Array.prototype.concat.call(v, …)` and `JSON.stringify` by every route were
+measured on 2026-11-10. An empty header or parameter is a list of one empty
+string, and a key not sent is `null`, so `[].concat(missing)` is `[null]`.
+
+The value is a real `java.util.List`, so every other member answers as Java
+does: `isEmpty()`, `contains(x)`, `indexOf(x)`, `toArray()`,
+`forEach(function (x) {…})`. `get(i)` out of range throws
+`InternalError: Index 2 out of bounds for length 2`, a wrong argument shape is
+Rhino's catchable `Can't find method java.util.List.get().`, and `iterator()`
+is refused by the class allow-list, as `getClass()` is. Those two refusals and
+the `InternalError` come from the allow-list: a case run with
+`classShutter: false` gets a `JavaException` from `get(2)` and a working
+`iterator()`. A `[]` seed is an
+empty list (`size()` 0, `String(v)` `"[]"`); AIC itself hands over `[""]` for
+an empty value. An out-of-range bracket read (`v[5]`) is `undefined`.
+The simplest copy is `[].concat(v)`; the loop
+below also works:
+
+```js
+var values = requestParameters.get("q");
+var copy = [];
+for (var i = 0; i < values.size(); i++) copy.push(String(values.get(i)));
+```
+
+`requestCookies` values are still plain strings (measured).
+
+### `openidm` query results and relationship arrays are Java lists too
+
+`openidm.query(…).result`, and a has-many relationship array on an
+`openidm.read`, are Java lists on AIC (measured 2026-11-08), and now here.
+`length`, `[i]`, `size()` and `get(i)` work; `get(i)` out of range either way
+throws AIC's `InternalError: Index 2 out of bounds for length 2`; `.map`,
+`.some`, `.filter`, `.join` and every other array method are absent, so calling
+one is the same `TypeError: Cannot find function some in object [].` the tenant
+throws. `String(v)` has Java's shape, `[{_id=u1, _rev=1}]`, and there is no
+`toJSON` member, but `JSON.stringify` still writes a JSON array, however it
+reaches the list (nested, through a `toJSON`, a getter or a replacer). Copy into
+a JS array with `[].concat(v)`, which is the measured way:
+
+```js
+var ids = [].concat(openidm.query("managed/alpha_user", params, ["_id"]).result)
+  .map(function (r) { return r._id; });
+```
+
+It is a real `java.util.List`, so `forEach`, `isEmpty`, `contains`, `indexOf`
+and `toArray` answer as Java does, and an empty result is an empty list.
+`String(v)` of a list holding a number writes the number as the script engine
+does (`3`, not `3.0`); AIC's rendering of that one was not measured. A has-many
+array read with `*` alone, or with no field list, is still a JS array.
 
 ## Using the installed package
 
@@ -92,6 +213,113 @@ setTenantProvider(
 );
 ```
 
+### Harness faults: refusals a script cannot catch
+
+When a script does something the harness does not emulate, the harness refuses
+it with a **harness fault** rather than guessing. Examples are an unmocked
+binding method, an unseeded fixture, an argument count whose accepted range is
+the harness's guess, or a JS `Date` in an `httpClient.send` body. A harness fault **fails the case even if the script
+catches it and then succeeds**, because the harness cannot say what AIC does
+there: it may throw something the harness has not measured (a write to a type
+the tenant lacks), or nobody knows (a guessed argument count). One family is
+different in kind. Under `script-defect/` AIC's behaviour is measured — it sends
+a `Date`, `RegExp` or function body as a dump of the Rhino object and carries on
+— and the fault is a refusal to pass a script that would send that dump, not a
+gap in the harness. The tally lists that family apart, so it does not read as
+harness work. In each case a `try`/`catch` around the call must not turn a
+gap in the harness into a passing test.
+
+```text
+rhino-local harness fault script-defect/send-body-js-date: httpClient.send body.d is a JS Date: … (script defect: AIC's behaviour here is measured and is not what the script means; this fails the run even if the script caught it)
+```
+
+Every fault has a stable id: a kebab-case slug, or a family prefix such as
+`arity-unknown/<binding.method>`, `not-mocked/<binding.method>`,
+`not-implemented/<binding.method>`,
+`fixture/<kind>` or `script-defect/<kind>`.
+Ids are never derived from line numbers or message text, so they survive a
+release. [`docs/rhino-local-gaps.md`](../../docs/rhino-local-gaps.md#harness-faults)
+lists them.
+
+Errors that AIC itself raises and the harness emulates stay ordinary,
+catchable script errors. One example is `Entry Already Exists` from a
+colliding `openidm.create`, `Resource 'managed/<type>' not found` from
+`openidm.query` on a `managed/<type>` the environment profile (from
+`aic-script-tester-pull-profile`) does not declare, or the `_queryFilter` parse error for a filter AIC is measured (or
+certain) to reject, such as `name eq` or the word form `not (…)` (raised before any record is read, so an empty
+collection does not hide it). A filter the harness's CREST grammar cannot read, an operator it does not evaluate
+(`gt`/`ge`/`lt`/`le`, except `gt`/`lt` on `alpha_user`'s measured date fields), `ne` (refused by AIC, in words not measured from a script), an empty or `null` filter, an escaped quote anywhere
+but a bare `eq` joined by `and` alone, and a record whose match turns on letter case, spaces or Unicode normalisation
+(AIC folds them for some fields, unmeasured for the rest), on a type mismatch (a number field against a quoted
+integer such as `"7"` is decided on `alpha_user` `frIndexedInteger1` only, and this lane knows no other types), on a decimal literal against a
+number, on `pr` of `""`, `[]` or `{}`, on a pointer through an array (except a bare `eq` joined by `and` alone), or on
+an `alpha_user`/`bravo_user` field DS does not compare by caseIgnoreMatch (`telephoneNumber`, the date and integer
+families) beyond what the 2026-11-06 probes measured (refused before any record is read) are the harness fault
+`openidm-query-filter` instead: AIC may well parse a filter the harness cannot. Where the probes measured AM's
+`openidm.query` on `alpha_user` — `telephoneNumber` with spaces, hyphens and `+` ignored, `frIndexedDate1` and
+`frUnindexedDate1` as instants under `eq`/`gt`/`lt`, an integral literal of either JSON type under `eq` on
+`frIndexedInteger1`, `pr` of an explicitly written `[]` — the script tester answers as AIC does, and a literal AIC
+cannot convert (`frIndexedInteger1 eq 7.5`, `frIndexedDate1 eq "notadate"`) throws AIC's catchable `JavaException`:
+`org.forgerock.openam.scripting.wrappers.ResourceExceptionScriptAdapter: The request cannot be processed because it
+contained an illegal filter assertion value &#39;7.5&#39; for field &#39;/frIndexedInteger1&#39;`, with
+`e.javaException.getCode()` 400 and `getReason()` `Bad Request` (`docs/api/12`). A script
+that catches one of those passes, just as it would on the tenant. `openidm.read`
+of an undeclared type returns `null`, as AIC's does. A profile speaks only for `managed/<type>`: any other unseeded
+resource (`internal/role`, `config/…`, a relationship collection) is the fault `fixture/managed` with or without one.
+
+**Argument counts.** A call with an argument count AIC has no overload for is
+refused the way Rhino refuses it on AIC — a catchable
+`InternalError: Can't find method <java class>.<method>(<argument types>).` —
+wherever the accepted counts have a basis: measured on AIC
+(`existingSession.get`, `utils.crypto.randomUUID`, `nodeState.mergeShared`) or read from AIC's binding
+introspection (`docs/api/bindings/scripted-decision-next.json`). Where the
+harness's range is its own guess, the call is the harness fault
+`arity-unknown/<binding.method>` instead, The same fault covers a count
+that only a reading of the introspection decides: where an overload's last
+parameter is listed as an `array`, it may be Java varargs, which Rhino calls
+with any count from one fewer upwards. So `logger.trace` with four or more
+arguments and `openidm.read(r, null, ["_id"], "x")` fault rather than pass or
+throw. `logger.debug`/`info`/`warn`/`error` were measured true varargs on
+2026-11-06: any count is accepted, each argument fills a `{}`, and a number
+prints as Java's `Double` text (`1.0`). `nodeState.mergeShared`/`mergeTransient`
+with a non-object throws AIC's measured catchable `InternalError`, leaving state
+unchanged; only a function argument is still the fault
+`node-state-merge-non-object`. The class named in an introspection-based refusal is the introspection's
+declaring class; that Rhino names that class, and not an implementation
+subclass, is measured for `existingSession.get` and `randomUUID` only.
+
+**The fault tally.** At the end of a run the package's Vitest reporter prints a
+per-id summary to stderr. It shows how many cases hit each fault and in how
+many files, and counts a case once per id however often it hit it. Each run
+also writes the tally as JSON, even when it is empty. The default path is
+`<state dir>/harness-faults/tally.json`, where the state dir is
+`AIC_SCRIPT_TESTER_STATE_DIR` or else `<project>/.aic-script-tester`. Set
+`AIC_SCRIPT_TESTER_FAULT_TALLY` to write it somewhere else. The tally covers
+every file, worker and pooled JVM in the run, and each fault is attributed to
+the case whose job raised it. Missing journey and IDM behaviour that has no id
+yet is listed separately, under its cause text. In watch mode with
+`isolate: false` the audit history spans reruns, so a rerun's tally can count
+cases from earlier runs; read the tally from a plain `vitest run`.
+
+```json
+{ "version": 1, "harness": "0.4.0-emulator.1",
+  "faults": [{ "id": "script-defect/send-body-js-date", "cases": 2, "failed": 2,
+               "files": ["test/a.test.ts", "test/b.test.ts"], "message": "…" }],
+  "unidentified": [] }
+```
+
+`harness` is the version of this package that ran the suite; the summary's
+heading names it too, so a pasted tally says which build produced it.
+`failed` is the number of cases the fault failed. The rest declared it on
+purpose with `expectHarnessFault(id)`, which is how a test that exercises the
+refusal itself asserts it:
+
+```ts
+import { expectHarnessFault } from "@agiledigital/pingone-aic-script-tester";
+expectHarnessFault("script-defect/send-body-js-date");
+await expect(lease.run().expect({ outcome: "done" })).rejects.toThrow(/harness fault script-defect\/send-body-js-date/);
+```
+
 ### Libraries used by `require()`
 
 Put each next-gen library on the suite, keyed by the exact name passed to
@@ -150,8 +378,7 @@ host per `aic.id`, as for the other leased resources.
 Before blanking or deleting a library it created, the lease checks its current
 source and ownership fields; if they changed, it leaves the library and recovery
 journal in place and reports a cleanup warning. It never blanks or deletes a
-reused library. Legacy scripts
-cannot use libraries, and `given.engine: "legacy"` with `libraries` is rejected.
+reused library.
 
 ### Callback suspension
 
@@ -159,7 +386,7 @@ On a next-gen pass, queued callbacks make AM pause and wait for a reply. They
 win even if the script also called `action.goTo()`: the pass has no outcome.
 Expect `outcome: null` and the emitted callbacks, then use `.step({ reply })`
 to submit a response and run the next pass. A pass with no queued callbacks
-keeps its `goTo` outcome. Legacy `Action.send` behavior is separate.
+keeps its `goTo` outcome.
 
 `action.putSessionProperty` and `removeSessionProperty` produce a judged
 `sessionProperties` state diff. Declare `added`, `changed`, and `removed` keys
@@ -419,9 +646,35 @@ hooks a `LeaseLane` calls, which hand your `check()` the complete form with
 the missing channels marked unobserved. What the harness hands *to* your code
 (`RunResult`, `StepResult`, `CheckContext`, `StepContext`, `BeforeRunContext`)
 stays complete, so a test that builds one of those by hand needs the new
-fields. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
+fields. The one deliberate widening is `EvidenceChannel`, which gained
+`"accessToken"` and `"oidc"` for the access-token and OIDC claims contexts, so an
+exhaustive `switch` over it written against 0.1.2 needs new arms. `test/compat/consumer-0.1.2.ts` holds this line: it compiles every
 0.1.2 export's shape against the current one, and `npm run typecheck` fails on
 any new break.
+
+### Project-wide suite defaults
+
+Channels and libraries that most suites in a project share, such as the ESVs a
+common library reads on most paths, can be declared once:
+
+```ts
+// test/suite.ts
+import { readFileSync } from "node:fs";
+import { withSuiteDefaults } from "@agiledigital/pingone-aic-script-tester";
+
+export const defineSuite = withSuiteDefaults({
+  always: { esv: { "common.url": "https://api.example.com" } },
+  libraries: { common: readFileSync("src/library/common.js", "utf8") },
+});
+```
+
+Each suite built with that `defineSuite` starts from the defaults. Precedence,
+lowest first: the defaults, the suite's `always`, then a case's `.run()`
+overrides. Maps merge per key, stub lists put the upper layer's entries first,
+and a suite's library replaces a default library of the same name. Set
+`defaults: false` on a suite to opt it out. Defaults only add declarations, so
+an ESV nobody declared is still refused unless a layer sets `esvUndeclared`.
+`layerChannels(base, top)` is the merge on its own, for composing defaults.
 
 ### ESV declarations
 
@@ -474,6 +727,25 @@ non-null default just as for a declared `null`; null bypasses conversion.
 it does not waive verdict checks. Cases remain AIC-eligible: AIC resolves real
 ESVs, so a tenant property that exists can still produce a disagreement.
 
+### Session and its principal
+
+`always: { session: { tier: "gold" } }` or `.run().session({ tier: "gold" })`
+asks for a logged-in session; the script sees it as `existingSession`, a flat
+string map. Custom properties only: `UserId`, `AuthLevel` and the other keys AM
+sets itself are refused, because the AIC lane cannot override them.
+
+The five keys AM derives from the principal (`UserId`, `Principals`,
+`UserToken`, `Principal`, `sun.am.UniversalIdentifier`) come from
+`sessionPrincipal`: `always: { sessionPrincipal: "alice" }` or
+`.run().sessionPrincipal("alice")`. Declaring it also asks for a session. It is
+independent of shared state, so a test can put one user in `existingSession`
+and another in `nodeState`. Without it, the principal is shared-state
+`username`, then `rl-session`. The AIC lane logs in as the principal through a
+mini journey (the principal need not exist), and the local lane mints the same
+five keys (`live-session-principal`). A principal that would need escaping in a
+DN (`,+"\<>;=`, or edge spaces) is refused, because AM's handling of it is
+unmeasured.
+
 ### Request cookies
 
 Declare cookies with `always: { cookies: { name: "value" } }`, override one
@@ -521,15 +793,18 @@ defaults, and resource accepts a string or regex. Match uses resource and action
 name; HTTP reply matching also does not inspect request content. The unchanged
 call effect is judged by `expect.openidm` (`actionName`, `body`). Failure stubs
 win over reply stubs. Unmatched actions now throw naming `given.openidmActions`
-(**breaking for 0.2.0**), instead of inventing `{}`. The exception is the measured
-managed-collection actions `patch`, `triggerSyncCheck`, `updateLastSync`, which
-still return `{}` by default; an explicit reply overrides that default. Other
+(**breaking for 0.2.0**), instead of inventing `{}`. The managed-collection
+actions `patch`, `triggerSyncCheck` and `updateLastSync` are the names AIC's
+refusal lists (measured); what they return was not measured, and on AIC they
+run the records' write chain or the type's sync mappings. Unstubbed, each is
+the harness fault `openidm-managed-collection-action/<action>` (E15b; it used
+to return an invented `{}`). An explicit reply answers it. Other
 managed-collection actions still throw the measured refusal, even with a reply.
 Action replies are local only: like HTTP replies, they make cases AIC-ineligible
 and report the same observation gap (`aic.unsupported: "skip"` opts into skipping).
 
 Use `openidmFailures` to make one local IDM call fail: each stub has
-`match: { method, resource, ordinal }` and `reply: { code }`. `ordinal` is
+`match: { method, resource, ordinal }` and `reply: { code, detail?, message? }`. `ordinal` is
 one-based among calls with the same method and resource, so a second patch
 can fail after the first succeeds. On a `.step()` chain the count runs across
 the whole journey, not per pass: "patch #1" fails once, so a retry on the
@@ -540,8 +815,32 @@ The failed call is still recorded in `expect.openidm`. The script sees a
 `JavaException` whose text reads
 `…ResourceExceptionScriptAdapter: injected ResourceException code <code>`, and
 no `code` property — AIC's adapter has none (`typeof error.code` measured
-`"undefined"`), so a script cannot route on one there either. The message text
-is the harness's own; AIC's carries the reason phrase, not the number. These
+`"undefined"`), so a script cannot route on one there either. It routes on
+`e.javaException.getCode()`, which answers the stub's code, as AIC's adapter
+answers its status; `getReason()` answers CREST's reason phrase for it (a code
+outside CREST's table faults, `openidm-failure-reason`). The message text
+is the harness's own unless the stub gives `message`, which replaces the text
+after `ResourceExceptionScriptAdapter: `; AIC's carries the reason phrase or
+IDM's own words, not the number. `detail` is what `getDetail()` returns, as
+AIC's CREST `JsonValue` (measured 2026-11-08 and 2026-11-10, docs/api/12):
+`get(key)`, `get(index)`, `isNull()`, `getObject()`, `asString()` and its
+one-line string form. `asString()` is the string, or `null` for a null value
+(a null detail, a missing key, an index past the end), and on a boolean,
+object or array throws AIC's catchable `<pointer>: Expecting a
+java.lang.String but got <class>`. A policy failure's detail is its
+`{ result: false, failedPolicyRequirements: [...] }` object; a 404 or 400 from
+`openidm` carries `null`, so `getDetail().get("x").asString()` is `null`
+there. `typeof detail.<member>` is `"function"` and `"<member>" in detail` is
+`true` for every `JsonValue` method, as measured, so feature detection works;
+calling a member the probes did not exercise (or binding it, rendering it as a
+string, or serialising it with `JSON.stringify` by any route but one: an
+author's `toJSON` returning it under a property list is not caught) is the
+fault `openidm-failure-detail`, as is rendering any member but `asString` as a
+string (`String(detail.get)`), whose text was not measured; `asString` renders
+as AIC's Java signature by every route, as
+is a `get` index that is not an integer within a Java `int` (on any value,
+a null one included), as is calling `getDetail()` on a stub
+without `detail`. These
 stubs are AIC-ineligible. An AIC-enabled file lease refuses such a case unless
 its `aic.unsupported` is `"skip"`, which keeps the local verdict and reports
 the observation gap.
@@ -614,7 +913,7 @@ In next-gen decision-node scripts, local `logger.getName()` uses the measured
 With an AIC lease, the ID is its deterministic subject UUID. A local-only
 suite uses `<unseeded-script-id>` as an obvious placeholder; a raw `Case` can
 provide `given.loggerScriptId`. The logger-name form for other script contexts
-has not been measured, and the legacy mock keeps its earlier bare name.
+has not been measured.
 
 ### Match a value's shape
 
@@ -661,7 +960,65 @@ default export is a `TenantProvider`. It exists because a bin runs in its own
 process, where the Vitest registration does not reach.
 
 - `aic-script-tester-pull-profile [--tenant <name>]` writes
-  `.aic-script-tester/profiles/<tenant>.json`. It prints only counts.
+  `.aic-script-tester/profiles/<tenant>.json`. It prints only counts. The
+  profile records each type's properties, `required` (and whether the schema
+  has the array at all), `enum`s, `default`s, the `policyId`s of declared
+  `policies`, `conditionalPolicies` and `fallbackPolicies`, and the **names**
+  of its script hooks (object-level `onCreate`, `postUpdate`, …, and
+  property-level `onStore`, …), never their source or conditions. It carries
+  `profileVersion: 3`: version 3 keeps any `type` list other than the exact
+  `["<type>", "null"]` pair (as `type: "any"` plus `types`) and the `properties` nested under a property,
+  so a default the earlier versions erased is still judged.
+
+**Writes on types with hooks or policies (E15b).** The script tester's
+`openidm.create`/`update`/`patch`/`delete` write `given.managed` directly: they
+run no hook and evaluate no policy. On AIC the same write runs both, so for a
+type whose profile declares either, a local pass says nothing (an `alpha_user`
+create without `mail`/`givenName`/`sn` is a measured 403 there). Such a write
+is a harness fault: `openidm-managed-hook/<type>.<hook>`, naming the first hook
+the write would run, in the measured order (a create runs `onCreate`, property
+`onValidate`, `onValidate`, property `onStore`, `onStore`, `postCreate`,
+`onSync`; an update or patch first reads the record, running `onRetrieve`,
+property `onRetrieve` and `onRead`, then the `onUpdate`/`postUpdate`
+equivalents of the create chain; a delete `onDelete`, `postDelete`, `onSync`;
+hook names the harness does not know count for every write), or
+`openidm-managed-policy/<type>` when the type declares only policies
+(`required`, an `enum`, property `policies`, `conditionalPolicies` or
+`fallbackPolicies`; a delete is not judged on policy). Declarations nested
+under a property's `properties` or `items` count as well, since what AIC does
+with them was never measured: a nested hook faults every write as
+`openidm-managed-unmeasured-hook/<type>.<path>.<hook>`, and a nested policy or
+non-empty `required` as `openidm-managed-policy/<type>`. A write a test stubs with `given.openidmFailures`
+never reaches the store and does not fault. A type with neither keeps writing
+silently, and without a profile nothing changes. A profile whose
+`profileVersion` is absent, below 3 or not an integer (`"3"` is a string)
+cannot say a type declares nothing, nor describe every default, so every write under it is
+`openidm-managed-profile-stale` until it is pulled again. A hand-written
+profile cannot be re-pulled: add `hooks` to each type (`[]` for none) and
+`noRequiredArray: true` to a type whose schema has no `required` array, add
+`default`, `conditionalPolicies` and `fallbackPolicies` to each property the
+tenant gives them, record any `type` list other than the exact `["<type>", "null"]` pair as
+`"type": "any"` with the list in `types`, and copy any `properties` nested under
+a property, then set `"profileVersion": 3`. A type's
+defaults are applied on create (`default: null` stores `null`, and `[]` on an
+array, as does a `null` sent to that array), and a `null`
+sent for a property with a non-null default is AIC's measured `403 Policy
+validation failed` on a create of a new record and a harness fault otherwise
+(`docs/rhino-local-gaps.md`). If any type's profile records an invalid
+`default` (a type mismatch such as `{"type": "boolean", "default": "nope"}`,
+any numeric default on `integer` — AIC calls every JSON number `"number"`, so
+`3` fails too — or an array item not of `items.type`), every `openidm` call on any `managed/…`
+resource faults, reads included, as
+`openidm-managed-invalid-default/<type>.<property>`: AIC stores such a config
+but keeps serving an earlier one for every type, which the profile does not
+describe. A default no probe covered — on any `type` list other than the exact
+`["<type>", "null"]` pair, or nested under `items` or `properties` — faults the same way as
+`openidm-managed-unmeasured-default/<type>.<property>`. A `null` default is
+valid on every type. The IDM emulator refuses the same declarations with the same rule. A profile must key each type by its
+own `name`: one whose `objects` key and `name` disagree is refused when read
+and when a case is given it. Expect this to fail
+client tests that write without stubs; the fault tally counts them, by type
+and hook (E19).
 - `aic-script-tester-show-log [--stdout]` fetches the logs of recorded failures. It
   writes them to `.aic-script-tester/failures/latest-logs.json`, and opens that in
   `$LOGS_EDITOR` or `$EDITOR` if one is set. `--stdout` prints them instead;
@@ -682,6 +1039,558 @@ process, where the Vitest registration does not reach.
 More detail lives in this repository's `docs/rhino-local-harness.md`, which is
 not shipped with the package.
 
+### Access-token modification scripts
+
+A case runs a decision-node script unless it names another script context.
+`context: "OAUTH2_ACCESS_TOKEN_MODIFICATION"` runs an OAuth2 access-token
+modification script instead (the next-gen `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`
+engine). A case without `context` behaves exactly as before.
+
+```ts
+import { defineCase } from "@agiledigital/pingone-aic-script-tester/case";
+
+defineCase({
+  name: "stamps the owner claim",
+  context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+  script,
+  given: {
+    engine: "next-gen",
+    accessToken: { clientId: "widget-client", scope: ["read"] },
+    identity: { attributes: { "com.forgerock.openam.oauth2provider.clientType": ["Confidential"] } },
+    client: { allowedScopes: ["read", "write"], customProperties: { owner: "a" } },
+    request: { headers: { "Content-Type": ["application/x-www-form-urlencoded"] } },
+  },
+  expect: { accessToken: { fields: { added: { owner: "a" } } } },
+});
+```
+
+**Fixtures.** Every one is optional. `accessToken` is the token's starting
+state (client, owner, grant type, realm, scope, audience, auth time, expiry,
+custom `fields`, nonce, auth level, claims); by default it is a
+`client_credentials` token for `test-client` in `/alpha`, valid for an hour,
+whose custom fields are AM's `subname` and `expires_in`. `identity` is the
+client's agent identity (name, universal id, `exists`, attributes). `client` is
+what `clientProperties` reports. `scopes` overrides the `scopes` binding, which
+otherwise holds the token's scope. `request` is `requestProperties`: params,
+headers and the request URI.
+
+**Assertions.** `expect.accessToken` judges the token after the script:
+`fields` and `responseFields` (added/changed/removed, as for state buckets),
+`scope` (compared as a set), `expiryTime`, `nonce`, `authLevel`, `claims`,
+`act`, `mayAct` and `permissions` (each a value or a matcher), and `issued`.
+Any change the case does not declare fails the verdict, as every other channel
+does, unless `allowUndeclared: { accessToken: true }`. `issued` defaults to
+`true`. A script can return normally and still leave AM unable to issue the
+token: measured, `accessToken.removeScopes()` makes the token
+endpoint answer 500 with `Cannot invoke "java.util.Collection.size()" because
+"c" is null`. Such a run reports that refusal; declare `issued: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as AM fails the
+token request. `expect.outcome` and `outcomes` are refused: this script decides
+nothing. `logs`, `http` and `openidm` are judged as usual.
+
+**Bindings.** Only measured members are emulated (2026-08-27 and 2026-11-10,
+`docs/api/12-script-bindings-matrix.md`). There is no `session` (reading it is a `ReferenceError`).
+Decision-node bindings such as `nodeState`, `action` and `callbacksBuilder` are
+not defined. Every member
+nobody measured raises a harness fault, `oauth2-token-unmeasured/<binding>.<member>`,
+which fails the run and is tallied. `docs/rhino-local-gaps.md` lists what is
+approximated.
+
+A token-context case runs locally only: the AIC lane wraps its subject in a
+journey, which can run only a decision-node script, so it reports the case as
+unsupported rather than run it.
+
+The types are exported from `./case`: `AccessTokenCaseInit` (what
+`defineCase` accepts for this context), `AccessTokenSeed`, `IdentitySeed`,
+`ClientSeed`, `TokenRequestSeed`, `AccessTokenExpect` and the recorded
+`AccessTokenEffect`. Types for the script itself are the `aic` script
+workspace's `oauth2-access-token.d.ts` and `oauth2-access-token-ng.d.ts`.
+
+### OIDC claims scripts
+
+`context: "OIDC_CLAIMS"` runs an OIDC claims script (next-gen,
+`OIDC_CLAIMS_NEXT_GEN`). The script's
+result is its **completion value**, the value of its last expression, as AM
+reads it: `({ values: { … }, compositeScopes: { … } })`, with
+`compositeScopes` optional.
+
+```ts
+defineCase({
+  name: "adds the mail claim",
+  context: "OIDC_CLAIMS",
+  script, // ...; ({ values: { mail: String(identity.getAttributeValues("mail")[0]) } });
+  given: {
+    engine: "next-gen",
+    identity: { name: "user-1", attributes: { mail: ["user@example.com"] } },
+    scopes: ["openid", "email"],
+  },
+  expect: { oidc: { userinfo: { mail: "user@example.com" } } },
+});
+```
+
+**Fixtures.** Every one is optional. `identity` is the user (name, universal
+id, `exists`, attributes); the name defaults to `rhino-local-user`. `scopes`
+defaults to `["openid"]`. `client` is what `clientProperties` reports. `request` is `requestProperties`. By default it is a
+password-grant token request, with AM's filtering applied: no `password` and
+no `client_secret`. To model the userinfo endpoint, which runs the same script
+a second time, give the userinfo URI with empty params. `oidc` holds the
+`claims` binding's seed (`sub` and `subname`, both defaulting to the identity's
+name) and `claimsLocales`.
+
+**Assertions.** `expect.oidc` judges what AM would emit:
+
+- `userinfo`: the userinfo body, which is the returned values verbatim, nulls
+  included.
+- `idToken`: the id token's script claims. These are the values with nulls
+  dropped, under AM's subject rule: when the values hold `sub`, the token takes
+  `sub` and `subname` from them; otherwise the seed's `sub` and `subname` win.
+- `compositeScopes`: as returned.
+- `issued`: defaults to `true`.
+
+Any of the first three can be a value or a matcher. A non-empty userinfo body
+or composite-scopes map that the case does not declare fails the verdict
+unless `allowUndeclared: { oidc: true }` is set. The id token is never called
+undeclared, because it is derived from the values.
+
+An uncaught throw fails the run with
+`CaseRunError`. A completion value of `undefined`, or an object without
+`values`, is a 200 with no script claims. A refused token request is recorded;
+declare `issued: false` to expect it.
+`expect.outcome` is refused.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- `claims` is a JS-friendly map: its keys enumerate, `===`
+  works, and `get`/`put`/`remove`/`containsKey` are available. Changing it
+  changes nothing unless the script returns it.
+- `accessToken` and the decision-node bindings are not bound.
+
+Every unmeasured member raises the harness fault
+`oidc-claims-unmeasured/<binding>.<member>`. So does returning a claim AM
+writes itself (`aud`, `iss`, …) and deleting a key of next-gen `claims`
+(which AIC refuses quietly).
+
+An OIDC case runs locally only. The types are exported from `./case`:
+`OidcClaimsCaseInit`, `OidcClaimsSeed`, `OidcClaimsExpect` and the recorded
+`OidcClaimsEffect`.
+
+### Social IdP profile transformation scripts
+
+`context: "SOCIAL_IDP_PROFILE_TRANSFORMATION"` runs a social identity
+provider's `transform` script (next-gen,
+`SOCIAL_IDP_PROFILE_TRANSFORMATION_NEXT_GEN`). The script turns the provider's
+raw profile into the normalised profile that `SocialProviderHandlerNodeV2`
+reads. Its result is its **completion value**: a plain object.
+
+```ts
+defineCase({
+  name: "maps the provider's subject",
+  context: "SOCIAL_IDP_PROFILE_TRANSFORMATION",
+  script, // ...; ({ id: rawProfile.sub, mail: rawProfile.get("email") });
+  given: {
+    engine: "next-gen",
+    socialIdp: { selectedIdp: "my-idp", rawProfile: { sub: "abc", email: "user@example.com" } },
+  },
+  expect: { socialIdp: { profile: { id: "abc", mail: "user@example.com" } } },
+});
+```
+
+**Fixtures.** `socialIdp.rawProfile` is the provider's profile (default `{}`)
+and `socialIdp.selectedIdp` the provider's name (default `rhino-local-idp`),
+which also seeds `nodeState.get("selectedIdp")` unless the case seeds that
+key. The node state comes from `sharedState` / `transientState`, as on the
+decision node. `requestHeaders`, `requestParameters`, `cookieName` and
+`loggerScriptId` are accepted too.
+
+**Assertions.** `expect.socialIdp.profile` is the profile the handler node
+receives, as a value or a matcher. A returned profile the case does not
+declare fails the verdict unless `allowUndeclared: { socialIdp: true }`.
+Numbers reach the node as doubles (`4` arrives as `4.0`), which JSON cannot
+tell apart. A top-level `undefined` property arrives as `null`. If the script
+evaluates to `undefined`, `null` or a string, AM fails the journey with 401
+Login failure. The run records that refusal; declare `accepted: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as it fails
+the journey. Node-state writes (`nodeState.putShared`/`putTransient`) persist to later nodes and are judged through
+`expect.sharedState` / `expect.transientState`, fail-closed.
+`expect.outcome` is refused.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- `rawProfile` is a Java map with map access: `rawProfile.sub`
+  and `rawProfile.get("sub")` are JS strings, a missing key reads `undefined`
+  by dot and `null` by `get`, and `keys()`/`size()` work. `nodeState.keys()`
+  fails with AIC's class-shutter error. `httpClient`, `openidm`, `secrets`,
+  `utils`, `require` and the other next-gen shared bindings are the decision
+  node's. `sharedState`, `transientState` and `callbacks` are not bound.
+- `existingSession` (a `ReferenceError`, although the
+  descriptor lists it), `normalizedProfile`, `action` and `outcome` are not bound.
+
+Only string profile values were measured, so reading any other value raises
+the harness fault `social-idp-unmeasured/rawProfile.<key>`. Every other
+unmeasured member raises `social-idp-unmeasured/<binding>.<member>`, as does a
+result of any other kind.
+
+A social IdP case runs locally only. The types are exported from `./case`:
+`SocialIdpCaseInit`, `SocialIdpSeed`, `SocialIdpExpect` and the recorded
+`SocialIdpEffect`.
+
+### Config provider node scripts
+
+`context: "CONFIG_PROVIDER_NODE"` runs a Configuration Provider node's
+script (next-gen, `CONFIG_PROVIDER_NODE_NEXT_GEN`). The script builds the configuration of the
+node the Configuration Provider wraps. AM reads its **`config` global** after
+the script ends: a plain object. A script that only evaluates to a map is refused.
+
+```ts
+defineCase({
+  name: "greets by name",
+  context: "CONFIG_PROVIDER_NODE",
+  script, // config = { message: { en: "Hello " + nodeState.get("username") } };
+  given: { engine: "next-gen", sharedState: { username: "ada" } },
+  expect: { configProvider: { config: { message: { en: "Hello ada" } } } },
+});
+```
+
+**Fixtures.** The node state comes from `sharedState` / `transientState`, as
+on the decision node. `requestHeaders`, `requestParameters`, `cookieName` and
+`loggerScriptId` are accepted too.
+
+**Assertions.** `expect.configProvider.config` is the map the wrapped node is
+configured from, as a value or a matcher. How the wrapped node reads it is
+that node's business and is not emulated. A map the case does not declare
+fails the verdict unless `allowUndeclared: { configProvider: true }`. Numbers
+reach the node as doubles (`42` arrives as `42.0`), which JSON cannot tell
+apart. An `undefined` property arrives as `null`. If `config` is never
+assigned, or is `undefined`, `null`, a string, a number, a boolean, an array
+or a function, AM fails the journey with HTTP 500 ("Script must set 'config'
+to a Map."). The run records that refusal; declare `accepted: false` to
+expect it. An uncaught throw fails the run with `CaseRunError`, as it fails
+the journey. Node-state writes (`nodeState.putShared`/`putTransient`) persist
+to later nodes and are judged through `expect.sharedState` /
+`expect.transientState`, fail-closed. `expect.outcome` is refused: the
+wrapped node decides the outcome.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- **Next-gen** binds the decision node's bindings except `sharedState`,
+  `transientState` and `outcome`. `nodeState.keys()` fails with AIC's
+  class-shutter error. `callbacks.isEmpty()` is `true`,
+  `callbacksBuilder.textOutputCallback(type, message)` is accepted and adds
+  nothing to what the wrapped node shows, and `action.goTo(name)` is accepted
+  and routes nothing. Every other member of those three raises a harness
+  fault.
+- `identity`, `session` and `cacheManager` are not bound.
+  `existingSession` is a `ReferenceError` on a request without a session
+  cookie, although the descriptor lists it; with one it was not
+  measured, so `given.existingSession` is refused.
+  `requestHeaders.get(name)` and `requestParameters.get(name)` are Java lists
+  (`[v1]`), and `null` for an absent name.
+
+A value inside `config` of any kind not measured raises the harness fault
+`config-provider-unmeasured/config.<path>`. Every other unmeasured member
+raises `config-provider-unmeasured/<binding>.<member>`.
+
+AM runs the script again on every request that reaches the node, including
+the one that submits the wrapped node's callbacks. One case is one
+invocation; the re-run, in which transient state is gone and next-gen node
+state objects come back as Java maps, is not emulated.
+
+A config provider case runs locally only. The types are exported from
+`./case`: `ConfigProviderCaseInit`, `ConfigProviderExpect` and the recorded
+`ConfigProviderEffect`.
+
+### OAuth2 validate scope scripts
+
+`context: "OAUTH2_VALIDATE_SCOPE"` runs an OAuth2 client's validate scope
+script (next-gen, `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`). AM runs the script's body, then calls its
+global **`validateAccessTokenScope()`** with no arguments and grants **exactly
+the list it returns**: AM does not intersect it with the request, so a script
+can widen a grant, even with a scope the client does not hold.
+
+```ts
+defineCase({
+  name: "drops the admin scope",
+  context: "OAUTH2_VALIDATE_SCOPE",
+  script, // function validateAccessTokenScope() { return Array.prototype.slice.call(requestedScopes).filter(function (s) { return s !== "admin"; }); }
+  given: { engine: "next-gen", validateScope: { requested: ["read", "admin"], allowed: ["read", "admin"] } },
+  expect: { validateScope: { granted: ["read"] } },
+});
+```
+
+**Fixtures.** `given.validateScope` seeds `requested`, `allowed`,
+`available` (next-gen only; defaults to `allowed`) and `defaults`, each a list
+of scope strings (default `[]`). `client` and `request` seed next-gen's
+`clientProperties` and `requestProperties`, as for access-token modification;
+the default request is a `client_credentials` token request whose `scope`
+parameter is `requested`. `loggerScriptId` and `cookieName` are accepted too.
+
+**Assertions.** `expect.validateScope.granted` is the granted scopes, compared
+as a set (AM removes duplicates). A grant the case does not declare fails the
+verdict unless `allowUndeclared: { validateScope: true }`. AM issues no token
+when the function returns `[]`, `null` or `undefined` (HTTP 403, "The user has
+declined authorization"), a string or a plain object (HTTP 500), or a list
+holding a number (HTTP 500, a `Double` cast), or when there is no
+`validateAccessTokenScope` function at all (HTTP 500). The run records those
+refusals; declare `accepted: false` to expect one. `scopeValidatorHelper.throwInvalidScope(message)` is AM's invalid-scope denial
+(HTTP 400 with `message` as the `error_description`, verbatim); declare it as
+`invalidScope: "<message>"`. Any other uncaught throw fails the run with
+`CaseRunError`, as it fails the token request with HTTP 500. A denial the
+script catches itself denies nothing.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- `requestedScopes`, `allowedScopes`, `availableScopes`
+  and `defaultScopes` as Java lists (`[object JavaList]`) of JS strings:
+  `length`, `size()`, `[i]`, `contains()`, `indexOf()`, `isEmpty()`,
+  `forEach()`, `toArray()` (not a JS array), `JSON.stringify`,
+  `[].concat(v)` and `Array.prototype.slice.call(v)` answer, and so does
+  `add()` on `requestedScopes` and `allowedScopes`; `iterator()` is AIC's
+  class-shutter error. It also binds `scopeValidatorHelper`
+  (`throwInvalidScope`, and `inheritAccessTokenScopesOnRefresh()`, which
+  returns `undefined`), `identity` (on a `client_credentials` grant
+  `exists()` is `false` and `getName()` throws), `requestProperties`,
+  `clientProperties`, `logger`, `httpClient`, `secrets`, `systemEnv`,
+  `realm`, `scriptName`, `cookieName`, `openidm`, `utils`, `emailService`,
+  `jwtAssertion`, `jwtValidator`, `policy` and `require`.
+- Not bound: the request maps, node state, callbacks, `session`
+  or `existingSession`.
+
+A returned value of a kind not measured raises the harness fault
+`oauth2-validate-scope-unmeasured/validateAccessTokenScope()`. Every other
+unmeasured member raises `oauth2-validate-scope-unmeasured/<binding>.<member>`.
+
+One case is one access-token request. AM's other entry points
+(`validateRefreshTokenScope`, `validateAuthorizationScope`, …) were not
+measured and are never called.
+
+A validate scope case runs locally only. The types are exported from
+`./case`: `ValidateScopeCaseInit`, `ValidateScopeSeed`, `ValidateScopeExpect`
+and the recorded `ValidateScopeEffect`.
+
+### OAuth2 may act scripts
+
+`context: "OAUTH2_MAY_ACT"` runs an OAuth2 client's may-act script, on either
+(next-gen, `OAUTH2_MAY_ACT_NEXT_GEN`).
+AM runs the script's body and then, if it did not throw, stamps `may_act` and
+`act` from what the script stored on `token`. The body's return value is
+ignored. A script that throws is HTTP 500 (`Error running may_act script`) and a
+claim set earlier in that script is discarded.
+
+```ts
+defineCase({
+  name: "names the actor",
+  context: "OAUTH2_MAY_ACT",
+  script, // next-gen: token.setMayAct({ client_id: "actor" })
+  given: {
+    engine: "next-gen",
+    client: { clientId: "subject-client" },
+    scopes: ["read"],
+  },
+  expect: { mayAct: { mayAct: { client_id: "actor" }, scope: ["read"] } },
+});
+```
+
+**Fixtures.** There is no `given.mayAct`. `client`, `scopes`, `request`,
+`identity` and `accessToken` seed the same bindings as access-token
+modification, but a may-act `accessToken` accepts only `clientId`, `grantType`
+(`"client_credentials"` only), `realm`, `scope` and `fields.expires_in`. Any
+other token member, any other field, and `request.params.grant_type` other than
+`["client_credentials"]` are rejected: this context was measured only for that
+grant, and an unread member would otherwise be a fixture the script never sees.
+`loggerScriptId` and `cookieName` are accepted too. The default request is a
+`client_credentials` token request. `scopes` defaults to `accessToken.scope`, or
+`[]`. `expires_in` defaults to `3600`.
+
+**Assertions.** `expect.mayAct.mayAct` is the `may_act` claim and
+`expect.mayAct.act` is the `act` claim. A key present with the value `null`
+means the claim was JSON null; omitting the key means the claim was absent.
+On this context `token.setMayAct(null)` writes
+JSON null.
+A claim the case does not declare fails the verdict unless
+`allowUndeclared: { mayAct: true }`. `scope` is the issued token's scopes,
+compared as a set; it defaults to the request's scopes. `issued: false` expects no token (HTTP 500) and
+cannot be combined with `mayAct`, `act` or `scope`. `refusal` is the
+`error_description`. A `Date` stored as a direct property of the claim does not
+throw inside the script; AM then fails the write with its Jackson message, which
+`refusal` can name. Any other uncaught throw fails the run with `CaseRunError`.
+
+**Bindings.** Only measured members are emulated (2026-11-10,
+`docs/api/12-script-bindings-matrix.md`):
+
+- `token` has five methods: `getField`, `getAct`, `getMayAct`,
+  `setAct` and `setMayAct`. `setMayAct` and `setAct` take one plain object,
+  stored by reference, or `null` (JSON null). A string, number, boolean or a
+  second argument is `Can't find method`; a function or an array, where a map is
+  required, is the recorded `InternalError`. `getField("scope")` is the class
+  shutter's refusal of `java.util.TreeSet`. `scopes` is a Java list of JS
+  strings. `identity.exists()` is `true` and `getName()` is the client id on a
+  `client_credentials` grant. `requestProperties` and `clientProperties` are the
+  same maps as access-token modification. The decision-node host bindings
+  (`httpClient`, `openidm`, `require`, …) stay bound. `session` is not bound.
+  `cookieName` is a string; the capture records the type, not the value.
+
+
+An unmeasured member raises `oauth2-may-act-unmeasured/<binding>.<member>`.
+
+One case is one access-token request. Authorization-code, refresh and
+token-exchange entry points were not measured.
+
+A may-act case runs locally only. The types are exported from `./case`:
+`MayActCaseInit`, `MayActExpect` and the recorded `MayActEffect`.
+
+### Library scripts
+
+`context: "LIBRARY"` calls an export of a next-gen library script directly.
+The case's `script` is the library body. The harness `require()`s it through the
+same loader a decision node uses and calls `given.library.export` with
+`given.library.args` (default `[]`). The call is a method call, so `this` is the
+object `require()` returned.
+
+```ts
+defineCase({
+  name: "echoes its argument",
+  context: "LIBRARY",
+  script, // exports.echo = function (v) { return v; };
+  given: { library: { export: "echo", args: [{ n: 1 }] } },
+  expect: { returns: { status: "returned", value: { n: 1 } } },
+});
+```
+
+**Assertions.** `expect.returns` is fail-closed. Omitting it requires the export
+to return `undefined` and not throw, unless
+`allowUndeclared: { returns: true }`. A returned JSON value is `value`. A
+returned `undefined` is `undefined: true` (JSON `null` is a different result).
+Declare exactly one of those. A throw is `status: "thrown"` with `type`
+(`typeof` of the thrown value), `name` (`""` for a thrown string) and `message`
+(`String(error)`, so `new Error("x")` is `"Error: x"`). `phase` is `"export"`
+(the default) or `"module"` when the library body throws while it loads, before
+the export is called. A status mismatch does not also compare the other fields.
+
+An argument of `undefined` is not a JSON value, so `args` cannot express one. A
+returned value is admitted only when it is JSON, nested `null` included, or
+top-level `undefined`. A function, a cycle, a nested `undefined`, a non-finite
+number (including `-0`), a `Date`, an `Error`, a Java object, or anything else
+JSON would drop or rewrite is the harness fault `library-unmeasured/return`.
+`JSON.stringify` succeeding is not that check.
+
+**Bindings.** Measured 2026-11-11 (`docs/api/12-script-bindings-matrix.md`).
+Inside the library, at module scope and inside the export, the same names are
+bound. Present: `require`, `JavaImporter`, `exports`, `module`, `logger`,
+`httpClient`, `openidm`, `secrets`, `systemEnv`, `utils`, `emailService`,
+`jwtAssertion`, `jwtValidator`, `policy`, `realm`, `scriptName` and
+`cookieName`. The caller's own bindings (`nodeState`, `accessToken`, `scopes`,
+…) are not. `scriptName` and `logger.getName()` are the caller's, including
+inside a nested `require()`. `logger.getName()` is
+`scripts.<caller context>.<script id>.(<script name>)`. `systemEnv.getProperty`
+of a missing key is `null`. `utils.base64.encode` and `openidm.read` of a
+missing id behave as they do for a decision node.
+
+`given.library.callerContext` selects that logger segment and that caller's
+class shutter. The default is `AUTHENTICATION_TREE_DECISION_NODE`, where
+`new java.util.HashSet()` constructs (`"ok-1"`). The other measured callers are
+`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`, `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`,
+`OAUTH2_MAY_ACT_NEXT_GEN` and `OAUTH2_EVALUATE_SCOPE_NEXT_GEN`. Each of those
+refuses `HashSet` (the captures record `"err"`). The refusal message was not
+captured; the runner uses that caller's allow-list, so the error is the class
+shutter's. `logger.getName()` was measured with no arguments. Any other count is
+`library-unmeasured/logger.getName(…)`. `realm`, `scriptName`, `loggerScriptId`
+and `cookieName` seed the same values the caller would have had.
+
+`emailService`, `jwtAssertion`, `jwtValidator` and `policy` were present and
+none of their methods was called. Each function member is
+`library-unmeasured/<binding>.<member>`. `String(binding)` and
+`JSON.stringify(binding)` were not measured either:
+`library-unmeasured/String(<binding>)` and
+`library-unmeasured/JSON.stringify(<binding>)`. `logger`, `httpClient`,
+`openidm`, `secrets`, `systemEnv` and `utils` keep the decision-node harness:
+the probe called `logger.getName`, `systemEnv.getProperty`,
+`utils.base64.encode` and `openidm.read`. Shared channels (`logs`, `http`,
+`openidm`) are judged as elsewhere.
+
+A library case runs locally only. The types are exported from `./case`:
+`LibraryCaseInit`, `LibrarySeed`, `LibraryExpect`, `LibraryCallerContext`,
+`LIBRARY_CALLER_CONTEXTS` and the recorded `LibraryEffect`.
+
+### Phase timing
+
+To see where a suite's time goes, set `AIC_SCRIPT_TESTER_TIMING` to a file and
+summarise it afterwards:
+
+```sh
+AIC_SCRIPT_TESTER_TIMING=timing.jsonl npx vitest run
+npx aic-script-tester-timing timing.jsonl        # --json for machine output
+npx aic-script-tester-timing --share timing.jsonl  # names replaced by hashes
+```
+
+Every JVM spawn, pool lease and eval job appends one JSON line. A job row
+carries the bytes written (`lineBytes`), the source text shipped with it
+(`sourceBytes`, `sourcesShipped`), `stringifyMs`, `roundTripMs` and
+`transportMs`, and the JVM's own phases under `jvm`: reader decode, setup,
+prelude, preamble (where the seed is parsed) and subject compile and exec,
+library compile and load, harvest, host-call wait, and compile-cache hits and
+misses. A phase that threw or timed out still reports its time.
+
+Subject execution breaks down further. `moduleBodyMs` is the time library
+module bodies ran (a body runs when a script first requires it, inside subject
+execution), and `moduleBodies` gives each library its own share, less the
+libraries it required in turn. `harvestMs` is collecting the case's result.
+`subjectOwnMs` is what is left: the script's own work and the bindings it
+called. `libraryLoaderExecMs` is only creating each module's loader function,
+not running its body.
+
+`outcome` is the script's own outcome, so a script that caught a harness
+refusal reads `"ok"`; `emulationFault` says whether the run failed the fault
+audit, and `faultIds` names the faults.
+
+The summary adds a table of module-body time per library and of JVM time per
+test source. `--share` replaces every library id and source name with a salted
+hash, so the summary can be sent to someone outside the project; the salt is
+random unless you pass `--salt=<text>`, which makes two summaries comparable.
+Timing is off unless the variable is set, and it never changes a response or a
+lane comparison. `src/timing.ts` documents every field.
+
+### Vitest settings for a fast suite
+
+Vitest's default isolation re-evaluates every module in every test file. One
+client suite of 97 files evaluated 117 modules 666 times under it, and took
+58 s; with `isolate: false` it took 26 s (client measurement, Node 24 and
+Java 25 on 4 cores). Both settings are supported: the readiness suite runs the
+`forks` and `threads` pools with isolation on and off.
+
+```ts
+// vitest.config.ts
+export default defineConfig({
+  test: {
+    isolate: false,
+    maxWorkers: 3, // see below
+    setupFiles: ["@agiledigital/pingone-aic-script-tester/vitest-setup"],
+    runner: "@agiledigital/pingone-aic-script-tester/vitest-runner",
+    reporters: ["default", "@agiledigital/pingone-aic-script-tester/vitest-reporter"],
+  },
+});
+```
+
+With `isolate: false`, module-level state in a test file or a setup module
+carries into the next file on the same worker, so keep fixtures inside
+`defineSuite` and `useLease`. In watch mode the fault tally also spans reruns
+(above).
+
+Each Vitest worker borrows one warm JVM from the pool, and in that client's
+suite the Node workers were idle 81–83% of the time, waiting on Java. A worker
+beyond the core count therefore adds a JVM competing for the same CPUs; they
+ran 3 workers on 4 cores. The best number for another machine is not measured
+here: try one or two values with phase timing on.
+
+A suite on the local lane does not load the tenant lane's modules; they load
+in `beforeAll` only for a suite given `aicWhenEnabled(...)` options with
+`AIC_SCRIPT_TESTER_AIC=1` set. That halves the package entry's import time
+(63 ms to 33 ms here), which counts once per worker with `isolate: false` and
+once per file without it.
+
 ## JVM runner client
 
 `src/runner.ts` launches Java 25 from `AIC_SCRIPT_TESTER_JAVA_HOME` or `JAVA_HOME`
@@ -693,18 +1602,719 @@ lanes require Docker and the reference JVM image. The cache defaults to
 job rather than hanging. `close()` ends stdin and waits for the process;
 `afterAll` should call it.
 
+**JVM reuse.** Under the package's Vitest reporter, `useLease` borrows its JVM
+from a pool the reporter keeps in the main Vitest process, so a worker runs
+every file it is given on one JVM rather than starting one per file. The pool
+keeps one JVM per worker, per lane (two with `AIC_SCRIPT_TESTER_JVM=both`) and
+per lease a worker holds at once. A borrowed JVM is returned at `afterAll` and
+lent again only if it is idle: one that crashed, retired itself after a spawned
+thread survived cleanup, or still has a job running (a lease closed while a
+case was still executing) is discarded, and the next file gets a fresh JVM.
+
+What reuse guarantees:
+
+- **JavaScript state never crosses a case.** Every case runs in a fresh
+  `initStandardObjects()` scope, and only compiled code is shared.
+- **Java-level state crosses a file only on a JVM whose every job ran behind
+  the class shutter, which hides the classes that could change it.** A script that can reach `java.lang.System`, `java.util.TimeZone` or
+  `java.lang.Thread` can change the JVM itself (a default timezone, a system
+  property, a thread it started), and a normal finish does not undo that. The
+  next-gen decision-node shutter, which is on by default, hides all of those
+  classes. Any job without it (`classShutter: false`,
+  an IDM-engine script, or a raw `runner.eval` with no `classAllowList`) marks
+  its JVM as not lendable, so the file that ran it gets a JVM to itself and the
+  next file starts a new one, as it would with no pool.
+- **Within one file, cases share a JVM, as they always have.** An unshuttered
+  case can still leave Java-level state for a later case in the same file.
+
+`test/harness/isolation.e2e.test.ts` and `pool-files.e2e.test.ts` pin these.
+
+The pool runs in the main Vitest process, so it and the JVMs it launches read
+**that** process's environment: set `AIC_SCRIPT_TESTER_JVM_POOL`,
+`JAVA_TOOL_OPTIONS` and the like in the shell that runs Vitest, not in
+`test.env`, which only reaches workers. Set `AIC_SCRIPT_TESTER_JVM_POOL=0` to
+start a JVM per lease as before.
+
+Within a JVM, the case prelude (generated mocks, identity policy, runtime) and
+each library body are compiled once and cached by content hash, and each
+distinct text crosses the pipe once per JVM, whichever lease, worker or file
+sends it: the pool hands each lease the hashes earlier leases shipped. A case therefore costs a few
+milliseconds, plus executing the libraries it `require`s, however large the
+library map. `node bench/run.ts [--workers=N]` and `node bench/micro.ts`
+measure this on invented fixtures.
+
 Job shape (open enough to carry later mock bindings):
 
 - `source` / `sourceName` — author's script; `sourceName` is Rhino's source
   name, so a parse error names the author's file and line, not `<eval>`
-- `globals` — JSON values placed in ENGINE_SCOPE Bindings
+- `engine` — `"am"` (default) or `"idm"`
+- `globals` — AM JSON values placed in ENGINE_SCOPE Bindings
 - `preamble` — evaluated first so concatenating mocks into `source` is not
   needed (that would shift line numbers)
+- `prelude` — optional; evaluated before `preamble` and compiled once per JVM
+  per distinct text. `preamble` continues its line numbers
+- `preambleData` — optional string, visible to the preamble only as
+  `__rhinoLocalPreambleData`; per-case data travels here rather than as a
+  literal that would be compiled every case
+- `libraries` — optional `require()` id → body, compiled once per JVM per
+  distinct body. The runtime's `require` reads them; an undeclared id is
+  still refused
 - `timeoutMs` — per-job; AM's `Error("Interrupt.")` past the instruction
-  observer. Omit for the runner's 10s harness default; `0` is AM's no-timeout
+  observer. Omit for the runner's 10s harness default; `0` disables timeouts
 
 Outcomes are machine-readable and distinct: `ok`, `compile_error`,
 `runtime_error`, `timeout`.
+
+### IDM scripts and re-entrant host calls
+
+The IDM lane uses ES6 (200), compiled optimization level 9, the plain Rhino
+feature set, and a Context locale of `en`. AM retains its interpreter and
+`en-US` Context locale. `timeoutMs: 0` uses an actual plain `ContextFactory`
+and observer threshold 0, matching the measured IDM configuration. Positive
+timeouts enable instruction checks in compiled bytecode, including tight loops;
+they also bound waits for host replies. Java code called by a script is outside
+the instruction observer. Both engines run on the runner's Java 25 runtime;
+the measured tenant IDM runtime uses Java 21.
+
+Each IDM job has a fresh shell `Global` above a deferred binding scope. Named
+bindings resolve; enumerating the global with `for (p in this)` fails the job
+with an uncatchable Java `UnsupportedOperationException`. Fresh `Global`
+initialization measured about 0.063 ms after warmup, so globals and standard
+prototypes remain isolated per job.
+
+```ts
+import { HostCallError, RhinoRunner } from "@agiledigital/pingone-aic-script-tester/runner";
+
+const runner = await RhinoRunner.spawn();
+try {
+  const response = await runner.eval({
+    engine: "idm",
+    source: "object.label = openidm.read('managed/example/1').label; object",
+    bindings: { object: {}, resourceName: "managed/example/1" },
+    resourceNameBindings: ["resourceName"],
+  }, {
+    onCall: async (call) => {
+      // This may await runner.eval(...) to run a hook that itself calls out.
+      if (call.method === "read") return { label: "example" };
+      throw new HostCallError({
+        class: "org.forgerock.json.resource.NotSupportedException",
+        message: "example handler only supports read",
+        code: 405,
+        detail: {},
+      });
+    },
+  });
+  // response.value is JSON; response.bindings includes mutations to seeded maps/lists.
+} finally {
+  await runner.close();
+}
+```
+
+`bindings` supplies whichever top-level names the caller needs. Maps and lists
+are Java-backed replicas: map own-property names/descriptors are empty even
+though enumeration works, assigned objects become `HashMap`s, and lists pass
+`Array.isArray` while direct `JSON.stringify(list)` produces indexed objects.
+Map JSON serialization turns nested lists into arrays. `resourceNameBindings`
+marks string-valued bindings to wrap as Java resource-name objects.
+
+`openidm.read/create/update/patch/delete/query/action` emit host calls with
+converted JSON arguments. Numeric-path metadata outside the user value preserves
+NaN, infinities and negative zero in internal protocol frames, including nested
+endpoint arguments/results; literal data fields cannot collide with the metadata.
+This internal choice is labeled assumed because tenant special-number transfer
+has not been measured. Endpoint HTTP output retains its measured serializer.
+The emulator opts into `internalValues` for raw completions/bindings while the
+ordinary runner's `value` remains endpoint wire output. Function arguments are dropped; a final query callback
+runs on the JVM once per returned row, with `result` and `resultCount` removed
+from the query completion. Resource routing, missing-resource behavior, query
+validation, and storage policy belong to `onCall`; the experimental IDM core
+below provides that handler. A job without `onCall` fails with a protocol diagnostic. A handler must return a JSON value (use `null` for no result).
+Throw `HostCallError` to preserve a CREST class, message, numeric code, reason and detail;
+the script receives a Rhino `JavaException` whose `message` names the CREST
+class you named, with `javaException.getCode()`, `getReason()` and
+`getDetail()`, including in joined shell `spawn` threads. Reading
+`javaException.getClass` faults, although AIC's `getClass().getName()` is
+measured: the emulator cannot reproduce the Java method and class faithfully,
+so match on `e.message` instead. `String(getDetail())` is
+CREST's one-line JsonValue form, and a `null` detail is a Java null; any other
+member of `javaException` (read, tested with `in`, or enumerated; `in` is `true`
+for the members above), and a detail spelling no probe captured (an empty
+object or array, a string needing an escape), faults
+`idm-exception/unmeasured`, because the exception is not the CREST class it names. Ordinary handler errors
+are internal emulation failures; use an explicit CREST HostCallError for a
+catchable tenant failure.
+Emulation failures (missing behavior, admission/protocol failures and harness
+timeouts) carry structured `emulation` diagnostics and always fail the outer
+job/request. On the pinned Rhino, feature 13 is off and the Java `Error`
+used for these failures escapes script catches. Tenant CREST exceptions remain
+catchable. Nested runner failures survive adapters that ignore their response;
+policy and hook mappings preserve the same failure class. The asynchronous fatal
+scope spans runner instances along a logical call chain. A job's sticky timeout
+state includes host waits and instruction observers on joined shell threads;
+`finally` returns and child-thread completion cannot erase a recorded failure.
+
+IDM responses add `bindings`, ordered `logs` (`surface`, `level`, `message`,
+`args`), and, on failure, `thrown`. `thrown.kind` distinguishes `object`, `error`,
+`string`, `primitive`, `javaException` and raw `java` failures; `value`, `class`,
+`code`, `message` and `detail` retain the information the emulator needs to apply
+its hook/endpoint HTTP policy. A string-valued `code` stays a string. AM's
+response shape is unchanged. IDM completion objects are returned as JSON;
+undefined completions have `valueKind: "undefined"` and `value: null`.
+
+`logger` and `console.log` append to `logs` without host calls. Shell `print`
+writes to stderr to protect the protocol. `identityServer.getProperty` reads the
+job's optional `properties` map, returning the supplied default for missing names
+and recording `assumed: property <name> absent` in the response. `require`, `parseFilter`, `hash`,
+`encrypt`, `isHashed`, `matches`, `decrypt`, and `isEncrypted` fail explicitly
+with `rhino-local: <name> is not emulated yet`.
+
+In the `both` lane, the primary runs first and invokes `onCall` once. The shadow
+replays snapshots of the primary replies, checking method, arguments and sequence
+as well as the final response. Extra, missing or different calls raise
+`LaneDivergenceError`, even when the script catches the failure and returns the
+same final value. Nested evaluations use the same policy. The primary transcript
+is frozen when its response arrives. JVM responses name emitted host sequences
+whose replies the worker never consumed; replay withholds those replies even
+when a synchronous Node handler returned before Node read the timeout response.
+
+The stdin reader dispatches jobs to worker threads and routes replies to waiting
+calls; stdout writes are serialized. Jobs may complete in any order. IDs must
+be unique among active jobs; sequence numbers start at 1 for each job.
+Admission uses at most 128 job workers by default; excess jobs receive `protocol_error` immediately, including nested
+evaluations. There is no queue that can deadlock behind blocked parent jobs.
+`RhinoRunner.spawn({maxConcurrentJobs})` sets the limit. Capacity refusal on
+either lane is reported as an emulation failure, not a script divergence.
+A primary refusal is returned without admitting the job on the shadow.
+Shutdown stops admission, keeps routing replies, and waits up to 5 seconds for
+accepted jobs; remaining jobs receive `protocol_error` before the shutdown
+acknowledgement and process exit. `shutdownWaitMs` sets that bound; client
+public `close()` first drains accepted evaluations, including shadow replay,
+while permitting their nested callbacks and replies. It then requests protocol
+shutdown instead of closing stdin. Each phase is bounded by `shutdownWaitMs`;
+process termination has one extra second of grace and a two-second SIGTERM bound.
+
+Existing job/response records remain untagged. The new records are:
+
+```jsonl
+{"id":"outer","engine":"idm","source":"openidm.read('managed/example/1').label"}
+{"type":"call","id":"outer","seq":1,"method":"read","args":["managed/example/1"]}
+{"type":"reply","id":"outer","seq":1,"result":{"label":"example"}}
+{"id":"outer","outcome":"ok","valueKind":"string","value":"example","error":null,"logs":[],"bindings":{}}
+```
+
+A failed call uses an error reply instead of `result`:
+
+```jsonl
+{"type":"reply","id":"outer","seq":1,"error":{"class":"org.forgerock.json.resource.ForbiddenException","message":"denied","code":403,"detail":{"policy":"example"}}}
+```
+
+## Experimental IDM emulator core
+
+`src/idm/index.ts` exposes `IdmConfig`, `IdmEmulator` and their REST/config types
+inside the workspace. There is deliberately no new npm export yet: cross-tenant
+conformance should settle this contract before it becomes a package entry point.
+The core has no dependency on a test framework.
+
+```ts
+import { IdmConfig, IdmEmulator } from "./src/idm/index.ts";
+
+const config = new IdmConfig({
+  sync: { mappings: [] }, // required: the tenant's config/sync, or [] for none
+  managed: { _id: "managed", objects: [{
+    name: "widget",
+    schema: { properties: { label: { type: "string" } } },
+    onCreate: { type: "text/javascript", source: "object.label += '-created';" },
+  }] },
+  endpoints: { example: { type: "text/javascript", source: "({ok:true});" } },
+});
+const idm = new IdmEmulator(config, runner);
+const result = await idm.request({
+  method: "POST", path: "managed/widget", query: { _action: "create" },
+  body: { label: "sample" },
+});
+// result: {status:201, body:{_id, _rev, label:"sample-created"}, provenance:[...]}
+const isolated = idm.fork(); // shares frozen config and runner; deep-copies state
+```
+
+Paths can have a leading `/openidm/` or use resource names directly. Query values
+are already decoded. Inline scripts use the tenant's `{type, source, globals?}`
+shape; endpoint configs can instead wrap one in `{type:"scripted", script}`.
+Managed schemas retain object hooks, property hooks and custom `actions`.
+`config/managed` and `config/endpoint/<name>` are readable snapshots; config writes
+fail as missing behavior. A script `file` reference and a `require(id)` name one
+of IDM's own runtime scripts, which come from the `runtimeScripts` provider
+(below). The caller owns the runner and closes it after every emulator/fork
+using it has finished.
+
+Namespace roots (`managed`, `endpoint`, `config`, and `config/endpoint`) are
+unmeasured and fail as `missing`, regardless of completeness declarations.
+Unimplemented routes fail as `missing`. Supplying managed types or endpoint
+implementations covers only the listed names; unlisted names remain unknown,
+including with an empty map. To model genuinely absent names, explicitly declare
+namespace completeness:
+
+```ts
+new IdmConfig({
+  sync: { mappings: [] },
+  managed: { objects: [widgetType] },
+  endpoints: {},
+  complete: { managed: true, endpoints: true },
+});
+```
+
+Both flags default to false. Managed config is required, but even a full
+`managed.json` pull needs `complete.managed: true`: the emulator cannot distinguish
+that document from a partial fixture by its shape. A caller loading a complete
+pull can make that declaration explicitly. Endpoint completeness requires an
+explicit endpoint map, including `{}` for an empty namespace. Omission or
+undefined means no endpoint snapshot was supplied. Namespace containers must be
+plain objects (ordinary or null prototype); null, arrays, primitives and class
+instances are configuration errors at construction, before normalization.
+
+`repo` takes the tenant's `config/repo.ds` document, optionally. It is how the
+emulator knows a type's storage kind (`IdmConfig.storage`): a type that
+`genericMapping` names, or that `managed/*` covers without an
+`explicitMapping` entry, is stored as JSON. There a quoted literal never matches
+a number and numbers compare by value, `7.5` included, as measured on
+2026-11-06. A property that the type's `genericMapping` entry maps to an
+attribute of its own is excluded. Without `repo`, or for a type in both
+sections, those queries stay the `openidm-query-filter` fault. The measured
+shape is a type covered by `managed/*` alone; a type with its own
+`genericMapping` entry is decided the same way, labelled `assumed`. Pass the
+whole document: a partial `repo` holding only `managed/*` makes every non-user
+type generic, including types the tenant maps under `explicitMapping`, and the
+emulator cannot tell.
+
+`sync` takes the tenant's `config/sync` document (`{mappings: [...]}`), and
+it is **required**: omitting it is a type error and a `TypeError` at
+construction. Pass `{ mappings: [] }` to state that the tenant has no
+mappings; like `complete.managed`, that is your claim and the emulator records
+it rather than checking it. There is no loader that builds an `IdmConfig` from
+a pull yet (the profile pull reads only `config/managed`, for types), so take
+`sync` from the same `config/sync` read as the rest of the tenant's config.
+
+On AIC a committed managed write on a mapping's `source` runs that mapping
+(implicit sync, `docs/api/16-sync-mappings.md`): synchronously by default,
+measured 2026-06-19, and asynchronously from the sync queue when the mapping
+enables `queuedSync`, measured 2026-07-29. What `enableSync: false` does to
+implicit sync is unmeasured. The emulator models none of these, so a create,
+update, changed patch or delete on a type some mapping names as its source is
+the harness fault `idm-implicit-sync/<mapping>`, raised before the store
+changes, and its message says for each mapping which of the three it is. A
+patch that changes nothing writes nothing and does not fault. A write on a
+type no mapping names as its source records that the supplied `config/sync`
+has no mapping for it.
+
+With explicit completeness, an unlisted name reads as null internally and queries
+throw NotFoundException. Each such absence carries `assumed: caller declared
+managed namespace complete` or `assumed: caller declared endpoints namespace
+complete`: the emulator cannot verify the caller's claim. The null read and
+managed-query diagnostic are measured by orchestrator p24 (2026-11-02); endpoint
+query diagnostic reuse is assumed. Endpoint completeness also covers absent
+`config/endpoint/<name>` snapshots (assumed). REST absence uses 404 (assumed).
+Declare endpoints complete only with the tenant's whole `config/endpoint`
+pull: AIC also ships endpoints of its own (`oauthproxy`, `gettasksview`,
+docs/api/11-idm-endpoints.md), and a map built from your custom endpoints
+alone, declared complete, makes those read as absent locally where AIC answers
+them.
+Forks preserve the declarations. Unknown general `config/*`, `system/*` and other
+namespaces remain missing, even though p24 observed null for genuinely absent
+tenant resources there: the emulator was not given those namespaces.
+An absent id in an implemented collection continues to read as null. The built-in collection actions `patch`, `triggerSyncCheck` and
+`updateLastSync` are explicit missing boundaries. Readable ids remain supported
+except on measured `alpha_user` and `bravo_user`, which require UUID syntax.
+
+Declaration shape/location validation runs first across supplied configuration,
+before routing. Tuple/array-form `items`, malformed schemas/scripts and nested
+property hooks/file references/defaults are missing; only immediate property
+hooks/defaults are implemented. Type-mismatched defaults, including recursively typed object/array members, are
+missing until schema activation/unavailability is modeled; nested activation is
+unmeasured, and the scalar 404 measurement is not generalized. Routing, known absence, and implemented
+rejections (including unknown collection actions and invalid query selectors)
+then run before storage-capability checks. Schema `id` remains unmeasured and
+refused when storage is reached; it cannot block a known-absent record read or
+the implemented unknown-action rejection.
+
+Updates retain pre-read/retrieval hooks before revision validation, including
+stale revisions. The stale-case ordering is explicitly assumed until measured;
+a stale revision cannot hide an unsupported retrieval hook.
+
+Storage capability checks retain the conservative whole-schema refusal rule. Writes with
+`encryption` or `secureHash`, and reads/writes with `isVirtual`,
+`returnByDefault`, `viewable`, `userEditable`, `scope`, unknown types or declarations
+are missing until implemented and measured. Checks include nested properties and
+array items; they conservatively refuse the declared capability even if that
+request supplies no value. Relationships remain missing. `searchable` is the
+measured UI/schema setting, not an index declaration. Display metadata and supported immediate defaults/hooks remain implemented. Declared `enum`, `required` and `policies` require the
+explicit policy evaluator on writes; without one they are missing rather than
+silently accepted. Schemas without such declarations get the implicit checks
+described under "Policy" below (E15a). HTTP reads/queries omit `alpha_user.password`;
+internal calls expose a 90-character `{PBKDF2-HMAC-SHA256}`-prefixed string
+(orchestrator p22/p23, 2026-11-02). Its opaque body is assumed: 70 hex characters
+from a randomly keyed HMAC-SHA512, stored at commit. Orchestrator p25 (2026-11-02)
+measured verbatim hash retention through full-object update, password PATCH and
+copying the hash into a second user's create. The emulator preserves its issued
+prefixed tokens in all three forms, independently of the destination's old value.
+Token recognition is shared by forks. Since the tenant body grammar is unmeasured,
+other prefixed bodies (even plausible 70-character bodies) fail as missing; no
+format validator is guessed. Foreign `{SCHEME}` prefixes are also missing.
+This does not model IDM's salt/iteration encoding or password verification.
+Commit timing and explicit HTTP password projection omission remain assumptions.
+Unmeasured non-string password values or retrieval-hook changes to its
+representation are missing. `openidm.matches` remains missing: p25's observed
+false results do not establish verifier semantics.
+`bravo_user.password` remains missing; no cross-type password rule is inferred.
+
+Results add `provenance: {kind, behavior, source?}[]`, deduplicated per request.
+`measured` entries cite the verified API docs; `assumed` entries identify the
+choices the measurements leave open. A reached `missing` entry fails the request
+with 501 and names the behavior. Nested calls share provenance, including a
+missing call caught by script code; concurrent requests use separate scopes.
+Both `IdmEmulator` and `RhinoRunner` expose detached `emulationFailures` snapshots
+with a sequence, context, owning test and failure cause. Entries go to one
+process-wide registry and cannot be deleted. Forks share a family journal for
+inspection; verdicts belong to the test that started each request or evaluation,
+including when callbacks finish during a later test. Replacing or clearing a
+fixture variable does not remove its evidence.
+
+The supported Vitest integration uses all three package entries (Vitest 5):
+
+```ts
+// vitest.config.ts
+export default defineConfig({
+  test: {
+    setupFiles: ["@agiledigital/pingone-aic-script-tester/vitest-setup"],
+    runner: "@agiledigital/pingone-aic-script-tester/vitest-runner",
+    reporters: ["default", "@agiledigital/pingone-aic-script-tester/vitest-reporter"],
+  },
+});
+```
+
+Vitest has one `test.runner` slot. To retain a client's runner behavior, adapt
+that behavior into a subclass of the package runner and select that subclass:
+
+```ts
+// test/client-runner.ts
+import EmulationRunner from "@agiledigital/pingone-aic-script-tester/vitest-runner";
+import type { RunnerTask } from "vitest";
+
+export default class ClientRunner extends EmulationRunner {
+  override onAfterRunTask(task: RunnerTask): void {
+    // Perform the client's task bookkeeping here.
+    super.onAfterRunTask(task); // Preserve the final emulation verdict.
+  }
+}
+// vitest.config.ts: test.runner = "./test/client-runner.ts"
+```
+
+When overriding them, preserve calls to `super.onBeforeCollect`,
+`super.importFile`, `super.onCollectStart`, `super.onAfterRunTask`,
+`super.onAfterRunSuite` and `super.onAfterRunFiles`. Await superclass imports and
+async hooks; retain final verdict hooks after any client result changes.
+Leave the `onTaskUpdate` transport hook to Vitest. An unrelated runner cannot
+also occupy that single slot; port its hooks into this subclass.
+
+Other setup files and reporters coexist in their normal arrays. Append client
+setup files to `setupFiles` and client reporters to `reporters`, retaining the
+three package entries above. Asynchronous reporter hooks are supported:
+imports made before collection starts bypass readiness, while imports for each
+new collection file await its readiness, with a timeout
+bounded by `hookTimeout` (10 seconds when disabled). A client overriding a
+collection hook without its superclass call receives a readiness error.
+
+The setup wraps each test and its hooks in an async ownership context, then checks
+the global registry after cleanup. It covers every runner and emulator without
+naming sources. Vitest 5's `aroundEach` preserves separate contexts for concurrent
+tests, including sibling forks; a clean sibling does not inherit another test's
+failures. `useLease` also installs ownership guarding automatically. Legacy
+`useEmulationGuard()` calls remain supported; their source arguments are ignored.
+The custom runner publishes audit deltas in task metadata through Vitest's
+`onTaskUpdate` hook: each boundary sends only the entries recorded or changed
+since the last acknowledged publish, plus any earlier ones not yet
+acknowledged, and the reporter merges them into one ledger per worker, newest
+revision of each entry winning. The hook resolves only after the main process
+has handled the update, so an entry is dropped from the worker's resend set
+only once the reporter holds it; a worker that crashes or times out loses
+nothing it had already published. `AIC_SCRIPT_TESTER_AUDIT_SNAPSHOTS=1` sends
+the whole audit at every boundary instead, as earlier releases did; it is a
+diagnostic fallback and gives the same verdict. Its `onAfterRunFiles` check
+runs outside test control flow; the reporter checks the ledger in the main
+process at `onTestRunEnd` and
+sets a non-zero exit status, naming every unexpected cause and its original
+owner. It also handles updates received after that final check. This backstop
+works in the `forks` and `threads` pools with either isolation setting. Import-time
+records and outstanding work fail their file when attributable; unowned evidence
+always fails the run. Late callbacks retain the file and owner where their work
+started, even if those checks have already finished.
+
+The runner marks an owning test failed after Vitest's expected-failure inversion
+and retry handling, and always marks its file failed when it contains unexpected
+emulation failures. Dynamic skips can remain displayed as skipped; their file
+still fails. These are persistent task results, so
+`dangerouslyIgnoreUnhandledErrors` cannot suppress them. Named expectations
+continue to allow intentional failures.
+
+The setup requires both the custom runner and the main-process reporter. The
+reporter announces its presence with Vitest's public `provide`/`inject` context;
+setup refuses a missing reporter, including when CLI `--reporter` selection
+replaces the configured list. Keep the package reporter alongside other
+reporters, including on the CLI. The final worker throw is supplemental; the
+failed task states and independent main-process verdict enforce the result.
+Runners and reporters are trusted configuration; spoofing the presence handshake
+or forcing `process.exitCode = 0` from a reporter is out of scope.
+
+Direct use without this configuration remains possible. `useLease` and legacy
+helpers install the per-test guard only; they cannot install a main-process
+reporter from inside a worker. Core users in another framework must enforce
+their own run verdict over the registry.
+
+An unfinished request, evaluation or accepted host callback fails immediately as `outstanding work at
+test end`. The guard does not wait for a gate that only later hooks might release.
+Late completion keeps the original owner. A shell `spawn` child still alive when
+its job finishes reports `missing: spawned thread outlived its job` before the
+result is published; detached-thread tenant semantics are unmeasured. Joined or
+already completed children remain supported. Detached cleanup has a 100 ms total
+bound and interrupts script observers / Java waits; daemon children cannot hold
+JVM shutdown open. `spawn` with `timeoutMs: 0` is refused as uncatchable
+`missing: spawn with disabled deadline`: bytecode compiled without observer
+checks cannot gain them in a child. A deadline-disabled parent keeps its measured
+plain context when it does not spawn. With a deadline, joined children retain
+measured language 200, optimisation 9, features 13/21 off, closure visibility,
+`openidm` and throwing-child join behavior (orchestrator p20, 2026-11-02).
+The harness observer threshold 1000 and custom deadline factory are assumed
+execution controls, differing from the measured tenant child threshold 0/plain
+factory. If any child survives the bounded cleanup (for example an
+uninterruptible Java wait), that JVM is retired: subsequent evaluations receive
+an explicit protocol refusal. Close that runner and create another; shutdown
+remains available. It never accepts a new job in that contaminated JVM.
+
+Log appends and response snapshots are synchronized. Shared Java-backed binding
+maps/lists synchronize each operation and copy each container under its own
+lock for serialization. Wrapper identities remain cached per graph. Compound
+script operations such as concurrent read-modify-write remain subject to normal
+interleaving; graph-wide atomicity and thread log order are not inferred.
+Log argument snapshots at emission carry an explicit assumption label.
+
+Tests deliberately exercising an unsupported feature declare its named cause:
+
+```ts
+import { expectEmulationFailure } from "@agiledigital/pingone-aic-script-tester";
+expectEmulationFailure("named _queryId: intentionally-unsupported");
+await idm.request({ method: "GET", path: "managed/widget",
+  query: { _queryId: "intentionally-unsupported" } });
+```
+
+Each declaration covers exactly one cause: an exact missing behavior name, or
+an exact failure message for other failure kinds. A regular expression must
+match the entire cause name and binds to one cause, even if it matches several.
+Declare every cause in an aggregated result separately. Repeated observations
+of the same cause through nested mappings need only one declaration; the
+`runtime helper: ` provenance prefix is normalized to that underlying cause.
+Declarations apply only to the current test, retain the entries with an
+`expected` annotation once all their causes are covered, and fail the test if
+the declared cause never occurs. It cannot waive outstanding work. There is no reset
+API. Ordinary tenant failures, including tenant 501, are not recorded. The
+emulator's diagnostic 501 response alone is insufficient to validate a negative
+test; the setup enforces the independent verdict.
+
+Some hooks can commit nested writes before a later failure. A post-hook failure
+after repository commit reports `assumed: post-hook failure after commit keeps
+the write`; successful post hooks do not add that failure label. This is not a transactional clone of
+DS. See [IDM-DONE.md](IDM-DONE.md) for the complete assumption/boundary inventory.
+
+The optional `rawBody` is authoritative when present and `body` is then null.
+This preserves both the measured invalid JSON bytes (`{"_id":""`) for scalar/
+array endpoint reads and the empty-body 500 for a string-valued thrown `code`.
+A transport must send those bytes verbatim, including the missing closing brace.
+
+Attach `idm.onCall` to `runner.eval(..., {onCall})` for standalone script callers.
+It maps all seven host operations into the same core, returns null for missing
+reads, and throws `HostCallError` with CREST class/code/detail otherwise.
+`idm.hostRequest(call)` exposes a standalone call's body/status/provenance when
+the host needs to retain its evidence; `onCall` returns only the script value.
+Evaluation results now retain host-side evidence too: `provenance` preserves
+kind, behavior and source, while `assumed` and `measured` include host behavior
+summaries alongside JVM runtime evidence. This covers successful and caught-error
+calls, `hostRequest`/REST adapters, bound hook callbacks and nested evaluations,
+even if an adapter ignores a nested result. Metadata is carried on host replies
+and recorded by the JVM only when consumed. Shadow replay uses the identical
+reply metadata; late unanswered replies cannot change the completed report.
+Missing metadata remains fatal even if an adapter returns an error body as data.
+
+REST-driven scripts automatically aggregate all their nested evidence. Missing
+host behavior also travels in error metadata to the outer JVM job: its response
+contains `missing` and a non-`ok` outcome without requiring `reportMissing`.
+Script catches cannot handle that failure as a tenant error. Independent jobs retain separate diagnostics.
+
+Managed create applies declared property defaults to omitted keys before policy;
+explicit null is retained and updates never apply defaults. Placement before
+create hooks and generic JSON default handling are labeled assumptions.
+`onCreate` and `onUpdate` preserve the measured `object === newObject` alias.
+JSON pointers traverse own properties only; literal `__proto__`, `constructor`
+and `prototype` fields are ordinary data (assumed). Paging returns authenticated
+opaque continuation cookies and the measured count/policy envelope. Cookies
+re-evaluate offset pages; stability under concurrent data changes is assumed.
+Cookie parsing rejects trailing data. Forks copy the signing key: a parent cookie
+works on an unchanged fork, and after divergence it remains valid but re-evaluates
+the fork's own rows with the encoded offset. Updates and deletes guard the captured
+repository entry identity as well as revision, so deleting/recreating the same ID
+cannot satisfy a stale guard. Visible recreated revisions restart at `0`, assumed.
+Config snapshots have null prototypes; routes, actions, hook slots and document
+property lookups require own fields. Property-hook writeback defines own data
+properties, preserving literal prototype-named keys.
+
+Constructor options can supply `{properties: {"esv.feature": "on"}}`. Each
+emulator copies this map; forks inherit the snapshot. Property lookups missing
+from that map carry the absence assumption on the request's provenance.
+
+Policy: `policy.js` is **not run**. Without an evaluator, a validated
+create/update/changed patch is checked against IDM's implicit schema policies
+where they were measured, and faults where they were not (E15a,
+`src/idm/policy.ts`):
+
+- Measured on a create of a new record (`docs/api/10-managed-objects.md`, the
+  2026-11-08 probe over REST and from an IDM script), and emulated as
+  `403 Policy validation failed` in doc 10's envelope, one
+  `failedPolicyRequirements` entry per failing requirement, e.g.
+  `{"code":403,"reason":"Forbidden","message":"Policy validation failed","detail":{"result":false,"failedPolicyRequirements":[{"policyRequirements":[{"params":{"invalidType":"null","validTypes":["string"]},"policyRequirement":"VALID_TYPE"}],"property":"<name>"}]}}`.
+  An IDM script's `openidm.create` catches it as CREST's
+  `ForbiddenException` with `getCode()` 403 and the same `getDetail()`:
+  - **only the top-level `type` is checked**: a value whose JSON type is not
+    the declared `string`, `boolean`, `number`, `integer`, `object` or `array`
+    is `VALID_TYPE` (`invalidType`, `validTypes`). Every JSON number is
+    `"number"`, so **any number sent to an `integer` is refused**, `3` as much
+    as `3.5`. Schemas under `properties` and `items` are **not** enforced, and
+    nested values are stored as sent;
+  - a `null` on a property with a non-null `default` is `NOT_NULL`;
+  - a `null` passes the type check only when the schema's `required` key
+    exists and does not name the property (without an evaluator a `required`
+    array can only be empty). With no `required` key it is `VALID_TYPE`,
+    `invalidType "null"`, after any `NOT_NULL` for the same property;
+    otherwise an undefaulted property's `null` is stored as `null`;
+  - a `default: null` is applied on create, and a `null` sent to such a
+    property passes with no `NOT_NULL`; on an array both store `[]`. With no
+    `required` key a string's sent `null` is still `VALID_TYPE`, while its
+    applied default is stored.
+- A PATCH `remove` of an undefaulted, non-required property commits (measured
+  200).
+- Faults (`idm-policy/*`), because unmeasured: a mismatch on any write but a
+  new record's create, and any value for a property with no `type`
+  (`idm-policy/valid-type`); a defaulted `null` outside a new record's create,
+  or an undefaulted one when the schema has no `required` array
+  (`idm-policy/not-null`, `idm-policy/valid-type`); a non-string's
+  `default: null` when the schema has no `required` array, and a `null` sent
+  to a null-defaulted array outside a create (`idm-policy/valid-type`); a
+  property whose `type` lists two concrete types is not checked at all; a
+  refusal naming more than
+  one property, whose order is unmeasured; a PATCH `remove` of a defaulted
+  property (`idm-policy/required`); and an item of a top-level array that is
+  not the declared `items.type` (`idm-policy/valid-array-items`: only nested
+  `items` were measured unenforced).
+- A `null` on an undefaulted property outside a create, where a create would
+  accept it, is accepted with that assumption (the probe measured create only).
+- A PATCH is checked only on the properties its operations name or whose value
+  changed, as AIC's enum check is measured to do.
+
+Every pass records the measured outcomes it relied on, plus
+`assumed: policy.js not run: no config/policy resource policies apply to this
+write`. The optional constructor
+`{policy: evaluator}` seam replaces all of this, and runs between validation hooks and store hooks. It can
+throw `HostCallError` to reject with a CREST status and detail; its provenance is
+`assumed: caller-supplied policy evaluator`. It is intended for the real
+`policy.js`, not a TypeScript reconstruction of it.
+
+Runner jobs can opt into `reportMissing: true`, which adds a `missing: string[]`
+diagnostic even for caught uses of unsupported runtime helpers. The emulator
+uses this to enforce its fidelity boundary. Reached missing behavior is always
+reported; the option also requests an empty diagnostic list on complete jobs. `crestBindings: true` supplies the measured request class tags and
+case-insensitive HTTP header maps. These optional wrappers and missing-use
+diagnostics are the slice's Java changes; the IDM engine itself is unchanged.
+
+### IDM runtime scripts
+
+IDM runs scripts of its own: about 60 files under the tenant's
+`/opt/openidm/bin/defaults/script` (`policy.js`, `roles/effectiveRoles.js`,
+`onCreateUser.js`, `router-authz.js`, …) plus the engine's bundled `lib/lodash`,
+`lib/handlebars` and `lib/validator`. A tenant reaches them from configuration,
+either as a hook's `{type: "text/javascript", file: "roles/onDelete-roles.js"}`
+or from an inline one-liner such as `alpha_user.onCreate`'s
+`require('onCreateUser')`. This package does not ship them. The project
+supplies them, through a provider:
+
+```ts
+const idm = new IdmEmulator(config, runner, {
+  // A directory named by IDM's relative paths: <dir>/roles/effectiveRoles.js.
+  // Absolute, or a file: URL, so its base never depends on the process cwd.
+  runtimeScripts: new URL("./idm-runtime-scripts/", import.meta.url),
+  // …or a loader: (scriptPath) => string | undefined (it may return a promise)
+  // runtimeScripts: (path) => myScripts[path],
+});
+```
+
+The intended directory is a fetch from the tenant, run when you choose and
+never at test time: `aic idm runtime-scripts pull` (planned; until it ships,
+copy the files by hand in the same layout). Commit the output beside the rest
+of the configuration. Test runs then stay offline, and a later re-fetch shows
+ForgeRock's changes to these scripts as a diff. The directory holds each
+script at its IDM path, byte for byte, plus a `manifest.json` recording the
+tenant, the fetch time, the IDM version and each file's SHA-256. The emulator
+does not read the manifest. `test/fixtures/idm-runtime-scripts/` is an
+invented example of the layout.
+
+A directory provider is checked and indexed once, when the emulator is
+constructed: a relative path, one that is not a directory, or a tree with a
+subdirectory it cannot read, is a `TypeError` naming it, and a file added
+afterwards is not seen (its fault says the file is missing from the index made
+at construction). Names are looked up exactly
+as AIC's case-sensitive loader does, so a name that matches a file only in
+another letter case is unsupplied (the message names the near match), as is a
+directory's name. Symbolic links are never followed: a name that is a link, or
+passes through a linked directory, is `idm-runtime-script-path`, because a link
+can stand in for something that is not the tenant's bytes. That holds at read
+time too: a file or directory replaced by a link after construction is
+`idm-runtime-script-path`, because the read opens the file without following a
+final link and then checks that the open file is the one at the canonical path
+under the root. Forks share the index.
+
+A `file` reference runs the supplied source with the bindings an inline script
+in the same place gets. `require(id)` loads `<id>.js` (or `id` if it already
+ends in `.js`) as a CommonJS module, as an assumption not yet measured on AIC. The module sees the caller's bindings
+(`openidm`, `object`, `request`, …) and keeps its own top-level `var`s. The
+module cache is keyed by the id as written: within one script
+invocation `require('x')` runs `x.js` once, but `require('x')` and
+`require('x.js')` are two instances and each runs the body. Everything runs
+again in the next invocation. A require cycle sees the partial exports: the
+original `exports` object, not a replacement already assigned to
+`module.exports`; once the module returns, `require` answers
+`module.exports` (a primitive comes back as its object wrapper). A module that
+throws is not cached. These rules are recorded as `assumed` provenance. Two
+differences from IDM are deliberate and also recorded: IDM preloads
+`lib/lodash`, `lib/handlebars` and `lib/validator` once per engine, shares
+their exports and runs them without the caller's bindings, where here they run
+per invocation and see the caller's bindings; and a relative id (`./x`) is
+refused, because IDM's resolution of it is unmeasured.
+
+A script the provider does not supply is the harness fault
+`idm-runtime-script/<path>`, for example `idm-runtime-script/onCreateUser.js`.
+This includes the case where no provider is configured at all. The message
+names the script, how it was reached (`onCreate file reference`,
+`require("onCreateUser")`) and how to fetch it. As with every harness fault, a
+script that catches the failure still fails the request with 501, and the run's
+fault tally counts it; a fault raised inside a nested write keeps its id on the
+outer result's `emulation.faults`. A name that is not a canonical path under
+the script root (absolute, a `.`, `..` or empty segment, a trailing slash, a
+backslash or a NUL byte) is the fault `idm-runtime-script-path`. A loader that
+throws or returns something other than a string or `undefined`, or a listed
+file that cannot be read, is `idm-runtime-script-provider`. A script declaring
+both `file` and `source` is `idm-script-file-and-source`. Supplying a
+script does not make the behaviour around it emulated: `policy.js` in
+particular is not wired. Writes go through the `policy` evaluator seam or the
+implicit checks under "Policy" above.
+
+`runner.eval({ engine: "idm" })` called directly, outside the emulator, keeps
+the old behaviour: `require` is the `missing` behaviour `require`. The emulator
+opts its own jobs in with `idmRequire: true`, which turns `require` into a
+`require` host call that it answers from the provider.
 
 ## Artefacts
 
@@ -834,3 +2444,192 @@ Empty-`elements` bindings (`requestHeaders`, `requestParameters`,
 `requestCookies`, `locales`) are emitted as `{}` — a seam a test case seeds
 directly. Scalar bindings (`realm`, `scriptName`, `cookieName`) start as
 `"__rhino-local-unseeded__"`; `resumedFromSuspend` starts as `false`.
+
+### Experimental journey emulator core (J1/J2)
+
+`src/journey/index.ts` exposes `JourneyConfig`, `JourneyEmulator` and
+`journeyHttp` inside the checkout. They are not package exports yet: the
+framework-free core now includes Page, collectors and identity nodes; harness
+selection follows in later slices. Use the mandatory Vitest setup/runner/reporter
+described above when testing it. Its requests, runner evaluations and shared IDM
+calls use the same append-only emulation audit and verdict guard as IDM.
+
+```ts
+const config = new JourneyConfig({
+  realm: "alpha",
+  trees: { Example: treeDocument },
+  nodes: { ScriptedDecisionNode: { [nodeId]: nodeDocument } },
+  scripts: { [scriptId]: scriptDocument }, // script is REST base64, evaluatorVersion "2.0"
+});
+const journey = new JourneyEmulator(config, runner, idm, {
+  declaredOutcomes: { [unimplementedNodeId]: "true" },
+  // wire.bodyText is the body as AIC would send it: `1` goes out as `1.0`.
+  http: async (url, options, wire) => mockResponse(url, options, wire.bodyText),
+});
+const result = await journey.request({
+  method: "POST", path: "authenticate",
+  query: { authIndexType: "service", authIndexValue: "Example" },
+  body: {},
+});
+```
+
+The caller supplies one IDM emulator per test, shared with the journey, so
+script `openidm` calls execute managed hooks in that instance. `fork()` shares
+frozen config and the runner, forks IDM records, copies authentication snapshots,
+and shares failure history. The caller closes the runner. `journeyHttp(journey)`
+implements `AicIo.http` for the existing `invokeJourney`/`driveJourney` transport;
+no parallel callback driver or verdict implementation is introduced.
+
+The REST result uses `{status, body, rawBody?, provenance, emulation?}` just like
+IDM. Callbacks use the tenant `{authId, callbacks}` output/input envelopes;
+`aic/callbacks.ts` fills their inputs unchanged. Queued callbacks beat `goTo`;
+the node runs again on resume. Shared state survives, transient survives
+callback-free edges and is dropped at a round trip. Inner trees share shared
+state, isolate their transient state and restore outer transient state. Inner
+exceptions, callbacks and nested inner trees remain missing. Unsupported bindings, session-property actions, `noSession`, unsupported tree
+flags and unmocked HTTP are fatal missing behavior, even if script catches or
+`finally` tries to hide the failure. So is every `rhino-local:` diagnostic the
+binding runtime raises for behaviour it does not model (an argument count whose
+range is a guess, `new JsonValue(...)`, and so on): in a journey the runtime's
+diagnostic constructor, `__rhinoLocalFail`, is a Java function that fails the
+run, so the decision never depends on an error's text. Errors the runtime
+emulates from AIC (`keySet()` on a request map, a `consentMappingCallback`
+field refusal, an argument count AIC itself refuses) stay catchable in a
+journey, as they are on the tenant. `utils` members measured in `docs/api/12` run locally and record
+that provenance; any other `utils` member is refused.
+
+Node effects are serialized in Java from the values themselves, never through a
+script-reachable `JSON.stringify` or `toJSON`. Shared and transient state, queued
+callback arguments and `openidm`/`httpClient` arguments must be plain JSON: a
+custom or null prototype, an accessor, a non-enumerable property, an array
+expando or hole, a cycle, `undefined`, a non-finite number, a function or a host
+object is missing, never rewritten or thrown as a catchable error. The measured
+exceptions (`docs/api/12`, 2026-11-04): `undefined` anywhere in an
+`httpClient.send` body, including `body: undefined` itself, goes out as `null`;
+and a top-level `undefined` field of `openidm.create` content is sent as `null`,
+so a schema `default` does not land and a `NOT_NULL` policy refuses it.
+Nested `undefined` in `openidm` content, and `undefined` in any
+other `openidm` call, stay missing. The HTTP mock receives the body as parsed
+JSON and, as its third argument, `{ bodyText }`: the text AIC would send, where
+every JS number is a Java double (`1` is `1.0`), a boxed `java.lang.Integer` or
+`Long` is written as is, and no `body` key is `""`. Strings and keys are
+escaped as measured: in printable ASCII only `"` and `\` (no `\/`), other BMP
+characters raw (U+2028 included), `\n` and `\t` short, other C0 controls and
+every astral character or lone high surrogate as upper-case `\uXXXX`. That is
+measured for an object body sent with `Content-Type: application/json`. Each
+other shape is rendered the same way and labelled assumed with its reason: no
+such header, a string or top-level non-object body, `\r`/`\b`/`\f`, a C1
+control, a lone low surrogate, a
+fraction or an integer past 1e6, or a number the script engine holds as a Java
+Integer (written as an integer, which is measured for `s.length`, `indexOf` and
+`size()` results and assumed for a `JSON.parse` result). A `form` request is
+missing, because its body is not the JSON text. `objectAttributes` that a node
+wrote, or that crossed a callback round trip, reaches the next script as a Java
+map (`get`/`put` work); its printed form is measured, the methods are inferred
+and labelled assumed.
+
+The guarantee is against accidental false passes from realistic scripts, not a
+sandbox. AM's global scope cannot be made read-only, so a script that
+deliberately rebinds the runtime's own globals — `__rhinoLocalFail`,
+`__rhinoLocal`, built-ins such as `Error.prototype` or `Object.prototype` — can
+still change what the local runtime does. The cheap paths are closed: refusals
+and diagnostics are classified in Java by which function ran, and the harvest
+reads the runtime object handed to Java before author code, not a global.
+
+AuthIds use signed immutable local snapshot references (assumed format).
+Suspended snapshots may be replayed; tampering returns the measured 400. A fork
+accepts snapshots present when it forked; a parent's later snapshots are not
+present there. Replay after a previous submission minted a session is explicitly
+missing: doc 25 lists that case as unmeasured. Session tokenIds are local UUIDs;
+principal existence and session properties are not modeled. Success is currently
+measured only for realm alpha. `existingSession` can be supplied as complete flat
+string-map fixtures under `sessions: { [cookieValue]: properties }` with an
+explicit `cookieName`; unknown cookies fail missing instead of inventing session
+properties. Newly issued tokenIds do not synthesize such a session fixture.
+
+Declared outcomes are assumptions, not implementations of the named node. They
+carry `assumed: declared by test: <tree>/<node> -> <outcome>`. Known type
+vocabularies come from doc 25, including Page's last stored child's outcomes.
+Undeclared types are missing. Basic Name/Password/TextInput/TextOutput/HiddenValue
+callback wire shapes reuse the AM binding runtime; other wire types remain
+missing until implemented. Input defaults, local Java collection facsimiles,
+initial ambient state values, HTTP response fixtures and AM host-error adapters
+retain explicit assumptions. The request's provenance distinguishes these from
+the measurement agent's doc 25 rows; those rows were not measured by this agent.
+
+`timeoutMs` bounds each script job (default 10 seconds); `maxTransitions` bounds
+a callback-free request (default 1000 transitions). Exhaustion is an audited
+emulation failure. Malformed JSON and callback shapes, callback metadata that
+no longer matches a signed snapshot, and non-finite/negative-zero host values
+remain missing rather than becoming plausible answers. The ambient duration
+key's initial value/bucket is explicitly assumed; ordinary caller-written shared
+state is preserved even when its key has an ambient name.
+
+Page executes children in config order, merges their callbacks inline, and routes
+by the last child's outcome. Each scripted child receives only its own answers.
+A non-last child with multiple known outcomes is rejected by `JourneyConfig`
+with a `RangeError` carrying the measured `400 Invalid config: Only the last
+node in a page can have more than one outcome` diagnostic. Construction is the
+local config-loading boundary; this core does not expose node PUT. Declaring an
+outcome for any emulated node (including a Page child) throws `TypeError` when
+constructing `JourneyEmulator`, so declarations cannot bypass its implementation.
+
+Username/Password collectors write shared username/transient password.
+AttributeCollector (`validateInputs: false`) uses string-property titles from
+the shared IDM schema, emits the two-input attribute callback, and writes shared
+objectAttributes. Empty required fields re-send the Page with empty
+failedPolicies: attribute callbacks echo their submitted value (measured), while
+an accepted sibling's other callbacks go out as first sent — a PasswordCallback
+never carries the password (measured), other types are labelled assumed. A
+scripted child after a sibling that rejected the submission is missing before it
+runs, since whether AM runs it is unmeasured. `ValidatedPasswordNode` (`validateInput: false`) writes
+transient password and transient objectAttributes. `nodeState.get` returns the
+whole transient value when present, otherwise shared; objectAttributes maps are
+never merged across these buckets. Extending that shadowing to other caller keys
+is labelled assumed. The shared `pageNodeCallbacks` value is assumed to be the
+merged wire array; doc 25 measures its presence/lifetime, not its contents.
+Page discovery evaluates every script child once for real and retains its state
+effects, ignoring its goTo (measured); submission evaluates each child again.
+`withErrorMessage` in a discovery run, or alongside queued callbacks, is missing:
+AM discards that Action, and whether the message survives is unmeasured.
+
+IdentifyExistingUser queries the same IDM emulator and writes shared _id,
+username and the identifier in shared objectAttributes. When
+`objectAttributes[identityAttribute]` is present it is the only lookup value:
+a hit overwrites `username`, a miss is `false` with `username` untouched and no
+fallback; `username` is used only when that key is absent or `null`, and an
+empty string, as a blank optional AttributeCollector answer writes it, is
+looked up and fails (measured 2026-11-04). The IDM emulator's `eq` ignores
+letter case and leading/trailing spaces on `alpha_user` strings, and
+`gt`/`ge`/`lt` on `userName` ignore case (measured on the probed properties;
+the rest of `alpha_user`, `le` and ordering on other properties are assumed),
+so Identify finds a mixed-case or space-padded input and `username` takes the
+stored case. A query whose answer for a record turns on an unmeasured case or
+space rule (another managed type, `sw`, `co`, non-ASCII folding, repeated
+interior spaces), on Unicode normalisation, on an unmeasured type mismatch (a
+quoted integer is decided only on `alpha_user`, and a quoted literal against a
+number only on a type `repo` declares generic), on a decimal literal against a
+number, on `pr` of an explicitly empty string, array or object, on a pointer
+through an array, or on `telephoneNumber`, a date or an integer attribute beyond
+what the 2026-11-06 probe measured on `alpha_user` (`docs/rhino-local-gaps.md`) is the
+`openidm-query-filter` fault, since either answer could be a false pass; one
+whose answer does not turn on it, in any operand order, is not. CreateObject uses that
+emulator's create path (including managed hooks and the caller-supplied IDM
+policy evaluator) and writes no journey state. Missing-required policy rejection
+routes to FAILURE; the broader mapping of IDM 400/403 to FAILURE is assumed.
+PatchObject uses the identity attribute or username, ignores _id for lookup,
+and aborts with 401 when an identifier names nobody. Identify/Create do not add
+an extra principal-existence check at Success: doc 25 does not establish one.
+Create alone leaves username absent and therefore cannot produce a session.
+
+Attribute policy evaluation/validateOnly, validated-password validation,
+split objectAttributes passed to Create/Patch/Identify, conflicting identity
+sources for Patch, a null identity source, `httpClient.send` with no URL, Identify with no identity value at all, Patch with neither an
+identity value nor objectAttributes, a non-object shared objectAttributes under
+AttributeCollector or Identify, `ValidatedPasswordNode` over an existing
+transient objectAttributes, a `ValidatedUsernameNode` Page child, callbacks
+posted without an authId to an entry node other than a scripted decision, a
+non-array `outcomes` configuration, Patch patchAsObject/ignoredFields, Page
+headers/descriptions and nested Pages remain fatal missing behavior when
+reached. Policy evaluation is not copied
+into the journey layer: managed writes use the existing IDM policy seam.
