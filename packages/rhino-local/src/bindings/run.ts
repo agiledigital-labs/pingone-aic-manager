@@ -18,7 +18,14 @@ import type { EnvProfile } from "../profile/types.ts";
 
 export interface RunCaseOptions {
   timeoutMs?: number;
+  /** Rhino source name. Defaults to the case name. Part of the compile cache key. */
   sourceName?: string;
+  /**
+   * Timing-row name when it should differ from {@link sourceName}. The lease
+   * passes the case, test, or step name here and the script path as
+   * `sourceName`.
+   */
+  attributionName?: string;
   /** AM library script bodies keyed by `require()` id. See mockPreamble. */
   libraries?: Record<string, string>;
   /**
@@ -79,9 +86,11 @@ export async function runCase(
     // case rather than surfacing as a puzzling mismatch downstream.
     checkSeededManaged(options.profile, kase.given.managed, kase.name, kase.given.identityCustomAttrs);
   }
+  const sourceName = options.sourceName ?? kase.name;
   const request: JobRequest = {
     ...harvestJob(executed.script, kase.context),
-    sourceName: options.sourceName ?? kase.name,
+    sourceName,
+    ...(options.attributionName === undefined ? {} : { attributionName: options.attributionName }),
     ...casePreamble(executed.given, preambleOptions(options, kase)),
     preambleName: "rhino-local-mocks.cjs",
   };
