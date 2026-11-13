@@ -4,8 +4,8 @@
  * the stable message, which does not repeat those values.
  *
  * The id rides on `error.name` as `CaseValidationError/<id>`. Vitest keeps
- * `name` when it reports a failed test to the main process, and drops other
- * properties, so the reporter reads the id from the name.
+ * `name` when it reports a failed test or suite hook to the main process,
+ * and drops other properties, so the reporter reads the id from the name.
  */
 
 export const CASE_VALIDATION_FAULTS = {

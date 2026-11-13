@@ -1,6 +1,7 @@
 /**
- * The reporter turns a failed case-validation into a tally row. A test that
- * catches the same throw stays green and adds nothing.
+ * The reporter turns a failed case-validation into a tally row, including a
+ * refusal thrown from a nested suite's beforeAll. A test that catches the
+ * same throw stays green and adds nothing.
  */
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -45,10 +46,12 @@ it("a refused case is a tally row and a caught refusal is not", async () => {
     expect(code, output).toBe(1);
     const tally = JSON.parse(await readFile(tallyPath, "utf8")) as FaultTally;
     expect(tally.faults.map((row) => [row.id, row.cases, row.failed, row.message])).toEqual([
+      ["case-invalid/required", 2, 2, CASE_VALIDATION_FAULTS["case-invalid/required"]],
       ["case-invalid/engine-legacy", 1, 1, CASE_VALIDATION_FAULTS["case-invalid/engine-legacy"]],
       ["case-invalid/unknown-key", 1, 1, CASE_VALIDATION_FAULTS["case-invalid/unknown-key"]],
     ]);
     expect(JSON.stringify(tally)).not.toContain("widget");
+    expect(output).toContain("case-invalid/required");
     expect(output).toContain("case-invalid/engine-legacy");
     expect(output).toContain("case-invalid/unknown-key");
   } finally {

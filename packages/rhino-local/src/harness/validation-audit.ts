@@ -1,17 +1,20 @@
 /**
- * Failed tests whose error is a case-validation refusal, as one audit the
- * fault tally already knows how to count. Caught refusals do not fail the
- * test, so they are not here.
+ * Failed tests and suite hooks whose error is a case-validation refusal, as
+ * one audit the fault tally already knows how to count. A suite hook's
+ * refusal belongs to that suite. Caught refusals do not fail the test, so
+ * they are not here.
  */
 import type { EmulationAudit } from "../emulation.ts";
 import { validationFaultMessage, validationFaultOf, type CaseValidationFaultId } from "../case/validation-fault.ts";
 
 export interface ValidationFailure {
   file: string;
-  /** Stable per test, so two tests count as two cases. */
+  /** Stable per test or suite, so two of them count as two cases. */
   ownerId: string;
   ownerName: string;
   errors: ReadonlyArray<{ name?: string; cause?: unknown }>;
+  /** A suite hook's refusal belongs to the suite. Defaults to a test. */
+  kind?: "test" | "suite";
 }
 
 export function caseValidationAudit(failures: readonly ValidationFailure[]): EmulationAudit | undefined {
@@ -31,7 +34,7 @@ export function caseValidationAudit(failures: readonly ValidationFailure[]): Emu
       sequence: sequence++,
       context: "case validation",
       file: failure.file,
-      owner: { id: failure.ownerId, name: failure.ownerName, kind: "test", file: failure.file },
+      owner: { id: failure.ownerId, name: failure.ownerName, kind: failure.kind ?? "test", file: failure.file },
       causes: faults.map((fault) => `${fault.id}: ${fault.message}`),
       faults,
     });
