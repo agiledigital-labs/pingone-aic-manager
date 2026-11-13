@@ -94,8 +94,8 @@ export const CONTEXTS: { readonly [K in ScriptContext]: ContextDeclaration } = {
   OAUTH2_ACCESS_TOKEN_MODIFICATION: {
     id: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
     givenKeys: [...SHARED_GIVEN, "accessToken", "identity", "client", "scopes", "request"],
-    expectKeys: ["outcome", "accessToken", "openidm", "http", "logs", "allowUndeclared"],
-    allowUndeclared: ["accessToken", "openidmWrites", "openidmReads", "http", "logs"],
+    expectKeys: ["outcome", "accessToken", "openidm", "http", "logs", "identityWrites", "allowUndeclared"],
+    allowUndeclared: ["accessToken", "openidmWrites", "openidmReads", "http", "logs", "identityWrites"],
     hasOutcome: false,
   },
   OIDC_CLAIMS: {

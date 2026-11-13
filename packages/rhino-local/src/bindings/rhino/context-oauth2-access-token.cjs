@@ -499,7 +499,7 @@ function __rhinoLocalSeedAccessToken(given) {
     realm = d.token.realm;
   }
   accessToken = __rhinoLocalAtBuildToken(d.token);
-  identity = __rhinoLocalCtxBuildIdentity(d.identity);
+  identity = __rhinoLocalCtxBuildIdentity(d.identity, { writes: true });
   scopes = __rhinoLocalCtxBuildScopes(d.scopes);
   requestProperties = __rhinoLocalCtxBuildRequest(d.request, d.token.realm, null);
   clientProperties = __rhinoLocalCtxBuildClient(d.client, null);

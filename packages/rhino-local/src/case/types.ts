@@ -325,10 +325,12 @@ export interface OpenidmEffect {
 }
 
 /**
- * One attribute an `idRepository.getIdentity(id)` handle persisted with
- * `store()`. Named as the script named it (AM's attribute name), because the
- * write goes through AM's identity repository rather than the `openidm`
- * binding, and the managed-record shape it lands as is unmeasured.
+ * One attribute an identity handle persisted with `store()`. On the decision
+ * node that handle is `idRepository.getIdentity(id)`. On access-token
+ * modification it is the bound `identity`, and `identity` in the effect is
+ * `getName()` (`given.identity.name`). Named as the script named it (AM's
+ * attribute name), because the write goes through AM's identity repository
+ * rather than the `openidm` binding.
  */
 export interface IdentityWriteEffect {
   identity: string;
@@ -986,7 +988,7 @@ export interface AccessTokenCaseInit {
     | "scopes"
     | "request"
   >;
-  expect: Pick<Expect, "accessToken" | "openidm" | "http" | "logs" | "allowUndeclared">;
+  expect: Pick<Expect, "accessToken" | "openidm" | "http" | "logs" | "identityWrites" | "allowUndeclared">;
 }
 
 /** An `OIDC_CLAIMS` case: the script's value is the claims AM emits. */
