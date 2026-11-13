@@ -1260,9 +1260,7 @@ recorded. What it approximates or leaves out:
   runs in its own scope (`java/LibraryHost.java`, `java/LibraryScope.java`): the
   names bound after the preamble, less the measured unbound list. A caller's
   binding on that list, or a `var` the caller declared, is the engine's
-  `ReferenceError` inside the library, as on AIC. `context` is measured as
-  unusable inside a library but is not on the list, so a library can still
-  reach it locally. Assignments a library makes to an undeclared name stay in
+  `ReferenceError` inside the library, as on AIC. Assignments a library makes to an undeclared name stay in
   that library's scope; whether AIC shares them between libraries or with the
   caller is unmeasured. The `node:vm` unit-test helper evaluates libraries in
   the caller's scope and does not model this.
