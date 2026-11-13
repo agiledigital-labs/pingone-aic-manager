@@ -247,6 +247,13 @@ same day. Neither throws and both return `undefined`. Without `store()` the
 value does not persist and the same wrapper still reads the previous one.
 After `store()` a fresh managed read shows the new value.
 
+A required library keeps its own `logger` when the caller rebinds that
+name (measured 2026-11-14, same matrix). The decision-node fixtures are
+`fixtures/zzemuR3M-logger-*`. The may-act twin is
+`fixtures-atm-ng/mayact-logger-shadow.mayact.js`; the `*.mayact.js` suffix
+keeps it out of this lane's `*.script.js` glob. The call returns and the
+message is logged once.
+
 ## The token-exchange lane (`fixtures-exchange/`)
 
 A third lane, for RFC 8693. The OAuth2 lane drives one client on
