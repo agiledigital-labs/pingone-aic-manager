@@ -965,7 +965,10 @@ leaves out:
   with anything but the measured shapes, the other `remove*`/`set*`,
   next-gen `getResourceOwner`), Object methods on the views, `JSON.stringify` of
   any view, set iterators and streams,
-  next-gen `clientProperties.redirectUris`, overwriting a reserved claim, and
+  next-gen `clientProperties.redirectUris`, overwriting a reserved claim other
+  than `setField("aud", …)` (a string, a non-empty array of strings, or `null`,
+  measured 2026-11-14; `setFields` of `aud` is still unmeasured, and there is
+  no `removeField`), and
   the `identity` writers. `identity.getAttributes()` is a fault on purpose: it
   returns the client's password (`.ai/core.md` §8).
 - **The AIC lane** runs only decision-node scripts, so a token-context case is

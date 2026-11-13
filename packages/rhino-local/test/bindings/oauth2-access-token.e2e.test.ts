@@ -251,4 +251,125 @@ describe("access-token modification matches the live capture", () => {
   it("r11 P2-2 a Java method reference stays function in the overload signature", async () => {
     await overloadName("method ref", "(new java.lang.String(\"s\")).isEmpty", "getField(function,number)");
   }, 60_000);
+
+  // setField("aud") measured 2026-11-14. The issued claim is the fields diff.
+  // An omitted write keeps the client-id string; null removes it.
+  const CLIENT = "widget-client";
+  const audCase = (name: string, script: string, fields: Record<string, unknown>) =>
+    runCase(runner, defineCase({
+      name,
+      context: "OAUTH2_ACCESS_TOKEN_MODIFICATION",
+      script,
+      given: { engine, accessToken: { clientId: CLIENT } },
+      expect: { accessToken: { fields } },
+    }));
+
+  it("setField(\"aud\", string) issues that string and getAudience lists it", async () => {
+    const { effects, verdict } = await audCase(
+      "aud string",
+      [
+        "var before = [];",
+        "var seen = accessToken.getCustomFields();",
+        "for (var k in seen) before.push(k);",
+        "var ret = accessToken.setField(\"aud\", \"widget-audience\");",
+        "var after = [];",
+        "seen = accessToken.getCustomFields();",
+        "for (var k2 in seen) after.push(k2);",
+        "var field = accessToken.getField(\"aud\");",
+        "var audience = accessToken.getAudience();",
+        "before.sort(); after.sort();",
+        "accessToken.setField(\"probe\", [typeof ret, typeof field, field, audience.length, audience[0], before.join(\",\"), after.join(\",\")].join(\"|\"));",
+      ].join("\n"),
+      {
+        changed: { aud: "widget-audience" },
+        added: { probe: "undefined|string|widget-audience|1|widget-audience|expires_in,subname|expires_in,subname" },
+      },
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.initial.fields.aud).toBe(CLIENT);
+    expect(effects.accessToken!.final.fields.aud).toBe("widget-audience");
+  }, 60_000);
+
+  it("setField(\"aud\", one-element array) issues an array, not a string", async () => {
+    const { effects, verdict } = await audCase(
+      "aud one array",
+      [
+        "accessToken.setField(\"aud\", [\"only\"]);",
+        "var field = accessToken.getField(\"aud\");",
+        "var audience = accessToken.getAudience();",
+        "accessToken.setField(\"probe\", [typeof field, Array.isArray(field), field.length, field[0], audience.length, audience[0]].join(\"|\"));",
+      ].join("\n"),
+      {
+        changed: { aud: ["only"] },
+        added: { probe: "object|true|1|only|1|only" },
+      },
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.aud).toEqual(["only"]);
+  }, 60_000);
+
+  it("setField(\"aud\", multi-element array) keeps the order on the claim and getAudience", async () => {
+    const { effects, verdict } = await audCase(
+      "aud two array",
+      [
+        "accessToken.setField(\"aud\", [\"one\", \"two\"]);",
+        "var field = accessToken.getField(\"aud\");",
+        "var audience = accessToken.getAudience();",
+        "accessToken.setField(\"probe\", [field.length, field[0], field[1], audience.length, audience[0], audience[1]].join(\"|\"));",
+      ].join("\n"),
+      {
+        changed: { aud: ["one", "two"] },
+        added: { probe: "2|one|two|2|one|two" },
+      },
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.final.fields.aud).toEqual(["one", "two"]);
+  }, 60_000);
+
+  it("setField(\"aud\", null) removes the claim and getAudience is empty", async () => {
+    const { effects, verdict } = await audCase(
+      "aud null",
+      [
+        "var ret = accessToken.setField(\"aud\", null);",
+        "var audience = accessToken.getAudience();",
+        "accessToken.setField(\"probe\", [typeof ret, String(accessToken.getField(\"aud\")), String(audience), audience.length].join(\"|\"));",
+      ].join("\n"),
+      { removed: ["aud"], added: { probe: "undefined|null|[]|0" } },
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.initial.fields.aud).toBe(CLIENT);
+    expect(effects.accessToken!.final.fields.aud).toBeUndefined();
+    expect(effects.accessToken!.final.fields).not.toHaveProperty("aud");
+  }, 60_000);
+
+  it("an omitted aud write leaves the client-id claim in place", async () => {
+    const { effects, verdict } = await audCase(
+      "aud omitted",
+      [
+        "var audience = accessToken.getAudience();",
+        "accessToken.setField(\"probe\", [accessToken.getField(\"aud\"), audience.length, audience[0]].join(\"|\"));",
+      ].join("\n"),
+      { added: { probe: `${CLIENT}|1|${CLIENT}` } },
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.initial.fields.aud).toBe(CLIENT);
+    expect(effects.accessToken!.final.fields.aud).toBe(CLIENT);
+  }, 60_000);
+
+  it("removeField is absent and aud stays the client id", async () => {
+    const { effects, verdict } = await audCase(
+      "aud removeField",
+      [
+        "var message = \"\";",
+        "try { accessToken.removeField(\"aud\"); } catch (e) {",
+        "  message = String(e).split(\" in object \")[0].replace(/ \\([^()]*#\\d+\\)$/, \"\");",
+        "}",
+        "accessToken.setField(\"probe\", (typeof accessToken.removeField) + \"|\" + message);",
+      ].join("\n"),
+      { added: { probe: "undefined|TypeError: Cannot find function removeField" } },
+    );
+    expect(verdict.pass, verdict.summary).toBe(true);
+    expect(effects.accessToken!.initial.fields.aud).toBe(CLIENT);
+    expect(effects.accessToken!.final.fields.aud).toBe(CLIENT);
+  }, 60_000);
 });

@@ -853,7 +853,12 @@ export interface TokenRequestSeed {
  * `allowUndeclared.accessToken` is set.
  */
 export interface AccessTokenExpect {
-  /** Custom fields (JWT claims) added, changed or removed, against `given.accessToken.fields`. */
+  /**
+   * JWT claims added, changed or removed, against the token's starting field
+   * map. `aud` is one of them: it starts as the client id when the audience
+   * has one element, as that array when it has several, and absent when the
+   * audience is empty. `getCustomFields()` does not list `aud`.
+   */
   fields?: StateDiff;
   /** Fields `addExtraData` / `addExtraJsonData` put in the token endpoint's JSON response. */
   responseFields?: StateDiff;
