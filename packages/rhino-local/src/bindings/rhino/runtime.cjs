@@ -2903,11 +2903,10 @@ function __rhinoLocalApplyDefaults(collection, stored) {
 }
 
 // A PATCH `remove` of a property that declares a `default`, null included
-// (P3-1). Stock policy.js adds an implicit `required` for any default; the
-// measured 403 REQUIRED was taken with the property also named in
-// schema.required, which the lane already faults as a declared policy. With
-// the property not required the answer is unmeasured: stock predicts 403,
-// docs/api/10's inference predicts 200. Neither is emulated.
+// (P3-1). AIC's 403 REQUIRED was measured only with the property also named
+// in schema.required, which the lane already faults as a declared policy.
+// With the property not required the answer is unmeasured, so neither a 403
+// nor a 200 is emulated.
 function __rhinoLocalRemovedDefault(collection, patch) {
   var rule = __rhinoLocalPolicyRule(collection);
   if (!rule) {
@@ -2921,8 +2920,7 @@ function __rhinoLocalRemovedDefault(collection, patch) {
       throw __rhinoLocalFault("openidm-managed-policy/" + collection.replace(/^managed\//, ""),
         "rhino-local: openidm.patch: " + collection + ": remove " + String(patch[i].field) + ", which declares a default. " +
           "AIC's 403 REQUIRED for that is measured only with the property also named in schema.required " +
-          "(docs/api/10); without it, stock policy.js still adds an implicit required for any default, and what AIC " +
-          "answers is unmeasured. Stub the call with given.openidmFailures if the test means a refusal, or expect the fault (E19)");
+          "(docs/api/10); without it, what AIC answers is unmeasured. Stub the call with given.openidmFailures if the test means a refusal, or expect the fault (E19)");
     }
   }
 }

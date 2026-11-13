@@ -65,7 +65,7 @@ per-context `*CaseInit` types enforce at compile time.
 A context is one entry in `src/case/context.ts`, plus one runtime overlay
 file. It declares four things:
 
-1. **Bindings.** Which globals exist, which are refused, and per engine. The
+1. **Bindings.** Which globals exist and which are refused. The
    overlay (`src/bindings/rhino/context-<slug>.cjs`) is appended to the shared
    prelude after `context-common.cjs`, whose `__rhinoLocalCtx*` helpers (Java
    strings, sets, maps, lists, method arity, the `Object.prototype.toString`
@@ -132,9 +132,10 @@ fixture (the normalised profile) and result shape.
 
 See the README section "Config provider node scripts" for the author's view.
 The table used to list this context as next-gen only with an `expect.config`
-channel; both engines exist (measured 2026-11-10: the node's script list offers
-`CONFIG_PROVIDER_NODE` and `CONFIG_PROVIDER_NODE_NEXT_GEN` scripts, and a
-journey runs either), and the channel is `expect.configProvider`, named like
+channel; both engines exist on the tenant (measured 2026-11-10: the node's
+script list offers `CONFIG_PROVIDER_NODE` and `CONFIG_PROVIDER_NODE_NEXT_GEN`
+scripts, and a journey runs either), though the emulator runs only the
+next-gen one, and the channel is `expect.configProvider`, named like
 the other context-only channels. AM reads the `config` global after the script,
 so the harvest is appended to the source, as for access-token modification,
 rather than read through the completion hook. Like the social context, it binds
@@ -147,8 +148,8 @@ re-run is a gap (`docs/rhino-local-gaps.md`).
 
 See the README section "OAuth2 validate scope scripts" for the author's view.
 The table used to list this context as next-gen only, with an
-`expect.scopes` / `expect.invalidScope` pair; both engines exist (measured
-2026-11-10), and the channel is `expect.validateScope`, named like the other
+`expect.scopes` / `expect.invalidScope` pair; both engines exist on the tenant
+(measured 2026-11-10), though the emulator runs only the next-gen one, and the channel is `expect.validateScope`, named like the other
 context-only channels, holding `granted`, `invalidScope` and `accepted`. AM
 calls the script's `validateAccessTokenScope()` after the body, so the harvest
 is appended to the source and makes that call, rather than reading the
@@ -161,7 +162,8 @@ issues a token without the dropped scope, and a script can also widen a grant
 
 See the README section "OAuth2 may act scripts" for the author's view. The table
 used to list this context as next-gen only, with `token.setMayAct` as the whole
-surface; both engines exist (measured 2026-11-10), and the channel is
+surface; both engines exist on the tenant (measured 2026-11-10), though the
+emulator runs only the next-gen one, and the channel is
 `expect.mayAct`, holding `mayAct`, `act`, `scope`, `issued` and `refusal`. A key
 present with `null` is a JSON-null claim; an omitted key is an absent claim. AM
 stamps both claims after the body, so the harvest is appended to the source

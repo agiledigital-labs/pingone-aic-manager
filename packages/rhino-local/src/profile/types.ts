@@ -43,8 +43,9 @@ export interface ObjectSchema {
   /** Property names IDM rejects a create without. */
   required: string[];
   /**
-   * True when the schema has no `required` array at all, which stock `policy.js` treats differently
-   * from an empty one (a null is then also `VALID_TYPE`). Absent means the array was there.
+   * True when the schema has no `required` array at all, which AIC treats differently from an empty
+   * one: a null on create is then `403 VALID_TYPE` (measured 2026-11-08, docs/api/99 Q18). Absent
+   * means the array was there.
    */
   noRequiredArray?: true;
   /**
@@ -97,8 +98,8 @@ export interface PropertySchema {
    */
   default?: JsonValue;
   /**
-   * The `policyId`s inside the property's `conditionalPolicies` entries, and its `fallbackPolicies`,
-   * which stock `policy.js` runs when no condition matched. Names only.
+   * The `policyId`s inside the property's `conditionalPolicies` entries, and its `fallbackPolicies`.
+   * Names only; when AIC evaluates either is not measured.
    */
   conditionalPolicies?: string[];
   fallbackPolicies?: string[];

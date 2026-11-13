@@ -103,6 +103,13 @@ describe("OAUTH2_MAY_ACT case validation", () => {
     expect(() => validateCase(maCase({ mayAct: { extra: true } }))).toThrow(/extra/);
   });
 
+  it("refuses a repeated seed scope, which would let the unchanged-scope check pass a widened grant", () => {
+    // Seed ["a", "a"] against a granted ["a", "b"] has equal lengths and every
+    // seed entry granted, so a list comparison reads it as unchanged.
+    expect(() => validateCase(maCase({}, { scopes: ["a", "a"] }))).toThrow(/given\.scopes lists "a" twice; a scope is a set/);
+    expect(validateCase(maCase({}, { scopes: ["a", "b"] }))).toMatchObject({ given: { scopes: ["a", "b"] } });
+  });
+
   it("runs locally only", () => {
     expect(aicUnsupportedReason(validateCase(maCase()) as never)).toMatch(/another script context runs locally only/);
   });

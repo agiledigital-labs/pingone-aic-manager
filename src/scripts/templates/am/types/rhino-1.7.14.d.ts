@@ -138,8 +138,11 @@ interface RequestMap {
    *
    * Each element is a JS string, and the list is a `RequestValueList`: no
    * `includes`, `indexOf` or `join`, and `[].concat(list)` copies it (measured
-   * on the next-gen engine, 2026-11-08 and 2026-11-10; the legacy engine's list
-   * was not measured and is typed the same).
+   * on the next-gen engine, 2026-11-08 and 2026-11-10). The legacy overlays
+   * (`device-match.d.ts`, `social-handler.d.ts`) reuse this type, so for them
+   * the `concat` overload is a wider claim than the measurement: the legacy
+   * engine's list is unmeasured under `concat`. Kept as is because legacy is
+   * not invested in.
    */
   get(key: StringLike): RequestValueList<string> | null;
   containsKey(key: StringLike): boolean;

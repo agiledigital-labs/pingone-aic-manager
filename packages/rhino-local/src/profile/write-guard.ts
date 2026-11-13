@@ -228,9 +228,9 @@ const MEASURED_TYPES = new Set(["string", "object", "array", "boolean", "number"
  *   writes, as on the plain type.
  * - `itemTypes`: array property → its `items.type`. An item of another type faults: nested `items`
  *   were measured unenforced, a top-level array's own items were not tested.
- * - `defaulted`: every property that declares a `default`, `null` included. Stock `policy.js` adds
- *   an implicit `required` for any default, so a PATCH `remove` of one is checked on AIC; the
- *   measured 403 `REQUIRED` had the property in `schema.required` too, so the lane faults the rest.
+ * - `defaulted`: every property that declares a `default`, `null` included. AIC's 403 `REQUIRED`
+ *   for a PATCH `remove` was measured only with the property in `schema.required` too; without it
+ *   the answer is unmeasured, so the lane faults the rest.
  *   Removing any other (non-required) property is a measured 200.
  *
  * The lane decides only what it alone knows: the method and whether the record exists.

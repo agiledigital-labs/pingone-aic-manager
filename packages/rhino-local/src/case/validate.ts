@@ -69,6 +69,7 @@ import {
   parseLibrarySeed,
   parseSocialIdpSeed,
   parseTokenRequestSeed,
+  scopeSet,
 } from "./context.ts";
 import { assertDenseArray, defineOwn, isPlainObject, isStandardSchema, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
 
@@ -319,11 +320,9 @@ function parseGiven(raw: unknown, path: string, context: ScriptContext): Given {
     given.client = parseClientSeed(raw.client, `${path}.client`);
   }
   if (raw.scopes !== undefined) {
-    if (!Array.isArray(raw.scopes) || raw.scopes.some((item) => typeof item !== "string")) {
-      throw new Error(`rhino-local: ${path}.scopes must be an array of strings`);
-    }
-    assertDenseArray(raw.scopes, `${path}.scopes`);
-    given.scopes = raw.scopes.slice() as string[];
+    // A set, like every expected scope: the may-act verdict compares the
+    // granted scope against this seed as a set, which a repeat would defeat.
+    given.scopes = scopeSet(raw.scopes, `${path}.scopes`);
   }
   if (raw.request !== undefined) {
     given.request = parseTokenRequestSeed(raw.request, `${path}.request`);

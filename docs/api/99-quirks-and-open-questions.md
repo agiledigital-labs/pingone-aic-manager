@@ -294,9 +294,9 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
   nested types and optional removes"):** accepted and stored as `null` when
   `schema.required` exists and does not name the property; 403 `VALID_TYPE`
   (`invalidType "null"`) when the schema has no `required` key; 403
-  `VALID_TYPE` when `required` names it. The last **diverges from the stock
-  `policy.js` reading** this entry recorded (`REQUIRED` + `VALID_TYPE`): a null
-  counts as present, so only `VALID_TYPE` is listed. The same probe found that
+  `VALID_TYPE` when `required` names it. The last **diverges from the
+  prediction** this entry recorded (`REQUIRED` + `VALID_TYPE`): a null counts
+  as present, so only `VALID_TYPE` is listed. The same probe found that
   only the top-level `type` is checked — nested `properties`/`items` schemas are
   stored and not enforced — and that a `PATCH remove` of an undefaulted,
   non-required property is 200 with the key gone.
@@ -306,9 +306,8 @@ top with `callbacks` non-empty and its `goTo` was then acted on. See
     accept it, and faults it where a create would refuse it;
   - a `PATCH remove` of a **defaulted** property that `required` does not name.
     The measured 403 `REQUIRED` was taken with the property also in
-    `schema.required`; stock `policy.js` adds an implicit `required` for any
-    `default` (`null` included) and predicts 403; doc 10 used to state 200.
-    Both rhino-local lanes fault it (`idm-policy/required`,
+    `schema.required`; without it the answer is unmeasured (doc 10 used to
+    state 200). Both rhino-local lanes fault it (`idm-policy/required`,
     `openidm-managed-policy/<type>`);
   - ~~what triggers `NOT_NULL`~~ — answered 2026-11-08 by the zzemu_def probe
     (`probe-def/note.md`): a non-null default. An object defaulting to `{x: 1}`
