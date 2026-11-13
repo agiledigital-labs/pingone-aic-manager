@@ -152,8 +152,10 @@ type ManagedField<T> =
 // requires `remainingPagedResults` on a query handler's return value (see
 // `IdmQueryResult` in endpoint.d.ts) but never sent it on a script-side query
 // result in any observed response (verified 2026-08-17), hence optional here.
-// The list type of a query result and a has-many read. A JS array here: the
-// AM workspace's copy is a measured Java list, IDM's is not measured.
+// The list type of a query result and a has-many read. A JS array on IDM
+// (measured 2026-11-14, docs/api/12): `Array.isArray` is true, `.map` is
+// `Array.prototype.map`, and `size` / `get` are absent. The AM workspace's
+// copy of this alias is a Java list.
 type ReadList<T> = T[];
 
 interface QueryResult<T> {
@@ -245,7 +247,8 @@ type MetaMemberOf<F extends string> = [
 // multi-valued as an array — `[]` when unset, never `null`. Typing a
 // single-valued one as always present cost a live 500 on the first request
 // against a user with no manager, which every gate had passed.
-// A multi-valued one is a `ReadList`: on AM a Java list (measured 2026-11-08).
+// A multi-valued one is a `ReadList`: a JS array on IDM (measured 2026-11-14).
+// The AM workspace's `ReadList` is a Java list (measured 2026-11-08).
 type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]
   ? ReadList<RelationshipExpansion>
   : RelationshipExpansion | null;

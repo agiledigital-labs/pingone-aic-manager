@@ -158,8 +158,8 @@ type ManagedField<T> =
 // `result` is a Java list, not a JS array (measured 2026-11-08 on a next-gen
 // scripted decision): copy it with `[].concat(q.result)` before `.map`. The
 // projection kernel below is byte-identical in the IDM workspace, so the list
-// type is this per-workspace `ReadList`: IDM's list was not measured and stays
-// an array there.
+// type is this per-workspace `ReadList`. IDM's list is a JS array (measured
+// 2026-11-14, docs/api/12): `.map` is `Array.prototype.map` there.
 type ReadList<T> = OpenidmJavaList<T>;
 
 interface QueryResult<T> {

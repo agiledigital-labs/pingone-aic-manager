@@ -152,8 +152,10 @@ declare global {
     ? ReadList<RelationshipExpansion>
     : RelationshipExpansion | null;
 
-  // The list type of a query result and a has-many read: an array on IDM (the
-  // AM workspace's measured Java list is not IDM's, which is unmeasured).
+  // The list type of a query result and a has-many read. A JS array on IDM
+  // (measured 2026-11-14, docs/api/12): `Array.isArray` is true, `.map` is
+  // `Array.prototype.map`, and `size` / `get` are absent. The AM workspace's
+  // copy of this alias is a Java list.
   type ReadList<T> = T[];
 
   // A selected has-many relationship (an array of references) is a `ReadList`
@@ -226,7 +228,8 @@ declare global {
    * makes that a compile error instead.
    */
   interface OpenIdmQueryResult<T> {
-    result: T[];
+    /** JS array, measured 2026-11-14 (docs/api/12). `.map()` is valid here. */
+    result: ReadList<T>;
     resultCount: number;
     pagedResultsCookie: string | null;
     totalPagedResults: number;
