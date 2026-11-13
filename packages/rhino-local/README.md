@@ -341,7 +341,11 @@ const suite = defineSuite({
 ```
 
 For example, `lib/codeLookup.js` can contain `exports.code = function () {
-return "ready"; };`. Another library in the same map can call
+return "ready"; };`. A library cannot see its caller's bindings or the caller's
+own `var`s: on AIC, `nodeState`, `action`, `callbacks`, `requestHeaders` and the
+other context bindings are unbound inside a required library, and reading one is
+a `ReferenceError`, locally as on the tenant. Pass what the library needs as
+arguments (`require("codeLookup").save(nodeState, "code")`). Another library in the same map can call
 `require("codeLookup")`. The local lane loads both from the map; the AIC file
 lease provisions absent entries as `LIBRARY` scripts in declaration order,
 then creates the subject. AM's write path does not syntax-check scripts;

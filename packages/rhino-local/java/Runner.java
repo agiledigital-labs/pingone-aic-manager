@@ -5,6 +5,7 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -373,6 +374,7 @@ public final class Runner {
 
       final boolean hasPreamble = preamble != null && !preamble.isEmpty();
       if (hasPreamble || preludeHash != null) {
+        final LibraryHost libraries;
         try {
           final String hostOpName = "__rhinoLocalHostOp";
           HostOps hostOps = new HostOps();
@@ -389,12 +391,12 @@ public final class Runner {
             bridge.setPrototype(ScriptableObject.getFunctionPrototype(scope));
             ScriptableObject.putProperty(scope, "__rhinoLocalJourneyHost", bridge);
           }
-          if (libraryRefs != null) {
-            LibraryHost libraries = new LibraryHost(libraryRefs);
-            libraries.setParentScope(scope);
-            libraries.setPrototype(ScriptableObject.getFunctionPrototype(scope));
-            ScriptableObject.putProperty(scope, LIBRARIES_NAME, libraries);
-          }
+          // Always present, so a library a runner caller seeds directly also
+          // loads in a library scope rather than through the runtime's eval.
+          libraries = new LibraryHost(libraryRefs != null ? libraryRefs : Collections.<String, String>emptyMap());
+          libraries.setParentScope(scope);
+          libraries.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+          ScriptableObject.putProperty(scope, LIBRARIES_NAME, libraries);
           if (preambleData != null) ScriptableObject.putProperty(scope, PREAMBLE_DATA_NAME, preambleData);
           NativeMethod.Factory nativeMethods = new NativeMethod.Factory();
           nativeMethods.setParentScope(scope);
@@ -444,6 +446,7 @@ public final class Runner {
             if (bridge != null) ScriptableObject.deleteProperty(scope, "__rhinoLocalJourneyHost");
           }
           ((ScriptContextScope) scope).sealHarnessGlobals();
+          libraries.snapshot(scope);
         } catch (EvaluatorException e) {
           return errorFromRhino(id, "compile_error", e);
         } catch (RhinoException e) {

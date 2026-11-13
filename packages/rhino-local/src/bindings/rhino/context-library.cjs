@@ -24,16 +24,8 @@
 // undefined. JSON.stringify is not that check.
 
 
-var __rhinoLocalLibUnbound = [
-  "accessToken", "action", "allowedScopes", "auditEntryDetail", "availableScopes",
-  "cacheManager", "callbacks", "callbacksBuilder", "claims", "claimsLocales",
-  "clientProperties", "config", "console", "defaultScopes", "existingSession",
-  "idRepository", "identity", "journey", "locales", "nodeState", "oauthApplication",
-  "outcome", "process", "properties", "rawProfile", "requestCookies", "requestHeaders",
-  "requestParameters", "requestProperties", "requestedClaims", "requestedScopes",
-  "resumedFromSuspend", "samlApplication", "scopeValidatorHelper", "scopes",
-  "selectedIdp", "session", "sharedState", "token", "transientState"
-];
+// __rhinoLocalLibUnbound (the measured unbound list) is defined in
+// runtime.cjs, because a library required from any caller runs without it.
 
 function __rhinoLocalLibFaultObject(target, label) {
   var names = [];

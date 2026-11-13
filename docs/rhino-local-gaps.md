@@ -1253,12 +1253,19 @@ recorded. What it approximates or leaves out:
 - **The error `HashSet` raised on an OAuth caller.** The probe recorded `"err"`
   and not the message. The runner's catchable error is the caller's class
   shutter, not a string copied from the capture.
-- **`bindingOverrides`.** They run after the library unbind, so an override can
-  put a caller binding back. A case that does that is no longer the measured
-  scope.
-- **Other contexts still leak.** A decision-node script's `require()` still
-  closes the library over that script's bindings. Only a `LIBRARY` case unbinds
-  them first.
+- **`bindingOverrides`.** They run after the library unbind. An override of a
+  name on the unbound list does not reach a library (the library scope filters
+  it), but an override of a name a library sees (`logger`, say) does.
+- **Library scope from every caller.** A library `require()`d from any case
+  runs in its own scope (`java/LibraryHost.java`, `java/LibraryScope.java`): the
+  names bound after the preamble, less the measured unbound list. A caller's
+  binding on that list, or a `var` the caller declared, is the engine's
+  `ReferenceError` inside the library, as on AIC. `context` is measured as
+  unusable inside a library but is not on the list, so a library can still
+  reach it locally. Assignments a library makes to an undeclared name stay in
+  that library's scope; whether AIC shares them between libraries or with the
+  caller is unmeasured. The `node:vm` unit-test helper evaluates libraries in
+  the caller's scope and does not model this.
 - **The AIC lane** runs only decision-node scripts, so a library case runs
   locally only.
 
